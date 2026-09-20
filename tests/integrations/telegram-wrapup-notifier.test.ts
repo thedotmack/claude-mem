@@ -80,17 +80,58 @@ describe('Telegram wrap-up notifier', () => {
     expect(buildTelegramWrapupPrompt(summaryText)).toBe(`${instruction}\n\n${summaryText}`);
   });
 
-  it('joins stored fields plainly without trimming or adding field labels', () => {
+  it('joins stored fields plainly and replaces file paths with counts', () => {
     expect(joinStoredSummaryForTelegram({
       request: '  request\ncontinued  ',
       investigated: 'investigated',
       learned: 'learned',
       completed: 'completed',
       next_steps: 'next steps',
-      files_read: '["read.ts"]',
+      files_read: '["read.ts","lib/util.ts"]',
       files_edited: '["edited.ts"]',
       notes: 'notes',
-    })).toBe('  request\ncontinued  \ninvestigated\nlearned\ncompleted\nnext steps\n["read.ts"]\n["edited.ts"]\nnotes');
+    })).toBe('  request\ncontinued  \ninvestigated\nlearned\ncompleted\nnext steps\n2 files read, 1 edited\nnotes');
+  });
+
+  it('never emits a file path and drops credential stores from the counts', () => {
+    const joined = joinStoredSummaryForTelegram({
+      request: 'request',
+      investigated: 'investigated',
+      learned: 'learned',
+      completed: 'completed',
+      next_steps: 'next steps',
+      files_read: JSON.stringify([
+        'src/app.ts',
+        '/home/me/.ssh/id_ed25519',
+        '/home/me/.aws/credentials',
+        'project/.env',
+        'project/.env.local',
+        'secrets/server.pem',
+      ]),
+      files_edited: JSON.stringify(['project/.env', 'src/index.ts']),
+      notes: 'notes',
+    });
+    expect(joined).toContain('1 files read, 1 edited');
+    expect(joined).not.toContain('.ssh');
+    expect(joined).not.toContain('.aws');
+    expect(joined).not.toContain('.env');
+    expect(joined).not.toContain('.pem');
+    expect(joined).not.toContain('src/app.ts');
+    expect(joined).not.toContain('src/index.ts');
+  });
+
+  it('treats a missing or malformed file list as zero counts', () => {
+    const joined = joinStoredSummaryForTelegram({
+      request: 'request',
+      investigated: 'investigated',
+      learned: 'learned',
+      completed: 'completed',
+      next_steps: 'next steps',
+      files_read: null,
+      files_edited: 'not json',
+      notes: 'notes',
+    });
+    expect(joined).toContain('0 files read, 0 edited');
   });
 
   it('passes every field of the latest stored summary whole to the formatter', async () => {
@@ -117,7 +158,7 @@ describe('Telegram wrap-up notifier', () => {
       project: 'project-a',
       platformSource: 'claude',
       summaryText: [summary.request, summary.investigated, summary.learned, summary.completed,
-        summary.next_steps, '["read.ts"]', '["edited.ts"]', summary.notes].join('\n'),
+        summary.next_steps, '1 files read, 1 edited', summary.notes].join('\n'),
     });
   });
 
