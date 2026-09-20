@@ -262,11 +262,6 @@ export class SessionSearch {
     /[\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]+|[^\s\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]+/g;
 
   /**
-   * Build the substring predicate used when the index cannot represent the query. Each
-   * term must appear in at least one column, and every term must appear somewhere. The
-   * escaping matches {@link searchUserPrompts}, which has always searched by substring.
-   */
-  /**
    * Build the FTS5 MATCH expression for a query.
    *
    * The tokenizer treats CJK characters as word characters, so a Latin word that sits
@@ -279,6 +274,11 @@ export class SessionSearch {
     return '"' + query.replace(/"/g, '""') + '"*';
   }
 
+  /**
+   * Build the substring predicate used when the index cannot represent the query. Each
+   * term must appear in at least one column, and every term must appear somewhere. The
+   * escaping matches {@link searchUserPrompts}, which has always searched by substring.
+   */
   private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
     const terms = query.match(SessionSearch.UNSEGMENTED_RUN) ?? [];
     if (terms.length === 0) {
