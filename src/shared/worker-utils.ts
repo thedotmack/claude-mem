@@ -16,6 +16,7 @@ import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index
 // ProcessManager imports nothing from worker-utils, so no cycle.
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { sanitizeEnv } from "../supervisor/env-sanitizer.js";
 import { killProcessTree } from "./kill-process-tree.js";
 import { writeJsonFileAtomic } from "./atomic-json.js";
 
@@ -763,6 +764,12 @@ export async function ensureWorkerRunning(): Promise<boolean> {
           // daemon holds its cwd open for its whole life, and on Windows that locks the
           // folder against rename or move long after the session ends (#3706).
           cwd: DATA_DIR,
+          // Strip host CLI bleed-through (CLAUDE_CODE_*) before the detached
+          // daemon inherits it, matching spawnServerDaemon (ServerService.ts).
+          // The daemon re-reads its own credentials from ~/.claude-mem/.env at
+          // SDK spawn time, so leaking the hook's Claude Code env only risks the
+          // isolation discipline (#2357 / #2375).
+          env: sanitizeEnv(process.env),
         });
         // A bad runtime path (dangling npm/nvm shim, missing binary) is
         // reported by Node as an asynchronous 'error' event, which the
@@ -881,6 +888,9 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
       const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore'],
+        // Same env-isolation discipline as the lazy-spawn above and
+        // spawnServerDaemon: strip CLAUDE_CODE_* before the daemon inherits it.
+        env: sanitizeEnv(process.env),
       });
       proc.on('error', (error: Error) => {
         logger.error('SYSTEM', 'Bounded worker startup spawn failed', { runtimePath, scriptPath }, error);

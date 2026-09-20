@@ -54,13 +54,14 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'provider_switch' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'auth' | 'provider_switch' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
+    case 'auth': return 'auth';
     case 'provider_switch': return 'provider_switch';
     default: return 'none';
   }
@@ -480,10 +481,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
+        const normalizedReason = normalizeAbortReason(reason);
         // Quota surfaced as assistant prose aborts here rather than throwing, so
         // it must arm the breaker too — otherwise the prose path keeps the
         // per-observation request storm the classified path no longer has.
-        if (normalizeAbortReason(reason) === 'quota') {
+        if (normalizedReason === 'quota') {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
           recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
           // Quota returned as assistant prose never throws, so it never reaches
@@ -492,6 +494,21 @@ export class SessionRoutes extends BaseRouteHandler {
           // class: the allowance is spent, no observation will ever store, and
           // the user is told nothing.
           recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
+        }
+        // An auth failure surfaces the same way quota does: the SDK child comes
+        // back signed out, ResponseProcessor resets the batch to pending and
+        // aborts with 'auth:…' rather than throwing, so it reaches neither
+        // recordObserverFailure call site in the .catch above. Without this the
+        // observer-health ledger stays green through a full auth outage — every
+        // observation is dropped, yet /api/health and the session-start warning
+        // report healthy (#4150). Record it here, where the reason is consumed.
+        if (normalizedReason === 'auth') {
+          const authMessage = 'Provider rejected the observer credentials (signed out)';
+          recordObserverFailure(provider, {
+            message: authMessage,
+            kind: 'auth',
+            action: 'Re-login to Claude Code with /login to refresh the observer credentials',
+          });
         }
         if (reason !== null) {
           // Abort accounting lives HERE, where the reason is consumed — the
@@ -502,7 +519,7 @@ export class SessionRoutes extends BaseRouteHandler {
             outcome: 'aborted',
             provider,
             model: session.lastModelId ?? 'unknown',
-            abort_reason: normalizeAbortReason(reason),
+            abort_reason: normalizedReason,
             hook: session.lastGeneratorSource,
             ide: session.platformSource,
             observed_model: session.observedModel,

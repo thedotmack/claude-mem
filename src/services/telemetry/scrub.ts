@@ -100,7 +100,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // session_compressed trust signals — booleans, counters, and our own
   // closed enums (invalid_output_class: xml | idle | prose, where 'xml' means
   // XML-shaped output that still failed to parse; abort_reason:
-  // idle | shutdown | overflow | restart_guard | quota | provider_switch | none).
+  // idle | shutdown | overflow | restart_guard | quota | auth | provider_switch | none).
   // Never model output, never raw abort strings.
   'invalid_output_class',
   'consecutive_invalid_outputs',
@@ -169,6 +169,10 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_aborted',
   'outcomes_invalid_output',
   'top_model',
+  // top_abort_reason: the dominant normalized abort_reason among the session's
+  // aborted turns (same closed enum as abort_reason above). Present only when a
+  // turn aborted; never a raw abort string.
+  'top_abort_reason',
   // Observed-session identity (NOT the observer): the model id the user's IDE
   // session ran (from its transcript) and a closed-enum billing posture
   // (max | pro | team | enterprise | subscription | api_key | bedrock | vertex | foundry | unknown).
