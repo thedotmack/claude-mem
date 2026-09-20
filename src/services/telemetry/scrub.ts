@@ -110,6 +110,8 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // shutdown_reason (stop | restart | signal), uptime in whole seconds, and
   // process memory as integer megabytes. No paths, no PIDs.
   'previous_shutdown',
+  // Keep-rate attached when volume.ts samples an event (0..1).
+  'telemetry_sample_rate',
   'previous_uptime_seconds',
   'uptime_seconds',
   'shutdown_reason',
