@@ -468,7 +468,7 @@ async function fetchInject(cfg, projects) {
  * src/services/integrations/grok-bot-index-format.ts.
  */
 const UNSAFE_INJECT_CHARS =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
 
 export function stripUnsafeChars(value) {
   return String(value).replace(UNSAFE_INJECT_CHARS, '');
@@ -476,6 +476,22 @@ export function stripUnsafeChars(value) {
 
 function collapse(value) {
   return stripUnsafeChars(value).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Fence recalled (untrusted) row content in guillemets so the host reads each
+ * observation as quoted reference data, not a directive. The row ID stays
+ * outside the fence as the trusted lookup key; fence marks are stripped from
+ * the inner text so a title cannot forge a close. Mirror of fenceRecalled in
+ * src/services/integrations/grok-bot-index-format.ts.
+ */
+function fenceRecalled(text) {
+  return `«${String(text).replace(/[«»]/g, '')}»`;
+}
+
+function fenceRow(raw) {
+  const match = /^(\S+)\s+([\s\S]*)$/.exec(raw);
+  return match ? `${match[1]} ${fenceRecalled(match[2])}` : fenceRecalled(raw);
 }
 
 function todayStamp(now) {
@@ -595,7 +611,9 @@ export function injectTextToFactLines(text, {
 
   const out = [emitHeader(head)];
   for (const row of kept) {
-    out.push(emit(row.raw));
+    // Rows keyed by an observation/summary ID are recalled untrusted content;
+    // fence them. ID-less rows (e.g. "No previous sessions found.") are ours.
+    out.push(emit(row.id ? fenceRow(row.raw) : row.raw));
   }
   return out;
 }

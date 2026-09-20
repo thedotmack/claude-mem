@@ -67,7 +67,7 @@ export function resolveTier(raw: unknown): GrokBotIndexTier {
  * collapse, which folds them to a space so a title cannot forge a second row.
  */
 const UNSAFE_INJECT_CHARS =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
 
 export function stripUnsafeChars(value: string): string {
   return String(value).replace(UNSAFE_INJECT_CHARS, '');
@@ -75,6 +75,16 @@ export function stripUnsafeChars(value: string): string {
 
 export function collapseWhitespace(value: string): string {
   return stripUnsafeChars(value).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Fence recalled (untrusted) row content in guillemets so the host reads each
+ * observation as quoted reference data, not a directive it should obey. The
+ * observation ID stays outside the fence as the trusted lookup key; the fence
+ * marks are stripped from the inner text so a title cannot forge a close.
+ */
+export function fenceRecalled(text: string): string {
+  return `«${String(text).replace(/[«»]/g, '')}»`;
 }
 
 function compactTime(time: string): string {
@@ -103,7 +113,7 @@ export function typeIcon(type: string): string {
 export function formatIndexRow(obs: GrokBotIndexObservation): string {
   const title = collapseWhitespace(obs.title || 'Untitled');
   const time = compactTime(formatTime(obs.created_at_epoch));
-  return `${obs.id} ${time} ${typeIcon(obs.type)} ${title}`;
+  return `${obs.id} ${fenceRecalled(`${time} ${typeIcon(obs.type)} ${title}`)}`;
 }
 
 export function factLine(date: string, body: string, maxChars: number, tier: GrokBotIndexTier): string {
