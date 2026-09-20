@@ -36,6 +36,7 @@ import {
 } from '../../shared/observer-recycle.js';
 import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
+import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { captureEvent } from '../telemetry/telemetry.js';
@@ -772,6 +773,8 @@ export class ClaudeProvider {
               { toolInput: message.tool_input, toolOutput: message.tool_response },
               compressField,
               { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+              undefined,
+              resolveFieldOptimizeTimeoutMs,
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 

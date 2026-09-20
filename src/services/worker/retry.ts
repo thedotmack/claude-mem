@@ -13,6 +13,7 @@ import { ClassifiedProviderError, isClassified } from './provider-errors.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { FIELD_OPTIMIZE_TIMEOUT_MS } from './field-optimizer.js';
 
 /**
  * Parse Retry-After header (seconds or HTTP-date).
@@ -52,6 +53,37 @@ const LLM_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
 const FALLBACK_PER_ATTEMPT_TIMEOUT_MS = 30_000;
 
 /**
+ * Bounds-check one CLAUDE_MEM_*_TIMEOUT_MS value (env or settings.json).
+ *
+ * Complete integer only. parseInt('90000ms') would silently accept a typo
+ * as 90000 — Greptile reproduced that on #3808. settings.json values come
+ * back as parsed JSON, so a bare number (90000) arrives as a number, not a
+ * string. Only a string or a number is accepted: String([90000]) would read
+ * as "90000". A falsy value (unset, empty) falls back without a warning.
+ *
+ * `fallbackMs` is the caller's own default, so each resolver keeps its default
+ * where the value lives instead of every caller inheriting one constant.
+ */
+function parseTimeoutMs(raw: unknown, keyName: string, fallbackMs: number): number {
+  if (!raw) return fallbackMs;
+  const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
+  const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+  if (
+    Number.isFinite(parsed)
+    && parsed >= LLM_TIMEOUT_BOUNDS.min
+    && parsed <= LLM_TIMEOUT_BOUNDS.max
+  ) {
+    return parsed;
+  }
+  logger.warn('SDK', `Invalid ${keyName}, using default`, {
+    value: raw,
+    min: LLM_TIMEOUT_BOUNDS.min,
+    max: LLM_TIMEOUT_BOUNDS.max,
+  });
+  return fallbackMs;
+}
+
+/**
  * Per-attempt deadline for a provider request.
  *
  * 30s suits a hosted provider and is far too short for a local model: a
@@ -71,26 +103,26 @@ export function resolveLlmTimeoutMs(
 ): number {
   const raw = env.CLAUDE_MEM_LLM_TIMEOUT_MS
     ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_LLM_TIMEOUT_MS;
-  if (!raw) return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
-  // Complete integer only. parseInt('90000ms') would silently accept a typo
-  // as 90000 — Greptile reproduced that on #3808. settings.json values come
-  // back as parsed JSON, so a bare number (90000) arrives as a number, not a string.
-  // Only a string or a number is accepted: String([90000]) would read as "90000".
-  const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
-  const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
-  if (
-    Number.isFinite(parsed)
-    && parsed >= LLM_TIMEOUT_BOUNDS.min
-    && parsed <= LLM_TIMEOUT_BOUNDS.max
-  ) {
-    return parsed;
-  }
-  logger.warn('SDK', 'Invalid CLAUDE_MEM_LLM_TIMEOUT_MS, using default', {
-    value: raw,
-    min: LLM_TIMEOUT_BOUNDS.min,
-    max: LLM_TIMEOUT_BOUNDS.max,
-  });
-  return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
+  return parseTimeoutMs(raw, 'CLAUDE_MEM_LLM_TIMEOUT_MS', FALLBACK_PER_ATTEMPT_TIMEOUT_MS);
+}
+
+/**
+ * Deadline for one oversized-field condensation pass (field-optimizer.ts).
+ *
+ * The field pass races a bounded model call against this deadline; on expiry
+ * the observation falls back to head/tail truncation, so a slow or proxied
+ * backend that needs more than the default 30s silently loses field detail.
+ * Resolved with the same env-first, then settings.json, per-call rules as
+ * resolveLlmTimeoutMs and sharing the same bounds, so it is reachable from
+ * configuration instead of being frozen in the shipped bundle.
+ */
+export function resolveFieldOptimizeTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS;
+  return parseTimeoutMs(raw, 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', FIELD_OPTIMIZE_TIMEOUT_MS);
 }
 
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal' | 'perAttemptTimeoutMs'>> = {

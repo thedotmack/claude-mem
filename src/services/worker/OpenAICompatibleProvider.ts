@@ -16,6 +16,7 @@ import {
 } from '../../shared/observer-recycle.js';
 import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
+import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 
 import {
@@ -296,6 +297,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       { toolInput: message.tool_input, toolOutput: message.tool_response },
       (text, budgetChars, signal) => this.compressField(text, budgetChars, config, signal),
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+      undefined,
+      resolveFieldOptimizeTimeoutMs,
     );
 
     const obsPrompt = buildObservationPrompt({
