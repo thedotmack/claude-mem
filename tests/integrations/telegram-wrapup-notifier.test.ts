@@ -120,6 +120,28 @@ describe('Telegram wrap-up notifier', () => {
     expect(joined).not.toContain('src/index.ts');
   });
 
+  it('drops Windows-separated credential paths from the counts', () => {
+    const joined = joinStoredSummaryForTelegram({
+      request: 'request',
+      investigated: 'investigated',
+      learned: 'learned',
+      completed: 'completed',
+      next_steps: 'next steps',
+      files_read: JSON.stringify([
+        'src\\app.ts',
+        'C:\\Users\\me\\.ssh\\id_ed25519',
+        'C:\\Users\\me\\.aws\\credentials',
+        'project\\.env',
+      ]),
+      files_edited: JSON.stringify(['project\\.env']),
+      notes: 'notes',
+    });
+    expect(joined).toContain('1 files read, 0 edited');
+    expect(joined).not.toContain('.ssh');
+    expect(joined).not.toContain('.aws');
+    expect(joined).not.toContain('.env');
+  });
+
   it('treats a missing or malformed file list as zero counts', () => {
     const joined = joinStoredSummaryForTelegram({
       request: 'request',

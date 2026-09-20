@@ -133,7 +133,8 @@ const SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
 ];
 
 function isSensitiveFilePath(filePath: string): boolean {
-  return SENSITIVE_PATH_PATTERNS.some(pattern => pattern.test(filePath));
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  return SENSITIVE_PATH_PATTERNS.some(pattern => pattern.test(normalizedPath));
 }
 
 /** Count the non-sensitive entries in a stored JSON file-path array. */
