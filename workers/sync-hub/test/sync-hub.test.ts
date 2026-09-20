@@ -740,6 +740,87 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 			maxPages: 0,
 		})).rejects.toThrow(/positive safe integer/);
 	});
+
+	it("does not re-fetch projection state or heartbeat the lease on every page", async () => {
+		const userId = "projection-rpc-budget";
+		const realStub = hub(userId);
+		const ops = await Promise.all(
+			Array.from({ length: 101 }, (_, index) => observationOp(String(index + 1))),
+		);
+		const pushed = ok(await realStub.pushOps("dev-a", ops));
+		const counts = {
+			getProjectionState: 0,
+			acquireProjectionLease: 0,
+			getProjectionPage: 0,
+			heartbeatProjectionLease: 0,
+			advanceProjectionCheckpoint: 0,
+			releaseProjectionLease: 0,
+		};
+		const proxyStub = {
+			getProjectionState: () => {
+				counts.getProjectionState++;
+				return realStub.getProjectionState();
+			},
+			acquireProjectionLease: (targetSeq: string, now?: number) => {
+				counts.acquireProjectionLease++;
+				return now === undefined
+					? realStub.acquireProjectionLease(targetSeq)
+					: realStub.acquireProjectionLease(targetSeq, now);
+			},
+			getProjectionPage: (
+				leaseToken: string,
+				targetSeq: string,
+				projectionUserId: string,
+				maxOps: number,
+				maxBytes: number,
+				now?: number,
+			) => {
+				counts.getProjectionPage++;
+				return now === undefined
+					? realStub.getProjectionPage(leaseToken, targetSeq, projectionUserId, maxOps, maxBytes)
+					: realStub.getProjectionPage(leaseToken, targetSeq, projectionUserId, maxOps, maxBytes, now);
+			},
+			heartbeatProjectionLease: (leaseToken: string, now?: number) => {
+				counts.heartbeatProjectionLease++;
+				return now === undefined
+					? realStub.heartbeatProjectionLease(leaseToken)
+					: realStub.heartbeatProjectionLease(leaseToken, now);
+			},
+			advanceProjectionCheckpoint: (
+				leaseToken: string,
+				epoch: string,
+				fromSeqExclusive: string,
+				throughSeq: string,
+				now?: number,
+			) => {
+				counts.advanceProjectionCheckpoint++;
+				return now === undefined
+					? realStub.advanceProjectionCheckpoint(leaseToken, epoch, fromSeqExclusive, throughSeq)
+					: realStub.advanceProjectionCheckpoint(leaseToken, epoch, fromSeqExclusive, throughSeq, now);
+			},
+			releaseProjectionLease: async (leaseToken: string) => {
+				counts.releaseProjectionLease++;
+				await realStub.releaseProjectionLease(leaseToken);
+			},
+		};
+		const budgetEnv = {
+			...projectionEnv("success"),
+			SYNC_HUB: { getByName: () => proxyStub },
+		} as unknown as Env;
+
+		const result = await drainProjection(budgetEnv, userId, pushed.head_seq, {
+			fetchTimeoutMs: 100,
+		});
+		expect(result).toEqual({ ok: true, projectedSeq: pushed.head_seq });
+		expect(counts).toEqual({
+			getProjectionState: 1,
+			acquireProjectionLease: 1,
+			getProjectionPage: 2,
+			heartbeatProjectionLease: 0,
+			advanceProjectionCheckpoint: 2,
+			releaseProjectionLease: 1,
+		});
+	});
 });
 
 describe("large cursor pagination", () => {

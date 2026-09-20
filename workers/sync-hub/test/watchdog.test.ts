@@ -9,7 +9,9 @@
  * vitest.config.ts (scripted by accountTag).
  *
  * Covered:
- *   - unconfigured → skipped, zero outbound calls (never a false alert)
+ *   - unconfigured → skipped, GraphQL never called (never a false metric
+ *     alert); Discord is paged when the webhook is set so a missing
+ *     ANALYTICS_API_TOKEN cannot stay silent in prod
  *   - healthy metrics → no Discord, no kill switch
  *   - alert breach → Discord payload shape (embeds/title/color/fields)
  *   - severe duration / rowsWritten → kill-switch KV flag written FIRST
@@ -136,13 +138,35 @@ afterEach(async () => {
 });
 
 describe("watchdog: configuration + query failures", () => {
-	it("skips (no outbound calls) when ACCOUNT_ID / ANALYTICS_API_TOKEN are unconfigured", async () => {
+	it("skips GraphQL (never a false metric alert) when ACCOUNT_ID / ANALYTICS_API_TOKEN are unconfigured, and pages Discord so the missing guardrail is loud", async () => {
 		const { impl, calls } = makeFetch({});
 		const result = await runWatchdog(
 			watchdogEnv({ ACCOUNT_ID: "", ANALYTICS_API_TOKEN: "" }),
 			{ fetchImpl: impl },
 		);
 		expect(result.status).toBe("skipped");
+		expect(result.reason).toMatch(/ANALYTICS_API_TOKEN/);
+		expect(result.discord).toBe("sent");
+		expect(result.killSwitch).toBe("none");
+		expect(graphqlCalls(calls)).toHaveLength(0);
+		expect(discordCalls(calls)).toHaveLength(1);
+		const embed = (discordCalls(calls)[0].parsed as {
+			embeds: Array<{ title: string; description: string; fields: Array<{ name: string; value: string }> }>;
+		}).embeds[0];
+		expect(embed.title).toContain("INERT");
+		expect(embed.fields[0]?.value).toContain("ACCOUNT_ID");
+		expect(embed.fields[0]?.value).toContain("ANALYTICS_API_TOKEN");
+		expect(await env.AUTH_CACHE.get(KILL_SWITCH_KEY)).toBeNull();
+	});
+
+	it("unconfigured with no webhook is still skipped and makes no outbound calls", async () => {
+		const { impl, calls } = makeFetch({});
+		const result = await runWatchdog(
+			watchdogEnv({ ACCOUNT_ID: "", ANALYTICS_API_TOKEN: "", DISCORD_WEBHOOK_URL: "" }),
+			{ fetchImpl: impl },
+		);
+		expect(result.status).toBe("skipped");
+		expect(result.discord).toBe("not_configured");
 		expect(calls).toHaveLength(0);
 		expect(await env.AUTH_CACHE.get(KILL_SWITCH_KEY)).toBeNull();
 	});
