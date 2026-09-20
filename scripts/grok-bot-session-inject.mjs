@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
- * Claude-Mem → Grok Bot Memory mid-attach JIT (Phase 1 hack-on-Memory).
+ * Optional CLI / daemon for Grok Bot Memory mid-attach.
  *
- * Product shape (Alex’s only — do not contradict):
- *   1. markdown files = buckets (editable)
- *   2. mtime = cache bust
- *   3. folder tree = CCS (L1 seat-level first)
- *   4. Claude-Mem = JIT compiler
+ * Product live writer is the worker (`GrokBotIndexWriter`): it writes
+ * `agents/<uuid>/memory/log/zz-claude-mem-inject.md` directly as observations
+ * land. CCS TIMELINE.md is not the product source of truth. Keep this script
+ * for --once / --watch / --status / --clear; you do not need it for the
+ * growing INDEX.
+ *
+ * Legacy Phase 1 path (optional CCS intermediate) remains below for the
+ * existing tests and for operators who still run --watch.
  *
  * Authorized Phase 1 path (Alex YES 2026-09-10 ~1:18pm PT):
  *   Listen to markdown timeline bucket(s) after edit (mtime), compile a rich

@@ -269,6 +269,20 @@ Claude-mem can automatically generate `CLAUDE.md` files in your project folders 
 |---------|---------|-------------|
 | `CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` | `false` | Enable auto-generation of folder CLAUDE.md files |
 
+## Grok Bot live INDEX
+
+The worker writes a growing observation INDEX into each Grok Bot seat’s Memory mid-attach file (`agents/<uuid>/memory/log/zz-claude-mem-inject.md`). See [Grok Bot Integration](/grok-bot).
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED` | `true` | Live-write the INDEX. `false` disables it. No-op when no Grok Bot seats exist. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS` | `*` | `*` / `all` / empty = every live seat; or a comma-separated UUID list. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_FALLBACK` | `house` | `house` fills thin seat diaries from newest worker observations. `off` = seat project only. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_TIER` | `episode` | Memory rank prefix (`episode`, `plain`, `note`). |
+| `CLAUDE_MEM_GROK_BOT_INJECT_WINDOW` | `80` | Newest INDEX rows to keep (max 100). |
+| `CLAUDE_MEM_GROK_BOT_INJECT_PLATFORM_SOURCE` | — | Optional host filter. Leave empty unless you want grok-only rows. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT` | — | Optional `uuid=projA,projB;uuid2=projC` override of transcript-watch projects. |
+
 See [Folder Context Files](usage/folder-context) for full documentation on how this feature works, configuration options, and git integration recommendations.
 
 ## Context Injection Configuration

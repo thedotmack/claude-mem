@@ -139,6 +139,23 @@ describe('reactive provider errors set a preserving abortReason (#3700)', () => 
     expect(session.abortReason).toBe('auth:auth_invalid');
   });
 
+  // A per-attempt deadline expiry arrives as transient; finalizing on it
+  // dropped the session's buffered work.
+  it('marks a transient failure as a transport pause', async () => {
+    const session = makeSession();
+
+    await runAndCatch(
+      new ClassifiedProviderError('OpenRouter m exceeded the 30000ms per-attempt deadline.', {
+        kind: 'transient',
+        cause: null,
+      }),
+      session,
+    );
+
+    expect(session.abortReason).toBe('transport:transient');
+    expect(session.abortController.signal.aborted).toBe(true);
+  });
+
   // The categories that genuinely are fatal must keep finalizing, or a broken
   // session would linger forever instead of being cleaned up.
   it('leaves genuinely unrecoverable errors without a preserving reason', async () => {

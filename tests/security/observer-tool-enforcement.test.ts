@@ -29,7 +29,7 @@ function readAuditLines(): Array<Record<string, unknown>> {
 
 describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () => {
   describe('belt + suspenders + braces: option surface', () => {
-    it('sets tools to an empty array (disables ALL built-in tools)', () => {
+    it('sets tools to an empty array (disables ALL built-in tools on the SDK path)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       expect(Array.isArray(opts.tools)).toBe(true);
       expect(opts.tools).toHaveLength(0);
@@ -41,14 +41,21 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       expect(opts.allowedTools).toHaveLength(0);
     });
 
-    it('keeps the full disallowedTools deny-list (12 tools)', () => {
+    it('keeps the full disallowedTools deny-list (14 tools)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       const denied = opts.disallowedTools ?? [];
       for (const tool of OBSERVER_DISALLOWED_TOOLS) {
         expect(denied).toContain(tool);
       }
       expect(denied).toHaveLength(OBSERVER_DISALLOWED_TOOLS.length);
-      expect(OBSERVER_DISALLOWED_TOOLS).toHaveLength(12);
+      expect(OBSERVER_DISALLOWED_TOOLS).toHaveLength(14);
+    });
+
+    it('denies the peer-session tools that let a toolless Observer borrow authority', () => {
+      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
+      const denied = opts.disallowedTools ?? [];
+      expect(denied).toContain('SendMessage');
+      expect(denied).toContain('ListAgents');
     });
 
     it("uses the most restrictive non-interactive permissionMode ('dontAsk')", () => {

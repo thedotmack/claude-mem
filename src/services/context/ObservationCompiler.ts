@@ -17,21 +17,7 @@ import { SUMMARY_LOOKAHEAD } from './types.js';
 
 type DatabaseOwner = { db: Database };
 
-export function queryObservationsMulti(
-  db: DatabaseOwner,
-  projects: string[],
-  config: ContextConfig,
-  platformSource?: string
-): Observation[] {
-  const typeArray = Array.from(config.observationTypes);
-  const typePlaceholders = typeArray.map(() => '?').join(',');
-  const conceptArray = Array.from(config.observationConcepts);
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
-
-  const projectPlaceholders = projects.map(() => '?').join(',');
-
-  return db.db.prepare(`
-    SELECT
+const OBSERVATION_SELECT = `
       o.id,
       o.memory_session_id,
       COALESCE(s.platform_source, 'claude') as platform_source,
@@ -47,11 +33,55 @@ export function queryObservationsMulti(
       o.created_at,
       o.created_at_epoch,
       o.project
+`;
+
+export function queryObservationsMulti(
+  db: DatabaseOwner,
+  projects: string[],
+  config: ContextConfig,
+  platformSource?: string
+): Observation[] {
+  return queryObservationsNewest(db, config, {
+    limit: config.totalObservationCount,
+    platformSource,
+    projects,
+  });
+}
+
+/**
+ * Newest observations matching the active mode filters.
+ *
+ * Pass `projects` to stay on the SessionStart / `/api/context/inject` path
+ * (strict project scope). Omit `projects` for a house-wide newest feed — used
+ * only by the Grok Bot INDEX writer when a seat diary is thin. Do not add a
+ * house-fallback query param to `/api/context/inject`.
+ */
+export function queryObservationsNewest(
+  db: DatabaseOwner,
+  config: ContextConfig,
+  options: {
+    limit: number;
+    platformSource?: string;
+    projects?: string[];
+  }
+): Observation[] {
+  const typeArray = Array.from(config.observationTypes);
+  const typePlaceholders = typeArray.map(() => '?').join(',');
+  const conceptArray = Array.from(config.observationConcepts);
+  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+  const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
+  const projectClause = projects.length > 0
+    ? `AND (o.project IN (${projects.map(() => '?').join(',')})
+           OR o.merged_into_project IN (${projects.map(() => '?').join(',')}))`
+    : '';
+
+  return db.db.prepare(`
+    SELECT
+      ${OBSERVATION_SELECT}
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-           OR o.merged_into_project IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
+    WHERE (? IS NULL OR s.platform_source = ?)
+      ${projectClause}
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -60,13 +90,12 @@ export function queryObservationsMulti(
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
-    ...projects,
-    ...projects,
-    platformSource ?? null,
-    platformSource ?? null,
+    options.platformSource ?? null,
+    options.platformSource ?? null,
+    ...(projects.length > 0 ? [...projects, ...projects] : []),
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
+    options.limit
   ) as Observation[];
 }
 

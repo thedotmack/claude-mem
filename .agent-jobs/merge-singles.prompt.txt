@@ -1,0 +1,13 @@
+You are landing small community PRs in thedotmack/claude-mem for Alex's Prioritizer seat. Worktree branch work/merge-singles off origin/main; gh is authenticated. Alex authorized merging in-seat; every gate you meet is bot-written. Do not ask him anything.
+
+The oh-my-issues triage (report at ../oh-my-issues/.agent-jobs/oh-my-issues.report.md, per-PR notes in ../oh-my-issues/.agent-jobs/pr-results/batch-0*.md) marked these as merge-now singles: #3400 (test-only), #4064 (closes #4063 logger latch), #3476 (healthy-but-never-ready), #3410 (context-filter, "clean and mergeable, land first"), #3709 (51 lines, observer disallowed tools proxy hole), #4058 (Antigravity adapter contract), #3407 (three lines, reproduces on main). 
+
+For each PR, in that order:
+1. `gh pr view N --json title,files,mergeable,baseRefName,headRefName,additions,deletions,reviewDecision` and read the diff (`gh pr diff N`). Confirm it matches the triage note and touches nothing beyond its stated scope. Confirm no secrets, no dependency additions, no CI changes unless the note says so.
+2. Check it out locally (`gh pr checkout N` into this worktree is fine, or fetch the ref), rebase or merge origin/main if behind, run the repo's test suite (check package.json scripts; `npm test` or the documented equivalent) and the typecheck/lint if present. If tests fail because of the PR, skip it and record why.
+3. If green: `gh pr merge N --squash --delete-branch=false` with a merge commit body that credits the author and names the plan master it closes (from the triage note). If the PR says it closes an issue, let GitHub close it.
+4. After each merge, `git fetch origin && git checkout work/merge-singles && git reset --hard origin/main` before the next PR so every later PR is tested against the updated main.
+
+Do NOT merge anything not on this list. Do not touch #3614, #3564/#3403, #3416/#3408/#3309, #3410's rival #3310, or #4050. Never push to main directly.
+
+Write .agent-jobs/merge-singles.report.md: for each of the seven, merged (commit sha) or skipped (why), test command and result. Commit it on work/merge-singles, push, and exit; do not sit idle.
