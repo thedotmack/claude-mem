@@ -192,15 +192,31 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
 
   isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
 
-  // #2753 — override whatever the blanket copy above put in
-  // CLAUDE_CONFIG_DIR (the WORKER's own env) with the effective config dir
-  // for the SDK SUBPROCESS only: the CLAUDE_MEM_CLAUDE_CONFIG_DIR setting
-  // when set, else process.env.CLAUDE_CONFIG_DIR/default (unchanged from
-  // today). This never touches the worker's own paths.CLAUDE_CONFIG_DIR /
+  // #2753 / #4149 — set CLAUDE_CONFIG_DIR on the SDK SUBPROCESS using the SAME
+  // condition deriveMacKeychainServiceName (oauth-token.ts) uses to pick the
+  // keychain service name, so the child and the worker always agree:
+  //   - non-default profile: stamp the effective config dir (the
+  //     CLAUDE_MEM_CLAUDE_CONFIG_DIR setting when set, else
+  //     process.env.CLAUDE_CONFIG_DIR), so both resolve the suffixed
+  //     'Claude Code-credentials-<hash>' keychain entry.
+  //   - default profile: leave CLAUDE_CONFIG_DIR UNSET on the child, deleting
+  //     any value the blanket process.env copy above carried in. Claude Code
+  //     chooses its macOS keychain service name from whether CLAUDE_CONFIG_DIR
+  //     is SET, not from its value, so stamping even the default '~/.claude'
+  //     made the child hunt for a suffixed entry a normal login never creates
+  //     while the worker injects under the bare name. Once the access token
+  //     expired the worker stopped injecting, the child could not reach the
+  //     refresh token, and capture silently stopped (#4149).
+  // This never touches the worker's own paths.CLAUDE_CONFIG_DIR /
   // MARKETPLACE_ROOT, which stay derived solely from
   // process.env.CLAUDE_CONFIG_DIR at module load.
   const configDirSettings = SettingsDefaultsManager.loadFromFile(paths.settings());
-  isolatedEnv.CLAUDE_CONFIG_DIR = resolveEffectiveClaudeConfigDir(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  const effectiveConfigDir = resolveEffectiveClaudeConfigDir(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  if (effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR) {
+    delete isolatedEnv.CLAUDE_CONFIG_DIR;
+  } else {
+    isolatedEnv.CLAUDE_CONFIG_DIR = effectiveConfigDir;
+  }
 
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();
