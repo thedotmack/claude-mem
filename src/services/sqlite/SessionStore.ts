@@ -1931,18 +1931,24 @@ export class SessionStore {
   // every existing row and every non-init insert path (sync import, orphan FK
   // stub) a user session; the one-shot backfill reclassifies the pre-existing
   // observer-sessions rows so they leave pickers on upgrade, not just for new
-  // inits. Gated on the column check, not the version row alone, so a fixture
-  // with an incomplete ledger converges.
+  // inits. Only the ALTER sits behind the column check; the index and backfill
+  // always run until the version row is recorded, so an interruption after the
+  // ALTER but before the index/backfill is recovered on the next startup
+  // instead of leaving observer sessions in pickers and the kind index absent.
   private ensureSDKSessionsKindColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(53) as SchemaVersion | undefined;
     const columns = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
     const hasKind = columns.some(col => col.name === 'kind');
 
+    if (applied && hasKind) return;
+
     if (!hasKind) {
       this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT '${SESSION_KIND_USER}'`);
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_kind ON sdk_sessions(kind)');
-      this.db.prepare('UPDATE sdk_sessions SET kind = ? WHERE project = ?')
-        .run(SESSION_KIND_INTERNAL, OBSERVER_SESSIONS_PROJECT);
     }
+    // Idempotent, so re-running after a partial migration is safe.
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_kind ON sdk_sessions(kind)');
+    this.db.prepare('UPDATE sdk_sessions SET kind = ? WHERE project = ? AND kind = ?')
+      .run(SESSION_KIND_INTERNAL, OBSERVER_SESSIONS_PROJECT, SESSION_KIND_USER);
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
   }

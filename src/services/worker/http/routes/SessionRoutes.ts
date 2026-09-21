@@ -18,6 +18,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { SESSION_KIND_KEEPALIVE, normalizeSessionKind } from '../../../../shared/session-kind.js';
+import { parseKeepaliveIntervalMs } from '../../../../shared/keepalive.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
@@ -568,12 +569,12 @@ export class SessionRoutes extends BaseRouteHandler {
     );
   }
 
-  // '0' (the default) or any non-positive / unparseable value means keepalives
-  // are OFF, so the worker drops keepalive session-inits (#4159).
+  // '0' (the default) or any non-positive / malformed value means keepalives
+  // are OFF, so the worker drops keepalive session-inits (#4159). Only a
+  // complete positive integer enables them — see parseKeepaliveIntervalMs.
   private static isKeepaliveDisabled(): boolean {
     const raw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_KEEPALIVE_INTERVAL_MS;
-    const intervalMs = parseInt(raw, 10);
-    return !Number.isFinite(intervalMs) || intervalMs <= 0;
+    return parseKeepaliveIntervalMs(raw) <= 0;
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({

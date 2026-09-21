@@ -83,6 +83,24 @@ describe('SessionStore session kind (#4159)', () => {
     expect(store.getSessionById(id)?.kind).toBe(SESSION_KIND_INTERNAL);
   });
 
+  it('recovers a migration interrupted after the column add but before the index and backfill', () => {
+    const id = store.createSDKSession('content-partial', OBSERVER_SESSIONS_PROJECT, 'prompt');
+
+    // Reproduce the state left by an interruption after ALTER: the column
+    // exists but the index, backfill, and version row never landed.
+    store.db.run('DROP INDEX IF EXISTS idx_sdk_sessions_kind');
+    store.db.prepare('UPDATE sdk_sessions SET kind = ? WHERE id = ?').run(SESSION_KIND_USER, id);
+    store.db.run('DELETE FROM schema_versions WHERE version = 53');
+
+    (store as any).ensureSDKSessionsKindColumn();
+
+    expect(store.getSessionById(id)?.kind).toBe(SESSION_KIND_INTERNAL);
+    const index = store.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_sdk_sessions_kind'")
+      .get();
+    expect(index).not.toBeNull();
+  });
+
   describe('picker listing keeps only user sessions', () => {
     const SHARED_PROJECT = 'shared-project';
     let helper: PaginationHelper;
