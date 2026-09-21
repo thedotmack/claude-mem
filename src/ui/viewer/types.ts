@@ -91,4 +91,7 @@ export interface Settings {
 
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+
+  /** File/env only — shown read-only. Not written via POST /api/settings. */
+  CLAUDE_CODE_PATH?: string;
 }
