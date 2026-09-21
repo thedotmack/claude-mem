@@ -99,6 +99,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
   CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: string;
   CLAUDE_MEM_LLM_TIMEOUT_MS: string;
+  // Keepalive cadence in milliseconds a host reads to decide how often to send
+  // a keepalive session (a session-init tagged `kind: "keepalive"`). '0' = OFF:
+  // the worker drops keepalive session-inits before creating a row or running a
+  // billed generation, so an operator can stop the pings entirely (#4159).
+  CLAUDE_MEM_KEEPALIVE_INTERVAL_MS: string;
   // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
   // mounted and the worker behaves exactly as before. Set (with a non-loopback
   // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
@@ -247,6 +252,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
     CLAUDE_MEM_LLM_TIMEOUT_MS: '30000',                  // Per-attempt observer LLM deadline (retry.ts); raise for slow/local backends
+    CLAUDE_MEM_KEEPALIVE_INTERVAL_MS: '0',               // Keepalive cadence a host honors; '0' = OFF — the worker drops `kind: "keepalive"` session-inits (#4159)
     // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
     // mounted and the worker behaves exactly as before. Set (with a non-loopback
     // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
