@@ -44,6 +44,41 @@ export function __identityProbeCountForTesting(): number {
   return rawProbeCount;
 }
 
+/**
+ * Reads a start token out of a spawnSync result, treating a missing or
+ * non-string stdout as "no token" instead of dereferencing it.
+ *
+ * A probe that the OS kills — a timeout is the common way — comes back with an
+ * absent `stdout`. `result.stdout.trim()` then throws; on Bun the engine words
+ * it as "TypeError: undefined is not a function", so the probe crashes instead
+ * of degrading, and on Windows that removed the PID-reuse guard the token
+ * exists to provide (#4145).
+ *
+ * A null token is safe here: isSameProcess reads it as "proceed", strictly
+ * narrower than a false match. But a probe that reports success (status 0) and
+ * still hands back no usable stdout is a genuine degrade — the host silently
+ * loses reuse protection — so that one case is logged above debug rather than
+ * swallowed. A status-0 read with an EMPTY string is the normal "process is
+ * gone" answer and stays quiet.
+ */
+export function startTokenFromSpawnResult(
+  source: string,
+  pid: number,
+  result: { status: number | null; stdout?: unknown }
+): string | null {
+  if (result.status !== 0) return null;
+  if (typeof result.stdout !== 'string') {
+    logger.warn('SYSTEM', 'captureProcessStartToken: start-token probe returned no stdout', {
+      pid,
+      source,
+      status: result.status
+    });
+    return null;
+  }
+  const trimmed = result.stdout.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function queryWindowsCreationDate(pid: number): string | null {
   // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
   // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
@@ -64,11 +99,7 @@ function queryWindowsCreationDate(pid: number): string | null {
       env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
     }
   );
-  if (result.status === 0) {
-    const trimmed = result.stdout.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  return null;
+  return startTokenFromSpawnResult('powershell-cim', pid, result);
 }
 
 function captureWindowsStartToken(pid: number, bypassCache = false): string | null {
@@ -128,9 +159,7 @@ function readStartToken(pid: number, bypassCache: boolean): string | null {
       // binaries so the spawn-env CI check stays a single rule (#2357/#2375).
       env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
     });
-    if (result.status !== 0) return null;
-    const token = result.stdout.trim();
-    return token.length > 0 ? token : null;
+    return startTokenFromSpawnResult('ps-lstart', pid, result);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'captureProcessStartToken: ps exec failed', {
       pid,
