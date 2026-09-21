@@ -2478,7 +2478,7 @@ export class SessionStore {
   }
 
   getRecentSessionsWithStatus(project: string, limit: number = 3, platformSource?: string): RecentSessionStatusRow[] {
-    const params: any[] = [project];
+    const params: any[] = [project, SESSION_KIND_USER];
     let platformClause = '';
     if (platformSource) {
       platformClause = `AND COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`;
@@ -2497,7 +2497,7 @@ export class SessionStore {
           CASE WHEN sum.memory_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
         FROM sdk_sessions s
         LEFT JOIN session_summaries sum ON s.memory_session_id = sum.memory_session_id
-        WHERE s.project = ? AND s.memory_session_id IS NOT NULL
+        WHERE s.project = ? AND COALESCE(s.kind, '${SESSION_KIND_USER}') = ? AND s.memory_session_id IS NOT NULL
         ${platformClause}
         GROUP BY s.memory_session_id
         ORDER BY s.started_at_epoch DESC

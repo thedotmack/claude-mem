@@ -108,5 +108,10 @@ describe('SessionStore session kind (#4159)', () => {
       const prompts = helper.getPrompts(0, 50, SHARED_PROJECT).items.map(p => p.content_session_id);
       expect(prompts).toEqual(['c-user']);
     });
+
+    it('keeps machine sessions out of recent session context', () => {
+      const sessions = store.getRecentSessionsWithStatus(SHARED_PROJECT, 50).map(s => s.memory_session_id);
+      expect(sessions).toEqual(['m-user']);
+    });
   });
 });
