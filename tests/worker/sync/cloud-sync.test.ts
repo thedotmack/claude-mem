@@ -1315,6 +1315,154 @@ describe('CloudSync', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // After a hand merge of two devices' SQLite files, local revision counters
+  // no longer line up with what the hub already learned from the other
+  // device. The hub then refuses the whole batch on one entity forever
+  // (issue #4086: lastFlushAt stuck at null while the queue grows), so the
+  // client must rebase that entity above the hub's revision and retry the
+  // rest of the batch instead of rolling the whole queue back.
+  // ---------------------------------------------------------------------------
+  describe('revision conflict rebase', () => {
+    /**
+     * Mock hub that refuses any batch containing `entityId` at a revision at
+     * or below `hubRev` — exactly the all-or-nothing refusal the real hub
+     * returns for a conflicting entity.
+     */
+    function refusingHub(entityId: string, hubRev: string, error: (rev: string) => string) {
+      const mock = makeFetchMock(call => {
+        const ops = mock.calls[call - 1]?.wireParsed?.ops ?? [];
+        const hit = ops
+          .map((op: { body: string }) => JSON.parse(op.body) as { id: string; entity_rev: string })
+          .find((body: { id: string; entity_rev: string }) =>
+            body.id === entityId && BigInt(body.entity_rev) <= BigInt(hubRev));
+        if (!hit) return undefined;
+        return new Response(
+          JSON.stringify({ error: `invalid_ops: ${error(hit.entity_rev)}` }),
+          { status: 400 },
+        );
+      });
+      return mock;
+    }
+
+    function pushedBodies(calls: RecordedRequest[]): Array<Record<string, any>> {
+      return calls.flatMap(c => (c.wireParsed?.ops ?? [])
+        .map((op: { body: string }) => JSON.parse(op.body) as Record<string, any>));
+    }
+
+    function seedFrozenTombstone(originLocalId: string, entityRev = '1'): string {
+      const op = buildContentOperation({
+        kind: 'observation',
+        originDeviceId: 'device-fixture',
+        originLocalId,
+        entityRev,
+        payload: null,
+        deleted: true,
+        deletedAt: ISO,
+      });
+      const body = JSON.parse(op.body) as { id: string };
+      db.prepare(`
+        INSERT INTO sync_content_outbox
+          (entity_id, kind, origin_local_id, entity_rev, body,
+           operation_sha256, deleted, created_at_epoch)
+        VALUES (?, 'observation', ?, ?, ?, ?, 1, 1)
+      `).run(body.id, originLocalId, entityRev, op.body, op.operation_sha256);
+      return body.id;
+    }
+
+    it('rebases a hash-conflicted row above the hub revision and drains the batch behind it', async () => {
+      seedObservation({ title: 'conflicted' });
+      seedObservation({ title: 'healthy' });
+      const entityId = stableDocumentId('observation', 'device-fixture', '1');
+      const { impl, calls } = refusingHub(entityId, '1', rev => `revision_hash_conflict:${entityId}:${rev}`);
+
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().lastFlushAt).not.toBeNull();
+      expect(pendingCount('observations')).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 0 });
+      // Nothing is dead-lettered: a rebase preserves the record.
+      expect(sync.status().quarantine.count).toBe(0);
+      expect(
+        db.prepare("SELECT CAST(sync_rev AS TEXT) AS r FROM observations WHERE id = 1").get(),
+      ).toEqual({ r: '2' });
+
+      const bodies = pushedBodies(calls);
+      expect(bodies.some(b => b.id === entityId && b.entity_rev === '2' && b.payload.title === 'conflicted')).toBe(true);
+      // The healthy sibling shipped without waiting for the conflicted row.
+      expect(bodies.some(b => b.origin_local_id === '2' && b.payload.title === 'healthy')).toBe(true);
+      sync.stop();
+    });
+
+    it('rebases onto the head the hub reports for a stale revision', async () => {
+      seedObservation({ title: 'behind the hub' });
+      const entityId = stableDocumentId('observation', 'device-fixture', '1');
+      const { impl, calls } = refusingHub(entityId, '7', rev => `stale_revision:${entityId}:${rev}<7`);
+
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(pendingCount('observations')).toBe(0);
+      expect(
+        db.prepare("SELECT CAST(sync_rev AS TEXT) AS r FROM observations WHERE id = 1").get(),
+      ).toEqual({ r: '8' });
+      expect(pushedBodies(calls).some(b => b.id === entityId && b.entity_rev === '8')).toBe(true);
+      sync.stop();
+    });
+
+    it('rebases a conflicted tombstone, which has no local row to resnapshot', async () => {
+      const entityId = seedFrozenTombstone('99');
+      seedObservation({ title: 'behind the tombstone' });
+      const { impl, calls } = refusingHub(entityId, '1', rev => `revision_hash_conflict:${entityId}:${rev}`);
+
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 0 });
+      expect(sync.status().quarantine.count).toBe(0);
+      const bodies = pushedBodies(calls);
+      expect(bodies.some(b => b.id === entityId && b.entity_rev === '2' && b.deleted === true)).toBe(true);
+      expect(bodies.some(b => b.payload?.title === 'behind the tombstone')).toBe(true);
+      sync.stop();
+    });
+
+    it('rebases a conflicted mutation by re-freezing it at the next revision', async () => {
+      store.createSDKSession('sess-conflicted', 'proj-x', 'p', 'queued title', 'claude');
+      const opUuid = outboxRows()[0].op_uuid;
+      const entityId = `mutation:${opUuid}`;
+      const { impl, calls } = refusingHub(entityId, '1', rev => `revision_hash_conflict:${entityId}:${rev}`);
+
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(outboxRows().length).toBe(0);
+      expect(sync.status().quarantine.count).toBe(0);
+      expect(pushedBodies(calls).some(b => b.id === entityId && b.entity_rev === '2')).toBe(true);
+      sync.stop();
+    });
+
+    it('still surfaces an invalid_ops rejection it cannot attribute to a local entity', async () => {
+      seedObservation({ title: 'unmatched' });
+      const unknown = stableDocumentId('observation', 'device-fixture', '4242');
+      const { impl } = makeFetchMock(() => new Response(
+        JSON.stringify({ error: `invalid_ops: revision_hash_conflict:${unknown}:1` }),
+        { status: 400 },
+      ));
+
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toMatch(/revision_hash_conflict/);
+      expect(pendingCount('observations')).toBe(1);
+      sync.stop();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // stampAcked contract + the ack-driven-progress livelock guard.
   // ---------------------------------------------------------------------------
   describe('ack handling', () => {

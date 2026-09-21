@@ -39,6 +39,19 @@
 // LIVELOCK GUARD: the drain loops make forward progress ONLY via acks
 // (stamp/DELETE). Any malformed or incomplete 200 response is rejected
 // before acknowledgment state changes and enters the normal backoff path.
+//
+// REVISION REBASE: the hub refuses a whole batch when any op targets an
+// entity revision it already holds under different bytes
+// (`revision_hash_conflict:<entity>:<rev>`) or below its head
+// (`stale_revision:<entity>:<rev><<head>`). That happens whenever local
+// revision counters diverge from the hub's — most often after a local
+// SQLite merge across two devices on one account. Left alone it is a
+// permanent stall: one poisoned entity blocks every op behind it forever.
+// Both rejections name the hub's revision, so the client rebases that one
+// entity above it (re-queueing the local row / tombstone / mutation at
+// hub_rev + 1) and immediately retries the rest of the batch. Progress is
+// monotonic: every rebase raises the entity strictly above the revision the
+// hub just reported, and the retried batch is strictly smaller.
 
 import type { Database } from 'bun:sqlite';
 import { existsSync, readFileSync } from 'fs';
@@ -166,6 +179,26 @@ function isStaleOriginDeviceIdReject(message: string): boolean {
   return message.includes('sync hub push 400:')
     && message.includes('invalid_ops')
     && message.includes('origin_device_id does not match authenticated X-Device-Id');
+}
+
+/**
+ * Hub 400 naming an entity whose local revision can never be appended:
+ * either the hub holds that exact revision under different bytes, or the
+ * local revision is already below the hub's head. Both carry the revision
+ * the hub holds, which is the only thing the client needs to rebase onto.
+ * Entity ids are `<kind>:<base64url>` (or `mutation:<uuid>`), so the
+ * character class stops cleanly at the JSON quote that follows.
+ */
+function parseRevisionConflict(message: string): { entityId: string; hubRev: string } | null {
+  if (!message.includes('sync hub push 400:') || !message.includes('invalid_ops')) return null;
+  const stale = /stale_revision:([A-Za-z0-9:_-]+):\d+<(\d+)/.exec(message);
+  const conflict = stale ?? /revision_hash_conflict:([A-Za-z0-9:_-]+):(\d+)/.exec(message);
+  if (!conflict) return null;
+  try {
+    return { entityId: conflict[1], hubRev: assertCanonicalDecimal(conflict[2], { positive: true }) };
+  } catch {
+    return null;
+  }
 }
 
 const TABLE_BY_KIND: Record<RowKind, string> = {
@@ -998,7 +1031,8 @@ export class CloudSync {
         this.emitHeadSeq(response.head_seq);
         return;
       } catch (error) {
-        const next = this.dropStaleOriginDeviceIdOps(remaining, error);
+        const next = this.dropStaleOriginDeviceIdOps(remaining, error)
+          ?? this.rebaseRevisionConflictOps(remaining, error);
         if (next === null) throw error;
         if (next.length === 0 || this.stopped) return;
         remaining = next;
@@ -1064,6 +1098,196 @@ export class CloudSync {
     for (const row of mutationRows) {
       this.quarantineMutation(row, reason);
     }
+  }
+
+  /**
+   * The hub refused the batch because one entity's revision cannot be
+   * appended (its revision already exists there under different bytes, or it
+   * sits below the hub's head). A single such entity — typical after a local
+   * database merge, where local revision counters no longer line up with what
+   * the hub learned from the other device — otherwise wedges the queue
+   * permanently, because every retry re-sends the same doomed op at the head
+   * of the same batch.
+   *
+   * Rebase that one entity above the revision the hub named and return the
+   * rest of the batch for an immediate retry, so one conflict costs one op,
+   * not the whole queue. Returns null when this is not that failure class or
+   * nothing local matched the named entity (the caller then rethrows and the
+   * normal backoff applies).
+   */
+  private rebaseRevisionConflictOps(ops: WireOp[], error: unknown): WireOp[] | null {
+    const reason = error instanceof Error ? error.message : String(error);
+    const conflict = parseRevisionConflict(reason);
+    if (!conflict) return null;
+    let rebased: boolean;
+    try {
+      rebased = this.rebaseConflictedEntity(conflict.entityId, conflict.hubRev, reason);
+    } catch (rebaseError) {
+      // A rebase that cannot complete must surface the hub's own rejection,
+      // not replace it — the caller rethrows and the backoff timer retries.
+      logger.error('CLOUD_SYNC', 'Could not rebase the entity the hub refused', {
+        entityId: conflict.entityId,
+        hubRev: conflict.hubRev,
+        reason,
+      }, rebaseError instanceof Error ? rebaseError : new Error(String(rebaseError)));
+      return null;
+    }
+    if (!rebased) return null;
+    const kept = ops.filter(op => {
+      try {
+        return parseCanonicalOperation(op).id !== conflict.entityId;
+      } catch {
+        return true; // unparseable ops are the mutation/content drain's problem
+      }
+    });
+    // The rebase must retire at least one op, or the retry would re-send the
+    // identical batch and spin.
+    return kept.length === ops.length ? null : kept;
+  }
+
+  /** Re-queue one entity above `hubRev`. Returns false when nothing matched. */
+  private rebaseConflictedEntity(entityId: string, hubRev: string, reason: string): boolean {
+    if (entityId.startsWith('mutation:')) {
+      return this.rebaseConflictedMutation(entityId.slice('mutation:'.length), hubRev, reason);
+    }
+    return this.rebaseConflictedContent(entityId, hubRev, reason);
+  }
+
+  /**
+   * Drop every queued snapshot of `entityId` at or below the hub's revision
+   * and re-queue the newest one above it. A live row is re-flagged unsynced
+   * so drainKind resnapshots it from current SQLite state; a tombstone (or a
+   * row deleted out from under the queue) has no local source left, so its
+   * frozen payload is re-frozen at the rebased revision instead of being
+   * dropped.
+   */
+  private rebaseConflictedContent(entityId: string, hubRev: string, reason: string): boolean {
+    const rows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox WHERE entity_id = ?
+    `).all(entityId) as ContentOutboxRow[];
+    const doomed = rows.filter(row => compareCanonicalDecimals(row.entity_rev, hubRev) <= 0);
+    if (doomed.length === 0) return false;
+    const highest = doomed.reduce((a, b) =>
+      compareCanonicalDecimals(a.entity_rev, b.entity_rev) >= 0 ? a : b);
+    const kind = highest.kind as RowKind;
+    const table = TABLE_BY_KIND[kind];
+    if (!table) return false;
+
+    let frozen: { deleted: boolean; deletedAt: string | null; payload: Record<string, unknown> | null };
+    try {
+      const body = parseCanonicalOperation({
+        body: highest.body,
+        operation_sha256: highest.operation_sha256,
+      });
+      // The entity id is derived from the origin device id; rebasing under a
+      // different identity would fork attribution. That case belongs to
+      // dropStaleOriginDeviceIdOps, not here.
+      if (body.origin_device_id !== this.deviceId) return false;
+      frozen = {
+        deleted: body.deleted,
+        deletedAt: body.deleted_at,
+        payload: body.payload,
+      };
+    } catch {
+      return false;
+    }
+
+    // Above the hub AND above anything still queued for this entity, so the
+    // rebased op cannot collide with a newer snapshot already in line.
+    const nextRev = incrementCanonicalDecimal(
+      this.maxDecimal([hubRev, ...rows.map(row => row.entity_rev)]),
+    );
+    let resnapshot = false;
+    const tx = this.db.transaction(() => {
+      for (const row of doomed) {
+        this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+      }
+      if (!frozen.deleted) {
+        // SELECT-then-UPDATE, never `.run().changes` — see the bun:sqlite
+        // trap documented in SyncApply.applySetTitle.
+        const local = this.db.prepare(
+          `SELECT CAST(id AS TEXT) AS id FROM ${table}
+           WHERE id = ? AND origin_device_id IS NULL`
+        ).get(highest.origin_local_id) as { id: string } | undefined;
+        if (local) {
+          this.db.prepare(`
+            UPDATE ${table} SET sync_rev = ?, synced_at = NULL
+            WHERE id = ? AND origin_device_id IS NULL
+          `).run(nextRev, highest.origin_local_id);
+          resnapshot = true;
+        }
+      }
+      if (resnapshot) return;
+      const op = buildContentOperation({
+        kind,
+        originDeviceId: this.deviceId,
+        originLocalId: highest.origin_local_id,
+        entityRev: nextRev,
+        payload: frozen.payload,
+        deleted: frozen.deleted,
+        deletedAt: frozen.deleted ? frozen.deletedAt : null,
+      });
+      this.db.prepare(`
+        INSERT INTO sync_content_outbox
+          (entity_id, kind, origin_local_id, entity_rev, body,
+           operation_sha256, deleted, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(entity_id, entity_rev) DO NOTHING
+      `).run(
+        entityId, kind, highest.origin_local_id, nextRev,
+        op.body, op.operation_sha256, frozen.deleted ? 1 : 0, Date.now(),
+      );
+    });
+    tx();
+    logger.warn('CLOUD_SYNC', 'Rebased content entity above the hub revision that refused the batch', {
+      entityId,
+      kind,
+      originLocalId: highest.origin_local_id,
+      hubRev,
+      fromRev: highest.entity_rev,
+      toRev: nextRev,
+      requeuedAs: resnapshot ? 'local-row-resnapshot' : (frozen.deleted ? 'tombstone' : 'frozen-snapshot'),
+      reason,
+    });
+    return true;
+  }
+
+  /**
+   * Mutations carry no local row to resnapshot, so the queue entry itself is
+   * rebased: bump its revision above the hub's and drop the frozen
+   * serialization, which drainMutations re-freezes at the new revision on the
+   * next page.
+   */
+  private rebaseConflictedMutation(opUuid: string, hubRev: string, reason: string): boolean {
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+             body, canonical_body, operation_sha256
+      FROM sync_outbox WHERE op_uuid = ?
+    `).get(opUuid) as MutationOutboxRow | undefined;
+    if (!row) return false;
+    let currentRev: string;
+    try {
+      currentRev = assertCanonicalDecimal(row.rev, { positive: true });
+    } catch {
+      return false;
+    }
+    if (compareCanonicalDecimals(currentRev, hubRev) > 0) return false;
+    const nextRev = incrementCanonicalDecimal(hubRev);
+    this.db.prepare(`
+      UPDATE sync_outbox
+      SET rev = ?, canonical_body = NULL, operation_sha256 = NULL
+      WHERE id = ?
+    `).run(nextRev, row.id);
+    logger.warn('CLOUD_SYNC', 'Rebased mutation above the hub revision that refused the batch', {
+      opUuid,
+      hubRev,
+      fromRev: currentRev,
+      toRev: nextRev,
+      reason,
+    });
+    return true;
   }
 
   private quarantineStaleOriginDeviceIdMutation(op: WireOp, reason: string): boolean {
