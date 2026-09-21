@@ -399,12 +399,18 @@ export class SessionRoutes extends BaseRouteHandler {
         // controller on its next line, so aborted generators either resolve
         // normally (quota/overflow break) or hit the signal-aborted early
         // return above — this catch only ever sees non-abort rejections.
+        // Reset claimed messages so any pending observations remain in the buffer
+        // and are drained on the next run instead of being dropped
+        try {
+          await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+        } catch (resetErr) {
+          logger.warn('SESSION', 'Failed to reset claimed messages on generator error', {
+            sessionId: session.sessionDbId,
+            error: resetErr instanceof Error ? resetErr.message : String(resetErr),
+          });
+        }
+
         if (isClassified(error)) {
-          // The single error-level line for a classified provider failure:
-          // code, message, action, link, and request id — same words the
-          // gateway sent. Pass the rendered string (not the Error): classified
-          // errors are user-state (quota/auth/rate-limit), not bugs, so the
-          // errorSink/captureException isn't fired for them at all.
           logger.error('SESSION', 'Observer failed', {
             sessionId: session.sessionDbId,
             provider,
@@ -419,17 +425,7 @@ export class SessionRoutes extends BaseRouteHandler {
             error: errorMsg,
           }, error);
         }
-        // Trial-expiry fallback (plan 2026-08-26 Phase 6): a terminal quota/key
-        // rejection from the cmem gateway is the promised automatic switch to
-        // the Anthropic plan, not an outage — record the fallback marker (the
-        // next dispatch returns 'claude') and keep it OUT of the observer-health
-        // ledger so the scary session-start outage warning never fires for it.
-        //
-        // The quota breaker is NESTED in the else, not stacked ahead of this
-        // branch. Stacking them would run two cooldowns over one event with
-        // disagreeing periods (15 min here, 30 min there) and open a window
-        // where memory neither uses the gateway nor falls back. The gateway's
-        // own fallback marker IS the breaker on that path.
+
         if (provider === 'openrouter' && isClassified(error) && recordCmemFallbackIfEligible(error)) {
           logger.warn('SESSION', 'cmem gateway key is no longer funded; memory falls back to the Anthropic plan provider', {
             sessionId: session.sessionDbId,
@@ -437,14 +433,11 @@ export class SessionRoutes extends BaseRouteHandler {
             ...(error.code ? { code: error.code } : {}),
           });
         } else {
-          // Observer-health ledger: repeated generator failures mean observations
-          // are being dropped — session-start context warns the user via this.
-          // Classified errors carry the structured detail (code/action/link/
-          // request id) so the warning shows the same words as the log line.
-          // A structured quota refusal arms the breaker, so the next observation
-          // does not immediately buy the same refusal again (#3634).
           if (isClassified(error) && error.kind === 'quota_exhausted') {
-            recordQuotaExhausted(provider, error.message);
+            // For Gemini, only lock out if the daily quota is exhausted across models
+            if (provider !== 'gemini' || error.message.toLowerCase().includes('daily') || error.message.toLowerCase().includes('per day')) {
+              recordQuotaExhausted(provider, error.message);
+            }
           }
           recordObserverFailure(provider, isClassified(error)
             ? { message: error.message, kind: error.kind, code: error.code, action: error.action, url: error.url, requestId: error.requestId }

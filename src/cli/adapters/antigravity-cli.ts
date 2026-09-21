@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'fs';
 import type { PlatformAdapter } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
@@ -57,9 +58,9 @@ export const antigravityCliAdapter: PlatformAdapter = {
     // toolCall.
     const isInvocationEvent = 'invocationNum' in r && !hasToolCall;
 
-    let toolName: string | undefined = r.toolCall?.name ?? r.tool_name;
-    let toolInput: unknown = r.toolCall?.args ?? r.tool_input;
-    let toolResponse: unknown = r.tool_response;
+    let toolName: string | undefined = r.toolCall?.name ?? r.tool_name ?? r.toolName;
+    let toolInput: unknown = r.toolCall?.args ?? r.tool_input ?? r.toolInput;
+    let toolResponse: unknown = r.toolResult ?? r.tool_response ?? r.toolResponse;
 
     // Antigravity does not put the user's prompt on stdin — it lives in the
     // transcript's USER_INPUT node. Pull it (unwrapped) for both invocation
@@ -91,6 +92,30 @@ export const antigravityCliAdapter: PlatformAdapter = {
       toolResponse = typeof r.error === 'string' && r.error
         ? { error: r.error }
         : { status: 'completed' };
+    }
+
+    const transcriptPath = r.transcriptPath ?? r.transcript_path;
+    if (!toolName && transcriptPath && typeof transcriptPath === 'string') {
+      try {
+        if (existsSync(transcriptPath)) {
+          const content = readFileSync(transcriptPath, 'utf-8');
+          const lines = content.trim().split('\n');
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+              const step = JSON.parse(lines[i]);
+              if (Array.isArray(step.tool_calls) && step.tool_calls.length > 0) {
+                toolName = step.tool_calls[0].name;
+                toolInput = step.tool_calls[0].args;
+                break;
+              }
+            } catch {
+              // Ignore malformed line
+            }
+          }
+        }
+      } catch {
+        // Defensive non-blocking fallback
+      }
     }
 
     return {

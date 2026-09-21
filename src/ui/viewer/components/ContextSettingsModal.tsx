@@ -375,26 +375,62 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="Gemini Model"
-                    tooltip="Gemini model used for generating observations"
+                    tooltip="Gemini model used for generating observations. Select 'auto' for dynamic ranked cascade."
                   >
                     <select
-                      value={formState.CLAUDE_MEM_GEMINI_MODEL || 'gemini-flash-latest'}
+                      value={formState.CLAUDE_MEM_GEMINI_MODEL || 'auto'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_MODEL', e.target.value)}
                     >
-                      <option value="gemini-flash-latest">gemini-flash-latest (default, latest GA Flash)</option>
-                      <option value="gemini-flash-lite-latest">gemini-flash-lite-latest (latest GA Flash-Lite)</option>
-                      <option value="gemini-3.5-flash">gemini-3.5-flash</option>
-                      <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
-                      <option value="gemini-3-flash-preview">gemini-3-flash-preview (preview)</option>
+                      <option value="auto">✨ auto (Dynamic Cascade: Pro → Flash → Gemma → Omni → Lite)</option>
+                      <optgroup label="Tier 1: Pro Models (Frontier Reasoning)">
+                        <option value="gemini-pro-latest">gemini-pro-latest (Perpetual Alias)</option>
+                        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
+                        <option value="gemini-3.1-pro-preview-customtools">gemini-3.1-pro-preview-customtools</option>
+                        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                      </optgroup>
+                      <optgroup label="Tier 2: Flash Models (Balanced & Fast, 1M Context)">
+                        <option value="gemini-flash-latest">gemini-flash-latest (Perpetual Alias)</option>
+                        <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                        <option value="gemini-3.7-flash">gemini-3.7-flash</option>
+                        <option value="gemini-3.6-flash">gemini-3.6-flash</option>
+                        <option value="gemini-3.5-flash">gemini-3.5-flash</option>
+                        <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                      </optgroup>
+                      <optgroup label="Tier 3: Gemma Open Weights (Google Architecture)">
+                        <option value="gemma-4-31b-it">gemma-4-31b-it (31B params)</option>
+                        <option value="gemma-4-26b-a4b-it">gemma-4-26b-a4b-it (26B params)</option>
+                        <option value="gemma-2-27b-it">gemma-2-27b-it (27B params)</option>
+                        <option value="gemma-2-9b-it">gemma-2-9b-it (9B params)</option>
+                      </optgroup>
+                      <optgroup label="Tier 4: Omni & Agentic Previews">
+                        <option value="gemini-omni-1.1-flash">gemini-omni-1.1-flash</option>
+                        <option value="gemini-omni-flash-preview">gemini-omni-flash-preview</option>
+                        <option value="antigravity-preview-05-2026">antigravity-preview-05-2026</option>
+                      </optgroup>
+                      <optgroup label="Tier 5: Flash Lite (High RPM & Low Latency)">
+                        <option value="gemini-flash-lite-latest">gemini-flash-lite-latest (Perpetual Alias)</option>
+                        <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite</option>
+                        <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
+                        <option value="gemini-3.1-flash-lite-preview">gemini-3.1-flash-lite-preview</option>
+                        <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+                      </optgroup>
                     </select>
                   </FormField>
                   <div className="toggle-group" style={{ marginTop: '8px' }}>
                     <ToggleSwitch
                       id="gemini-rate-limiting"
                       label="Rate Limiting"
-                      description="Enable for free tier (10-30 RPM). Disable if you have billing set up (1000+ RPM)."
-                      checked={formState.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED === 'true'}
+                      description="Track RPM/RPD limits for free tier. Prevents hard 429 quota lockouts."
+                      checked={formState.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false'}
                       onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED', checked ? 'true' : 'false')}
+                    />
+                    <ToggleSwitch
+                      id="gemini-auto-fallback"
+                      label="Auto Cascade & Fallback"
+                      description="Automatically switch to the next available model in the ranked hierarchy when rate limits or 429 errors occur."
+                      checked={formState.CLAUDE_MEM_GEMINI_AUTO_FALLBACK !== 'false'}
+                      onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_AUTO_FALLBACK', checked ? 'true' : 'false')}
                     />
                   </div>
                 </>

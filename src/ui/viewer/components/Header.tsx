@@ -4,6 +4,7 @@ import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL } from '../constants/promo';
+import type { GeminiRateLimitsStatus } from '../types';
 
 interface HeaderProps {
   projects: string[];
@@ -15,6 +16,8 @@ interface HeaderProps {
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
   onShowHelp?: () => void;
+  geminiStatus?: GeminiRateLimitsStatus | null;
+  onOpenGeminiStatus?: () => void;
 }
 
 export function Header({
@@ -26,7 +29,9 @@ export function Header({
   themePreference,
   onThemeChange,
   onContextPreviewToggle,
-  onShowHelp
+  onShowHelp,
+  geminiStatus,
+  onOpenGeminiStatus
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
 
@@ -44,6 +49,52 @@ export function Header({
           </div>
           <span className="logo-text">claude-mem</span>
         </h1>
+        {geminiStatus && (() => {
+          const activeState = geminiStatus.models[geminiStatus.activeModel];
+          const rpdLimit = activeState?.rpdLimit || 1500;
+          const rpdUsed = activeState?.rpdUsed || 0;
+          const rpdPercent = Math.min(100, Math.round((rpdUsed / rpdLimit) * 100));
+          const rpdLevel = rpdPercent >= 85 ? 'usage-critical' : rpdPercent >= 60 ? 'usage-warning' : 'usage-normal';
+          return (
+            <button
+              type="button"
+              className={`gemini-header-badge ${geminiStatus.queue.isWaitingForQuota ? 'is-paused' : ''}`}
+              onClick={onOpenGeminiStatus}
+              title={`Gemini: ${geminiStatus.activeModel} • RPD: ${rpdUsed}/${rpdLimit} (${rpdPercent}%) • Clique para gerenciar`}
+            >
+              <span className="gemini-badge-icon">⚡</span>
+              <span className="gemini-badge-name" title={geminiStatus.activeModel}>
+                {geminiStatus.activeModel}
+              </span>
+              {geminiStatus.autoFallback && (
+                <span className="gemini-badge-auto">AUTO</span>
+              )}
+              {activeState && (
+                <div className="gemini-header-rpd-widget" title={`Cota diária: ${rpdUsed} / ${rpdLimit} requisições (${rpdPercent}%)`}>
+                  <div className="gemini-header-rpd-track">
+                    <div
+                      className={`gemini-header-rpd-fill ${rpdLevel}`}
+                      style={{ width: `${Math.max(4, rpdPercent)}%` }}
+                    />
+                  </div>
+                  <span className="gemini-header-rpd-label">
+                    {rpdUsed}/{rpdLimit >= 1000 ? `${(rpdLimit / 1000).toFixed(rpdLimit % 1000 === 0 ? 0 : 1)}k` : rpdLimit} RPD
+                  </span>
+                </div>
+              )}
+              {activeState && (
+                <span className={`gemini-badge-rpm ${activeState.rpmUsed >= (activeState.rpmLimit * 0.8) ? 'near-limit' : ''}`}>
+                  {activeState.rpmUsed}/{activeState.rpmLimit} RPM
+                </span>
+              )}
+              {geminiStatus.queue.depth > 0 && (
+                <span className="gemini-badge-queue" title={`${geminiStatus.queue.depth} observações na fila`}>
+                  +{geminiStatus.queue.depth}
+                </span>
+              )}
+            </button>
+          );
+        })()}
         {/* Most people running the free plugin never learn the trial exists.
             It sits beside the logo (not in .status) so it survives the
             responsive rules that hide the icon links on tablet and mobile. */}

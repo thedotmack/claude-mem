@@ -46,8 +46,67 @@ export type FeedItem =
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
+export interface GeminiModelInfo {
+  id: string;
+  displayName: string;
+  category: 'pro' | 'flash' | 'gemma' | 'omni' | 'lite';
+  rank: number;
+  rpmLimit: number;
+  tpmLimit: number;
+  rpdLimit: number;
+  contextWindow: number;
+  outputLimit: number;
+  description?: string;
+  isPerpetualAlias?: boolean;
+  isPreview?: boolean;
+}
+
+export interface ModelUsageState {
+  rpmUsed: number;
+  rpmLimit: number;
+  tpmUsed: number;
+  tpmLimit: number;
+  rpdUsed: number;
+  rpdLimit: number;
+  status: 'active' | 'ready' | 'cooldown' | 'exhausted' | 'unsupported';
+  cooldownUntilMs?: number;
+  cooldownReason?: string;
+  totalRequestsServed: number;
+}
+
+export interface GeminiRateLimitsStatus {
+  provider: 'gemini';
+  activeModel: string;
+  autoFallback: boolean;
+  models: Record<string, ModelUsageState>;
+  cascade: GeminiModelInfo[];
+  queue: {
+    depth: number;
+    isProcessing: boolean;
+    isWaitingForQuota: boolean;
+    quotaWaitRemainingMs: number;
+    lastEvent?: string;
+  };
+  lastUpdated: number;
+  lastSwitchEvent?: {
+    fromModel: string;
+    toModel: string;
+    reason: string;
+    timestamp: number;
+  };
+}
+
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
+  type:
+    | 'initial_load'
+    | 'new_observation'
+    | 'new_summary'
+    | 'new_prompt'
+    | 'processing_status'
+    | 'gemini_status_update'
+    | 'gemini_model_switched'
+    | 'gemini_queue_paused'
+    | 'gemini_queue_resumed';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -57,6 +116,7 @@ export interface StreamEvent {
   prompt?: UserPrompt;
   isProcessing?: boolean;
   queueDepth?: number;
+  data?: any;
 }
 
 export interface ProjectCatalog {
@@ -75,6 +135,7 @@ export interface Settings {
   CLAUDE_MEM_GEMINI_API_KEY?: string;
   CLAUDE_MEM_GEMINI_MODEL?: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED?: string;  
+  CLAUDE_MEM_GEMINI_AUTO_FALLBACK?: string;  
   CLAUDE_MEM_OPENROUTER_API_KEY?: string;
   CLAUDE_MEM_OPENROUTER_MODEL?: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL?: string;

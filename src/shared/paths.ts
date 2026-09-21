@@ -114,5 +114,6 @@ export const paths = {
   corpora: () => join(DATA_DIR, 'corpora'),
   supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
   envFile: () => join(DATA_DIR, '.env'),
+  geminiRateLimits: () => join(DATA_DIR, 'gemini-rate-limits.json'),
   logsDir: () => LOGS_DIR,
 } as const;
