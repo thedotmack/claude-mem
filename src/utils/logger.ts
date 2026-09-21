@@ -280,9 +280,9 @@ class Logger {
         const pairs = Object.entries(rest).map(([k, v]) => {
           if (typeof v !== 'object' || v === null || v instanceof Error) return `${k}=${v}`;
           try {
-            return `${k}=${this.formatData(v)}`;
+            return `${k}=${Array.isArray(v) ? JSON.stringify(v) : this.formatData(v)}`;
           } catch {
-            // [ANTI-PATTERN IGNORED]: JSON.stringify (via formatData) fails on circular/BigInt payloads, an expected shape for caller-supplied context; recovery is the '[unserializable]' fallback, avoiding an uncaught throw from a logger call.
+            // [ANTI-PATTERN IGNORED]: JSON.stringify (directly for arrays, via formatData for objects) fails on circular/BigInt payloads, an expected shape for caller-supplied context; recovery is the '[unserializable]' fallback, avoiding an uncaught throw from a logger call.
             return `${k}=[unserializable]`;
           }
         });

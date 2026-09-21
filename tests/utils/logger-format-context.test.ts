@@ -27,12 +27,42 @@ describe('logger context formatting', () => {
     expect(line).not.toContain('[object Object]');
   });
 
-  it('should render an array context value as whatever formatData produces', () => {
+  it('should render an array of numbers context value as JSON', () => {
     const marker = 'ctx-test-array-1';
     logger.info('SYSTEM', marker, { items: [1, 2, 3] });
     const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{items=[3 items]}');
+    expect(line).toContain('{items=[1,2,3]}');
     expect(line).not.toContain('[object Object]');
+  });
+
+  it('should render an array of strings context value as JSON', () => {
+    const marker = 'ctx-test-array-strings-1';
+    logger.info('SYSTEM', marker, { args: ['--version', '--foo'] });
+    const line = lastLoggedLineFor(marker);
+    expect(line).toContain('{args=["--version","--foo"]}');
+  });
+
+  it('should render an array of objects context value as JSON', () => {
+    const marker = 'ctx-test-array-objects-1';
+    logger.info('SYSTEM', marker, { records: [{ a: 1 }, { b: 2 }] });
+    const line = lastLoggedLineFor(marker);
+    expect(line).toContain('{records=[{"a":1},{"b":2}]}');
+  });
+
+  it('should render an empty array context value as []', () => {
+    const marker = 'ctx-test-array-empty-1';
+    logger.info('SYSTEM', marker, { items: [] });
+    const line = lastLoggedLineFor(marker);
+    expect(line).toContain('{items=[]}');
+  });
+
+  it('should not throw on an array containing a circular-reference element, and print the fallback', () => {
+    const circular: Record<string, unknown> = { a: 1 };
+    circular.self = circular;
+    const marker = 'ctx-test-array-circular-1';
+    expect(() => logger.info('SYSTEM', marker, { items: [circular] })).not.toThrow();
+    const line = lastLoggedLineFor(marker);
+    expect(line).toContain('{items=[unserializable]}');
   });
 
   it('should leave string context values unchanged', () => {
