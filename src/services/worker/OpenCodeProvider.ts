@@ -58,25 +58,38 @@ export function buildOpenCodeSafetyEnv(
 ): NodeJS.ProcessEnv {
   const configHome = join(DATA_DIR, 'opencode-summarizer', 'xdg-config');
   const sanitized = sanitizeEnv(baseEnv);
+  // Never inherit OpenCode control-plane settings from the user's shell.
+  // In particular, OPENCODE_CONFIG / OPENCODE_CONFIG_DIR / OPENCODE_CONFIG_CONTENT
+  // could otherwise re-enable plugins, MCPs, instructions, or permissions.
+  for (const key of Object.keys(sanitized)) {
+    if (key.startsWith('OPENCODE_')) delete sanitized[key];
+  }
+
   // The observer never needs Claude Code's session credential. Keep the main
   // coding agent's credential outside the secondary OpenCode process.
   delete sanitized.CLAUDE_CODE_OAUTH_TOKEN;
   delete sanitized.CLAUDE_CODE_SESSION;
   delete sanitized.CLAUDE_CODE_ENTRYPOINT;
+
   return {
     ...sanitized,
     XDG_CONFIG_HOME: configHome,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(buildOpenCodeSafetyConfig()),
     OPENCODE_PERMISSION: JSON.stringify({ '*': 'deny' }),
+    OPENCODE_PURE: 'true',
     OPENCODE_AUTO_SHARE: 'false',
+    OPENCODE_DISABLE_SHARE: 'true',
     OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
     OPENCODE_DISABLE_DEFAULT_PLUGINS: 'true',
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: 'true',
     OPENCODE_DISABLE_CLAUDE_CODE: 'true',
     OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true',
     OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true',
     OPENCODE_DISABLE_AUTOUPDATE: 'true',
     OPENCODE_DISABLE_LSP_DOWNLOAD: 'true',
     OPENCODE_ENABLE_EXA: 'false',
+    OPENCODE_ENABLE_PARALLEL: 'false',
+    OPENCODE_ENABLE_QUESTION_TOOL: 'false',
   };
 }
 
