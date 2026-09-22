@@ -57,6 +57,19 @@ export function collapseWhitespace(value: string): string {
   return String(value).replace(/\s+/g, ' ').trim();
 }
 
+function sanitizeInjectInlineText(value: string): string {
+  return collapseWhitespace(
+    String(value)
+      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+      .replace(/[<>`]/g, char => ({ '<': '‹', '>': '›', '`': 'ˋ' }[char] ?? char)),
+  );
+}
+
+function quoteRecalledTitle(value: string | null | undefined, label: 'title' | 'summary' = 'title'): string {
+  const sanitized = sanitizeInjectInlineText(value || '') || 'Untitled';
+  return `recalled ${label}: "${sanitized.replace(/"/g, "'")}"`;
+}
+
 function compactTime(time: string): string {
   return time.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
 }
@@ -81,13 +94,13 @@ export function typeIcon(type: string): string {
 }
 
 export function formatIndexRow(obs: GrokBotIndexObservation): string {
-  const title = collapseWhitespace(obs.title || 'Untitled');
+  const title = quoteRecalledTitle(obs.title);
   const time = compactTime(formatTime(obs.created_at_epoch));
   return `${obs.id} ${time} ${typeIcon(obs.type)} ${title}`;
 }
 
 export function factLine(date: string, body: string, maxChars: number, tier: GrokBotIndexTier): string {
-  const line = `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} ${collapseWhitespace(body)}`;
+  const line = `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} ${sanitizeInjectInlineText(body)}`;
   return line.length <= maxChars ? line : `${line.slice(0, maxChars - 1)}…`;
 }
 
