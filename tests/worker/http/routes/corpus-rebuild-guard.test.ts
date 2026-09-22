@@ -118,4 +118,34 @@ describe('rebuild_corpus shrink guard', () => {
     expect(statusSpy).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
   });
+
+  it('never runs two rebuilds of the same corpus at once', async () => {
+    const existing = createCorpus('big', 74);
+    read = mock(() => existing);
+    write = mock(() => undefined);
+    let active = 0;
+    let maxActive = 0;
+    build = mock(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return createCorpus('big', 74);
+    });
+    const routes = new CorpusRoutes(
+      { read, write, list: mock(() => []), delete: mock(() => false) } as any,
+      { build } as any,
+      {} as any,
+    );
+    const handler = captureRebuildHandler(routes);
+
+    const a = createMockReqRes('big', {});
+    const b = createMockReqRes('big', {});
+    handler(a.req, a.res);
+    handler(b.req, b.res);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(maxActive).toBe(1);
+    expect(build).toHaveBeenCalledTimes(2);
+  });
 });
