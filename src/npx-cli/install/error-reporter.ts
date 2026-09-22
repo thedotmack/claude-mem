@@ -138,7 +138,7 @@ export function installerError(
     case ErrorSeverity.WARN_CONTINUE: {
       summary.warnings.push({
         component: ctx.component,
-        message: causeMessage(ctx.cause),
+        message: ctx.details ? `${causeMessage(ctx.cause)}\n${ctx.details}` : causeMessage(ctx.cause),
         remediation,
       });
       return;
