@@ -34,6 +34,18 @@ export class CorpusStore {
     logger.debug('WORKER', `Wrote corpus file: ${filePath} (${corpus.observations.length} observations)`);
   }
 
+  backup(name: string): string | null {
+    const filePath = this.getFilePath(name);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+
+    const backupPath = `${filePath}.bak`;
+    fs.copyFileSync(filePath, backupPath);
+    logger.debug('WORKER', `Backed up corpus file: ${filePath} -> ${backupPath}`);
+    return backupPath;
+  }
+
   read(name: string): CorpusFile | null {
     const filePath = this.getFilePath(name);
     if (!fs.existsSync(filePath)) {
