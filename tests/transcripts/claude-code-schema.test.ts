@@ -120,6 +120,16 @@ const toolResultLine = {
   },
 };
 
+const assistantTextLine = {
+  type: 'assistant',
+  sessionId,
+  cwd,
+  message: {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Fixed the failing test by updating the mock.' }],
+  },
+};
+
 const turnDurationLine = {
   type: 'system',
   subtype: 'turn_duration',
@@ -197,5 +207,15 @@ describe('claude-code transcript schema (backfill)', () => {
     await processor.processEntry(turnDurationLine, makeWatch(), schema);
     expect(summarizeCalls).toHaveLength(1);
     expect(JSON.parse(summarizeCalls[0]).contentSessionId).toBe(sessionId);
+  });
+
+  it('captures an assistant text block as the last assistant message for the session summary', async () => {
+    const watch = makeWatch();
+    await processor.processEntry(assistantTextLine, watch, schema);
+    await processor.processEntry(turnDurationLine, watch, schema);
+    expect(summarizeCalls).toHaveLength(1);
+    expect(JSON.parse(summarizeCalls[0]).last_assistant_message).toBe(
+      'Fixed the failing test by updating the mock.',
+    );
   });
 });

@@ -65,11 +65,13 @@ export function buildOpenCodeSafetyEnv(
 ): NodeJS.ProcessEnv {
   const configHome = join(DATA_DIR, 'opencode-summarizer', 'xdg-config');
   const sanitized = sanitizeEnv(baseEnv);
-  // Never inherit OpenCode control-plane settings from the user's shell.
+  // Never inherit OpenCode/Kilo control-plane settings from the user's shell.
   // In particular, OPENCODE_CONFIG / OPENCODE_CONFIG_DIR / OPENCODE_CONFIG_CONTENT
+  // (and their KILO_* twins, since CLAUDE_MEM_OPENCODE_PATH may point at the
+  // Kilo CLI, an OpenCode fork that reads the same knobs under a KILO_ prefix)
   // could otherwise re-enable plugins, MCPs, instructions, or permissions.
   for (const key of Object.keys(sanitized)) {
-    if (key.startsWith('OPENCODE_')) delete sanitized[key];
+    if (key.startsWith('OPENCODE_') || key.startsWith('KILO_')) delete sanitized[key];
   }
 
   // The observer never needs Claude Code's session credential. Keep the main
@@ -80,9 +82,10 @@ export function buildOpenCodeSafetyEnv(
   delete sanitized.ANTHROPIC_API_KEY;
   delete sanitized.ANTHROPIC_AUTH_TOKEN;
 
-  return {
-    ...sanitized,
-    XDG_CONFIG_HOME: configHome,
+  // Kilo (CLAUDE_MEM_OPENCODE_PATH may point at the Kilo CLI, an OpenCode
+  // fork) reads the identical control-plane knobs under a KILO_ prefix
+  // instead of OPENCODE_. Set both so either binary is isolated the same way.
+  const controlPlaneEnv: Record<string, string> = {
     OPENCODE_CONFIG_CONTENT: JSON.stringify(buildOpenCodeSafetyConfig()),
     OPENCODE_PERMISSION: JSON.stringify(OPENCODE_DENY_ALL_PERMISSION),
     OPENCODE_PURE: 'true',
@@ -99,6 +102,15 @@ export function buildOpenCodeSafetyEnv(
     OPENCODE_ENABLE_EXA: 'false',
     OPENCODE_ENABLE_PARALLEL: 'false',
     OPENCODE_ENABLE_QUESTION_TOOL: 'false',
+  };
+  for (const [key, value] of Object.entries(controlPlaneEnv)) {
+    controlPlaneEnv[key.replace(/^OPENCODE_/, 'KILO_')] = value;
+  }
+
+  return {
+    ...sanitized,
+    XDG_CONFIG_HOME: configHome,
+    ...controlPlaneEnv,
   };
 }
 

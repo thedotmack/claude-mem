@@ -43,6 +43,23 @@ describe('OpenCodeProvider', () => {
     expect(JSON.parse(env.OPENCODE_PERMISSION! )['*']['*']).toBe('deny');
   });
 
+  it('isolates Kilo (the OpenCode-fork CLI CLAUDE_MEM_OPENCODE_PATH may point at) identically', () => {
+    const env = buildOpenCodeSafetyEnv({
+      HOME: '/tmp/home',
+      KILO_CONFIG: '/tmp/unsafe-kilo-config.jsonc',
+      KILO_PERMISSION: JSON.stringify({ '*': 'allow' }),
+    });
+    expect(env.KILO_DISABLE_PROJECT_CONFIG).toBe('true');
+    expect(env.KILO_DISABLE_DEFAULT_PLUGINS).toBe('true');
+    expect(env.KILO_DISABLE_CLAUDE_CODE).toBe('true');
+    expect(env.KILO_AUTO_SHARE).toBe('false');
+    expect(env.KILO_DISABLE_SHARE).toBe('true');
+    expect(env.KILO_PURE).toBe('true');
+    expect(env.KILO_CONFIG).toBeUndefined();
+    expect(JSON.parse(env.KILO_PERMISSION!)['*']['*']).toBe('deny');
+    expect(JSON.parse(env.KILO_CONFIG_CONTENT!)).toEqual(JSON.parse(env.OPENCODE_CONFIG_CONTENT!));
+  });
+
   it('parses text and final token usage from OpenCode JSONL', () => {
     const output = [
       JSON.stringify({ type: 'text', part: { text: 'hello ' } }),

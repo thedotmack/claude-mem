@@ -53,6 +53,19 @@
           }
         },
         {
+          "name": "assistant-message",
+          "match": {
+            "all": [
+              { "path": "type", "equals": "assistant" },
+              { "path": "message.content[0].type", "equals": "text" }
+            ]
+          },
+          "action": "assistant_message",
+          "fields": {
+            "message": "message.content[0].text"
+          }
+        },
+        {
           "name": "turn-end",
           "match": {
             "all": [
