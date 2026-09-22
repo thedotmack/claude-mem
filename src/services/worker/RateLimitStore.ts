@@ -126,14 +126,24 @@ export class RateLimitStore {
 
       // Status and overage fields describe the window they were observed in.
       // Carry them forward only while the reset still points at that window.
+      //
+      // The overage bucket runs on a second clock that `unifiedWindows` never
+      // carries, so its reset comes from the arriving event — and a carried
+      // `overageStatus` survives only while that reset is unchanged too.
       const previous = this.entries.get(window);
+      const isOverage = window === 'overage';
+      const overageResetsAt = isOverage ? info.overageResetsAt ?? snapshot.resetsAt : undefined;
       const sameWindow =
         previous !== undefined &&
-        resetsAtMs(previous.resetsAt) === resetsAtMs(snapshot.resetsAt);
+        resetsAtMs(previous.resetsAt) === resetsAtMs(snapshot.resetsAt) &&
+        (!isOverage ||
+          resetsAtMs(previous.overageResetsAt ?? previous.resetsAt) ===
+            resetsAtMs(overageResetsAt));
 
       this.entries.set(window, {
         ...(sameWindow ? previous : {}),
         ...snapshot,
+        ...(isOverage ? { overageResetsAt } : {}),
         rateLimitType: window,
         observedAt,
       });
@@ -299,8 +309,9 @@ export function shouldAbortForQuota(
     // near-100% seven_day reading would abort every request forever.
     //
     // The overage bucket runs on its own clock, so each piece of state is
-    // judged against the reset that governs it: a rejected overage stays
-    // enforced past the primary window's reset, and vice versa.
+    // judged against the reset that governs it: `overageStatus` by
+    // `overageResetsAt`, utilization and `status` by `resetsAt`. A rejected
+    // overage stays enforced past the primary window's reset, and vice versa.
     const isOverage = window === 'overage';
     const primaryResetsAt = resetsAtMs(entry.resetsAt);
     const primaryExpired = hasPassed(primaryResetsAt, now);
@@ -311,8 +322,7 @@ export function shouldAbortForQuota(
     // An explicit false means the provider is not charging the overage bucket,
     // so its utilization does not represent active quota consumption.
     const appliesUtilizationThreshold =
-      !(isOverage ? overageExpired : primaryExpired) &&
-      (!isOverage || entry.isUsingOverage !== false);
+      !primaryExpired && (!isOverage || entry.isUsingOverage !== false);
 
     // Provider-side rejection trumps utilization heuristics. A snapshot with
     // status='rejected' (or overageStatus='rejected' on the overage window)

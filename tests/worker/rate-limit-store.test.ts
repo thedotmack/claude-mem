@@ -181,6 +181,54 @@ describe('RateLimitStore — unifiedWindows hydration', () => {
     expect(store.size).toBe(1);
   });
 
+  it('drops carried overage state when the event advances the overage reset', () => {
+    // The overage allowance has its own reset; matching only the primary one
+    // carried a rejection from an overage window that had already ended.
+    const store = freshStore();
+    const OVERAGE_RESET = FIXED_NOW + 30 * 60 * 1000;
+    store.set({
+      rateLimitType: 'overage',
+      status: 'allowed',
+      utilization: 0.1,
+      overageStatus: 'rejected',
+      resetsAt: FIVE_HOUR_RESET,
+      overageResetsAt: OVERAGE_RESET,
+    });
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.2,
+      resetsAt: FIVE_HOUR_RESET,
+      overageResetsAt: OVERAGE_RESET + 60 * 60 * 1000,
+      unifiedWindows: { overage: { utilization: 0.1, resetsAt: FIVE_HOUR_RESET } },
+    });
+    const entry = store.get('overage');
+    expect(entry?.overageStatus).toBeUndefined();
+    expect(entry?.overageResetsAt).toBe(OVERAGE_RESET + 60 * 60 * 1000);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('keeps the overage rejection while both resets are unchanged', () => {
+    const store = freshStore();
+    const OVERAGE_RESET = FIXED_NOW + 30 * 60 * 1000;
+    store.set({
+      rateLimitType: 'overage',
+      status: 'allowed',
+      overageStatus: 'rejected',
+      resetsAt: FIVE_HOUR_RESET,
+      overageResetsAt: OVERAGE_RESET,
+    });
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      resetsAt: FIVE_HOUR_RESET,
+      overageResetsAt: OVERAGE_RESET,
+      unifiedWindows: { overage: { utilization: 0.1, resetsAt: FIVE_HOUR_RESET } },
+    });
+    expect(store.get('overage')?.overageStatus).toBe('rejected');
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).window).toBe('overage');
+  });
+
   it('lets the guard act on a hydrated seven_day reading', () => {
     const store = freshStore();
     store.set({
@@ -435,6 +483,32 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(true);
     expect(decision.window).toBe('overage');
+  });
+
+  it('applies the overage utilization threshold on the primary reset', () => {
+    // Utilization is dated by the window's own reset; the overage allowance
+    // reset governs overageStatus only.
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0.96,
+      isUsingOverage: true,
+      resetsAt: FIXED_NOW + 60 * 60 * 1000,
+      overageResetsAt: FIXED_NOW - 1,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
+  it('ignores overage utilization from a primary window that already reset', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0.96,
+      isUsingOverage: true,
+      resetsAt: FIXED_NOW - 1,
+      overageResetsAt: FIXED_NOW + 60 * 60 * 1000,
+    });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
   });
 
   it('falls back to the primary reset when overageResetsAt is absent', () => {
