@@ -952,7 +952,10 @@ export class SearchManager {
       };
     }
 
-    const resultsByDate = groupByDate(results, obs => obs.created_at);
+    // Relevance-ordered results (FTS/Chroma): only add day headers, never
+    // reorder into chronological groups, or the most relevant match could
+    // print below a less relevant but more recent one.
+    const resultsByDate = groupByDate(results, obs => obs.created_at, { sort: false });
 
     const lines: string[] = [];
     lines.push(`Found ${results.length} observation(s) matching "${query}"`);

@@ -501,4 +501,35 @@ describe('SearchManager searchObservations date grouping', () => {
     expect(text).toContain('April observation');
     expect(text).toContain('August observation');
   });
+
+  it('keeps relevance order across day headers instead of sorting chronologically', async () => {
+    const { FormattingService } = await import('../../src/services/worker/FormattingService.js');
+    const { ModeManager } = await import('../../src/services/domain/ModeManager.js');
+    ModeManager.getInstance().loadMode('code');
+    // The search backend ranks the August match first because it is more
+    // relevant, even though the April match is older. Day headers must not
+    // undo that ranking by sorting the August group after the April group.
+    const august = makeObservation(1, 'August observation', '2026-08-22T12:00:00Z');
+    const april = makeObservation(2, 'April observation', '2026-04-10T12:00:00Z');
+
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => [august, april]),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+      new FormattingService(),
+      {} as any,
+    );
+
+    const result = await manager.searchObservations({ query: 'observation' });
+    const text = result.content[0].text;
+
+    const augustHeaderIndex = text.indexOf('### Aug 22, 2026');
+    const aprilHeaderIndex = text.indexOf('### Apr 10, 2026');
+    expect(augustHeaderIndex).toBeGreaterThanOrEqual(0);
+    expect(aprilHeaderIndex).toBeGreaterThan(augustHeaderIndex);
+  });
 });
