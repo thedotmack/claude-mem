@@ -7,9 +7,11 @@ import {
   CMEM_FALLBACK_RETRY_MS,
   getSelectedProvider,
   recordCmemFallbackIfEligible,
+  selectProviderForGenerator,
   shouldUseCmemFallback,
 } from '../../src/services/worker/provider-dispatch.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import { getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
 
@@ -25,7 +27,9 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_OPENROUTER_BASE_URL',
   'CLAUDE_MEM_PRO_FALLBACK_AT',
+  'CLAUDE_MEM_FALLBACK_PROVIDER',
   'CLAUDE_MEM_GEMINI_API_KEY',
+  'GEMINI_API_KEY',
   'CMEM_PRO_ORIGIN',
 ] as const;
 
@@ -97,6 +101,32 @@ describe('provider-dispatch', () => {
       expect(getSelectedProvider()).toBe('openrouter');
     });
 
+    it('honors CLAUDE_MEM_FALLBACK_PROVIDER=gemini while the marker is fresh and a key exists', () => {
+      pinOpenRouterEnv({
+        CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString(),
+        CLAUDE_MEM_FALLBACK_PROVIDER: 'gemini',
+        CLAUDE_MEM_GEMINI_API_KEY: 'gm-test-key',
+      });
+      expect(getSelectedProvider()).toBe('gemini');
+    });
+
+    it('does not divert for gemini without a key — the quota breaker holds dispatch instead', () => {
+      pinOpenRouterEnv({
+        CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString(),
+        CLAUDE_MEM_FALLBACK_PROVIDER: 'gemini',
+        CLAUDE_MEM_GEMINI_API_KEY: '',
+      });
+      expect(getSelectedProvider()).toBe('openrouter');
+    });
+
+    it("does not divert for fallback 'none' — the quota breaker holds dispatch instead", () => {
+      pinOpenRouterEnv({
+        CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString(),
+        CLAUDE_MEM_FALLBACK_PROVIDER: 'none',
+      });
+      expect(getSelectedProvider()).toBe('openrouter');
+    });
+
     it('falls through to claude when openrouter is selected but has no key', () => {
       pinOpenRouterEnv({ CLAUDE_MEM_OPENROUTER_API_KEY: '' });
       expect(getSelectedProvider()).toBe('claude');
@@ -107,6 +137,33 @@ describe('provider-dispatch', () => {
       process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
       process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
       expect(getSelectedProvider()).toBe('claude');
+    });
+  });
+
+  describe('selectProviderForGenerator (fallback-provider choice)', () => {
+    it('dispatches to the chosen gemini fallback without taking a gateway probe claim', () => {
+      pinOpenRouterEnv({
+        CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString(),
+        CLAUDE_MEM_FALLBACK_PROVIDER: 'gemini',
+        CLAUDE_MEM_GEMINI_API_KEY: 'gm-test-key',
+      });
+      expect(selectProviderForGenerator()).toEqual({ provider: 'gemini', gatewayProbeClaimId: null });
+    });
+
+    it("keeps dispatch on openrouter for fallback 'none', claiming nothing", () => {
+      // The armed per-provider quota breaker (ensureGeneratorRunning's
+      // tryAdmitQuotaProbe gate) is what holds these sends — dispatch itself
+      // must not divert or build a second hold.
+      pinOpenRouterEnv({
+        CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString(),
+        CLAUDE_MEM_FALLBACK_PROVIDER: 'none',
+      });
+      expect(selectProviderForGenerator()).toEqual({ provider: 'openrouter', gatewayProbeClaimId: null });
+    });
+
+    it('defaults to claude while the marker is fresh with no explicit choice', () => {
+      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString() });
+      expect(selectProviderForGenerator()).toEqual({ provider: 'claude', gatewayProbeClaimId: null });
     });
   });
 
@@ -199,11 +256,59 @@ describe('provider-dispatch', () => {
       expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
     });
 
-    it('ignores non-terminal gateway errors (rate limits, transient, inactive subscription)', () => {
+    it('ignores non-terminal gateway errors (rate limits, transient)', () => {
       pinOpenRouterEnv();
       expect(recordCmemFallbackIfEligible(gatewayError(429, 'rate_limited'), settingsPath)).toBe(false);
       expect(recordCmemFallbackIfEligible(gatewayError(503, 'upstream_unavailable'), settingsPath)).toBe(false);
-      expect(recordCmemFallbackIfEligible(gatewayError(403, 'subscription_inactive'), settingsPath)).toBe(false);
+    });
+
+    it('triggers for subscription_inactive — the expired trial is the canonical fallback moment', () => {
+      pinOpenRouterEnv();
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'subscription_inactive'), settingsPath)).toBe(true);
+      const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).not.toBe('');
+    });
+
+    it('arms the openrouter quota breaker when no usable fallback exists', () => {
+      resetQuotaCooldownsForTesting();
+      // Fallback 'none': the marker cannot divert dispatch, so the recording
+      // itself must arm the breaker — otherwise every later observation buys
+      // another doomed request against the dead gateway.
+      pinOpenRouterEnv({ CLAUDE_MEM_FALLBACK_PROVIDER: 'none' });
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'key_invalid'), settingsPath)).toBe(true);
+      expect(getQuotaCooldown('openrouter')?.message).toContain('key_invalid');
+
+      // A divertable fallback (default 'claude') must NOT arm the breaker —
+      // the marker is the hold on that path, per the SessionRoutes comment.
+      resetQuotaCooldownsForTesting();
+      pinOpenRouterEnv({ CLAUDE_MEM_FALLBACK_PROVIDER: 'claude' });
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'key_invalid'), settingsPath)).toBe(true);
+      expect(getQuotaCooldown('openrouter')).toBeNull();
+
+      // 'gemini' without a key resolves to no usable fallback → breaker arms.
+      resetQuotaCooldownsForTesting();
+      pinOpenRouterEnv({ CLAUDE_MEM_FALLBACK_PROVIDER: 'gemini' });
+      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(true);
+      expect(getQuotaCooldown('openrouter')?.message).toContain('allowance_exhausted');
+      resetQuotaCooldownsForTesting();
+    });
+
+    it('arms the breaker when the marker write itself fails, for every eligible code', () => {
+      // A failed persist returns false (unhandled), but with no marker on
+      // disk the next dispatch would stay on openrouter and re-buy the same
+      // terminal stop — the auth-kind codes especially, since the caller's
+      // own breaker arming covers only quota_exhausted.
+      resetQuotaCooldownsForTesting();
+      pinOpenRouterEnv({ CLAUDE_MEM_FALLBACK_PROVIDER: 'claude' });
+      const unwritable = join(tempDir, 'settings-as-dir');
+      mkdirSync(unwritable, { recursive: true });
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'subscription_inactive'), unwritable)).toBe(false);
+      expect(getQuotaCooldown('openrouter')?.message).toContain('subscription_inactive');
+
+      resetQuotaCooldownsForTesting();
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'key_invalid'), unwritable)).toBe(false);
+      expect(getQuotaCooldown('openrouter')?.message).toContain('key_invalid');
+      resetQuotaCooldownsForTesting();
     });
   });
 });

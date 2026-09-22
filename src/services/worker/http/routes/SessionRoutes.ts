@@ -358,10 +358,41 @@ export class SessionRoutes extends BaseRouteHandler {
     const myController = session.abortController;
 
     let skipGeneratorExitFinalization = false;
+    // Set when the catch below consumed a terminal cmem-gateway stop as a
+    // recorded fallback: the finally's generic quota arming must then stand
+    // down (one hold per path — the 15-min marker for a divertable fallback,
+    // or the breaker recordCmemFallbackIfEligible itself armed for a null
+    // one). Stacking the 30-min provider breaker on top would delay the
+    // gateway recovery probe by another cooldown.
+    let cmemFallbackHandled = false;
     let generatorPromise: Promise<void>;
 
     generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
+        // Trial-expiry fallback (plan 2026-08-26 Phase 6): a terminal quota/key
+        // rejection from the cmem gateway is the promised automatic switch to
+        // the user's fallback provider, not an outage — record the fallback
+        // marker (the next dispatch honors CLAUDE_MEM_FALLBACK_PROVIDER).
+        //
+        // Recorded BEFORE the aborted early-return below: the provider pauses
+        // the session for exactly these classified quota/auth stops by
+        // aborting the controller before rethrowing (#3999,
+        // preservingAbortReason), so a marker write placed after that return
+        // would never run for a thrown gateway rejection. External aborts are
+        // a no-op here — eligibility requires a classified terminal gateway
+        // error on a cmem-gateway base URL, which an AbortError never is.
+        const cmemFallbackRecorded = provider === 'openrouter'
+          && isClassified(error)
+          && recordCmemFallbackIfEligible(error);
+        if (cmemFallbackRecorded) {
+          cmemFallbackHandled = true;
+          logger.warn('SESSION', 'cmem gateway key is no longer funded; memory falls back to the configured fallback provider', {
+            sessionId: session.sessionDbId,
+            kind: error.kind,
+            ...(error.code ? { code: error.code } : {}),
+          });
+        }
+
         if (myController.signal.aborted) {
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
           return;
@@ -419,24 +450,16 @@ export class SessionRoutes extends BaseRouteHandler {
             error: errorMsg,
           }, error);
         }
-        // Trial-expiry fallback (plan 2026-08-26 Phase 6): a terminal quota/key
-        // rejection from the cmem gateway is the promised automatic switch to
-        // the Anthropic plan, not an outage — record the fallback marker (the
-        // next dispatch returns 'claude') and keep it OUT of the observer-health
-        // ledger so the scary session-start outage warning never fires for it.
+        // A handled trial-expiry fallback stays OUT of the observer-health
+        // ledger, so the scary session-start outage warning never fires for it
+        // (the provider switch is the remedy; there is no outage to warn about).
         //
         // The quota breaker is NESTED in the else, not stacked ahead of this
         // branch. Stacking them would run two cooldowns over one event with
         // disagreeing periods (15 min here, 30 min there) and open a window
         // where memory neither uses the gateway nor falls back. The gateway's
         // own fallback marker IS the breaker on that path.
-        if (provider === 'openrouter' && isClassified(error) && recordCmemFallbackIfEligible(error)) {
-          logger.warn('SESSION', 'cmem gateway key is no longer funded; memory falls back to the Anthropic plan provider', {
-            sessionId: session.sessionDbId,
-            kind: error.kind,
-            ...(error.code ? { code: error.code } : {}),
-          });
-        } else {
+        if (!cmemFallbackRecorded) {
           // Observer-health ledger: repeated generator failures mean observations
           // are being dropped — session-start context warns the user via this.
           // Classified errors carry the structured detail (code/action/link/
@@ -483,7 +506,10 @@ export class SessionRoutes extends BaseRouteHandler {
         // Quota surfaced as assistant prose aborts here rather than throwing, so
         // it must arm the breaker too — otherwise the prose path keeps the
         // per-observation request storm the classified path no longer has.
-        if (normalizeAbortReason(reason) === 'quota') {
+        // A handled cmem fallback stands down: its hold is already in place
+        // (see cmemFallbackHandled above), and this generic 30-min arm would
+        // stack a second cooldown over the marker's 15-min probe window.
+        if (normalizeAbortReason(reason) === 'quota' && !cmemFallbackHandled) {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
           recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
           // Quota returned as assistant prose never throws, so it never reaches

@@ -61,3 +61,41 @@ export const PRO_TRIAL_PITCH = `Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage
 export function proTrialLine(source: ProPromoSource): string {
   return `${String.fromCodePoint(0x2728)} ${PRO_TRIAL_PITCH} ${proTrialUrl(source)}`;
 }
+
+// --- Pro fallback upsell -----------------------------------------------------
+// Shown ONLY once the trial-expiry fallback marker is set
+// (CLAUDE_MEM_PRO_FALLBACK_AT, src/shared/cmem-gateway.ts): the trial
+// allowance ran out and memory generation moved to the user's fallback
+// provider. NO dollar allowance/cap values here, ever — $30 is the
+// subscription price, which is public.
+
+/** Account dashboard, where "pay for your trial now" happens. */
+export const PRO_DASHBOARD_URL = 'https://cmem.ai/dashboard';
+
+/** Dashboard URL tagged with the fallback surface the user clicked from. */
+export function proFallbackUrl(source: ProPromoSource): string {
+  return `${PRO_DASHBOARD_URL}?from=fallback-${source}`;
+}
+
+// Cap-hit framing is a celebration, not a paywall: the user out-used the trial
+// because the product works, fallback already kept them running, and THIS is
+// the best-timed upgrade moment. Never phrase it as "limit reached, pay now."
+export const PRO_FALLBACK_UPSELL =
+  "Achievement unlocked: you're one of the heaviest memory users this cycle, so claude-mem switched to your fallback provider — nothing stopped. Want it all back? Pay for your trial now and get 6x more usage for just $30:";
+
+/** One-line upsell + link, for plain-text surfaces (hook banners). */
+export function proFallbackLine(source: ProPromoSource): string {
+  return `${String.fromCodePoint(0x1F3C6)} ${PRO_FALLBACK_UPSELL} ${proFallbackUrl(source)}`;
+}
+
+// Paused variant: fallback choice 'none' (or gemini without a key) means
+// dispatch HOLDS instead of switching providers — "switched … nothing
+// stopped" would be false, so this copy says what actually happened. Still
+// no dollar allowance/cap values.
+export const PRO_FALLBACK_PAUSED =
+  "You're one of the heaviest memory users this cycle — your free trial allowance is used up, so memory generation is paused. Pick it back up: pay for your trial now and get 6x more usage for just $30:";
+
+/** Paused-variant one-liner, for a fallback choice with no usable provider. */
+export function proFallbackPausedLine(source: ProPromoSource): string {
+  return `${String.fromCodePoint(0x23F8, 0xFE0F)} ${PRO_FALLBACK_PAUSED} ${proFallbackUrl(source)}`;
+}

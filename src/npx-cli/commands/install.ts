@@ -1173,6 +1173,10 @@ async function promptProvider(
     }
     if (cmemCredentials.clearFallback) clearProFallback();
     log.info('CMEM Pro configured with your signed-in memory key.');
+    // Second choice of the Pro path: where memory runs if the trial allowance
+    // ever runs out. Asked here — after Pro is configured, from the normal
+    // clean-stdin state every other clack prompt runs in.
+    await promptProFallbackProvider();
     return 'openrouter';
   }
 
@@ -1241,6 +1245,58 @@ async function promptProvider(
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
   }
   return selectedProvider;
+}
+
+type FallbackChoice = 'claude' | 'gemini' | 'none';
+
+/**
+ * Second choice of the Pro paths: what claude-mem should run on when the Pro
+ * allowance runs out (a terminal quota/key rejection from the gateway writes
+ * the CLAUDE_MEM_PRO_FALLBACK_AT marker — see src/shared/cmem-gateway.ts and
+ * provider-dispatch.ts, which honors CLAUDE_MEM_FALLBACK_PROVIDER).
+ * Asked right after Pro is configured, while the user is still in provider
+ * headspace. openrouter is deliberately absent: its settings slots carry the
+ * Pro token. Non-TTY / cancel: the 'claude' default in SettingsDefaultsManager
+ * stands, so there is nothing to write.
+ */
+async function promptProFallbackProvider(): Promise<void> {
+  if (!isInteractive) return;
+
+  const fallbackResult = await p.select<FallbackChoice>({
+    message: 'If your Pro allowance runs out, claude-mem can keep working on a fallback provider. Fall back to:',
+    options: [
+      { value: 'claude', label: 'Claude plan (recommended)', hint: 'no key needed' },
+      { value: 'gemini', label: 'Gemini API key', hint: 'requires Gemini API key' },
+      { value: 'none', label: 'No fallback', hint: 'pause memory generation instead' },
+    ],
+    initialValue: 'claude',
+  });
+
+  // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
+  let choice: FallbackChoice =
+    p.isCancel(fallbackResult) || typeof fallbackResult === 'symbol' ? 'claude' : fallbackResult;
+
+  if (choice === 'gemini') {
+    // Same key slot and prompt shape as the gemini branch of promptProvider —
+    // an already-stored key is reused, never re-asked.
+    const existingKey = getSetting('CLAUDE_MEM_GEMINI_API_KEY');
+    if (!existingKey || existingKey.trim().length === 0) {
+      const apiKeyResult = await p.password({
+        message: 'Paste your Gemini API key:',
+        mask: '*',
+        validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
+      });
+      if (p.isCancel(apiKeyResult)) {
+        log.warn('Gemini key prompt cancelled — using your Claude plan as the fallback instead.');
+        choice = 'claude';
+      } else {
+        mergeSettings({ CLAUDE_MEM_GEMINI_API_KEY: String(apiKeyResult).trim() });
+      }
+    }
+  }
+
+  const wrote = mergeSettings({ CLAUDE_MEM_FALLBACK_PROVIDER: choice });
+  if (wrote) log.info(`Saved fallback=${choice} to ~/.claude-mem/settings.json`);
 }
 
 async function promptClaudeModel(options: InstallOptions): Promise<void> {
