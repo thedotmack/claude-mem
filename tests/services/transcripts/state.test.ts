@@ -26,6 +26,29 @@ describe('transcript watch state', () => {
     expect(readFileSync(path, 'utf8')).toContain('"99"');
   });
 
+  it('replaces an existing state without leaving the old payload', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-state-'));
+    const path = join(dir, 'watch-state.json');
+
+    saveWatchState(path, { offsets: { '/tmp/session.jsonl': 1 } });
+    saveWatchState(path, { offsets: { '/tmp/session.jsonl': 2, '/tmp/other.jsonl': 7 } });
+
+    expect(loadWatchState(path)).toEqual({
+      offsets: { '/tmp/session.jsonl': 2, '/tmp/other.jsonl': 7 }
+    });
+    expect(readFileSync(path, 'utf8')).not.toContain('"1"');
+  });
+
+  it('round-trips unicode transcript paths', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-state-'));
+    const path = join(dir, 'watch-state.json');
+    const state = { offsets: { '/tmp/项目/会话.jsonl': 128 } };
+
+    saveWatchState(path, state);
+
+    expect(loadWatchState(path)).toEqual(state);
+  });
+
   it('still fails safely on malformed persisted state', () => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-mem-state-'));
     const path = join(dir, 'watch-state.json');
