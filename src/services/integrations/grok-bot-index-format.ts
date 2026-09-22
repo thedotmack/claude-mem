@@ -70,6 +70,11 @@ function quoteRecalledTitle(value: string | null | undefined, label: 'title' | '
   return `recalled ${label}: "${sanitized.replace(/"/g, "'")}"`;
 }
 
+function truncateFactLine(value: string, maxChars: number): string {
+  const chars = Array.from(value);
+  return chars.length <= maxChars ? value : `${chars.slice(0, maxChars - 1).join('')}…`;
+}
+
 function compactTime(time: string): string {
   return time.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
 }
@@ -101,7 +106,7 @@ export function formatIndexRow(obs: GrokBotIndexObservation): string {
 
 export function factLine(date: string, body: string, maxChars: number, tier: GrokBotIndexTier): string {
   const line = `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} ${sanitizeInjectInlineText(body)}`;
-  return line.length <= maxChars ? line : `${line.slice(0, maxChars - 1)}…`;
+  return truncateFactLine(line, maxChars);
 }
 
 /**

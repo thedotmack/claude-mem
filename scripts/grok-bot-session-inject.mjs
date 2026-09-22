@@ -469,13 +469,18 @@ function quoteRecalledText(value, label = 'title') {
   return `recalled ${label}: "${sanitized.replace(/"/g, "'")}"`;
 }
 
+function truncateFactLine(value, maxChars) {
+  const chars = Array.from(value);
+  return chars.length <= maxChars ? value : `${chars.slice(0, maxChars - 1).join('')}…`;
+}
+
 function todayStamp(now) {
   return now.toISOString().slice(0, 10);
 }
 
 function factLine(date, body, maxChars, tier) {
   const line = `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} ${sanitizeInjectInlineText(body)}`;
-  return line.length <= maxChars ? line : `${line.slice(0, maxChars - 1)}…`;
+  return truncateFactLine(line, maxChars);
 }
 
 function sanitizeTimelineRow(raw) {
@@ -485,8 +490,7 @@ function sanitizeTimelineRow(raw) {
   const summary = /^(S\d+)\s+(.*)$/.exec(raw);
   if (summary) return `${summary[1]} ${quoteRecalledText(summary[2], 'summary')}`;
 
-  if (/^No previous sessions found/i.test(raw)) return sanitizeInjectInlineText(raw);
-  return quoteRecalledText(raw, 'entry');
+  return sanitizeInjectInlineText(raw);
 }
 
 function isBoilerplate(line) {
