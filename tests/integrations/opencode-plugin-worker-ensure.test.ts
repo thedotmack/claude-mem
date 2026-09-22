@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
 import {
   resolveWorkerStartInvocation,
 } from "../../src/integrations/opencode-plugin/index";
@@ -56,10 +56,12 @@ describe("OpenCode plugin worker auto-start", () => {
     const mod = await freshPluginModule();
     let starts = 0;
     let fetches = 0;
+    const urls: string[] = [];
     originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (url: string | URL | Request) => {
       fetches += 1;
-      return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+      urls.push(String(url));
+      return new Response(JSON.stringify({ status: "ok", pid: 4242 }), { status: 200 });
     }) as FetchStub;
 
     const ready = await mod.ensureWorkerRunning({
@@ -73,6 +75,59 @@ describe("OpenCode plugin worker auto-start", () => {
     expect(ready).toBe(true);
     expect(starts).toBe(0);
     expect(fetches).toBe(1);
+    // The liveness probe must hit the worker's dedicated /health endpoint,
+    // not the bare base URL (any service on the port would answer "/").
+    expect(urls[0]).toContain("/health");
+  });
+
+  it("treats a non-worker HTTP service on the port as down and launches", async () => {
+    const mod = await freshPluginModule();
+    let starts = 0;
+    const urls: string[] = [];
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      // A different service (or the viewer-less base route) answering 200 with
+      // HTML must not count as a healthy claude-mem worker.
+      return new Response("<html>not claude-mem</html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      });
+    }) as FetchStub;
+
+    const ready = await mod.ensureWorkerRunning({
+      startWorker: () => {
+        starts += 1;
+      },
+      timeoutMs: 30,
+      pollIntervalMs: 5,
+    });
+
+    expect(ready).toBe(false);
+    expect(starts).toBe(1);
+    expect(urls.every((url) => url.includes("/health"))).toBe(true);
+  });
+
+  it("treats a 200 with an unexpected payload as down and launches", async () => {
+    const mod = await freshPluginModule();
+    let starts = 0;
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      // Right status code, wrong contract: not the { status: "ok", ... }
+      // payload /health serves, so the worker is not considered alive.
+      return new Response(JSON.stringify({ status: "degraded" }), { status: 200 });
+    }) as FetchStub;
+
+    const ready = await mod.ensureWorkerRunning({
+      startWorker: () => {
+        starts += 1;
+      },
+      timeoutMs: 30,
+      pollIntervalMs: 5,
+    });
+
+    expect(ready).toBe(false);
+    expect(starts).toBe(1);
   });
 
   it("launches the worker and resolves true once it responds", async () => {
@@ -221,5 +276,143 @@ describe("OpenCode worker start invocation (Windows shims)", () => {
     expect(invocation.args).toEqual(["claude-mem", "start"]);
     expect(invocation.options.stdio).toBe("ignore");
     expect(invocation.options.windowsVerbatimArguments).toBeUndefined();
+  });
+});
+
+/**
+ * Regression guard (Copilot review on fix/opencode-plugin-ensure-worker): a
+ * start command that spawns but then dies with a non-zero code — e.g. npx
+ * cannot resolve the CLI, Bun is missing, the worker script is gone — must be
+ * treated as a launch failure. Without the `exit` handler the ensure loop
+ * burns the full readiness timeout with launchFailed=false and the memoized
+ * false result blocks every later plugin initialization from retrying.
+ */
+describe("OpenCode worker start exit handling", () => {
+  // Snapshot the real module BEFORE mock.module mutates the live namespace
+  // (bun's mock.module is process-global and sticky; re-register the real
+  // module in afterAll so later test files see the original).
+  const realChildProcess = require("node:child_process");
+
+  interface FakeChild {
+    listeners: Record<string, (...args: unknown[]) => void>;
+    on: (event: string, listener: (...args: unknown[]) => void) => void;
+    unref: () => void;
+  }
+
+  let spawned: FakeChild[] = [];
+
+  function installSpawnMock(): void {
+    const fakeSpawn = (
+      _command: string,
+      _args?: readonly string[],
+      _options?: Record<string, unknown>,
+    ): FakeChild => {
+      const listeners: Record<string, (...args: unknown[]) => void> = {};
+      const child: FakeChild = {
+        listeners,
+        on: (event, listener) => {
+          listeners[event] = listener;
+        },
+        unref: () => {},
+      };
+      spawned.push(child);
+      return child;
+    };
+    const moduleMock = { ...realChildProcess, spawn: fakeSpawn };
+    mock.module("node:child_process", () => moduleMock);
+    mock.module("child_process", () => moduleMock);
+  }
+
+  beforeAll(() => {
+    installSpawnMock();
+  });
+
+  afterAll(() => {
+    mock.module("node:child_process", () => realChildProcess);
+    mock.module("child_process", () => realChildProcess);
+  });
+
+  // The default starter resolves inside the (async) ensure IIFE, so poll for
+  // the mock spawn to have run before emitting child events.
+  async function waitForSpawns(count: number): Promise<void> {
+    for (let i = 0; i < 200 && spawned.length < count; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(spawned.length).toBeGreaterThanOrEqual(count);
+  }
+
+  it("treats a non-zero exit as a launch failure and resets the guard", async () => {
+    const mod = await freshPluginModule();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw connectionRefused();
+    }) as FetchStub;
+    try {
+      spawned = [];
+      const startedAt = Date.now();
+      const readyPromise = mod.ensureWorkerRunning({ timeoutMs: 5000, pollIntervalMs: 10 });
+      await waitForSpawns(1);
+      // `npx` spawned fine but the start command died (e.g. CLI not installed).
+      spawned[0].listeners["exit"]?.(1, null);
+
+      const ready = await readyPromise;
+      expect(ready).toBe(false);
+      // The failed exit must short-circuit the wait, not burn the 5s timeout.
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+
+      // The one-shot guard must have reset: a later init spawns again.
+      const secondPromise = mod.ensureWorkerRunning({ timeoutMs: 5000, pollIntervalMs: 10 });
+      await waitForSpawns(2);
+      spawned[1].listeners["exit"]?.(1, null);
+      const second = await secondPromise;
+      expect(second).toBe(false);
+      expect(spawned).toHaveLength(2);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("treats a signal-killed start process (null code) as a launch failure", async () => {
+    const mod = await freshPluginModule();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw connectionRefused();
+    }) as FetchStub;
+    try {
+      spawned = [];
+      const readyPromise = mod.ensureWorkerRunning({ timeoutMs: 5000, pollIntervalMs: 10 });
+      await waitForSpawns(1);
+      spawned[0].listeners["exit"]?.(null, "SIGKILL");
+
+      const ready = await readyPromise;
+      expect(ready).toBe(false);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("keeps waiting when the start command exits 0 (daemonized launch)", async () => {
+    const mod = await freshPluginModule();
+    let fetches = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetches += 1;
+      if (fetches <= 3) throw connectionRefused();
+      return new Response(JSON.stringify({ status: "ok", pid: 4242 }), { status: 200 });
+    }) as FetchStub;
+    try {
+      spawned = [];
+      const readyPromise = mod.ensureWorkerRunning({ timeoutMs: 5000, pollIntervalMs: 10 });
+      await waitForSpawns(1);
+      // `claude-mem start` daemonizes the worker and exits 0 on success — a
+      // clean exit must NOT count as a launch failure; the readiness poll
+      // keeps going until /health answers.
+      spawned[0].listeners["exit"]?.(0, null);
+
+      const ready = await readyPromise;
+      expect(ready).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });

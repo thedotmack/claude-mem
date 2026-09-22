@@ -354,10 +354,15 @@ export function parseSearchResponse(text: string, query: string): string {
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const WORKER_READY_POLL_INTERVAL_MS = 250;
 
-/** Reports an asynchronous spawn failure (the `error` event) to the ensure loop. */
+/** Reports a launch failure (spawn `error` event or a non-zero start exit) to the ensure loop. */
 type MarkLaunchFailed = () => void;
 
-/** Spawns `npx claude-mem start`; the default starter reports spawn errors via `markLaunchFailed`. */
+/**
+ * Spawns `npx claude-mem start`; the default starter reports spawn errors and
+ * non-zero exits via `markLaunchFailed`, so a start command that dies on its
+ * own (missing CLI, missing Bun, ...) fails the wait immediately instead of
+ * burning the full readiness timeout with the one-shot guard left latched.
+ */
 type WorkerStarter = (markLaunchFailed: MarkLaunchFailed) => void;
 
 /**
@@ -391,13 +396,32 @@ const spawnWorkerStartCommand: WorkerStarter = (markLaunchFailed) => {
     markLaunchFailed();
     console.warn("[claude-mem] failed to start worker:", err.message);
   });
+  child.on("exit", (code: number | null) => {
+    // The start command daemonizes the worker and exits 0 on success (see
+    // `start` in src/services/worker-service.ts), so any non-zero exit — or a
+    // signal kill — means the launch itself failed.
+    if (code !== 0) {
+      markLaunchFailed();
+      console.warn(`[claude-mem] worker start process exited with code ${code}`);
+    }
+  });
   child.unref();
 };
 
+/**
+ * Liveness probe against the worker's dedicated /health endpoint (served by
+ * ViewerRoutes, always 200 JSON `{ status: "ok", ... }` while the worker's
+ * HTTP layer answers). Probing "/" would mark any service bound to the port
+ * as healthy and suppress the auto-start.
+ */
 async function workerAlive(): Promise<boolean> {
   try {
-    await fetch(WORKER_BASE_URL, { signal: AbortSignal.timeout(1000) });
-    return true;
+    const response = await fetch(`${WORKER_BASE_URL}/health`, {
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!response.ok) return false;
+    const body = (await response.json()) as { status?: unknown };
+    return body?.status === "ok";
   } catch {
     return false;
   }
