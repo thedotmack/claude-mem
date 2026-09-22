@@ -191,3 +191,32 @@ describe('classifyClaudeError — model identifier rejections without .status (#
     expect(classified.kind).toBe('transient');
   });
 });
+
+/**
+ * The SDK refuses to spawn when its `cwd` does not exist (an unexpanded ~ in
+ * CLAUDE_MEM_DATA_DIR, or a deleted data dir) and reports a bare
+ * `Path "<dir>" does not exist`. Without this branch the error fell through to
+ * the default `transient` case and the worker retried the broken setup forever
+ * while memory capture stayed silently dead.
+ */
+describe('classifyClaudeError — missing observer working directory', () => {
+  it('classifies the SDK "Path ... does not exist" cwd error as setup_required', () => {
+    const sdkErr = new Error('Path "~/.claude-mem/observer-sessions" does not exist');
+    expect(classifyClaudeError(sdkErr).kind).toBe('setup_required');
+  });
+
+  it('classifies the pre-spawn "working directory does not exist" check as setup_required', () => {
+    const err = new Error('Observer working directory does not exist: /home/u/.claude-mem/observer-sessions');
+    expect(classifyClaudeError(err).kind).toBe('setup_required');
+  });
+
+  it('classifies a "could not be prepared" mkdir failure (ENOTDIR/EEXIST/EACCES) as setup_required', () => {
+    const err = new Error('Observer working directory could not be prepared: /home/u/data/observer-sessions (ENOTDIR): not a directory');
+    expect(classifyClaudeError(err).kind).toBe('setup_required');
+  });
+
+  it('does not treat an unrelated "does not exist" message as setup_required', () => {
+    const err = new Error('the requested record does not exist');
+    expect(classifyClaudeError(err).kind).toBe('transient');
+  });
+});

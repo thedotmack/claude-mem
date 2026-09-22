@@ -4,7 +4,7 @@ import { CorpusRenderer } from './CorpusRenderer.js';
 import type { CorpusFile, QueryResult } from './types.js';
 import { logger } from '../../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../../shared/paths.js';
+import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth } from '../../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../../shared/find-claude-executable.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
@@ -36,7 +36,7 @@ export class KnowledgeAgent {
       'Acknowledge what you\'ve received. Summarize the key themes and topics you can answer questions about.'
     ].join('\n');
 
-    ensureDir(OBSERVER_SESSIONS_DIR);
+    ensureObserverSessionsDir();
     const claudePath = findClaudeExecutable('WORKER');
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
 
@@ -128,7 +128,7 @@ export class KnowledgeAgent {
   }
 
   private async executeQuery(corpus: CorpusFile, question: string): Promise<QueryResult> {
-    ensureDir(OBSERVER_SESSIONS_DIR);
+    ensureObserverSessionsDir();
     const claudePath = findClaudeExecutable('WORKER');
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
 
