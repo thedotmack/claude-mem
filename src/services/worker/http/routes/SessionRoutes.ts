@@ -5,6 +5,7 @@ import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { redactSecrets } from '../../../../utils/redact-secrets.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -710,8 +711,9 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    const redactSecretsEnabled = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_REDACT_SECRETS !== 'false';
     const cleanedLastAssistantMessage = last_assistant_message
-      ? stripMemoryTags(String(last_assistant_message))
+      ? (redactSecretsEnabled ? redactSecrets(stripMemoryTags(String(last_assistant_message))) : stripMemoryTags(String(last_assistant_message)))
       : last_assistant_message;
     await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
@@ -806,7 +808,9 @@ export class SessionRoutes extends BaseRouteHandler {
       logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
     }
 
-    const cleanedPrompt = stripMemoryTags(prompt);
+    const redactSecretsEnabled = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_REDACT_SECRETS !== 'false';
+    const strippedPrompt = stripMemoryTags(prompt);
+    const cleanedPrompt = redactSecretsEnabled ? redactSecrets(strippedPrompt) : strippedPrompt;
 
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
       logger.debug('HOOK', 'Session init - prompt entirely private', {

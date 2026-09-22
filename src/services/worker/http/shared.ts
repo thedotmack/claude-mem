@@ -4,6 +4,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
 import { stripMemoryTags } from '../../../utils/tag-stripping.js';
+import { redactSecretsDeep } from '../../../utils/redact-secrets.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -137,11 +138,19 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: true, status: 'skipped', reason: 'private' };
   }
 
+  // Redact before stringify: the deep walker needs the real object shape to
+  // match sensitive KEY names (tool_input.password, etc), not a serialized
+  // string. This is the single choke point every observation's tool
+  // input/response passes through on the way to tool_uses, pending_messages
+  // (→ the observer prompt), and — once generated — the stored observation
+  // text, so redacting once here covers the provider prompt, SQLite, and
+  // Chroma together.
+  const redactSecretsEnabled = settings.CLAUDE_MEM_REDACT_SECRETS !== 'false';
   const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolInput))
+    ? stripMemoryTags(JSON.stringify(redactSecretsEnabled ? redactSecretsDeep(payload.toolInput) : payload.toolInput))
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
+    ? stripMemoryTags(JSON.stringify(redactSecretsEnabled ? redactSecretsDeep(payload.toolResponse) : payload.toolResponse))
     : '{}';
 
   // Dual-write: the durable `tool_uses` side index (v51) alongside — never
