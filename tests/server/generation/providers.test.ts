@@ -123,6 +123,20 @@ describe('shared error classification', () => {
     expect(err.kind).toBe('rate_limit');
   });
 
+  it('classifyHttpProviderError no longer reads a 429 RESOURCE_EXHAUSTED body as a spent quota', () => {
+    // Gemini stamps that status string on *every* 429, so on the 429 path it
+    // says nothing about which allowance ran out. The 500 case above still
+    // resolves by marker — only the 429 path is excluded, exactly as the
+    // generic `limit exceeded` marker beside it already was.
+    const err = classifyHttpProviderError({
+      status: 429,
+      bodyText: 'RESOURCE_EXHAUSTED',
+      cause: new Error(''),
+      providerLabel: 'Gemini',
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
   it('classifyHttpProviderError maps a bare 402 to quota_exhausted', () => {
     const err = classifyHttpProviderError({
       status: 402,
@@ -311,6 +325,114 @@ describe('GeminiObservationProvider', () => {
       expect((err.cause as Error).message).not.toContain('RAW_PROVIDER_BODY');
     });
   }
+
+  const PER_MINUTE = 'GenerateContentInputTokensPerModelPerMinute-FreeTier';
+  const PER_DAY = 'GenerateContentInputTokensPerModelPerDay-FreeTier';
+
+  /**
+   * A 429 body in the shape Gemini actually sends, captured from the live
+   * endpoint: every one carries `RESOURCE_EXHAUSTED`, the retry hint is in the
+   * body because Google sends no `Retry-After` header, and the window that ran
+   * out is named by the `quotaId`s. A spent period quota lists its per-minute
+   * window alongside the period one, which is why the per-minute violation
+   * cannot be the discriminator.
+   */
+  function quotaFailureBody(quotaIds: string[], retryDelay = '11s'): string {
+    return JSON.stringify({
+      error: {
+        code: 429,
+        message: 'You exceeded your current quota, please check your plan and billing details.',
+        status: 'RESOURCE_EXHAUSTED',
+        details: [
+          {
+            '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+            violations: quotaIds.map(quotaId => ({
+              quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_input_token_count',
+              quotaId,
+              quotaValue: '250000',
+            })),
+          },
+          { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay },
+        ],
+      },
+    });
+  }
+
+  it('reads a per-minute-only 429 as a rate limit and keeps the body retry hint', () => {
+    const err = classifyGeminiServerError({
+      status: 429,
+      bodyText: quotaFailureBody([PER_MINUTE]),
+      cause: new Error(''),
+    });
+
+    expect(err.kind).toBe('rate_limit');
+    // No Retry-After header on these, so the body is the only hint there is.
+    expect(err.retryAfterMs).toBe(11000);
+  });
+
+  it('reads a 429 that also names a period window as the exhausted allowance', () => {
+    const err = classifyGeminiServerError({
+      status: 429,
+      bodyText: quotaFailureBody([PER_MINUTE, PER_DAY]),
+      cause: new Error(''),
+    });
+
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('lets a Retry-After header win over the body hint when one is present', () => {
+    const err = classifyGeminiServerError({
+      status: 429,
+      bodyText: quotaFailureBody([PER_MINUTE]),
+      headers: new Headers({ 'retry-after': '3' }),
+      cause: new Error(''),
+    });
+
+    expect(err.retryAfterMs).toBe(3000);
+  });
+
+  it('returns the answer rather than the reasoning when a thought part comes first', async () => {
+    const fakeFetch = new FakeFetch(
+      jsonResponse(200, {
+        candidates: [{
+          content: {
+            parts: [
+              // Captured shape with `thinkingConfig.includeThoughts`.
+              { text: 'The user wants an observation, so I should emit XML.', thought: true },
+              { text: '<observation><type>x</type><title>Answer</title></observation>' },
+            ],
+          },
+        }],
+        usageMetadata: { totalTokenCount: 42 },
+      }),
+    );
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+
+    const result = await provider.generate(makeContext());
+
+    expect(result.rawText).toBe('<observation><type>x</type><title>Answer</title></observation>');
+    expect(result.tokensUsed).toBe(42);
+  });
+
+  it('joins an answer that Gemini split across several parts', async () => {
+    const fakeFetch = new FakeFetch(
+      jsonResponse(200, {
+        candidates: [{
+          content: {
+            parts: [
+              { text: '<observation><type>x</type>' },
+              { text: '<title>Split</title></observation>' },
+            ],
+          },
+        }],
+      }),
+    );
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+
+    const result = await provider.generate(makeContext());
+
+    expect(result.rawText).toBe('<observation><type>x</type><title>Split</title></observation>');
+  });
 
   it('parses generateContent response into rawText', async () => {
     const fakeFetch = new FakeFetch(
