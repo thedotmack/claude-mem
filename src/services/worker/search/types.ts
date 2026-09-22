@@ -6,7 +6,8 @@ export type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 export const SEARCH_CONSTANTS = {
   RECENCY_WINDOW_MS: 90 * 24 * 60 * 60 * 1000,
   DEFAULT_LIMIT: 20,
-  CHROMA_BATCH_SIZE: 100
+  CHROMA_BATCH_SIZE: 100,
+  CHROMA_DATE_ORDER_BATCH_SIZE: 1000
 } as const;
 
 export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';

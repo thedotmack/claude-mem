@@ -72,6 +72,22 @@ export class SearchManager {
     return await this.chromaSync.queryChroma(query, limit, whereFilter);
   }
 
+  private getChromaCandidateLimit(
+    orderBy: 'relevance' | 'date_desc' | 'date_asc' = 'date_desc'
+  ): number {
+    return orderBy === 'date_desc' || orderBy === 'date_asc'
+      ? SEARCH_CONSTANTS.CHROMA_DATE_ORDER_BATCH_SIZE
+      : SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
+  }
+
+  private getSqlOrderBy(
+    orderBy: 'relevance' | 'date_desc' | 'date_asc' = 'date_desc'
+  ): 'relevance' | 'date_desc' | 'date_asc' {
+    return orderBy === 'date_desc' || orderBy === 'date_asc'
+      ? orderBy
+      : 'relevance';
+  }
+
   /**
    * Build a Chroma where-filter scoped to a single doc_type, applying the
    * dual-project ($or: project + merged_into_project) scoping used by every
@@ -108,7 +124,7 @@ export class SearchManager {
     hydrate: (ids: number[]) => T[]
   ): Promise<T[]> {
     const whereFilter = this.buildDocTypeWhereFilter(docType, project, platformSource);
-    const chromaResults = await this.queryChroma(query, 100, whereFilter);
+    const chromaResults = await this.queryChroma(query, this.getChromaCandidateLimit('relevance'), whereFilter);
     logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
 
     if (chromaResults?.ids && chromaResults.ids.length > 0) {
@@ -377,7 +393,8 @@ export class SearchManager {
     let prompts: UserPromptSearchResult[] = [];
     let platformScopedChromaZeroFallback = false;
 
-    const chromaResults = await this.queryChroma(query, 100, whereFilter);
+    const sqlOrderBy = this.getSqlOrderBy(options.orderBy);
+    const chromaResults = await this.queryChroma(query, this.getChromaCandidateLimit(sqlOrderBy), whereFilter);
     logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
     if (chromaResults.ids.length > 0) {
@@ -426,13 +443,15 @@ export class SearchManager {
       }
 
       if (obsIds.length > 0) {
-        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: 'relevance' };
+        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: sqlOrderBy };
         observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
-        observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
+        if (sqlOrderBy === 'relevance') {
+          observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
+        }
       }
       if (sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
-          orderBy: 'date_desc',
+          orderBy: sqlOrderBy,
           limit: options.limit,
           project: options.project,
           platformSource: options.platformSource
@@ -440,7 +459,7 @@ export class SearchManager {
       }
       if (promptIds.length > 0) {
         prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
-          orderBy: 'date_desc',
+          orderBy: sqlOrderBy,
           limit: options.limit,
           project: options.project,
           platformSource: options.platformSource
@@ -680,7 +699,11 @@ export class SearchManager {
     const limitedResults = allResults.slice(0, options.limit || 20);
 
     const cwd = process.cwd();
-    const resultsByDate = groupByDate(limitedResults, item => item.created_at);
+    const resultsByDate = groupByDate(
+      limitedResults,
+      item => item.created_at,
+      options.orderBy === 'date_desc' ? 'desc' : 'asc'
+    );
 
     const lines: string[] = [];
     lines.push(`Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts)`);

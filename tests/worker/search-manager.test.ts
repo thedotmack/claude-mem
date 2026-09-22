@@ -88,7 +88,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       limit: 10,
     });
 
-    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 1000, {
       $and: [
         { doc_type: 'observation' },
         { $or: [{ project: 'search-project' }, { merged_into_project: 'search-project' }] },
@@ -100,6 +100,101 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       project: 'search-project',
     }));
     expect(result.observations).toEqual([observation]);
+  });
+
+  it('renders date_desc search results newest day first', async () => {
+    const jan4 = {
+      id: 4,
+      memory_session_id: 'session-4',
+      project: 'search-project',
+      text: null,
+      type: 'discovery',
+      title: 'Older observation',
+      subtitle: null,
+      facts: '[]',
+      narrative: 'older',
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: '2025-01-04T10:00:00.000Z',
+      created_at_epoch: Date.parse('2025-01-04T10:00:00.000Z'),
+    };
+    const jan6 = {
+      ...jan4,
+      id: 6,
+      title: 'Newer observation',
+      created_at: '2025-01-06T10:00:00.000Z',
+      created_at_epoch: Date.parse('2025-01-06T10:00:00.000Z'),
+    };
+
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => [jan4, jan6]),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+      {
+        formatSearchTableHeader: mock(() => '| h |'),
+        formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
+      } as any,
+      {} as any,
+    );
+
+    const result = await manager.search({
+      orderBy: 'date_desc',
+      format: 'text',
+      limit: 5,
+    });
+
+    const text = result.content[0].text as string;
+    expect(text.indexOf('### Jan 6')).toBeLessThan(text.indexOf('### Jan 4'));
+  });
+
+  it('widens Chroma candidates and preserves date ordering when date sorting is requested', async () => {
+    const getObservationsByIds = mock(() => []);
+    const getSessionSummariesByIds = mock(() => []);
+    const getUserPromptsByIds = mock(() => []);
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [11, 22, 33],
+      distances: [0.1, 0.2, 0.3],
+      metadatas: [
+        { sqlite_id: 11, doc_type: 'observation', created_at_epoch: Date.now() },
+        { sqlite_id: 22, doc_type: 'session_summary', created_at_epoch: Date.now() },
+        { sqlite_id: 33, doc_type: 'user_prompt', created_at_epoch: Date.now() },
+      ],
+    }));
+
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds,
+        getSessionSummariesByIds,
+        getUserPromptsByIds,
+      } as any,
+      { queryChroma } as any,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.search({
+      query: 'trading',
+      orderBy: 'date_asc',
+      format: 'json',
+      limit: 5,
+    });
+
+    expect(queryChroma).toHaveBeenCalledWith('trading', 1000, undefined);
+    expect(getObservationsByIds).toHaveBeenCalledWith([11], expect.objectContaining({ orderBy: 'date_asc' }));
+    expect(getSessionSummariesByIds).toHaveBeenCalledWith([22], expect.objectContaining({ orderBy: 'date_asc' }));
+    expect(getUserPromptsByIds).toHaveBeenCalledWith([33], expect.objectContaining({ orderBy: 'date_asc' }));
   });
 
   it('hydrates Chroma observation matches in relevance order, not by date', async () => {
@@ -219,7 +314,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       limit: 10,
     });
 
-    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 1000, {
       $and: [
         { doc_type: 'session_summary' },
         { $or: [{ project: 'search-project' }, { merged_into_project: 'search-project' }] },

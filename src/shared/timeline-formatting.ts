@@ -78,7 +78,8 @@ export function estimateTokens(text: string | null): number {
 
 export function groupByDate<T>(
   items: T[],
-  getDate: (item: T) => string
+  getDate: (item: T) => string,
+  order: 'asc' | 'desc' = 'asc'
 ): Map<string, T[]> {
   const itemsByDay = new Map<string, T[]>();
   for (const item of items) {
@@ -93,7 +94,7 @@ export function groupByDate<T>(
   const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {
     const aDate = new Date(a[0]).getTime();
     const bDate = new Date(b[0]).getTime();
-    return aDate - bDate;
+    return order === 'desc' ? bDate - aDate : aDate - bDate;
   });
 
   return new Map(sortedEntries);
