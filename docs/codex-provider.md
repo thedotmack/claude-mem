@@ -13,7 +13,7 @@ Optional settings:
 | --- | --- | --- |
 | `CLAUDE_MEM_CODEX_MODEL` | empty | Use Codex's default model, or name a model available to your subscription. |
 | `CLAUDE_MEM_CODEX_REASONING_EFFORT` | empty | Use Codex's default effort, or an effort supported by the selected model. |
-| `CLAUDE_MEM_CODEX_PATH` | `codex` | CLI executable, resolved through PATH unless an explicit path is supplied. |
+| `CLAUDE_MEM_CODEX_PATH` | `codex` | CLI executable, resolved through PATH unless an explicit path is supplied. Set it in `settings.json` or the environment; the settings API does not accept executable paths. |
 | `CLAUDE_MEM_CODEX_TIMEOUT_MS` | `120000` | Per-request timeout in milliseconds. |
 
 The provider uses `codex app-server` over stdio. It reuses claude-mem's existing
