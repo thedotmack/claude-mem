@@ -12,6 +12,7 @@ afterAll(() => {
 });
 
 mock.module('../../src/services/worker/http/shared.js', () => ({
+  hasIngestContext: () => true,
   ingestObservation: async (payload: Record<string, unknown>) => {
     ingestCalls.push(payload);
     return { ok: true, sessionDbId: 1 };

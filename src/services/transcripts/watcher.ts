@@ -307,7 +307,8 @@ export class TranscriptWatcher {
       await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined);
     } catch (error: unknown) {
       if (error instanceof Error) {
-        logger.debug('TRANSCRIPT', 'Failed to parse transcript line', {
+        // Only malformed JSON is routine; anything else (e.g. ingest failures) must be visible.
+        logger[error instanceof SyntaxError ? 'debug' : 'warn']('TRANSCRIPT', 'Failed to process transcript line', {
           watch: watch.name,
           file: basename(filePath)
         }, error);

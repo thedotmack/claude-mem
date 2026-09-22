@@ -10,7 +10,7 @@ import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { ingestObservation } from '../worker/http/shared.js';
+import { hasIngestContext, ingestObservation } from '../worker/http/shared.js';
 
 const AGENT_ID_IN_PATH =
   /agent-transcripts[/\\]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/\\]|$)/i;
@@ -255,7 +255,7 @@ export class TranscriptEventProcessor {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
-    const result = await ingestObservation({
+    const payload = {
       contentSessionId: session.sessionId,
       cwd: session.cwd ?? process.cwd(),
       toolName,
@@ -264,10 +264,38 @@ export class TranscriptEventProcessor {
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
       agentId: resolveWatchAgentId(watch),
-    });
+    };
+
+    if (!hasIngestContext()) {
+      // Standalone `transcript watch` CLI: no in-process DB, so go through the worker's HTTP route.
+      await this.postObservation(payload);
+      return;
+    }
+
+    const result = await ingestObservation(payload);
 
     if (!result.ok) {
       throw new Error(`ingestObservation failed: ${result.reason}`);
+    }
+  }
+
+  private async postObservation(payload: Record<string, unknown>): Promise<void> {
+    const response = await workerHttpRequest('/api/sessions/observations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contentSessionId: payload.contentSessionId,
+        cwd: payload.cwd,
+        platformSource: payload.platformSource,
+        tool_name: payload.toolName,
+        tool_input: payload.toolInput,
+        tool_response: payload.toolResponse,
+        tool_use_id: payload.toolUseId,
+        agentId: payload.agentId,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`observation POST failed: ${response.status} ${await response.text()}`);
     }
   }
 

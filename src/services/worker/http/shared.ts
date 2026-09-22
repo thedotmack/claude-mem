@@ -26,6 +26,11 @@ export function setIngestContext(next: IngestContext): void {
   ctx = next;
 }
 
+/** False outside the worker process (e.g. the standalone `transcript watch` CLI). */
+export function hasIngestContext(): boolean {
+  return ctx !== null;
+}
+
 export function attachIngestGeneratorStarter(
   ensureGeneratorRunning: (sessionDbId: number, source: string) => void | Promise<void>,
 ): void {

@@ -18,6 +18,8 @@ const realSharedSnapshot = { ...realShared };
 const sessionInitCalls: NormalizedHookInput[] = [];
 const ingestCalls: Array<Record<string, unknown>> = [];
 const summarizeCalls: string[] = [];
+const observationPosts: Array<Record<string, unknown>> = [];
+let inWorkerProcess = true;
 
 mock.module('../../src/cli/handlers/session-init.js', () => ({
   sessionInitHandler: {
@@ -32,11 +34,13 @@ mock.module('../../src/shared/worker-utils.js', () => ({
   ensureWorkerRunning: async () => true,
   workerHttpRequest: async (apiPath: string, init?: RequestInit) => {
     if (apiPath === '/api/sessions/summarize') summarizeCalls.push(String(init?.body));
+    if (apiPath === '/api/sessions/observations') observationPosts.push(JSON.parse(String(init?.body)));
     return new Response('ok');
   },
 }));
 
 mock.module('../../src/services/worker/http/shared.js', () => ({
+  hasIngestContext: () => inWorkerProcess,
   ingestObservation: async (payload: Record<string, unknown>) => {
     ingestCalls.push(payload);
     return { ok: true, sessionDbId: 1 };
@@ -132,6 +136,8 @@ describe('claude-code transcript schema (backfill)', () => {
     sessionInitCalls.length = 0;
     ingestCalls.length = 0;
     summarizeCalls.length = 0;
+    observationPosts.length = 0;
+    inWorkerProcess = true;
   });
 
   afterEach(() => {
@@ -169,6 +175,22 @@ describe('claude-code transcript schema (backfill)', () => {
     expect(ingestCalls[0].toolUseId).toBe('toolu_01');
     expect(ingestCalls[0].toolInput).toEqual({ command: 'echo hi' });
     expect(ingestCalls[0].toolResponse).toEqual({ stdout: 'hi\n', stderr: '', interrupted: false });
+  });
+
+  it('posts observations over HTTP when run as the standalone watcher CLI (no in-process ingest context)', async () => {
+    inWorkerProcess = false;
+    const watch = makeWatch();
+    await processor.processEntry(toolUseLine, watch, schema);
+    await processor.processEntry(toolResultLine, watch, schema);
+    expect(ingestCalls).toHaveLength(0);
+    expect(observationPosts).toHaveLength(1);
+    expect(observationPosts[0]).toMatchObject({
+      contentSessionId: sessionId,
+      cwd,
+      tool_name: 'Bash',
+      tool_use_id: 'toolu_01',
+      tool_input: { command: 'echo hi' },
+    });
   });
 
   it('maps turn_duration to session_end and queues a summary', async () => {
