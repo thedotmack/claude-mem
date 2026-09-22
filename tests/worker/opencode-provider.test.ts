@@ -11,6 +11,8 @@ describe('OpenCodeProvider', () => {
   it('builds a deny-all, non-sharing safety config', () => {
     const config = buildOpenCodeSafetyConfig() as any;
     expect(config.share).toBe('disabled');
+    expect(config.plugin).toEqual([]);
+    expect(config.mcp).toEqual({});
     expect(config.permission['*']).toBe('deny');
     expect(config.tools['*']).toBe(false);
     expect(config.agent['claude-mem-summarizer'].permission['*']).toBe('deny');
