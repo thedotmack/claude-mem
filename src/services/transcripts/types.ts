@@ -48,6 +48,8 @@ export interface TranscriptSchema {
   sessionIdPath?: string;
   cwdPath?: string;
   projectPath?: string;
+  /** Original event time on each transcript line (e.g. "timestamp"). See TranscriptEventProcessor.resolveTimestamp. */
+  timestampPath?: string;
   events: SchemaEvent[];
 }
 

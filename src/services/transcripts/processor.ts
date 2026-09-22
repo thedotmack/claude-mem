@@ -31,6 +31,8 @@ interface SessionState {
   lastUserMessage?: string;
   lastAssistantMessage?: string;
   pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
+  /** Original event time (ISO) of the most recently processed transcript line — see resolveTimestamp. */
+  lastEventTimestamp?: string;
 }
 
 export class TranscriptEventProcessor {
@@ -112,6 +114,29 @@ export class TranscriptEventProcessor {
     return session.project;
   }
 
+  /**
+   * Reads the transcript line's original event time via schema.timestampPath
+   * (e.g. Claude Code JSONL's top-level "timestamp"). Session-level action
+   * handlers (handleSessionInit, sendObservation, queueSummary) read
+   * session.lastEventTimestamp directly rather than threading a param through
+   * every signature — handleEvent updates it right before dispatching, so by
+   * the time an action handler runs it already holds the current event's time.
+   */
+  private resolveTimestamp(
+    entry: unknown,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    event: SchemaEvent,
+    session: SessionState
+  ): string | undefined {
+    const ctx = { watch, schema, session } as any;
+    const fieldSpec = event.fields?.timestamp ?? (schema.timestampPath ? { path: schema.timestampPath } : undefined);
+    const resolved = resolveFieldSpec(fieldSpec, entry, ctx);
+    if (typeof resolved === 'string' && resolved.trim()) return resolved;
+    if (typeof resolved === 'number') return new Date(resolved).toISOString();
+    return session.lastEventTimestamp;
+  }
+
   private async handleEvent(
     entry: unknown,
     watch: WatchTarget,
@@ -130,6 +155,8 @@ export class TranscriptEventProcessor {
     if (cwd) session.cwd = cwd;
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
+    const timestamp = this.resolveTimestamp(entry, watch, schema, event, session);
+    if (timestamp) session.lastEventTimestamp = timestamp;
 
     const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
 
@@ -188,7 +215,8 @@ export class TranscriptEventProcessor {
       sessionId: session.sessionId,
       cwd,
       prompt,
-      platform: session.platformSource
+      platform: session.platformSource,
+      timestamp: session.lastEventTimestamp,
     });
   }
 
@@ -264,6 +292,7 @@ export class TranscriptEventProcessor {
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
       agentId: resolveWatchAgentId(watch),
+      timestamp: session.lastEventTimestamp,
     };
 
     if (!hasIngestContext()) {
@@ -292,6 +321,7 @@ export class TranscriptEventProcessor {
         tool_response: payload.toolResponse,
         tool_use_id: payload.toolUseId,
         agentId: payload.agentId,
+        timestamp: payload.timestamp,
       }),
     });
     if (!response.ok) {
@@ -364,7 +394,9 @@ export class TranscriptEventProcessor {
     const requestBody = JSON.stringify({
       contentSessionId: session.sessionId,
       last_assistant_message: lastAssistantMessage,
-      platformSource: session.platformSource
+      platformSource: session.platformSource,
+      // Timestamp of the turn-end event that triggered this summary, not now().
+      timestamp: session.lastEventTimestamp,
     });
 
     try {

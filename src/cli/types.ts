@@ -14,6 +14,8 @@ export interface NormalizedHookInput {
    * platform that omits it still ingests, it just cannot be de-duplicated.
    */
   toolUseId?: string;
+  /** Original event time (transcript backfill). Forwarded as-is; live hooks never set it. */
+  timestamp?: string;
   transcriptPath?: string;
   lastAssistantMessage?: string;
   reason?: string;

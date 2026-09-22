@@ -2887,9 +2887,11 @@ export class SessionStore {
     project: string,
     userPrompt: string,
     customTitle?: string,
-    platformSource?: string
+    platformSource?: string,
+    /** Validated original event time (transcript backfill), epoch ms. Only applies when this call creates a new row. */
+    startedAtEpoch?: number
   ): number {
-    const now = new Date();
+    const now = startedAtEpoch !== undefined ? new Date(startedAtEpoch) : new Date();
     const nowEpoch = now.getTime();
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : DEFAULT_PLATFORM_SOURCE;
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
@@ -2972,8 +2974,15 @@ export class SessionStore {
     return mutation;
   }
 
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number): number {
-    const now = new Date();
+  saveUserPrompt(
+    contentSessionId: string,
+    promptNumber: number,
+    promptText: string,
+    sessionDbId?: number,
+    /** Validated original event time (transcript backfill), epoch ms. */
+    createdAtEpoch?: number
+  ): number {
+    const now = createdAtEpoch !== undefined ? new Date(createdAtEpoch) : new Date();
     const nowEpoch = now.getTime();
     const storedPromptText = normalizeStoredPromptText(promptText);
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);

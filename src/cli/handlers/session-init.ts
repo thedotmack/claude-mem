@@ -118,6 +118,7 @@ export const sessionInitHandler: EventHandler = {
         project,
         prompt,
         platformSource,
+        timestamp: input.timestamp,
       },
       platformSource === 'codex'
         ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }

@@ -6,6 +6,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { redactSecrets } from '../../../../utils/redact-secrets.js';
+import { validateClientTimestamp } from '../../../../shared/validate-client-timestamp.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -593,6 +594,8 @@ export class SessionRoutes extends BaseRouteHandler {
     prompt: z.string().optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
+    /** Original event time (transcript backfill). Validated by validateClientTimestamp; falls back to now(). */
+    timestamp: z.union([z.string(), z.number()]).optional(),
   }).passthrough();
 
   private static readonly observationsByClaudeIdSchema = z.object({
@@ -612,6 +615,8 @@ export class SessionRoutes extends BaseRouteHandler {
     orGenerationId: z.string().optional(),
     or_session_id: z.string().optional(),
     orSessionId: z.string().optional(),
+    /** Original event time (transcript backfill). Validated by validateClientTimestamp; falls back to now(). */
+    timestamp: z.union([z.string(), z.number()]).optional(),
   }).passthrough();
 
   private static readonly summarizeByClaudeIdSchema = z.object({
@@ -621,6 +626,8 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     observedModel: z.string().min(1).max(200).optional(),
     observedBilling: z.string().min(1).max(40).optional(),
+    /** Timestamp of the turn-end event that triggered this summary (transcript backfill). Falls back to now(). */
+    timestamp: z.union([z.string(), z.number()]).optional(),
   }).passthrough();
 
   private static readonly sessionEndSchema = z.object({
@@ -645,6 +652,7 @@ export class SessionRoutes extends BaseRouteHandler {
       orGenerationId,
       or_session_id,
       orSessionId,
+      timestamp,
     } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
@@ -660,6 +668,7 @@ export class SessionRoutes extends BaseRouteHandler {
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
       orGenerationId: typeof or_generation_id === 'string' ? or_generation_id : (typeof orGenerationId === 'string' ? orGenerationId : undefined),
       orSessionId: typeof or_session_id === 'string' ? or_session_id : (typeof orSessionId === 'string' ? orSessionId : undefined),
+      timestamp,
     });
 
     if (!result.ok) {
@@ -676,7 +685,7 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId, last_assistant_message, agentId, observedModel, observedBilling } = req.body;
+    const { contentSessionId, last_assistant_message, agentId, observedModel, observedBilling, timestamp } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
     if (agentId) {
@@ -715,7 +724,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const cleanedLastAssistantMessage = last_assistant_message
       ? (redactSecretsEnabled ? redactSecrets(stripMemoryTags(String(last_assistant_message))) : stripMemoryTags(String(last_assistant_message)))
       : last_assistant_message;
-    await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
+    const summaryTimestampEpoch = validateClientTimestamp(timestamp) ?? undefined;
+    await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, summaryTimestampEpoch);
 
     await this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
@@ -746,6 +756,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
     const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
+    const sessionTimestampEpoch = validateClientTimestamp(req.body.timestamp) ?? undefined;
 
     if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
@@ -790,7 +801,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource, sessionTimestampEpoch);
 
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
@@ -854,7 +865,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId, sessionTimestampEpoch);
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
     // saved prompt nudges — including cursor sessions, which skip the

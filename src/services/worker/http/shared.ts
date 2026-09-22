@@ -5,6 +5,7 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
 import { stripMemoryTags } from '../../../utils/tag-stripping.js';
 import { redactSecretsDeep } from '../../../utils/redact-secrets.js';
+import { validateClientTimestamp } from '../../../shared/validate-client-timestamp.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -68,6 +69,8 @@ export interface ObservationPayload {
    */
   orGenerationId?: string;
   orSessionId?: string;
+  /** Original event time (transcript backfill), ISO string or epoch ms. See validateClientTimestamp. */
+  timestamp?: string | number;
 }
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
@@ -111,11 +114,12 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const store = dbManager.getSessionStore();
+  const clientTimestampEpoch = validateClientTimestamp(payload.timestamp) ?? undefined;
 
   let sessionDbId: number;
   let promptNumber: number;
   try {
-    sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
+    sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource, clientTimestampEpoch);
     promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -204,6 +208,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
+    clientTimestampEpoch,
   });
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');

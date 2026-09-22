@@ -257,6 +257,7 @@ export class SessionManager {
       agentId: data.agentId,
       agentType: data.agentType,
       toolUseId: data.toolUseId,
+      client_timestamp_epoch: data.clientTimestampEpoch,
     };
 
     const messageId = this.buffer.enqueue(sessionDbId, message);
@@ -273,7 +274,7 @@ export class SessionManager {
     }
   }
 
-  async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
+  async queueSummarize(sessionDbId: number, lastAssistantMessage?: string, clientTimestampEpoch?: number): Promise<void> {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -281,7 +282,8 @@ export class SessionManager {
 
     const message: PendingMessage = {
       type: 'summarize',
-      last_assistant_message: lastAssistantMessage
+      last_assistant_message: lastAssistantMessage,
+      client_timestamp_epoch: clientTimestampEpoch,
     };
 
     const messageId = this.buffer.enqueue(sessionDbId, message);

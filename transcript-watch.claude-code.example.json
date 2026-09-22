@@ -7,6 +7,7 @@
       "description": "Schema for historical Claude Code session transcripts under ~/.claude/projects/<encoded-path>/*.jsonl. Each JSONL line is one block (thinking/text/tool_use for assistant, or a plain-string prompt/tool_result for user).",
       "sessionIdPath": "sessionId",
       "cwdPath": "cwd",
+      "timestampPath": "timestamp",
       "events": [
         {
           "name": "user-prompt",

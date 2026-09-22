@@ -74,6 +74,7 @@ const userPromptLine = {
   type: 'user',
   sessionId,
   cwd,
+  timestamp: '2024-03-01T12:00:00.000Z',
   message: { role: 'user', content: 'fix the failing test' },
 };
 
@@ -103,6 +104,7 @@ const toolUseLine = {
   type: 'assistant',
   sessionId,
   cwd,
+  timestamp: '2024-03-01T12:00:01.000Z',
   message: {
     role: 'assistant',
     content: [{ type: 'tool_use', id: 'toolu_01', name: 'Bash', input: { command: 'echo hi' } }],
@@ -113,6 +115,7 @@ const toolResultLine = {
   type: 'user',
   sessionId,
   cwd,
+  timestamp: '2024-03-01T12:00:02.000Z',
   toolUseResult: { stdout: 'hi\n', stderr: '', interrupted: false },
   message: {
     role: 'user',
@@ -135,6 +138,7 @@ const turnDurationLine = {
   subtype: 'turn_duration',
   sessionId,
   cwd,
+  timestamp: '2024-03-01T12:00:03.000Z',
   durationMs: 1234,
 };
 
@@ -162,6 +166,11 @@ describe('claude-code transcript schema (backfill)', () => {
     expect(sessionInitCalls[0].cwd).toBe(cwd);
   });
 
+  it('forwards the transcript line\'s original timestamp to session_init', async () => {
+    await processor.processEntry(userPromptLine, makeWatch(), schema);
+    expect(sessionInitCalls[0].timestamp).toBe('2024-03-01T12:00:00.000Z');
+  });
+
   it('ignores isMeta command lines and <wrapper> stdout lines', async () => {
     await processor.processEntry(metaCommandLine, makeWatch(), schema);
     await processor.processEntry(commandWrapperLine, makeWatch(), schema);
@@ -185,6 +194,9 @@ describe('claude-code transcript schema (backfill)', () => {
     expect(ingestCalls[0].toolUseId).toBe('toolu_01');
     expect(ingestCalls[0].toolInput).toEqual({ command: 'echo hi' });
     expect(ingestCalls[0].toolResponse).toEqual({ stdout: 'hi\n', stderr: '', interrupted: false });
+    // The observation's timestamp is the tool_result line's own time (the event
+    // that actually completed it), not the earlier tool_use line's time.
+    expect(ingestCalls[0].timestamp).toBe('2024-03-01T12:00:02.000Z');
   });
 
   it('posts observations over HTTP when run as the standalone watcher CLI (no in-process ingest context)', async () => {
@@ -200,6 +212,7 @@ describe('claude-code transcript schema (backfill)', () => {
       tool_name: 'Bash',
       tool_use_id: 'toolu_01',
       tool_input: { command: 'echo hi' },
+      timestamp: '2024-03-01T12:00:02.000Z',
     });
   });
 
@@ -207,6 +220,11 @@ describe('claude-code transcript schema (backfill)', () => {
     await processor.processEntry(turnDurationLine, makeWatch(), schema);
     expect(summarizeCalls).toHaveLength(1);
     expect(JSON.parse(summarizeCalls[0]).contentSessionId).toBe(sessionId);
+  });
+
+  it('summary carries the turn-end event\'s own timestamp', async () => {
+    await processor.processEntry(turnDurationLine, makeWatch(), schema);
+    expect(JSON.parse(summarizeCalls[0]).timestamp).toBe('2024-03-01T12:00:03.000Z');
   });
 
   it('captures an assistant text block as the last assistant message for the session summary', async () => {

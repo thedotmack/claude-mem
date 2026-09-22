@@ -99,6 +99,14 @@ export interface PendingMessage {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  /**
+   * Validated original event time (backfill/transcript replay), epoch ms.
+   * When present it becomes this message's `_originalTimestamp` instead of
+   * enqueue time, so a replayed batch is stamped with when it actually
+   * happened rather than when the backfill run enqueued it. Absent for live
+   * hooks, which keep today's enqueue-time behavior unchanged.
+   */
+  client_timestamp_epoch?: number;
 }
 
 export interface PendingMessageWithId extends PendingMessage {
@@ -115,6 +123,8 @@ export interface ObservationData {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  /** See PendingMessage.client_timestamp_epoch. */
+  clientTimestampEpoch?: number;
 }
 
 export interface SSEEvent {

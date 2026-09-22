@@ -64,7 +64,14 @@ export class SessionMessageBuffer {
     }
 
     const id = this.nextId++;
-    this.getList(sessionDbId).push({ id, message, claimed: false, enqueuedAt: Date.now() });
+    // enqueuedAt doubles as this message's `_originalTimestamp` (see
+    // getMessagesByIds/drain below). A backfill/transcript-replay message
+    // carries the real event time in client_timestamp_epoch — honor it so
+    // storeObservations() stamps the row with when it actually happened, not
+    // when the replay enqueued it. Live hooks never set this field, so
+    // behavior there is unchanged.
+    const enqueuedAt = message.client_timestamp_epoch ?? Date.now();
+    this.getList(sessionDbId).push({ id, message, claimed: false, enqueuedAt });
     this.onMutate?.();
     this.signal(sessionDbId);
     return id;
