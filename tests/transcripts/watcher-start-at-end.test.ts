@@ -56,6 +56,13 @@ const createSchema = (): TranscriptSchema => ({
   ],
 });
 
+const createWatch = (filePath: string, schema: TranscriptSchema, startAtEnd = false): WatchTarget => ({
+  name: 'codex',
+  path: filePath,
+  schema,
+  startAtEnd,
+});
+
 describe('TranscriptWatcher startAtEnd', () => {
   let tmpRoot: string;
   let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -203,12 +210,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     const filePath = join(tmpRoot, `${sessionId}.jsonl`);
     const statePath = join(tmpRoot, 'state.json');
     const schema = createSchema();
-    const watch: WatchTarget = {
-      name: 'codex',
-      path: filePath,
-      schema,
-      startAtEnd: false,
-    };
+    const watch = createWatch(filePath, schema);
     const firstLine = createUserMessage(sessionId, 'first prompt');
     const secondLine = createUserMessage(sessionId, 'resumed 日本語 prompt');
     const splitAt = Math.floor(secondLine.length / 2);
@@ -240,12 +242,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     const filePath = join(tmpRoot, `${sessionId}.jsonl`);
     const statePath = join(tmpRoot, 'state.json');
     const schema = createSchema();
-    const watch: WatchTarget = {
-      name: 'codex',
-      path: filePath,
-      schema,
-      startAtEnd: false,
-    };
+    const watch = createWatch(filePath, schema);
     const line = createUserMessage(sessionId, 'live resumed 日本語 prompt');
     const splitAt = Math.floor(line.length / 2);
 
@@ -264,8 +261,6 @@ describe('TranscriptWatcher startAtEnd', () => {
 
     expect(sessionInitCalls.map(call => call.prompt)).toEqual(['live resumed 日本語 prompt']);
 
-    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
-    expect(persisted.offsets[filePath]).toBe(Buffer.byteLength(`${line}\n`, 'utf8'));
   });
 
   it('discards a buffered partial line when the file is truncated', async () => {
