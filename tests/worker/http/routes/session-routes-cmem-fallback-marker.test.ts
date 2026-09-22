@@ -30,6 +30,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_OPENROUTER_BASE_URL',
   'CLAUDE_MEM_PRO_FALLBACK_AT',
+  'CLAUDE_MEM_FALLBACK_PROVIDER',
   'CMEM_PRO_ORIGIN',
 ] as const;
 
@@ -134,6 +135,9 @@ describe('SessionRoutes — cmem trial-expiry fallback marker on a paused gatewa
   });
 
   it('writes the marker and preserves the session when the gateway stop pauses via abort (#3999 shape)', async () => {
+    // Fallback 'none': no provider to divert to, so recordCmemFallbackIfEligible
+    // arms the openrouter breaker itself — that is the hold this test asserts.
+    process.env.CLAUDE_MEM_FALLBACK_PROVIDER = 'none';
     const session = makeFakeSession(910001);
     const gatewayStop = classifyOpenRouterError({
       status: 402,
@@ -171,9 +175,43 @@ describe('SessionRoutes — cmem trial-expiry fallback marker on a paused gatewa
     expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
 
-    // The quota breaker armed too (the finally's quota accounting) — that is
-    // what holds dispatch when the fallback choice is 'none'.
+    // The quota breaker armed too (recordCmemFallbackIfEligible arms it when
+    // the choice resolves to no usable fallback) — that is what holds
+    // dispatch for fallback 'none'.
     expect(getQuotaCooldown('openrouter')).not.toBeNull();
+  });
+
+  it('keeps a single hold for the default claude fallback: marker only, no breaker', async () => {
+    // Default choice ('claude') diverts dispatch via the marker; the finally's
+    // generic quota arming must stand down (cmemFallbackHandled), or the
+    // 30-min breaker stacks over the marker's 15-min recovery probe.
+    const session = makeFakeSession(910003);
+    const gatewayStop = classifyOpenRouterError({
+      status: 402,
+      bodyText: JSON.stringify({ error: { code: 'allowance_exhausted', message: 'allowance exhausted' } }),
+      cause: new Error('upstream 402'),
+    });
+    const openRouterAgent = {
+      startSession: mock((s: ActiveSession) => {
+        s.abortReason = 'quota:quota_exhausted';
+        s.abortController.abort();
+        return Promise.reject(gatewayStop);
+      }),
+    };
+    const { routes, sessionManager, completionHandler } = makeRoutes(session, openRouterAgent);
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'test');
+    const generatorPromise = session.generatorPromise;
+    if (generatorPromise) await generatorPromise;
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    const marker = (persisted.env ?? persisted).CLAUDE_MEM_PRO_FALLBACK_AT;
+    expect(typeof marker).toBe('string');
+    expect(marker).not.toBe('');
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+    expect(getQuotaCooldown('openrouter')).toBeNull();
   });
 
   it('never writes the marker for an externally aborted generator (idle/shutdown)', async () => {

@@ -358,6 +358,13 @@ export class SessionRoutes extends BaseRouteHandler {
     const myController = session.abortController;
 
     let skipGeneratorExitFinalization = false;
+    // Set when the catch below consumed a terminal cmem-gateway stop as a
+    // recorded fallback: the finally's generic quota arming must then stand
+    // down (one hold per path — the 15-min marker for a divertable fallback,
+    // or the breaker recordCmemFallbackIfEligible itself armed for a null
+    // one). Stacking the 30-min provider breaker on top would delay the
+    // gateway recovery probe by another cooldown.
+    let cmemFallbackHandled = false;
     let generatorPromise: Promise<void>;
 
     generatorPromise = agent.startSession(session, this.workerService)
@@ -378,6 +385,7 @@ export class SessionRoutes extends BaseRouteHandler {
           && isClassified(error)
           && recordCmemFallbackIfEligible(error);
         if (cmemFallbackRecorded) {
+          cmemFallbackHandled = true;
           logger.warn('SESSION', 'cmem gateway key is no longer funded; memory falls back to the configured fallback provider', {
             sessionId: session.sessionDbId,
             kind: error.kind,
@@ -498,7 +506,10 @@ export class SessionRoutes extends BaseRouteHandler {
         // Quota surfaced as assistant prose aborts here rather than throwing, so
         // it must arm the breaker too — otherwise the prose path keeps the
         // per-observation request storm the classified path no longer has.
-        if (normalizeAbortReason(reason) === 'quota') {
+        // A handled cmem fallback stands down: its hold is already in place
+        // (see cmemFallbackHandled above), and this generic 30-min arm would
+        // stack a second cooldown over the marker's 15-min probe window.
+        if (normalizeAbortReason(reason) === 'quota' && !cmemFallbackHandled) {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
           recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
           // Quota returned as assistant prose never throws, so it never reaches

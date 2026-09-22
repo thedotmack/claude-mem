@@ -87,3 +87,15 @@ export const PRO_FALLBACK_UPSELL =
 export function proFallbackLine(source: ProPromoSource): string {
   return `${String.fromCodePoint(0x1F3C6)} ${PRO_FALLBACK_UPSELL} ${proFallbackUrl(source)}`;
 }
+
+// Paused variant: fallback choice 'none' (or gemini without a key) means
+// dispatch HOLDS instead of switching providers — "switched … nothing
+// stopped" would be false, so this copy says what actually happened. Still
+// no dollar allowance/cap values.
+export const PRO_FALLBACK_PAUSED =
+  "You're one of the heaviest memory users this cycle — your free trial allowance is used up, so memory generation is paused. Pick it back up: pay for your trial now and get 6x more usage for just $30:";
+
+/** Paused-variant one-liner, for a fallback choice with no usable provider. */
+export function proFallbackPausedLine(source: ProPromoSource): string {
+  return `${String.fromCodePoint(0x23F8, 0xFE0F)} ${PRO_FALLBACK_PAUSED} ${proFallbackUrl(source)}`;
+}
