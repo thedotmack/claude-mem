@@ -39,6 +39,8 @@ export function buildOpenCodeSafetyConfig(): Record<string, unknown> {
     $schema: 'https://opencode.ai/config.json',
     share: 'disabled',
     instructions: [],
+    plugin: [],
+    mcp: {},
     permission: { '*': 'deny' },
     tools: { '*': false },
     agent: {
