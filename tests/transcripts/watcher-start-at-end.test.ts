@@ -198,6 +198,43 @@ describe('TranscriptWatcher startAtEnd', () => {
     expect(livePrompts).toHaveLength(1);
   });
 
+  it('persists only complete lines so partial records resume after restart', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763d';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+    const schema = createSchema();
+    const watch: WatchTarget = {
+      name: 'codex',
+      path: filePath,
+      schema,
+      startAtEnd: false,
+    };
+    const firstLine = createUserMessage(sessionId, 'first prompt');
+    const secondLine = createUserMessage(sessionId, 'resumed prompt');
+    const splitAt = Math.floor(secondLine.length / 2);
+
+    writeFileSync(filePath, `${firstLine}\n${secondLine.slice(0, splitAt)}`, 'utf8');
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (watcher as any).addTailer(filePath, watch, schema);
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt']);
+
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    expect(persisted.offsets[filePath]).toBe(Buffer.byteLength(`${firstLine}\n`, 'utf8'));
+
+    appendFileSync(filePath, `${secondLine.slice(splitAt)}\n`, 'utf8');
+
+    const resumed = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (resumed as any).addTailer(filePath, watch, schema);
+    await waitForAsyncTail();
+    resumed.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt', 'resumed prompt']);
+  });
+
   it('discards a buffered partial line when the file is truncated', async () => {
     const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763c';
     const filePath = join(tmpRoot, `${sessionId}.jsonl`);
