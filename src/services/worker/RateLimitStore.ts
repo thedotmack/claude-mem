@@ -12,7 +12,7 @@
  *     resetsAt?: number,                              // epoch ms
  *     rateLimitType?: "five_hour" | "seven_day"
  *                   | "seven_day_opus" | "seven_day_sonnet"
- *                   | "overage",
+ *                   | "seven_day_overage_included" | "overage",
  *     utilization?: number,                           // 0..1
  *     overageStatus?: "allowed" | "allowed_warning" | "rejected",
  *     overageResetsAt?: number,
@@ -34,6 +34,8 @@ export type RateLimitWindow =
   | 'seven_day'
   | 'seven_day_opus'
   | 'seven_day_sonnet'
+  /** Weekly window for the premium model bucket, counted with overage included. */
+  | 'seven_day_overage_included'
   | 'overage';
 
 /**
@@ -60,6 +62,11 @@ export interface RateLimitInfo {
    * as. Absent from `SDKRateLimitInfo` in the agent SDK's current typings
    * but present on the wire (Claude Code v2.1.267), so it is validated at
    * runtime and ignored when missing.
+   *
+   * Claude Code fans out only `five_hour`, `seven_day`, and
+   * `seven_day_overage_included` here — the model-typed weeklies and the
+   * overage bucket never arrive this way. Other keys are accepted because
+   * the field is undocumented and free to grow.
    */
   unifiedWindows?: Partial<Record<RateLimitWindow, UnifiedWindowSnapshot>>;
 }
@@ -76,6 +83,7 @@ const RATE_LIMIT_WINDOWS: RateLimitWindow[] = [
   'seven_day_opus',
   'seven_day_sonnet',
   'seven_day',
+  'seven_day_overage_included',
   'overage',
 ];
 
@@ -162,6 +170,7 @@ export class RateLimitStore {
     seven_day?: RateLimitEntry;
     seven_day_opus?: RateLimitEntry;
     seven_day_sonnet?: RateLimitEntry;
+    seven_day_overage_included?: RateLimitEntry;
     overage?: RateLimitEntry;
   } {
     return {
@@ -169,6 +178,7 @@ export class RateLimitStore {
       seven_day: this.entries.get('seven_day'),
       seven_day_opus: this.entries.get('seven_day_opus'),
       seven_day_sonnet: this.entries.get('seven_day_sonnet'),
+      seven_day_overage_included: this.entries.get('seven_day_overage_included'),
       overage: this.entries.get('overage'),
     };
   }
@@ -269,6 +279,7 @@ const UTILIZATION_THRESHOLDS: Record<RateLimitWindow, number> = {
   seven_day_opus: 0.93,
   seven_day_sonnet: 0.92,
   seven_day: 0.93,
+  seven_day_overage_included: 0.93,
   overage: 0.95,
 };
 

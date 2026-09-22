@@ -229,6 +229,25 @@ describe('RateLimitStore — unifiedWindows hydration', () => {
     expect(shouldAbortForQuota('cli', store, FIXED_NOW).window).toBe('overage');
   });
 
+  it('hydrates the overage-included weekly window', () => {
+    // Claude Code fans out five_hour, seven_day, and seven_day_overage_included
+    // — the premium-model weekly counted with overage included.
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.1,
+      resetsAt: FIVE_HOUR_RESET,
+      unifiedWindows: {
+        seven_day_overage_included: { utilization: 0.94, resetsAt: SEVEN_DAY_RESET },
+      },
+    });
+    expect(store.get('seven_day_overage_included')?.utilization).toBe(0.94);
+    const decision = shouldAbortForQuota('cli', store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day_overage_included');
+  });
+
   it('lets the guard act on a hydrated seven_day reading', () => {
     const store = freshStore();
     store.set({
@@ -483,6 +502,17 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(true);
     expect(decision.window).toBe('overage');
+  });
+
+  it('aborts on a rejected overage-included weekly window', () => {
+    store.set({
+      rateLimitType: 'seven_day_overage_included',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 24 * 60 * 60 * 1000,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day_overage_included');
   });
 
   it('applies the overage utilization threshold on the primary reset', () => {

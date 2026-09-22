@@ -125,7 +125,8 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'threshold_tripped',
   // usage_limit_hit — the SDK's rate_limit_info projected to closed enums:
   // limit_window (five_hour | seven_day | seven_day_opus | seven_day_sonnet |
-  // overage | unknown), overage_status (allowed | allowed_warning | rejected |
+  // seven_day_overage_included | overage | unknown), overage_status
+  // (allowed | allowed_warning | rejected |
   // unknown), a boolean, and whole minutes until the window resets. Never the
   // provider's limit message text.
   'limit_window',
