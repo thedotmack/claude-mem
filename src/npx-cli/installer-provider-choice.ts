@@ -1,4 +1,4 @@
-type InstallerProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
+type InstallerProviderId = 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'host';
 type InstallerProviderChoice = InstallerProviderId | 'cmem';
 
 /**
