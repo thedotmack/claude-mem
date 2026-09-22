@@ -264,6 +264,21 @@ export class SessionSearch {
     };
   }
 
+  /**
+   * Build an FTS5 query that preserves literal-token safety while allowing multi-word
+   * input to behave as an AND of terms instead of an exact phrase.
+   */
+  private static buildFTSMatchQuery(query: string): string {
+    const tokens = query.match(/\S+/g) ?? [];
+    if (tokens.length === 0) {
+      return `"${query.replace(/"/g, '""')}"`;
+    }
+
+    return tokens
+      .map(token => `"${token.replace(/"/g, '""')}"`)
+      .join(' AND ');
+  }
+
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
     switch (orderBy) {
       case 'relevance':
@@ -336,7 +351,7 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
+      const escapedQuery = SessionSearch.buildFTSMatchQuery(query);
       params.unshift(escapedQuery);
       params.push(limit, offset);
 
@@ -426,7 +441,7 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
+      const escapedQuery = SessionSearch.buildFTSMatchQuery(query);
       params.unshift(escapedQuery);
       params.push(limit, offset);
 
