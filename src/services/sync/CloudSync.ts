@@ -144,6 +144,13 @@ interface PushResponse {
   acked: AckedOp[];
   head_seq: string;
   projected_seq: string;
+  /**
+   * The `X-Sync-Mode` header value, or null when absent. `'poll'` means the
+   * hub deliberately did NOT advance its projection for this push (kill switch
+   * tripped), so projected_seq trails head_seq and the acked ops are durable
+   * but not yet projected.
+   */
+  sync_mode: string | null;
 }
 
 function operationTupleKey(tuple: {
@@ -1236,6 +1243,7 @@ export class CloudSync {
       acked: validatedAcked,
       head_seq: headSeq,
       projected_seq: projectedSeq,
+      sync_mode: syncMode,
     };
   }
 
@@ -1293,14 +1301,23 @@ export class CloudSync {
       throw new Error('sync hub push: 200 response acknowledgment multiset mismatch');
     }
 
-    if (compareCanonicalDecimals(response.head_seq, response.projected_seq) > 0) {
-      throw new Error('sync hub push: checkpoint order requires head_seq <= projected_seq');
+    // The hub's projection cursor trails its write head by design, so the
+    // invariant is projected_seq <= head_seq. (The prior assertion demanded the
+    // opposite direction and threw on every well-formed response, wedging any
+    // account in poll mode — see status validation, which already checks this
+    // direction.)
+    if (compareCanonicalDecimals(response.projected_seq, response.head_seq) > 0) {
+      throw new Error('sync hub push: checkpoint order requires projected_seq <= head_seq');
     }
+    // Poll mode (kill switch tripped) means the hub answered with an unadvanced
+    // projection on purpose. The acks are still a durable proof of receipt, so
+    // an acked seq above projected_seq is a pending projection, not a fault.
+    const pollMode = response.sync_mode === 'poll';
     for (const ack of response.acked) {
       if (compareCanonicalDecimals(ack.seq, response.head_seq) > 0) {
         throw new Error('sync hub push: acknowledgment seq exceeds head_seq');
       }
-      if (compareCanonicalDecimals(ack.seq, response.projected_seq) > 0) {
+      if (!pollMode && compareCanonicalDecimals(ack.seq, response.projected_seq) > 0) {
         throw new Error('sync hub push: sent operation is not covered by projected_seq');
       }
     }
