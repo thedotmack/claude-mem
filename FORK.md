@@ -100,11 +100,25 @@ The child process receives a separate `XDG_CONFIG_HOME` under Claude-Mem's data 
 This intentionally prevents the summarizer from loading the user's normal global OpenCode
 configuration, plugins, MCP definitions, and global instructions.
 
-OpenCode provider authentication is normally stored separately in its data/auth store, so
-regular authenticated providers remain available. A provider that exists *only* because of
-custom entries in the user's normal OpenCode config may not be available in this isolated mode.
+A provider that exists *only* because of custom entries in the user's normal OpenCode config
+may not be available in this isolated mode. That tradeoff is intentional: secure isolation is
+the default.
 
-That tradeoff is intentional: secure isolation is the default.
+### 2b. Isolated XDG data/state/cache
+
+The child also receives separate `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`
+directories under Claude-Mem's data directory, instead of inheriting the user's real
+`~/.local/share`/`~/.local/state`/`~/.cache`. Without this, every summarizer run was recorded
+as a full session (transcript, tokens, model) in the user's personal
+`~/.local/share/kilo/kilo.db` (and OpenCode's equivalent `opencode.db`), leaking Claude-Mem
+transcript copies into the user's normal Kilo/VS Code and OpenCode session history.
+
+This also means the isolated data dir starts with no `auth.json`. Verified empirically (see
+`buildOpenCodeSafetyEnv` comment) that the configured free-tier models — `kilo/kilo-auto/free`,
+`kilo/inclusionai/ling-3.0-flash-fin:free`, and `opencode/big-pickle` — all authenticate and
+respond successfully against a completely empty, auth-less isolated data dir, so no
+`auth.json` copy-in step was added. A provider that requires stored credentials would not be
+reachable in this isolated mode; that is the same secure-by-default tradeoff as section 2.
 
 ### 3. Inline deny-all agent
 

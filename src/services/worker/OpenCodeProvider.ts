@@ -63,7 +63,17 @@ export function buildOpenCodeSafetyConfig(): Record<string, unknown> {
 export function buildOpenCodeSafetyEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  const configHome = join(DATA_DIR, 'opencode-summarizer', 'xdg-config');
+  const root = join(DATA_DIR, 'opencode-summarizer');
+  const configHome = join(root, 'xdg-config');
+  // Isolate the CLI's session/log/cache stores too: left inherited, OpenCode/Kilo write every
+  // summarizer run as a session into the user's real ~/.local/share/{kilo,opencode} data dir
+  // (kilo.db, log/, storage/), leaking transcript copies into the user's normal Kilo/VS Code
+  // history. Verified empirically that kilo's free models (kilo/kilo-auto/free,
+  // kilo/inclusionai/ling-3.0-flash-fin:free) and opencode/big-pickle all work against a
+  // completely empty, auth.json-less data dir, so no auth.json copy-in is implemented here.
+  const dataHome = join(root, 'xdg-data');
+  const stateHome = join(root, 'xdg-state');
+  const cacheHome = join(root, 'xdg-cache');
   const sanitized = sanitizeEnv(baseEnv);
   // Never inherit OpenCode/Kilo control-plane settings from the user's shell.
   // In particular, OPENCODE_CONFIG / OPENCODE_CONFIG_DIR / OPENCODE_CONFIG_CONTENT
@@ -110,6 +120,9 @@ export function buildOpenCodeSafetyEnv(
   return {
     ...sanitized,
     XDG_CONFIG_HOME: configHome,
+    XDG_DATA_HOME: dataHome,
+    XDG_STATE_HOME: stateHome,
+    XDG_CACHE_HOME: cacheHome,
     ...controlPlaneEnv,
   };
 }
@@ -316,9 +329,10 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
   ): Promise<ProviderQueryResult> {
     const root = join(DATA_DIR, 'opencode-summarizer');
     const workspace = join(root, 'workspace');
-    const configHome = join(root, 'xdg-config');
+    for (const dir of ['xdg-config', 'xdg-data', 'xdg-state', 'xdg-cache']) {
+      mkdirSync(join(root, dir), { recursive: true, mode: 0o700 });
+    }
     mkdirSync(workspace, { recursive: true, mode: 0o700 });
-    mkdirSync(configHome, { recursive: true, mode: 0o700 });
 
     const args = [
       '--pure',

@@ -31,6 +31,9 @@ describe('OpenCodeProvider', () => {
     });
     expect(env.HOME).toBe('/tmp/home');
     expect(env.XDG_CONFIG_HOME).toContain('opencode-summarizer');
+    expect(env.XDG_DATA_HOME).toContain('opencode-summarizer');
+    expect(env.XDG_STATE_HOME).toContain('opencode-summarizer');
+    expect(env.XDG_CACHE_HOME).toContain('opencode-summarizer');
     expect(env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('true');
     expect(env.OPENCODE_DISABLE_DEFAULT_PLUGINS).toBe('true');
     expect(env.OPENCODE_DISABLE_CLAUDE_CODE).toBe('true');
@@ -41,6 +44,21 @@ describe('OpenCodeProvider', () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(JSON.parse(env.OPENCODE_PERMISSION! )['*']['*']).toBe('deny');
+  });
+
+  it('never passes through an inherited XDG_DATA_HOME (or state/cache)', () => {
+    const env = buildOpenCodeSafetyEnv({
+      HOME: '/tmp/home',
+      XDG_DATA_HOME: '/home/user/.local/share',
+      XDG_STATE_HOME: '/home/user/.local/state',
+      XDG_CACHE_HOME: '/home/user/.cache',
+    });
+    expect(env.XDG_DATA_HOME).not.toBe('/home/user/.local/share');
+    expect(env.XDG_STATE_HOME).not.toBe('/home/user/.local/state');
+    expect(env.XDG_CACHE_HOME).not.toBe('/home/user/.cache');
+    expect(env.XDG_DATA_HOME).toContain('opencode-summarizer');
+    expect(env.XDG_STATE_HOME).toContain('opencode-summarizer');
+    expect(env.XDG_CACHE_HOME).toContain('opencode-summarizer');
   });
 
   it('isolates Kilo (the OpenCode-fork CLI CLAUDE_MEM_OPENCODE_PATH may point at) identically', () => {
