@@ -8,6 +8,7 @@ import { DATA_DIR, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { ClassifiedProviderError } from './provider-errors.js';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 
 export const OPENCODE_SUMMARIZER_AGENT = 'claude-mem-summarizer';
 
@@ -15,6 +16,7 @@ interface OpenCodeConfig {
   apiKey: string;
   model: string;
   binary: string;
+  timeoutMs: number;
   plainText?: boolean;
 }
 
@@ -55,8 +57,14 @@ export function buildOpenCodeSafetyEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const configHome = join(DATA_DIR, 'opencode-summarizer', 'xdg-config');
+  const sanitized = sanitizeEnv(baseEnv);
+  // The observer never needs Claude Code's session credential. Keep the main
+  // coding agent's credential outside the secondary OpenCode process.
+  delete sanitized.CLAUDE_CODE_OAUTH_TOKEN;
+  delete sanitized.CLAUDE_CODE_SESSION;
+  delete sanitized.CLAUDE_CODE_ENTRYPOINT;
   return {
-    ...baseEnv,
+    ...sanitized,
     XDG_CONFIG_HOME: configHome,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(buildOpenCodeSafetyConfig()),
     OPENCODE_PERMISSION: JSON.stringify({ '*': 'deny' }),
@@ -246,6 +254,7 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
       apiKey: 'opencode-cli',
       model: validateOpenCodeModel(settings.CLAUDE_MEM_OPENCODE_MODEL ?? ''),
       binary: (settings.CLAUDE_MEM_OPENCODE_PATH || 'opencode').trim() || 'opencode',
+      timeoutMs: Math.max(1_000, Number.parseInt(settings.CLAUDE_MEM_LLM_TIMEOUT_MS || '30000', 10) || 30_000),
     };
   }
 
@@ -297,10 +306,17 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
       let stdout = '';
       let stderr = '';
       let settled = false;
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGTERM');
+      }, config.timeoutMs);
+      timeout.unref?.();
 
       const finishReject = (error: unknown, exitCode?: number | null) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timeout);
         reject(classifyOpenCodeError({ exitCode, stderr, cause: error }));
       };
 
@@ -310,6 +326,7 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
         error.name = 'AbortError';
         if (!settled) {
           settled = true;
+          clearTimeout(timeout);
           reject(error);
         }
       };
@@ -326,6 +343,12 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
       child.on('close', (code, closeSignal) => {
         signal?.removeEventListener('abort', onAbort);
         if (settled) return;
+        clearTimeout(timeout);
+
+        if (timedOut) {
+          finishReject(new Error(`OpenCode exceeded the ${config.timeoutMs}ms inference deadline`), code);
+          return;
+        }
 
         if (code !== 0 || closeSignal) {
           finishReject(
