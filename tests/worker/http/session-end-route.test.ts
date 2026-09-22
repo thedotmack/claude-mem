@@ -58,7 +58,7 @@ function makeRoutes(findSessionDbIdByContentSessionId: ReturnType<typeof mock>, 
 }
 
 describe('SessionEnd route', () => {
-  it.each(['claude', 'gemini', 'openrouter'] as const)('formats through the active %s summary provider and model', async provider => {
+  it.each(['claude', 'gemini', 'openrouter', 'opencode'] as const)('formats through the active %s summary provider and model', async provider => {
     let formatter!: TelegramWrapupFormatter;
     const input: TelegramWrapupFormatterInput = {
       sessionDbId: 42, contentSessionId: 'session', project: 'project', platformSource: 'claude', summaryText: 'whole summary',
@@ -67,12 +67,13 @@ describe('SessionEnd route', () => {
       claude: { formatTelegramWrapup: mock(async () => '• Claude summary') },
       gemini: { formatTelegramWrapup: mock(async () => '• Gemini summary') },
       openrouter: { formatTelegramWrapup: mock(async () => '• OpenRouter summary') },
+      opencode: { formatTelegramWrapup: mock(async () => '• OpenCode summary') },
     };
     const selection = spyOn(providerDispatch, 'selectProviderForGenerator');
     new SessionRoutes({
       getSession: () => ({ currentProvider: provider, lastModelId: 'active-model' }),
       setTelegramWrapupFormatter: (value: TelegramWrapupFormatter) => { formatter = value; },
-    } as any, {} as any, agents.claude as any, agents.gemini as any, agents.openrouter as any, {} as any, {} as any, {} as any);
+    } as any, {} as any, agents.claude as any, agents.gemini as any, agents.openrouter as any, {} as any, {} as any, {} as any, agents.opencode as any);
 
     await formatter(input);
 
