@@ -169,7 +169,16 @@ For private work, configure OpenCode to use an appropriate local model/provider.
 
 ## Configuration
 
-In `~/.claude-mem/settings.json`:
+When running this fork's CLI, the narrow non-interactive installer path is:
+
+```bash
+npx claude-mem install --provider opencode --model provider/model
+```
+
+This skips claude-mem account/OAuth setup because OpenCode owns provider authentication.
+The normal interactive installer choices are intentionally left unchanged.
+
+You can also configure it directly in `~/.claude-mem/settings.json`:
 
 ```json
 {
