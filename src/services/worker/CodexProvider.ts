@@ -18,11 +18,32 @@ interface CodexConfig {
   setupProbeClaimId?: number | null;
 }
 
+const CODEX_ERROR_INFO_KINDS: Record<string, ConstructorParameters<typeof ClassifiedProviderError>[1]['kind']> = {
+  usageLimitExceeded: 'quota_exhausted',
+  unauthorized: 'auth_invalid',
+  rateLimitExceeded: 'rate_limit',
+  contextWindowExceeded: 'context_overflow',
+};
+
+/** Maps the app-server's structured CodexErrorInfo, which is more stable than its display text. */
+function classifyCodexErrorInfo(info: unknown): ConstructorParameters<typeof ClassifiedProviderError>[1]['kind'] | null {
+  if (typeof info === 'string') return CODEX_ERROR_INFO_KINDS[info] ?? null;
+  if (!info || typeof info !== 'object') return null;
+  const [detail] = Object.values(info as Record<string, unknown>);
+  const status = (detail as { httpStatusCode?: unknown } | null)?.httpStatusCode;
+  if (status === 401 || status === 403) return 'auth_invalid';
+  if (status === 429) return 'rate_limit';
+  return null;
+}
+
 export function classifyCodexError(cause: unknown): ClassifiedProviderError {
   const message = cause instanceof Error ? cause.message : String(cause);
   const code = (cause as { code?: unknown } | null)?.code;
+  const structuredKind = classifyCodexErrorInfo((cause as { codexErrorInfo?: unknown } | null)?.codexErrorInfo);
   let kind: ConstructorParameters<typeof ClassifiedProviderError>[1]['kind'] = 'transient';
-  if (code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
+  if (structuredKind) {
+    kind = structuredKind;
+  } else if (code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
     kind = 'unrecoverable';
   } else if (/not logged in|codex login|unauthorized|authentication|ChatGPT auth|requires Codex CLI|\b40[13]\b/i.test(message)) {
     kind = 'auth_invalid';

@@ -253,4 +253,34 @@ describe('Codex provider integration', () => {
       expect(classifyCodexError(new Error(message)).kind).toBe(kind);
     });
   }
+
+  for (const [info, kind] of [
+    ['usageLimitExceeded', 'quota_exhausted'], ['unauthorized', 'auth_invalid'],
+    ['rateLimitExceeded', 'rate_limit'], ['contextWindowExceeded', 'context_overflow'],
+    [{ responseStreamConnectionFailed: { httpStatusCode: 401 } }, 'auth_invalid'],
+    [{ httpConnectionFailed: { httpStatusCode: 429 } }, 'rate_limit'],
+    [{ responseStreamDisconnected: { httpStatusCode: null } }, 'transient'],
+  ] as const) {
+    it(`classifies structured Codex error ${JSON.stringify(info)} as ${kind}`, () => {
+      const error = Object.assign(new Error('Codex app-server reported an error'), { codexErrorInfo: info });
+      expect(classifyCodexError(error).kind).toBe(kind);
+    });
+  }
+
+  it('arms the quota cooldown without retrying a structured usage-limit failure', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const sends = mock(async () => {
+      throw Object.assign(new Error('Codex app-server reported an error'), { codexErrorInfo: 'usageLimitExceeded' });
+    });
+    provider.appServer.runTurn = sends;
+    try {
+      await expect(provider.query([{ role: 'user', content: 'input' }], { ...config }))
+        .rejects.toMatchObject({ kind: 'quota_exhausted' });
+      expect(sends).toHaveBeenCalledTimes(1);
+      expect(getQuotaCooldown('codex')).not.toBeNull();
+      expect(getQuotaCooldown('codex-setup')).toBeNull();
+    } finally {
+      await provider.close();
+    }
+  });
 });

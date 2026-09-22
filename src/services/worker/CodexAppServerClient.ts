@@ -184,6 +184,18 @@ function executableFingerprint(codexPath: string): string {
   }
 }
 
+/** Keeps the app-server TurnError text and structured code available for classification. */
+function codexTurnError(prefix: string, error: unknown): Error {
+  const detail = isObject(error) && typeof error.message === 'string' && error.message.trim()
+    ? `: ${error.message}`
+    : '';
+  const result = new Error(`${prefix}${detail}`);
+  if (isObject(error) && error.codexErrorInfo != null) {
+    Object.assign(result, { codexErrorInfo: error.codexErrorInfo });
+  }
+  return result;
+}
+
 function resolveNativeCodexHome(explicitHome?: string): string {
   const configured = explicitHome?.trim() || process.env.CODEX_HOME?.trim();
   return configured || join(process.env.HOME?.trim() || homedir(), '.codex');
@@ -419,10 +431,7 @@ export class CodexAppServerClient {
       if (active.protocolError) throw active.protocolError;
       if (!active.terminalTurn) throw new Error('Codex app-server turn ended without terminal state');
       if (active.terminalTurn.status !== 'completed') {
-        const detail = isObject(active.terminalTurn.error) && typeof active.terminalTurn.error.message === 'string'
-          ? `: ${active.terminalTurn.error.message}`
-          : '';
-        throw new Error(`Codex app-server turn ${String(active.terminalTurn.status)}${detail}`);
+        throw codexTurnError(`Codex app-server turn ${String(active.terminalTurn.status)}`, active.terminalTurn.error);
       }
       if (active.finalText === null) {
         throw new Error('Codex app-server completed without a final agent message');
@@ -751,9 +760,9 @@ export class CodexAppServerClient {
     }
 
     if (method === 'error') {
-      active.protocolError = new Error(
-        typeof params.message === 'string' ? params.message : 'Codex app-server reported an error',
-      );
+      // Codex retries these itself; the turn's final notification decides the outcome.
+      if (params.willRetry === true) return;
+      active.protocolError = codexTurnError('Codex app-server reported an error', params.error);
       active.complete();
     }
   }
