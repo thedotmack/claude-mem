@@ -278,7 +278,7 @@ class Logger {
       const { sessionId, memorySessionId, correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
         const pairs = Object.entries(rest).map(([k, v]) => {
-          if (typeof v !== 'object' || v === null || v instanceof Error) return `${k}=${v}`;
+          if (typeof v !== 'object' || v === null || v instanceof Error || v instanceof Date) return `${k}=${v}`;
           try {
             return `${k}=${Array.isArray(v) ? JSON.stringify(v) : this.formatData(v)}`;
           } catch {

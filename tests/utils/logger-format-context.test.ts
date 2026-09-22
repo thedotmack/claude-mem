@@ -108,6 +108,14 @@ describe('logger context formatting', () => {
     expect(line.split('\n').length).toBe(1);
   });
 
+  it('should render a Date context value in its string form, not {}', () => {
+    const marker = 'ctx-test-date-1';
+    const when = new Date(0);
+    logger.info('SYSTEM', marker, { when });
+    const line = lastLoggedLineFor(marker);
+    expect(line).toContain(`{when=${when}}`);
+  });
+
   it('should not throw on a circular-reference context value, and print the fallback', () => {
     const circular: Record<string, unknown> = { a: 1 };
     circular.self = circular;
