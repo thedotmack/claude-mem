@@ -776,10 +776,9 @@ Failed with non-blocking status code: ""bun"" is not recognized as an internal o
 
 4. Check query syntax:
    ```bash
-   # Bad: Special characters may cause issues
+   # Phrase and punctuation-heavy queries now get tokenized before FTS5 matching,
+   # but a simpler query is still the fastest way to rule out data issues.
    search(query="[test]")
-
-   # Good: Simple words
    search(query="test")
    ```
 
@@ -1028,7 +1027,7 @@ SELECT created_at, tool_name FROM observations ORDER BY created_at DESC LIMIT 10
 
 **Cause**: Invalid search query syntax.
 
-**Solution**: Use simpler query, avoid special characters.
+**Solution**: Retry with a simpler query to isolate whether the problem is query parsing or missing data. If the simple form works and the original still fails, capture both examples when filing the bug.
 
 ### "SQLITE_CANTOPEN"
 

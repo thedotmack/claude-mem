@@ -15,7 +15,7 @@ Instead of fetching all historical data upfront (expensive), claude-mem uses a p
 2. **Timeline** → Get context around interesting results
 3. **Get Observations** → Fetch full details ONLY for filtered IDs
 
-This achieves **~10x token savings** compared to traditional RAG approaches.
+This keeps search token-efficient by narrowing candidates before fetching full details. A published top-10 recall baseline is still pending (#3442), so treat the workflow as guidance rather than a benchmarked savings claim.
 
 ## The 3-Layer Workflow
 

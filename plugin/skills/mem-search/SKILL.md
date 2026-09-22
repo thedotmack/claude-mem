@@ -17,7 +17,7 @@ Use when users ask about PREVIOUS sessions (not current conversation):
 
 ## Layered Workflow (ALWAYS Follow)
 
-**NEVER fetch full details without filtering first. 10x token savings.**
+**NEVER fetch full details without filtering first. Token-efficient workflow; published recall benchmark pending (#3442).**
 
 ### Step 1: Search - Get Index with IDs
 
@@ -159,7 +159,8 @@ get_tool_uses(ids=["toolu_01ABC..."])    # only if the summary omitted the detai
 - **Full observation:** ~500-1000 tokens each
 - **Raw tool body:** up to 64 KB each — the layer you skip 95% of the time
 - **Batch fetch:** 1 HTTP request vs N individual requests
-- **10x token savings** by filtering before fetching
+- **Token-efficient progressive disclosure** by filtering before fetching
+- **Recall note:** step 1 has to find the right candidates first. A published top-10 recall baseline is still pending (#3442), so use this as workflow guidance rather than a benchmarked savings claim
 
 ## Knowledge Agents
 

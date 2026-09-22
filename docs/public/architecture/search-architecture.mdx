@@ -105,7 +105,7 @@ Always visible to Claude. Explains the 3-layer workflow pattern.
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-NEVER fetch full details without filtering first. 10x token savings.
+NEVER fetch full details without filtering first. Token-efficient workflow; published recall benchmark pending (#3442).
 ```
 
 **Purpose:** Ensures Claude follows token-efficient pattern
@@ -347,7 +347,7 @@ Total: 2,500-5,000 tokens (50-75% savings)
 - No overlapping operations
 - Simple schemas (`additionalProperties: true`)
 - Clear workflow pattern
-- ~10x token savings
+- Token-efficient progressive disclosure
 
 **Code Size:** ~312 lines in mcp-server.ts (88% reduction)
 
@@ -430,7 +430,7 @@ function escapeFTS5Query(query: string): string {
 
 **3-Layer MCP:**
 - Fetches only what's needed
-- ~10x token savings
+- Token-efficient progressive disclosure (top-10 recall benchmark pending #3442)
 - 100% relevance (Claude chooses what to fetch)
 
 ### vs. Previous MCP Implementation (v5.x)

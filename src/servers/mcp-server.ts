@@ -448,7 +448,7 @@ const tools = [
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
 4. get_tool_uses([IDs]) → Raw tool_input/tool_response, ONLY when the summary is not enough
-NEVER fetch full details without filtering first. 10x token savings.`,
+NEVER fetch full details without filtering first. Token-efficient workflow; recall benchmark pending (#3442).`,
     inputSchema: {
       type: 'object',
       properties: {}
@@ -476,7 +476,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    \`get_tool_uses(ids=[...])\`
    Returns: The original tool_input / tool_response bodies (UNSUMMARIZED — can be thousands of tokens each)
 
-**Why:** 10x token savings. Never fetch full details without filtering first, and never reach for layer 4 before layer 3 answered.`
+**Why:** This keeps recall and detail-fetching separate so Claude can narrow results before opening full records. Treat it as workflow guidance, not a benchmarked savings claim — a published top-10 recall baseline is still pending (#3442). Never fetch full details without filtering first, and never reach for layer 4 before layer 3 answered.`
       }]
     })
   },

@@ -267,7 +267,8 @@ Claude-Mem provides intelligent memory search through **4 MCP tools** following 
 - Start with `search` to get an index of results
 - Use `timeline` to see what was happening around specific observations
 - Use `get_observations` to fetch full details for relevant IDs
-- **~10x token savings** by filtering before fetching details
+- **Token-efficient progressive disclosure** by filtering before fetching details
+- **Recall note:** the search workflow depends on step-1 retrieval quality. A published top-10 recall baseline is still pending via the planned eval harness (#3442), so this workflow should be treated as guidance rather than a benchmarked savings claim
 
 **Available MCP Tools:**
 

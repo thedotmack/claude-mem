@@ -264,6 +264,17 @@ export class SessionSearch {
     };
   }
 
+  /**
+   * Convert free-form user text into an FTS5 query that preserves per-token AND semantics
+   * without turning the whole input into a single phrase match. Quoting each token keeps
+   * FTS operators such as OR/NOT literal while still allowing realistic multi-word queries
+   * to match when the words appear separately.
+   */
+  private static buildFtsMatchQuery(query: string): string {
+    const tokens = query.match(/[\p{L}\p{N}]+/gu) ?? [];
+    return tokens.map(token => `"${token}"`).join(' ');
+  }
+
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
     switch (orderBy) {
       case 'relevance':
@@ -301,7 +312,9 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
-    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
+    const ftsQuery = SessionSearch.buildFtsMatchQuery(query);
+
+    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query) || !ftsQuery) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       const orderClause = this.buildOrderClause(orderBy, false);
       const match = SessionSearch.buildSubstringClause(query, [
@@ -336,8 +349,7 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
-      params.unshift(escapedQuery);
+      params.unshift(ftsQuery);
       params.push(limit, offset);
 
       try {
@@ -380,7 +392,9 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
 
-    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
+    const ftsQuery = SessionSearch.buildFtsMatchQuery(query);
+
+    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query) || !ftsQuery) {
       const filterOptions = { ...filters };
       delete filterOptions.type;
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
@@ -426,8 +440,7 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
-      params.unshift(escapedQuery);
+      params.unshift(ftsQuery);
       params.push(limit, offset);
 
       try {
