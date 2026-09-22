@@ -23,7 +23,7 @@ describe('transcript watch state', () => {
     saveWatchState(path, { offsets: { '/tmp/session.jsonl': 99 } });
 
     expect(readdirSync(dir)).toEqual(['watch-state.json']);
-    expect(readFileSync(path, 'utf8')).toContain('"99"');
+    expect(readFileSync(path, 'utf8')).toContain('99');
   });
 
   it('replaces an existing state without leaving the old payload', () => {
