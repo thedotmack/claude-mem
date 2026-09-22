@@ -214,21 +214,15 @@ describe('TranscriptWatcher startAtEnd', () => {
     const firstLine = createUserMessage(sessionId, 'first prompt');
     const secondLine = createUserMessage(sessionId, 'resumed 日本語 prompt');
     const splitAt = Math.floor(secondLine.length / 2);
-
     writeFileSync(filePath, `${firstLine}\n${secondLine.slice(0, splitAt)}`, 'utf8');
-
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, schema);
     await waitForAsyncTail();
     watcher.stop();
-
     expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt']);
-
     const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
     expect(persisted.offsets[filePath]).toBe(Buffer.byteLength(`${firstLine}\n`, 'utf8'));
-
     appendFileSync(filePath, `${secondLine.slice(splitAt)}\n`, 'utf8');
-
     const resumed = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (resumed as any).addTailer(filePath, watch, schema);
     await waitForAsyncTail();
@@ -245,9 +239,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     const watch = createWatch(filePath, schema);
     const line = createUserMessage(sessionId, 'live resumed 日本語 prompt');
     const splitAt = Math.floor(line.length / 2);
-
     writeFileSync(filePath, line.slice(0, splitAt), 'utf8');
-
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, schema);
     await waitForAsyncTail();
