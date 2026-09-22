@@ -52,7 +52,10 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>\n\n> **Fork note:** this fork adds a security-isolated OpenCode CLI inference provider so Claude Code can remain the primary coding agent while Claude-Mem observation and summarization run on an OpenCode-selected free/local model. See **[FORK.md](FORK.md)** for the motivation, threat model, exact changes, privacy implications, and configuration.\n
+<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
+
+> **Fork note:** this fork adds a security-isolated OpenCode CLI inference provider so Claude Code can remain the primary coding agent while Claude-Mem observation and summarization run on an OpenCode-selected free/local model. See **[FORK.md](FORK.md)** for the motivation, threat model, exact changes, privacy implications, and configuration.
+
 <p align="center">
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
