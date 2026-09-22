@@ -13,16 +13,19 @@ describe('OpenCodeProvider', () => {
     expect(config.share).toBe('disabled');
     expect(config.plugin).toEqual([]);
     expect(config.mcp).toEqual({});
-    expect(config.permission['*']).toBe('deny');
-    expect(config.tools['*']).toBe(false);
-    expect(config.agent['claude-mem-summarizer'].permission['*']).toBe('deny');
-    expect(config.agent['claude-mem-summarizer'].tools['*']).toBe(false);
+    expect(config.permission['*']['*']).toBe('deny');
+    expect(config.agent['claude-mem-summarizer'].permission['*']['*']).toBe('deny');
+    // Zen free tier 403s when tools are stripped from the request: no bare deny, no tools map.
+    expect(config.permission['*']).not.toBe('deny');
+    expect(config.tools).toBeUndefined();
+    expect(config.agent['claude-mem-summarizer'].tools).toBeUndefined();
   });
 
   it('isolates OpenCode config and disables ambient integrations', () => {
     const env = buildOpenCodeSafetyEnv({
       HOME: '/tmp/home',
       CLAUDE_CODE_OAUTH_TOKEN: 'secret-main-session-token',
+      ANTHROPIC_API_KEY: 'secret-api-key',
       OPENCODE_CONFIG: '/tmp/unsafe-user-config.json',
       OPENCODE_PERMISSION: JSON.stringify({ '*': 'allow' }),
     });
@@ -36,7 +39,8 @@ describe('OpenCodeProvider', () => {
     expect(env.OPENCODE_PURE).toBe('true');
     expect(env.OPENCODE_CONFIG).toBeUndefined();
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    expect(JSON.parse(env.OPENCODE_PERMISSION! )['*']).toBe('deny');
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(JSON.parse(env.OPENCODE_PERMISSION! )['*']['*']).toBe('deny');
   });
 
   it('parses text and final token usage from OpenCode JSONL', () => {
@@ -57,6 +61,14 @@ describe('OpenCodeProvider', () => {
   it('classifies a missing OpenCode executable as setup_required', () => {
     const error = Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' });
     expect(classifyOpenCodeError({ cause: error }).kind).toBe('setup_required');
+  });
+
+  it('keeps the underlying reason in transient error messages', () => {
+    const error = classifyOpenCodeError({ exitCode: 1, stderr: "OpenCode's free tier can only be used from within OpenCode", cause: new Error('x') });
+    expect(error.kind).toBe('transient');
+    expect(error.message).toContain('free tier');
+    expect(classifyOpenCodeError({ cause: new Error('exceeded the 30000ms inference deadline') }).message)
+      .toContain('deadline');
   });
 
   it('rejects model values that look like CLI flags', () => {

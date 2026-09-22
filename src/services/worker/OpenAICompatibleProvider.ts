@@ -452,6 +452,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         logger.warn('SDK', `${this.providerName} paused on ${error.kind}; preserving buffered work`, {
           sessionId: session.sessionDbId,
           kind: error.kind,
+          error: error.message,
         });
       }
 

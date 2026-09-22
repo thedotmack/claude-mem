@@ -34,6 +34,13 @@ const SAFE_AGENT_PROMPT = [
   'You have no tools and must only return the requested text response.'
 ].join(' ');
 
+// OpenCode Zen's free tier rejects requests whose tool list differs from stock OpenCode
+// ("free tier can only be used from within OpenCode", HTTP 403). A bare `'*': 'deny'` or
+// `tools: { '*': false }` strips every tool from the request, so instead deny every call per
+// pattern: the never-matching `ask` rule keeps tools advertised, and `opencode run`
+// auto-rejects asks anyway.
+export const OPENCODE_DENY_ALL_PERMISSION = { '*': { '*': 'deny', 'claude-mem-never-matches': 'ask' } };
+
 export function buildOpenCodeSafetyConfig(): Record<string, unknown> {
   return {
     $schema: 'https://opencode.ai/config.json',
@@ -41,15 +48,13 @@ export function buildOpenCodeSafetyConfig(): Record<string, unknown> {
     instructions: [],
     plugin: [],
     mcp: {},
-    permission: { '*': 'deny' },
-    tools: { '*': false },
+    permission: OPENCODE_DENY_ALL_PERMISSION,
     agent: {
       [OPENCODE_SUMMARIZER_AGENT]: {
         description: 'Tool-less Claude-Mem observation and summary worker',
         mode: 'primary',
         prompt: SAFE_AGENT_PROMPT,
-        permission: { '*': 'deny' },
-        tools: { '*': false }
+        permission: OPENCODE_DENY_ALL_PERMISSION
       }
     }
   };
@@ -72,12 +77,14 @@ export function buildOpenCodeSafetyEnv(
   delete sanitized.CLAUDE_CODE_OAUTH_TOKEN;
   delete sanitized.CLAUDE_CODE_SESSION;
   delete sanitized.CLAUDE_CODE_ENTRYPOINT;
+  delete sanitized.ANTHROPIC_API_KEY;
+  delete sanitized.ANTHROPIC_AUTH_TOKEN;
 
   return {
     ...sanitized,
     XDG_CONFIG_HOME: configHome,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(buildOpenCodeSafetyConfig()),
-    OPENCODE_PERMISSION: JSON.stringify({ '*': 'deny' }),
+    OPENCODE_PERMISSION: JSON.stringify(OPENCODE_DENY_ALL_PERMISSION),
     OPENCODE_PURE: 'true',
     OPENCODE_AUTO_SHARE: 'false',
     OPENCODE_DISABLE_SHARE: 'true',
@@ -158,10 +165,12 @@ export function classifyOpenCodeError(input: OpenCodeFailureInput): ClassifiedPr
     });
   }
 
+  const reason = stderr.trim() || (input.cause instanceof Error ? input.cause.message : '');
+  const detail = reason ? `: ${reason.slice(-500)}` : '';
   return new ClassifiedProviderError(
-    input.exitCode !== undefined && input.exitCode !== null
+    (input.exitCode !== undefined && input.exitCode !== null
       ? `OpenCode exited with code ${input.exitCode}`
-      : 'OpenCode request failed',
+      : 'OpenCode request failed') + detail,
     { kind: 'transient', cause: input.cause },
   );
 }
@@ -366,10 +375,10 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
         }
 
         if (code !== 0 || closeSignal) {
-          finishReject(
-            new Error(closeSignal ? `OpenCode killed by ${closeSignal}` : `OpenCode exited with code ${code}`),
-            code,
-          );
+          // OpenCode reports provider errors (403, 429, ...) as a JSON event on stdout, not stderr.
+          let cause = new Error(closeSignal ? `OpenCode killed by ${closeSignal}` : `OpenCode exited with code ${code}`);
+          try { parseOpenCodeJsonOutput(stdout); } catch (error) { cause = error as Error; stderr += `\n${cause.message}`; }
+          finishReject(cause, code);
           return;
         }
 
