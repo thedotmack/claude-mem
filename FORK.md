@@ -136,6 +136,17 @@ limits and keeps transcript text out of normal process listings.
 The OpenCode binary is spawned directly with an argv array and `shell: false`.
 Model names are validated before being placed in argv.
 
+### What this isolation does not guarantee
+
+This is **application-level isolation, not an operating-system sandbox**. It prevents the model
+from being intentionally given OpenCode tools and keeps ordinary user/project OpenCode
+configuration out of the worker, but it does not sandbox the OpenCode executable itself.
+OpenCode is still a trusted local program running as your user.
+
+System-managed OpenCode configuration may also have higher precedence than user configuration.
+If your environment requires a hard process/filesystem/network boundary, run the memory worker
+inside an OS/container sandbox in addition to these controls.
+
 ## Important boundary: model privacy
 
 Tool isolation does **not** make a remote model local.
