@@ -470,8 +470,10 @@ function quoteRecalledText(value, label = 'title') {
 }
 
 function truncateFactLine(value, maxChars) {
+  if (maxChars <= 0) return '';
   const chars = Array.from(value);
-  return chars.length <= maxChars ? value : `${chars.slice(0, maxChars - 1).join('')}…`;
+  if (chars.length <= maxChars) return value;
+  return maxChars === 1 ? '…' : `${chars.slice(0, maxChars - 1).join('')}…`;
 }
 
 function todayStamp(now) {
