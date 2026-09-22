@@ -450,6 +450,22 @@ export function ContextSettingsModal({
               )}
 
               <FormField
+                label="Claude Code CLI path"
+                tooltip="Executable path for the Claude Code CLI. File/env only — edit ~/.claude-mem/settings.json or set CLAUDE_CODE_PATH in the environment, then restart the worker."
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_CODE_PATH || ''}
+                  readOnly
+                  disabled
+                  placeholder="Auto-detect (set via settings.json or env)"
+                />
+                <span className="toggle-description">
+                  Read-only here. Set <code>CLAUDE_CODE_PATH</code> in <code>~/.claude-mem/settings.json</code> or the environment.
+                </span>
+              </FormField>
+
+              <FormField
                 label="Worker Port"
                 tooltip="Port for the background worker service"
               >

@@ -314,6 +314,7 @@ async function handlePushOps(
 	userId: string,
 	deviceId: string,
 	deviceName: string | null,
+	options: { skipProjectionDrain?: boolean } = {},
 ): Promise<Response> {
 	const raw = await request.text();
 	// Deliberate 413s (see the cap constants above): an oversize batch must
@@ -350,6 +351,13 @@ async function handlePushOps(
 		const result = await stub.pushOps(deviceId, ops as PushOp[], deviceName);
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
+		}
+		// Poll mode must actually stop the DO slam. The Hub already has the
+		// ops; Pro can catch up via /internal/v1/projection/drain. Skipping
+		// the lease/page/heartbeat loop here is latency, never data loss.
+		if (options.skipProjectionDrain) {
+			const state = await stub.getProjectionState();
+			return json(200, { ...result, projected_seq: state.projected_seq });
 		}
 		const projection = await drainProjection(env, userId, result.head_seq);
 		if (!projection.ok) {
@@ -606,6 +614,13 @@ function projectionNow(dependencies: ProjectionDrainDependencies): number | unde
 /**
  * Drain one user's authoritative Hub checkpoint through targetSeq. The DO
  * only leases/pages/CAS-advances; all outbound I/O remains in this Worker.
+ *
+ * RPC budget (deliberate): one getProjectionState, one acquire, then per page
+ * getProjectionPage + advanceProjectionCheckpoint. acquire already returns
+ * projected_seq, getProjectionPage already renews the 90s lease, and
+ * advance returns the new checkpoint — extra getProjectionState /
+ * heartbeatProjectionLease round-trips were waking SQLite DOs for no
+ * fencing value.
  */
 export async function drainProjection(
 	env: Env,
@@ -637,15 +652,20 @@ export async function drainProjection(
 	const lease = acquiredAt === undefined
 		? await stub.acquireProjectionLease(targetSeq)
 		: await stub.acquireProjectionLease(targetSeq, acquiredAt);
-	if (!lease.acquired || !lease.lease_token) {
-		state = await stub.getProjectionState();
-		if (decimalAtLeast(state.projected_seq, targetSeq)) {
-			return { ok: true, projectedSeq: state.projected_seq };
+	// acquire already returns the authoritative checkpoint. A predecessor may
+	// have finished between the initial read and this RPC — use that snapshot
+	// instead of another getProjectionState round-trip.
+	if (decimalAtLeast(lease.projected_seq, targetSeq)) {
+		if (lease.acquired && lease.lease_token) {
+			await stub.releaseProjectionLease(lease.lease_token);
 		}
+		return { ok: true, projectedSeq: lease.projected_seq };
+	}
+	if (!lease.acquired || !lease.lease_token) {
 		return {
 			ok: false,
 			error: "projection_busy",
-			projectedSeq: state.projected_seq,
+			projectedSeq: lease.projected_seq,
 			httpStatus: 503,
 			retryable: true,
 		};
@@ -654,16 +674,12 @@ export async function drainProjection(
 	const token = lease.lease_token;
 	let releaseLeaseEarly = false;
 	let projectedPages = 0;
+	let projectedSeq = lease.projected_seq;
 	try {
 		for (;;) {
-			state = await stub.getProjectionState();
-			if (decimalAtLeast(state.projected_seq, targetSeq)) {
-				// A predecessor may have checkpointed and released between our
-				// initial state read and lease acquisition. The authoritative Hub
-				// checkpoint proves it finished, so this otherwise redundant lease
-				// is safe to release immediately.
+			if (decimalAtLeast(projectedSeq, targetSeq)) {
 				releaseLeaseEarly = true;
-				return { ok: true, projectedSeq: state.projected_seq };
+				return { ok: true, projectedSeq };
 			}
 			const pageAt = projectionNow(dependencies);
 			const page = pageAt === undefined
@@ -686,7 +702,7 @@ export async function drainProjection(
 				return {
 					ok: false,
 					error: "projection_page_empty",
-					projectedSeq: state.projected_seq,
+					projectedSeq,
 					httpStatus: 503,
 					retryable: true,
 				};
@@ -702,16 +718,14 @@ export async function drainProjection(
 				return {
 					ok: false,
 					error: "projection_page_too_large",
-					projectedSeq: state.projected_seq,
+					projectedSeq,
 					httpStatus: 503,
 					retryable: true,
 				};
 			}
-			// Renew immediately before the bounded outbound request. The token is
-			// then checked again by advanceProjectionCheckpoint's fenced CAS.
-			const heartbeatAt = projectionNow(dependencies);
-			if (heartbeatAt === undefined) await stub.heartbeatProjectionLease(token);
-			else await stub.heartbeatProjectionLease(token, heartbeatAt);
+			// getProjectionPage already renews the 90s fencing lease. A second
+			// heartbeat RPC here was waking the SQLite DO again for no extra
+			// fencing: Hub abort (45s) is already strictly inside that window.
 			// From this point until a deterministic response/checkpoint outcome,
 			// the upstream may still be applying the request even if our fetch
 			// rejects. Never let a successor overlap that ambiguous predecessor.
@@ -730,7 +744,7 @@ export async function drainProjection(
 					return {
 						ok: false,
 						error: error.message,
-						projectedSeq: state.projected_seq,
+						projectedSeq,
 						httpStatus: 503,
 						retryable: true,
 					};
@@ -738,7 +752,7 @@ export async function drainProjection(
 				return {
 					ok: false,
 					error: "projection_upstream_unreachable",
-					projectedSeq: state.projected_seq,
+					projectedSeq,
 					httpStatus: 503,
 					retryable: true,
 				};
@@ -751,7 +765,7 @@ export async function drainProjection(
 					return {
 						ok: false,
 						error: "projection_upstream_409",
-						projectedSeq: state.projected_seq,
+						projectedSeq,
 						httpStatus: 409,
 						retryable: false,
 					};
@@ -759,7 +773,7 @@ export async function drainProjection(
 				return {
 					ok: false,
 					error: `projection_upstream_${response.status}`,
-					projectedSeq: state.projected_seq,
+					projectedSeq,
 					httpStatus: 503,
 					retryable: true,
 				};
@@ -769,7 +783,7 @@ export async function drainProjection(
 				return {
 					ok: false,
 					error: "projection_response_not_json",
-					projectedSeq: state.projected_seq,
+					projectedSeq,
 					httpStatus: 503,
 					retryable: true,
 				};
@@ -783,7 +797,7 @@ export async function drainProjection(
 				return {
 					ok: false,
 					error: "projection_response_mismatch",
-					projectedSeq: state.projected_seq,
+					projectedSeq,
 					httpStatus: 503,
 					retryable: true,
 				};
@@ -803,14 +817,15 @@ export async function drainProjection(
 					page.through_seq,
 					checkpointAt,
 				);
+			projectedSeq = state.projected_seq;
 			releaseLeaseEarly = true;
 			projectedPages++;
 			if (
 				dependencies.maxPages !== undefined
 				&& projectedPages >= dependencies.maxPages
-				&& !decimalAtLeast(state.projected_seq, targetSeq)
+				&& !decimalAtLeast(projectedSeq, targetSeq)
 			) {
-				return { ok: true, projectedSeq: state.projected_seq };
+				return { ok: true, projectedSeq };
 			}
 		}
 	} catch (error) {
@@ -964,7 +979,9 @@ export default {
 			if (pathname === "/v1/sync/ops") {
 				if (request.method !== "POST") return errorResponse(405, "use POST");
 				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
-				return handlePushOps(request, env, auth.userId, auth.deviceId, auth.deviceName);
+				return handlePushOps(request, env, auth.userId, auth.deviceId, auth.deviceName, {
+					skipProjectionDrain: killSwitch.tripped,
+				});
 			}
 
 			if (pathname === "/v1/sync/changes") {

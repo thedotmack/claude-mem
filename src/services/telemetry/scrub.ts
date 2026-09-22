@@ -1,3 +1,5 @@
+import { redactText } from './error-scrub.js';
+
 /**
  * Whitelist scrubber for telemetry event properties.
  *
@@ -116,7 +118,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'process_rss_mb',
   'heap_used_mb',
   // hook_failed distress signal — hook_type is one of OUR hook names
-  // (context | session-init | observation | summarize | file-context),
+  // (context | session-init | observation | summarize | session-end | file-context),
   // error_mode (worker_unavailable | blocking_error), plus a consecutive
   // failure counter and threshold flag. Never an error message.
   'hook_type',
@@ -219,7 +221,12 @@ function copyAllowedProperties(
     if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
     const value = props[key];
     if (typeof value === 'string') {
-      scrubbed[key] = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
+      const truncated = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
+      // Allowed keys are supposed to be enums/counters, but a call site can
+      // still stuff a URL-shaped token into e.g. `endpoint`. Run the error
+      // redaction pipeline so query/userinfo/assignment secrets cannot ride
+      // along on a whitelisted key.
+      scrubbed[key] = redactText(truncated);
     } else if (typeof value === 'number' && Number.isFinite(value)) {
       scrubbed[key] = value;
     } else if (typeof value === 'boolean') {
