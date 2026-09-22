@@ -135,6 +135,30 @@ describe('SettingsRoutes — CLAUDE_CODE_PATH is not HTTP-writable', () => {
     expect(persisted.CLAUDE_MEM_LOG_LEVEL).toBe('DEBUG');
   });
 
+  it('keeps CLAUDE_MEM_OPENCODE_PATH file-only while allowing the model setting', () => {
+    writeFileSync(settingsPath, JSON.stringify({
+      CLAUDE_MEM_OPENCODE_PATH: '/usr/local/bin/opencode',
+      CLAUDE_MEM_OPENCODE_MODEL: 'old/provider-model',
+    }));
+
+    const { res, jsonSpy } = createMockRes();
+    handler({
+      body: {
+        CLAUDE_MEM_OPENCODE_PATH: '/tmp/attacker-controlled-opencode',
+        CLAUDE_MEM_OPENCODE_MODEL: 'opencode/free-model',
+      },
+      path: '/api/settings',
+      params: {},
+      query: {},
+      headers: {},
+    } as Request, res as Response);
+
+    expect(jsonSpy).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
+    const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(persisted.CLAUDE_MEM_OPENCODE_PATH).toBe('/usr/local/bin/opencode');
+    expect(persisted.CLAUDE_MEM_OPENCODE_MODEL).toBe('opencode/free-model');
+  });
+
   it('rejects a browser POST from a different localhost origin', () => {
     writeFileSync(settingsPath, JSON.stringify({
       CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
