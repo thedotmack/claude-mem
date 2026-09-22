@@ -8,6 +8,7 @@ import { TranscriptEventProcessor } from './processor.js';
 
 interface TailState {
   offset: number;
+  readOffset: number;
   partial: string;
 }
 
@@ -23,7 +24,7 @@ class FileTailer {
     private onLine: (line: string) => Promise<void>,
     private onOffset: (offset: number) => void
   ) {
-    this.tailState = { offset: initialOffset, partial: '' };
+    this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: '' };
   }
 
   start(): void {
@@ -71,15 +72,16 @@ class FileTailer {
       return;
     }
 
-    if (size < this.tailState.offset) {
+    if (size < this.tailState.readOffset) {
       this.tailState.offset = 0;
+      this.tailState.readOffset = 0;
       this.tailState.partial = '';
     }
 
-    if (size === this.tailState.offset) return;
+    if (size === this.tailState.readOffset) return;
 
     const stream = createReadStream(this.filePath, {
-      start: this.tailState.offset,
+      start: this.tailState.readOffset,
       end: size - 1,
       encoding: 'utf8'
     });
@@ -88,23 +90,24 @@ class FileTailer {
     for await (const chunk of stream) {
       data += chunk as string;
     }
+    this.tailState.readOffset = size;
 
     const combined = this.tailState.partial + data;
     const lines = combined.split('\n');
     this.tailState.partial = lines.pop() ?? '';
 
-    // Checkpoint only through the last complete line. Persisting EOF before
-    // processing makes an interrupted read permanently skip buffered records,
-    // especially a final JSONL record that was still incomplete at shutdown.
+    // Keep the live read cursor at EOF while checkpointing only complete lines.
+    // The two positions must differ when a trailing JSONL record is incomplete:
+    // live appends start at EOF, while restart recovery resumes before the partial.
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       await this.onLine(trimmed);
     }
 
-    const processedOffset = size - Buffer.byteLength(this.tailState.partial, 'utf8');
-    this.tailState.offset = processedOffset;
-    this.onOffset(processedOffset);
+    const checkpointOffset = size - Buffer.byteLength(this.tailState.partial, 'utf8');
+    this.tailState.offset = checkpointOffset;
+    this.onOffset(checkpointOffset);
   }
 }
 
