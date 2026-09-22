@@ -46,6 +46,7 @@ import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+const OBSERVER_WARMUP_PROMPT = 'Warmup ping - reply with the single word: ready';
 
 /**
  * Collapse session.abortReason onto a closed telemetry enum. The raw value can
@@ -64,6 +65,27 @@ function normalizeAbortReason(
     case 'provider_switch': return 'provider_switch';
     default: return 'none';
   }
+}
+
+function isObserverWarmupPrompt(prompt: string | undefined): boolean {
+  return typeof prompt === 'string' && prompt.trim() === OBSERVER_WARMUP_PROMPT;
+}
+
+function isWarmupPingEnabled(raw: string | undefined): boolean {
+  switch ((raw ?? '').trim().toLowerCase()) {
+    case '0':
+    case 'false':
+    case 'off':
+    case 'no':
+      return false;
+    default:
+      return true;
+  }
+}
+
+function parseWarmupPingIntervalMs(raw: string | undefined): number {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 export class SessionRoutes extends BaseRouteHandler {
@@ -725,6 +747,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
     const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
+    const isObserverWarmup = isObserverWarmupPrompt(rawPrompt);
 
     if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
@@ -768,8 +791,43 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const store = this.dbManager.getSessionStore();
+    if (isObserverWarmup) {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      if (!isWarmupPingEnabled(settings.CLAUDE_MEM_OBSERVER_WARMUP_PINGS_ENABLED)) {
+        logger.info('HTTP', 'session-init: skipping observer warmup ping because it is disabled', {
+          contentSessionId,
+          project,
+          platformSource,
+        });
+        res.json({ skipped: true, reason: 'observer_warmup_disabled' });
+        return;
+      }
 
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+      const intervalMs = parseWarmupPingIntervalMs(settings.CLAUDE_MEM_OBSERVER_WARMUP_PING_INTERVAL_MS);
+      if (intervalMs > 0) {
+        const lastWarmupAt = store.getLatestSessionStartEpochByKind(project, 'observer_warmup', platformSource);
+        if (lastWarmupAt !== null && Date.now() - lastWarmupAt < intervalMs) {
+          logger.info('HTTP', 'session-init: throttling observer warmup ping', {
+            contentSessionId,
+            project,
+            platformSource,
+            intervalMs,
+            retryInMs: intervalMs - (Date.now() - lastWarmupAt),
+          });
+          res.json({ skipped: true, reason: 'observer_warmup_throttled' });
+          return;
+        }
+      }
+    }
+
+    const sessionDbId = store.createSDKSession(
+      contentSessionId,
+      project,
+      prompt,
+      customTitle,
+      platformSource,
+      isObserverWarmup ? 'observer_warmup' : 'user',
+    );
 
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
