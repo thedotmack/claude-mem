@@ -300,7 +300,7 @@ async function resolveClaudeAutoMemoryChoice(
   return choice;
 }
 
-function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | null {
+export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
     // Route every per-IDE failure through the central decision point. A single
     // IDE failure is FAIL_LOUD_PER_IDE (partial install); the summary headline
@@ -365,9 +365,26 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
         title: 'OpenCode: installing plugin',
         task: async (message) => {
           message('Loading OpenCode installer…');
-          const { installOpenCodeIntegration } = await import('../../services/integrations/OpenCodeInstaller.js');
+          const {
+            installOpenCodeIntegration,
+            OPENCODE_MCP_REGISTRATION_INCOMPLETE,
+          } = await import('../../services/integrations/OpenCodeInstaller.js');
           message('Installing OpenCode plugin…');
           const { result, output } = await bufferConsole(() => installOpenCodeIntegration());
+          if (result === OPENCODE_MCP_REGISTRATION_INCOMPLETE) {
+            // The plugin and AGENTS.md context are installed; only the MCP entry
+            // is missing. That is a partial install, not a failed IDE: record a
+            // WARN_CONTINUE warning (exit 0) and keep the integration's captured
+            // output so its remediation reaches the user after the spinners.
+            installerError(ErrorSeverity.WARN_CONTINUE, {
+              component: 'opencode',
+              phase: 'ide-install',
+              cause: new Error('OpenCode plugin + context installed, but MCP registration is incomplete (mcp-server.cjs not found).'),
+              remediation: 'Restore the plugin build, then re-run `npx claude-mem install --ide=opencode` to register the MCP server.',
+              details: output,
+            }, summary);
+            return `OpenCode: plugin + context installed; MCP registration incomplete ${styleText('yellow', '!')}`;
+          }
           if (result !== 0) {
             recordFailure('OpenCode: plugin installation failed', output);
             return `OpenCode: plugin installation failed ${styleText('red', 'FAIL')}`;
