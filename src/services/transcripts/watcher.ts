@@ -96,9 +96,7 @@ class FileTailer {
     const lines = combined.split('\n');
     this.tailState.partial = lines.pop() ?? '';
 
-    // Keep the live read cursor at EOF while checkpointing only complete lines.
-    // The two positions must differ when a trailing JSONL record is incomplete:
-    // live appends start at EOF, while restart recovery resumes before the partial.
+    // Keep live reads at EOF while restart recovery resumes before any partial record.
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
