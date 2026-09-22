@@ -885,12 +885,12 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
- * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker understands
+ * 'claude' | 'gemini' | 'openrouter' | 'opencode', so 'cmem' must never reach settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1179,6 +1179,19 @@ async function promptProvider(
   if (selectedProvider === 'claude') {
     useSubscriptionAuth();
     return 'claude';
+  }
+
+  if (selectedProvider === 'opencode') {
+    const wrote = mergeSettings({
+      CLAUDE_MEM_PROVIDER: 'opencode',
+      ...(options.model ? { CLAUDE_MEM_OPENCODE_MODEL: options.model } : {}),
+    });
+    if (!wrote) {
+      p.cancel('Could not save the OpenCode observer configuration.');
+      process.exit(1);
+    }
+    log.info(`Configured OpenCode observer${options.model ? ` with model=${options.model}` : ''}.`);
+    return 'opencode';
   }
 
   if (selectedProvider === 'host') {
@@ -1853,12 +1866,12 @@ async function promptTelemetryOptIn(): Promise<void> {
  * must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'host';
+  return provider !== 'claude' && provider !== 'host' && provider !== 'opencode';
 }
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'host';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -1926,7 +1939,7 @@ function validateNonInteractiveProvider(
     }, summary);
   }
 
-  if (options.provider === 'host') return;
+  if (options.provider === 'host' || options.provider === 'opencode') return;
   if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;
   const keyName = options.provider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
@@ -2222,7 +2235,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
-      : '--provider claude runs memory on your own Anthropic plan.';
+      : options.provider === 'opencode'
+        ? 'OpenCode owns model/provider authentication; no claude-mem account is required.'
+        : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);
