@@ -89,18 +89,22 @@ class FileTailer {
       data += chunk as string;
     }
 
-    this.tailState.offset = size;
-    this.onOffset(this.tailState.offset);
-
     const combined = this.tailState.partial + data;
     const lines = combined.split('\n');
     this.tailState.partial = lines.pop() ?? '';
 
+    // Checkpoint only through the last complete line. Persisting EOF before
+    // processing makes an interrupted read permanently skip buffered records,
+    // especially a final JSONL record that was still incomplete at shutdown.
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       await this.onLine(trimmed);
     }
+
+    const processedOffset = size - Buffer.byteLength(this.tailState.partial, 'utf8');
+    this.tailState.offset = processedOffset;
+    this.onOffset(processedOffset);
   }
 }
 
