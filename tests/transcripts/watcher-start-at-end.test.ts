@@ -210,7 +210,7 @@ describe('TranscriptWatcher startAtEnd', () => {
       startAtEnd: false,
     };
     const firstLine = createUserMessage(sessionId, 'first prompt');
-    const secondLine = createUserMessage(sessionId, 'resumed prompt');
+    const secondLine = createUserMessage(sessionId, 'resumed 日本語 prompt');
     const splitAt = Math.floor(secondLine.length / 2);
 
     writeFileSync(filePath, `${firstLine}\n${secondLine.slice(0, splitAt)}`, 'utf8');
@@ -232,7 +232,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     await waitForAsyncTail();
     resumed.stop();
 
-    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt', 'resumed prompt']);
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt', 'resumed 日本語 prompt']);
   });
 
   it('discards a buffered partial line when the file is truncated', async () => {
