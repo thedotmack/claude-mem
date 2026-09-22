@@ -26,6 +26,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_OPENROUTER_BASE_URL',
   'CLAUDE_MEM_PRO_FALLBACK_AT',
   'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_OPENCODE_MODEL',
   'CMEM_PRO_ORIGIN',
 ] as const;
 
@@ -100,6 +101,13 @@ describe('provider-dispatch', () => {
     it('falls through to claude when openrouter is selected but has no key', () => {
       pinOpenRouterEnv({ CLAUDE_MEM_OPENROUTER_API_KEY: '' });
       expect(getSelectedProvider()).toBe('claude');
+    });
+
+    it('returns opencode when the OpenCode provider is selected', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'opencode';
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
+      process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
+      expect(getSelectedProvider()).toBe('opencode');
     });
 
     it('returns claude for the default provider selection', () => {
