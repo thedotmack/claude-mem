@@ -91,7 +91,11 @@ export const contextHandler: EventHandler = {
     // a previous worker spawn detected an expired keychain entry.
     const staleReason = readStaleMarker();
     if (staleReason) {
-      const hint = `[claude-mem] Claude Desktop OAuth token is stale: ${staleReason}\nPlease re-login via Claude Desktop to refresh the token.`;
+      // The observer authenticates with the Claude Code CLI credentials
+      // (keychain service "Claude Code-credentials", see oauth-token.ts), not
+      // Claude Desktop. Point the remedy at the CLI so the user runs the right
+      // login (#4150).
+      const hint = `[claude-mem] Claude Code OAuth token is stale: ${staleReason}\nPlease re-login to Claude Code with /login to refresh the token.`;
       additionalContext = additionalContext
         ? `${hint}\n\n${additionalContext}`
         : hint;
