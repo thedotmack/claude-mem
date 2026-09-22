@@ -550,7 +550,7 @@ export class SessionRoutes extends BaseRouteHandler {
           // chain is built, so resuming inline could be overwritten by that
           // assignment and leave a settled promise blocking every later start.
           const resume = setTimeout(() => {
-            void this.ensureGeneratorRunning(session.sessionDbId, 'overflow-recycle')
+            void this.ensureGeneratorRunning(session.sessionDbId, isTransport ? 'transport-resume' : 'overflow-recycle')
               .catch(error => {
                 logger.error('SESSION', 'Failed to resume the observer after recycling its conversation', {
                   sessionId: session.sessionDbId,
