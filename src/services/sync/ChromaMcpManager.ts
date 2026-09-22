@@ -797,6 +797,14 @@ export class ChromaMcpManager {
     }
   }
 
+  /**
+   * Whether a mutation sent now would be accepted. False in local mode once
+   * stop() has begun, because callTool() then refuses every mutation.
+   */
+  acceptsMutations(): boolean {
+    return !this.serializeMutations || this.acceptingLocalMutations;
+  }
+
   async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
     if (!this.serializeMutations || !ChromaMcpManager.isMutationTool(toolName)) {
       return this.callToolUnqueued(toolName, toolArguments);
