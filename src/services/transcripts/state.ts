@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { existsSync, readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 
 export interface TranscriptWatchState {
   offsets: Record<string, number>;
@@ -30,7 +30,7 @@ export function saveWatchState(statePath: string, state: TranscriptWatchState): 
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    writeFileSync(statePath, JSON.stringify(state, null, 2));
+    writeJsonFileAtomic(statePath, state);
   } catch (error) {
     logger.warn('TRANSCRIPT', 'Failed to save watch state', {
       statePath,
