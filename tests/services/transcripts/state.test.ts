@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { loadWatchState, saveWatchState } from '../../../src/services/transcripts/state.js';
 
 describe('transcript watch state', () => {
-  it('loads the state written by saveWatchState', () => {
+  it('creates parent directories and persists offsets', () => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-mem-state-'));
     const path = join(dir, 'nested', 'watch-state.json');
     const state = { offsets: { '/tmp/session.jsonl': 42 } };
@@ -16,14 +16,21 @@ describe('transcript watch state', () => {
     expect(existsSync(path)).toBe(true);
   });
 
-  it('preserves the last valid state when a write is interrupted', () => {
+  it('leaves no atomic-write temp files after a successful save', () => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-mem-state-'));
     const path = join(dir, 'watch-state.json');
-    const original = { offsets: { '/tmp/session.jsonl': 42 } };
-    saveWatchState(path, original);
-    const raw = readFileSync(path, 'utf8');
 
-    expect(() => writeFileSync(path, raw.slice(0, Math.floor(raw.length / 2)))).not.toThrow();
+    saveWatchState(path, { offsets: { '/tmp/session.jsonl': 99 } });
+
+    expect(readdirSync(dir)).toEqual(['watch-state.json']);
+    expect(readFileSync(path, 'utf8')).toContain('"99"');
+  });
+
+  it('still fails safely on malformed persisted state', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-state-'));
+    const path = join(dir, 'watch-state.json');
+    writeFileSync(path, '{ "offsets":');
+
     expect(loadWatchState(path)).toEqual({ offsets: {} });
   });
 });
