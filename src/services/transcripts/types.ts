@@ -17,6 +17,9 @@ export interface MatchRule {
   not_contains?: string;
   exists?: boolean;
   regex?: string;
+  /** All nested rules must match (AND across different `path`s, e.g. Claude Code's
+   *  single-line-per-block transcripts need type==user AND content-shape checks). */
+  all?: MatchRule[];
 }
 
 export type EventAction =

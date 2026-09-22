@@ -157,6 +157,10 @@ export function matchesRule(
     if (typeof value === 'string' && value.includes(rule.not_contains)) return false;
   }
 
+  if (rule.all && Array.isArray(rule.all)) {
+    if (!rule.all.every(sub => matchesRule(entry, sub, schema))) return false;
+  }
+
   if (rule.regex) {
     try {
       const regex = new RegExp(rule.regex);

@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "schemas": {
+    "claude-code": {
+      "name": "claude-code",
+      "version": "1",
+      "description": "Schema for historical Claude Code session transcripts under ~/.claude/projects/<encoded-path>/*.jsonl. Each JSONL line is one block (thinking/text/tool_use for assistant, or a plain-string prompt/tool_result for user).",
+      "sessionIdPath": "sessionId",
+      "cwdPath": "cwd",
+      "events": [
+        {
+          "name": "user-prompt",
+          "match": {
+            "all": [
+              { "path": "type", "equals": "user" },
+              { "path": "isMeta", "not_equals": true },
+              { "path": "message.content[0].type", "exists": false },
+              { "path": "message.content", "regex": "^[^<]" }
+            ]
+          },
+          "action": "session_init",
+          "fields": {
+            "prompt": "message.content"
+          }
+        },
+        {
+          "name": "tool-use",
+          "match": {
+            "all": [
+              { "path": "type", "equals": "assistant" },
+              { "path": "message.content[0].type", "equals": "tool_use" }
+            ]
+          },
+          "action": "tool_use",
+          "fields": {
+            "toolId": "message.content[0].id",
+            "toolName": "message.content[0].name",
+            "toolInput": "message.content[0].input"
+          }
+        },
+        {
+          "name": "tool-result",
+          "match": {
+            "all": [
+              { "path": "type", "equals": "user" },
+              { "path": "message.content[0].type", "equals": "tool_result" }
+            ]
+          },
+          "action": "tool_result",
+          "fields": {
+            "toolId": "message.content[0].tool_use_id",
+            "toolResponse": { "coalesce": ["toolUseResult", "message.content[0].content"] }
+          }
+        },
+        {
+          "name": "turn-end",
+          "match": {
+            "all": [
+              { "path": "type", "equals": "system" },
+              { "path": "subtype", "equals": "turn_duration" }
+            ]
+          },
+          "action": "session_end"
+        }
+      ]
+    }
+  },
+  "watches": [
+    {
+      "name": "claude-code-backfill",
+      "path": "~/.claude/projects/-home-USER-dev-PROJECT/*.jsonl",
+      "schema": "claude-code",
+      "startAtEnd": false
+    }
+  ],
+  "stateFile": "~/.claude-mem/transcript-backfill-state.json"
+}

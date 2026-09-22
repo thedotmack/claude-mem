@@ -249,3 +249,34 @@ changes rather than introducing a second full host integration.
 
 If an equivalent secure provider is accepted upstream, this fork should ideally become
 unnecessary.
+
+## Backfilling historical Claude Code transcripts
+
+Claude-Mem normally captures Claude Code sessions live, through hooks. To retroactively
+ingest transcripts from sessions that happened before Claude-Mem was installed (or while it
+was disabled), this fork adds a `claude-code` transcript-watch schema that replays the
+existing `~/.claude/projects/<encoded-path>/*.jsonl` files through the same engine used for
+Codex/Cursor/Grok Bot.
+
+1. Copy `transcript-watch.claude-code.example.json` and edit its `watches[0].path` to point
+   at one project's transcript directory (the placeholder is
+   `~/.claude/projects/-home-USER-dev-PROJECT/*.jsonl`; the encoded directory name is your
+   `cwd` with `/` replaced by `-`).
+2. Run the watcher against that config:
+
+   ```bash
+   bun plugin/scripts/transcript-watcher.cjs watch --config /path/to/your-backfill-config.json
+   ```
+
+   (equivalently `claude-mem transcript watch --config ...` if you're using an installed
+   `claude-mem` build).
+3. `startAtEnd: false` in the example config makes it replay every line from offset 0, so
+   the whole history gets ingested. Progress is recorded per-file in the config's own
+   `stateFile` (`~/.claude-mem/transcript-backfill-state.json` by default) — a rerun resumes
+   from where it left off rather than re-ingesting from the start.
+4. **Stop the watcher (Ctrl-C) once it has caught up.** It has no notion of "backfill done";
+   if left running alongside the live Claude Code hooks, it will keep tailing the same
+   files and double-ingest every new session going forward.
+5. Session summaries queued by the backfill go through whatever `CLAUDE_MEM_PROVIDER` is
+   configured for the worker (e.g. `opencode`, per this fork's own default) — the backfill
+   does not change or bypass that setting.
