@@ -18,13 +18,14 @@ describe('OpenCodeProvider', () => {
   });
 
   it('isolates OpenCode config and disables ambient integrations', () => {
-    const env = buildOpenCodeSafetyEnv({ HOME: '/tmp/home' });
+    const env = buildOpenCodeSafetyEnv({ HOME: '/tmp/home', CLAUDE_CODE_OAUTH_TOKEN: 'secret-main-session-token' });
     expect(env.HOME).toBe('/tmp/home');
     expect(env.XDG_CONFIG_HOME).toContain('opencode-summarizer');
     expect(env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('true');
     expect(env.OPENCODE_DISABLE_DEFAULT_PLUGINS).toBe('true');
     expect(env.OPENCODE_DISABLE_CLAUDE_CODE).toBe('true');
     expect(env.OPENCODE_AUTO_SHARE).toBe('false');
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(JSON.parse(env.OPENCODE_PERMISSION! )['*']).toBe('deny');
   });
 
