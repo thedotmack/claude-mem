@@ -1,7 +1,7 @@
 import { afterEach, beforeEach } from 'bun:test';
 import { getQuotaCooldown, type QuotaProvider } from '../../src/shared/quota-cooldown.js';
 
-const QUOTA_PROVIDERS: QuotaProvider[] = ['claude', 'gemini', 'openrouter', 'cmem-gateway'];
+const QUOTA_PROVIDERS: QuotaProvider[] = ['claude', 'gemini', 'openrouter', 'opencode', 'cmem-gateway'];
 
 /**
  * #2756 round-2 review finding (important) — `tryAdmitQuotaProbe`/
