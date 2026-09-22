@@ -154,8 +154,9 @@ export class CorpusRoutes extends BaseRouteHandler {
       return;
     }
 
+    const corpus = await this.corpusBuilder.build(name, existingCorpus.description, existingCorpus.filter, { writeFile: false });
     const backupPath = this.corpusStore.backup(name);
-    const corpus = await this.corpusBuilder.build(name, existingCorpus.description, existingCorpus.filter);
+    this.corpusStore.write(corpus);
 
     const { observations, ...metadata } = corpus;
     const previousCount = existingCorpus.stats.observation_count;

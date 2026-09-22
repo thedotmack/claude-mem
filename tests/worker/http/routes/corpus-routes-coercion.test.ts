@@ -74,15 +74,17 @@ describe('CorpusRoutes Type Coercion', () => {
   let mockBuild: ReturnType<typeof mock>;
   let mockRead: ReturnType<typeof mock>;
   let mockBackup: ReturnType<typeof mock>;
+  let mockWrite: ReturnType<typeof mock>;
   let rebuildHandler: (req: Request, res: Response) => void;
 
   beforeEach(() => {
     mockBuild = mock((name: string, description: string, filter: any) => Promise.resolve(createCorpus(name, filter)));
     mockRead = mock(() => null);
     mockBackup = mock(() => '/tmp/native.corpus.json.bak');
+    mockWrite = mock(() => undefined);
 
     const routes = new CorpusRoutes(
-      { list: mock(() => []), read: mockRead, delete: mock(() => false), backup: mockBackup } as any,
+      { list: mock(() => []), read: mockRead, delete: mock(() => false), backup: mockBackup, write: mockWrite } as any,
       { build: mockBuild } as any,
       {} as any
     );
@@ -284,7 +286,11 @@ describe('CorpusRoutes Type Coercion', () => {
       query: 'legacy docs',
       date_start: '2025-01-01T00:00:00.000Z',
       date_end: '2025-01-31T23:59:59.999Z',
-    });
+    }, { writeFile: false });
+    expect(mockWrite).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'shrinking',
+      stats: expect.objectContaining({ observation_count: 2 }),
+    }));
     expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
       backup_path: '/tmp/native.corpus.json.bak',
       warning: expect.stringContaining('shrank from 5 to 2 observations'),
