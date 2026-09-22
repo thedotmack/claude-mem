@@ -47,6 +47,8 @@ import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+// ponytail: fixed delay, one retry per pause; add backoff if providers stay overloaded for long.
+const TRANSPORT_RESUME_DELAY_MS = 60_000;
 
 /**
  * Collapse session.abortReason onto a closed telemetry enum. The raw value can
@@ -539,8 +541,11 @@ export class SessionRoutes extends BaseRouteHandler {
         // was reset to pending and the conversation dropped; without this the
         // work waits for the next captured tool call, so the final observation
         // of a session is stranded when none arrives. Quota and auth pauses
-        // deliberately do NOT resume — those wait on the user.
-        if (reason === 'overflow:recycle') {
+        // deliberately do NOT resume — those wait on the user. Transient transport
+        // failures (e.g. an overloaded free model) resume after a pause, otherwise a
+        // backfill with no further ingest strands the whole buffer.
+        const isTransport = (reason ?? '').startsWith('transport');
+        if (reason === 'overflow:recycle' || isTransport) {
           // Deferred a tick: `session.generatorPromise` is assigned after this
           // chain is built, so resuming inline could be overwritten by that
           // assignment and leave a settled promise blocking every later start.
@@ -551,7 +556,7 @@ export class SessionRoutes extends BaseRouteHandler {
                   sessionId: session.sessionDbId,
                 }, error instanceof Error ? error : new Error(String(error)));
               });
-          }, 0);
+          }, isTransport ? TRANSPORT_RESUME_DELAY_MS : 0);
           resume.unref?.();
         }
       });

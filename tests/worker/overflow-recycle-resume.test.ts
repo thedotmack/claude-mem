@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, jest } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
@@ -147,6 +147,34 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     await nextTick();
 
     expect(starts).toBe(1);
+  });
+
+  it('resumes after a delay on a transient transport pause (overloaded provider)', async () => {
+    const session = makeSession();
+    let starts = 0;
+
+    const { routes } = buildRoutes(session, async () => {
+      starts += 1;
+      if (starts === 1) {
+        session.abortReason = 'transport:transient';
+        return;
+      }
+      await new Promise<void>(() => {});
+    });
+
+    jest.useFakeTimers();
+    try {
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      jest.advanceTimersByTime(1_000);
+      expect(starts).toBe(1);
+      jest.advanceTimersByTime(60_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await nextTick();
+
+    expect(starts).toBe(2);
   });
 
   it('does not resume on an auth pause', async () => {
