@@ -6,6 +6,7 @@ import { CodexAppServerClient } from './CodexAppServerClient.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
 import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted } from '../../shared/quota-cooldown.js';
+import { logger } from '../../utils/logger.js';
 
 interface CodexConfig {
   apiKey: string;
@@ -139,6 +140,10 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
               const classified = error instanceof ClassifiedProviderError ? error : classifyCodexError(error);
               if (classified.kind === 'unrecoverable' || classified.kind === 'auth_invalid') {
                 recordQuotaExhausted('codex-setup', classified.message);
+                logger.warn('SDK', 'Codex setup failure; pausing Codex requests until a recovery probe succeeds', {
+                  kind: classified.kind,
+                  message: classified.message,
+                });
               }
             },
           });
@@ -153,6 +158,9 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     } catch (error) {
       if (error instanceof ClassifiedProviderError && error.kind === 'quota_exhausted') {
         recordQuotaExhausted('codex', error.message);
+        logger.warn('SDK', 'Codex usage limit reached; pausing Codex requests until a quota probe succeeds', {
+          message: error.message,
+        });
       }
       throw error;
     }
