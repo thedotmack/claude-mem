@@ -19,7 +19,7 @@ interface FakeCodex {
 
 interface FakeCodexOptions {
   instructionSources?: string[];
-  mode?: 'normal' | 'terminal-response' | 'slow-first-turn' | 'reject-first-init';
+  mode?: 'normal' | 'terminal-response' | 'slow-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error';
 }
 
 function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
@@ -69,7 +69,16 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
     "        send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
     "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: [] } } });",
     '      };',
-    "      if (mode === 'terminal-response') {",
+    "      const turnError = { message: 'You have hit your usage limit.', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null };",
+    "      if (mode === 'usage-limit') {",
+    "        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });",
+    "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: false, error: turnError } });",
+    "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'failed', items: [], error: turnError } } });",
+    "      } else if (mode === 'retried-error') {",
+    "        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });",
+    "        send({ method: 'error', params: { threadId: message.params.threadId, turnId, willRetry: true, error: { message: 'stream disconnected', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } }, additionalDetails: null } } });",
+    "        finish();",
+    "      } else if (mode === 'terminal-response') {",
     "        send({ id: message.id, result: { turn: { id: turnId, status: 'completed', items: [{ type: 'agentMessage', phase: 'final_answer', text: content }] } } });",
     '      } else {',
     '        send({ id: message.id, result: { turn: { id: turnId, status: \'inProgress\' } } });',
@@ -118,6 +127,34 @@ it('rejects API-key login before launching a model process', async () => {
     await expect(client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
       prompt: 'Summarize.', timeoutMs: 5000 })).rejects.toThrow('not an API key');
     expect(readTrace(fake.trace)).toHaveLength(0);
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+it('keeps usage-limit details from app-server error notifications', async () => {
+  const fake = createFakeCodex({ mode: 'usage-limit' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  try {
+    const error = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 }).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('Codex app-server reported an error: You have hit your usage limit.');
+    expect(error).toHaveProperty('codexErrorInfo', 'usageLimitExceeded');
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+it('waits for the final turn state when Codex retries an error itself', async () => {
+  const fake = createFakeCodex({ mode: 'retried-error' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  try {
+    const result = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 });
+    expect(result.content).toContain('<title>Turn 1</title>');
   } finally {
     await client.close();
     rmSync(fake.root, { recursive: true, force: true });
