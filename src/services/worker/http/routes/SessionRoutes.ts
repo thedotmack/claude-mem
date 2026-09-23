@@ -197,7 +197,23 @@ export class SessionRoutes extends BaseRouteHandler {
           }
 
           try {
-            findClaudeExecutable('SDK');
+            const resolvedPath = findClaudeExecutable('SDK');
+            if (claudeStatus.executablePath && resolvedPath === claudeStatus.executablePath) {
+              // Discovery still resolves the same executable a spawn error could
+              // not launch (a .cmd/.bat shim the SDK spawns without a shell).
+              // Re-running the query would fail identically, so refresh the
+              // cooldown and keep skipping until the configuration changes (a
+              // different path resolves) or the worker restarts — instead of
+              // clearing the status and churning a doomed start every cooldown.
+              recordClaudeCliSetupRequired(claudeStatus.message, claudeStatus.executablePath);
+              logger.warn('SESSION', 'Claude executable still unspawnable after cooldown; skipping until configuration changes', {
+                sessionId: sessionDbId,
+                source,
+                executablePath: resolvedPath,
+              });
+              releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+              return;
+            }
             clearDependencyStatus('claude_cli');
             logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {
               sessionId: sessionDbId,
@@ -381,7 +397,7 @@ export class SessionRoutes extends BaseRouteHandler {
         const errorMsg = error instanceof Error ? error.message : String(error);
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
-          recordClaudeCliSetupRequired(error.message);
+          recordClaudeCliSetupRequired(error.message, error.executablePath);
           logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
             sessionId: session.sessionDbId,
             provider,

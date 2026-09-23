@@ -60,20 +60,24 @@ export function __resetEffortHintLatchForTesting(): void {
  * Classify a ClaudeProvider error (executable spawn failures, SDK errors,
  * Anthropic API errors). Provider-specific because it relies on:
  *   - SDK error class names (e.g. OverloadedError) when present
- *   - spawn errors (ENOENT) when the Claude executable is missing
+ *   - spawn errors (ENOENT/EINVAL) when the executable is missing or is a
+ *     Windows .cmd/.bat shim the SDK cannot launch without a shell
  *   - Anthropic-specific message strings ("Invalid API key", "Prompt is too long")
  */
 export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   const message = err instanceof Error ? err.message : String(err);
   const errAny = err as { name?: string; status?: number; error?: { type?: string }; body?: unknown };
 
-  // Executable / spawn issues — unrecoverable, no point retrying.
+  // Executable / spawn issues — unrecoverable, no point retrying. EINVAL is the
+  // shape modern Node raises when the SDK spawns a Windows .cmd/.bat shim
+  // (e.g. a codex or uv shim reached via CLAUDE_CODE_PATH) without a shell.
   if (
     message.includes('Claude executable not found') ||
     message.includes('Every Claude CLI found is too old') ||
     message.includes('CLAUDE_CODE_PATH') ||
     (message.includes('desktop app') && message.includes('headless mode')) ||
     message.includes('ENOENT') ||
+    message.includes('EINVAL') ||
     message.startsWith('spawn ')
   ) {
     return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
@@ -217,6 +221,27 @@ export class ClaudeProvider {
     }
   }
 
+  /**
+   * Classify a thrown provider error and rethrow. A setup_required failure (a
+   * missing or unspawnable executable) is recorded and rethrown as the
+   * classified error so SessionRoutes reports it once and skips future Claude
+   * starts until it is repaired; every other error keeps its original shape so
+   * genuine bugs still reach exception capture. `executablePath` is the resolved
+   * path a spawn failure could not launch — carried on the error and status so
+   * the setup-recheck gate does not re-run a query against the same shim.
+   */
+  private recordAndThrowClassified(error: unknown, executablePath?: string): never {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const classified = classifyClaudeError(err);
+    if (classified.kind === 'setup_required') {
+      recordClaudeCliSetupRequired(classified.message, executablePath);
+      throw executablePath
+        ? new ClassifiedProviderError(classified.message, { kind: 'setup_required', cause: err, executablePath })
+        : classified;
+    }
+    throw err;
+  }
+
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
     const observerExtraArgs = ['--no-session-persistence'];
@@ -227,13 +252,7 @@ export class ClaudeProvider {
       claudePath = findClaudeExecutable('SDK');
       clearDependencyStatus('claude_cli');
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      const classified = classifyClaudeError(err);
-      if (classified.kind === 'setup_required') {
-        recordClaudeCliSetupRequired(classified.message);
-        throw classified;
-      }
-      throw err;
+      this.recordAndThrowClassified(error);
     }
 
     const modelId = session.modelOverride || this.getModelId();
@@ -598,6 +617,17 @@ export class ClaudeProvider {
           pacer.answer();
         }
       }
+    } catch (error) {
+      // The agent SDK spawns the resolved executable itself for the observer
+      // query (and for the field-compression calls the message generator makes
+      // inside it), with no cmd.exe wrapper, so a missing binary (ENOENT) or a
+      // Windows .cmd/.bat shim it cannot launch (EINVAL) surfaces here as a raw
+      // spawn error. Left unclassified it reaches SessionRoutes as a generic
+      // failure and is retried on every later observation; classify it so the
+      // setup problem is reported once, mirroring the findClaudeExecutable guard
+      // at the top of startSession. Pass the resolved path so the recheck gate
+      // will not re-run against the same shim it cannot spawn.
+      this.recordAndThrowClassified(error, claudePath);
     } finally {
       // Whatever ended the stream (throw, quota break, abort), nothing will
       // answer the feed's last prompt any more.

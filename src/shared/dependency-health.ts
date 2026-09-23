@@ -10,6 +10,13 @@ export interface DependencyStatus {
   message: string;
   remediation?: string;
   recordedAtMs: number;
+  /**
+   * The resolved executable path that failed, when the failure was a spawn
+   * error (a .cmd/.bat shim the SDK cannot launch, or a missing binary). The
+   * setup-recheck gate uses it to avoid re-running a query against the same
+   * unspawnable path that discovery still resolves.
+   */
+  executablePath?: string;
 }
 
 export const CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS = 30_000;
@@ -38,6 +45,7 @@ export function recordDependencyStatus(
   kind: DependencyStatusKind,
   message: string,
   remediation?: string,
+  executablePath?: string,
 ): DependencyStatus {
   const status: DependencyStatus = {
     dependency,
@@ -45,13 +53,14 @@ export function recordDependencyStatus(
     message,
     ...(remediation ? { remediation } : {}),
     recordedAtMs: Date.now(),
+    ...(executablePath ? { executablePath } : {}),
   };
   statuses.set(dependency, status);
   return status;
 }
 
-export function recordClaudeCliSetupRequired(message: string): DependencyStatus {
-  return recordDependencyStatus('claude_cli', 'setup_required', message, CLAUDE_CLI_SETUP_REMEDIATION);
+export function recordClaudeCliSetupRequired(message: string, executablePath?: string): DependencyStatus {
+  return recordDependencyStatus('claude_cli', 'setup_required', message, CLAUDE_CLI_SETUP_REMEDIATION, executablePath);
 }
 
 export function recordUvxVectorSearchUnavailable(message: string): DependencyStatus {
