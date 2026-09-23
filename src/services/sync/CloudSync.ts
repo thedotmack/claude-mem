@@ -1293,15 +1293,20 @@ export class CloudSync {
       throw new Error('sync hub push: 200 response acknowledgment multiset mismatch');
     }
 
-    if (compareCanonicalDecimals(response.head_seq, response.projected_seq) > 0) {
-      throw new Error('sync hub push: checkpoint order requires head_seq <= projected_seq');
+    // The hub advances the projection cursor only up to the write head, so
+    // projected_seq trails head_seq — the same order the /v1/sync/status path
+    // asserts. In poll mode the kill switch skips the projection drain, so a
+    // cold cursor reads far behind an already-advanced head (issue #4191:
+    // projected 0 while head is 200). The ack itself is the durable proof the
+    // hub holds the op; projection is downstream fan-out. So an ack ahead of
+    // projected_seq is pending, never fatal — this lane stamps it and the
+    // poll-mode header (read in pushOps) drives the client backoff.
+    if (compareCanonicalDecimals(response.projected_seq, response.head_seq) > 0) {
+      throw new Error('sync hub push: checkpoint order requires projected_seq <= head_seq');
     }
     for (const ack of response.acked) {
       if (compareCanonicalDecimals(ack.seq, response.head_seq) > 0) {
         throw new Error('sync hub push: acknowledgment seq exceeds head_seq');
-      }
-      if (compareCanonicalDecimals(ack.seq, response.projected_seq) > 0) {
-        throw new Error('sync hub push: sent operation is not covered by projected_seq');
       }
     }
   }

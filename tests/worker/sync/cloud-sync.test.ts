@@ -1409,13 +1409,13 @@ describe('CloudSync', () => {
       },
       {
         name: 'ack seq beyond head',
-        change: acks => ({ acks: [{ ...acks[0], seq: '3' }, acks[1]], head: '2', projected: '3' }),
-        error: /seq exceeds head_seq/,
+        change: acks => ({ acks: [{ ...acks[0], seq: '3' }, acks[1]], head: '2', projected: '2' }),
+        error: /acknowledgment seq exceeds head_seq/,
       },
       {
-        name: 'head beyond projected checkpoint',
-        change: acks => ({ acks, head: '3', projected: '2' }),
-        error: /head_seq <= projected_seq/,
+        name: 'projected beyond head checkpoint',
+        change: acks => ({ acks, head: '2', projected: '3' }),
+        error: /projected_seq <= head_seq/,
       },
       {
         name: 'noncanonical head checkpoint',
@@ -1744,6 +1744,27 @@ describe('CloudSync', () => {
       expect(modes).toEqual(['poll']);
       // The structural guarantee: a tripped kill switch never blocks the
       // durable push lane — the row was acked and stamped as usual.
+      expect(pendingCount('observations')).toBe(0);
+    });
+
+    it('stamps a poll-mode push whose acks sit ahead of a cold projection cursor (#4191)', async () => {
+      // Kill switch tripped: the hub skips the projection drain and answers
+      // with head_seq advanced past a cold projected_seq. The acks are ahead
+      // of that stale cursor, which must read as pending, not fatal.
+      seedObservation();
+      const modes: Array<string | null> = [];
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body ?? '{}'));
+        const acked = (parsed.ops ?? []).map((op: any, index: number) => canonicalAck(op, 200 + index));
+        return canonicalSuccess(acked, 200 + acked.length - 1, { 'X-Sync-Mode': 'poll' }, '0');
+      }) as typeof fetch;
+      const sync = makeCloudSync(impl);
+      sync.setSyncModeListener((mode) => modes.push(mode));
+
+      await sync.flush();
+
+      expect(modes).toEqual(['poll']);
+      expect(sync.status().lastError).toBeNull();
       expect(pendingCount('observations')).toBe(0);
     });
 
