@@ -366,14 +366,14 @@ async function handlePushOps(
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
-		// #4140 skipped this drain under kill-switch and still returned 200.
-		// That was a real-sync regression, not a logging-only cut: clients
-		// require head_seq <= projected_seq on every 200 (CloudSync.ts), and
-		// DEPLOY.md says a public push is 200 only after the Hub checkpoint
-		// covers head. The cost cuts that stay: refuse WS (idle DO pin),
-		// drop extra getProjectionState/heartbeat knocks inside drain, 1%
-		// log sample. Poll mode bounds the request-path drain and continues
-		// via waitUntil — it never lies with a lagged 200.
+		// Hypothesis: logging sample cut ≠ customer pain. #4140
+		// skipProjectionDrain under kill-switch left head_seq ahead of
+		// projected_seq and still returned 200; CloudSync rejects that
+		// (head_seq <= projected_seq). 1% Workers Logs never advanced the
+		// checkpoint. The cost cuts that stay: refuse WS (idle DO pin),
+		// drop extra getProjectionState/heartbeat knocks inside drain.
+		// Poll mode (PLAN.md path A) bounds the request-path drain and
+		// continues via waitUntil — it never lies with a lagged 200.
 		const projection = await drainProjection(env, userId, result.head_seq, {
 			...(options.pollMode ? { maxPages: POLL_PUSH_DRAIN_MAX_PAGES } : {}),
 		});

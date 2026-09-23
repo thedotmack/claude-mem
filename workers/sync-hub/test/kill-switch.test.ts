@@ -1,6 +1,12 @@
 /**
  * Kill-switch suite (plan Phase 5 task 2 verification).
  *
+ * Hypothesis under test (PLAN.md): the 1% Workers Logs sample cut is not
+ * customer pain. #4140 `skipProjectionDrain` on the push path left
+ * head_seq ahead of projected_seq; clients reject that 200
+ * (`head_seq <= projected_seq`). These tests keep kill-switch ON and still
+ * require a 200 to cover head — logging config is not touched.
+ *
  * SELF tests run with KILL_SWITCH_CACHE_MS=0 (vitest.config.ts) so a KV
  * flag flip is visible on the very next request:
  *   - tripped ⇒ /v1/sync/ops and /v1/sync/changes STILL WORK (the
@@ -72,8 +78,9 @@ describe("kill switch: front Worker behavior", () => {
 		expect(res.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
 		const body = (await res.json()) as { acked: unknown[]; head_seq: string; projected_seq: string };
 		expect(body.acked).toHaveLength(1); // the durable lane is untouched
-		// Poll mode still projects on the push path. A lagged 200 is a
-		// client-facing protocol violation (head_seq <= projected_seq).
+		// skipProjectionDrain used to return 200 with projected_seq "0" here.
+		// That is the customer pain — not the log sample. Clients cannot flush
+		// unless this 200 already satisfies head_seq <= projected_seq.
 		expect(body.projected_seq).toBe(body.head_seq);
 		expect(body.projected_seq).toBe("1");
 

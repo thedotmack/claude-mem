@@ -292,6 +292,8 @@ curl "http://localhost:8787/__scheduled?cron=7+*+*+*+*"
 
 ## 3. Kill switch operations (Phase 5 task 2)
 
+Poll-mode projection catch-up (keep the switch ON until spend is green): `PLAN.md`.
+
 State = presence of KV key `control:kill-switch` in `AUTH_CACHE`. Tripped ⇒
 WS upgrades answer `503 {"error":…,"mode":"poll"}` and every HTTP sync
 response carries `X-Sync-Mode: poll`; clients close their sockets, suppress

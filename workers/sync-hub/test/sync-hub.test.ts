@@ -742,6 +742,9 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 	});
 
 	it("does not re-fetch projection state or heartbeat the lease on every page", async () => {
+		// Lean drain (PLAN.md): extra getProjectionState / heartbeat RPCs were
+		// automated DO storage knocks, independent of the 1% log sample and of
+		// skipProjectionDrain. Catch-up must keep this budget — 0 heartbeats.
 		const userId = "projection-rpc-budget";
 		const realStub = hub(userId);
 		const ops = await Promise.all(
