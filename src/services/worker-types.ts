@@ -82,6 +82,10 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /** SessionEnd requested one Telegram wrap-up after the latest summary lands. */
+  telegramWrapupRequestedAt?: number | null;
+  /** One-shot grace timer for a SessionEnd wrap-up request. */
+  telegramWrapupTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 export interface PendingMessage {

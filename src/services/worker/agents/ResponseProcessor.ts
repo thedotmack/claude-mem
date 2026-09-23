@@ -12,6 +12,7 @@ import {
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
+import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverSuccess } from '../../../shared/observer-health.js';
@@ -635,6 +636,10 @@ export async function processAgentResponse(
     agentId: context.pendingAgentId,
   });
 
+  // Growing Grok Bot INDEX: any new observation (any project) can fill a
+  // thin seat diary via the house fallback, so refresh all mapped seats.
+  notifyGrokBotIndex();
+
   await syncAndBroadcastObservations(
     labeledObservations,
     result,
@@ -656,6 +661,10 @@ export async function processAgentResponse(
     worker,
     agentName
   );
+
+  if (result.summaryId) {
+    sessionManager.deliverRequestedSessionWrapup?.(session.sessionDbId);
+  }
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {

@@ -373,6 +373,17 @@ describe('scrubProperties', () => {
     expect(scrubProperties({})).toEqual({});
   });
 
+  it('redacts URL-shaped secrets even on a whitelisted key', () => {
+    const result = scrubProperties({
+      endpoint: 'https://api.example.com/v1/data?token=secret123',
+      outcome: 'success',
+    });
+
+    expect(result.outcome).toBe('success');
+    expect(String(result.endpoint)).not.toContain('secret123');
+    expect(String(result.endpoint)).not.toContain('token=');
+  });
+
   it('never throws on hostile input', () => {
     expect(scrubProperties(null as unknown as Record<string, unknown>)).toEqual({});
     expect(scrubProperties(undefined as unknown as Record<string, unknown>)).toEqual({});

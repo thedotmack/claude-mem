@@ -65,8 +65,10 @@
 
 		// --- Watchdog (src/watchdog.ts) ---------------------------------------
 		// Account tag (32-hex account id) for the GraphQL Analytics query.
-		// Required for the watchdog to run; empty ⇒ the watchdog
-		// logs a skip (never a false alert). (DEPLOY.md)
+		// Required for the watchdog to query Analytics. Empty ACCOUNT_ID or a
+		// missing ANALYTICS_API_TOKEN secret used to silently skip the hourly
+		// kill-switch. The runner now console.errors and Discord-pages when
+		// the webhook secret is set. Do not invent a token here.
 		// The companion secrets ANALYTICS_API_TOKEN and DISCORD_WEBHOOK_URL are
 		// set via `wrangler secret put` (typed in src/secrets.d.ts).
 		"ACCOUNT_ID": "b68923b1c0a9c2840648102da88ba9d4",
@@ -89,6 +91,14 @@
 		"WATCHDOG_ROWS_READ_KILL": ""
 	},
 	"observability": {
-		"enabled": true
+		// `enabled: true` with no sample rate is a 100% head sample. That was a
+		// cost multiplier on every console line (healthy cron logs included).
+		// 1% still leaves a usable debug tail without ingesting the full flood.
+		"enabled": true,
+		"head_sampling_rate": 0.01,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 0.01
+		}
 	}
 }

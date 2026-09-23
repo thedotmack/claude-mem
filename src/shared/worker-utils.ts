@@ -1067,7 +1067,7 @@ function getFailLoudThreshold(): number {
  * never widen one without the others. Events outside this set (user-message,
  * file-edit) simply omit hook_type.
  */
-const TELEMETRY_HOOK_TYPES = ['context', 'session-init', 'observation', 'summarize', 'file-context'] as const;
+const TELEMETRY_HOOK_TYPES = ['context', 'session-init', 'observation', 'summarize', 'session-end', 'file-context'] as const;
 export type TelemetryHookType = (typeof TELEMETRY_HOOK_TYPES)[number];
 
 let activeHookType: TelemetryHookType | null = null;
