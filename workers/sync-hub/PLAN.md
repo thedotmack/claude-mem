@@ -1,8 +1,10 @@
 # Sync Hub poll-mode projection — ship plan
 
+**BOARD DECISION LOCKED — ship Path A only.**
 **Seat:** Sync Hub (receiving-end Worker / KV / DO). This file is the make-plan + ship path.
-**Constraint:** kill-switch stays ON until a green cost path exists. Product stays LIVE. No Pro / Vercel / client brakes.
-**PR:** this branch. **Customers:** ALE-457 / #4191, ALE-461 / #4198.
+**Constraint:** kill-switch stays ON until the green path is live. Product stays LIVE. No Pro / Vercel / client brakes. Do not clear the kill-switch (Path C).
+**PR:** https://github.com/thedotmack/claude-mem/pull/4209
+**Customers:** ALE-457 / #4191, ALE-461 / #4198.
 
 ---
 
@@ -64,14 +66,14 @@ Keep kill-switch ON for all three until spend is actually green. None of them tu
 
 **When:** Only after A/B are insufficient *and* watchdog metrics (duration / rows / requests) stay under kill thresholds with the lean RPC budget.
 
-## 4. Recommended ship path
+## 4. Ship path (locked)
 
-**Ship A. Keep kill-switch ON. Do not ship C.**
+**Path A only.** Keep kill-switch ON. Fallback B only if A regresses cost. Do **not** clear kill-switch (Path C).
 
 1. Merge this PR and deploy the **sync-hub Worker only** (`workers/sync-hub`).
 2. Leave `control:kill-switch` in place. Poll mode remains the cost guardrail.
 3. Existing lagged accounts (`projected_seq = 0`, head 40–200) catch up on the next client push (≤8 pages on the request, then waitUntil / retry) or via `/internal/v1/projection/drain`.
-4. Watch Cloudflare DO duration / rows-read / rows-written for a few watchdog cycles. A is the green-path candidate; C stays locked until those numbers hold.
+4. Watch Cloudflare DO duration / rows-read / rows-written for a few watchdog cycles. C stays locked. B is a follow-up on this seat only if A regresses cost while users can flush.
 
 ### Alex hand
 
