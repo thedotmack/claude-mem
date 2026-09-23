@@ -87,6 +87,17 @@ const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const REPAIR_DRAIN_MAX_PAGES = 1;
 
 /**
+ * Poll/kill-switch request-path budget. A page is ≤100 ops, so 8 pages covers
+ * one max push (500) plus the 40–200 seq lags seen when #4140 skipped drain
+ * entirely. Remaining catch-up is waitUntil + client retry, never a 200 with
+ * head_seq > projected_seq.
+ */
+export const POLL_PUSH_DRAIN_MAX_PAGES = 8;
+
+/** waitUntil continuation after a bounded poll-mode push that still lags. */
+export const POLL_CATCHUP_MAX_PAGES = 32;
+
+/**
  * Pro declares a 60-second maximum duration. Abort the complete response-body
  * read at 45 seconds while the Hub holds a 90-second fencing lease:
  * Hub abort (45s) < Pro platform ceiling (60s) < Hub lease (90s).
@@ -314,7 +325,10 @@ async function handlePushOps(
 	userId: string,
 	deviceId: string,
 	deviceName: string | null,
-	options: { skipProjectionDrain?: boolean } = {},
+	options: {
+		pollMode?: boolean;
+		waitUntil?: (promise: Promise<unknown>) => void;
+	} = {},
 ): Promise<Response> {
 	const raw = await request.text();
 	// Deliberate 413s (see the cap constants above): an oversize batch must
@@ -352,27 +366,58 @@ async function handlePushOps(
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
-		// Poll mode must actually stop the DO slam. The Hub already has the
-		// ops; Pro can catch up via /internal/v1/projection/drain. Skipping
-		// the lease/page/heartbeat loop here is latency, never data loss.
-		if (options.skipProjectionDrain) {
-			const state = await stub.getProjectionState();
-			return json(200, { ...result, projected_seq: state.projected_seq });
+		// Hypothesis: logging sample cut ≠ customer pain. #4140
+		// skipProjectionDrain under kill-switch left head_seq ahead of
+		// projected_seq and still returned 200; CloudSync rejects that
+		// (head_seq <= projected_seq). 1% Workers Logs never advanced the
+		// checkpoint. The cost cuts that stay: refuse WS (idle DO pin),
+		// drop extra getProjectionState/heartbeat knocks inside drain.
+		// Poll mode (PLAN.md path A) bounds the request-path drain and
+		// continues via waitUntil — it never lies with a lagged 200.
+		const projection = await drainProjection(env, userId, result.head_seq, {
+			...(options.pollMode ? { maxPages: POLL_PUSH_DRAIN_MAX_PAGES } : {}),
+		});
+		if (projection.ok && decimalAtLeast(projection.projectedSeq, result.head_seq)) {
+			return json(200, { ...result, projected_seq: projection.projectedSeq });
 		}
-		const projection = await drainProjection(env, userId, result.head_seq);
-		if (!projection.ok) {
-			return json(projection.httpStatus, {
-				error: projection.error,
+		if (projection.ok) {
+			scheduleProjectionCatchUp(env, userId, result.head_seq, options.waitUntil);
+			return json(503, {
+				error: "projection_catching_up",
 				durable: true,
-				retryable: projection.retryable,
+				retryable: true,
 				head_seq: result.head_seq,
 				projected_seq: projection.projectedSeq,
 			});
 		}
-		return json(200, { ...result, projected_seq: projection.projectedSeq });
+		return json(projection.httpStatus, {
+			error: projection.error,
+			durable: true,
+			retryable: projection.retryable,
+			head_seq: result.head_seq,
+			projected_seq: projection.projectedSeq,
+		});
 	} catch (e) {
 		return mapHubError(e);
 	}
+}
+
+function scheduleProjectionCatchUp(
+	env: Env,
+	userId: string,
+	targetSeq: string,
+	waitUntil?: (promise: Promise<unknown>) => void,
+): void {
+	if (!waitUntil) return;
+	waitUntil((async () => {
+		try {
+			await drainProjection(env, userId, targetSeq, {
+				maxPages: POLL_CATCHUP_MAX_PAGES,
+			});
+		} catch (error) {
+			console.error("sync-hub poll-mode projection catch-up failed:", error);
+		}
+	})());
 }
 
 async function handleGetChanges(
@@ -897,7 +942,7 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 }
 
 export default {
-	async fetch(request, env): Promise<Response> {
+	async fetch(request, env, ctx): Promise<Response> {
 		const url = new URL(request.url);
 		const { pathname } = url;
 		if (pathname === "/internal/v1/projection/drain") {
@@ -929,12 +974,14 @@ export default {
 		// Kill switch (plan Phase 5 task 2): one KV read per request, through
 		// the per-isolate cache (KILL_SWITCH_CACHE_MS). Tripped ⇒ WS upgrades
 		// refused below and every HTTP sync response is stamped
-		// `X-Sync-Mode: poll` — the pushes and pulls themselves KEEP WORKING
-		// (poll mode degrades latency, never correctness). Read BEFORE
-		// authenticate so auth-FAILURE responses are stamped too: incidents
-		// correlate, and a tripped switch during a degraded verify upstream
-		// (everything 401/503ing) must still tell clients "poll" — an
-		// unstamped error response must never read as "switch cleared".
+		// `X-Sync-Mode: poll` — the pushes and pulls themselves KEEP WORKING,
+		// including the push-path projection drain that satisfies
+		// head_seq <= projected_seq (poll mode degrades socket latency, never
+		// correctness). Read BEFORE authenticate so auth-FAILURE responses
+		// are stamped too: incidents correlate, and a tripped switch during a
+		// degraded verify upstream (everything 401/503ing) must still tell
+		// clients "poll" — an unstamped error response must never read as
+		// "switch cleared".
 		const killSwitch = await readKillSwitch(env);
 
 		const auth = await authenticateRequest(request, env);
@@ -980,7 +1027,8 @@ export default {
 				if (request.method !== "POST") return errorResponse(405, "use POST");
 				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
 				return handlePushOps(request, env, auth.userId, auth.deviceId, auth.deviceName, {
-					skipProjectionDrain: killSwitch.tripped,
+					pollMode: killSwitch.tripped,
+					waitUntil: (promise) => ctx.waitUntil(promise),
 				});
 			}
 

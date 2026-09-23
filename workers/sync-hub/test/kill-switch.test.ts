@@ -1,12 +1,19 @@
 /**
  * Kill-switch suite (plan Phase 5 task 2 verification).
  *
+ * Hypothesis under test (PLAN.md): the 1% Workers Logs sample cut is not
+ * customer pain. #4140 `skipProjectionDrain` on the push path left
+ * head_seq ahead of projected_seq; clients reject that 200
+ * (`head_seq <= projected_seq`). These tests keep kill-switch ON and still
+ * require a 200 to cover head — logging config is not touched.
+ *
  * SELF tests run with KILL_SWITCH_CACHE_MS=0 (vitest.config.ts) so a KV
  * flag flip is visible on the very next request:
  *   - tripped ⇒ /v1/sync/ops and /v1/sync/changes STILL WORK (the
- *     structural guarantee: poll mode degrades latency, never correctness)
- *     but carry `X-Sync-Mode: poll`; pushes skip the projection drain loop
- *     (Hub keeps the ops; repair drain can still catch Pro up);
+ *     structural guarantee: poll mode degrades socket latency, never
+ *     correctness) but carry `X-Sync-Mode: poll`; pushes still drain
+ *     projection so a 200 satisfies head_seq <= projected_seq (clients
+ *     reject a lagged 200); repair drain remains for leftover catch-up;
  *     /v1/sync/status too; the WS upgrade is refused with 503 + a JSON body
  *     clients recognize ({mode: "poll"}) — built in the front Worker, the
  *     DO is never woken.
@@ -28,6 +35,8 @@ import {
 	SYNC_MODE_POLL,
 	tripKillSwitch,
 } from "../src/kill-switch";
+import { POLL_PUSH_DRAIN_MAX_PAGES } from "../src/index";
+import { PROJECTION_PAGE_MAX_OPS } from "../src/projection-protocol";
 import { observationOp } from "./content-v2-helpers";
 
 const base = "https://sync-hub.test";
@@ -67,11 +76,13 @@ describe("kill switch: front Worker behavior", () => {
 		});
 		expect(res.status).toBe(200);
 		expect(res.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
-		const body = (await res.json()) as { acked: unknown[]; projected_seq: string };
+		const body = (await res.json()) as { acked: unknown[]; head_seq: string; projected_seq: string };
 		expect(body.acked).toHaveLength(1); // the durable lane is untouched
-		// Poll mode skips the projection lease/page loop so DOs stay cheap.
-		// Hub still has the op; Pro catch-up is /internal/v1/projection/drain.
-		expect(body.projected_seq).toBe("0");
+		// skipProjectionDrain used to return 200 with projected_seq "0" here.
+		// That is the customer pain — not the log sample. Clients cannot flush
+		// unless this 200 already satisfies head_seq <= projected_seq.
+		expect(body.projected_seq).toBe(body.head_seq);
+		expect(body.projected_seq).toBe("1");
 
 		const repair = await SELF.fetch(`${base}/internal/v1/projection/drain`, {
 			method: "POST",
@@ -86,6 +97,82 @@ describe("kill switch: front Worker behavior", () => {
 			head_seq: "1",
 			projected_through_seq: "1",
 		});
+	});
+
+	it("tripped ⇒ sequential pushes keep head_seq <= projected_seq (lag cannot re-grow)", async () => {
+		await trip();
+		const user = "user-ks-pace";
+		for (const origin of ["1", "2", "3"]) {
+			const op = await observationOp(origin, "1", "dev-ks");
+			const res = await SELF.fetch(`${base}/v1/sync/ops`, {
+				method: "POST",
+				headers: { ...headers(user), "Content-Type": "application/json" },
+				body: JSON.stringify({ protocol_version: 2, ops: [op] }),
+			});
+			expect(res.status).toBe(200);
+			expect(res.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
+			const body = (await res.json()) as { head_seq: string; projected_seq: string };
+			expect(body.projected_seq).toBe(body.head_seq);
+			expect(body.head_seq).toBe(origin);
+		}
+	});
+
+	it("tripped ⇒ a pre-existing lag larger than the poll-mode page budget still reaches head<=projected", async () => {
+		await trip();
+		const user = "user-ks-backlog";
+		const stub = env.SYNC_HUB.getByName(user);
+		const lagged = POLL_PUSH_DRAIN_MAX_PAGES * PROJECTION_PAGE_MAX_OPS;
+		// Seed Hub head without projecting — the #4140 skip shape (head ahead,
+		// projected_seq still 0). Worker HTTP is capped at 500 ops/push, so
+		// this goes through the DO RPC the same way a skipped drain left state.
+		for (let start = 1; start <= lagged; start += 400) {
+			const count = Math.min(400, lagged - start + 1);
+			const seed = await Promise.all(
+				Array.from({ length: count }, (_, index) => observationOp(String(start + index), "1", "dev-ks")),
+			);
+			const seeded = await stub.pushOps("dev-ks", seed, null);
+			if ("refused" in seeded) throw new Error(seeded.error);
+		}
+		const seededState = await stub.getProjectionState();
+		expect(seededState.head_seq).toBe(String(lagged));
+		expect(seededState.projected_seq).toBe("0");
+
+		const next = await observationOp(String(lagged + 1), "1", "dev-ks");
+		const request = () => SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST",
+			headers: { ...headers(user), "Content-Type": "application/json" },
+			body: JSON.stringify({ protocol_version: 2, ops: [next] }),
+		});
+
+		const first = await request();
+		expect(first.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
+		const firstBody = (await first.json()) as {
+			error?: string;
+			durable?: boolean;
+			retryable?: boolean;
+			head_seq: string;
+			projected_seq: string;
+		};
+		expect(first.status).toBe(503);
+		expect(firstBody).toMatchObject({
+			error: "projection_catching_up",
+			durable: true,
+			retryable: true,
+			head_seq: String(lagged + 1),
+			projected_seq: String(lagged),
+		});
+
+		let lastStatus = first.status;
+		let lastBody = firstBody;
+		for (let attempt = 0; attempt < 5 && lastStatus !== 200; attempt++) {
+			const retry = await request();
+			lastStatus = retry.status;
+			lastBody = (await retry.json()) as typeof firstBody;
+			expect(retry.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
+		}
+		expect(lastStatus).toBe(200);
+		expect(lastBody.projected_seq).toBe(lastBody.head_seq);
+		expect(lastBody.head_seq).toBe(String(lagged + 1));
 	});
 
 	it("tripped ⇒ pulls still succeed AND carry X-Sync-Mode: poll (poll-path convergence intact)", async () => {

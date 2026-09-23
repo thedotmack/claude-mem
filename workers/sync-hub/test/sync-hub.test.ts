@@ -742,6 +742,9 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 	});
 
 	it("does not re-fetch projection state or heartbeat the lease on every page", async () => {
+		// Lean drain (PLAN.md): extra getProjectionState / heartbeat RPCs were
+		// automated DO storage knocks, independent of the 1% log sample and of
+		// skipProjectionDrain. Catch-up must keep this budget — 0 heartbeats.
 		const userId = "projection-rpc-budget";
 		const realStub = hub(userId);
 		const ops = await Promise.all(
@@ -1344,14 +1347,17 @@ describe("per-user device admission bound", () => {
 		expect((await metadata(userId)).devices).toHaveLength(MAX_DEVICES_PER_USER);
 	});
 
-	it("keeps existing devices writable/readable while new admitting paths are rejected at the cap", async () => {
+	it("keeps existing devices writable/readable while new admitting paths are rejected at the cap", { timeout: 20_000 }, async () => {
 		const userId = "device-cap-http-paths";
-		for (let index = 0; index < MAX_DEVICES_PER_USER; index++) {
-			const response = await SELF.fetch(`${base}/v1/sync/changes?since=0`, {
+		// 64 serial SELF fetches plus a push-path drain can exceed vitest's
+		// default 5s under CI suite load (Path A tests do not change this
+		// product path). Admit in parallel; keep a 20s ceiling.
+		const admits = await Promise.all(Array.from({ length: MAX_DEVICES_PER_USER }, (_, index) =>
+			SELF.fetch(`${base}/v1/sync/changes?since=0`, {
 				headers: clientHeaders(userId, `device-${index}`, `Named ${index}`),
-			});
-			expect(response.status).toBe(200);
-		}
+			}),
+		));
+		expect(admits.every((response) => response.status === 200)).toBe(true);
 
 		const existingStatus = await SELF.fetch(`${base}/v1/sync/status`, {
 			headers: clientHeaders(userId, "device-0", "Changed by client"),
