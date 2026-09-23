@@ -1409,13 +1409,13 @@ describe('CloudSync', () => {
       },
       {
         name: 'ack seq beyond head',
-        change: acks => ({ acks: [{ ...acks[0], seq: '3' }, acks[1]], head: '2', projected: '3' }),
+        change: acks => ({ acks: [{ ...acks[0], seq: '3' }, acks[1]], head: '2', projected: '2' }),
         error: /seq exceeds head_seq/,
       },
       {
-        name: 'head beyond projected checkpoint',
-        change: acks => ({ acks, head: '3', projected: '2' }),
-        error: /head_seq <= projected_seq/,
+        name: 'projected checkpoint beyond head',
+        change: acks => ({ acks, head: '2', projected: '3' }),
+        error: /projected_seq <= head_seq/,
       },
       {
         name: 'noncanonical head checkpoint',
@@ -1745,6 +1745,49 @@ describe('CloudSync', () => {
       // The structural guarantee: a tripped kill switch never blocks the
       // durable push lane — the row was acked and stamped as usual.
       expect(pendingCount('observations')).toBe(0);
+    });
+
+    /**
+     * Hub in poll mode: acks every op durably but answers with an UNADVANCED
+     * projection, so projected_seq trails head_seq and the acked seqs sit above
+     * projected_seq — exactly what a tripped kill switch returns.
+     */
+    function makeTrailingProjectionFetch(mode: string | null) {
+      let seq = 0;
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body ?? '{}'));
+        const acked = (parsed.ops ?? []).map((op: any) => canonicalAck(op, ++seq));
+        const headers: Record<string, string> = {};
+        if (mode !== null) headers['X-Sync-Mode'] = mode;
+        // projected_seq stuck at 0: the projection never advanced this push.
+        return canonicalSuccess(acked, seq, headers, 0);
+      }) as typeof fetch;
+      return impl;
+    }
+
+    it('accepts a poll-mode push whose projection trails the write head (outbox drains)', async () => {
+      seedObservation();
+      const sync = makeCloudSync(makeTrailingProjectionFetch('poll'));
+
+      await sync.flush();
+
+      // The acked op is durable on the hub; a lagging projection is a pending
+      // state, not a fault. The row drains instead of retrying forever.
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+    });
+
+    it('rejects a trailing-projection push that is NOT in poll mode', async () => {
+      seedObservation();
+      const sync = makeCloudSync(makeTrailingProjectionFetch(null), {}, { backoffInitialMs: 600_000 });
+
+      await sync.flush();
+
+      // Outside poll mode the hub must project what it acks; an ack above
+      // projected_seq is a real violation and the row stays queued.
+      expect(sync.status().lastError).toMatch(/not covered by projected_seq/);
+      expect(pendingCount('observations')).toBe(1);
+      sync.stop();
     });
 
     it('surfaces null when the header is absent (mode cleared)', async () => {
