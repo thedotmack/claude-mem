@@ -19,6 +19,11 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import {
+  MAX_CONSECUTIVE_STALL_RESUMES,
+  RESPONSE_STALL_RESUME_DELAY_MS,
+  planResponseStallResume,
+} from '../../session/response-pacer.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
@@ -331,6 +336,12 @@ export class SessionRoutes extends BaseRouteHandler {
   ): Promise<void> {
     if (!session) return;
 
+    // A generator is starting, so a pending stall resume has nothing left to do.
+    if (session.stallResumeTimer !== undefined) {
+      clearTimeout(session.stallResumeTimer);
+      session.stallResumeTimer = undefined;
+    }
+
     if (session.abortController.signal.aborted) {
       logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
         sessionId: session.sessionDbId
@@ -539,6 +550,33 @@ export class SessionRoutes extends BaseRouteHandler {
               });
           }, 0);
           resume.unref?.();
+        }
+
+        // A response stall preserved its claimed batch but, like a recycle, has
+        // no later ingest guaranteed to pick it up. Resume after a delay, a
+        // bounded number of times in a row; an answered queued-work turn resets
+        // the count (#4066).
+        if (reason === 'transport:response_stall') {
+          const { resume, attempts } = planResponseStallResume(session);
+          if (!resume) {
+            logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {
+              sessionId: session.sessionDbId,
+              consecutiveStalls: attempts,
+              maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
+            });
+          } else {
+            const resume = setTimeout(() => {
+              session.stallResumeTimer = undefined;
+              void this.ensureGeneratorRunning(session.sessionDbId, 'response-stall')
+                .catch(error => {
+                  logger.error('SESSION', 'Failed to resume the observer after a response stall', {
+                    sessionId: session.sessionDbId,
+                  }, error instanceof Error ? error : new Error(String(error)));
+                });
+            }, RESPONSE_STALL_RESUME_DELAY_MS);
+            resume.unref?.();
+            session.stallResumeTimer = resume;
+          }
         }
       });
     session.generatorPromise = generatorPromise;
