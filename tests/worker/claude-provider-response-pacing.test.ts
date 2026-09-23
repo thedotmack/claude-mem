@@ -58,6 +58,17 @@ class FakeSdk {
     this.wakeStream?.();
   }
 
+  /**
+   * A complete turn the stream has buffered but not yet delivered: it surfaces
+   * only when something else wakes the stream, e.g. the abort that ends it.
+   */
+  bufferAnswer(text: string): void {
+    this.outbox.push(
+      { type: 'assistant', message: { content: [{ type: 'text', text }], usage: { input_tokens: 10, output_tokens: 2 } } },
+      { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 10, output_tokens: 2 } },
+    );
+  }
+
   /** A turn that failed before emitting any text. */
   failTurn(): void {
     this.outbox.push({ type: 'result', subtype: 'error_during_execution', is_error: true });
@@ -511,6 +522,30 @@ describe('Claude observer feed pacing (#4066)', () => {
     h.session.abortController.abort();
     await withTimeout(run, 'startSession after abort');
   });
+  it('a reply that lands after a response stall is dropped, so the re-sent message is not stored twice', async () => {
+    const h = createHarness(2);
+    liveSessions.push(h.session);
+    (h.provider as any).responseStallMs = () => 50;
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+
+    await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+    sdk().answer(SKIP_REPLY);
+    await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+    expect(h.session.claimedMessageIds.length).toBe(1);
+
+    // The answer is already in the stream when the stall fires; the stall's own
+    // abort is what flushes it out. Processing it would confirm or store a turn
+    // whose claim the stall just handed back for re-sending.
+    const LATE_REPLY = 'late reply that arrived after the stall';
+    sdk().bufferAnswer(LATE_REPLY);
+    await withTimeout(run, 'startSession after stall', 5_000);
+
+    expect(h.session.abortReason).toBe('transport:response_stall');
+    expect(h.session.conversationHistory.some(m => m.role === 'assistant' && m.content === LATE_REPLY)).toBe(false);
+    expect(h.session.claimedMessageIds).toEqual([]);
+    expect(h.pending()).toBe(2);
+  });
 });
 
 describe('ObserverResponsePacer', () => {
@@ -524,6 +559,18 @@ describe('ObserverResponsePacer', () => {
   it('reports a stall once the window passes without an answer', async () => {
     const pacer = new ObserverResponsePacer();
     expect(await pacer.waitForAnswer(pacer.mark(), new AbortController().signal, 10)).toBe('stalled');
+  });
+
+  it('fences late frames only after a stall', async () => {
+    const answered = new ObserverResponsePacer();
+    const mark = answered.mark();
+    answered.answer();
+    await answered.waitForAnswer(mark, new AbortController().signal, 1_000);
+    expect(answered.hasStalled).toBe(false);
+
+    const stalling = new ObserverResponsePacer();
+    expect(await stalling.waitForAnswer(stalling.mark(), new AbortController().signal, 10)).toBe('stalled');
+    expect(stalling.hasStalled).toBe(true);
   });
 
   it('releases a waiter when the stream closes or the signal aborts', async () => {

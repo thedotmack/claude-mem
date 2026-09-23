@@ -186,6 +186,11 @@ export class ClaudeProvider {
     );
   }
 
+  /** How long an unanswered prompt may go without SDK activity (#4066). */
+  private responseStallMs(): number {
+    return IDLE_TIMEOUT_MS;
+  }
+
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
@@ -327,6 +332,9 @@ export class ClaudeProvider {
       let retriedAfterErrorResult = false;
 
       for await (const message of queryResult) {
+        // A stall already handed the claimed batch back to pending; a frame
+        // processed now would be stored twice once the batch is re-sent (#4066).
+        if (pacer.hasStalled) break;
         // Any SDK message means the turn is alive, so the feed's stall window
         // restarts; an announced API retry also buys its backoff delay (#4066).
         pacer.activity(
@@ -878,21 +886,25 @@ export class ClaudeProvider {
     pacer: ObserverResponsePacer,
     answeredBeforeSend: number,
   ): Promise<boolean> {
-    const outcome = await pacer.waitForAnswer(answeredBeforeSend, session.abortController.signal, IDLE_TIMEOUT_MS);
+    const stallMs = this.responseStallMs();
+    const outcome = await pacer.waitForAnswer(answeredBeforeSend, session.abortController.signal, stallMs);
     if (outcome === 'answered') return !session.abortController.signal.aborted;
     if (outcome === 'stalled') {
       logger.warn('SDK', 'Observer prompt went unanswered; preserving the claimed batch and stopping this generation', {
         sessionId: session.sessionDbId,
-        waitedMs: IDLE_TIMEOUT_MS,
+        waitedMs: stallMs,
         claimed: session.claimedMessageIds.length,
       });
-      await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+      // Abort before releasing the claims: the pacer has already fenced the SDK
+      // loop, and killing the stream first means no late frame can be processed
+      // between the release and the abort.
       session.abortReason = 'transport:response_stall';
       try {
         session.abortController.abort();
       } catch {
         // best-effort
       }
+      await this.sessionManager.resetProcessingToPending(session.sessionDbId);
     }
     return false;
   }

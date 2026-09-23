@@ -14,6 +14,7 @@
  */
 
 import type { ActiveSession } from '../../worker-types.js';
+import { logger } from '../../../utils/logger.js';
 
 export type PacerWaitOutcome = 'answered' | 'aborted' | 'closed' | 'stalled';
 
@@ -44,6 +45,7 @@ export function planResponseStallResume(session: ActiveSession): { resume: boole
 export class ObserverResponsePacer {
   private answeredTurns = 0;
   private closed = false;
+  private stalled = false;
   private wake: (() => void) | null = null;
   private rearm: ((graceMs: number) => void) | null = null;
 
@@ -74,6 +76,15 @@ export class ObserverResponsePacer {
   }
 
   /**
+   * True once a wait stalled out. The stall hands the claimed batch back to
+   * pending, so the SDK loop must drop any frame that arrives afterwards: a
+   * late answer stored now would be stored again when the batch is re-sent.
+   */
+  get hasStalled(): boolean {
+    return this.stalled;
+  }
+
+  /**
    * Resolve once a turn has finished since `since`, the signal aborts, the
    * stream closes, or `stallMs` passes with no answer and no SDK activity.
    */
@@ -91,7 +102,12 @@ export class ObserverResponsePacer {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const arm = (graceMs: number) => {
         if (timer !== undefined) clearTimeout(timer);
-        timer = setTimeout(() => finish('stalled'), stallMs + Math.max(0, graceMs));
+        timer = setTimeout(() => {
+          // Fence first, synchronously: from here on the SDK loop ignores frames.
+          this.stalled = true;
+          logger.debug('SDK', 'Observer response pacer stalled; fencing late frames', { stallMs, graceMs });
+          finish('stalled');
+        }, stallMs + Math.max(0, graceMs));
         timer.unref?.();
       };
       const finish = (outcome: PacerWaitOutcome) => {
