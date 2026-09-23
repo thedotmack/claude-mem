@@ -2,14 +2,16 @@
  * Kill switch — the structural cost guardrail (plan Phase 5 task 2).
  *
  * One KV flag. Tripped ⇒ the front Worker refuses WebSocket upgrades (503 +
- * a JSON body clients recognize), stamps `X-Sync-Mode: poll` on every HTTP
- * sync response, and skips the push-path projection drain (the lease / page /
- * heartbeat RPC loop that was keeping per-user SQLite DOs awake). Clients
- * fall back to the Phase 3 poll path; Pro catch-up is the existing
- * `/internal/v1/projection/drain` repair route. The product stays COMPLETE
- * in poll mode (~$0.03/user/mo indefinitely) — the switch degrades latency,
- * never correctness (prime directive #5: watchdog → poll mode, never
- * "stop working").
+ * a JSON body clients recognize) and stamps `X-Sync-Mode: poll` on every HTTP
+ * sync response. That un-pins idle Durable Objects; it must not skip the
+ * push-path projection drain. Clients require `head_seq <= projected_seq` on
+ * every 200, so poll mode still drains on an active push (bounded pages +
+ * waitUntil catch-up) and still exposes `/internal/v1/projection/drain`.
+ * Extra getProjectionState / heartbeatProjectionLease RPCs stay gone — those
+ * were automated DO storage knocks with no fencing value. The product stays
+ * COMPLETE in poll mode (~$0.03/user/mo indefinitely) — the switch degrades
+ * socket latency, never correctness (prime directive #5: watchdog → poll
+ * mode, never "stop working").
  *
  * STORAGE CHOICE — reuse AUTH_CACHE with a distinct `control:` key, not a
  * dedicated SYNC_CONTROL namespace. Rationale: (a) AUTH_CACHE is already a

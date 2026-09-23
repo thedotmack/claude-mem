@@ -268,11 +268,11 @@ export function shouldAbortForQuota(
     const entry = store.get(window);
     if (!entry) continue;
 
-    // A rejected/utilization snapshot is only meaningful until its window's
-    // reset. This is especially important after a worker has been alive long
-    // enough to retain a rejection from the previous quota period.
-    const resetAtMs = getResetAtMs(entry, window);
-    if (resetAtMs !== undefined && resetAtMs <= now) continue;
+    // Ignore expired snapshots without removing them from the store so a
+    // repeated stale rejection does not look new to set() telemetry. Overage
+    // has its own reset: a primary-window reset cannot clear its rejection.
+    const resetsAtMs = getResetAtMs(entry, window);
+    if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
@@ -310,12 +310,11 @@ export function shouldAbortForQuota(
     // bailing on a window that just reset to ~0%.
     if (
       window === 'five_hour' &&
-      typeof entry.resetsAt === 'number' &&
+      resetsAtMs !== undefined &&
       typeof util === 'number' &&
       util >= RESET_GRACE_UTILIZATION_FLOOR
     ) {
-      const fiveHourResetAtMs = toEpochMs(entry.resetsAt);
-      const msUntilReset = fiveHourResetAtMs === undefined ? 0 : fiveHourResetAtMs - now;
+      const msUntilReset = resetsAtMs - now;
       if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
         return {
           abort: true,
