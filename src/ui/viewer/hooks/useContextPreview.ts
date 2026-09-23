@@ -21,7 +21,7 @@ function getPreferredSource(sources: string[]): string | null {
 }
 
 function withDefaultSources(sources: string[]): string[] {
-  const merged = ['claude', 'codex', 'antigravity-cli', ...sources];
+  const merged = ['claude', 'codex', ...sources];
   return Array.from(new Set(merged));
 }
 
