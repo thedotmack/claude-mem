@@ -76,10 +76,22 @@ export function estimateTokens(text: string | null): number {
   return Math.ceil(text.length / 4);
 }
 
+export interface GroupByDateOptions {
+  /**
+   * When true (default), day groups are reordered chronologically
+   * (oldest first). When false, day groups keep the order in which
+   * their first item appeared in `items`, so a relevance-ordered
+   * input stays relevance-ordered across day headers.
+   */
+  sort?: boolean;
+}
+
 export function groupByDate<T>(
   items: T[],
-  getDate: (item: T) => string
+  getDate: (item: T) => string,
+  options: GroupByDateOptions = {}
 ): Map<string, T[]> {
+  const { sort = true } = options;
   const itemsByDay = new Map<string, T[]>();
   for (const item of items) {
     const itemDate = getDate(item);
@@ -88,6 +100,10 @@ export function groupByDate<T>(
       itemsByDay.set(day, []);
     }
     itemsByDay.get(day)!.push(item);
+  }
+
+  if (!sort) {
+    return itemsByDay;
   }
 
   const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {

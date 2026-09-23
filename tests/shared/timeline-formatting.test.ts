@@ -202,4 +202,19 @@ describe('groupByDate', () => {
     const dayItems = Array.from(result.values())[0];
     expect(dayItems.map(i => i.id)).toEqual([3, 1, 2]);
   });
+
+  it('should keep day-group encounter order when sort is false', () => {
+    const items: TestItem[] = [
+      { id: 1, date: '2025-01-06T10:00:00Z' },
+      { id: 2, date: '2025-01-04T10:00:00Z' },
+      { id: 3, date: '2025-01-05T10:00:00Z' },
+    ];
+
+    const result = groupByDate(items, (item) => item.date, { sort: false });
+
+    const dates = Array.from(result.keys());
+    expect(dates[0]).toContain('Jan 6');
+    expect(dates[1]).toContain('Jan 4');
+    expect(dates[2]).toContain('Jan 5');
+  });
 });
