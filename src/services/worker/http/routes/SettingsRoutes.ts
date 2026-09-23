@@ -60,6 +60,56 @@ function redactSecretSettings<T extends object>(settings: T): T {
   return redacted as T;
 }
 
+// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
+// the HTTP write list below, this set keeps it from being persisted via POST.
+const FILE_ONLY_SETTING_KEYS = new Set([
+  'CLAUDE_CODE_PATH',
+]);
+
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function splitHostHeader(hostHeader: string): { hostname: string; port: string } {
+  if (hostHeader.startsWith('[')) {
+    const match = hostHeader.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    return { hostname: match?.[1] ?? hostHeader, port: match?.[2] ?? '80' };
+  }
+  const colon = hostHeader.lastIndexOf(':');
+  if (colon === -1) return { hostname: hostHeader, port: '80' };
+  return { hostname: hostHeader.slice(0, colon), port: hostHeader.slice(colon + 1) };
+}
+
+/**
+ * True when a browser Origin is present and is not the same loopback host:port
+ * as this request. Used to reject settings writes from other localhost pages
+ * without adding a new auth scheme. Exported for unit tests.
+ */
+export function isForeignLoopbackBrowserWrite(req: Pick<Request, 'headers'>): boolean {
+  const rawOrigin = req.headers?.origin;
+  if (Array.isArray(rawOrigin)) return true;
+  const origin = rawOrigin;
+  if (typeof origin !== 'string' || origin.length === 0) return false;
+
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return true;
+  }
+  if (originUrl.protocol !== 'http:') return true;
+  if (!LOOPBACK_HOSTNAMES.has(originUrl.hostname)) return true;
+
+  const rawHost = req.headers?.host;
+  if (Array.isArray(rawHost)) return true;
+  const hostHeader = rawHost;
+  if (typeof hostHeader !== 'string' || hostHeader.length === 0) return true;
+
+  const { hostname, port } = splitHostHeader(hostHeader);
+  if (!LOOPBACK_HOSTNAMES.has(hostname)) return true;
+
+  const originPort = originUrl.port || '80';
+  return originPort !== port;
+}
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
@@ -88,6 +138,17 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
+    // Browser POSTs always send Origin. Reject cross-port loopback origins so
+    // another http://localhost:* page cannot write settings. Origin-less
+    // clients (hooks, CLI, curl) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const validation = this.validateSettings(req.body);
     if (!validation.valid) {
       res.status(400).json({
@@ -116,10 +177,15 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Write whitelist. Secrets are deliberately absent: the Observation TV token,
-    // and the Chroma / Telegram / CloudSync keys. POST /api/settings has no
-    // authentication, so any page the user visits could set one of its choosing.
-    // Keeping them off this list means only the filesystem or the env can set them.
+    // Write whitelist. POST /api/settings has no authentication — the worker
+    // trusts loopback — so any page that can reach this origin could set one
+    // of these. Secrets stay off this list except the two provider keys the
+    // viewer Settings UI must save (Gemini / OpenRouter); those are masked on
+    // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
+    // Telegram / CloudSync / Redis tokens remain file/env only.
+    //
+    // Executable spawn paths (CLAUDE_CODE_PATH) are also file/env only: that
+    // value is the binary passed to posix_spawn, so it must not be HTTP-writable.
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
@@ -138,7 +204,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
-      'CLAUDE_CODE_PATH',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
@@ -155,6 +220,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     ];
 
     for (const key of settingKeys) {
+      if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
       if (req.body[key] !== undefined) {
         if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], settings[key])) {
           continue;
@@ -163,10 +229,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Persist CLAUDE_CODE_PATH with any leading `~` expanded: it's fed straight
-    // to existsSync/posix_spawn (no shell), where a literal `~` fails with
-    // ENOENT and silently breaks all memory capture. Store the resolved path so
-    // the resolver never sees the tilde.
+    // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
+    // HTTP cannot set this key; the expand is only so a tilde written by the
+    // user in settings.json is resolved before posix_spawn sees it.
     if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
       settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
     }

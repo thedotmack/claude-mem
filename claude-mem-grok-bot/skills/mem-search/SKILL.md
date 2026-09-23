@@ -13,6 +13,8 @@ Layered workflow. Do not dump full observations until IDs are filtered, and do n
 3. `get_observations(ids=[...])` — full details for those IDs only
 4. `get_tool_uses(ids=[...])` — the ORIGINAL `tool_input` / `tool_response` for specific tool calls. Last resort: these are unsummarized and can run to thousands of tokens each.
 
+The worker also live-writes a growing ID INDEX to `agents/<this-seat-uuid>/memory/log/zz-claude-mem-inject.md` (host Memory mid-attach). Use those IDs with `get_observations`. Thin seat diaries are filled from newest house observations. Disable with `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED=false`.
+
 Stamp `platformSource` as `cursor` or `grok-bot` on writes for this host. When reading, do not drop the other host unless asked.
 
 If MCP is missing, run the install skill first (`npx claude-mem install --ide <host>`).

@@ -5,9 +5,11 @@
  * flag flip is visible on the very next request:
  *   - tripped ⇒ /v1/sync/ops and /v1/sync/changes STILL WORK (the
  *     structural guarantee: poll mode degrades latency, never correctness)
- *     but carry `X-Sync-Mode: poll`; /v1/sync/status too; the WS upgrade is
- *     refused with 503 + a JSON body clients recognize ({mode: "poll"}) —
- *     built in the front Worker, the DO is never woken.
+ *     but carry `X-Sync-Mode: poll`; pushes skip the projection drain loop
+ *     (Hub keeps the ops; repair drain can still catch Pro up);
+ *     /v1/sync/status too; the WS upgrade is refused with 503 + a JSON body
+ *     clients recognize ({mode: "poll"}) — built in the front Worker, the
+ *     DO is never woken.
  *   - cleared ⇒ no header, normal behavior.
  *   - ANY value at the key counts as tripped (presence contract — a
  *     hand-typed emergency `wrangler kv key put ... "1"` works).
@@ -65,8 +67,25 @@ describe("kill switch: front Worker behavior", () => {
 		});
 		expect(res.status).toBe(200);
 		expect(res.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
-		const body = (await res.json()) as { acked: unknown[] };
+		const body = (await res.json()) as { acked: unknown[]; projected_seq: string };
 		expect(body.acked).toHaveLength(1); // the durable lane is untouched
+		// Poll mode skips the projection lease/page loop so DOs stay cheap.
+		// Hub still has the op; Pro catch-up is /internal/v1/projection/drain.
+		expect(body.projected_seq).toBe("0");
+
+		const repair = await SELF.fetch(`${base}/internal/v1/projection/drain`, {
+			method: "POST",
+			headers: {
+				Authorization: "Bearer test-projector-secret",
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ protocol_version: 1, user_id: "user-ks-push" }),
+		});
+		expect(repair.status).toBe(200);
+		expect(await repair.json()).toMatchObject({
+			head_seq: "1",
+			projected_through_seq: "1",
+		});
 	});
 
 	it("tripped ⇒ pulls still succeed AND carry X-Sync-Mode: poll (poll-path convergence intact)", async () => {
