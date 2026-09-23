@@ -59,10 +59,13 @@ export interface ShellTemplateOptions {
 }
 
 // Prepend common tool locations without spawning a login shell on every hook
-// invocation. Setup already used this shape; runtime hooks now match (#3190).
+// invocation. On Windows Git Bash, skip the NVM probe entirely: Node already
+// arrives on PATH there, and the POSIX-only probe costs seconds per tool call.
 const CLAUDE_CODE_HOOK_PATH_PRELUDE =
-  'export PATH="$HOME/.nvm/versions/node/v$(ls "$HOME/.nvm/versions/node" 2>/dev/null | ' +
-  "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
+  'case "${OS:-}:${MSYSTEM:-}:${OSTYPE:-}" in ' +
+  '*Windows_NT*:*:*|*:MINGW*:*|*:MSYS*:*|*:*:cygwin*|*:*:msys*) ;; ' +
+  '*) export PATH="$HOME/.nvm/versions/node/v$(ls "$HOME/.nvm/versions/node" 2>/dev/null | ' +
+  "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";; esac;";
 
 const CODEX_CLI_PATH_PRELUDE =
   `_HP=$(printenv PATH 2>/dev/null || true); ` +
@@ -91,6 +94,15 @@ function fileExistsClause(options: ShellTemplateOptions): string {
   return primary;
 }
 
+function envRootFastPathClause(options: ShellTemplateOptions): string {
+  const fileClause = fileExistsClause(options);
+  return (
+    `if [ -n "$_E" ]; then _R="\${_E%/}"; ` +
+    `[ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
+    `${fileClause} && _P="$_Q"; fi;`
+  );
+}
+
 /**
  * Build the candidate-enumeration block. The `{ ...; }` subshell prints one
  * candidate root per line in priority order; the `while` loop picks the first
@@ -110,7 +122,7 @@ function fileExistsClause(options: ShellTemplateOptions): string {
 function candidateBlock(options: ShellTemplateOptions): string {
   const isMcp = options.host === 'mcp';
 
-  const lines: string[] = [`[ -n "$_E" ] && printf '%s\\n' "$_E";`];
+  const lines: string[] = [];
 
   if (isMcp && options.mcpExtraCandidates && options.mcpExtraCandidates.length > 0) {
     const quoted = options.mcpExtraCandidates.map((candidate) => `"${candidate}"`).join(' ');
@@ -306,7 +318,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
 
   parts.push('_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";');
   parts.push('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";');
-  parts.push(candidateBlock(options));
+  parts.push('_P=;');
+  parts.push(envRootFastPathClause(options));
+  parts.push(`[ -n "$_P" ] || { ${candidateBlock(options)} }`);
   parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit 1; };`);
 
   // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
