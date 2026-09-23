@@ -77,6 +77,7 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
+        '@anthropic-ai/claude-agent-sdk': '^0.2.119',
         'zod': '^4.3.6',
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
@@ -148,7 +149,8 @@ async function buildHooks() {
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
-        'onnxruntime-node'
+        'onnxruntime-node',
+        '@anthropic-ai/claude-agent-sdk'
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
