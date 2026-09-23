@@ -35,7 +35,7 @@ Before doing anything, confirm a publishing tool is actually connected:
 For truly recurring, unattended runs (e.g., "post something every day"):
 
 - Use the `/loop` skill or a scheduled trigger (`create_trigger`) to fire this workflow on a cadence.
-- Autonomous mode still means step 3 happens — either the user pre-approved a content calendar in full (all drafts reviewed up front), or the agent posts and immediately reports what went out so the user can catch problems fast. Never skip the gate silently just because the run is unattended.
+- Autonomous mode still means step 3 happens — the user must pre-approve the full content calendar, or explicitly approve each draft before it is published. If no approval is available during an unattended run, save the draft and report that it's waiting on approval — never publish it. Never skip the gate silently just because the run is unattended.
 - Rate-limit yourself to the cadence the user specified. Don't burst-publish to "catch up" after a gap without checking in first.
 
 ## Guardrails
