@@ -186,7 +186,7 @@ export function isNewRejection(
 ): boolean {
   if (next.status !== 'rejected') return false;
   if (!previous || previous.status !== 'rejected') return true;
-  return previous.resetsAt !== next.resetsAt;
+  return toEpochMs(previous.resetsAt) !== toEpochMs(next.resetsAt);
 }
 
 /**

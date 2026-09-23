@@ -413,6 +413,13 @@ describe('RateLimitStore.set → new-rejection signal', () => {
     expect(store.set({ ...rejected, utilization: 1 })).toBe(false);
   });
 
+  it('does not re-report the same rejection when reset timestamp units differ', () => {
+    const store = freshStore();
+    const resetAtMs = FIXED_NOW + 60_000;
+    expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: resetAtMs / 1000 })).toBe(true);
+    expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: resetAtMs })).toBe(false);
+  });
+
   it('reports again when the same window is exhausted after a reset', () => {
     const store = freshStore();
     expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 })).toBe(true);
