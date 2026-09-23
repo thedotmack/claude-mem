@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
@@ -9,6 +9,8 @@ const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 let existingObservationIds = new Set<number>();
 let acceptingMutations = true;
 let createCollectionCalls = 0;
+// Runs inside chroma_create_collection, so a test can make the call fail in flight.
+let onCreateCollection: (() => void) | null = null;
 const addDocumentCalls: string[][] = [];
 const addDocumentPayloads: Array<{ ids: string[]; documents: string[]; metadatas: Array<Record<string, unknown>> }> = [];
 
@@ -19,6 +21,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
       callTool: async (toolName: string, args: Record<string, unknown>) => {
         if (toolName === 'chroma_create_collection') {
           createCollectionCalls += 1;
+          onCreateCollection?.();
           return {};
         }
 
@@ -150,6 +153,7 @@ describe('ChromaSync watermark gap persistence', () => {
     existingObservationIds = new Set<number>();
     acceptingMutations = true;
     createCollectionCalls = 0;
+    onCreateCollection = null;
     addDocumentCalls.length = 0;
     addDocumentPayloads.length = 0;
     ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
@@ -420,6 +424,81 @@ describe('ChromaSync watermark gap persistence', () => {
 
     expect(createCollectionCalls).toBe(0);
     expect(completed).toBe(false);
+  });
+
+  it('stops a backfill when shutdown refuses the collection creation in flight (#4069)', async () => {
+    onCreateCollection = () => {
+      // stop() begins while the create call is queued, so Chroma refuses it.
+      acceptingMutations = false;
+      throw new Error('Local Chroma mutations are unavailable after shutdown begins');
+    };
+
+    const completed = await new ChromaSync(project).ensureBackfilled(project, makeStore(project, [1]));
+
+    expect(addDocumentCalls).toEqual([]);
+    expect(ChromaSyncState.get(project).observations).toBe(0);
+    expect(completed).toBe(false);
+  });
+
+  it('still rejects when the collection cannot be created for another reason', async () => {
+    onCreateCollection = () => {
+      throw new Error('disk full');
+    };
+
+    await expect(
+      new ChromaSync(project).ensureBackfilled(project, makeStore(project, [1]))
+    ).rejects.toThrow('disk full');
+  });
+
+  it('does not log a shutdown-refused collection creation as a failed project (#4069)', async () => {
+    const errorSpy = spyOn(logger, 'error');
+    onCreateCollection = () => {
+      acceptingMutations = false;
+      throw new Error('Local Chroma mutations are unavailable after shutdown begins');
+    };
+
+    try {
+      const completed = await ChromaSync.backfillAllProjects(makeStore(project, [1, 2]));
+
+      expect(completed).toBe(false);
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('stops bootstrapping watermarks once shutdown begins (#4069)', async () => {
+    rmSync(join(process.env.CLAUDE_MEM_DATA_DIR!, 'chroma-sync-state.json'), { force: true });
+    expect(ChromaSyncState.exists()).toBe(false);
+
+    const base = makeStore(project, [1]);
+    const store = {
+      db: {
+        prepare(query: string) {
+          if (query.includes('SELECT DISTINCT project FROM observations')) {
+            return { all: () => [{ project }, { project: `${project}-b` }, { project: `${project}-c` }] };
+          }
+          return base.db.prepare(query);
+        },
+      },
+    } as any;
+    const errorSpy = spyOn(logger, 'error');
+    onCreateCollection = () => {
+      acceptingMutations = false;
+      throw new Error('Local Chroma mutations are unavailable after shutdown begins');
+    };
+
+    try {
+      const completed = await ChromaSync.backfillAllProjects(store);
+
+      // The first project's refused creation ends the bootstrap; the other
+      // projects never try to create the collection again.
+      expect(createCollectionCalls).toBe(1);
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(completed).toBe(false);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('reports a finished backfill as complete', async () => {

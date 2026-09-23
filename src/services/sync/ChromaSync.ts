@@ -780,7 +780,17 @@ export class ChromaSync {
     }
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project });
 
-    await this.ensureCollectionExists();
+    try {
+      await this.ensureCollectionExists();
+    } catch (error) {
+      // stop() can begin while the create call is in flight; Chroma then
+      // refuses it. That is an interrupted run, not a failed one.
+      if (shutdownBegan()) {
+        logger.info('CHROMA_SYNC', 'Backfill stopped: worker shutdown began', { project });
+        return false;
+      }
+      throw error;
+    }
 
     this.backfillAborted = false;
     const watermarks = ChromaSyncState.get(project);
@@ -1239,9 +1249,17 @@ export class ChromaSync {
       if (!ChromaSyncState.exists()) {
         logger.info('CHROMA_SYNC', 'Watermark cache missing — bootstrapping from Chroma (one-time)');
         for (const { project } of projects) {
+          if (shutdownBegan()) {
+            logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
+            return false;
+          }
           try {
             await sync.bootstrapWatermarksFromChroma(project, store);
           } catch (error) {
+            if (shutdownBegan()) {
+              logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
+              return false;
+            }
             logger.error('CHROMA_SYNC', `Bootstrap failed for project: ${project}`,
               {}, error instanceof Error ? error : new Error(String(error)));
           }
