@@ -103,7 +103,7 @@ function workerPostFireAndForget(
     headers: JSON_HEADERS,
     body: JSON.stringify({
       ...body,
-      platformSource: normalizePlatformSource("opencode"),
+      platformSource: normalizePlatformSource(PLATFORM_SOURCE),
     }),
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
