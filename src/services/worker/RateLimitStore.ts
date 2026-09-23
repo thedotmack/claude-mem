@@ -20,9 +20,22 @@
  *     surpassedThreshold?: number,
  *   }
  *
+ * Claude Code additionally attaches an undocumented `unifiedWindows` map
+ * (`{ five_hour: { utilization, resetsAt }, seven_day: {...} }`) carrying the
+ * live state of EVERY window, not just the one named by `rateLimitType`. The
+ * SDK passes it through untouched; it is optional here and only used when
+ * present.
+ *
  * Pattern adapted from meridian's proxy/rateLimitStore.ts (last-write-wins
  * per `rateLimitType` bucket, in-memory only). State resets on worker
  * restart — that's fine, the SDK pushes a fresh event on the next request.
+ *
+ * Two rules keep a bucket from going stale (#4068): every snapshot also
+ * refreshes the other windows from `unifiedWindows`, and the guard ignores
+ * any bucket whose `resetsAt` is already in the past. Without them a
+ * `seven_day` snapshot taken while that window was the binding one is never
+ * overwritten (later events are `five_hour`-typed) and keeps aborting the
+ * observer for days after the window has actually reset.
  *
  * Quota-aware abort logic gates the worker from continuing to consume a
  * subscription bucket once it crosses a per-window threshold. API-key
@@ -36,6 +49,12 @@ export type RateLimitWindow =
   | 'seven_day_sonnet'
   | 'overage';
 
+/** Per-window slice of the undocumented `unifiedWindows` map. */
+export interface RateLimitWindowSnapshot {
+  utilization?: number;
+  resetsAt?: number;
+}
+
 export interface RateLimitInfo {
   status?: 'allowed' | 'allowed_warning' | 'rejected';
   resetsAt?: number;
@@ -45,6 +64,20 @@ export interface RateLimitInfo {
   overageResetsAt?: number;
   isUsingOverage?: boolean;
   surpassedThreshold?: number;
+  /** Live state of every window, when the CLI attaches it. Not in the SDK type. */
+  unifiedWindows?: Partial<Record<string, RateLimitWindowSnapshot | null | undefined>>;
+}
+
+const KNOWN_WINDOWS: readonly RateLimitWindow[] = [
+  'five_hour',
+  'seven_day',
+  'seven_day_opus',
+  'seven_day_sonnet',
+  'overage',
+];
+
+function isKnownWindow(key: string): key is RateLimitWindow {
+  return (KNOWN_WINDOWS as readonly string[]).includes(key);
 }
 
 export interface RateLimitEntry extends RateLimitInfo {
@@ -63,10 +96,35 @@ export class RateLimitStore {
    */
   set(info: RateLimitInfo | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
-    const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
+    const { unifiedWindows, ...top } = info;
+    const key: RateLimitBucketKey = top.rateLimitType ?? 'default';
     const previous = this.entries.get(key);
-    this.entries.set(key, { ...info, observedAt: Date.now() });
-    return isNewRejection(previous, info);
+    const observedAt = Date.now();
+
+    // Every event carries the live state of all windows in `unifiedWindows`.
+    // Refresh the other buckets from it so a window that stopped being the
+    // binding one still gets its utilization/resetsAt updated (#4068). The
+    // primary bucket is written last so its explicit top-level fields win.
+    const unified = unifiedWindows && typeof unifiedWindows === 'object' ? unifiedWindows : undefined;
+    if (unified) {
+      for (const [window, snapshot] of Object.entries(unified)) {
+        if (!isKnownWindow(window) || window === key) continue;
+        if (!snapshot || typeof snapshot !== 'object') continue;
+        this.entries.set(window, {
+          rateLimitType: window,
+          ...pickSnapshot(snapshot),
+          observedAt,
+        });
+      }
+    }
+
+    const primarySnapshot = unified && key !== 'default' ? unified[key] : undefined;
+    this.entries.set(key, {
+      ...(primarySnapshot && typeof primarySnapshot === 'object' ? pickSnapshot(primarySnapshot) : {}),
+      ...top,
+      observedAt,
+    });
+    return isNewRejection(previous, top);
   }
 
   /** Snapshot a single bucket, or undefined if not yet seen. */
@@ -145,9 +203,33 @@ export function isNewRejection(
  * documents epoch ms, so anything too small to be ms is treated as seconds.
  */
 export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
-  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
-  const resetsAtMs = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
+  const resetsAtMs = toEpochMs(resetsAt);
+  if (resetsAtMs === undefined) return undefined;
   return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
+}
+
+/** Normalize a `resetsAt` that may be epoch seconds or epoch ms to epoch ms. */
+export function toEpochMs(resetsAt: number | undefined): number | undefined {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
+  return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
+}
+
+/**
+ * A bucket whose window has already reset says nothing about the current
+ * window. The guard must skip it rather than abort on a number that was
+ * true days ago (#4068).
+ */
+export function isStaleEntry(entry: RateLimitInfo, now: number = Date.now()): boolean {
+  const resetsAtMs = toEpochMs(entry.resetsAt);
+  return resetsAtMs !== undefined && resetsAtMs <= now;
+}
+
+/** Copy only the numeric fields of a `unifiedWindows` slice. */
+function pickSnapshot(snapshot: RateLimitWindowSnapshot): RateLimitWindowSnapshot {
+  const out: RateLimitWindowSnapshot = {};
+  if (typeof snapshot.utilization === 'number') out.utilization = snapshot.utilization;
+  if (typeof snapshot.resetsAt === 'number') out.resetsAt = snapshot.resetsAt;
+  return out;
 }
 
 /**
@@ -216,6 +298,9 @@ export function shouldAbortForQuota(
   for (const window of windows) {
     const entry = store.get(window);
     if (!entry) continue;
+    // The snapshot describes a window that has since reset; it no longer
+    // says anything about current usage. Wait for a fresh event instead.
+    if (isStaleEntry(entry, now)) continue;
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
@@ -257,7 +342,8 @@ export function shouldAbortForQuota(
       typeof util === 'number' &&
       util >= RESET_GRACE_UTILIZATION_FLOOR
     ) {
-      const msUntilReset = entry.resetsAt - now;
+      // resetsAt arrives as epoch seconds from Claude Code; normalize.
+      const msUntilReset = (toEpochMs(entry.resetsAt) as number) - now;
       if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
         return {
           abort: true,
