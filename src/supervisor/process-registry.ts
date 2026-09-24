@@ -190,11 +190,19 @@ export class ProcessRegistry {
     this.persist();
   }
 
-  unregister(id: string): void {
+  /** Remove only the process that exited, even if its fixed id was reused. */
+  unregister(id: string, expectedPid?: number): void {
     this.initialize();
-    const existing = this.entries.get(id);
-    this.entries.delete(id);
-    this.runtimeProcesses.delete(id);
+    let targetId = id;
+    let existing = this.entries.get(targetId);
+    if (expectedPid !== undefined && existing?.pid !== expectedPid) {
+      targetId = `${id}#superseded:${expectedPid}`;
+      existing = this.entries.get(targetId);
+      if (existing?.pid !== expectedPid) return;
+    }
+    if (!existing) return;
+    this.entries.delete(targetId);
+    this.runtimeProcesses.delete(targetId);
     this.persist();
     if (existing?.type === 'sdk') notifySlotAvailable();
   }
