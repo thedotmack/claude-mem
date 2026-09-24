@@ -24,6 +24,7 @@ const toggleMcpSchema = z.object({
 // prefs) and corrupts them on every GET (#3680 / #3861).
 const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_OPENCODE_API_KEY',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
   'CLAUDE_MEM_CHROMA_API_KEY',
   'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
@@ -201,6 +202,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
+      'CLAUDE_MEM_OPENCODE_API_KEY',
+      'CLAUDE_MEM_OPENCODE_MODEL',
+      'CLAUDE_MEM_OPENCODE_BASE_URL',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -258,9 +262,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      const validProviders = ['claude', 'gemini', 'openrouter', 'opencode'];
+      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "opencode"' };
       }
     }
 

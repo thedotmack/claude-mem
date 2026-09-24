@@ -332,7 +332,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), or OpenRouter — also used by the claude-mem observer"
+                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), OpenRouter, or OpenCode"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -341,6 +341,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
+                  <option value="opencode">OpenCode (Zen / Go)</option>
                 </select>
               </FormField>
 
@@ -444,6 +445,44 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'opencode' && (
+                <>
+                  <FormField
+                    label="OpenCode API Key"
+                    tooltip="Your OpenCode Zen / Go API key (or set OPENCODE_API_KEY env var)"
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_OPENCODE_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_API_KEY', e.target.value)}
+                      placeholder="Enter OpenCode API key..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenCode Model"
+                    tooltip="Model identifier from OpenCode"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENCODE_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENCODE_MODEL}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_MODEL', e.target.value)}
+                      placeholder="e.g., kimi-k3"
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenCode Endpoint URL"
+                    tooltip="Endpoint URL for OpenCode Go or Zen"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENCODE_BASE_URL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENCODE_BASE_URL}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_BASE_URL', e.target.value)}
+                      placeholder={DEFAULT_SETTINGS.CLAUDE_MEM_OPENCODE_BASE_URL}
                     />
                   </FormField>
                 </>
