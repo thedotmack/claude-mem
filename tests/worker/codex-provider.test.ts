@@ -92,6 +92,7 @@ describe('Codex provider integration', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
     expect(defaults.CLAUDE_MEM_PROVIDER).toBe('claude');
     expect(defaults.CLAUDE_MEM_CODEX_MODEL).toBe('');
+    expect(defaults.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('low');
     const routes = Object.create(SettingsRoutes.prototype) as any;
     expect(routes.validateSettings({ CLAUDE_MEM_PROVIDER: 'codex' }).valid).toBe(true);
   });

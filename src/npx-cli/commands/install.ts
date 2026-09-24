@@ -885,12 +885,12 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
+type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'codex' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1070,8 +1070,8 @@ function openBrowser(url: string): void {
 async function promptProvider(
   options: InstallOptions,
   /**
-   * Null only when login was skipped, which happens solely for an explicit
-   * `--provider claude`. That path cannot reach the CMEM branch below, which
+   * Null only when login was skipped for an explicit local provider.
+   * That path cannot reach the CMEM branch below, which
    * re-checks rather than assuming.
    */
   pairing: InstallerOAuthPairing | null,
@@ -1179,6 +1179,23 @@ async function promptProvider(
   if (selectedProvider === 'claude') {
     useSubscriptionAuth();
     return 'claude';
+  }
+
+  if (selectedProvider === 'codex') {
+    const model = options.model?.trim();
+    if (options.model !== undefined && !model) {
+      throw new Error('Codex model must not be empty. Omit --model to use the Codex default.');
+    }
+    const wrote = mergeSettings({
+      CLAUDE_MEM_PROVIDER: 'codex',
+      ...(model ? { CLAUDE_MEM_CODEX_MODEL: model } : {}),
+    });
+    if (!wrote) {
+      p.cancel('Could not save the Codex provider configuration.');
+      process.exit(1);
+    }
+    log.info('Configured Codex subscription provider. Run `codex login` before starting the worker.');
+    return 'codex';
   }
 
   if (selectedProvider === 'host') {
@@ -1844,21 +1861,21 @@ async function promptTelemetryOptIn(): Promise<void> {
 /**
  * Whether an install still has an account question to answer.
  *
- * `--provider claude` and `--provider host` are exempt: they either run on the
- * user's own Anthropic plan or the logged-in host agent and need no claude-mem
- * credentials. `gemini` and
+ * `--provider claude`, `--provider codex`, and `--provider host` are exempt:
+ * they use the user's existing local credentials and need no claude-mem
+ * account. `gemini` and
  * `openrouter` are NOT exempt — openrouter is the transport for the cmem
  * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
  * With no flag at all the provider screen can still offer CMEM Pro, so login
  * must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'host';
+  return provider !== 'claude' && provider !== 'codex' && provider !== 'host';
 }
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
+  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'host';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -2222,7 +2239,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
-      : '--provider claude runs memory on your own Anthropic plan.';
+      : options.provider === 'codex'
+        ? '--provider codex uses the local Codex subscription login.'
+        : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);
