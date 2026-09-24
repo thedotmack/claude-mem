@@ -89,13 +89,11 @@ const REPAIR_DRAIN_MAX_PAGES = 1;
 /**
  * Poll/kill-switch request-path budget. A page is ≤100 ops, so 8 pages covers
  * one max push (500) plus the 40–200 seq lags seen when #4140 skipped drain
- * entirely. Remaining catch-up is waitUntil + client retry, never a 200 with
+ * entirely. One bounded inline pass per push; remaining catch-up is client
+ * retry or /internal/v1/projection/drain, never a 200 with
  * head_seq > projected_seq.
  */
 export const POLL_PUSH_DRAIN_MAX_PAGES = 8;
-
-/** waitUntil continuation after a bounded poll-mode push that still lags. */
-export const POLL_CATCHUP_MAX_PAGES = 32;
 
 /**
  * Pro declares a 60-second maximum duration. Abort the complete response-body
@@ -117,6 +115,16 @@ function json(status: number, data: unknown): Response {
 
 function errorResponse(status: number, error: string): Response {
 	return json(status, { error });
+}
+
+const STORE_RETRY_AFTER_SECONDS = "5";
+
+/** Unguarded DO failures used to become uncaught exceptions (quota / rows-read). */
+function retryableStoreUnavailable(label: string, error: unknown): Response {
+	console.error(`sync-hub ${label} failed:`, error);
+	const response = json(503, { error: "sync_hub_unavailable", retryable: true });
+	response.headers.set("Retry-After", STORE_RETRY_AFTER_SECONDS);
+	return response;
 }
 
 interface AuthOk {
@@ -327,7 +335,6 @@ async function handlePushOps(
 	deviceName: string | null,
 	options: {
 		pollMode?: boolean;
-		waitUntil?: (promise: Promise<unknown>) => void;
 	} = {},
 ): Promise<Response> {
 	const raw = await request.text();
@@ -372,8 +379,8 @@ async function handlePushOps(
 		// (head_seq <= projected_seq). 1% Workers Logs never advanced the
 		// checkpoint. The cost cuts that stay: refuse WS (idle DO pin),
 		// drop extra getProjectionState/heartbeat knocks inside drain.
-		// Poll mode (PLAN.md path A) bounds the request-path drain and
-		// continues via waitUntil — it never lies with a lagged 200.
+		// Poll mode bounds the request-path drain to one inline pass — it
+		// never lies with a lagged 200 and never starts a waitUntil loop.
 		const projection = await drainProjection(env, userId, result.head_seq, {
 			...(options.pollMode ? { maxPages: POLL_PUSH_DRAIN_MAX_PAGES } : {}),
 		});
@@ -381,7 +388,6 @@ async function handlePushOps(
 			return json(200, { ...result, projected_seq: projection.projectedSeq });
 		}
 		if (projection.ok) {
-			scheduleProjectionCatchUp(env, userId, result.head_seq, options.waitUntil);
 			return json(503, {
 				error: "projection_catching_up",
 				durable: true,
@@ -400,24 +406,6 @@ async function handlePushOps(
 	} catch (e) {
 		return mapHubError(e);
 	}
-}
-
-function scheduleProjectionCatchUp(
-	env: Env,
-	userId: string,
-	targetSeq: string,
-	waitUntil?: (promise: Promise<unknown>) => void,
-): void {
-	if (!waitUntil) return;
-	waitUntil((async () => {
-		try {
-			await drainProjection(env, userId, targetSeq, {
-				maxPages: POLL_CATCHUP_MAX_PAGES,
-			});
-		} catch (error) {
-			console.error("sync-hub poll-mode projection catch-up failed:", error);
-		}
-	})());
 }
 
 async function handleGetChanges(
@@ -680,7 +668,19 @@ export async function drainProjection(
 		throw new Error("projection maxPages must be a positive safe integer");
 	}
 	const stub = env.SYNC_HUB.getByName(userId);
-	let state = await stub.getProjectionState();
+	let state: Awaited<ReturnType<typeof stub.getProjectionState>>;
+	try {
+		state = await stub.getProjectionState();
+	} catch (error) {
+		console.error("sync-hub projection drain: getProjectionState failed:", error);
+		return {
+			ok: false,
+			error: "sync_hub_unavailable",
+			projectedSeq: "0",
+			httpStatus: 503,
+			retryable: true,
+		};
+	}
 	if (decimalAtLeast(state.projected_seq, targetSeq)) {
 		return { ok: true, projectedSeq: state.projected_seq };
 	}
@@ -874,10 +874,16 @@ export async function drainProjection(
 			}
 		}
 	} catch (error) {
+		let checkpoint = projectedSeq;
+		try {
+			checkpoint = (await stub.getProjectionState()).projected_seq;
+		} catch (stateError) {
+			console.error("sync-hub projection drain: checkpoint read failed:", stateError);
+		}
 		return {
 			ok: false,
 			error: error instanceof Error ? error.message : "projection_failed",
-			projectedSeq: (await stub.getProjectionState()).projected_seq,
+			projectedSeq: checkpoint,
 			httpStatus: 503,
 			retryable: true,
 		};
@@ -904,7 +910,12 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 		return errorResponse(400, "expected {protocol_version:1,user_id,through_seq?}");
 	}
 	const stub = env.SYNC_HUB.getByName(record.user_id);
-	const state = await stub.getProjectionState();
+	let state: Awaited<ReturnType<typeof stub.getProjectionState>>;
+	try {
+		state = await stub.getProjectionState();
+	} catch (error) {
+		return retryableStoreUnavailable("repair drain", error);
+	}
 	const target = record.through_seq === undefined ? state.head_seq : record.through_seq;
 	if (typeof target !== "string" || !CANONICAL_DECIMAL.test(target)) {
 		return errorResponse(400, "through_seq must be a canonical unsigned decimal string");
@@ -912,10 +923,16 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 	if (decimalAtLeast(target, state.head_seq) && target !== state.head_seq) {
 		return errorResponse(400, "through_seq exceeds Hub head_seq");
 	}
-	const drained = await drainProjection(env, record.user_id, target, {
-		maxPages: REPAIR_DRAIN_MAX_PAGES,
-	});
-	const finalState = await stub.getProjectionState();
+	let drained: DrainResult;
+	let finalState: Awaited<ReturnType<typeof stub.getProjectionState>>;
+	try {
+		drained = await drainProjection(env, record.user_id, target, {
+			maxPages: REPAIR_DRAIN_MAX_PAGES,
+		});
+		finalState = await stub.getProjectionState();
+	} catch (error) {
+		return retryableStoreUnavailable("repair drain", error);
+	}
 	if (!drained.ok) {
 		return json(drained.httpStatus, {
 			error: drained.error,
@@ -942,7 +959,7 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 }
 
 export default {
-	async fetch(request, env, ctx): Promise<Response> {
+	async fetch(request, env, _ctx): Promise<Response> {
 		const url = new URL(request.url);
 		const { pathname } = url;
 		if (pathname === "/internal/v1/projection/drain") {
@@ -1016,7 +1033,11 @@ export default {
 				return refusal;
 			}
 			const stub = env.SYNC_HUB.getByName(auth.userId);
-			return stub.fetch(request);
+			try {
+				return await stub.fetch(request);
+			} catch (error) {
+				return retryableStoreUnavailable("websocket upgrade", error);
+			}
 		}
 
 		// All non-WS routes funnel through one point so the poll-mode header
@@ -1028,7 +1049,6 @@ export default {
 				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
 				return handlePushOps(request, env, auth.userId, auth.deviceId, auth.deviceName, {
 					pollMode: killSwitch.tripped,
-					waitUntil: (promise) => ctx.waitUntil(promise),
 				});
 			}
 
