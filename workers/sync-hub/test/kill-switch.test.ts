@@ -175,6 +175,39 @@ describe("kill switch: front Worker behavior", () => {
 		expect(lastBody.head_seq).toBe(String(lagged + 1));
 	});
 
+	it("tripped ⇒ a bounded inline catch-up does not continue in the background", async () => {
+		await trip();
+		const user = "user-ks-no-waituntil";
+		const stub = env.SYNC_HUB.getByName(user);
+		const lagged = POLL_PUSH_DRAIN_MAX_PAGES * PROJECTION_PAGE_MAX_OPS;
+		for (let start = 1; start <= lagged; start += 400) {
+			const count = Math.min(400, lagged - start + 1);
+			const seed = await Promise.all(
+				Array.from({ length: count }, (_, index) => observationOp(String(start + index), "1", "dev-ks")),
+			);
+			const seeded = await stub.pushOps("dev-ks", seed, null);
+			if ("refused" in seeded) throw new Error(seeded.error);
+		}
+
+		const next = await observationOp(String(lagged + 1), "1", "dev-ks");
+		const first = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST",
+			headers: { ...headers(user), "Content-Type": "application/json" },
+			body: JSON.stringify({ protocol_version: 2, ops: [next] }),
+		});
+		expect(first.status).toBe(503);
+		expect(await first.json()).toMatchObject({
+			error: "projection_catching_up",
+			projected_seq: String(lagged),
+			head_seq: String(lagged + 1),
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		const state = await stub.getProjectionState();
+		expect(state.projected_seq).toBe(String(lagged));
+		expect(state.head_seq).toBe(String(lagged + 1));
+	});
+
 	it("tripped ⇒ pulls still succeed AND carry X-Sync-Mode: poll (poll-path convergence intact)", async () => {
 		const user = "user-ks-pull";
 		// Seed one op while tripped — write path must be unaffected.
