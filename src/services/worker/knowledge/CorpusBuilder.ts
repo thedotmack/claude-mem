@@ -34,7 +34,12 @@ export class CorpusBuilder {
     this.renderer = new CorpusRenderer();
   }
 
-  async build(name: string, description: string, filter: CorpusFilter): Promise<CorpusFile> {
+  async build(
+    name: string,
+    description: string,
+    filter: CorpusFilter,
+    options: { writeFile?: boolean } = {}
+  ): Promise<CorpusFile> {
     logger.debug('WORKER', `Building corpus "${name}" with filter`, { filter });
 
     const searchArgs: Record<string, unknown> = {};
@@ -91,7 +96,9 @@ export class CorpusBuilder {
     const renderedText = this.renderer.renderCorpus(corpus);
     corpus.stats.token_estimate = this.renderer.estimateTokens(renderedText);
 
-    this.corpusStore.write(corpus);
+    if (options.writeFile !== false) {
+      this.corpusStore.write(corpus);
+    }
 
     logger.debug('WORKER', `Corpus "${name}" built with ${observations.length} observations, ~${corpus.stats.token_estimate} tokens`);
 

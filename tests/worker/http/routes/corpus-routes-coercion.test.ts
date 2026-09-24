@@ -72,22 +72,36 @@ function captureChain(mockApp: any, targetPath: string): (req: Request, res: Res
 describe('CorpusRoutes Type Coercion', () => {
   let handler: (req: Request, res: Response) => void;
   let mockBuild: ReturnType<typeof mock>;
+  let mockRead: ReturnType<typeof mock>;
+  let mockBackup: ReturnType<typeof mock>;
+  let mockWrite: ReturnType<typeof mock>;
+  let rebuildHandler: (req: Request, res: Response) => void;
 
   beforeEach(() => {
     mockBuild = mock((name: string, description: string, filter: any) => Promise.resolve(createCorpus(name, filter)));
+    mockRead = mock(() => null);
+    mockBackup = mock(() => '/tmp/native.corpus.json.bak');
+    mockWrite = mock(() => undefined);
 
     const routes = new CorpusRoutes(
-      { list: mock(() => []), read: mock(() => null), delete: mock(() => false) } as any,
+      { list: mock(() => []), read: mockRead, delete: mock(() => false), backup: mockBackup, write: mockWrite } as any,
       { build: mockBuild } as any,
       {} as any
     );
 
-    const mockApp: any = {
+    const buildApp: any = {
       get: mock(() => {}),
       delete: mock(() => {}),
     };
-    handler = captureChain(mockApp, '/api/corpus');
-    routes.setupRoutes(mockApp as any);
+    handler = captureChain(buildApp, '/api/corpus');
+    routes.setupRoutes(buildApp as any);
+
+    const rebuildApp: any = {
+      get: mock(() => {}),
+      delete: mock(() => {}),
+    };
+    rebuildHandler = captureChain(rebuildApp, '/api/corpus/:name/rebuild');
+    routes.setupRoutes(rebuildApp as any);
   });
 
   it('accepts native array filters and numeric limit', async () => {
@@ -146,6 +160,22 @@ describe('CorpusRoutes Type Coercion', () => {
       types: ['decision', 'bugfix'],
       concepts: ['hooks', 'agent'],
       files: ['src/a.ts', 'src/b.ts'],
+    });
+  });
+
+  it('accepts camelCase date filters and persists them in corpus filter format', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'camel-dates',
+      dateStart: '2025-01-01T00:00:00.000Z',
+      dateEnd: '2025-01-31T23:59:59.999Z',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('camel-dates', '', {
+      date_start: '2025-01-01T00:00:00.000Z',
+      date_end: '2025-01-31T23:59:59.999Z',
     });
   });
 
@@ -210,5 +240,60 @@ describe('CorpusRoutes Type Coercion', () => {
 
     expect(statusSpy).toHaveBeenCalledWith(400);
     expect(mockBuild).not.toHaveBeenCalled();
+  });
+
+  it('backs up the previous corpus and warns when a rebuild shrinks it', async () => {
+    mockRead.mockImplementation(() => createCorpus('shrinking', {
+      query: 'legacy docs',
+      date_start: '2025-01-01T00:00:00.000Z',
+      date_end: '2025-01-31T23:59:59.999Z',
+    }));
+    mockBuild.mockImplementation(() => Promise.resolve({
+      ...createCorpus('shrinking', {
+        query: 'legacy docs',
+        date_start: '2025-01-01T00:00:00.000Z',
+        date_end: '2025-01-31T23:59:59.999Z',
+      }),
+      stats: {
+        observation_count: 2,
+        token_estimate: 0,
+        date_range: { earliest: '', latest: '' },
+        type_breakdown: {},
+      },
+    }));
+    mockRead.mockImplementationOnce(() => ({
+      ...createCorpus('shrinking', {
+        query: 'legacy docs',
+        date_start: '2025-01-01T00:00:00.000Z',
+        date_end: '2025-01-31T23:59:59.999Z',
+      }),
+      stats: {
+        observation_count: 5,
+        token_estimate: 0,
+        date_range: { earliest: '', latest: '' },
+        type_breakdown: {},
+      },
+    }));
+
+    const { req, res, jsonSpy } = createMockReqRes({});
+    req.params = { name: 'shrinking' };
+
+    rebuildHandler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBackup).toHaveBeenCalledWith('shrinking');
+    expect(mockBuild).toHaveBeenCalledWith('shrinking', '', {
+      query: 'legacy docs',
+      date_start: '2025-01-01T00:00:00.000Z',
+      date_end: '2025-01-31T23:59:59.999Z',
+    }, { writeFile: false });
+    expect(mockWrite).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'shrinking',
+      stats: expect.objectContaining({ observation_count: 2 }),
+    }));
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({
+      backup_path: '/tmp/native.corpus.json.bak',
+      warning: expect.stringContaining('shrank from 5 to 2 observations'),
+    }));
   });
 });

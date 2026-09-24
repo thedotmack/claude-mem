@@ -51,6 +51,8 @@ const buildCorpusSchema = z.object({
   concepts: stringArrayLike,
   files: stringArrayLike,
   query: z.string().optional(),
+  dateStart: z.string().optional(),
+  dateEnd: z.string().optional(),
   date_start: z.string().optional(),
   date_end: z.string().optional(),
   limit: positiveIntegerLike,
@@ -89,8 +91,10 @@ export class CorpusRoutes extends BaseRouteHandler {
   }
 
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { name, description, project, types, concepts, files, query, date_start, date_end, limit } =
+    const { name, description, project, types, concepts, files, query, dateStart, dateEnd, date_start, date_end, limit } =
       req.body as z.infer<typeof buildCorpusSchema>;
+    const normalizedDateStart = date_start ?? dateStart;
+    const normalizedDateEnd = date_end ?? dateEnd;
 
     const filter: CorpusFilter = {};
     if (project) filter.project = project;
@@ -98,8 +102,8 @@ export class CorpusRoutes extends BaseRouteHandler {
     if (concepts && concepts.length > 0) filter.concepts = concepts;
     if (files && files.length > 0) filter.files = files;
     if (query) filter.query = query;
-    if (date_start) filter.date_start = date_start;
-    if (date_end) filter.date_end = date_end;
+    if (normalizedDateStart) filter.date_start = normalizedDateStart;
+    if (normalizedDateEnd) filter.date_end = normalizedDateEnd;
     if (limit !== undefined) filter.limit = limit;
 
     logger.info('SEARCH', 'Building corpus', { name, project, filterKeys: Object.keys(filter) });
@@ -150,10 +154,26 @@ export class CorpusRoutes extends BaseRouteHandler {
       return;
     }
 
-    const corpus = await this.corpusBuilder.build(name, existingCorpus.description, existingCorpus.filter);
+    const corpus = await this.corpusBuilder.build(name, existingCorpus.description, existingCorpus.filter, { writeFile: false });
+    const backupPath = this.corpusStore.backup(name);
+    this.corpusStore.write(corpus);
 
     const { observations, ...metadata } = corpus;
-    res.json(metadata);
+    const previousCount = existingCorpus.stats.observation_count;
+    const rebuiltCount = corpus.stats.observation_count;
+    const warning = rebuiltCount < previousCount
+      ? `Rebuilt corpus "${name}" shrank from ${previousCount} to ${rebuiltCount} observations. Previous file backed up to ${backupPath}.`
+      : undefined;
+
+    if (warning) {
+      logger.warn('SEARCH', warning, { name, previousCount, rebuiltCount, backupPath });
+    }
+
+    res.json({
+      ...metadata,
+      backup_path: backupPath,
+      warning,
+    });
   });
 
   private handlePrimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
