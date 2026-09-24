@@ -613,6 +613,6 @@ export function touchPidFile(): void {
   }
 }
 
-export function cleanStalePidFile(): ValidateWorkerPidStatus {
-  return validateWorkerPidFile({ logAlive: false });
+export function cleanStalePidFile(options: { removeStale?: boolean } = {}): ValidateWorkerPidStatus {
+  return validateWorkerPidFile({ logAlive: false, removeStale: options.removeStale });
 }
