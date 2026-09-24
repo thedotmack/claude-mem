@@ -15,6 +15,7 @@ import {
 } from './error-scrub.js';
 import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
 import { telemetryBuffer } from './buffer.js';
+import { shouldSampleEvent } from './volume.js';
 // logger.warn ONLY in this module — logger.error routes through the error sink
 // back into captureException (logger.ts setErrorSink), which would recurse.
 import { logger } from '../../utils/logger.js';
@@ -109,7 +110,7 @@ function getClient(): PostHog {
 // ---------------------------------------------------------------------------
 
 /** Send at most one $exception per fingerprint per this window. */
-const ERROR_RATELIMIT_WINDOW_MS = 60_000;
+const ERROR_RATELIMIT_WINDOW_MS = 15 * 60_000; // was 60s; 15m cuts $exception storms
 /**
  * Hard cap on the dedupe map size so a pathological stream of UNIQUE
  * fingerprints can't grow it without bound. When exceeded, the least-recently
@@ -118,6 +119,51 @@ const ERROR_RATELIMIT_WINDOW_MS = 60_000;
  * worst-case memory to O(MAX) small records.
  */
 const ERROR_FINGERPRINT_MAX = 500;
+
+/**
+ * Client-side denylist for known non-actionable noise. Mirrors PostHog
+ * suppression rules (2026-09-19 triage) and the Sep 2026 CMEM volume audit.
+ * DROP these before rate-limit / send so they never bill.
+ *
+ * ChromaUnavailableError alone was ~2.6M $exception / 7d (expected chroma-mcp
+ * downtime). ClassifiedProviderError / McpError are similarly environmental.
+ * Prefer a future state-shaped analytics event over Error Tracking for these.
+ */
+const NOISE_EXCEPTION_TYPES = new Set([
+  'AbortError',
+  'InstallAbortError',
+  'ChromaUnavailableError',
+  'ClassifiedProviderError',
+  'McpError',
+]);
+
+const NOISE_MESSAGE_SUBSTRINGS = [
+  'The operation was aborted',
+  'EPIPE: broken pipe',
+  'broken pipe, write',
+  'Claude executable not found',
+  'Executable not found in $PATH: "uvx"',
+  "Executable not found in $PATH: 'uvx'",
+  'Executable not found in $PATH: "uvx.exe"',
+];
+
+/**
+ * True when this exception should never be reported to PostHog Error Tracking.
+ * Pure / never throws.
+ */
+export function isNoiseException(type: string, message: string): boolean {
+  try {
+    if (NOISE_EXCEPTION_TYPES.has(type)) return true;
+    const msg = message || '';
+    for (const needle of NOISE_MESSAGE_SUBSTRINGS) {
+      if (msg.includes(needle)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 
 type ErrorRateState = {
   /** Total occurrences seen this window (including dropped ones). */
@@ -345,6 +391,10 @@ function errorBeforeSend(event: EventMessage | null): EventMessage | null {
     if (typeof props.$exception_type === 'string') type = props.$exception_type;
     if (typeof props.$exception_message === 'string') message = props.$exception_message;
 
+    if (isNoiseException(type, message)) {
+      return null;
+    }
+
     // fingerprintError already applies messageTemplate internally — pass the
     // raw (redacted) message, do not pre-template it (S1).
     const fingerprint = fingerprintError(type, message, stack);
@@ -417,6 +467,9 @@ function captureExceptionInner(
   }
 
   const scrubbed = scrubError(err);
+  if (isNoiseException(scrubbed.type, scrubbed.message)) {
+    return;
+  }
   const fingerprint = fingerprintError(scrubbed.type, scrubbed.message, scrubbed.stack);
   const decision = applyErrorRateLimit(fingerprint, Date.now());
   if (!decision.send) {
@@ -516,9 +569,18 @@ function captureEventInner(
     return;
   }
 
+  // Volume gate: sample high-churn operational events (worker_started clean
+  // restarts, search/skill/hook, context_injected_rollup). Crashes and
+  // funnel/pro_* events always send. See volume.ts.
+  const sample = shouldSampleEvent(event, props);
+  if (!sample.send) {
+    return;
+  }
+
   const properties: Record<string, unknown> = scrubProperties({
     ...buildBaseProperties(),
     ...(props ?? {}),
+    ...(sample.sampleRate < 1 ? { telemetry_sample_rate: sample.sampleRate } : {}),
   });
   // $-prefixed PostHog directives are not user data and bypass the whitelist;
   // they are added AFTER scrubbing.

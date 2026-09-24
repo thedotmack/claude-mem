@@ -10,6 +10,7 @@ import {
 import {
   captureException,
   captureEvent,
+  isNoiseException,
   __resetTelemetryForTests,
   __errorBeforeSendForTests,
 } from '../../src/services/telemetry/telemetry';
@@ -101,7 +102,9 @@ describe('captureException: kill-switch', () => {
     process.env.CLAUDE_MEM_TELEMETRY_ERRORS = '0';
     __resetTelemetryForTests();
     captureException(new Error('boom'));
-    captureEvent('worker_started');
+    // Use a non-sampleable funnel event — worker_started is volume-sampled
+    // and would flake this assertion depending on install-id hash.
+    captureEvent('pro_checkout_started');
     expect(postHogExceptionCalls.length).toBe(0);
     expect(postHogCaptureCalls.length).toBe(1);
   });
@@ -344,5 +347,58 @@ describe('logger error-sink hook', () => {
       throw new Error('sink exploded');
     });
     expect(() => logger.error('WORKER', 'boom', undefined, new Error('x'))).not.toThrow();
+  });
+});
+
+
+describe('captureException: noise denylist', () => {
+  it('drops AbortError entirely', () => {
+    const err = new Error('The operation was aborted.');
+    err.name = 'AbortError';
+    captureException(err);
+    expect(postHogExceptionCalls.length).toBe(0);
+  });
+
+  it('drops Claude executable not found setup noise', () => {
+    captureException(new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH'));
+    expect(postHogExceptionCalls.length).toBe(0);
+  });
+
+  it('drops EPIPE broken pipe', () => {
+    captureException(new Error('EPIPE: broken pipe, write'));
+    expect(postHogExceptionCalls.length).toBe(0);
+  });
+
+  it('still sends real product errors', () => {
+    const err = new Error('database disk image is malformed');
+    err.name = 'SQLiteError';
+    captureException(err);
+    expect(postHogExceptionCalls.length).toBe(1);
+  });
+
+
+  it('drops ChromaUnavailableError (volume storm)', () => {
+    const err = new Error('chroma-mcp connection in backoff');
+    err.name = 'ChromaUnavailableError';
+    captureException(err);
+    expect(postHogExceptionCalls.length).toBe(0);
+  });
+
+  it('drops ClassifiedProviderError environmental noise', () => {
+    const err = new Error('rate limited by provider');
+    err.name = 'ClassifiedProviderError';
+    captureException(err);
+    expect(postHogExceptionCalls.length).toBe(0);
+  });
+
+  it('isNoiseException flags chroma/provider noise', () => {
+    expect(isNoiseException('ChromaUnavailableError', 'backoff')).toBe(true);
+    expect(isNoiseException('ClassifiedProviderError', 'rate limited')).toBe(true);
+    expect(isNoiseException('McpError', 'tool failed')).toBe(true);
+  });
+
+  it('isNoiseException classifies known noise', () => {
+    expect(isNoiseException('AbortError', 'The operation was aborted.')).toBe(true);
+    expect(isNoiseException('SQLiteError', 'database disk image is malformed')).toBe(false);
   });
 });

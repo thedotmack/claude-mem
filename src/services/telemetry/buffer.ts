@@ -12,7 +12,7 @@
  *      This collapses the per-turn stream to ~one event per session.
  *
  *   2. context_injected → context_injected_rollup — TIME-WINDOW accumulator,
- *      a single module-level bucket flushed every 5 minutes. context_injected
+ *      a single module-level bucket flushed every 30 minutes. context_injected
  *      is a HOOK-level event (no sessionDbId in scope — see SearchRoutes.ts),
  *      so it CANNOT be keyed by session. It stays a wall-clock rollup. Do NOT
  *      "unify" these two paths — the asymmetry is intentional and load-bearing.
@@ -442,9 +442,10 @@ export const telemetryBuffer = {
    *   - the time-window flush (context_injected) every intervalMs
    *   - the per-session safety sweep every SAFETY_SWEEP_INTERVAL_MS
    *
-   * @param intervalMs  Time-window flush interval. Defaults to 5 minutes.
+   * @param intervalMs  Time-window flush interval. Defaults to 30 minutes
+   *   (was 5m; raised to cut context_injected_rollup PostHog volume ~6×).
    */
-  start(intervalMs: number = 5 * 60 * 1000): void {
+  start(intervalMs: number = 30 * 60 * 1000): void {
     if (intervalHandle === null) {
       intervalHandle = setInterval(() => {
         telemetryBuffer.flush();
