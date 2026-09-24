@@ -50,6 +50,7 @@ describe('SessionStore session lifecycle', () => {
       expect(session?.id).toBe(id);
       expect(session?.content_session_id).toBe('content-get');
       expect(session?.project).toBe('test-project');
+      expect(session?.session_kind).toBe('user');
       expect(session?.user_prompt).toBe('Test prompt');
       expect(session?.memory_session_id).toBeNull();
     });
@@ -113,6 +114,51 @@ describe('SessionStore session lifecycle', () => {
       expect(store.getSessionById(claudeId)?.platform_source).toBe('claude');
       expect(store.getSessionById(cursorId)?.platform_source).toBe('cursor');
       expect(store.createSDKSession('content-platform-3', 'later', 'prompt', undefined, 'claude')).toBe(claudeId);
+    });
+  });
+
+  describe('session_kind', () => {
+    it('defaults to user', () => {
+      const id = store.createSDKSession('content-kind-1', 'project', 'prompt');
+      expect(store.getSessionById(id)?.session_kind).toBe('user');
+    });
+
+    it('stores observer_warmup when requested', () => {
+      const id = store.createSDKSession(
+        'content-kind-2',
+        'project',
+        'Warmup ping - reply with the single word: ready',
+        undefined,
+        'cursor',
+        'observer_warmup',
+      );
+      expect(store.getSessionById(id)?.session_kind).toBe('observer_warmup');
+    });
+
+    it('reports the latest session epoch for a kind scoped by project and platform', () => {
+      const earlier = store.createSDKSession(
+        'content-kind-3a',
+        'project',
+        'Warmup ping - reply with the single word: ready',
+        undefined,
+        'cursor',
+        'observer_warmup',
+      );
+      const earlierEpoch = (store.db.prepare('SELECT started_at_epoch FROM sdk_sessions WHERE id = ?').get(earlier) as { started_at_epoch: number }).started_at_epoch;
+
+      const later = store.createSDKSession(
+        'content-kind-3b',
+        'project',
+        'Warmup ping - reply with the single word: ready',
+        undefined,
+        'cursor',
+        'observer_warmup',
+      );
+      const laterEpoch = (store.db.prepare('SELECT started_at_epoch FROM sdk_sessions WHERE id = ?').get(later) as { started_at_epoch: number }).started_at_epoch;
+
+      expect(store.getLatestSessionStartEpochByKind('project', 'observer_warmup', 'cursor')).toBe(laterEpoch);
+      expect(store.getLatestSessionStartEpochByKind('project', 'observer_warmup', 'claude')).toBeNull();
+      expect(laterEpoch).toBeGreaterThanOrEqual(earlierEpoch);
     });
   });
 

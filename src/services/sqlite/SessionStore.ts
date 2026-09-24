@@ -155,6 +155,7 @@ interface SdkSessionDetailRow {
   memory_session_id: string | null;
   project: string;
   platform_source: string;
+  session_kind: 'user' | 'observer_warmup';
   user_prompt: string;
   custom_title: string | null;
   status: string;
@@ -214,6 +215,7 @@ export class SessionStore {
     this.initializeSyncHubLaunchBaseline();
     this.normalizeConceptTags();
     this.ensureSDKSessionsObservedColumns();
+    this.ensureSDKSessionsKindColumn();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
   }
@@ -339,6 +341,7 @@ export class SessionStore {
         memory_session_id TEXT UNIQUE,
         project TEXT NOT NULL,
         platform_source TEXT NOT NULL DEFAULT '${DEFAULT_PLATFORM_SOURCE}',
+        session_kind TEXT NOT NULL DEFAULT 'user' CHECK(session_kind IN ('user', 'observer_warmup')),
         user_prompt TEXT,
         started_at TEXT NOT NULL,
         started_at_epoch INTEGER NOT NULL,
@@ -353,13 +356,13 @@ export class SessionStore {
     this.db.run(`
       INSERT INTO sdk_sessions_new (
         id, content_session_id, memory_session_id, project, platform_source,
-        user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
+        session_kind, user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
         status, worker_port, prompt_counter, custom_title
       )
       SELECT
         id, content_session_id, memory_session_id, project,
         COALESCE(NULLIF(platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}'),
-        user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
+        'user', user_prompt, started_at, started_at_epoch, completed_at, completed_at_epoch,
         status, worker_port, prompt_counter, custom_title
       FROM sdk_sessions
     `);
@@ -1031,6 +1034,7 @@ export class SessionStore {
         memory_session_id TEXT UNIQUE,
         project TEXT NOT NULL,
         platform_source TEXT NOT NULL DEFAULT 'claude',
+        session_kind TEXT NOT NULL DEFAULT 'user' CHECK(session_kind IN ('user', 'observer_warmup')),
         user_prompt TEXT,
         started_at TEXT NOT NULL,
         started_at_epoch INTEGER NOT NULL,
@@ -1124,6 +1128,21 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(6, new Date().toISOString());
+  }
+
+  private ensureSDKSessionsKindColumn(): void {
+    const sessionsInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasSessionKind = sessionsInfo.some(col => col.name === 'session_kind');
+
+    if (!hasSessionKind) {
+      this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'user' CHECK(session_kind IN ('user', 'observer_warmup'))`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_sdk_sessions_kind ON sdk_sessions(session_kind)`);
+      logger.debug('DB', 'Added session_kind column to sdk_sessions table');
+    } else {
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_sdk_sessions_kind ON sdk_sessions(session_kind)`);
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
   }
 
   // #3378: legacy DBs contain child rows whose memory_session_id has no
@@ -2671,6 +2690,7 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+             COALESCE(NULLIF(session_kind, ''), 'user') as session_kind,
              user_prompt, custom_title, status,
              observed_model, observed_billing
       FROM sdk_sessions
@@ -2887,7 +2907,8 @@ export class SessionStore {
     project: string,
     userPrompt: string,
     customTitle?: string,
-    platformSource?: string
+    platformSource?: string,
+    sessionKind: 'user' | 'observer_warmup' = 'user',
   ): number {
     const now = new Date();
     const nowEpoch = now.getTime();
@@ -2933,15 +2954,40 @@ export class SessionStore {
 
     const result = this.db.prepare(`
       INSERT INTO sdk_sessions
-      (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch);
+      (content_session_id, memory_session_id, project, platform_source, session_kind, user_prompt, custom_title, started_at, started_at_epoch, status)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'active')
+    `).run(contentSessionId, project, normalizedPlatformSource, sessionKind, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch);
 
     if (customTitle) {
       this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
     }
 
     return Number(result.lastInsertRowid);
+  }
+
+  getLatestSessionStartEpochByKind(
+    project: string,
+    sessionKind: 'user' | 'observer_warmup',
+    platformSource?: string,
+  ): number | null {
+    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+    const platformClause = normalizedPlatformSource
+      ? `AND COALESCE(NULLIF(platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
+      : '';
+    const params: SQLQueryBindings[] = [project, sessionKind];
+    if (normalizedPlatformSource) params.push(normalizedPlatformSource);
+
+    const row = this.db.prepare(`
+      SELECT started_at_epoch
+      FROM sdk_sessions
+      WHERE project = ?
+        AND COALESCE(NULLIF(session_kind, ''), 'user') = ?
+        ${platformClause}
+      ORDER BY started_at_epoch DESC
+      LIMIT 1
+    `).get(...params) as { started_at_epoch: number } | undefined;
+
+    return row?.started_at_epoch ?? null;
   }
 
   /**
