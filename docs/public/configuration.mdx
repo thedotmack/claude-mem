@@ -37,6 +37,8 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and rate
 
 Run `codex login` as the user running the worker, then install with `npx claude-mem install --provider codex`. Add `--model gpt-6-luna` to choose that model, or select Codex and enter a model in the viewer settings. Codex uses the local CLI subscription login; it does not require an OpenAI API key.
 
+Reinstalling without `--model` keeps the saved Codex model. On a first install the setting is empty and Codex chooses its default. Clear the Codex Model field in the viewer to return to the default later.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `CLAUDE_MEM_CODEX_MODEL` | empty | Codex chooses its default model when empty; otherwise use a model available to your subscription. |

@@ -7,6 +7,11 @@ No OpenAI API key is used, and failures do not fall back to another provider.
 2. Run `npx claude-mem install --provider codex` (optionally add `--model gpt-6-luna`), or select Codex in the viewer, or set `CLAUDE_MEM_PROVIDER` to `codex` in `settings.json`.
 3. Restart the claude-mem worker.
 
+If `--model` is omitted, the installer keeps any saved Codex model. On a first
+install the model setting is empty, so Codex chooses its default. To return to
+that default after choosing a model, clear the Codex Model field in the viewer
+or set `CLAUDE_MEM_CODEX_MODEL` to an empty string in `settings.json`.
+
 Optional settings:
 
 | Setting | Default | Purpose |

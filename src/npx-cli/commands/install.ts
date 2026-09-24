@@ -1184,7 +1184,7 @@ async function promptProvider(
   if (selectedProvider === 'codex') {
     const model = options.model?.trim();
     if (options.model !== undefined && !model) {
-      throw new Error('Codex model must not be empty. Omit --model to use the Codex default.');
+      throw new Error('Codex model must not be empty. Omit --model to keep the current Codex model setting.');
     }
     const wrote = mergeSettings({
       CLAUDE_MEM_PROVIDER: 'codex',
