@@ -166,8 +166,9 @@ describe('plugin/skills/token-savings-scan', () => {
     const skill = readFileSync(TOKEN_SAVINGS_SCAN_SKILL, 'utf-8');
     expect(skill).toContain('name: token-savings-scan');
     expect(skill).toContain('usage-smart');
-    expect(skill).not.toContain('see how long your trial will last');
+    expect(skill).toContain('comfortable runway for how they already work');
     expect(versionCheckSource).toContain('token-savings-scan');
+    expect(versionCheckSource).not.toContain('see how long your trial will last');
   });
 });
 
