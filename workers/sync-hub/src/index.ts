@@ -401,7 +401,7 @@ async function handlePushOps(
 			durable: true,
 			retryable: projection.retryable,
 			head_seq: result.head_seq,
-			projected_seq: projection.projectedSeq,
+			...(projection.projectedSeq !== undefined ? { projected_seq: projection.projectedSeq } : {}),
 		});
 	} catch (e) {
 		return mapHubError(e);
@@ -569,7 +569,8 @@ interface DrainSuccess {
 interface DrainFailure {
 	ok: false;
 	error: string;
-	projectedSeq: string;
+	/** Omitted when the checkpoint could not be read — never invent `"0"`. */
+	projectedSeq?: string;
 	httpStatus: 409 | 503;
 	retryable: boolean;
 }
@@ -676,7 +677,6 @@ export async function drainProjection(
 		return {
 			ok: false,
 			error: "sync_hub_unavailable",
-			projectedSeq: "0",
 			httpStatus: 503,
 			retryable: true,
 		};

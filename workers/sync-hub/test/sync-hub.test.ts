@@ -1592,7 +1592,6 @@ describe("fail-soft Durable Object errors", () => {
 		)).resolves.toEqual({
 			ok: false,
 			error: "sync_hub_unavailable",
-			projectedSeq: "0",
 			httpStatus: 503,
 			retryable: true,
 		});
@@ -1634,5 +1633,60 @@ describe("fail-soft Durable Object errors", () => {
 			retryable: true,
 			projectedSeq: "0",
 		});
+	});
+
+	it("omits projected_seq when a push commits but the checkpoint cannot be read", async () => {
+		await env.AUTH_CACHE.delete(KILL_SWITCH_KEY);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(
+			new Request("https://sync-hub.test/v1/sync/ops", {
+				method: "POST",
+				headers: {
+					Authorization: "Bearer valid-for:user-push-unknown-checkpoint",
+					"X-User-Id": "user-push-unknown-checkpoint",
+					"X-Device-Id": "dev-a",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					protocol_version: 2,
+					ops: [await observationOp("1", "1", "dev-a")],
+				}),
+			}),
+			{
+				...env,
+				SYNC_HUB: {
+					getByName: () => ({
+						pushOps: async () => ({
+							acked: [{
+								id: "doc",
+								kind: "observation",
+								origin_local_id: "1",
+								entity_rev: "1",
+								operation_sha256: "hash",
+								seq: "1",
+							}],
+							head_seq: "1",
+						}),
+						getProjectionState: async () => {
+							throw quota;
+						},
+					}),
+				},
+			} as Env,
+			ctx,
+		);
+		expect(response.status).toBe(503);
+		const body = await response.json() as {
+			error: string;
+			retryable: boolean;
+			head_seq: string;
+			projected_seq?: string;
+		};
+		expect(body).toMatchObject({
+			error: "sync_hub_unavailable",
+			retryable: true,
+			head_seq: "1",
+		});
+		expect(body).not.toHaveProperty("projected_seq");
 	});
 });

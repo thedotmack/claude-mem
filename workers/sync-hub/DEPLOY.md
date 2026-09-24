@@ -91,8 +91,9 @@ its deterministic nonretryable 409 outcome.
 
 A public push returns 200 only after the Hub's authoritative `projected_seq`
 covers the committed `head_seq` — including while the kill switch is tripped.
-Poll mode refuses WebSockets and bounds the request-path drain (then continues
-via `waitUntil` / client retry / this repair route). It never returns 200 with
+Poll mode refuses WebSockets and bounds the request-path drain to one inline
+pass (then client retry / this repair route — no `waitUntil` continuation).
+It never returns 200 with
 `head_seq > projected_seq`. Retryable projection failures after a durable
 append return 503 with `durable:true` and `retryable:true`; retrying the
 identical operation reuses its sequence and resumes projection. Pro's

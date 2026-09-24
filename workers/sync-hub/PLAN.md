@@ -44,11 +44,11 @@ Keep kill-switch ON for all three until spend is actually green. None of them tu
 
 ### A — Selective drain under kill-switch (ship this)
 
-**What:** On an active poll-mode push, drain with a page budget (8 pages / ≤800 ops). If `projected >= head` → 200. If not → 503 `projection_catching_up` (`durable` + `retryable`) + `waitUntil` catch-up (32 pages). Repair route remains. Extra heartbeat / state knocks stay deleted. WS still refused.
+**What:** On an active poll-mode push, drain with a page budget (8 pages / ≤800 ops). If `projected >= head` → 200. If not → 503 `projection_catching_up` (`durable` + `retryable`). Remaining catch-up is the next client retry or `/internal/v1/projection/drain` — no `waitUntil` background loop. Extra heartbeat / state knocks stay deleted. WS still refused.
 
 **Cost risk:** Low–medium. DO RPCs and Pro fetches happen only for users who are writing. Idle accounts are not woken. Bound prevents a 66k-seq backlog from holding one request for `N × 45s`. vs pre-#4140: ~half the per-page storage knocks, 1% logs, no WS pin.
 
-**Correctness:** Restores the 200-contract on the write path. Deep lag still progresses (503 + retry / waitUntil / repair).
+**Correctness:** Restores the 200-contract on the write path. Deep lag still progresses (503 + client retry / repair).
 
 ### B — Keep skip on push + Hub-side background drain queue
 
@@ -72,7 +72,7 @@ Keep kill-switch ON for all three until spend is actually green. None of them tu
 
 1. Merge this PR and deploy the **sync-hub Worker only** (`workers/sync-hub`).
 2. Leave `control:kill-switch` in place. Poll mode remains the cost guardrail.
-3. Existing lagged accounts (`projected_seq = 0`, head 40–200) catch up on the next client push (≤8 pages on the request, then waitUntil / retry) or via `/internal/v1/projection/drain`.
+3. Existing lagged accounts (`projected_seq = 0`, head 40–200) catch up on the next client push (≤8 pages on the request, then retry) or via `/internal/v1/projection/drain`.
 4. Watch Cloudflare DO duration / rows-read / rows-written for a few watchdog cycles. C stays locked. B is a follow-up on this seat only if A regresses cost while users can flush.
 
 ### Alex hand
