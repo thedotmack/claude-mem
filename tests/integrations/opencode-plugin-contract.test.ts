@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   ClaudeMemPlugin,
   parseSearchResponse,
@@ -60,11 +61,38 @@ describe("OpenCode plugin event contract", () => {
     // non-function export (e.g. the contract-test constants) leaks into the
     // bundle, the whole plugin fails to load with
     // "Plugin export is not a function".
-    const bundleEntry = await import("../../src/integrations/opencode-plugin/bundle-entry");
-    const exportNames = Object.keys(bundleEntry).sort();
-    expect(exportNames).toEqual(["ClaudeMemPlugin", "default"]);
-    expect(typeof bundleEntry.ClaudeMemPlugin).toBe("function");
-    expect(typeof bundleEntry.default).toBe("function");
+    //
+    // This must exercise the GENERATED bundle (the file users receive), not
+    // the TypeScript entry: importing the entry cannot catch exports the
+    // bundler itself introduces or leaks. Same build config as
+    // scripts/build-hooks.js, but into a temp dir so the test stays
+    // self-contained.
+    const { buildSync } = await import("esbuild");
+    const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-"));
+    const outfile = join(dir, "index.js");
+    try {
+      buildSync({
+        entryPoints: ["src/integrations/opencode-plugin/bundle-entry.ts"],
+        bundle: true,
+        platform: "node",
+        target: "node18",
+        format: "esm",
+        outfile,
+        minify: true,
+        logLevel: "error",
+        external: [
+          "fs", "fs/promises", "path", "os", "child_process", "url",
+          "crypto", "http", "https", "net", "stream", "util", "events",
+        ],
+      });
+      const bundle = await import(pathToFileURL(outfile).href);
+      const exportNames = Object.keys(bundle).sort();
+      expect(exportNames).toEqual(["ClaudeMemPlugin", "default"]);
+      expect(typeof bundle.ClaudeMemPlugin).toBe("function");
+      expect(typeof bundle.default).toBe("function");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("reads the worker port from persisted settings without importing worker-utils", () => {
