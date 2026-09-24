@@ -1,4 +1,5 @@
 import {
+	createExecutionContext,
 	env,
 	runDurableObjectAlarm,
 	runInDurableObject,
@@ -32,7 +33,7 @@ import {
 	PROJECTION_PAGE_MAX_BYTES,
 	projectionRequestBytes,
 } from "../src/projection-protocol";
-import { drainProjection, fetchProjectionWithTimeout } from "../src/index";
+import worker, { drainProjection, fetchProjectionWithTimeout } from "../src/index";
 import {
 	contractFixture,
 	fixtureOp,
@@ -852,6 +853,109 @@ describe("large cursor pagination", () => {
 		}
 		expect(count).toBe(10_001);
 	});
+
+	it("orders '9' before '10' and a pull after the cursor returns only new rows", async () => {
+		const stub = hub("seq-length-boundary");
+		const ops = await Promise.all(
+			Array.from({ length: 12 }, (_, index) => observationOp(String(index + 1))),
+		);
+		ok(await stub.pushOps("dev-a", ops));
+
+		const afterNine = changes(await stub.getChanges("dev-reader", "9", 500));
+		expect(afterNine.ops.map((op) => op.seq)).toEqual(["10", "11", "12"]);
+		expect(afterNine.more).toBe(false);
+
+		const firstPage = changes(await stub.getChanges("dev-reader", "0", 9));
+		expect(firstPage.ops.map((op) => op.seq)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+		expect(firstPage.more).toBe(true);
+
+		const secondPage = changes(await stub.getChanges("dev-reader", "9", 9));
+		expect(secondPage.ops.map((op) => op.seq)).toEqual(["10", "11", "12"]);
+		expect(secondPage.more).toBe(false);
+		expect(status(await stub.getStatus()).op_count).toBe(12);
+	});
+
+	it("reads O(new rows) after cursor N, not the whole log", async () => {
+		const stub = hub("seq-rows-read");
+		const logSize = 200;
+		const ops = await Promise.all(
+			Array.from({ length: logSize }, (_, index) => observationOp(String(index + 1))),
+		);
+		ok(await stub.pushOps("dev-a", ops));
+
+		const page = changes(await stub.getChanges("dev-reader", "190", 10));
+		expect(page.ops.map((op) => op.seq)).toEqual(["191", "192", "193", "194", "195", "196", "197", "198", "199", "200"]);
+
+		await runInDurableObject(stub, (_instance: SyncHub, state) => {
+			const indexes = state.storage.sql.exec<{ name: string }>(
+				"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'canonical_ops_seq_order'",
+			).toArray();
+			expect(indexes).toHaveLength(1);
+
+			const plan = state.storage.sql.exec<{ detail: string }>(
+				`EXPLAIN QUERY PLAN
+				 SELECT seq, body, operation_sha256, server_ts
+				 FROM canonical_ops
+				 WHERE (seq_len, seq) > (?, ?)
+				 ORDER BY seq_len, seq LIMIT ?`,
+				"190".length,
+				"190",
+				10,
+			).toArray();
+			expect(plan.some((row) => row.detail.includes("canonical_ops_seq_order"))).toBe(true);
+
+			const cursor = state.storage.sql.exec<{ seq: string }>(
+				`SELECT seq FROM canonical_ops
+				 WHERE (seq_len, seq) > (?, ?)
+				 ORDER BY seq_len, seq LIMIT ?`,
+				"190".length,
+				"190",
+				10,
+			);
+			expect(cursor.toArray()).toHaveLength(10);
+			// A LENGTH(seq) scan would read the whole 200-row log. The composite
+			// index should charge about the 10 returned rows, plus small overhead.
+			expect(cursor.rowsRead).toBeGreaterThanOrEqual(10);
+			expect(cursor.rowsRead).toBeLessThan(40);
+		});
+	});
+
+	it("backfills seq_len and the order index on an existing pre-migration log", async () => {
+		const stub = hub("seq-schema-migrate");
+		ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		await runInDurableObject(stub, (instance: SyncHub, state) => {
+			state.storage.sql.exec("DROP INDEX IF EXISTS canonical_ops_seq_order");
+			state.storage.sql.exec("DROP INDEX IF EXISTS canonical_ops_entity_rev");
+			state.storage.sql.exec("DROP TABLE canonical_ops");
+			state.storage.sql.exec(`CREATE TABLE canonical_ops (
+				seq TEXT PRIMARY KEY,
+				entity_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				origin_device_id TEXT NOT NULL,
+				origin_local_id TEXT,
+				entity_rev TEXT NOT NULL,
+				operation_sha256 TEXT NOT NULL,
+				body TEXT NOT NULL,
+				deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+				server_ts TEXT NOT NULL
+			)`);
+			state.storage.sql.exec(
+				`INSERT INTO canonical_ops
+				 (seq, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
+				  operation_sha256, body, deleted, server_ts)
+				 VALUES ('9', 'legacy', 'observation', 'dev-a', '9', '1', 'hash', '{}', 0, '1')`,
+			);
+			(instance as unknown as { ensureSeqOrderSchema(): void }).ensureSeqOrderSchema();
+			const row = state.storage.sql.exec<{ seq: string; seq_len: number }>(
+				"SELECT seq, seq_len FROM canonical_ops WHERE seq = '9'",
+			).one();
+			expect(row).toEqual({ seq: "9", seq_len: 1 });
+			const indexes = state.storage.sql.exec<{ name: string }>(
+				"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'canonical_ops_seq_order'",
+			).toArray();
+			expect(indexes).toHaveLength(1);
+		});
+	});
 });
 
 describe("front Worker durability and repair", () => {
@@ -1422,5 +1526,114 @@ describe("per-user device admission bound", () => {
 		expect(state.devices).toHaveLength(MAX_DEVICES_PER_USER);
 		expect(state.devices.find((device) => device.device_id === "device-0")?.name).toBe("Named 0");
 		expect(state.devices.some((device) => device.device_id === "unknown-rename")).toBe(false);
+	});
+});
+
+describe("fail-soft Durable Object errors", () => {
+	const quota = new Error("Exceeded allowed volume of requests in Durable Objects free tier");
+
+	function throwingHub(overrides: Record<string, unknown> = {}) {
+		return {
+			getByName: () => ({
+				fetch: async () => {
+					throw quota;
+				},
+				getProjectionState: async () => {
+					throw quota;
+				},
+				...overrides,
+			}),
+		};
+	}
+
+	it("returns 503 Retry-After when the websocket upgrade stub throws", async () => {
+		await env.AUTH_CACHE.delete(KILL_SWITCH_KEY);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(
+			new Request("https://sync-hub.test/v1/sync/ws", {
+				headers: {
+					Authorization: "Bearer valid-for:user-ws-failsoft",
+					"X-User-Id": "user-ws-failsoft",
+					"X-Device-Id": "dev-a",
+					Upgrade: "websocket",
+				},
+			}),
+			{ ...env, SYNC_HUB: throwingHub() } as Env,
+			ctx,
+		);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("Retry-After")).toBe("5");
+		expect(await response.json()).toEqual({ error: "sync_hub_unavailable", retryable: true });
+	});
+
+	it("returns 503 Retry-After when repair getProjectionState throws", async () => {
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(
+			new Request("https://sync-hub.test/internal/v1/projection/drain", {
+				method: "POST",
+				headers: {
+					Authorization: "Bearer test-projector-secret",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ protocol_version: 1, user_id: "user-repair-failsoft" }),
+			}),
+			{ ...env, SYNC_HUB: throwingHub() } as Env,
+			ctx,
+		);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("Retry-After")).toBe("5");
+		expect(await response.json()).toEqual({ error: "sync_hub_unavailable", retryable: true });
+	});
+
+	it("drainProjection fails soft when the initial or catch-path state read throws", async () => {
+		await expect(drainProjection(
+			{ ...env, SYNC_HUB: throwingHub() } as Env,
+			"user-drain-failsoft",
+			"1",
+		)).resolves.toEqual({
+			ok: false,
+			error: "sync_hub_unavailable",
+			projectedSeq: "0",
+			httpStatus: 503,
+			retryable: true,
+		});
+
+		let stateReads = 0;
+		const midFlight = throwingHub({
+			getProjectionState: async () => {
+				stateReads++;
+				if (stateReads === 1) {
+					return { protocol_version: 1, epoch: "1", head_seq: "1", projected_seq: "0" };
+				}
+				throw quota;
+			},
+			acquireProjectionLease: async () => ({
+				acquired: true,
+				lease_token: "lease",
+				epoch: "1",
+				head_seq: "1",
+				projected_seq: "0",
+				target_seq: "1",
+			}),
+			getProjectionPage: async () => {
+				throw quota;
+			},
+			releaseProjectionLease: async () => {},
+		});
+		await expect(drainProjection(
+			{
+				...env,
+				INTERNAL_PROJECTOR_URL: "https://projector.test/api/internal/sync/project",
+				CMEM_INTERNAL_PROJECTOR_SECRET: "test-projector-secret",
+				SYNC_HUB: midFlight,
+			} as Env,
+			"user-drain-failsoft-mid",
+			"1",
+		)).resolves.toMatchObject({
+			ok: false,
+			httpStatus: 503,
+			retryable: true,
+			projectedSeq: "0",
+		});
 	});
 });

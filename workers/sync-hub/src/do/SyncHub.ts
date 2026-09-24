@@ -25,6 +25,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_PAGE = 500;
 const ADVANCE_MAX_OPS = 100;
 const ADVANCE_MAX_FRAME_BYTES = 262_144;
+/**
+ * Length-then-lexicographic order matches compareCanonicalDecimals.
+ * Predicates on (seq_len, seq) use canonical_ops_seq_order instead of a
+ * LENGTH(seq) expression, which SQLite cannot satisfy from the seq PK.
+ */
+const SEQ_AFTER = "(seq_len, seq) > (?, ?)";
+const SEQ_THROUGH = "(seq_len, seq) <= (?, ?)";
+const SEQ_ORDER = "seq_len, seq";
 export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
@@ -180,6 +188,11 @@ function toChange(row: {
 	};
 }
 
+/** Bindings for a (seq_len, seq) row-value comparison against a cursor. */
+function seqTuple(cursor: string): [number, string] {
+	return [cursor.length, cursor];
+}
+
 export class SyncHub extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -206,7 +219,8 @@ export class SyncHub extends DurableObject<Env> {
 				operation_sha256    TEXT NOT NULL,
 				body                TEXT NOT NULL,
 				deleted             INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-				server_ts           TEXT NOT NULL
+				server_ts           TEXT NOT NULL,
+				seq_len             INTEGER NOT NULL
 			);
 			CREATE UNIQUE INDEX IF NOT EXISTS canonical_ops_entity_rev
 				ON canonical_ops(entity_id, entity_rev);
@@ -228,6 +242,7 @@ export class SyncHub extends DurableObject<Env> {
 			);
 			CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);`,
 		);
+		this.ensureSeqOrderSchema();
 		const defaults: Array<[string, string]> = [
 			["epoch", newEpoch()],
 			["head_seq", "0"],
@@ -319,11 +334,8 @@ export class SyncHub extends DurableObject<Env> {
 				`SELECT COUNT(*) AS n,
 				        COALESCE(SUM(LENGTH(CAST(body AS BLOB))), 0) AS body_len
 				 FROM canonical_ops
-				 WHERE LENGTH(seq) > LENGTH(?)
-				    OR (LENGTH(seq) = LENGTH(?) AND seq > ?)`,
-				headBefore,
-				headBefore,
-				headBefore,
+				 WHERE ${SEQ_AFTER}`,
+				...seqTuple(headBefore),
 			).one();
 			if (stats.n === 0) return;
 			const epoch = this.meta("epoch");
@@ -340,12 +352,9 @@ export class SyncHub extends DurableObject<Env> {
 				}>(
 					`SELECT seq, body, operation_sha256, server_ts
 					 FROM canonical_ops
-					 WHERE LENGTH(seq) > LENGTH(?)
-					    OR (LENGTH(seq) = LENGTH(?) AND seq > ?)
-					 ORDER BY LENGTH(seq), seq`,
-					headBefore,
-					headBefore,
-					headBefore,
+					 WHERE ${SEQ_AFTER}
+					 ORDER BY ${SEQ_ORDER}`,
+					...seqTuple(headBefore),
 				).toArray();
 				frame = JSON.stringify({ type: "op", epoch, ops: rows.map(toChange) });
 				if (encoder.encode(frame).length > ADVANCE_MAX_FRAME_BYTES) {
@@ -432,8 +441,8 @@ export class SyncHub extends DurableObject<Env> {
 					sql.exec(
 						`INSERT INTO canonical_ops
 						 (seq, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
-						  operation_sha256, body, deleted, server_ts)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						  operation_sha256, body, deleted, server_ts, seq_len)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 						seq,
 						body.id,
 						body.kind,
@@ -444,6 +453,7 @@ export class SyncHub extends DurableObject<Env> {
 						row.serialized,
 						body.deleted ? 1 : 0,
 						nowDecimal,
+						seq.length,
 					);
 					sql.exec(
 						`INSERT INTO entity_heads
@@ -527,12 +537,9 @@ export class SyncHub extends DurableObject<Env> {
 		}>(
 			`SELECT seq, body, operation_sha256, server_ts
 			 FROM canonical_ops
-			 WHERE LENGTH(seq) > LENGTH(?)
-			    OR (LENGTH(seq) = LENGTH(?) AND seq > ?)
-			 ORDER BY LENGTH(seq), seq LIMIT ?`,
-			since,
-			since,
-			since,
+			 WHERE ${SEQ_AFTER}
+			 ORDER BY ${SEQ_ORDER} LIMIT ?`,
+			...seqTuple(since),
 			lim,
 		).toArray();
 		const ops = rows.map(toChange);
@@ -540,12 +547,9 @@ export class SyncHub extends DurableObject<Env> {
 		const more = sql.exec<{ n: number }>(
 			`SELECT EXISTS(
 				SELECT 1 FROM canonical_ops
-				WHERE LENGTH(seq) > LENGTH(?)
-				   OR (LENGTH(seq) = LENGTH(?) AND seq > ?)
+				WHERE ${SEQ_AFTER}
 			) AS n`,
-			last,
-			last,
-			last,
+			...seqTuple(last),
 		).one().n === 1;
 		return {
 			protocol_version: 2,
@@ -567,7 +571,9 @@ export class SyncHub extends DurableObject<Env> {
 			epoch: this.meta("epoch"),
 			head_seq: this.headSeq(),
 			projected_seq: this.projectedSeq(),
-			op_count: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM canonical_ops").one().n,
+			// Append-only log, seq increments from 0 with no gaps or deletes.
+			// head_seq is the row count; COUNT(*) would scan every op.
+			op_count: Number(this.headSeq()),
 			device_count: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM devices").one().n,
 		};
 	}
@@ -689,15 +695,10 @@ export class SyncHub extends DurableObject<Env> {
 		}>(
 			`SELECT seq, body, operation_sha256, server_ts
 			 FROM canonical_ops
-			 WHERE (LENGTH(seq) > LENGTH(?) OR (LENGTH(seq) = LENGTH(?) AND seq > ?))
-			   AND (LENGTH(seq) < LENGTH(?) OR (LENGTH(seq) = LENGTH(?) AND seq <= ?))
-			 ORDER BY LENGTH(seq), seq LIMIT ?`,
-			projected,
-			projected,
-			projected,
-			target,
-			target,
-			target,
+			 WHERE ${SEQ_AFTER} AND ${SEQ_THROUGH}
+			 ORDER BY ${SEQ_ORDER} LIMIT ?`,
+			...seqTuple(projected),
+			...seqTuple(target),
 			limit,
 		).toArray();
 		const ops: ChangeOp[] = [];
@@ -815,6 +816,21 @@ export class SyncHub extends DurableObject<Env> {
 		// canonical operation remains replayable. Keep the alarm surface for
 		// deployed-object compatibility, but deliberately delete zero rows.
 		await this.ctx.storage.setAlarm(Date.now() + DAY_MS);
+	}
+
+	/**
+	 * Existing objects created before seq_len: add the column, backfill, and
+	 * install the composite index. New objects already have seq_len on the
+	 * CREATE TABLE path. Idempotent — safe on every cold start and reset.
+	 */
+	private ensureSeqOrderSchema(): void {
+		const sql = this.ctx.storage.sql;
+		const columns = sql.exec<{ name: string }>("PRAGMA table_info(canonical_ops)").toArray();
+		if (!columns.some((column) => column.name === "seq_len")) {
+			sql.exec("ALTER TABLE canonical_ops ADD COLUMN seq_len INTEGER");
+			sql.exec("UPDATE canonical_ops SET seq_len = LENGTH(seq) WHERE seq_len IS NULL");
+		}
+		sql.exec("CREATE INDEX IF NOT EXISTS canonical_ops_seq_order ON canonical_ops(seq_len, seq)");
 	}
 
 	private headSeq(): string { return this.meta("head_seq"); }
