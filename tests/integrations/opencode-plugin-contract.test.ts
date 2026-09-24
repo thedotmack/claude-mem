@@ -54,6 +54,19 @@ const pluginCtx = {
 };
 
 describe("OpenCode plugin event contract", () => {
+  it("bundle entry exports only the plugin function (opencode calls every named export)", async () => {
+    // Regression guard for #4197: opencode's loader iterates every named
+    // export of the plugin file and calls each as a plugin factory. If a
+    // non-function export (e.g. the contract-test constants) leaks into the
+    // bundle, the whole plugin fails to load with
+    // "Plugin export is not a function".
+    const bundleEntry = await import("../../src/integrations/opencode-plugin/bundle-entry");
+    const exportNames = Object.keys(bundleEntry).sort();
+    expect(exportNames).toEqual(["ClaudeMemPlugin", "default"]);
+    expect(typeof bundleEntry.ClaudeMemPlugin).toBe("function");
+    expect(typeof bundleEntry.default).toBe("function");
+  });
+
   it("reads the worker port from persisted settings without importing worker-utils", () => {
     const source = readFileSync(
       "src/integrations/opencode-plugin/index.ts",

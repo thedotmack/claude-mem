@@ -735,7 +735,11 @@ async function buildHooks() {
         fs.mkdirSync(opencodeOutDir, { recursive: true });
       }
       await build({
-        entryPoints: ['src/integrations/opencode-plugin/index.ts'],
+        // Bundle ONLY through bundle-entry.ts: opencode's loader calls every
+        // named export as a plugin factory, so the shipped file must not
+        // expose the contract-test constants (REAL_OPENCODE_EVENT_TYPES,
+        // REGISTERED_OPENCODE_HOOKS) or any other helper (#4197).
+        entryPoints: ['src/integrations/opencode-plugin/bundle-entry.ts'],
         bundle: true,
         platform: 'node',
         target: 'node18',
