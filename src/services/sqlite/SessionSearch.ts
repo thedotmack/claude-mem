@@ -14,6 +14,7 @@ import {
   ObservationRow
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { resolveDateBound } from '../../shared/date-bounds.js';
 import { applySqliteConnectionPragmas } from './connection.js';
 
 export class SessionSearch {
@@ -190,14 +191,12 @@ export class SessionSearch {
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         conditions.push(`${tableAlias}.created_at_epoch >= ?`);
-        params.push(startEpoch);
+        params.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         conditions.push(`${tableAlias}.created_at_epoch <= ?`);
-        params.push(endEpoch);
+        params.push(resolveDateBound(end, 'end'));
       }
     }
 
@@ -546,14 +545,12 @@ export class SessionSearch {
     if (sessionFilters.dateRange) {
       const { start, end } = sessionFilters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         baseConditions.push('s.created_at_epoch >= ?');
-        sessionParams.push(startEpoch);
+        sessionParams.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         baseConditions.push('s.created_at_epoch <= ?');
-        sessionParams.push(endEpoch);
+        sessionParams.push(resolveDateBound(end, 'end'));
       }
     }
 
@@ -624,14 +621,12 @@ export class SessionSearch {
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         baseConditions.push('up.created_at_epoch >= ?');
-        params.push(startEpoch);
+        params.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         baseConditions.push('up.created_at_epoch <= ?');
-        params.push(endEpoch);
+        params.push(resolveDateBound(end, 'end'));
       }
     }
 

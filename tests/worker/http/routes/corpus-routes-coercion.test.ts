@@ -131,6 +131,38 @@ describe('CorpusRoutes Type Coercion', () => {
     });
   });
 
+  it('persists camelCase dateStart/dateEnd from the MCP tool into the filter', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'camel-dates',
+      dateStart: '2025-01-01',
+      dateEnd: '2025-03-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('camel-dates', '', {
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
+    });
+  });
+
+  it('persists snake_case date_start/date_end into the filter', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'snake-dates',
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('snake-dates', '', {
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
+    });
+  });
+
   it('coerces comma-separated filters and trims whitespace', async () => {
     const { req, res } = createMockReqRes({
       name: 'comma-strings',

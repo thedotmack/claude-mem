@@ -13,6 +13,7 @@ import { ChromaSync } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { resolveDateBound } from '../../../../shared/date-bounds.js';
 
 export class ChromaSearchStrategy {
   constructor(
@@ -186,14 +187,10 @@ export class ChromaSearchStrategy {
 
     if (dateRange) {
       if (dateRange.start) {
-        startEpoch = typeof dateRange.start === 'number'
-          ? dateRange.start
-          : new Date(dateRange.start).getTime();
+        startEpoch = resolveDateBound(dateRange.start, 'start');
       }
       if (dateRange.end) {
-        endEpoch = typeof dateRange.end === 'number'
-          ? dateRange.end
-          : new Date(dateRange.end).getTime();
+        endEpoch = resolveDateBound(dateRange.end, 'end');
       }
     } else {
       startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
