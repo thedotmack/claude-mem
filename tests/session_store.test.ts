@@ -182,6 +182,25 @@ describe('SessionStore', () => {
     expect(stored?.memory_session_id).toBe(memoryId);
   });
 
+  it('rejects null memory session ids before any summary or observation insert', () => {
+    const summary = {
+      request: 'Do something',
+      investigated: 'Stuff',
+      learned: 'Things',
+      completed: 'Done',
+      next_steps: 'More',
+      notes: null,
+    };
+
+    expect(() => store.storeSummary(null as unknown as string, 'test-project', summary)).toThrow(
+      'storeSummary requires a non-null memorySessionId'
+    );
+    expect(() => store.storeObservations(null as unknown as string, 'test-project', [], summary)).toThrow(
+      'storeObservations requires a non-null memorySessionId'
+    );
+    expect((store.db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number }).count).toBe(0);
+  });
+
   it('should store summary with timestamp override', () => {
     const claudeId = 'claude-sess-sum';
     const memoryId = 'memory-sess-sum';

@@ -462,8 +462,17 @@ export async function processAgentResponse(
     // count as "in progress" and trigger a respawn loop while we wait for the
     // memory session id to appear. The next generator pass will re-claim them.
     await sessionManager.resetProcessingToPending(session.sessionDbId);
+    session.abortReason = 'identity:memory_session_id';
+    try {
+      session.abortController.abort();
+    } catch {
+      // best-effort; AbortController.abort() should not throw in normal use.
+    }
+    worker?.broadcastProcessingStatus?.();
     return;
   }
+
+  session.consecutiveIdentityResumes = 0;
 
   const { observations, summary } = parsed;
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
