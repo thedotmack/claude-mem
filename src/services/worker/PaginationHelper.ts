@@ -3,6 +3,7 @@ import type { SQLQueryBindings } from 'bun:sqlite';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { SESSION_KIND_USER } from '../../shared/session-kind.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
@@ -86,6 +87,10 @@ export class PaginationHelper {
       conditions.push('o.project != ?');
       params.push(OBSERVER_SESSIONS_PROJECT);
     }
+    // Keep machine-made sessions (internal / keepalive) out of pickers even
+    // when the caller filters by their real project name (#4159).
+    conditions.push(`COALESCE(s.kind, '${SESSION_KIND_USER}') = ?`);
+    params.push(SESSION_KIND_USER);
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
@@ -142,6 +147,10 @@ export class PaginationHelper {
       params.push(OBSERVER_SESSIONS_PROJECT);
     }
 
+    // Hide machine-made sessions from pickers regardless of project filter (#4159).
+    conditions.push(`COALESCE(s.kind, '${SESSION_KIND_USER}') = ?`);
+    params.push(SESSION_KIND_USER);
+
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
@@ -192,6 +201,10 @@ export class PaginationHelper {
       conditions.push('s.project != ?');
       params.push(OBSERVER_SESSIONS_PROJECT);
     }
+
+    // Hide machine-made sessions from pickers regardless of project filter (#4159).
+    conditions.push(`COALESCE(s.kind, '${SESSION_KIND_USER}') = ?`);
+    params.push(SESSION_KIND_USER);
 
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);

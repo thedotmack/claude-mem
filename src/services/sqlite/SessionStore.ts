@@ -1,6 +1,11 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import {
+  SESSION_KIND_USER,
+  SESSION_KIND_INTERNAL,
+  normalizeSessionKind,
+} from '../../shared/session-kind.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -158,6 +163,7 @@ interface SdkSessionDetailRow {
   user_prompt: string;
   custom_title: string | null;
   status: string;
+  kind: string;
   observed_model: string | null;
   observed_billing: string | null;
 }
@@ -216,6 +222,7 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
+    this.ensureSDKSessionsKindColumn();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1917,6 +1924,35 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
   }
 
+  // v53 — `kind` marks a session as user / internal / keepalive (#4159). Before
+  // this the only marker for a machine-made session was the `observer-sessions`
+  // project value, so an internal session written under a real project name was
+  // indistinguishable from user work in a picker. Defaulting to 'user' keeps
+  // every existing row and every non-init insert path (sync import, orphan FK
+  // stub) a user session; the one-shot backfill reclassifies the pre-existing
+  // observer-sessions rows so they leave pickers on upgrade, not just for new
+  // inits. Only the ALTER sits behind the column check; the index and backfill
+  // always run until the version row is recorded, so an interruption after the
+  // ALTER but before the index/backfill is recovered on the next startup
+  // instead of leaving observer sessions in pickers and the kind index absent.
+  private ensureSDKSessionsKindColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(53) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasKind = columns.some(col => col.name === 'kind');
+
+    if (applied && hasKind) return;
+
+    if (!hasKind) {
+      this.db.run(`ALTER TABLE sdk_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT '${SESSION_KIND_USER}'`);
+    }
+    // Idempotent, so re-running after a partial migration is safe.
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_kind ON sdk_sessions(kind)');
+    this.db.prepare('UPDATE sdk_sessions SET kind = ? WHERE project = ? AND kind = ?')
+      .run(SESSION_KIND_INTERNAL, OBSERVER_SESSIONS_PROJECT, SESSION_KIND_USER);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
+  }
+
   // v52 — durable claim ledger for one Telegram session wrap-up per route.
   // The DDL is intentionally idempotent so fresh installs and existing DBs
   // converge even if a fixture has an incomplete schema_versions ledger.
@@ -2448,7 +2484,7 @@ export class SessionStore {
   }
 
   getRecentSessionsWithStatus(project: string, limit: number = 3, platformSource?: string): RecentSessionStatusRow[] {
-    const params: any[] = [project];
+    const params: any[] = [project, SESSION_KIND_USER];
     let platformClause = '';
     if (platformSource) {
       platformClause = `AND COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`;
@@ -2467,7 +2503,7 @@ export class SessionStore {
           CASE WHEN sum.memory_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
         FROM sdk_sessions s
         LEFT JOIN session_summaries sum ON s.memory_session_id = sum.memory_session_id
-        WHERE s.project = ? AND s.memory_session_id IS NOT NULL
+        WHERE s.project = ? AND COALESCE(s.kind, '${SESSION_KIND_USER}') = ? AND s.memory_session_id IS NOT NULL
         ${platformClause}
         GROUP BY s.memory_session_id
         ORDER BY s.started_at_epoch DESC
@@ -2672,6 +2708,7 @@ export class SessionStore {
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
              user_prompt, custom_title, status,
+             COALESCE(kind, '${SESSION_KIND_USER}') as kind,
              observed_model, observed_billing
       FROM sdk_sessions
       WHERE id = ?
@@ -2887,12 +2924,19 @@ export class SessionStore {
     project: string,
     userPrompt: string,
     customTitle?: string,
-    platformSource?: string
+    platformSource?: string,
+    kind?: string
   ): number {
     const now = new Date();
     const nowEpoch = now.getTime();
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : DEFAULT_PLATFORM_SOURCE;
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
+    // An explicit non-user kind always wins; otherwise the observer's own
+    // project is internal so its SDK sessions stay out of user pickers.
+    const normalizedKind = normalizeSessionKind(kind);
+    const resolvedKind = normalizedKind !== SESSION_KIND_USER
+      ? normalizedKind
+      : (project === OBSERVER_SESSIONS_PROJECT ? SESSION_KIND_INTERNAL : SESSION_KIND_USER);
     if (customTitle) {
       this.validateSetTitleMutation(contentSessionId, normalizedPlatformSource, customTitle);
     }
@@ -2933,9 +2977,9 @@ export class SessionStore {
 
     const result = this.db.prepare(`
       INSERT INTO sdk_sessions
-      (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch);
+      (content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title, started_at, started_at_epoch, status, kind)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active', ?)
+    `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch, resolvedKind);
 
     if (customTitle) {
       this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);

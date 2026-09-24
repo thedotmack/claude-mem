@@ -17,6 +17,8 @@ import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { SESSION_KIND_KEEPALIVE, normalizeSessionKind } from '../../../../shared/session-kind.js';
+import { parseKeepaliveIntervalMs } from '../../../../shared/keepalive.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import {
@@ -605,12 +607,21 @@ export class SessionRoutes extends BaseRouteHandler {
     );
   }
 
+  // '0' (the default) or any non-positive / malformed value means keepalives
+  // are OFF, so the worker drops keepalive session-inits (#4159). Only a
+  // complete positive integer enables them — see parseKeepaliveIntervalMs.
+  private static isKeepaliveDisabled(): boolean {
+    const raw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_KEEPALIVE_INTERVAL_MS;
+    return parseKeepaliveIntervalMs(raw) <= 0;
+  }
+
   private static readonly sessionInitByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),
     project: z.string().optional(),
     prompt: z.string().optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
+    kind: z.string().optional(),
   }).passthrough();
 
   private static readonly observationsByClaudeIdSchema = z.object({
@@ -770,6 +781,16 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // A host can tag a machine ping as a keepalive. When keepalives are turned
+    // off, drop it before creating a row or running a billed generation — the
+    // off switch the operator controls (#4159).
+    const sessionKind = normalizeSessionKind(req.body.kind);
+    if (sessionKind === SESSION_KIND_KEEPALIVE && SessionRoutes.isKeepaliveDisabled()) {
+      logger.debug('HTTP', 'session-init: keepalive disabled, dropping keepalive session', { contentSessionId });
+      res.json({ skipped: true, reason: 'keepalive_disabled' });
+      return;
+    }
+
     const slashSkillId = firstPartySkillFromSlashPrompt(rawPrompt);
     if (slashSkillId) {
       captureEvent('skill_invoked', {
@@ -807,7 +828,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource, sessionKind);
 
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
