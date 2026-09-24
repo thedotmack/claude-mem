@@ -278,6 +278,44 @@ export class PostgresServerSessionsRepository {
    * observation_generation_jobs row. Tenant-scoped: rows are filtered by
    * (project_id, team_id) before any join.
    */
+  /**
+   * Every event of the session, in order — the input a SESSION SUMMARY needs.
+   *
+   * `listUnprocessedEvents` below deliberately hides the events the per-event
+   * lane has already collapsed. That is the right set for "what still needs an
+   * observation" and the WRONG set for "describe the arc of this session": the
+   * per-event lane normally finishes first, so the summary arrives at an empty
+   * list and the model is asked to summarise nothing.
+   */
+  async listSessionEvents(input: {
+    serverSessionId: string;
+    projectId: string;
+    teamId: string;
+    limit?: number;
+  }): Promise<PostgresAgentEvent[]> {
+    const limit = input.limit ?? 500;
+    const result = await this.client.query<UnprocessedEventRow>(
+      `
+        SELECT e.*
+        FROM agent_events e
+        WHERE e.server_session_id = $1
+          AND e.project_id = $2
+          AND e.team_id = $3
+        ORDER BY e.occurred_at ASC
+        LIMIT $4
+      `,
+      [input.serverSessionId, input.projectId, input.teamId, limit]
+    );
+    return result.rows.map(mapUnprocessedEventRow);
+  }
+
+  /**
+   * The events that still need a per-event observation.
+   *
+   * NOT the input for a session summary — see `listSessionEvents` above. Using
+   * this one there is what fed the summary an empty list once the per-event lane
+   * had caught up, which is normally before the session even ends.
+   */
   async listUnprocessedEvents(input: {
     serverSessionId: string;
     projectId: string;
