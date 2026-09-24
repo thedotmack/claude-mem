@@ -25,14 +25,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_PAGE = 500;
 const ADVANCE_MAX_OPS = 100;
 const ADVANCE_MAX_FRAME_BYTES = 262_144;
-/**
- * Length-then-lexicographic order matches compareCanonicalDecimals.
- * Predicates on (seq_len, seq) use canonical_ops_seq_order instead of a
- * LENGTH(seq) expression, which SQLite cannot satisfy from the seq PK.
- */
-const SEQ_AFTER = "(seq_len, seq) > (?, ?)";
-const SEQ_THROUGH = "(seq_len, seq) <= (?, ?)";
-const SEQ_ORDER = "seq_len, seq";
 export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
@@ -188,11 +180,6 @@ function toChange(row: {
 	};
 }
 
-/** Bindings for a (seq_len, seq) row-value comparison against a cursor. */
-function seqTuple(cursor: string): [number, string] {
-	return [cursor.length, cursor];
-}
-
 export class SyncHub extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -219,8 +206,7 @@ export class SyncHub extends DurableObject<Env> {
 				operation_sha256    TEXT NOT NULL,
 				body                TEXT NOT NULL,
 				deleted             INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-				server_ts           TEXT NOT NULL,
-				seq_len             INTEGER NOT NULL
+				server_ts           TEXT NOT NULL
 			);
 			CREATE UNIQUE INDEX IF NOT EXISTS canonical_ops_entity_rev
 				ON canonical_ops(entity_id, entity_rev);
@@ -242,7 +228,6 @@ export class SyncHub extends DurableObject<Env> {
 			);
 			CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);`,
 		);
-		this.ensureSeqOrderSchema();
 		const defaults: Array<[string, string]> = [
 			["epoch", newEpoch()],
 			["head_seq", "0"],
@@ -330,12 +315,13 @@ export class SyncHub extends DurableObject<Env> {
 			const sockets = this.ctx.getWebSockets();
 			if (sockets.length === 0) return;
 			const sql = this.ctx.storage.sql;
+			const after = this.rowidAfterCursor(headBefore);
 			const stats = sql.exec<{ n: number; body_len: number }>(
 				`SELECT COUNT(*) AS n,
 				        COALESCE(SUM(LENGTH(CAST(body AS BLOB))), 0) AS body_len
 				 FROM canonical_ops
-				 WHERE ${SEQ_AFTER}`,
-				...seqTuple(headBefore),
+				 WHERE rowid > ?`,
+				after,
 			).one();
 			if (stats.n === 0) return;
 			const epoch = this.meta("epoch");
@@ -352,9 +338,9 @@ export class SyncHub extends DurableObject<Env> {
 				}>(
 					`SELECT seq, body, operation_sha256, server_ts
 					 FROM canonical_ops
-					 WHERE ${SEQ_AFTER}
-					 ORDER BY ${SEQ_ORDER}`,
-					...seqTuple(headBefore),
+					 WHERE rowid > ?
+					 ORDER BY rowid`,
+					after,
 				).toArray();
 				frame = JSON.stringify({ type: "op", epoch, ops: rows.map(toChange) });
 				if (encoder.encode(frame).length > ADVANCE_MAX_FRAME_BYTES) {
@@ -441,8 +427,8 @@ export class SyncHub extends DurableObject<Env> {
 					sql.exec(
 						`INSERT INTO canonical_ops
 						 (seq, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
-						  operation_sha256, body, deleted, server_ts, seq_len)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						  operation_sha256, body, deleted, server_ts)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 						seq,
 						body.id,
 						body.kind,
@@ -453,7 +439,6 @@ export class SyncHub extends DurableObject<Env> {
 						row.serialized,
 						body.deleted ? 1 : 0,
 						nowDecimal,
-						seq.length,
 					);
 					sql.exec(
 						`INSERT INTO entity_heads
@@ -529,27 +514,26 @@ export class SyncHub extends DurableObject<Env> {
 			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
 			throw error;
 		}
+		const after = this.rowidAfterCursor(since);
 		const rows = sql.exec<{
+			rowid: number;
 			seq: string;
 			body: string;
 			operation_sha256: string;
 			server_ts: string;
 		}>(
-			`SELECT seq, body, operation_sha256, server_ts
+			`SELECT rowid, seq, body, operation_sha256, server_ts
 			 FROM canonical_ops
-			 WHERE ${SEQ_AFTER}
-			 ORDER BY ${SEQ_ORDER} LIMIT ?`,
-			...seqTuple(since),
+			 WHERE rowid > ?
+			 ORDER BY rowid LIMIT ?`,
+			after,
 			lim,
 		).toArray();
 		const ops = rows.map(toChange);
-		const last = ops.length > 0 ? ops[ops.length - 1].seq : since;
+		const lastRowid = rows.length > 0 ? Number(rows[rows.length - 1].rowid) : after;
 		const more = sql.exec<{ n: number }>(
-			`SELECT EXISTS(
-				SELECT 1 FROM canonical_ops
-				WHERE ${SEQ_AFTER}
-			) AS n`,
-			...seqTuple(last),
+			`SELECT EXISTS(SELECT 1 FROM canonical_ops WHERE rowid > ?) AS n`,
+			lastRowid,
 		).one().n === 1;
 		return {
 			protocol_version: 2,
@@ -687,20 +671,24 @@ export class SyncHub extends DurableObject<Env> {
 		if (compareCanonicalDecimals(target, this.headSeq()) > 0) throw projectionError("target_seq exceeds head_seq");
 		const limit = Math.min(PROJECTION_PAGE_MAX_OPS, Math.max(1, Math.floor(maxOps)));
 		const byteLimit = Math.min(PROJECTION_PAGE_MAX_BYTES, Math.max(1, Math.floor(maxBytes)));
-		const rows = this.ctx.storage.sql.exec<{
-			seq: string;
-			body: string;
-			operation_sha256: string;
-			server_ts: string;
-		}>(
-			`SELECT seq, body, operation_sha256, server_ts
-			 FROM canonical_ops
-			 WHERE ${SEQ_AFTER} AND ${SEQ_THROUGH}
-			 ORDER BY ${SEQ_ORDER} LIMIT ?`,
-			...seqTuple(projected),
-			...seqTuple(target),
-			limit,
-		).toArray();
+		const after = this.rowidAfterCursor(projected);
+		const through = this.rowidThrough(target);
+		const rows = through === null || through <= after
+			? []
+			: this.ctx.storage.sql.exec<{
+				seq: string;
+				body: string;
+				operation_sha256: string;
+				server_ts: string;
+			}>(
+				`SELECT seq, body, operation_sha256, server_ts
+				 FROM canonical_ops
+				 WHERE rowid > ? AND rowid <= ?
+				 ORDER BY rowid LIMIT ?`,
+				after,
+				through,
+				limit,
+			).toArray();
 		const ops: ChangeOp[] = [];
 		for (const row of rows) {
 			const op = toChange(row);
@@ -818,23 +806,90 @@ export class SyncHub extends DurableObject<Env> {
 		await this.ctx.storage.setAlarm(Date.now() + DAY_MS);
 	}
 
-	/**
-	 * Existing objects created before seq_len: add the column, backfill, and
-	 * install the composite index. New objects already have seq_len on the
-	 * CREATE TABLE path. Idempotent — safe on every cold start and reset.
-	 */
-	private ensureSeqOrderSchema(): void {
-		const sql = this.ctx.storage.sql;
-		const columns = sql.exec<{ name: string }>("PRAGMA table_info(canonical_ops)").toArray();
-		if (!columns.some((column) => column.name === "seq_len")) {
-			sql.exec("ALTER TABLE canonical_ops ADD COLUMN seq_len INTEGER");
-			sql.exec("UPDATE canonical_ops SET seq_len = LENGTH(seq) WHERE seq_len IS NULL");
-		}
-		sql.exec("CREATE INDEX IF NOT EXISTS canonical_ops_seq_order ON canonical_ops(seq_len, seq)");
-	}
-
 	private headSeq(): string { return this.meta("head_seq"); }
 	private projectedSeq(): string { return this.meta("projected_seq"); }
+
+	/**
+	 * Ops are appended in seq order (incrementCanonicalDecimal(head) on the
+	 * only INSERT path; replays do not insert; rows are never deleted except
+	 * by reset/deleteAll). SQLite rowid is therefore monotonic with seq, and
+	 * `WHERE rowid > ? ORDER BY rowid` uses the existing clustered key — no
+	 * new column, index, or backfill.
+	 *
+	 * `SELECT rowid WHERE seq = ?` uses the existing TEXT PK. A missing
+	 * cursor (since=0, or a jumped head with no matching row) falls back to
+	 * an O(log N) rowid walk, never a full-table scan or bulk write.
+	 */
+	private rowidOfSeq(seq: string): number | null {
+		const row = this.ctx.storage.sql.exec<{ rowid: number }>(
+			"SELECT rowid FROM canonical_ops WHERE seq = ?",
+			seq,
+		).toArray()[0];
+		return row === undefined ? null : Number(row.rowid);
+	}
+
+	/** Exclusive lower bound: rows with `rowid >` this are strictly after cursor. */
+	private rowidAfterCursor(cursor: string): number {
+		if (cursor === "0") return 0;
+		const exact = this.rowidOfSeq(cursor);
+		if (exact !== null) return exact;
+		const firstAfter = this.firstRowidWithSeqAfter(cursor);
+		if (firstAfter !== null) return firstAfter - 1;
+		const last = this.ctx.storage.sql.exec<{ rowid: number }>(
+			"SELECT rowid FROM canonical_ops ORDER BY rowid DESC LIMIT 1",
+		).toArray()[0];
+		return last === undefined ? 0 : Number(last.rowid);
+	}
+
+	/** Inclusive upper bound: last row whose seq is <= target. */
+	private rowidThrough(target: string): number | null {
+		const exact = this.rowidOfSeq(target);
+		if (exact !== null) return exact;
+		const firstAfter = this.firstRowidWithSeqAfter(target);
+		if (firstAfter === null) {
+			const last = this.ctx.storage.sql.exec<{ rowid: number }>(
+				"SELECT rowid FROM canonical_ops ORDER BY rowid DESC LIMIT 1",
+			).toArray()[0];
+			return last === undefined ? null : Number(last.rowid);
+		}
+		const prev = this.ctx.storage.sql.exec<{ rowid: number }>(
+			"SELECT rowid FROM canonical_ops WHERE rowid < ? ORDER BY rowid DESC LIMIT 1",
+			firstAfter,
+		).toArray()[0];
+		return prev === undefined ? null : Number(prev.rowid);
+	}
+
+	private firstRowidWithSeqAfter(cursor: string): number | null {
+		const first = this.ctx.storage.sql.exec<{ rowid: number }>(
+			"SELECT rowid FROM canonical_ops ORDER BY rowid LIMIT 1",
+		).toArray()[0];
+		if (first === undefined) return null;
+		const last = this.ctx.storage.sql.exec<{ rowid: number }>(
+			"SELECT rowid FROM canonical_ops ORDER BY rowid DESC LIMIT 1",
+		).one();
+		let lo = Number(first.rowid);
+		let hi = Number(last.rowid);
+		let found: number | null = null;
+		while (lo <= hi) {
+			const mid = lo + Math.floor((hi - lo) / 2);
+			const row = this.ctx.storage.sql.exec<{ rowid: number; seq: string }>(
+				"SELECT rowid, seq FROM canonical_ops WHERE rowid >= ? ORDER BY rowid LIMIT 1",
+				mid,
+			).toArray()[0];
+			if (row === undefined) {
+				hi = mid - 1;
+				continue;
+			}
+			const rowid = Number(row.rowid);
+			if (compareCanonicalDecimals(String(row.seq), cursor) > 0) {
+				found = rowid;
+				hi = rowid - 1;
+			} else {
+				lo = rowid + 1;
+			}
+		}
+		return found;
+	}
 
 	private touchDevice(deviceId: string, name: string | null, now = Date.now()): void {
 		const normalizedId = this.normalizeDeviceId(deviceId);

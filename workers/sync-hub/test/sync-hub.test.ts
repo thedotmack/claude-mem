@@ -875,7 +875,7 @@ describe("large cursor pagination", () => {
 		expect(status(await stub.getStatus()).op_count).toBe(12);
 	});
 
-	it("reads O(new rows) after cursor N, not the whole log", async () => {
+	it("reads O(new rows) after cursor N via rowid, not the whole log", async () => {
 		const stub = hub("seq-rows-read");
 		const logSize = 200;
 		const ops = await Promise.all(
@@ -887,74 +887,73 @@ describe("large cursor pagination", () => {
 		expect(page.ops.map((op) => op.seq)).toEqual(["191", "192", "193", "194", "195", "196", "197", "198", "199", "200"]);
 
 		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const indexes = state.storage.sql.exec<{ name: string }>(
-				"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'canonical_ops_seq_order'",
+			const ordered = state.storage.sql.exec<{ seq: string; rowid: number }>(
+				"SELECT seq, rowid FROM canonical_ops ORDER BY rowid",
 			).toArray();
-			expect(indexes).toHaveLength(1);
+			expect(ordered.map((row) => row.seq)).toEqual(
+				Array.from({ length: logSize }, (_, index) => String(index + 1)),
+			);
+			expect(ordered.every((row, index) => Number(row.rowid) === index + 1)).toBe(true);
+
+			const lookup = state.storage.sql.exec<{ rowid: number }>(
+				"SELECT rowid FROM canonical_ops WHERE seq = ?",
+				"190",
+			);
+			const cursorRow = lookup.one();
+			expect(lookup.rowsRead).toBeLessThan(4);
 
 			const plan = state.storage.sql.exec<{ detail: string }>(
 				`EXPLAIN QUERY PLAN
-				 SELECT seq, body, operation_sha256, server_ts
-				 FROM canonical_ops
-				 WHERE (seq_len, seq) > (?, ?)
-				 ORDER BY seq_len, seq LIMIT ?`,
-				"190".length,
-				"190",
+				 SELECT seq FROM canonical_ops WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+				cursorRow.rowid,
 				10,
 			).toArray();
-			expect(plan.some((row) => row.detail.includes("canonical_ops_seq_order"))).toBe(true);
+			expect(plan.some((row) => /rowid|INTEGER PRIMARY KEY/i.test(row.detail))).toBe(true);
 
 			const cursor = state.storage.sql.exec<{ seq: string }>(
-				`SELECT seq FROM canonical_ops
-				 WHERE (seq_len, seq) > (?, ?)
-				 ORDER BY seq_len, seq LIMIT ?`,
-				"190".length,
-				"190",
+				`SELECT seq FROM canonical_ops WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+				cursorRow.rowid,
 				10,
 			);
 			expect(cursor.toArray()).toHaveLength(10);
-			// A LENGTH(seq) scan would read the whole 200-row log. The composite
-			// index should charge about the 10 returned rows, plus small overhead.
+			// A LENGTH(seq) scan would read the whole 200-row log. rowid range
+			// + LIMIT should charge about the 10 returned rows.
 			expect(cursor.rowsRead).toBeGreaterThanOrEqual(10);
 			expect(cursor.rowsRead).toBeLessThan(40);
 		});
 	});
 
-	it("backfills seq_len and the order index on an existing pre-migration log", async () => {
-		const stub = hub("seq-schema-migrate");
-		ok(await stub.pushOps("dev-a", [await observationOp("1")]));
-		await runInDurableObject(stub, (instance: SyncHub, state) => {
-			state.storage.sql.exec("DROP INDEX IF EXISTS canonical_ops_seq_order");
-			state.storage.sql.exec("DROP INDEX IF EXISTS canonical_ops_entity_rev");
-			state.storage.sql.exec("DROP TABLE canonical_ops");
-			state.storage.sql.exec(`CREATE TABLE canonical_ops (
-				seq TEXT PRIMARY KEY,
-				entity_id TEXT NOT NULL,
-				kind TEXT NOT NULL,
-				origin_device_id TEXT NOT NULL,
-				origin_local_id TEXT,
-				entity_rev TEXT NOT NULL,
-				operation_sha256 TEXT NOT NULL,
-				body TEXT NOT NULL,
-				deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-				server_ts TEXT NOT NULL
-			)`);
-			state.storage.sql.exec(
-				`INSERT INTO canonical_ops
-				 (seq, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
-				  operation_sha256, body, deleted, server_ts)
-				 VALUES ('9', 'legacy', 'observation', 'dev-a', '9', '1', 'hash', '{}', 0, '1')`,
-			);
-			(instance as unknown as { ensureSeqOrderSchema(): void }).ensureSeqOrderSchema();
-			const row = state.storage.sql.exec<{ seq: string; seq_len: number }>(
-				"SELECT seq, seq_len FROM canonical_ops WHERE seq = '9'",
-			).one();
-			expect(row).toEqual({ seq: "9", seq_len: 1 });
-			const indexes = state.storage.sql.exec<{ name: string }>(
-				"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'canonical_ops_seq_order'",
-			).toArray();
-			expect(indexes).toHaveLength(1);
+	it("DO init does not bulk-update or reindex a pre-populated log", async () => {
+		const stub = hub("seq-init-no-backfill");
+		const seed = await Promise.all(
+			Array.from({ length: 80 }, (_, index) => observationOp(String(index + 1))),
+		);
+		ok(await stub.pushOps("dev-a", seed));
+
+		await runInDurableObject(stub, async (instance: SyncHub, state) => {
+			const statements: string[] = [];
+			let rowsWritten = 0;
+			const sql = state.storage.sql;
+			const originalExec = sql.exec.bind(sql);
+			(sql as { exec: typeof sql.exec }).exec = ((query: string, ...bindings: unknown[]) => {
+				statements.push(query);
+				const cursor = originalExec(query, ...bindings);
+				rowsWritten += cursor.rowsWritten;
+				return cursor;
+			}) as typeof sql.exec;
+
+			await (instance as unknown as { initializePristineState(): Promise<void> }).initializePristineState();
+
+			expect(rowsWritten).toBeLessThan(8);
+			expect(statements.some((sqlText) => /UPDATE\s+canonical_ops/i.test(sqlText))).toBe(false);
+			expect(statements.some((sqlText) => /CREATE\s+INDEX/i.test(sqlText) && /seq_len|seq_order/i.test(sqlText)))
+				.toBe(false);
 		});
+
+		const afterInit = changes(await stub.getChanges("dev-reader", "70", 20));
+		expect(afterInit.ops.map((op) => op.seq)).toEqual(
+			Array.from({ length: 10 }, (_, index) => String(71 + index)),
+		);
 	});
 });
 
