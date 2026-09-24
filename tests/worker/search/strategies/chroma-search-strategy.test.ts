@@ -88,7 +88,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100, // CHROMA_BATCH_SIZE
+        1000,
         undefined 
       );
     });
@@ -102,6 +102,26 @@ describe('ChromaSearchStrategy', () => {
 
       expect(result.usedChroma).toBe(true);
       expect(result.strategy).toBe('chroma');
+    });
+
+    it('should preserve requested date ordering in SQLite hydration', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        orderBy: 'date_asc',
+        limit: 10
+      };
+
+      await strategy.search(options);
+
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+      expect(mockSessionStore.getSessionSummariesByIds).toHaveBeenCalledWith([2], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+      expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalledWith([3], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
     });
 
     it('should hydrate observations from SQLite', async () => {
@@ -168,7 +188,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100,
+        1000,
         { doc_type: 'observation' }
       );
     });
@@ -183,7 +203,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100,
+        1000,
         { doc_type: 'session_summary' }
       );
     });
@@ -198,7 +218,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100,
+        1000,
         { doc_type: 'user_prompt' }
       );
     });
@@ -213,7 +233,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100,
+        1000,
         { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
       );
     });
@@ -229,7 +249,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100,
+        1000,
         { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] }
       );
     });
@@ -244,7 +264,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100,
+        1000,
         { platform_source: 'cursor' }
       );
     });
@@ -261,7 +281,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100,
+        1000,
         { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] }
       );
     });
@@ -276,7 +296,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        100,
+        1000,
         { doc_type: 'observation' }
       );
     });

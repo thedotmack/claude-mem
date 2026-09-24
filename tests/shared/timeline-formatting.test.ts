@@ -135,6 +135,22 @@ describe('groupByDate', () => {
     expect(dates[2]).toContain('Jan 6');
   });
 
+  it('should support descending date order', () => {
+    const items: TestItem[] = [
+      { id: 1, date: '2025-01-06T10:00:00Z' },
+      { id: 2, date: '2025-01-04T10:00:00Z' },
+      { id: 3, date: '2025-01-05T10:00:00Z' },
+    ];
+
+    const result = groupByDate(items, (item) => item.date, 'desc');
+
+    const dates = Array.from(result.keys());
+    expect(dates).toHaveLength(3);
+    expect(dates[0]).toContain('Jan 6');
+    expect(dates[1]).toContain('Jan 5');
+    expect(dates[2]).toContain('Jan 4');
+  });
+
   it('should group multiple items on same date together', () => {
     const items: TestItem[] = [
       { id: 1, date: '2025-01-04T08:00:00Z' },
