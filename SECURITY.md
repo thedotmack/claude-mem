@@ -160,6 +160,7 @@ However, by design claude-mem invokes upstream model providers and optional inte
 
 - **Claude Agent SDK** (default summarization/observation path): sends prompts and transcript context to Anthropic's API.
 - **Alternate providers** (`gemini`, `openrouter`): when configured, send the same context to those providers instead.
+- **`openai-compatible` provider**: when configured, sends the same context to whatever OpenAI-compatible endpoint `CLAUDE_MEM_OPENAI_COMPAT_PRESET` / `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` names — a third-party host (NVIDIA NIM, DeepSeek, Groq, Together) or a server on your own machine (Ollama, LM Studio, vLLM). Unlike the OpenRouter path it sends no attribution headers, and it never reuses the OpenRouter or cmem.ai gateway credential.
 - **Chroma MCP / `chroma-mcp`**: when enabled, computes embeddings via the configured embedding backend, which may be a remote API depending on the user's chroma-mcp configuration.
 - **OAuth / keychain reads**: claude-mem reads the Claude Code OAuth token from the platform-native credential store at spawn time. The token is injected into worker subprocesses but is not transmitted by claude-mem.
 - **GitHub releases / npm registry**: version-check and self-update flows fetch metadata from public registries.
@@ -201,6 +202,6 @@ For security-related questions (non-vulnerabilities), please:
 
 ---
 
-**Last Updated:** 2026-05-03
+**Last Updated:** 2026-09-09
 **Last Audit:** 2025-12-16 (Issue #354)
 **Next Scheduled Audit:** 2026-09-16

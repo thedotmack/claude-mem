@@ -24,7 +24,14 @@ const toggleMcpSchema = z.object({
 // prefs) and corrupts them on every GET (#3680 / #3861).
 const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_GEMINI_API_KEY',
+  // The rotation pools hold credentials exactly like the singular keys above.
+  // Leaving them out would mask the primary key and hand back every rotation
+  // key in cleartext from an unauthenticated GET.
+  'CLAUDE_MEM_GEMINI_API_KEYS',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_API_KEYS',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS',
   'CLAUDE_MEM_CHROMA_API_KEY',
   'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
   'CLAUDE_MEM_TELEGRAM_BOT_TOKEN',
@@ -194,9 +201,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
       'CLAUDE_MEM_GEMINI_API_KEY',
+      'CLAUDE_MEM_GEMINI_API_KEYS',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
+      'CLAUDE_MEM_OPENROUTER_API_KEYS',
       'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
@@ -258,9 +267,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
+    const validProviders = ['claude', 'gemini', 'openrouter', 'openai-compatible'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "openai-compatible"' };
       }
     }
 

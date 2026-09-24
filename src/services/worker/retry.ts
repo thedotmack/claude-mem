@@ -45,6 +45,19 @@ export interface RetryOptions {
   label?: string;
   /** External abort signal. */
   abortSignal?: AbortSignal;
+  /**
+   * Classified kinds this call must NOT retry, even when `isRetryableKind`
+   * would.
+   *
+   * Exists for multi-key rotation. `rate_limit` is retryable against one key —
+   * waiting out a per-minute window is the right move when that key is all
+   * there is. With a pool it is the wrong move: the caller has another key that
+   * is not rate limited, and honoring `retryAfterMs` twice first spends the
+   * window it was trying to avoid. The pool wrapper passes the rotate-worthy
+   * kinds here so they reach it after the first failed request, while
+   * `transient` keeps retrying in place.
+   */
+  nonRetryableKinds?: readonly string[];
 }
 
 /** Bounds shared with the other CLAUDE_MEM_*_TIMEOUT_MS settings. */
@@ -93,18 +106,19 @@ export function resolveLlmTimeoutMs(
   return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal' | 'perAttemptTimeoutMs'>> = {
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal' | 'perAttemptTimeoutMs' | 'nonRetryableKinds'>> = {
   maxRetries: 2,
   baseDelayMs: 100,
   maxDelayMs: 30_000,
 };
 
 /** Returns true if a classified error is worth retrying. */
-export function isRetryableKind(err: unknown): boolean {
+export function isRetryableKind(err: unknown, nonRetryableKinds?: readonly string[]): boolean {
   if (!isClassified(err)) {
     // Unclassified errors are treated as transient (preserve old default).
     return true;
   }
+  if (nonRetryableKinds?.includes(err.kind)) return false;
   return err.kind === 'transient' || err.kind === 'rate_limit';
 }
 
@@ -165,7 +179,7 @@ export async function withRetry<T>(
         );
       }
 
-      if (!isRetryableKind(err)) {
+      if (!isRetryableKind(err, options.nonRetryableKinds)) {
         throw err;
       }
 
