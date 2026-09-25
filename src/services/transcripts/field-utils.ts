@@ -120,6 +120,23 @@ export function matchesRule(
 ): boolean {
   if (!rule) return true;
 
+  // Every operator below is applied to the ONE value `rule.path` selects, so a
+  // single rule cannot constrain one field by another. `all`/`any` evaluate
+  // sub-rules that each carry their own path, which is what makes a rule like
+  // "role == user AND the content is not an injected preamble" expressible
+  // (#4211). Evaluated before the single-path operators so a nested rule is
+  // decided on its own terms, and so nesting composes.
+  if (rule.all && Array.isArray(rule.all)) {
+    for (const subRule of rule.all) {
+      if (!matchesRule(entry, subRule, schema)) return false;
+    }
+  }
+
+  if (rule.any && Array.isArray(rule.any)) {
+    const matched = rule.any.some(subRule => matchesRule(entry, subRule, schema));
+    if (!matched) return false;
+  }
+
   const path = rule.path || schema.eventTypePath || 'type';
   const value = path ? getValueByPath(entry, path) : undefined;
   const isAbsent = value === undefined || value === null || value === '';

@@ -17,6 +17,14 @@ export interface MatchRule {
   not_contains?: string;
   exists?: boolean;
   regex?: string;
+  /**
+   * Every sub-rule must match. Each sub-rule carries its own `path`, which is
+   * the only way to constrain one field by another (e.g. `role == "user"` AND
+   * the text is not an injected preamble). Sub-rules may nest.
+   */
+  all?: MatchRule[];
+  /** At least one sub-rule must match. Each sub-rule carries its own `path`. */
+  any?: MatchRule[];
 }
 
 export type EventAction =
