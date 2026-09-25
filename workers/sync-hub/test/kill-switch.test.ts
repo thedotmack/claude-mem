@@ -22,11 +22,11 @@
  *     hand-typed emergency `wrangler kv key put ... "1"` works).
  *
  * Unit tests cover the per-isolate read cache (the documented KV-read-cost
- * vs freshness trade) and the fail-open contract via an injected fake KV.
+ * vs freshness trade) and the fail-closed contract via an injected fake KV.
  */
 
 import { env, SELF } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__resetKillSwitchCacheForTests,
 	KILL_SWITCH_KEY,
@@ -317,7 +317,7 @@ describe("kill switch: front Worker behavior", () => {
 	});
 });
 
-describe("kill switch: per-isolate cache + fail-open (unit)", () => {
+describe("kill switch: per-isolate cache + fail-closed (unit)", () => {
 	interface FakeKV {
 		reads: number;
 		value: string | null;
@@ -365,14 +365,62 @@ describe("kill switch: per-isolate cache + fail-open (unit)", () => {
 		expect(kv.reads).toBe(2);
 	});
 
-	it("fails OPEN on a KV read error and does not cache the failure", async () => {
+	it("KV get throws means ON", async () => {
+		const kv: FakeKV = { reads: 0, value: null, throwOnGet: true };
+		const testEnv = fakeEnv(kv, "0");
+		expect((await readKillSwitch(testEnv)).tripped).toBe(true);
+		expect(kv.reads).toBe(1);
+	});
+
+	it("KV get returns null means OFF", async () => {
+		const kv: FakeKV = { reads: 0, value: null, throwOnGet: false };
+		const testEnv = fakeEnv(kv, "0");
+		const state = await readKillSwitch(testEnv);
+		expect(state.tripped).toBe(false);
+		expect(state.raw).toBeNull();
+		expect(kv.reads).toBe(1);
+	});
+
+	it("KV get returns a value means ON", async () => {
+		const kv: FakeKV = { reads: 0, value: "1", throwOnGet: false };
+		const testEnv = fakeEnv(kv, "0");
+		const state = await readKillSwitch(testEnv);
+		expect(state.tripped).toBe(true);
+		expect(state.raw).toBe("1");
+		expect(kv.reads).toBe(1);
+	});
+
+	it("fails CLOSED on a KV read error and does not cache the failure", async () => {
 		const kv: FakeKV = { reads: 0, value: "flag", throwOnGet: true };
 		const testEnv = fakeEnv(kv, "30000");
-		expect((await readKillSwitch(testEnv)).tripped).toBe(false);
+		expect((await readKillSwitch(testEnv)).tripped).toBe(true);
 		// KV recovers: the very next read sees the flag (failure never cached).
 		kv.throwOnGet = false;
 		expect((await readKillSwitch(testEnv)).tripped).toBe(true);
 		expect(kv.reads).toBe(2);
+	});
+
+	it("keeps the last known value when a later KV read fails", async () => {
+		const kv: FakeKV = { reads: 0, value: null, throwOnGet: false };
+		const testEnv = fakeEnv(kv, "30000");
+		let nowMs = 1_000_000;
+		expect((await readKillSwitch(testEnv, { now: () => nowMs })).tripped).toBe(false);
+
+		kv.throwOnGet = true;
+		nowMs += 30_001;
+		expect((await readKillSwitch(testEnv, { now: () => nowMs })).tripped).toBe(false);
+		expect(kv.reads).toBe(2);
+	});
+
+	it("logs a KV read failure once per isolate", async () => {
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const kv: FakeKV = { reads: 0, value: null, throwOnGet: true };
+		const testEnv = fakeEnv(kv, "0");
+		expect((await readKillSwitch(testEnv)).tripped).toBe(true);
+		expect((await readKillSwitch(testEnv)).tripped).toBe(true);
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(String(spy.mock.calls[0]?.[0])).toContain("failing closed");
+		spy.mockRestore();
 	});
 
 	it("tripKillSwitch writes a JSON flag once and reports already_tripped after", async () => {
