@@ -7,6 +7,7 @@
 **Execute with:** `/do` on this file, one phase per fresh session, commit at the end of each verified phase.
 **Revised 2026-09-25 (PT):** added Phase 2B, agent behavior metrics taken from Alex's own complaints, plus the matching render, verification, and green-checklist items. Status unchanged.
 **Revised again 2026-09-25 ~4:35 PM (PT):** Alex scoped a "Wins vs mistakes" section directly under the dollar headline (4:28 PM PT): a cost-of-mistakes line, wins with their cost, and two day-by-day timelines on one time axis. Added in 2.8 (wins and attribution), 2B.9 (mistakes line and timeline data), 3.8 (render), 8.6 (reconciliation). Phase 2B's metric list is now provisional pending the Frustration Arc seat. Out-of-scope section added. Status unchanged.
+**Revised 2026-09-25 ~4:40 PM (PT):** Phase 2B reconciled with the Frustration Arc seat's final list (`/workspace/frustration-arc/metrics-ideas.md`). PROVISIONAL removed; M1–M6 merged into 12 patterns (P1–P12) plus 2 supporting metrics, 4 summary tiles. The mistakes line now headlines the low (same-session) figure, with the high figure as an upper bound in Details. Win cost shows "unmeasured" until sessions are linked to PRs. Added rule effectiveness (2B.10), a prerequisites list (0.5), a Frustration Arc comparison in Phase 8 (8.7), and a renumbered green checklist (G1–G16). Status unchanged.
 **Supersedes:** the rendering-only plan at `/workspace/plans/2026-09-25-agent-cost-report-timing-style.md` (its data basis was `discovery_tokens` and its unit was cents; both are gone). Its mapping tables are reused in Phase 3.
 **All times in PT.** All secrets by env var name only. Never read `.env` or settings files for keys.
 **Scratch dir for every verification command:** define once per session, `ACR_TMP=${ACR_TMP:-/tmp/acr-weekly}`, then use `$ACR_TMP/p1`, `$ACR_TMP/p2`, … per phase. Phases 3 and 8 read Phase 2 output from `$ACR_TMP/p2`. Nothing under `$ACR_TMP` is committed.
@@ -45,6 +46,7 @@ Added by this plan, same spirit:
 ## Out of scope for this plan
 
 - **Auto-lessons at session start** (injecting lessons learned from past mistakes into new sessions) is out of scope. It is a separate claude-mem memory feature with its own plan. This report only measures and shows wins and mistakes; it does not feed anything back into agent sessions.
+- **Upstream data fixes** named in 0.5 (claude-mem tagging prompts when it writes them, logging the model id for Grok and Codex, stamping session ids in PRs, keeping Grok Bot chats) are changes to other products or house workflows. This plan lists them as prerequisites and builds only the report side. Each needs its own plan and Alex's go.
 
 ---
 
@@ -191,6 +193,19 @@ git log --oneline -1 -- plugin/skills/agent-cost-report/SKILL.md
 - Do not edit SKILL.md content in Phase 0. Baseline first.
 - Do not add mirrors yet.
 - Do not open any settings file to find device ids or keys.
+
+### 0.5 Prerequisites for behavior counts, mistake cost, and win cost
+
+From Frustration Arc's "Data hygiene the report needs" (`/workspace/frustration-arc/metrics-ideas.md:37-41`). Until each one is met, the report shows the listed fallback, never a guess.
+
+| # | Prerequisite | Why | What this plan builds | Gate | Until it is met the report shows |
+|---|---|---|---|---|---|
+| R1 | Keep Alex's chat turns with timestamps on every agent surface | Grok Bot chats vanish from the box after Sep 16, so the last week cannot be scored firsthand (`trend.md`) | Reads whatever human turns exist (box transcripts, claude-mem `user_prompts`) | Keeping or exporting Grok Bot chats: needs Alex's explicit go and a sanctioned export (G14) | Grok Bot episodes "unavailable"; rule effectiveness "not enough data" where prompts are missing |
+| R2 | Tag bot-authored prompts | About 31% of "user" messages were agents (`MI:7`) | Read-time tagger in `acr/behavior.py` (2B.1), with tests. **Required before any behavior count from "user" messages.** Write-time tagging in claude-mem is an upstream change | Upstream write-time tagging: separate plan, needs Alex's go | "unavailable (prompts not tagged human vs bot)" for every count that reads user messages |
+| R3 | Log the model id on every call, including Grok and Codex | Both were assumed in Frustration Arc's study (`MI:40`) | Uses `message.model` from box transcripts (already there, Phase 1); labels anything else `model: assumed` | Upstream logging for Grok and Codex: outside this plan | P3 counts only turns with a logged model; the rest are listed as "model not logged" |
+| R4 | Link session → PR → release | Win cost cannot be measured without it (`MI:32`) | Reads a session id from the PR body line `Session: <content_session_id>` or the commit trailer `Claude-Session: <content_session_id>`; release = npm version ↔ tag ↔ merge commit | Changing the house ship flow (`/do`, babysit, PR template, version-bump) to stamp the id, which puts session ids in public PRs: needs Alex's explicit go (G13) | Win cost "unmeasured" (2.8) |
+
+Order: R2 is built in Phase 2B and must pass its tests before any other Phase 2B count that reads user messages. R1, R3 (Grok/Codex), and R4 are gated steps listed under "What ships".
 
 ---
 
@@ -366,31 +381,35 @@ Unit tests: observer dedup (three observation rows with the same per-turn value 
 - **Finished work**: a line item with status `shipped` or `completed` (Phase 2.3 outcome rule) that has no PR or publish win of its own. Key = `content_session_id` (or `memory_session_id` for replica sessions).
 - Each win records `{win_id, kind: pr|publish|finished, title, url|null, ts_pt (the merge/publish/summary time), day_pt, project, evidence_ids, sessions: [...]}`. Titles come from the PR title, package name, or the completed summary's first line, never written by hand.
 
-**What a win cost (attribution)** — every dollar here is `ESTIMATED` and carries `attribution_method`:
-- **Default, "worktree lineage + time split"** (proposed in G11): the sessions that led to a win are the session holding the win event plus earlier sessions in the window with the same `project` value (which is `<repo>/<worktree>` inside a worktree, Phase 0 C) or that mention the same PR number or branch in their prompts. A win's cost = sum of `api_equiv()` of those sessions' turns up to the win timestamp. When one session feeds more than one win, each turn is assigned to the next win that happened after it, so no turn is counted twice.
-- **Alternatives for G11**: "direct session only" (only the session with the win event; cheapest to explain, undercounts), or "token-weighted split across the project" (spreads shared cost by each win's share of edited files; more judgment).
-- Spend not tied to any win shows as "not tied to a win: ≈$X.XX" so wins plus unattributed plus mistakes can be read against the headline. Mistake turns inside a win's lineage stay in the win's cost and are also shown in the mistakes line; the render says "win costs include the mistakes made on the way".
-- Wins from Mac replica sessions (no transcript on the box) get `cost_basis: extrapolated` and the `EXTRAPOLATED (low confidence)` tag, using the Phase 2.2 ratio. Never $0.
-- Each win also carries `tokens {input, output, cache_write_5m, cache_write_1h, cache_read}`, `sessions_n`, `turns_n`, `active_minutes`.
+**What a win cost** — Frustration Arc found cost per win cannot be measured today because sessions are not linked to PRs (`/workspace/frustration-arc/metrics-ideas.md:32`; all 491 wins in `wins.jsonl` carry `cost_method: unmeasured`). So:
+- **Default: "unmeasured".** Each win row shows "cost: unmeasured (session not linked to PR)". Never $0, never a guess.
+- **Once R4 exists (session linking):** a win's cost = the sum of `api_equiv()` of the sessions named in its PR body (`Session: <content_session_id>`) or commit trailers (`Claude-Session: <content_session_id>`), up to the merge time. Labeled `ESTIMATED · session-linked` (measured tokens, list prices). A session named by more than one win has each turn assigned to the next win after it, so no turn counts twice.
+- **Fallback, only if G11 approves it:** "worktree lineage + time split" (the session holding the win event plus earlier sessions in the window with the same `project` value, which is `<repo>/<worktree>` inside a worktree (Phase 0 C), or that mention the same PR number or branch, up to the win time). Every such figure is labeled `ESTIMATED · attribution fallback (worktree lineage), not linked`, in the row and in Details. Without G11 this fallback is not computed.
+- Spend not tied to any win shows as "not tied to a win: ≈$X.XX" only when at least one win cost is computed; otherwise "win costs unmeasured". Mistake turns inside a win's sessions stay in the win's cost and are also shown in the mistakes line; the render says "win costs include the mistakes made on the way".
+- Wins from Mac replica sessions (no transcript on the box) get `cost_basis: extrapolated` and the `EXTRAPOLATED (low confidence)` tag, using the Phase 2.2 ratio, only when a linked or fallback cost exists. Never $0.
+- Each win with a computed cost also carries `tokens {input, output, cache_write_5m, cache_write_1h, cache_read}`, `sessions_n`, `turns_n`, `active_minutes`.
+- **More win sources from Frustration Arc** (`MI:29-31`, decision G12): npm releases (`npm view <pkg> time`, read-only), deploys that stayed up 24 hours where a deploy check exists, and praise moments (human-tagged messages matching `boom|love it|perfect|nice|hell yes|excellent|ship it|lfg|great job`, minus sarcasm via 2B.4). Praise is counted and shown, but never costed.
 
-**Outputs**: `report.json.wins = {items: [...], attribution_method, unattributed_usd, total_attributed_usd}` and `report.json.timeline.wins_by_day = [{day_pt, count, usd, win_ids}]` covering every PT day in the window (empty days present).
+**Outputs**: `report.json.wins = {items: [...], cost_status: unmeasured|session_linked|fallback_estimate, attribution_method|null, unattributed_usd|null, total_attributed_usd|null, praise_n}`; each item has `usd|null` and `cost_status` and `report.json.timeline.wins_by_day = [{day_pt, count, usd, win_ids}]` covering every PT day in the window (empty days present).
 
 **Verification** (add to 2.6):
 
 ```bash
 python3 - <<PY
 import json;d=json.load(open('$ACR_TMP/p2/report.json'));w=d['wins']
-print(len(w['items']), w['attribution_method'], w['total_attributed_usd'], w['unattributed_usd'])
+print(len(w['items']), w['cost_status'], w['attribution_method'], w['total_attributed_usd'], w['unattributed_usd'])
 assert len({i['win_id'] for i in w['items']})==len(w['items'])          # deduped
-assert w['total_attributed_usd'] <= d['spend']['agent_estimated_usd'] + d['spend']['extrapolated_unmeasured_usd']
+if w['cost_status']=='unmeasured': assert all(i['usd'] is None for i in w['items'])   # no $0, no guess
+else: assert w['total_attributed_usd'] <= d['spend']['agent_estimated_usd'] + d['spend']['extrapolated_unmeasured_usd']
 assert len(d['timeline']['wins_by_day'])==len(d['by_day'])
 PY
 # research window had 5 distinct ship events and 26 finished outcomes (Phase 0 A); expect win count <= 26 + 5 and >= 5
+# Frustration Arc's wins.jsonl has 19 merged PRs + 1 npm release dated Sep 18-25 (4 undated rows excluded); merged-PR + publish wins should be within ±3 of 20, or VERIFICATION.md says why
 ```
 
-Unit tests: one PR seen in both a transcript merge and a ship observation counts once; a turn shared by two wins is assigned to exactly one; a win from a replica session is labeled extrapolated; finished work that already has a PR win is not counted twice; a win outside the window (by `mergedAt`) is dropped.
+Unit tests: with no session link and no G11, every win cost is `null` and renders "unmeasured"; a PR body with `Session: <id>` and a commit with `Claude-Session: <id>` link to that session; a fallback cost always carries the fallback label; one PR seen in both a transcript merge and a ship observation counts once; a turn shared by two wins is assigned to exactly one; a win from a replica session is labeled extrapolated; finished work that already has a PR win is not counted twice; a win outside the window (by `mergedAt`) is dropped.
 
-**Guards**: no hand-written win titles; no `gh` write commands; never show a win cost without `ESTIMATED` and the attribution method; a win with no traceable session shows "cost not attributable", not $0.
+**Guards**: no hand-written win titles; no `gh` write commands; never show a win cost without `ESTIMATED` and its method; no lineage fallback without G11; a win with no linked session shows "unmeasured", not $0.
 
 ---
 
@@ -398,11 +417,13 @@ Unit tests: one PR seen in both a transcript merge and a ship observation counts
 
 **Goal of the session:** add a behavior pass that finds the agent habits Alex has been angry about, counts them, prices what they cost with the same list-price method, and hands the numbers to the renderer. One commit. Runs after Phase 2 (it needs `usage.json`, the `rate()` table, and line items). Everything it produces is labeled **estimated**, and every count is labeled **heuristic** until a review or classifier pass confirms it.
 
-**PROVISIONAL metric list.** A separate seat, **Frustration Arc**, now owns mining Alex's complaints and will send the final behavior-metric list with detection methods. The six metrics below (M1–M6) are the starting set. Before Phase 2B executes, reconcile this section against Frustration Arc's list: keep, rename, add, or drop metrics to match it, carry over its detection methods where they differ, and note each change in the plan. The cost rules (2B.2), no-double-count union, layout limits (2B.5), and verification gates (2B.8, 8.5) stay as written whatever the final list is.
+**Reconciled 2026-09-25 (PT) with the Frustration Arc seat's final list.** The source is `/workspace/frustration-arc/metrics-ideas.md` (cited below as `MI:<line>`), with backing data in `costs.csv`/`costs.md`, `episodes.jsonl`, `wins.jsonl`, and `trend.csv`/`trend.md` in the same folder. Frustration Arc's study covers Jul 22 → Sep 25, 2026 PT: 142 episodes and 286 frustrated Alex messages (`MI:3`). Its prices are OpenRouter list-price estimates. Unmeasured stays unmeasured, never $0. The pattern list in 2B.3 is final for this plan. The starting set M1–M6 was merged into it (the mapping is in 2B.3).
 
-### 2B.0 Why these metrics (Alex's own words)
+**Hard gate (Prerequisite R2, 0.5):** no behavior count that reads "user" messages runs until every user turn is tagged human or bot. About 31% of "user" messages in Frustration Arc's study were written by agents (`MI:7`). Detectors that read only agent turns (for example, wrong model, or a claimed skill run with no tool call) can run before that.
 
-Alex asked on Sep 25 for "the stuff like hedging, errors, etc." Nobody had the exact list, so it was mined from his words for Sep 20–25, 2026 PT. Only behaviors backed by a quote are here.
+### 2B.0 Supporting evidence from the planner's own mining (Sep 20–25)
+
+Frustration Arc's 142-episode study is the primary evidence (`costs.md`, `episodes.jsonl`). The table below is the planner's earlier mining of Alex's words for Sep 20–25. It agrees with Frustration Arc: "asked instead of doing" = invented gates, "said done without proof" = false done, "wrong approach" = did something not asked / over-engineering. It is kept as supporting quotes only.
 
 Where the words came from: the box has almost no text Alex typed himself in this window. Box Claude Code transcripts hold only agent-written prompts (some relay "from Alex" steers). The claude-mem `user_prompts` table has no Mac rows after Sep 19, 11:51 PM PT. The Grok Bot chat stores on the box stop at Sep 16. So most quotes below are **relayed**: an agent wrote down his lines. The main one is the Prioritizer's user-lines-only transcript of the Sep 21 Cloudflare bleed chat (`/workspace/cf-bleed-narrative/USER-TRANSCRIPT-CF-BLEED-2026-09-21.md`, written 3:31 PM PT, header "USER LINES ONLY… quoted lines are his"; item numbers below). Lines outside Sep 20–25 are listed as "supporting, outside window" and are not counted.
 
@@ -415,8 +436,6 @@ Where the words came from: the box has almost no text Alex typed himself in this
 | **Hedging** | "the stuff like hedging, errors, etc." (Sep 25, relayed in the task brief). Supporting, outside window: "you can search for "subagents" "errors" "hedging" "overconfidence" "mistakes" etc. and everything should be visually on a report that adds up to 100%" (Sep 12 11:39 AM, Mac, `user_prompts` row 2828) · Sep 8 ~9:12 PM lock: "Do NOT get stuck on Max-plan / measured-cash caveats — that obfuscation blocks the job" (`user-memory/by-agent/521e962d…/log/2026-09.md:36`, paraphrased) | 1 (weakest evidence in the window; kept because Alex named it) |
 | **Wrong approach** (fixing the wrong side, wrong basis) | "Why is there anything related to Cloudflare running from that repo? … You should be able to handle it from the receiving end not the fucking sending end." (Sep 21, item 14, relayed). Paraphrased: Sep 25 3:53 PM "the data makes it feel dumb. The proof report showed 1.9 cents from just two sessions" (`/workspace/weekly-cost-workflow/NOTION-PAGE.md:5`) | ~2 |
 
-Each metric maps to one of the existing 16 failure types (`SKILL.md:80`), except jargon, which is a communication count and never a `failure_type`. No new failure types.
-
 ### 2B.1 Shared machinery: `acr/behavior.py`
 
 - A second pass over the same transcript files and window as the Phase 1 collector. Phase 1 reads only `type == "assistant"` lines with usage; this pass also reads assistant `text` and `tool_use {id, name, input}` blocks and user `tool_result {tool_use_id, is_error, content}` and user text blocks. Field names verified on box transcripts 2026-09-25 (see 2B.7).
@@ -425,80 +444,169 @@ Each metric maps to one of the existing 16 failure types (`SKILL.md:80`), except
 - Who was on the other side: each session is tagged `alex_direct` (interactive `entrypoint: cli` with no agent-prompt markers), `agent_relayed` (headless `sdk-cli`/`-p`, or prompts starting "You are…", "/do", "/make-plan", "STEER/RESET/CORRECTION from Alex"), or `unknown`. On the box nearly every session is `agent_relayed`. Asks are labeled `asked: Alex` or `asked: agent` from this tag. Relayed agent prompts are never labeled as Alex's words.
 - Excerpts: at most 160 characters, run through a secret scrubber (`sk-`, `sk-or-`, `Bearer `, `ghp_`, `gho_`, `xox[abp]-`, `AKIA`, any 32+ char base64/hex run) before they are written anywhere. Excerpts go only to `evidence.json` and Details.
 - Output: `behavior.json` in the run dir, merged into `report.json` by `rollup` (see 2B.5).
+- **Base layer, used by every pattern** (`MI:5-10`):
+  - **Human-or-bot tag on every user turn** (required, R2). `author: human | bot | unknown`. Until claude-mem tags prompts when it writes them, `acr` tags them when it reads them. A turn is `bot` if it starts with a Frustration Arc marker (`STEER from Alex`, `HOUSE LOCK`, `[SAND_HIDDEN_PROMPT]`, `<system-reminder>`, subagent prompt templates; `MI:7`) or one of the agent markers above ("You are…", "/do", "/make-plan"), or if the session is headless (`sdk-cli`/`-p`). It is `human` only in an `alex_direct` session, or in a claude-mem `user_prompts` row that passes the marker filter. Everything else is `unknown`. `bot` and `unknown` turns never count as Alex's words, never start an episode, and never go into a per-100-prompt denominator. If the tagger has not run, every count that reads user messages renders "unavailable (prompts not tagged human vs bot)".
+  - **Frustration detector** (heuristic, `MI:6`): a human-tagged message with profanity (`fuck|shit|wtf|goddamn`), ≥40% capital letters over ≥12 letters, `!!!` or `???`, or a phrase such as `i told you|i said|why did you|who (said|made|told)|stop|never|again`. Frustration Arc measured about 51% precision for this (563 candidates → 286 kept), so a candidate reaches the summary only after the model check (2B.4) or a pattern detector in 2B.3 confirms it.
+  - **Episode grouping**: frustrated messages in the same session with gaps ≤45 min form one episode (`MI:8`). `episode_id` = hash of session id + first message timestamp.
+  - **Pattern assignment**: an episode takes the 2B.3 pattern whose detector fired inside its wasted window. If none fired, it uses the human-message phrases. If still none, it is "unclear cause" (P12). Frustration Arc had 24 of 142 unclear.
+- **Sources**: box Claude Code transcripts (agent turns plus tagged user turns), and claude-mem `user_prompts`, local and replica rows (tagged; Mac rows run through Sep 19, 11:51 PM PT). Grok Bot chats: "unavailable" until R1.
 
-### 2B.2 How cost and time are counted (same list-price method)
+### 2B.2 How cost and time are counted (low headline, high upper bound)
 
-- **Wasted dollars** = sum of `api_equiv()` (Phase 1 `rate()`, integer micro-dollars) over the flagged turns. **Recovery dollars** = the same over the turns the behavior caused until it was resolved. Each metric defines "flagged" and "resolved" below. Both are shown as "≈$X.XX estimated".
-- Each reply re-reads its whole context from cache, so a retry costs about as much as the context size, not only the new words. That is real spend at list price and is counted as-is.
-- **Time**: wall-clock from the first flagged turn to resolution, summed with the Phase 2 `active_minutes(gap=15)` rule so idle gaps are not billed. **Waiting time** (a person or parent agent had to answer) is shown as hours, never as dollars.
-- **No double counting**: one turn can trip more than one metric. Each tile shows its own total and says "overlaps". The ribbon's waste sliver and the line-item `wasted_cost`/`recovery_cost` use the union, so each turn counts once. The union can never exceed `agent_estimated_usd` (tested).
-- Line items get `behavior_counts {…}` and their existing `wasted_cost`, `recovery_cost`, `failure_type` fields fill from here.
-- Coverage: box transcripts only. Mac sessions show "behavior: unavailable" unless the Phase 5 export carries counts (2B.6). Grok Bot chats are not in any transcript on the box: "unavailable".
+- **Episode windows** (`MI:9`): *wasted* = the turns from the previous human prompt to the first frustrated message (capped at 6 hours). *Redo* = the turns in the 60 minutes after the episode's last message.
+- **Detector windows**: each pattern in 2B.3 names the agent turns it flags. These need no human message.
+- **Low figure (the headline)** = `api_equiv()` (Phase 1 `rate()`, integer micro-dollars) summed over the union of episode wasted windows and detector-flagged turns, **within the same session only**. Each turn is counted once. This is `spend.mistakes_estimated_usd` (2B.9).
+- **High figure (upper bound, Details only)** = the low figure plus the redo windows plus a project-wide fallback: when an episode has no session tie, the same project's turns inside its window are used. Frustration Arc found this overstates cost 5 to 10 times: all-time $59.90 low vs $655.87 high (`costs.md`). It is labeled "upper bound, likely 5–10× too high" and never shown in the summary.
+- **Model used for pricing**: the observed model on each turn (box transcripts carry `message.model`). When a source has no model id (Grok, Codex, Mac replica rows), the session default is used and labeled `model: assumed` (R3).
+- **Unmeasured**: an episode with no token rows tied to it (a Grok chat, or a Mac session without the Phase 5 export) is counted with `cost: unmeasured`, never $0. Every dollar figure shows "+ N unmeasured" next to it. For Frustration Arc's last 7 days, 8 of 13 episodes were unmeasured (`costs.md`). Mac episodes can show the Phase 2.2 extrapolation in Details, tagged `EXTRAPOLATED · low confidence`, and never in the low figure.
+- **Alex-minutes** (`MI:10`): time since the last agent output before the complaint (capped at 60) + episode span + 1 minute per message. Computed only when the episode has human-tagged messages with timestamps; otherwise "unknown". Shown next to dollars. For invented gates and bad outbound, Alex-minutes are the real cost.
+- **Agent time**: the Phase 2 `active_minutes(gap=15)` rule, so idle gaps are not billed. Waiting time is shown in hours, never as dollars.
+- **Retries that worked** (the old "recovery" number) are now part of the redo window, so they count only in the high figure. This settles the old recovery question (G13 in the previous revision).
+- **No double counting**: one turn can trip more than one pattern. Each pattern shows its own total and says "overlaps". The ribbon's waste sliver, the line-item `wasted_cost`, and the mistakes line all use the one union set. The union can never exceed `agent_estimated_usd` (tested).
+- Line items get `behavior_counts {…}`, and their existing `wasted_cost` (low) and `failure_type` fields fill from here. `recovery_cost` holds the redo part of the high figure.
 
-### 2B.3 The metrics
+### 2B.3 The patterns (Frustration Arc's list, final)
 
-**M1 — Errors and retries** → `failure_type`: Recovery after miss (retries), Looping (repeats). Summary tile.
-- Error: `tool_result.is_error == true`, or the first 2 KB of the result matches `(?i)^(error|fatal)|traceback \(most recent|exit code [1-9]|command not found|no such file|ENOENT|EACCES|timed out|rate.?limit|\b429\b|\b5\d\d\b`.
-- Permission denials (`Permission to use .* has been denied`, harness blocks) are counted separately as "blocked by a rule". They are shown in Details and not priced as agent waste.
-- Retry: within the next 5 turns, a tool_use with the same tool name and normalized input similarity ≥ 0.8 (whitespace collapsed, temp paths and numbers masked). The chain ends at the first non-error result or when the agent moves on.
-- Loop: the same `(tool name, normalized input hash)` 3 or more times in a session, errors or not.
-- Cost: the turn that made the failed call is wasted. The retry turns up to the first success are recovery. A chain that never succeeds is all wasted. Time runs from the first failure to the first success.
-- Classifier: not needed (structural). Confidence high for `is_error`, medium for text-matched errors.
+**What happened to the starting set M1–M6:**
 
-**M2 — Asked you instead of doing it** → Unnecessary escalation. Summary tile.
-- Candidate: user-facing text that ends with "?" or matches `(?i)would you like me to|do you want me to|want me to|should I\b|shall I\b|let me know if|can you (paste|provide|send|share|click|confirm|approve|log ?in)|please (paste|provide|click|approve|confirm|run)|I need you to|waiting (for|on) (you|your)|blocked on (you|Alex)|needs? Alex|human gate`.
-- Flag when a candidate also has one boost: (1) **already answered**: the thing asked for (token, key, URL, link, path, password, approval, yes) or a value of that shape appears in an earlier user message in the same session; (2) **nobody can answer**: headless session (`sdk-cli`/`-p`) that ends on the ask; (3) **annoyed reply**: the next user message matches `(?i)already|I told you|just do it|stop asking|why do I have to|no .{0,20}human gate|fuck|wtf`. A candidate with no boost goes to the classifier or stays "unconfirmed".
-- Cost: the asking turn plus up to 2 turns after the reply that rebuild state before new tool work. In a headless session that ends on the ask, every turn after the last successful tool result is wasted. Waiting hours = ask → next user message, or "never answered".
+| Starting metric | Now |
+|---|---|
+| M1 Errors and retries | Kept as supporting metric S1 in Details. Not on Frustration Arc's list; G10 decides keep or drop. |
+| M2 Asked you instead of doing it | Merged into P1 Invented human gates. The old ask regex and boosts stay as extra detectors. |
+| M3 Said done without proof | Merged into P7 Skipped steps / false done. The old claim-without-proof rule stays as an extra detector. |
+| M4 Hedging | Kept as supporting metric S2 in Details, count only. Not on Frustration Arc's list; G10 decides. |
+| M5 Jargon | Became P11 Jargon / walls of text (adds message length and reading-time cost). |
+| M6 Wrong approach | Split into P4 Over-engineering and P5 Did something not asked. Its phrases stay in P5. |
 
-**M3 — Said done without proof** → Premature completion. Summary tile.
-- Claim: user-facing text matching `(?i)\b(done|fixed|works now|deployed|shipped|merged|all tests pass(ed)?|verified|100%|confirmed)\b`, skipping negated or future forms (`not done`, `isn't fixed`, `once deployed`, `will be`).
-- Proof: since the last user message, a successful tool result after the last Edit/Write whose command or output shows a check: a test runner (`pytest|unittest|vitest|jest|bun test|npm (run )?test|go test|cargo test`) exiting 0 or printing "passed"; `curl` with a 2xx; `gh pr (view|checks)` showing merged or passing; deploy output with a URL or "Deployed"; `git push` success for "pushed".
-- Flag a claim with no proof. Special case "merged, not deployed": the claim says deployed or fixed-in-production and the only evidence is `gh pr merge`.
-- Cost: the redo, meaning later turns in the same session, or the same project within 48 hours, that edit the same files or re-run the same failing command. The claim turn itself is cheap. Time runs from the claim to the end of the redo. A next user message like `is it (100% )?fixed|did you (actually|fix)|confirm` raises confidence to high.
-- Classifier: yes, for fuzzy claims.
+Counts, dollars (low → high), and Alex-minutes below are Frustration Arc's all-time figures from `costs.md`. "7d" is its Sep 18 → 25 count. For each pattern, **H** = heuristic, **M** = model check (2B.4). "Type" maps to one of the existing 16 failure types (`SKILL.md:80`), or none. No new failure types.
 
-**M4 — Hedging** → Hedging. Summary tile.
-- Scope: user-facing text only.
-- Lexicon: `might|may|could potentially|possibly|perhaps|it seems|it appears|appears to|probably|likely|I think|I believe|not sure|should work|should be (fine|fixed|good|working)|in theory|hopefully|if you want|would you like|depending on`.
-- Flag a message when (a) a hedge sits on a status or fact claim (`should be (fixed|deployed|working)`, `probably (works|fixed|deployed)`, `I think it's (done|fixed)`), or (b) density is at least 3 hedges per 100 words and at least 3 hits. Decision G10 picks (a) only, or (a) plus (b).
-- Not hedging: the report's own required labels ("estimated", "low confidence", "unavailable", "measured spend unavailable") and stated numeric ranges. The truth rules require honest labels, so they are excluded by an allowlist.
-- Cost: the count comes first. Dollars only when the hedge caused a follow-up (next user message matches `(?i)is it|yes or no|did you|confirm|what do you mean|straight answer`). Then the follow-up round trip is priced as recovery. Otherwise the tile says "text only, not priced".
-- Classifier: recommended. Keyword hedges have many false positives.
+**Summary strip (4 tiles).** Picked by frequency, cost, and trust:
+1. **Invented human gates / asking instead of doing** (P1): the most frequent pattern in the last 7 days (5 of 13), and it kept happening after its Sep 10 HARD rule.
+2. **Made it up, or said done when it wasn't** (P6 fake output + P7 false done, merged; 22 episodes): a trust problem. Each pattern keeps its own row in Details.
+3. **Broke working things** (P2): the largest low figure ($12.65).
+4. **Wrong or expensive model** (P3): the largest high figure ($233.38), and detection is exact.
 
-**M5 — Jargon in messages to Alex** → no failure type. Details only.
-- User-facing text containing a word from one constant list copied from the cheat sheet in `ccs/house/HUMAN-GATES-PLAIN-ENGLISH.md` plus Alex's own example: drain, projection, projected_seq, head_seq, poll-mode, lag, kill-switch, BYOK, face-wall, chatty, Durable Object, idempotent, backfill, TOCTOU. It counts only when there is no plain-English gloss in the same sentence (a parenthesis, "—", "means", "i.e.", "that is").
-- Cost: only the clarification round trip, when the next user message matches `(?i)what (does|is) .{0,30} mean|what the fuck is|no idea what|what are you talking about`.
+Everything else goes in Details. Over-engineering has the most Alex-minutes (608), but its detection is fuzzy and 6 of 15 episodes are unmeasured, so it stays in Details unless G9 swaps it in. Bad outbound goes in Details as a count, plus a Worth-your-attention card whenever there is an incident.
 
-**M6 — Wrong approach** → Wrong turn, Missed requirement. Details only (the failure table already shows it).
-- Extend the Phase 2 `FAIL_RULES` Wrong turn pattern with `wrong (side|end|repo)|receiving end|sending end|why is there .{0,40}(in|from) that repo|not what I (asked|want)|feels? dumb`. Steers and resets stay under Rework as today.
-- Cost: turns from the last user message before the wrong work to the correcting message are wasted.
+**P1 — Invented human gates / asking instead of doing** (12 episodes; 7d 5; $2.77 → $69.65; 4 unmeasured; 278 Alex-min) · `MI:16`
+- H: agent user-facing text matching `Blocked on Alex|needs your sign-off|initials|please click|open this link and|when you get a chance|human gate`, plus the old M2 rules:
+  - Candidate: user-facing text that ends with "?" or matches `(?i)would you like me to|do you want me to|want me to|should I\b|shall I\b|let me know if|can you (paste|provide|send|share|click|confirm|approve|log ?in)|please (paste|provide|click|approve|confirm|run)|I need you to|waiting (for|on) (you|your)|blocked on (you|Alex)|needs? Alex|human gate`.
+  - Flag when a candidate also has one boost: (1) **already answered**: the thing asked for (token, key, URL, link, path, password, approval, yes) or a value of that shape appears in an earlier user message in the same session; (2) **nobody can answer**: headless session (`sdk-cli`/`-p`) that ends on the ask; (3) **annoyed reply**: the next user message matches `(?i)already|I told you|just do it|stop asking|why do I have to|no .{0,20}human gate|fuck|wtf`. A candidate with no boost goes to the classifier or stays "unconfirmed".
+- H (human reply): `who (made|makes) up|no one said|you're allowed|just do it`.
+- M: judges whether the gate is real, invented, or on the house allow-list (`ccs/house/HUMAN-GATES-PLAIN-ENGLISH.md`). Real gates on the allow-list are never flagged.
+- Cost: low = the asking turn plus up to 2 turns after the reply that rebuild state. A headless session that ends on the ask wastes every turn after the last successful tool result. Details also shows idle time × the session's burn rate, and Alex-minutes, as `MI:16` suggests. Waiting hours = ask → next human message, or "never answered".
+- Type: Unnecessary escalation. Place: **summary tile 1**.
+
+**P2 — Broke working things** (15; 7d 1; $12.65 → $101.95; 233 Alex-min) · `MI:17`
+- H (human): `broke|broken|crash|regress|was working`.
+- H (objective, read-only): CI red after a merge (`gh run list`), a revert PR within 48 hours, an npm patch release within 24 hours of a release, worker restart storms where worker logs exist.
+- Cost: low = the turns in the session that made the breaking change. High adds the fix session's turns (the redo window).
+- Type: Regression. Place: **summary tile 3**.
+
+**P3 — Wrong or expensive model** (13; 7d 1; $9.34 → $233.38; 182 Alex-min) · `MI:18`
+- H (exact, build first): `message.model` differs from the house default for that kind of work. The default table is a constant in `acr/behavior.py` seeded from `MI:18` (Claude for claude-mem work, deepseek-flash for cheap evals) and confirmed in G16. Human phrases: `gemini|gpt-5|why are you using|credits|spent`.
+- Cost: the difference = actual list cost − the cost of the same tokens at the default model's list price. Exact tokens, estimated dollars. Counts only turns with a logged model id (R3). Turns with `model: assumed` are listed as "model not logged".
+- Type: Model thrash (closest of the 16). Place: **summary tile 4** (shows the difference, "≈$X.XX more than the default model").
+
+**P4 — Over-engineering / overthinking** (15; 7d 1; $6.86 → $49.10; 6 unmeasured; 608 Alex-min) · `MI:19`
+- H: lines changed ÷ words in the request above a threshold; new `guard|harden|fallback|validator` files; plan length over N lines; human `happy path|overthink|guards|harden|simple`.
+- M: was the extra scope asked for?
+- Cost: the turns that produced hunks later reverted or removed on request.
+- Type: Suboptimal path. Place: Details.
+
+**P5 — Did something not asked** (14; $9.24 → $12.93; 400 Alex-min) · `MI:20`
+- H (human): `i did not ask|i didn't tell you|nobody said|I SAID`, plus the old M6 phrases `wrong (side|end|repo)|receiving end|sending end|why is there .{0,40}(in|from) that repo|not what I (asked|want)|feels? dumb`.
+- M: compares the last human instruction with the tool calls that followed.
+- Cost: the turns from the last instruction to the correcting message.
+- Type: Missed requirement, or Unauthorized action when the unasked action touched something outside the box. Place: Details.
+
+**P6 — Fake or invented output** (12; 7d 3; $7.81 → $10.70; 3 unmeasured; 255 Alex-min) · `MI:21`
+- H: a claimed skill run with no matching tool call (for example, said `/learn-codebase` ran, with no Skill tool_use); numbers in the final text that no tool result in the session produced; placeholders (`$0.00`, `123`, `lorem`, `TBD`); implausibly small totals (the 1.9¢ report).
+- M: is each number sourced or not?
+- Cost: the turns that produced the fake output, plus a trust flag on the line item.
+- Type: Premature completion. Place: **summary tile 2** (merged with P7).
+
+**P7 — Skipped steps / false "done"** (10; 7d 1; $6.19 → $42.72) · `MI:22`
+- H: a release without `/version-bump` (tag and `package.json` disagree, or npm publish failed); "done" or "pushed" claimed but the branch is not on the remote (`git ls-remote`, read-only); code written before `make-plan` under the Sep 23 ship gate. Also the old M3 rule:
+  - Claim: user-facing text matching `(?i)\b(done|fixed|works now|deployed|shipped|merged|all tests pass(ed)?|verified|100%|confirmed)\b`, skipping negated or future forms (`not done`, `isn't fixed`, `once deployed`, `will be`).
+  - Proof: since the last user message, a successful tool result after the last Edit/Write whose command or output shows a check: a test runner (`pytest|unittest|vitest|jest|bun test|npm (run )?test|go test|cargo test`) exiting 0 or printing "passed"; `curl` with a 2xx; `gh pr (view|checks)` showing merged or passing; deploy output with a URL or "Deployed"; `git push` success for "pushed".
+  - Flag a claim with no proof. Special case "merged, not deployed": the claim says deployed or fixed-in-production and the only evidence is `gh pr merge`.
+- Cost: the claim turn (low). The redo counts in the high figure. The tile also shows false-done claims per week.
+- Type: Premature completion. Place: **summary tile 2** (merged with P6).
+
+**P8 — Wrong tool, account, or contact** (9; 7d 1; $0.28 → $27.79) · `MI:23`
+- H: a tool, account, or contact outside an allow/deny list built from HARD rules (Zapier, computer-use for money digs, a Cloudflare account other than the house one, a CS email sent as Alex instead of Barb, the wrong AJ address).
+- Cost: the turns that used it.
+- Type: Unauthorized action when it reached outside the box, otherwise Suboptimal path. Place: Details.
+
+**P9 — Bad outbound** (6; $0.20 → $0.30 in tokens, which says nothing; 252 Alex-min) · `MI:24`
+- H: any send, broadcast, or email tool call without explicit human approval in the preceding human-tagged turn; recipient count above a threshold (G16); a send using Alex's identity.
+- Cost: **incidents × recipients**, plus Alex-minutes. Never dollars, and never described as cheap.
+- Type: Unauthorized action (risk exposure high). Place: Details, plus a Worth-your-attention card when there is at least 1 incident in the window.
+
+**P10 — Memory or rule loss** (5; $0.82 → $40.05) · `MI:25`
+- H (human): `I told you|100 times|8,000 times|what's the rule|like i said`. H (string match): the agent broke a HARD fact already in its memory file.
+- Cost: the episode window.
+- Type: none. It feeds rule effectiveness (2B.10). Place: Details.
+
+**P11 — Jargon / walls of text** (7; $0.10 → $12.27; 303 Alex-min) · `MI:26`
+- H: final agent message over N words (G16, proposed 150, because Alex reads only the last message); file paths instead of links; unexplained terms from the old M5 list:
+  - User-facing text containing a word from one constant list copied from the cheat sheet in `ccs/house/HUMAN-GATES-PLAIN-ENGLISH.md` plus Alex's own example: drain, projection, projected_seq, head_seq, poll-mode, lag, kill-switch, BYOK, face-wall, chatty, Durable Object, idempotent, backfill, TOCTOU. It counts only when there is no plain-English gloss in the same sentence (a parenthesis, "—", "means", "i.e.", "that is").
+- Human phrases: `jargon|9000 things|single answer|plain english`.
+- Cost: Alex-minutes = words ÷ 200 words per minute. Dollars only for the clarification round trip.
+- Type: none. Place: Details.
+
+**P12 — Unclear cause** (24; $3.64 → $55.03) · `MI:27`
+- Base detector only. M attributes it to P1–P11 when it can.
+- Cost: the episode window. Place: Details, as "unclear cause".
+
+**Supporting metrics kept from the starting set (Details only, G10):**
+- **S1 — Tool errors and retries** (was M1; failure types Recovery after miss, Looping). Detection unchanged:
+  - Error: `tool_result.is_error == true`, or the first 2 KB of the result matches `(?i)^(error|fatal)|traceback \(most recent|exit code [1-9]|command not found|no such file|ENOENT|EACCES|timed out|rate.?limit|\b429\b|\b5\d\d\b`.
+  - Permission denials (`Permission to use .* has been denied`, harness blocks) are counted separately as "blocked by a rule". They are shown in Details and not priced as agent waste.
+  - Retry: within the next 5 turns, a tool_use with the same tool name and normalized input similarity ≥ 0.8 (whitespace collapsed, temp paths and numbers masked). The chain ends at the first non-error result or when the agent moves on.
+  - Loop: the same `(tool name, normalized input hash)` 3 or more times in a session, errors or not.
+  - Cost: the turn that made the failed call is wasted. The retry turns up to the first success are recovery. A chain that never succeeds is all wasted. Time runs from the first failure to the first success.
+  - Classifier: not needed (structural). Confidence high for `is_error`, medium for text-matched errors.
+- **S2 — Hedging** (was M4; failure type Hedging). Count only, not priced unless it caused a follow-up. Detection unchanged:
+  - Scope: user-facing text only.
+  - Lexicon: `might|may|could potentially|possibly|perhaps|it seems|it appears|appears to|probably|likely|I think|I believe|not sure|should work|should be (fine|fixed|good|working)|in theory|hopefully|if you want|would you like|depending on`.
+  - Flag a message when (a) a hedge sits on a status or fact claim (`should be (fixed|deployed|working)`, `probably (works|fixed|deployed)`, `I think it's (done|fixed)`), or (b) density is at least 3 hedges per 100 words and at least 3 hits. Decision G10 picks (a) only, or (a) plus (b).
+  - Not hedging: the report's own required labels ("estimated", "low confidence", "unavailable", "measured spend unavailable") and stated numeric ranges. The truth rules require honest labels, so they are excluded by an allowlist.
+  - Cost: the count comes first. Dollars only when the hedge caused a follow-up (next user message matches `(?i)is it|yes or no|did you|confirm|what do you mean|straight answer`). Then the follow-up round trip is priced as recovery. Otherwise the tile says "text only, not priced".
+  - Classifier: recommended. Keyword hedges have many false positives.
 
 ### 2B.4 Optional cheap classifier pass (off by default)
 
-- `acr.py classify-behavior --model anthropic/claude-haiku-4.5 --budget-usd 2.00`. It only sees candidates the heuristics could not settle (M2 without a boost, M3, M4). Input per candidate: the flagged text plus one message before and after, scrubbed, cut to 1,500 characters. Output JSON `{label: yes|no|unsure, metric, reason (≤20 words)}`.
+- `acr.py classify-behavior --model anthropic/claude-haiku-4.5 --budget-usd 2.00`. It only sees candidates the heuristics could not settle: frustration detector hits (about $0.001 per message, `MI:6`), P1 real vs invented gate, P4 was the extra scope asked for, P5 instruction vs actions, P6 sourced vs unsourced numbers, P12 attribution, S2 hedges, and praise vs sarcasm for 2.8. Input per candidate: the flagged text plus one message before and after, scrubbed, cut to 1,500 characters. Output JSON `{label: yes|no|unsure, pattern, reason (≤20 words)}`.
 - Model: Claude Haiku 4.5, list $1 in / $5 out per MTok (`out/openrouter_prices.json`). Run path per decision G8: OpenRouter with `OPENROUTER_API_KEY` (only if G5 is a go), or Claude Code headless on the Max plan (`claude -p --model haiku`), still priced at list in the report.
-- Expected size: about 200–400 candidates a week × ~1,600 tokens ≈ 0.3–0.6M input + ~0.03M output ≈ $0.45–$0.80 at list. Default cap **$2.00 per run**, a hard stop. It prints an estimate first. If candidates would pass the cap, it classifies a stratified random sample and scales, labeled "estimated from a sample of N".
+- Expected size: about 200–400 candidates a week × ~1,600 tokens ≈ 0.3–0.6M input + ~0.03M output ≈ $0.45–$0.80 at list. Default cap **$2.00 per run**, a hard stop. It prints an estimate first. If candidates would go over the cap, it classifies a stratified random sample and scales up, labeled "estimated from a sample of N".
 - The classifier's own spend is shown in Details as "classifier cost (separate)" and never added to agent cost, the same as the note-taker rule.
 - Each flag carries `label_source: heuristic | classifier | human`, like 2.4. Items left at `heuristic` render with the "draft" mark.
 
 ### 2B.5 Where it goes in the Timing layout (summary stays clean)
 
-- **Behavior strip**, a new row directly under the "How much was useful" ring, with at most 4 tiles: *Errors and retries* · *Asked you instead of doing it* · *Said done without proof* · *Hedging* (decision G9). Each tile shows the count, "≈$X.XX estimated", and hours where they apply (waiting hours for M2), with a small "heuristic" mark until reviewed. A zero tile says "none found" and is never hidden. A tile whose Phase 8 spot-check precision is under 70% moves to Details marked "low confidence".
-- **Cost ribbon**: the existing striped waste sliver (Phase 3, from `wasted_cost`) now includes behavior waste, counted once per turn. Recovery is not in the waste sliver.
-- **Worth your attention**: at most 1 of the ≤3 cards is a behavior card, picked by the largest behavior dollars, built only from computed fields, for example "Failed commands and their retries cost ≈$X.XX (estimated), most in <session title>."
-- **Details**: the full behavior table (all six metrics, per session and per model), up to 10 scrubbed example excerpts per metric, permission denials as their own line, label-source counts, classifier cost, and coverage (box measured; Mac and Grok Bot unavailable).
+- **Behavior strip**, a row directly under the "How much was useful" ring, with at most 4 tiles (G9): *Invented gates / asking instead of doing* · *Made it up or said done when it wasn't* · *Broke working things* · *Wrong or expensive model*. Each tile shows the count, "≈$X.XX estimated" (the low, same-session figure), Alex-minutes where known, and "+ N unmeasured" when N > 0, with a small "heuristic" mark until reviewed. The model tile shows the difference vs the default model. A zero tile says "none found" and is never hidden. A tile whose Phase 8 spot-check precision is under 70% moves to Details marked "low confidence", and the next pattern by the same ranking takes its place only if it passes.
+- **Cost ribbon**: the striped waste sliver is drawn from the low figure, counted once per turn. The high figure and redo are never in the ribbon.
+- **Worth your attention**: at most 2 of the ≤3 cards come from Phase 2B, in this order: (1) any bad outbound incident ("N sends reached M recipients without your approval", P9); (2) a rule that clearly didn't stop repeats (2B.10); (3) otherwise the largest pattern by low dollars. Built only from computed fields.
+- **Details**: a table of every pattern (P1–P12, S1–S2) with count, low, high (labeled "upper bound, likely 5–10× too high"), Alex-minutes, unmeasured count, detection basis (H/M), and failure type. P9 shows incidents × recipients instead of dollars. Also: the rule-effectiveness section (2B.10), up to 10 scrubbed example excerpts per pattern, permission denials as their own line, label-source counts, the human/bot tag counts (how many user turns were bot, human, unknown), classifier cost, and coverage (box measured; Mac and Grok Bot unavailable unless R1/Phase 5).
 - No excerpts, session ids, or regexes in the summary.
-- `report.json` gets `behavior: {metrics: [{key, name, failure_type, count, count_basis: heuristic|classifier|sample, wasted_usd, recovery_usd, active_minutes, waiting_minutes, confidence, overlaps: true, examples: [{content_session_id, ts_pt, excerpt, label_source}]}], union_wasted_usd, union_recovery_usd, coverage: {box, mac, grok_bot}, classifier: {ran, model, spend_usd, cap_usd, sampled_n}, permission_denials}`.
+- `report.json` gets `behavior: {patterns: [{key, name, source_ref: "metrics-ideas.md:<line>", failure_type, placement: tile|details, count, count_basis: heuristic|classifier|sample, low_usd, high_usd, unmeasured_n, alex_minutes, agent_minutes, waiting_minutes, confidence, overlaps: true, examples: [{content_session_id, ts_pt, excerpt, label_source}]}], outbound: {incidents, recipients, alex_minutes}, episodes: [{episode_id, session, ts_pt, pattern, low_usd|null, high_usd|null, cost_status: measured_tokens|unmeasured, alex_minutes|null, model, model_status: observed|assumed}], union_low_usd, union_high_usd, author_tags: {human, bot, unknown}, rule_effectiveness: [...], coverage: {box, mac, grok_bot}, classifier: {ran, model, spend_usd, cap_usd, sampled_n}, permission_denials}`.
 
 ### 2B.6 Mac export (ties to Phase 5)
 
-`acr.py collect --export-device mac` may also write per-session behavior counts and priced turn totals for the six metrics. No text, no excerpts, no prompts, which keeps the Phase 5 export rule. Without it, Mac behavior stays "unavailable". The same "needs Alex's explicit go" gate applies.
+`acr.py collect --export-device mac` may also write per-session pattern counts, episode windows (timestamps only), and priced turn totals. No text, no excerpts, no prompts, which keeps the Phase 5 export rule. Without it, Mac episodes stay "unmeasured" in dollars. The same "needs Alex's explicit go" gate applies.
 
-### 2B.7 Facts this phase relies on (planner probe, read-only, 2026-09-25)
+### 2B.7 Facts this phase relies on
 
+Planner probe, read-only, 2026-09-25:
 - Box transcripts carry `tool_use {type, id, name, input}` on assistant lines and `tool_result {type, content, is_error, tool_use_id}` on user lines. A sampled `is_error: true` result was a harness permission denial ("Permission to use Bash with command curl … has been denied."), which is why M1 separates denials.
 - Over the 78 box transcript files touched Sep 18–26 PT: 1,631 tool calls, 1,584 tool results, 54 with `is_error: true`, 375 assistant text blocks, 18 with at least one hedge word (raw, unthresholded), 0 identical tool calls repeated 3 or more times in a session. These are sanity ranges for Phase 8, not targets.
 - Sessions on the box with `entrypoint: sdk-cli` exist alongside `cli`. Both show agent-written prompts in the window.
+
+From Frustration Arc (`costs.md`, `costs.csv`, `episodes.jsonl`):
+- All-time: 142 episodes, $59.90 low → $655.87 high, 20 unmeasured, 3,059 Alex-minutes. No episode qualified for measured Claude Code pricing. Its dollars come from claude-mem `discovery_tokens` priced at Opus input rate (Estimate A) or Grok characters ÷ 4 (Estimate B). That basis differs from this plan's (transcript tokens), so they are comparison points, not targets to hit exactly.
+- Last 7 days (Sep 18 → 25): 13 episodes, $6.70 low → $14.43 high, 8 unmeasured, 630 agent-minutes, 222 Alex-minutes. Six are Alex-typed Mac prompts synced into the box's claude-mem (E135, E096, E066, E129, E067 on Sep 18; E091 on Sep 19). Seven (M01–M07, Sep 21–25) are rebuilt from rule files and an agent-written transcript, and all are unmeasured.
 
 ### 2B.8 Verification checklist
 
@@ -509,35 +617,57 @@ OUT=$ACR_TMP/p2b
 python3 scripts/acr.py collect --start 2026-09-18 --end 2026-09-26 --out $OUT && python3 scripts/acr.py rollup --start 2026-09-18 --end 2026-09-26 --out $OUT --prices /workspace/weekly-cost-workflow/out/openrouter_prices.json
 python3 - <<PY
 import json;d=json.load(open('$ACR_TMP/p2b/report.json'));b=d['behavior'];s=d['spend']
-for m in b['metrics']: print(m['key'],m['count'],m['wasted_usd'],m['recovery_usd'],m['count_basis'])
-assert b['union_wasted_usd']+b['union_recovery_usd'] <= s['agent_estimated_usd']
-assert {m['failure_type'] for m in b['metrics'] if m['failure_type']} <= {'Looping','Hedging','Wrong turn','Rework','Regression','Premature completion','Unauthorized action','Suboptimal path','Duplicate work','Blocked work','Missed requirement','Unnecessary escalation','Context re-read','Model thrash','Fan-out waste','Recovery after miss'}
-assert b['coverage']['mac']=='unavailable' and b['coverage']['grok_bot']=='unavailable'
+for p in b['patterns']: print(p['key'],p['placement'],p['count'],p['low_usd'],p['high_usd'],p['unmeasured_n'],p['count_basis'])
+print('author tags',b['author_tags'],'outbound',b['outbound'])
+assert b['union_low_usd'] <= b['union_high_usd'] and b['union_low_usd'] <= s['agent_estimated_usd']
+assert sum(p['placement']=='tile' for p in b['patterns']) <= 4
+assert all(p['source_ref'].startswith('metrics-ideas.md:') for p in b['patterns'] if p['key'].startswith('P'))
+assert all(p.get('low_usd') is None for p in b['patterns'] if p['key']=='P9_bad_outbound')   # outbound is a count, never dollars
+assert all(e['low_usd'] is None for e in b['episodes'] if e['cost_status']=='unmeasured')    # never $0 for unmeasured
+assert {p['failure_type'] for p in b['patterns'] if p['failure_type']} <= {'Looping','Hedging','Wrong turn','Rework','Regression','Premature completion','Unauthorized action','Suboptimal path','Duplicate work','Blocked work','Missed requirement','Unnecessary escalation','Context re-read','Model thrash','Fan-out waste','Recovery after miss'}
+assert b['coverage']['grok_bot']=='unavailable'
 PY
-# expect M1 errors near 54 minus permission denials (2B.7); loops near 0
+# expect S1 errors near 54 minus permission denials (2B.7); loops near 0
+# expect the 6 Alex-typed Sep 18-19 episodes from 2B.7 (E135, E096, E066, E129, E067, E091) to be found from user_prompts replica rows
 grep -rn 'sk-or-\|Bearer \|ghp_' $OUT/behavior.json $OUT/evidence.json && echo FAIL || echo ok
 python3 -m unittest discover -s scripts/tests -v
 ```
 
-Unit tests (tiny hand-made jsonl fixtures): an `is_error` call followed by a similar retry that succeeds (1 wasted + 1 recovery turn); a permission denial not priced; the same call three times gives Looping; a headless session ending "Would you like me to…?" is flagged; "fixed" with a passing `pytest` is not flagged, without it is; "merged" plus a deploy claim with only `gh pr merge` is flagged; hedge density threshold; "estimated" and "low confidence" not counted as hedges; the union never exceeds agent cost; a fixture containing `sk-or-abc…` leaves no trace in outputs; the classifier stops at the cap (mocked).
+Unit tests (tiny hand-made jsonl fixtures): every Frustration Arc bot marker tags a turn `bot`; with the tagger disabled, user-message counts render "unavailable"; a bot-tagged angry message never starts an episode; two frustrated messages 40 minutes apart form one episode, 50 minutes apart form two; the wasted window stops at 6 hours; the low figure never crosses a session; high ≥ low; an episode with no token rows is `unmeasured` with `null` dollars; the model tile prices the difference vs the default model; a turn with no model id is `assumed` and not counted by P3; a send with no approval counts as 1 incident × its recipients with no dollars; "fixed" with a passing `pytest` is not flagged, without it is; a claimed `/learn-codebase` with no Skill call is flagged P6; an `is_error` call followed by a similar retry that succeeds (S1); a permission denial is not priced; "estimated" and "low confidence" are not hedges; the union never exceeds agent cost; a fixture containing `sk-or-abc…` leaves no trace in outputs; the classifier stops at the cap (mocked).
 
 ### 2B.9 Cost of mistakes line and mistakes timeline data (feeds "Wins vs mistakes")
 
 - **Failure signals at turn level.** Phase 2's failure signals are session-level keyword hits. For the mistakes line they get turn spans so they can join the union: Rework and Wrong turn = turns from the user message before the corrected work up to the steer/reset/correction message; Recovery after miss = turns from the miss (usage limit, dead token, 401) to the first successful tool result after resuming; Looping = the repeated calls after the first. Turns that cannot be placed stay session-level and are listed in Details as "not in the mistakes line (no turn span)".
-- **Cost of mistakes** = sum of `api_equiv()` over the **union** of turns flagged as waste by any behavior metric (2B.3) or any failure signal span. Each turn counts once. Stored as `spend.mistakes_estimated_usd` with `mistakes_turns_n`, `mistakes_basis: "behavior waste ∪ failure-signal waste, each turn once"`. Recovery (retries that eventually worked) is not in this number; it is `spend.recovery_estimated_usd`, shown as a small sub-line (decision G13).
-- **One source of truth.** The ribbon's waste segment, line-item `wasted_cost` totals, and this line all read the same union set. There is no second waste calculation anywhere in the codebase.
-- **Mistakes by day**: `report.json.timeline.mistakes_by_day = [{day_pt, usd, turns_n, by_metric: {key: usd}, top_examples: [{mistake_id, metric, content_session_id, ts_pt}]}]`, every PT day in the window. A turn is dated by its own timestamp in PT.
-- Each mistake cluster (consecutive flagged turns in one session) gets a stable `mistake_id` (hash of session id + first turn id) so the render can link to it.
+- **Headline = the low figure.** `spend.mistakes_estimated_usd` = `api_equiv()` over the same-session union of episode wasted windows, pattern-flagged turns (2B.3), and failure-signal spans. Each turn counts once. Stored with `mistakes_turns_n`, `mistakes_episodes_n`, `mistakes_unmeasured_n`, `mistakes_alex_minutes` (sum over episodes where known, plus `mistakes_alex_minutes_known_n`), and `mistakes_basis: "same-session wasted turns, each turn once"`.
+- **Upper bound in Details only.** `spend.mistakes_high_usd` = low + redo windows (retries that worked, fixes) + project-wide fallback, labeled "upper bound, likely 5–10× too high (Frustration Arc)". It never appears in the summary. `spend.recovery_estimated_usd` is dropped; recovery is part of the redo window.
+- **One source of truth.** The ribbon's waste segment, line-item `wasted_cost` totals, and the mistakes line all read the same low union set. There is no second waste calculation anywhere in the codebase.
+- **Mistakes by day**: `report.json.timeline.mistakes_by_day = [{day_pt, usd (low), high_usd, unmeasured_n, alex_minutes, turns_n, by_pattern: {key: usd}, outbound_incidents, top_examples: [{mistake_id, pattern, content_session_id, ts_pt}]}]`, every PT day in the window. A turn is dated by its own timestamp in PT.
+- Each mistake cluster (an episode, or consecutive flagged turns in one session) gets a stable `mistake_id` (hash of session id + first turn id) so the render can link to it.
 
-### 2B.10 Anti-pattern guards
+### 2B.10 Rule effectiveness (did a HARD rule stop repeats?)
 
-- Do not invent failure types. Map to the 16 or leave `failure_type` empty (jargon).
-- Do not price hedged or jargon text itself as waste. Price only the follow-up it caused.
+- **Metric** (`MI:34-35`): for each HARD rule, same-pattern episodes per 100 human prompts in the N days before and after `rule_landed_at`, with the denominator shown ("8 episodes / 211 human prompts = 3.8 per 100"). N = 7 days (proposed, G15).
+- **Rules and dates**: read from the house rule files that carry a "HARD (Alex YYYY-MM-DD…)" date (for example `ccs/house/NEVER.md`, `ccs/house/HUMAN-GATES-PLAIN-ENGLISH.md`). Each rule maps to one pattern through a small table `acr/rules.json`, seeded from `/workspace/frustration-arc/trend.md` ("HARD rules landing dates vs. the pattern afterwards"). No rule text in the summary.
+- **Which rules**: those that landed inside the report window or within N days before it.
+- **Needs**: R1 and R2. Human prompts are counted only from human-tagged turns. If either side has fewer than 50 human prompts, the row says "not enough data (P human prompts)" instead of a rate. Frustration Arc's Sep 21 week had 18 human prompts, which gave a meaningless 38.9 per 100 (`trend.md`).
+- **Placement**: a Details section, one row per rule: rule name, landed date, pattern, before (count / prompts / rate), after (count / prompts / rate), and the episode ids after the rule.
+- **Worth-your-attention card** (priority 2 in 2B.5) only when a rule clearly didn't stop repeats: both sides have ≥50 human prompts, the rate after ≥ the rate before, and there are ≥2 same-pattern episodes after. Example from Frustration Arc: the Sep 10 "no invented Blocked-on-Alex gates" rule had 3 episodes before and 8 after (Sep 11, 12 ×2, 18 ×2, 21, 22, 23), and was re-locked Sep 15, 22, and 23 (`trend.md`).
+- `report.json.behavior.rule_effectiveness = [{rule_key, landed_pt, pattern, n_days, before: {episodes, human_prompts, per_100|null}, after: {…}, verdict: stopped|not_stopped|not_enough_data, episode_ids_after}]`.
+- Unit tests: a rule with 3 before / 8 after and enough prompts gives `not_stopped` and a card; 18 prompts gives `not_enough_data` and no card; bot-tagged prompts are not in the denominator.
+
+### 2B.11 Anti-pattern guards
+
+- Do not count anything from "user" messages before the human/bot tagger runs (R2). Bot and unknown turns are never Alex's words.
+- Do not invent failure types. Map to the 16 or leave `failure_type` empty (P10, P11, P12).
+- Do not put the high figure in the summary. Headline the low, same-session figure.
+- Do not write $0 for an unmeasured episode, or dollars for bad outbound. Use "unmeasured" and incidents × recipients.
+- Do not price hedged or jargon text itself as waste. Price only the follow-up it caused; P11 reading time is Alex-minutes, not dollars.
 - Do not count permission denials or harness blocks as agent mistakes.
-- Do not show excerpts, regexes, or session ids in the summary. Details only, scrubbed.
+- Do not show excerpts, regexes, rule text, or session ids in the summary. Details only, scrubbed.
 - Do not run the classifier without a cap, or through OpenRouter without G5.
-- Do not call a relayed agent prompt "Alex said". Use `asked: agent` unless the text is marked from Alex or the session is `alex_direct`.
-- Do not read Grok Bot chats or Mac files to fill gaps. Show "unavailable".
+- Do not call a relayed agent prompt "Alex said". Use `asked: agent` unless the turn is human-tagged.
+- Do not read Grok Bot chats or Mac files to fill gaps. Show "unavailable" until R1 or the Phase 5 export.
+- Do not copy Frustration Arc's dollar figures into the report. They are comparison points for Phase 8 only.
 
 ---
 
@@ -569,11 +699,11 @@ Unit tests (tiny hand-made jsonl fixtures): an `is_error` call followed by a sim
 - Story sentence assembled from data fields only; the useful-share number is computed by the renderer (`plan:150`). No hand-written prose.
 - Ring color bands: ≥ 90 % green, 70–90 % amber, < 70 % red.
 - Attention list from `report.json.attention`. Draft labels marked.
-- Behavior strip under the ring from `report.json.behavior` (Phase 2B.5): at most 4 tiles, each with count, "≈$X.XX estimated", hours, and a "heuristic" mark until reviewed; zero shows "none found". At most one behavior card in Worth your attention. The other metrics, excerpts, and permission denials go in Details.
+- Behavior strip under the ring from `report.json.behavior` (Phase 2B.5): at most 4 tiles (invented gates, made it up / false done, broke working things, wrong or expensive model), each with count, "≈$X.XX estimated" (low figure), Alex-minutes where known, "+ N unmeasured", and a "heuristic" mark until reviewed; zero shows "none found". At most 2 Phase 2B cards in Worth your attention (bad outbound first, then a rule that didn't stop repeats). The other patterns, the high figures, rule effectiveness, excerpts, and permission denials go in Details.
 
 ### 3.4 Details section (folded `<details>`)
 
-Holds: evidence IDs and short titles per line item; session IDs (`content_session_id`, `memory_session_id`); tokens by type per line item and per model; model and price per MTok with the 1h rule used; pricing source and fetch time; confidence; risk exposure; full failure accounting table; observer (note-taker) cost line; device table with short hashes; unmatched transcripts; unpriced models; label review counts; the behavior table and scrubbed examples (Phase 2B.5); a link to `line-items.csv` and `evidence.json` by relative path. Print CSS opens `<details>` for the PDF via a `--print` flag, not a CSS hack (`plan:152`).
+Holds: evidence IDs and short titles per line item; session IDs (`content_session_id`, `memory_session_id`); tokens by type per line item and per model; model and price per MTok with the 1h rule used; pricing source and fetch time; confidence; risk exposure; full failure accounting table; observer (note-taker) cost line; device table with short hashes; unmatched transcripts; unpriced models; label review counts; the behavior pattern table with low and high figures, bad outbound as incidents × recipients, rule effectiveness, and scrubbed examples (Phase 2B.5, 2B.10); a link to `line-items.csv` and `evidence.json` by relative path. Print CSS opens `<details>` for the PDF via a `--print` flag, not a CSS hack (`plan:152`).
 
 ### 3.5 PDF
 
@@ -608,16 +738,17 @@ Then view `$OUT/report.html` rendered to PNG (Chrome `--screenshot` for a fixed 
 
 Order becomes: hero + sub-line + story → **Wins vs mistakes** → cost ribbon → the rest as in `brief.md:33-42`. One card, three parts:
 
-- **(a) Cost of mistakes**: one line under the hero, "Cost of mistakes: ≈$X.XX estimated · N turns", with the ESTIMATE tag and a hover-free footnote "behavior waste plus failure-signal waste, each turn counted once". Recovery as a gray sub-line "+ ≈$Y.YY spent recovering (retries that worked)" if G13 keeps it separate. Source: `spend.mistakes_estimated_usd` only. The ribbon's waste segment is drawn from the same field and carries it as `data-waste-usd="X.XX"` so 8.6 can reconcile the two from the HTML.
-- **(b) Wins shipped**: a short list, most expensive first, capped at 5 with "+K more" folded into Details. Each row: kind icon (PR / publish / finished), title, day, "≈$X.XX estimated", and a tiny basis tag with the attribution method ("worktree lineage"). Extrapolated wins use the gray `EXTRAPOLATED · low confidence` tag. A last row "Not tied to a win: ≈$Z.ZZ". This replaces nothing; the existing "What got done" card stays below for the full outcome list, and 3.3's sidebar is unchanged.
-- **(c) Two timelines on one time axis**: one inline SVG, width computed from `by_day` length like the day chart (3.3). Shared x axis = PT days in the window, partial last day marked. Wins above the axis as dots sized by count (label = count, value = attributed dollars); mistakes below the axis as red bars of mistake dollars per day. Empty days show a small tick, not a gap. Each dot and bar is an `<a href="#win-<win_id>">` / `<a href="#mistakes-<day>">` link to its entry in Details. No `<script>`.
-- **Details additions**: a "Wins" sub-section (one entry per win with `id="win-<win_id>"`: title, url, sessions, tokens by type, cost, attribution method, evidence IDs) and a "Mistakes by day" sub-section (one entry per day with `id="mistakes-<day>"`: dollars by metric, top examples with session id and time, scrubbed excerpts). Chrome opens a closed `<details>` when navigating to a fragment inside it; verify this in the checks below. If it does not, keep these two sub-sections outside the fold (always open) and keep the rest folded. The PDF (`--print`) renders both timelines plus these entries as tables.
+- **(a) Cost of mistakes**: one line under the hero, "Cost of mistakes: ≈$X.XX estimated · N episodes · M min of your time · K unmeasured", with the ESTIMATE tag and a hover-free footnote "same-session wasted turns, each counted once". The dollar figure is the **low** figure, `spend.mistakes_estimated_usd`. "M min of your time" is `spend.mistakes_alex_minutes`, shown only when known ("your time: unknown" otherwise). "K unmeasured" appears when K > 0. The **high** figure is never in this line. It appears only in Details as "Upper bound: ≈$Y.YY (adds 60-minute redo windows and project-wide fallback; likely 5–10× too high)". If there were bad outbound incidents, a second short line says "N sends to M recipients without your approval" (no dollars). The ribbon's waste segment is drawn from the same low field and carries it as `data-waste-usd="X.XX"` so 8.6 can reconcile the two from the HTML.
+- **(b) Wins shipped**: a short list, newest first while costs are unmeasured (most expensive first once costs exist), capped at 5 with "+K more" folded into Details. Each row: kind icon (PR / publish / finished / praise count), title, day, and the cost: "unmeasured (session not linked to PR)" by default; "≈$X.XX estimated · session-linked" once R4 exists; "≈$X.XX estimated · attribution fallback (worktree lineage)" only if G11 approves it. Extrapolated wins use the gray `EXTRAPOLATED · low confidence` tag. A last row "Not tied to a win: ≈$Z.ZZ" appears only when some win cost is computed. This replaces nothing; the existing "What got done" card stays below for the full outcome list, and 3.3's sidebar is unchanged.
+- **(c) Two timelines on one time axis**: one inline SVG, width computed from `by_day` length like the day chart (3.3). Shared x axis = PT days in the window, partial last day marked. Wins above the axis as dots sized by count (label = count; value = attributed dollars, or "unmeasured"); mistakes below the axis as red bars of low mistake dollars per day, with a hollow marker on days that have only unmeasured episodes and a small outbound mark on days with a bad outbound incident. Empty days show a small tick, not a gap. Each dot and bar is an `<a href="#win-<win_id>">` / `<a href="#mistakes-<day>">` link to its entry in Details. No `<script>`.
+- **Details additions**: a "Wins" sub-section (one entry per win with `id="win-<win_id>"`: title, url, sessions, tokens by type, cost, attribution method, evidence IDs) and a "Mistakes by day" sub-section (one entry per day with `id="mistakes-<day>"`: low and high dollars by pattern, unmeasured episodes, Alex-minutes, outbound incidents, top examples with session id and time, scrubbed excerpts). Chrome opens a closed `<details>` when navigating to a fragment inside it; verify this in the checks below. If it does not, keep these two sub-sections outside the fold (always open) and keep the rest folded. The PDF (`--print`) renders both timelines plus these entries as tables.
 - Everything is computed from `report.json`; no hand-written numbers.
 
 Verification:
 
 ```bash
 grep -c 'Cost of mistakes' $OUT/report.html                         # expect 1
+python3 -c "h=open('$OUT/report.html').read();i=h.find('Upper bound');d=h.find('<details');assert i==-1 or (d!=-1 and i>d),'high figure only in Details'"
 grep -o 'href="#win-[^"]*"' $OUT/report.html | sort -u | while read h; do id=${h#href=\"#}; id=${id%\"}; grep -q "id=\"$id\"" $OUT/report.html || echo "MISSING $id"; done
 grep -o 'href="#mistakes-[^"]*"' $OUT/report.html | sort -u | while read h; do id=${h#href=\"#}; id=${id%\"}; grep -q "id=\"$id\"" $OUT/report.html || echo "MISSING $id"; done
 python3 - <<PY
@@ -628,7 +759,7 @@ PY
 # visual: open $OUT/report.html#win-<first id> in Chrome headless screenshot; the Details entry must be visible
 ```
 
-Guards: no `<script>`; the mistakes line never reads anything but `spend.mistakes_estimated_usd`; no win row without ESTIMATE (or EXTRAPOLATED) and its method; at most 5 win rows in the summary.
+Guards: no `<script>`; the mistakes line never reads anything but `spend.mistakes_estimated_usd` (low) and its minutes/unmeasured fields; `mistakes_high_usd` appears only inside Details; no win dollar without ESTIMATE (or EXTRAPOLATED) and its method; no win shown as $0 when unmeasured; at most 5 win rows in the summary.
 
 ### 3.7 Anti-pattern guards
 
@@ -700,7 +831,7 @@ python3 scripts/acr.py render --in <report.json with measured status ok> --out .
 - `acr.py rollup --device-usage <file>...`: merges exported files. Rows join to box-side replica sessions on `memory_session_id`; those sessions flip from `cost_basis: extrapolated` to `estimated_usage` with `device: <label>`. The extrapolation is recomputed for whatever remains unmeasured and stays labeled low confidence.
 - The skill's scripts directory must be runnable from a plain checkout on the Mac with system `python3` (3.9+ has `zoneinfo`). Document the command Alex would run, and that the output file is small and safe to copy.
 - SKILL.md documents both paths: "Ask Alex to run `python3 scripts/acr.py collect --export-device mac --start ... --end ...` on the Mac and share the file. Or, only after Alex's explicit go for this specific run, run the same command on the registered Mac through the house's registered-machine tooling and copy only `device-usage-mac.json` to the box." The export rule holds on either path: no prompt text, no observation text, no settings.
-- The export may also carry per-session behavior counts and priced turn totals for the Phase 2B metrics (numbers only, no excerpts). Without them, Mac behavior shows "unavailable".
+- The export may also carry per-session pattern counts, episode windows (timestamps only), and priced turn totals for the Phase 2B patterns (numbers only, no excerpts). Without them, Mac episodes stay "unmeasured" in dollars.
 
 ### 5.3 Verification checklist
 
@@ -896,10 +1027,12 @@ Render `$OUT/report.html` to PNG and compare section order and labeling with `/w
 python3 scripts/acr.py behavior-sample --in $OUT/report.json --per-metric 20 --seed 7 --out $OUT/behavior-spotcheck.md
 ```
 
-- For each summary metric, hand-check 20 flagged turns (or all of them if fewer) in `behavior-spotcheck.md`. Mark each true, false, or unsure against the transcript line it cites. Record precision per metric in `VERIFICATION.md`. A metric needs at least 70% precision to stay in the summary strip. Below that it moves to Details as "low confidence".
-- Hand-check 10 random unflagged sessions for obvious misses (for example, a failed command followed by a retry that M1 did not catch) and write down what was missed.
-- M1 error count within ±10% of the 2B.7 probe (54 `is_error` results, minus permission denials) for Sep 18–26, or a written reason.
-- `union_wasted_usd + union_recovery_usd <= agent_estimated_usd`; every behavior dollar in the HTML has an ESTIMATE tag; the strip has at most 4 tiles; no secrets in `behavior.json`, `evidence.json`, or the HTML (8.3 grep covers the directory).
+- **Human/bot tag first (R2):** hand-check 20 random human-tagged user turns and 20 bot-tagged ones. At least 19 of 20 human-tagged turns must really be Alex, or no user-message count ships. Record in `VERIFICATION.md`.
+- For each tile pattern (P1, P6+P7, P2, P3), hand-check 20 flagged turns or episodes (or all of them if fewer) in `behavior-spotcheck.md`. Mark each true, false, or unsure against the line it cites. Record precision per pattern in `VERIFICATION.md`. A pattern needs at least 70% precision to stay in the summary strip. Below that it moves to Details as "low confidence".
+- Hand-check 10 random unflagged sessions for obvious misses (for example, an invented gate or a failed command followed by a retry that nothing caught) and write down what was missed.
+- S1 error count within ±10% of the 2B.7 probe (54 `is_error` results, minus permission denials) for Sep 18–26, or a written reason.
+- `union_low_usd <= union_high_usd <= agent_estimated_usd + extrapolated_unmeasured_usd`; every behavior dollar in the HTML has an ESTIMATE tag; the strip has at most 4 tiles; P9 bad outbound shows incidents × recipients and no dollars; unmeasured episodes show "unmeasured", never $0; no secrets in `behavior.json`, `evidence.json`, or the HTML (8.3 grep covers the directory).
+- Rule effectiveness: the Sep 10 invented-gates rule, run over a window that covers Sep 3–17, gives `not_stopped` if both sides reach 50 human prompts, else `not_enough_data`. Either way the denominator is shown.
 - If the classifier ran (G8), its spend is at or under the cap and appears only as "classifier cost (separate)".
 
 ### 8.6 Wins vs mistakes reconciliation
@@ -908,22 +1041,42 @@ python3 scripts/acr.py behavior-sample --in $OUT/report.json --per-metric 20 --s
 python3 - <<PY
 import json,re
 d=json.load(open('$ACR_TMP/p8/report.json'));s=d['spend'];h=open('$ACR_TMP/p8/report.html').read()
-m=s['mistakes_estimated_usd']
+m=s['mistakes_estimated_usd']   # the low figure
+assert s['mistakes_high_usd'] >= m
 li=sum(x['wasted_cost'] for x in d['line_items'])
 rib=float(re.search(r'data-waste-usd="([0-9.]+)"',h).group(1))   # renderer writes the ribbon waste value as a data attribute
 days=sum(x['usd'] for x in d['timeline']['mistakes_by_day'])
 print(m,li,rib,days)
 assert abs(m-rib)<=0.01 and abs(m-li)<=0.01 and abs(m-days)<=0.01, 'mistakes line, ribbon waste, line items, and day timeline must reconcile to the cent'
 assert m <= s['agent_estimated_usd']
-w=d['wins'];assert abs(w['total_attributed_usd']-sum(i['usd'] for i in w['items']))<=0.01
-assert abs(sum(x['usd'] for x in d['timeline']['wins_by_day'])-w['total_attributed_usd'])<=0.01
+w=d['wins']
+if w['cost_status']!='unmeasured':
+    assert abs(w['total_attributed_usd']-sum(i['usd'] for i in w['items']))<=0.01
+    assert abs(sum(x['usd'] for x in d['timeline']['wins_by_day'])-w['total_attributed_usd'])<=0.01
+assert sum(x['count'] for x in d['timeline']['wins_by_day'])==len(w['items'])
 PY
 ```
 
-- Hand-check 5 wins: the PR or publish really happened in the window (`gh pr view` read-only, or the transcript line), and the attributed sessions really led to it. Record in `VERIFICATION.md`.
+- Hand-check 5 wins: the PR or publish really happened in the window (`gh pr view` read-only, or the transcript line). If costs are session-linked or fallback, check that the named sessions really led to it. Record in `VERIFICATION.md`.
 - Hand-check 3 mistake days: the day's dollars match the flagged turns listed in its Details entry.
 - Click-through: every timeline link resolves to a Details entry (3.8 checks), and the screenshot of `report.html#win-<id>` shows the entry.
 - Any gap outside one cent is a bug, not drift. Fix it before shipping.
+
+### 8.7 Comparison with Frustration Arc's last 7 days
+
+Target: Frustration Arc's Sep 18 → 25 figures (`/workspace/frustration-arc/costs.md`, `costs.csv`): **$6.70 low – $14.43 high, 13 episodes, 8 unmeasured.** Run for Sep 18–26 PT exclusive (the 8.1 run) and compare. The bases differ: Frustration Arc priced claude-mem `discovery_tokens` as Opus input (Estimate A), while this report prices transcript tokens and never prices `discovery_tokens` as agent cost. So episodes are compared tightly and dollars loosely.
+
+| Number | Frustration Arc | Tolerance | Why it can differ |
+|---|---|---|---|
+| Episodes the report can see | 6 (E135, E096, E066, E129, E067 on Sep 18; E091 on Sep 19; Alex-typed Mac prompts in box claude-mem) | all 6 found, ±1, each matched by id and time (±15 min) in `VERIFICATION.md` | detector threshold; grouping edge |
+| Episodes the report cannot see | 7 (M01–M07, Sep 21–25, rebuilt from rule files and an agent-written transcript) | listed as "outside report sources" in `VERIFICATION.md`, not counted | the R2 bot filter drops relayed text; R1 missing |
+| Total episodes | 13 | 6 ±1 found + 7 listed = 13 | same |
+| Unmeasured | 8 | without the Mac export: all found Mac episodes unmeasured (6 ±1); with the Phase 5 export (G6): 1–3 | Mac sessions have no transcript on the box |
+| Low dollars | $6.70 | without the Mac export: "unmeasured", never $0; with the export: 0.5×–2× ($3.35–$13.40) | tokens basis (transcript vs discovery_tokens) and cache reads |
+| High dollars (Details) | $14.43 | with the export: 0.5×–2× ($7.22–$28.86); high ≥ low always | same, plus redo window edges |
+| Pattern of each found episode | as in `episodes.jsonl` | ≥5 of 6 match the primary pattern or one of `all_categories` | model-vs-heuristic attribution |
+
+Any number outside tolerance gets a written reason in `VERIFICATION.md`. Frustration Arc's figures are never copied into the report itself.
 
 ---
 
@@ -933,7 +1086,7 @@ PY
 - **Babysit:** `/claude-mem:babysit` on the PR until CI and review comments are clear.
 - **Version bump:** a new bundled skill with scripts is a MINOR bump by the house precedent (`plans/2026-09-16-grok-bot-live-index.md`, Phase 4). **Needs Alex's explicit go.** npm publish stays a human step (`plugin/skills/version-bump/SKILL.md` description).
 - **Publishing consequence to decide first (G1):** `sync-marketplace.cjs` already installs the untracked dir locally, and `package.json` `files` includes `plugin/skills`, so merging makes this skill part of the public plugin and the npm package. If Alex wants it house-only, Phase 0 still tracks it on this branch, but the PR target changes (see G1).
-- **Gated steps, each "needs Alex's explicit go":** providing `OPENROUTER_API_KEY` (Phase 4); running the collector on the registered Mac and copying the export, per run (Phase 5); any manual Grok Bot figure (Phase 6); running the behavior classifier and its spend cap (Phase 2B, G8); writing into mirror plugin dirs (Phase 7, G2); merge; version-bump; publish.
+- **Gated steps, each "needs Alex's explicit go":** providing `OPENROUTER_API_KEY` (Phase 4); running the collector on the registered Mac and copying the export, per run (Phase 5); any manual Grok Bot figure (Phase 6); running the behavior classifier and its spend cap (Phase 2B, G8); keeping or exporting Grok Bot chat turns (R1, G14); write-time human/bot tagging in claude-mem (R2 upstream, separate plan); model-id logging for Grok and Codex (R3 upstream, separate plan); stamping session ids in PR bodies or commit trailers in the house ship flow (R4, G13); writing into mirror plugin dirs (Phase 7, G2); merge; version-bump; publish.
 
 ---
 
@@ -946,12 +1099,17 @@ PY
 - **G5 — OpenRouter key.** Go / no-go on providing `OPENROUTER_API_KEY` as an env var for report runs, and whether a management/provisioning key for `/api/v1/activity` is something you want at all.
 - **G6 — Mac export.** Go / no-go on running `acr.py collect --export-device mac` on your Mac for Sep 18–26 before the transcripts age out (about Oct 18 at the 30-day default).
 - **G7 — Version bump size.** MINOR (proposed) or PATCH.
-- **G8 — Behavior classifier.** On or off (default off, heuristics only). If on: model (proposed Claude Haiku 4.5, list $1 in / $5 out per MTok), path (OpenRouter key per G5, or Claude Code headless on the Max plan), and the per-run spend cap (proposed $2.00, hard stop; expected ≈$0.45–$0.80 a week).
-- **G9 — Behavior tiles up top.** Are these the 4 numbers in the summary: Errors and retries, Asked you instead of doing it, Said done without proof, Hedging? Jargon and Wrong approach stay in Details.
-- **G11 — How a win's cost is attributed.** Proposed "worktree lineage + time split" (sessions on the same worktree/project or naming the same PR, up to the win time; shared turns go to the next win). Alternatives: "direct session only" or "token-weighted split across the project".
-- **G12 — What counts as a win.** Merged PRs + published items + finished work (proposed), or only merged PRs and published items?
-- **G13 — Recovery in the mistakes line.** Keep retries that eventually worked out of "Cost of mistakes" and show them as a sub-line (proposed), or fold them in?
-- **G10 — What counts as hedging.** Only hedges on a status or fact claim ("should be fixed", "probably deployed"), which is proposed, or also any message dense with hedge words?
+- **G8 — Behavior classifier.** On or off (default off, heuristics only). If on: model (proposed Claude Haiku 4.5, list $1 in / $5 out per MTok, about $0.001 per message per Frustration Arc), path (OpenRouter key per G5, or Claude Code headless on the Max plan), and the per-run spend cap (proposed $2.00, hard stop; expected ≈$0.45–$0.80 a week).
+- **G9 — Behavior tiles up top.** Are these the 4 numbers in the summary: Invented gates / asking instead of doing, Made it up or said done when it wasn't, Broke working things, Wrong or expensive model? Everything else (over-engineering, did something not asked, wrong tool/account, bad outbound, memory loss, jargon, unclear cause) stays in Details. Over-engineering (most of your minutes, 608) is the first alternate.
+- **G10 — Keep the two metrics Frustration Arc didn't list?** Tool errors and retries (S1) and hedging (S2), both Details only. Proposed: keep both. If hedging stays: only hedges on a status or fact claim ("should be fixed", "probably deployed"), which is proposed, or also any message dense with hedge words?
+- **G11 — Fallback win cost.** Win cost shows "unmeasured" until sessions are linked to PRs (R4). Do you want the "worktree lineage + time split" estimate shown meanwhile, labeled "attribution fallback, not linked"? Default: no, show "unmeasured".
+- **G12 — What counts as a win.** Merged PRs + published items + finished work (proposed), or only merged PRs and published items? Also count deploys that stayed up 24 hours and praise moments (counted, never costed), as Frustration Arc does?
+- **G13 — Session-id linking (R4).** Go / no-go on changing the house ship flow so every PR body carries `Session: <id>` and/or every commit a `Claude-Session: <id>` trailer (proposed: both). Session ids would then be visible in public PRs on `thedotmack/claude-mem`.
+- **G14 — Keep your Grok Bot chat turns (R1).** Grok Bot chats vanish from the box after Sep 16. Is there a sanctioned export or retention setting to use for behavior counts, or do they stay "unavailable"? (Replaces the old O5.)
+- **G15 — Rule effectiveness settings.** Window N = 7 days before and after each HARD rule (proposed), minimum 50 human prompts per side (proposed), and the rule-to-pattern table seeded from Frustration Arc's `trend.md`. OK?
+- **G16 — Detector thresholds.** House default model per kind of work for P3 (proposed from Frustration Arc: Claude for claude-mem work, deepseek-flash for cheap evals), bad outbound recipient threshold (proposed 10), and the final-message word limit for P11 (proposed 150).
+
+The old recovery question (G13 in the previous revision) is settled by Frustration Arc's rule: retries that worked are in the redo window, so they count only in the high figure.
 
 ## Risks
 
@@ -961,10 +1119,15 @@ PY
 - **Keyword labels in a manager report.** Without the review pass, categories are guesses. Phase 2's `label_source` and the footer count make the state visible; they do not make the labels right.
 - **Remote sessions cannot join transcripts on the box.** Only the Mac-side export fixes this; extrapolation stays low confidence until then.
 - **Price drift.** List prices change; the report states the fetch date and the 1h rule used, and the comparison run pins the saved price file.
-- **Win attribution is a judgment call.** Lineage rules can pull in unrelated sessions on a long-lived worktree or miss work done elsewhere. The method is printed next to every win cost, and 8.6 hand-checks 5 wins.
-- **Final behavior list comes from Frustration Arc.** Phase 2B may change after reconciliation; the mistakes line and its checks do not depend on which metrics are in the list.
+- **Win attribution is a judgment call.** If G11 turns on the lineage fallback, it can pull in unrelated sessions on a long-lived worktree or miss work done elsewhere. It is labeled as a fallback estimate next to every win cost, and 8.6 hand-checks 5 wins.
+- **Bot-written "user" messages.** About 31% of "user" messages were agents. Without the R2 tagger, behavior counts would be inflated and relayed text would be shown as Alex's words. Phase 2B refuses to count until the tagger passes, and 8.5 checks it by hand.
+- **Thin human data.** The box has few Alex-typed messages after Sep 19 and no Grok Bot chats after Sep 16. Most recent episodes (Frustration Arc's M01–M07) are invisible to the report, and per-100-prompt rates can collapse (Sep 21 week: 18 prompts, 38.9 per 100). The report shows denominators and "not enough data" rather than a rate.
+- **High figure overstates.** The high figure is 5–10× too high by Frustration Arc's own check. It stays in Details, labeled as an upper bound.
+- **Different cost basis from Frustration Arc.** Its dollars price `discovery_tokens`; this report prices transcript tokens. 8.7 compares episodes tightly and dollars loosely, and without the Mac export the last week's dollars are "unmeasured" here.
+- **Wins look free or unknown.** Until sessions are linked to PRs (R4), every win cost is "unmeasured", so "Wins vs mistakes" shows dollars on one side only. The render says why.
+- **Session ids in public PRs (R4).** Stamping ids makes them visible on a public repo. G13 decides; ids are opaque but still identify sessions.
 - **Behavior heuristics are noisy.** Keyword and structure rules will flag some honest turns and miss some bad ones. Counts stay labeled heuristic, and Phase 8 precision gates what reaches the summary.
-- **Alex's words behind the metrics are mostly relayed.** In Sep 20–25 the box holds no text he typed himself; the quotes come from agent-kept transcripts and locks (Phase 2B.0). Behaviors may be missing if they only came up in Grok Bot chats or on the Mac.
+- **Alex's words behind the metrics are partly secondhand.** Frustration Arc's 142 episodes mix Alex-typed prompts with relayed lines; its Sep 21–25 episodes are rebuilt from rule files and an agent-written transcript. The planner's own quotes (2B.0) are mostly relayed too.
 - **`${CLAUDE_SKILL_DIR}` may not exist.** SKILL.md gives the "resolve this file's directory" instruction first.
 
 ## Open questions
@@ -972,5 +1135,5 @@ PY
 - **O1 — Session count basis.** Research counted 80; the live probe counted 81 `sdk_sessions` (one codex). Which is the manager-facing number: all sessions, or Claude-only? Phase 2 counts all and shows platform in Details; confirm.
 - **O2 — Activity endpoint.** If a management key is acceptable (G5), per-day per-model measured USD for the last 30 days becomes possible, which could replace the estimate for the box. Out of scope until answered.
 - **O3 — House copy of SKILL.md with `sand-workflow:*` links.** Keep those links only in the house copy, or drop them everywhere?
-- **O5 — Grok Bot chats as a source.** Most of Alex's complaints happen in Grok Bot chats, which no box transcript or claude-mem table holds for Sep 20–25 (box chat stores stop at Sep 16). Is there a sanctioned export we should read for behavior metrics, or do they stay "unavailable"?
+- **O5 — Grok Bot chats as a source.** Moved to G14 (prerequisite R1).
 - **O4 — Where do report outputs go by default?** The current skill writes to a workspace path (`SKILL.md:163`). Proposed default: `~/.claude-mem/reports/agent-cost-report/<start>_<end>/`. Confirm or name another.
