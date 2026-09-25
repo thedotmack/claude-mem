@@ -437,7 +437,7 @@ export class SessionManager {
 
   /** Snapshot paused in-memory work without loading sessions or changing the buffer. */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
-    const automaticallyRetryable = new Set([null, undefined, 'quota', 'overflow', 'setup_required']);
+    const automaticallyRetryable = new Set([null, undefined, 'quota', 'overflow', 'provider_switch', 'setup_required']);
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0

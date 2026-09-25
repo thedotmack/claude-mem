@@ -173,6 +173,26 @@ describe('paused in-memory session recovery', () => {
     expect(db.getSessionStore).not.toHaveBeenCalled();
   });
 
+  it('retries a provider-switch pause after the replacement provider cooldown expires', async () => {
+    const { routes, manager, buffer, agent } = fixture();
+    manager.getSession(1)!.pausedReason = 'provider_switch';
+    const pending = buffer.getPendingCount(1);
+    const now = Date.now();
+    spyOn(Date, 'now').mockReturnValue(now);
+    recordQuotaExhausted('openrouter', 'Quota exhausted');
+
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await flushStarts();
+    expect(agent.startSession).not.toHaveBeenCalled();
+    expect(buffer.getPendingCount(1)).toBe(pending);
+
+    spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await flushStarts();
+    expect(agent.startSession).toHaveBeenCalledTimes(1);
+    expect(buffer.getPendingCount(1)).toBe(pending);
+  });
+
   it('handles an individual rejected start without preventing other attempts', async () => {
     const { routes, buffer } = fixture();
     buffer.enqueue(3, { type: 'summarize' });
