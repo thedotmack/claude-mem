@@ -42,19 +42,26 @@ interface ChildRender {
   primary: string;
   briefing: string;
   optedOut: string;
+  production: string;
 }
 
 function runChild(): ChildRender {
   const result = Bun.spawnSync(['bun', '-e', `
     import { generateContext, healthWarningForContext } from './src/services/context/ContextBuilder.ts';
+    import { loadSessionStartContext } from './src/services/worker/session/recycle-conversation.ts';
     import { ModeManager } from './src/services/domain/ModeManager.ts';
     ModeManager.getInstance().loadMode('code');
     const primary = await generateContext({ projects: ['observer-briefing-test'] });
     const briefing = await generateContext({ projects: ['observer-briefing-test'], includeHealthWarning: false });
+    const production = await loadSessionStartContext(
+      { sessionDbId: 1, project: 'observer-briefing-test', platformSource: 'claude' },
+      process.cwd(),
+    );
     console.log(JSON.stringify({
       primary,
       briefing,
       optedOut: healthWarningForContext({ includeHealthWarning: false }, false),
+      production,
     }));
   `], {
     cwd: repoRoot,
@@ -88,6 +95,18 @@ describe("observer session-start briefing and the health banner", () => {
     expect(briefing).not.toContain(BANNER);
     expect(briefing).not.toContain('tell the user');
     expect(briefing).toBe('');
+  });
+
+  it('withholds the banner from the briefing the observer actually receives', () => {
+    writeFileSync(healthPath, JSON.stringify(unhealthyState()));
+    const { primary, production } = runChild();
+    // Driven through loadSessionStartContext, the real caller that briefs the
+    // observer generation. Deleting `includeHealthWarning: false` from
+    // recycle-conversation.ts brings the banner straight back and fails this
+    // test; asserting only on a direct builder call would not notice.
+    expect(primary).toContain(BANNER);
+    expect(production).not.toContain(BANNER);
+    expect(production).not.toContain('tell the user');
   });
 
   it('reports no warning for an opted-out build without consulting the ledger', () => {
