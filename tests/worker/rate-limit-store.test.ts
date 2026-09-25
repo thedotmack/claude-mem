@@ -406,6 +406,24 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(shouldAbortForQuota(cliAuth, store, observedAt + 30 * 60_000).abort).toBe(false);
   });
 
+  it('preserves five-hour reset grace when a reading reaches 30 minutes old', () => {
+    const observedAt = Date.now();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.9,
+      resetsAt: observedAt + 45 * 60_000,
+    });
+    const storedAt = store.get('five_hour')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 29 * 60_000).abort).toBe(false);
+    const atGrace = shouldAbortForQuota(cliAuth, store, storedAt + 30 * 60_000);
+    expect(atGrace.abort).toBe(true);
+    expect(atGrace.reason).toContain('grace buffer');
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 31 * 60_000).abort).toBe(true);
+    expect(shouldAbortForQuota(cliAuth, store, observedAt + 45 * 60_000).abort).toBe(false);
+  });
+
   it('retains an explicit overage rejection without a reset after a cooldown', () => {
     store.set({ rateLimitType: 'overage', overageStatus: 'rejected' });
     const observedAt = store.get('overage')!.observedAt;

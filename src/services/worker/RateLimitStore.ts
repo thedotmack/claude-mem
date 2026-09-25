@@ -235,9 +235,8 @@ const RESET_GRACE_MS = 15 * 60 * 1000; // 15 minutes
 /** Utilization floor before the reset-grace check kicks in. */
 const RESET_GRACE_UTILIZATION_FLOOR = 0.85;
 
-// A quota cooldown admits a fresh probe every 30 minutes. An older
-// utilization reading cannot be treated as current indefinitely when its
-// reset time is absent or the provider has changed accounts or plans.
+// A quota cooldown admits a fresh probe every 30 minutes. Without a usable
+// reset time, an older utilization reading cannot be trusted indefinitely.
 const RATE_LIMIT_SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
 
 /**
@@ -277,17 +276,17 @@ export function shouldAbortForQuota(
       entry.status === 'rejected' ||
       (window === 'overage' && entry.overageStatus === 'rejected');
 
-    // A high-utilization estimate must be refreshed after a cooldown probe;
-    // otherwise it can re-arm the cooldown forever when newer events update
-    // other windows. Explicit provider rejections stay active until their own
-    // reset or a replacement snapshot, including overage without a reset.
-    if (!isRejected && now - entry.observedAt >= RATE_LIMIT_SNAPSHOT_MAX_AGE_MS) continue;
-
     // Ignore expired snapshots without removing them from the store so a
     // repeated stale rejection does not look new to set() telemetry. Overage
     // has its own reset: a primary-window reset cannot clear its rejection.
     const resetsAtMs = getResetAtMs(entry, window);
     if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
+
+    // A high-utilization estimate with no usable reset needs a freshness
+    // bound, or it can re-arm the cooldown forever. Keep readings with a
+    // future reset active so the five-hour reset-grace guard still applies.
+    // Explicit provider rejections remain active until reset or replacement.
+    if (!isRejected && resetsAtMs === undefined && now - entry.observedAt >= RATE_LIMIT_SNAPSHOT_MAX_AGE_MS) continue;
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
