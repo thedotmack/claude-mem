@@ -406,6 +406,23 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(shouldAbortForQuota(cliAuth, store, observedAt + 30 * 60_000).abort).toBe(false);
   });
 
+  it('ignores an old weekly utilization after a partial five-hour update, even before its reset', () => {
+    const observedAt = Date.now();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.97,
+      resetsAt: observedAt + 6 * 24 * 60 * 60_000,
+    });
+    const weeklyObservedAt = store.get('seven_day')!.observedAt;
+    store.set({ rateLimitType: 'five_hour', status: 'allowed', utilization: 0.1 });
+
+    expect(store.get('seven_day')!.observedAt).toBe(weeklyObservedAt);
+    expect(shouldAbortForQuota(cliAuth, store, weeklyObservedAt + 29 * 60_000).window).toBe('seven_day');
+    expect(shouldAbortForQuota(cliAuth, store, weeklyObservedAt + 30 * 60_000).abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, store, weeklyObservedAt + 31 * 60_000).abort).toBe(false);
+  });
+
   it('preserves five-hour reset grace when a reading reaches 30 minutes old', () => {
     const observedAt = Date.now();
     store.set({
@@ -422,6 +439,32 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(atGrace.reason).toContain('grace buffer');
     expect(shouldAbortForQuota(cliAuth, store, storedAt + 31 * 60_000).abort).toBe(true);
     expect(shouldAbortForQuota(cliAuth, store, observedAt + 45 * 60_000).abort).toBe(false);
+  });
+
+  it('does not trust old five-hour utilization until its reset grace begins', () => {
+    const observedAt = Date.now();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.96,
+      resetsAt: observedAt + 60 * 60_000,
+    });
+    const storedAt = store.get('five_hour')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 30 * 60_000).abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 45 * 60_000).abort).toBe(true);
+  });
+
+  it('retains an explicit weekly rejection with a future reset after a cooldown', () => {
+    const observedAt = Date.now();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      resetsAt: observedAt + 6 * 24 * 60 * 60_000,
+    });
+    const storedAt = store.get('seven_day')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 30 * 60_000).window).toBe('seven_day');
   });
 
   it('retains an explicit overage rejection without a reset after a cooldown', () => {

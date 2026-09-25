@@ -282,13 +282,19 @@ export function shouldAbortForQuota(
     const resetsAtMs = getResetAtMs(entry, window);
     if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
 
-    // A high-utilization estimate with no usable reset needs a freshness
-    // bound, or it can re-arm the cooldown forever. Keep readings with a
-    // future reset active so the five-hour reset-grace guard still applies.
-    // Explicit provider rejections remain active until reset or replacement.
-    if (!isRejected && resetsAtMs === undefined && now - entry.observedAt >= RATE_LIMIT_SNAPSHOT_MAX_AGE_MS) continue;
-
     const util = entry.utilization;
+    const inFiveHourResetGrace =
+      window === 'five_hour' &&
+      resetsAtMs !== undefined &&
+      typeof util === 'number' &&
+      util >= RESET_GRACE_UTILIZATION_FLOOR &&
+      resetsAtMs - now <= RESET_GRACE_MS;
+
+    // A future reset does not make an old utilization estimate fresh: partial
+    // provider events may leave another window unchanged for days. Preserve
+    // only the five-hour reset grace and explicit provider rejections.
+    if (!isRejected && !inFiveHourResetGrace && now - entry.observedAt >= RATE_LIMIT_SNAPSHOT_MAX_AGE_MS) continue;
+
     const threshold = UTILIZATION_THRESHOLDS[window];
     // An explicit false means the provider is not charging the overage bucket,
     // so its utilization does not represent active quota consumption.
@@ -318,20 +324,13 @@ export function shouldAbortForQuota(
     // Reset-grace buffer: only meaningful for the rolling 5h window where
     // a fresh bucket is imminent. Skip when utilization is low — no point
     // bailing on a window that just reset to ~0%.
-    if (
-      window === 'five_hour' &&
-      resetsAtMs !== undefined &&
-      typeof util === 'number' &&
-      util >= RESET_GRACE_UTILIZATION_FLOOR
-    ) {
+    if (inFiveHourResetGrace && resetsAtMs !== undefined && typeof util === 'number') {
       const msUntilReset = resetsAtMs - now;
-      if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
-        return {
-          abort: true,
-          window,
-          reason: `quota:${window} resets in ${Math.round(msUntilReset / 60000)}m (grace buffer ${RESET_GRACE_MS / 60000}m, util ${(util * 100).toFixed(1)}%)`,
-        };
-      }
+      return {
+        abort: true,
+        window,
+        reason: `quota:${window} resets in ${Math.round(msUntilReset / 60000)}m (grace buffer ${RESET_GRACE_MS / 60000}m, util ${(util * 100).toFixed(1)}%)`,
+      };
     }
   }
 
