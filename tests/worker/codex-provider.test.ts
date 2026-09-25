@@ -68,6 +68,14 @@ function harness(startSession: (s: ActiveSession) => Promise<void>) {
 }
 
 describe('Codex provider integration', () => {
+  it('accepts an empty structured initialization reply without retrying', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, ['']);
+    const result = await provider.queryForInitialization([{ role: 'user', content: 'initialize' }], config);
+    expect(result.content).toBe('');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
+  });
+
   it('retries a completed app-server turn without an agent message once', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const methods = stubCompletedAppServerTurns(provider, [null, 'Recovered memory']);
