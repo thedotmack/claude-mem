@@ -288,12 +288,59 @@ describe('#2753: buildIsolatedEnv resolves CLAUDE_CONFIG_DIR for the SDK subproc
     expect(result.CLAUDE_CONFIG_DIR).not.toBe(CLAUDE_CONFIG_DIR);
   });
 
-  it('falls through to the frozen CLAUDE_CONFIG_DIR (env-or-default, resolved at module load) when the setting is empty', () => {
+  it('with the setting empty, the SDK subprocess CLAUDE_CONFIG_DIR mirrors the worker keychain derivation', () => {
     stubConfigDirSetting('');
 
     const result = buildIsolatedEnv();
 
-    expect(result.CLAUDE_CONFIG_DIR).toBe(CLAUDE_CONFIG_DIR);
+    if (CLAUDE_CONFIG_DIR === DEFAULT_CLAUDE_CONFIG_DIR) {
+      // Default profile: the variable must be ABSENT so Claude Code reads the
+      // bare 'Claude Code-credentials' keychain entry the worker injects under
+      // (#4149).
+      expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
+    } else {
+      // Non-default profile: stamp the frozen (env-resolved) config dir so the
+      // child and the worker resolve the same suffixed keychain entry.
+      expect(result.CLAUDE_CONFIG_DIR).toBe(CLAUDE_CONFIG_DIR);
+    }
+  });
+
+  // #4149 — regression: a default-profile config dir (the resolved '~/.claude',
+  // whether typed as '~/.claude' or already expanded) must leave
+  // CLAUDE_CONFIG_DIR ABSENT on the SDK subprocess. Claude Code derives its
+  // macOS keychain service name from whether CLAUDE_CONFIG_DIR is SET, so any
+  // value here — even the default — sent the child to a suffixed
+  // 'Claude Code-credentials-<hash>' entry a normal login never creates, while
+  // the worker injects under the bare name (deriveMacKeychainServiceName). Once
+  // the access token expired the worker stopped injecting and capture silently
+  // stopped for default-profile macOS users.
+  it('#4149: stamps NO CLAUDE_CONFIG_DIR on the SDK subprocess for a default-profile setting', () => {
+    stubConfigDirSetting('~/.claude');
+
+    const result = buildIsolatedEnv();
+
+    expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it('#4149: deletes a blanket-copied process.env.CLAUDE_CONFIG_DIR for the default profile', () => {
+    // Even when the worker inherited the default config dir explicitly in its
+    // own env (so the blanket process.env copy carries it), the child must end
+    // up with the variable UNSET.
+    const originalProcessEnvConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = DEFAULT_CLAUDE_CONFIG_DIR;
+    stubConfigDirSetting(DEFAULT_CLAUDE_CONFIG_DIR);
+
+    try {
+      const result = buildIsolatedEnv();
+
+      expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
+    } finally {
+      if (originalProcessEnvConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = originalProcessEnvConfigDir;
+      }
+    }
   });
 
   it('never touches the worker\'s own paths.CLAUDE_CONFIG_DIR / MARKETPLACE_ROOT module constants, nor the real process.env.CLAUDE_CONFIG_DIR', () => {
