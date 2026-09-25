@@ -287,6 +287,27 @@ describe('Codex provider integration', () => {
     expect(nativeSignal?.aborted).toBe(true);
   });
 
+  it('cancels a compression request while the session signal remains active', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const sessionController = new AbortController();
+    const compressionController = new AbortController();
+    const c = { ...config, signal: sessionController.signal };
+    let started!: () => void;
+    let nativeSignal: AbortSignal | undefined;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
+      nativeSignal = options.signal;
+      options.signal.addEventListener('abort', () => reject(new Error('compression aborted')), { once: true });
+      started();
+    });
+    const result = provider.query([{ role: 'user', content: 'compress payload' }], c, compressionController.signal);
+    await ready;
+    compressionController.abort();
+    await expect(result).rejects.toThrow('Aborted');
+    expect(nativeSignal?.aborted).toBe(true);
+    expect(sessionController.signal.aborted).toBe(false);
+  });
+
   for (const [message, kind] of [
     ['Codex executable not found', 'unrecoverable'], ['not logged in', 'auth_invalid'],
     ['usage limit reached', 'quota_exhausted'], ['429 rate limit', 'rate_limit'],

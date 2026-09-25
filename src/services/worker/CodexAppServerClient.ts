@@ -13,7 +13,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
-import { spawnHidden } from '../../shared/spawn.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { logger } from '../../utils/logger.js';
@@ -136,6 +136,22 @@ export interface CodexAppServerTurnResult {
 
 export function buildCodexAppServerArgs(): string[] {
   return ['app-server', '--listen', 'stdio://'];
+}
+
+export function buildCodexAppServerLaunch(
+  codexPath: string,
+  platform: NodeJS.Platform = process.platform,
+  findCommand: (command: string) => string | null = lookupWindowsCommand,
+): { command: string; args: string[]; windowsVerbatimArguments?: boolean } {
+  const command = platform === 'win32' && codexPath === 'codex'
+    ? findCommand('codex') ?? 'codex.cmd'
+    : codexPath;
+  const invocation = buildSpawnSyncInvocation(command, buildCodexAppServerArgs(), { encoding: 'utf-8' }, platform);
+  return {
+    command: invocation.command,
+    args: invocation.args,
+    windowsVerbatimArguments: invocation.options.windowsVerbatimArguments,
+  };
 }
 
 export function buildCodexAppServerThreadConfig(mcpServerNames: readonly string[]): JsonObject {
@@ -579,11 +595,13 @@ export class CodexAppServerClient {
 
     let expectedChild: ChildProcessWithoutNullStreams | undefined;
     try {
-      const child = spawnHidden(codexPath, buildCodexAppServerArgs(), {
+      const launch = buildCodexAppServerLaunch(codexPath);
+      const child = spawnHidden(launch.command, launch.args, {
         cwd: this.workspace,
         env: sanitizeEnv(buildCodexAppServerEnv(process.env, runtime.codexHome)),
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
       }) as ChildProcessWithoutNullStreams;
       expectedChild = child;
       this.child = child;

@@ -262,6 +262,12 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
+    for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
+      if (settings[key] !== undefined && typeof settings[key] !== 'string') {
+        return { valid: false, error: `${key} must be a string` };
+      }
+    }
+
     if (settings.CLAUDE_MEM_PROVIDER) {
     const validProviders = ['claude', 'gemini', 'openrouter', 'codex'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
