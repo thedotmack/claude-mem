@@ -580,6 +580,11 @@ export class SessionRoutes extends BaseRouteHandler {
               maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
             });
           } else {
+            // The delayed retry may hit a quota cooldown and return without
+            // starting a generator. Keep this pause eligible for the periodic
+            // sweep after the timer fires; ordinary transport pauses still
+            // require an explicit retry, and exhausted stalls keep their cap.
+            session.pausedReason = 'response_stall';
             const resume = setTimeout(() => {
               session.stallResumeTimer = undefined;
               void this.ensureGeneratorRunning(session.sessionDbId, 'response-stall')

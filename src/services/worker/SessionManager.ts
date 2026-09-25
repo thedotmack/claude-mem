@@ -437,10 +437,11 @@ export class SessionManager {
 
   /** Snapshot paused in-memory work without loading sessions or changing the buffer. */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
-    const automaticallyRetryable = new Set([null, undefined, 'quota', 'overflow', 'provider_switch', 'setup_required']);
+    const automaticallyRetryable = new Set([null, undefined, 'quota', 'overflow', 'provider_switch', 'response_stall', 'setup_required']);
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0
+        && !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined)
         && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
       .map(session => session.sessionDbId);
   }

@@ -232,6 +232,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       expect(requestedDelays).toEqual([RESPONSE_STALL_RESUME_DELAY_MS]);
       expect(starts).toBe(2);
       expect(session.consecutiveResponseStalls).toBe(1);
+      expect(session.pausedReason).toBe('response_stall');
       expect(stats().finalizeCalls).toBe(0);
     });
 
@@ -251,6 +252,7 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
 
       expect(requestedDelays).toEqual([]);
       expect(starts).toBe(1);
+      expect(session.pausedReason).toBe('transport');
       // Still preserved for the next hook event rather than finalized.
       expect(stats().finalizeCalls).toBe(0);
       expect(stats().active).toBe(session);

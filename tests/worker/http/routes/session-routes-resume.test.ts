@@ -193,6 +193,30 @@ describe('paused in-memory session recovery', () => {
     expect(buffer.getPendingCount(1)).toBe(pending);
   });
 
+  it('retries a stalled response after its timer fires during quota cooldown', async () => {
+    const { routes, manager, agent } = fixture();
+    const session = manager.getSession(1)!;
+    session.pausedReason = 'response_stall';
+    session.stallResumeTimer = setTimeout(() => {}, 60_000);
+    session.stallResumeTimer.unref?.();
+    expect(manager.getResumableSessionIds()).toEqual([]);
+    clearTimeout(session.stallResumeTimer);
+    session.stallResumeTimer = undefined;
+
+    const now = Date.now();
+    spyOn(Date, 'now').mockReturnValue(now);
+    recordQuotaExhausted('openrouter', 'Quota exhausted');
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await flushStarts();
+    expect(agent.startSession).not.toHaveBeenCalled();
+    expect(session.pausedReason).toBe('response_stall');
+
+    spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await flushStarts();
+    expect(agent.startSession).toHaveBeenCalledTimes(1);
+  });
+
   it('handles an individual rejected start without preventing other attempts', async () => {
     const { routes, buffer } = fixture();
     buffer.enqueue(3, { type: 'summarize' });
