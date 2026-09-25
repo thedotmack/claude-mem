@@ -105,6 +105,41 @@ describe('RateLimitStore', () => {
     expect(store.get('seven_day')?.utilization).toBe(0.01);
     expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
   });
+
+  it('replaces a high-utilization weekly bucket without a rejection', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', status: 'allowed_warning', utilization: 0.99 });
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: {
+        seven_day: { utilization: 0.01, resetsAt: FIXED_NOW + 6 * 24 * 60 * 60_000 },
+      },
+    });
+
+    expect(store.get('seven_day')?.status).toBeUndefined();
+    expect(store.get('seven_day')?.utilization).toBe(0.01);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('replaces a high-utilization five-hour bucket from a weekly event', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.95 });
+
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.8,
+      unifiedWindows: {
+        five_hour: { utilization: 0.73, resetsAt: FIXED_NOW + 60 * 60_000 },
+      },
+    });
+
+    expect(store.get('five_hour')?.status).toBeUndefined();
+    expect(store.get('five_hour')?.utilization).toBe(0.73);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
 });
 
 describe('isApiKeyAuth', () => {
@@ -351,6 +386,42 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(false);
+  });
+
+  it('ignores high utilization without rejection after its reset time', () => {
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.97,
+      resetsAt: Math.floor(FIXED_NOW / 1000) - 60,
+    });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('stops trusting a high-utilization reading after a cooldown without a refresh', () => {
+    store.set({ rateLimitType: 'seven_day', status: 'allowed_warning', utilization: 0.97 });
+    const observedAt = store.get('seven_day')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, observedAt + 29 * 60_000).abort).toBe(true);
+    expect(shouldAbortForQuota(cliAuth, store, observedAt + 30 * 60_000).abort).toBe(false);
+  });
+
+  it('retains an explicit overage rejection without a reset after a cooldown', () => {
+    store.set({ rateLimitType: 'overage', overageStatus: 'rejected' });
+    const observedAt = store.get('overage')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, observedAt + 30 * 60_000).abort).toBe(true);
+  });
+
+  it('applies five-hour reset grace to an epoch-seconds timestamp', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      utilization: 0.9,
+      resetsAt: FIXED_NOW / 1000 + 10 * 60,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.reason).toContain('grace buffer');
   });
 
   it('skips reset-grace check when utilization is below the floor', () => {
