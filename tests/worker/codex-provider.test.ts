@@ -9,6 +9,28 @@ import { getQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, 
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex', timeoutMs: 1000 };
+
+function stubCompletedAppServerTurns(provider: any, contents: Array<string | null>): string[] {
+  const methods: string[] = [];
+  let turn = 0;
+  provider.appServer.ensureStarted = async () => {};
+  provider.appServer.workspace = 'private-test-workspace';
+  provider.appServer.readInheritedMcpServerNames = async () => [];
+  provider.appServer.attestMcpServersDisabled = async () => {};
+  provider.appServer.request = async (method: string) => {
+    methods.push(method);
+    if (method === 'thread/start') return { thread: { id: `thread-${turn + 1}` }, instructionSources: [] };
+    if (method === 'turn/start') {
+      const content = contents[turn++];
+      return { turn: { id: `turn-${turn}`, status: 'completed', items: content === null ? [] : [
+        { type: 'agentMessage', phase: 'final_answer', text: JSON.stringify({ content }) },
+      ] } };
+    }
+    if (method === 'thread/unsubscribe') return {};
+    throw new Error(`Unexpected request: ${method}`);
+  };
+  return methods;
+}
 let savedProvider: string | undefined;
 beforeEach(() => {
   savedProvider = process.env.CLAUDE_MEM_PROVIDER;
@@ -46,6 +68,26 @@ function harness(startSession: (s: ActiveSession) => Promise<void>) {
 }
 
 describe('Codex provider integration', () => {
+  it('retries a completed app-server turn without an agent message once', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, [null, 'Recovered memory']);
+    const result = await provider.query([{ role: 'user', content: 'input' }], config);
+    expect(result.content).toBe('Recovered memory');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
+  });
+
+  it('retries blank structured output once and reports bounded diagnostics if it stays blank', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, [' ', ' ']);
+    const error = await provider.query([{ role: 'user', content: 'input' }], config)
+      .then(() => null, (caught: unknown) => caught);
+    expect(error).toHaveProperty('kind', 'transient');
+    expect((error as Error).message).toContain('agentMessages=1');
+    expect((error as Error).message).toContain('finalTextBytes=15');
+    expect((error as Error).message).not.toContain('"content"');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
+  });
+
   it('accepts Codex settings without changing the default provider or pinning a model', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
     expect(defaults.CLAUDE_MEM_PROVIDER).toBe('claude');

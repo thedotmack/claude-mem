@@ -94,6 +94,9 @@ interface ActiveTurn {
   threadId: string;
   turnId: string | null;
   finalText: string | null;
+  completedItems: number;
+  agentMessages: number;
+  terminalItems: number;
   tokenUsage: JsonObject | null;
   terminalTurn: JsonObject | null;
   protocolError: Error | null;
@@ -395,6 +398,9 @@ export class CodexAppServerClient {
       threadId,
       turnId: null,
       finalText: null,
+      completedItems: 0,
+      agentMessages: 0,
+      terminalItems: 0,
       tokenUsage: null,
       terminalTurn: null,
       protocolError: null,
@@ -434,7 +440,7 @@ export class CodexAppServerClient {
         throw codexTurnError(`Codex app-server turn ${String(active.terminalTurn.status)}`, active.terminalTurn.error);
       }
       if (active.finalText === null) {
-        throw new Error('Codex app-server completed without a final agent message');
+        throw new Error(`Codex app-server completed without a final agent message (${this.describeEmptyTurn(active)})`);
       }
 
       let structured: unknown;
@@ -446,8 +452,11 @@ export class CodexAppServerClient {
       if (!isObject(structured) || typeof structured.content !== 'string') {
         throw new Error('Codex app-server structured output omitted string content');
       }
-
-      return { content: structured.content.trim(), ...normalizeUsage(active.tokenUsage) };
+      const content = structured.content.trim();
+      if (!content) {
+        throw new Error(`Codex app-server returned empty structured content (${this.describeEmptyTurn(active)})`);
+      }
+      return { content, ...normalizeUsage(active.tokenUsage) };
     } finally {
       if (this.activeTurn === active) this.activeTurn = null;
       await this.request('thread/unsubscribe', { threadId }, INTERRUPT_TIMEOUT_MS).catch(() => undefined);
@@ -739,11 +748,13 @@ export class CodexAppServerClient {
 
     if (method === 'item/completed' && isObject(params.item)) {
       const item = params.item;
+      active.completedItems += 1;
       if (typeof item.type === 'string' && FORBIDDEN_ITEM_TYPES.has(item.type)) {
         active.protocolError = new Error(`Codex app-server attempted forbidden ${item.type} capability`);
         void this.interruptOrInvalidate(active).finally(() => active.complete());
       }
       if (item.type === 'agentMessage' && typeof item.text === 'string') {
+        active.agentMessages += 1;
         if (item.phase === 'final_answer' || active.finalText === null) active.finalText = item.text;
       }
       return;
@@ -771,13 +782,20 @@ export class CodexAppServerClient {
     if (typeof turn.status !== 'string' || !TERMINAL_TURN_STATUSES.has(turn.status)) return;
     active.terminalTurn = turn;
     if (Array.isArray(turn.items)) {
+      active.terminalItems += turn.items.length;
       for (const raw of turn.items) {
         if (isObject(raw) && raw.type === 'agentMessage' && typeof raw.text === 'string') {
+          active.agentMessages += 1;
           if (raw.phase === 'final_answer' || active.finalText === null) active.finalText = raw.text;
         }
       }
     }
     active.complete();
+  }
+
+  private describeEmptyTurn(active: ActiveTurn): string {
+    return `completedItems=${active.completedItems}, terminalItems=${active.terminalItems}, `
+      + `agentMessages=${active.agentMessages}, finalTextBytes=${Buffer.byteLength(active.finalText ?? '', 'utf8')}`;
   }
 
   private onChildExit(child: ChildProcessWithoutNullStreams, error: Error): void {

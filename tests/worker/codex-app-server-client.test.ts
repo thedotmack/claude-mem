@@ -9,6 +9,9 @@ import {
   buildCodexAppServerThreadConfig,
   CodexAppServerClient,
 } from '../../src/services/worker/CodexAppServerClient.js';
+import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
+
+const itPosix = process.platform === 'win32' ? it.skip : it;
 
 interface FakeCodex {
   authHome: string;
@@ -19,7 +22,8 @@ interface FakeCodex {
 
 interface FakeCodexOptions {
   instructionSources?: string[];
-  mode?: 'normal' | 'terminal-response' | 'slow-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error';
+  mode?: 'normal' | 'terminal-response' | 'slow-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error'
+    | 'empty-first-turn' | 'empty-always' | 'missing-message';
 }
 
 function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
@@ -63,10 +67,10 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
     "    else if (message.method === 'turn/start') {",
     '      turn += 1;',
     "      const turnId = 'turn-' + turn;",
-    "      const content = JSON.stringify({ content: '<observation><type>discovery</type><title>Turn ' + turn + '</title><narrative>Captured.</narrative></observation>' });",
+    "      const content = JSON.stringify({ content: mode === 'empty-always' || (mode === 'empty-first-turn' && turn === 1) ? '   ' : '<observation><type>discovery</type><title>Turn ' + turn + '</title><narrative>Captured.</narrative></observation>' });",
     "      const finish = () => {",
     "        send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1 } } } });",
-    "        send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
+    "        if (mode !== 'missing-message') send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
     "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: [] } } });",
     '      };',
     "      const turnError = { message: 'You have hit your usage limit.', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null };",
@@ -161,6 +165,55 @@ it('waits for the final turn state when Codex retries an error itself', async ()
   }
 });
 
+itPosix('retries one empty structured app-server response and accepts the next turn', async () => {
+  const fake = createFakeCodex({ mode: 'empty-first-turn' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  const provider = new CodexProvider(null as any, null as any) as any;
+  provider.appServer = client;
+  try {
+    const result = await provider.query([{ role: 'user', content: 'Remember this.' }], {
+      apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null, timeoutMs: 5000,
+    });
+    expect(result.content).toContain('<title>Turn 2</title>');
+    expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(2);
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+itPosix('fails after one retry when structured content stays empty without logging response text', async () => {
+  const fake = createFakeCodex({ mode: 'empty-always' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  const provider = new CodexProvider(null as any, null as any) as any;
+  provider.appServer = client;
+  try {
+    const error = await provider.query([{ role: 'user', content: 'Remember this.' }], {
+      apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null, timeoutMs: 5000,
+    }).then(() => null, (caught: unknown) => caught);
+    expect(error).toHaveProperty('kind', 'transient');
+    expect((error as Error).message).toContain('agentMessages=1');
+    expect((error as Error).message).not.toContain('"content"');
+    expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(2);
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
+itPosix('describes a completed turn without an agent message', async () => {
+  const fake = createFakeCodex({ mode: 'missing-message' });
+  const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+  try {
+    const error = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 }).then(() => null, (caught: unknown) => caught);
+    expect((error as Error).message).toContain('completedItems=0, terminalItems=0, agentMessages=0, finalTextBytes=0');
+  } finally {
+    await client.close();
+    rmSync(fake.root, { recursive: true, force: true });
+  }
+});
+
 async function waitForTrace(path: string, predicate: (trace: Array<Record<string, any>>) => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate(readTrace(path))) return;
@@ -200,8 +253,6 @@ describe('CodexAppServerClient configuration', () => {
     expect(env).toEqual({ PATH: '/usr/bin', HOME: '/home/tester', CODEX_HOME: '/tmp/claude-mem-private-codex', LANG: 'C.UTF-8' });
   });
 });
-
-const itPosix = process.platform === 'win32' ? it.skip : it;
 
 describe('CodexAppServerClient transport', () => {
   itPosix('reaps a rejected handshake and initializes a fresh supervised child', async () => {
