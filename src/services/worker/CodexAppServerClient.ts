@@ -121,6 +121,8 @@ export interface CodexAppServerTurnOptions {
   prompt: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Initialization may complete with an empty structured content string. */
+  allowEmptyContent?: boolean;
   /** Recheck caller-owned admission after waiting in the serialized queue. */
   beforeSend?: () => void;
   /** Publish admission failures before releasing the queue to the next caller. */
@@ -469,7 +471,7 @@ export class CodexAppServerClient {
         throw new Error('Codex app-server structured output omitted string content');
       }
       const content = structured.content.trim();
-      if (!content) {
+      if (!content && !options.allowEmptyContent) {
         throw new Error(`Codex app-server returned empty structured content (${this.describeEmptyTurn(active)})`);
       }
       return { content, ...normalizeUsage(active.tokenUsage) };

@@ -108,7 +108,16 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     session.lastModelId = config.model || 'codex-default';
   }
 
-  protected async query(history: ConversationMessage[], config: CodexConfig, callerSignal?: AbortSignal): Promise<ProviderQueryResult> {
+  protected override queryForInitialization(history: ConversationMessage[], config: CodexConfig): Promise<ProviderQueryResult> {
+    return this.query(history, config, undefined, { allowEmptyContent: true });
+  }
+
+  protected async query(
+    history: ConversationMessage[],
+    config: CodexConfig,
+    callerSignal?: AbortSignal,
+    options: { allowEmptyContent?: boolean } = {},
+  ): Promise<ProviderQueryResult> {
     const abortSignal = config.signal && callerSignal
       ? AbortSignal.any([config.signal, callerSignal])
       : callerSignal ?? config.signal;
@@ -127,6 +136,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
             timeoutMs: config.timeoutMs,
             prompt,
             signal,
+            allowEmptyContent: options.allowEmptyContent,
             beforeSend: () => {
               signal.throwIfAborted();
               const setup = getQuotaCooldown('codex-setup');

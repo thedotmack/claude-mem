@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
+import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
@@ -136,5 +137,26 @@ describe('OpenAICompatibleProvider init response', () => {
     expect(storeObservations).toHaveBeenCalledTimes(1);
     // The init reply still occupies its assistant turn, so roles alternate.
     expect(session.conversationHistory.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+  });
+
+  it('continues a Codex session after an empty initialization reply', async () => {
+    const provider = new CodexProvider(dbManager, sessionManager) as any;
+    provider.getConfig = () => ({
+      apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex', timeoutMs: 1000,
+    });
+    const turns = mock(async (options: { allowEmptyContent?: boolean }) => ({
+      content: options.allowEmptyContent ? '' : observationXml,
+    }));
+    provider.appServer.runTurn = turns;
+    const session = makeSession({ currentProvider: 'codex' });
+
+    await provider.startSession(session);
+
+    expect(turns).toHaveBeenCalledTimes(2);
+    expect(turns.mock.calls[0][0].allowEmptyContent).toBe(true);
+    expect(turns.mock.calls[1][0].allowEmptyContent).toBeUndefined();
+    expect(storeObservations).toHaveBeenCalledTimes(1);
+    expect(session.conversationHistory.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(session.conversationHistory[1].content).toBe('');
   });
 });
