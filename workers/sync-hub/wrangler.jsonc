@@ -51,9 +51,10 @@
 		// Implemented Pro verifier dependency. Deploy and canary this route first;
 		// activate SyncHub only after the production route passes token/user binding.
 		"TOKEN_VERIFY_URL": "https://cmem.ai/api/pro/sync/verify",
-		// Positive-verdict cache TTL. Runtime clamps this to exactly 60 seconds:
-		// Cloudflare KV's minimum and the public token-rotation bound coincide.
-		"AUTH_CACHE_TTL_SECONDS": "60",
+		// Positive-verdict cache TTL. Runtime clamps to 60s–3600s (default 900).
+		// Longer TTL cuts AUTH_CACHE writes; revoked tokens linger up to this
+		// window on a warm isolate / KV hit. See src/index.ts.
+		"AUTH_CACHE_TTL_SECONDS": "900",
 		// Stateless Worker -> Pro projection endpoint. The companion bearer
 		// credential is the CMEM_INTERNAL_PROJECTOR_SECRET Worker secret.
 		"INTERNAL_PROJECTOR_URL": "https://cmem.ai/api/internal/sync/project",

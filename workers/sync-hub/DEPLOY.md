@@ -26,7 +26,7 @@ Paste the returned id into `wrangler.jsonc` → `kv_namespaces[0].id`
 (replacing the `00000000…` placeholder). This one namespace serves two
 purposes, separated by key prefix:
 
-- `verdict:<sha256>` — positive token-verification verdicts (short TTL).
+- `verdict:<sha256>` — positive token-verification verdicts (default 15 min TTL).
 - `control:kill-switch` — the kill-switch flag (no TTL; see §3).
 
 A dedicated `SYNC_CONTROL` namespace was considered and rejected: the
@@ -47,10 +47,11 @@ return the canonical user id the token belongs to, as JSON `{userId}` or
 claimed user id.
 
 SyncHub is the sole positive cache in this composed verification path. The Pro
-route performs a fresh identity lookup, while `AUTH_CACHE` positives are fixed
-at 60 seconds (Cloudflare KV's minimum). This preserves the dashboard promise
-that rotating a setup token stops uploads within 60 seconds and bounds any
-time-limited entitlement overrun to the same interval.
+route performs a fresh identity lookup, while `AUTH_CACHE` positives default to
+15 minutes (`AUTH_CACHE_TTL_SECONDS`, clamped 60s–60m). Rotating or revoking a
+setup token can therefore keep succeeding on a warm cache for up to that TTL.
+A verify 401/403 deletes the verdict key, but only on a cache miss that
+reaches upstream.
 
 There is no local or production authentication bypass. Vitest intercepts the
 verify request with Miniflare's mocked outbound service; manual `wrangler dev`
