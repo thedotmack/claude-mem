@@ -217,6 +217,22 @@ describe('paused in-memory session recovery', () => {
     expect(agent.startSession).toHaveBeenCalledTimes(1);
   });
 
+  it('lets an operator retry a stalled response before its automatic timer fires', async () => {
+    const { routes, manager, agent } = fixture();
+    const session = manager.getSession(1)!;
+    session.pausedReason = 'response_stall';
+    session.stallResumeTimer = setTimeout(() => {}, 60_000);
+    session.stallResumeTimer.unref?.();
+
+    expect(manager.getResumableSessionIds()).toEqual([]);
+    expect(manager.getResumableSessionIds(true)).toEqual([1]);
+    const response = await postProcessing(routes, { isProcessing: false });
+    await flushStarts();
+    expect(response.body.scheduledSessions).toBe(1);
+    expect(agent.startSession).toHaveBeenCalledTimes(1);
+    expect(session.stallResumeTimer).toBeUndefined();
+  });
+
   it('handles an individual rejected start without preventing other attempts', async () => {
     const { routes, buffer } = fixture();
     buffer.enqueue(3, { type: 'summarize' });

@@ -441,7 +441,7 @@ export class SessionManager {
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0
-        && !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined)
+        && (includeOperatorOnly || !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined))
         && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
       .map(session => session.sessionDbId);
   }
