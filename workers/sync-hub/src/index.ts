@@ -9,7 +9,8 @@
  *   - Token verification. This happens HERE, never in the DO (anti-pattern
  *     #3: no outbound I/O of any kind from the DO). Verdicts are checked
  *     against the cmem.ai verify endpoint (TOKEN_VERIFY_URL) and positive
- *     verdicts are cached in Workers KV (AUTH_CACHE) with a short TTL.
+ *     verdicts are cached in isolate memory plus Workers KV (AUTH_CACHE).
+ *     Default TTL is 15 minutes (min 60s / max 60m).
  *   - Route to `env.SYNC_HUB.getByName(userId)` and call RPC methods on the
  *     stub — non-WS data never flows through stub.fetch().
  *
@@ -53,10 +54,16 @@ import { runWatchdog } from "./watchdog";
 // The DO class must be exported from the Worker entrypoint.
 export { SyncHub };
 
-/** KV minimum expirationTtl and the public token-rotation bound are both 60s. */
-const MIN_CACHE_TTL_SECONDS = 60;
-const MAX_CACHE_TTL_SECONDS = 60;
-const DEFAULT_CACHE_TTL_SECONDS = 60;
+/** Cloudflare KV's minimum expirationTtl. */
+export const AUTH_CACHE_TTL_MIN_SECONDS = 60;
+/** Upper clamp — revocation / rotation can linger this long on a warm cache. */
+export const AUTH_CACHE_TTL_MAX_SECONDS = 3_600;
+/** Default positive-verdict TTL. Cuts KV rewrites vs the old 60s bound. */
+export const AUTH_CACHE_TTL_DEFAULT_SECONDS = 900;
+
+const MIN_CACHE_TTL_SECONDS = AUTH_CACHE_TTL_MIN_SECONDS;
+const MAX_CACHE_TTL_SECONDS = AUTH_CACHE_TTL_MAX_SECONDS;
+const DEFAULT_CACHE_TTL_SECONDS = AUTH_CACHE_TTL_DEFAULT_SECONDS;
 
 /**
  * Batch caps for POST /v1/sync/ops, sized against live Cloudflare docs
@@ -87,6 +94,15 @@ const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const REPAIR_DRAIN_MAX_PAGES = 1;
 
 /**
+ * Poll/kill-switch request-path budget. A page is ≤100 ops, so 8 pages covers
+ * one max push (500) plus the 40–200 seq lags seen when #4140 skipped drain
+ * entirely. One bounded inline pass per push; remaining catch-up is client
+ * retry or /internal/v1/projection/drain, never a 200 with
+ * head_seq > projected_seq.
+ */
+export const POLL_PUSH_DRAIN_MAX_PAGES = 8;
+
+/**
  * Pro declares a 60-second maximum duration. Abort the complete response-body
  * read at 45 seconds while the Hub holds a 90-second fencing lease:
  * Hub abort (45s) < Pro platform ceiling (60s) < Hub lease (90s).
@@ -108,6 +124,16 @@ function errorResponse(status: number, error: string): Response {
 	return json(status, { error });
 }
 
+const STORE_RETRY_AFTER_SECONDS = "5";
+
+/** Unguarded DO failures used to become uncaught exceptions (quota / rows-read). */
+function retryableStoreUnavailable(label: string, error: unknown): Response {
+	console.error(`sync-hub ${label} failed:`, error);
+	const response = json(503, { error: "sync_hub_unavailable", retryable: true });
+	response.headers.set("Retry-After", STORE_RETRY_AFTER_SECONDS);
+	return response;
+}
+
 interface AuthOk {
 	ok: true;
 	userId: string;
@@ -124,15 +150,65 @@ interface AuthFail {
 export interface AuthDependencies {
 	readCachedVerdict(cacheKey: string): Promise<string | null>;
 	cacheVerifiedVerdict(cacheKey: string, ttlSeconds: number): Promise<void>;
+	invalidateCachedVerdict(cacheKey: string): Promise<void>;
 	verifyToken(request: Request): Promise<Response>;
-	logCacheFailure(operation: "get" | "put", error: unknown): void;
+	logCacheFailure(operation: "get" | "put" | "delete", error: unknown): void;
 }
 
-function defaultAuthDependencies(env: Env): AuthDependencies {
+interface MemoryVerdict {
+	expiresAtMs: number;
+}
+
+/** Per-isolate positive verdicts. Avoids a KV write on every miss this isolate can already serve. */
+const verdictMemory = new Map<string, MemoryVerdict>();
+
+/** Brief memo after a KV hit so a burst does not re-read KV or extend the 15–60m window. */
+const MEMORY_KV_HINT_SECONDS = 60;
+
+function readVerdictMemory(cacheKey: string, nowMs = Date.now()): boolean {
+	const entry = verdictMemory.get(cacheKey);
+	if (!entry) return false;
+	if (entry.expiresAtMs <= nowMs) {
+		verdictMemory.delete(cacheKey);
+		return false;
+	}
+	return true;
+}
+
+function writeVerdictMemory(cacheKey: string, ttlSeconds: number, nowMs = Date.now()): void {
+	verdictMemory.set(cacheKey, { expiresAtMs: nowMs + ttlSeconds * 1_000 });
+}
+
+function deleteVerdictMemory(cacheKey: string): void {
+	verdictMemory.delete(cacheKey);
+}
+
+/** Tests only: forget the per-isolate auth-verdict memo. */
+export function __resetAuthVerdictMemoryForTests(): void {
+	verdictMemory.clear();
+}
+
+export function defaultAuthDependencies(env: Env): AuthDependencies {
 	return {
-		readCachedVerdict: (cacheKey) => env.AUTH_CACHE.get(cacheKey),
-		cacheVerifiedVerdict: (cacheKey, ttlSeconds) =>
-			env.AUTH_CACHE.put(cacheKey, "1", { expirationTtl: ttlSeconds }),
+		async readCachedVerdict(cacheKey) {
+			if (readVerdictMemory(cacheKey)) return "1";
+			const stored = await env.AUTH_CACHE.get(cacheKey);
+			if (stored === "1") {
+				writeVerdictMemory(cacheKey, MEMORY_KV_HINT_SECONDS);
+			}
+			return stored;
+		},
+		async cacheVerifiedVerdict(cacheKey, ttlSeconds) {
+			// A live isolate memo means a concurrent miss already verified and
+			// wrote KV. Do not refresh the key — that was the 60s rewrite bill.
+			if (readVerdictMemory(cacheKey)) return;
+			writeVerdictMemory(cacheKey, ttlSeconds);
+			await env.AUTH_CACHE.put(cacheKey, "1", { expirationTtl: ttlSeconds });
+		},
+		async invalidateCachedVerdict(cacheKey) {
+			deleteVerdictMemory(cacheKey);
+			await env.AUTH_CACHE.delete(cacheKey);
+		},
 		verifyToken: (request) => fetch(request),
 		logCacheFailure(operation, error) {
 			// Never log the cache key: it is derived from a bearer credential.
@@ -288,8 +364,9 @@ export async function authenticateRequest(
 			};
 		}
 		// Cache positive verdicts only, and only after the user binding above —
-		// a newly-revoked token lingers at most 60 seconds; a newly-issued
-		// token is never wrongly rejected; a forged pair is never pinned.
+		// a newly-revoked token lingers at most AUTH_CACHE_TTL (default 15m,
+		// max 60m); a newly-issued token is never wrongly rejected; a forged
+		// pair is never pinned.
 		try {
 			await dependencies.cacheVerifiedVerdict(cacheKey, cacheTtlSeconds(env));
 		} catch (error) {
@@ -300,6 +377,13 @@ export async function authenticateRequest(
 		return { ok: true, userId, deviceId, deviceName };
 	}
 	if (verifyRes.status === 401 || verifyRes.status === 403) {
+		// The only revocation signal this Worker sees: upstream rejected the
+		// token. Drop a stale positive so a KV-read outage cannot pin it.
+		try {
+			await dependencies.invalidateCachedVerdict(cacheKey);
+		} catch (error) {
+			dependencies.logCacheFailure("delete", error);
+		}
 		return { ok: false, response: errorResponse(401, "invalid token") };
 	}
 	return {
@@ -314,7 +398,9 @@ async function handlePushOps(
 	userId: string,
 	deviceId: string,
 	deviceName: string | null,
-	options: { skipProjectionDrain?: boolean } = {},
+	options: {
+		pollMode?: boolean;
+	} = {},
 ): Promise<Response> {
 	const raw = await request.text();
 	// Deliberate 413s (see the cap constants above): an oversize batch must
@@ -352,24 +438,36 @@ async function handlePushOps(
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
-		// Poll mode must actually stop the DO slam. The Hub already has the
-		// ops; Pro can catch up via /internal/v1/projection/drain. Skipping
-		// the lease/page/heartbeat loop here is latency, never data loss.
-		if (options.skipProjectionDrain) {
-			const state = await stub.getProjectionState();
-			return json(200, { ...result, projected_seq: state.projected_seq });
+		// Hypothesis: logging sample cut ≠ customer pain. #4140
+		// skipProjectionDrain under kill-switch left head_seq ahead of
+		// projected_seq and still returned 200; CloudSync rejects that
+		// (head_seq <= projected_seq). 1% Workers Logs never advanced the
+		// checkpoint. The cost cuts that stay: refuse WS (idle DO pin),
+		// drop extra getProjectionState/heartbeat knocks inside drain.
+		// Poll mode bounds the request-path drain to one inline pass — it
+		// never lies with a lagged 200 and never starts a waitUntil loop.
+		const projection = await drainProjection(env, userId, result.head_seq, {
+			...(options.pollMode ? { maxPages: POLL_PUSH_DRAIN_MAX_PAGES } : {}),
+		});
+		if (projection.ok && decimalAtLeast(projection.projectedSeq, result.head_seq)) {
+			return json(200, { ...result, projected_seq: projection.projectedSeq });
 		}
-		const projection = await drainProjection(env, userId, result.head_seq);
-		if (!projection.ok) {
-			return json(projection.httpStatus, {
-				error: projection.error,
+		if (projection.ok) {
+			return json(503, {
+				error: "projection_catching_up",
 				durable: true,
-				retryable: projection.retryable,
+				retryable: true,
 				head_seq: result.head_seq,
 				projected_seq: projection.projectedSeq,
 			});
 		}
-		return json(200, { ...result, projected_seq: projection.projectedSeq });
+		return json(projection.httpStatus, {
+			error: projection.error,
+			durable: true,
+			retryable: projection.retryable,
+			head_seq: result.head_seq,
+			projected_seq: projection.projectedSeq,
+		});
 	} catch (e) {
 		return mapHubError(e);
 	}
@@ -635,7 +733,19 @@ export async function drainProjection(
 		throw new Error("projection maxPages must be a positive safe integer");
 	}
 	const stub = env.SYNC_HUB.getByName(userId);
-	let state = await stub.getProjectionState();
+	let state: Awaited<ReturnType<typeof stub.getProjectionState>>;
+	try {
+		state = await stub.getProjectionState();
+	} catch (error) {
+		console.error("sync-hub projection drain: getProjectionState failed:", error);
+		return {
+			ok: false,
+			error: "sync_hub_unavailable",
+			projectedSeq: "0",
+			httpStatus: 503,
+			retryable: true,
+		};
+	}
 	if (decimalAtLeast(state.projected_seq, targetSeq)) {
 		return { ok: true, projectedSeq: state.projected_seq };
 	}
@@ -829,10 +939,16 @@ export async function drainProjection(
 			}
 		}
 	} catch (error) {
+		let checkpoint = projectedSeq;
+		try {
+			checkpoint = (await stub.getProjectionState()).projected_seq;
+		} catch (stateError) {
+			console.error("sync-hub projection drain: checkpoint read failed:", stateError);
+		}
 		return {
 			ok: false,
 			error: error instanceof Error ? error.message : "projection_failed",
-			projectedSeq: (await stub.getProjectionState()).projected_seq,
+			projectedSeq: checkpoint,
 			httpStatus: 503,
 			retryable: true,
 		};
@@ -859,7 +975,12 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 		return errorResponse(400, "expected {protocol_version:1,user_id,through_seq?}");
 	}
 	const stub = env.SYNC_HUB.getByName(record.user_id);
-	const state = await stub.getProjectionState();
+	let state: Awaited<ReturnType<typeof stub.getProjectionState>>;
+	try {
+		state = await stub.getProjectionState();
+	} catch (error) {
+		return retryableStoreUnavailable("repair drain", error);
+	}
 	const target = record.through_seq === undefined ? state.head_seq : record.through_seq;
 	if (typeof target !== "string" || !CANONICAL_DECIMAL.test(target)) {
 		return errorResponse(400, "through_seq must be a canonical unsigned decimal string");
@@ -867,10 +988,16 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 	if (decimalAtLeast(target, state.head_seq) && target !== state.head_seq) {
 		return errorResponse(400, "through_seq exceeds Hub head_seq");
 	}
-	const drained = await drainProjection(env, record.user_id, target, {
-		maxPages: REPAIR_DRAIN_MAX_PAGES,
-	});
-	const finalState = await stub.getProjectionState();
+	let drained: DrainResult;
+	let finalState: Awaited<ReturnType<typeof stub.getProjectionState>>;
+	try {
+		drained = await drainProjection(env, record.user_id, target, {
+			maxPages: REPAIR_DRAIN_MAX_PAGES,
+		});
+		finalState = await stub.getProjectionState();
+	} catch (error) {
+		return retryableStoreUnavailable("repair drain", error);
+	}
 	if (!drained.ok) {
 		return json(drained.httpStatus, {
 			error: drained.error,
@@ -897,7 +1024,7 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 }
 
 export default {
-	async fetch(request, env): Promise<Response> {
+	async fetch(request, env, _ctx): Promise<Response> {
 		const url = new URL(request.url);
 		const { pathname } = url;
 		if (pathname === "/internal/v1/projection/drain") {
@@ -929,12 +1056,14 @@ export default {
 		// Kill switch (plan Phase 5 task 2): one KV read per request, through
 		// the per-isolate cache (KILL_SWITCH_CACHE_MS). Tripped ⇒ WS upgrades
 		// refused below and every HTTP sync response is stamped
-		// `X-Sync-Mode: poll` — the pushes and pulls themselves KEEP WORKING
-		// (poll mode degrades latency, never correctness). Read BEFORE
-		// authenticate so auth-FAILURE responses are stamped too: incidents
-		// correlate, and a tripped switch during a degraded verify upstream
-		// (everything 401/503ing) must still tell clients "poll" — an
-		// unstamped error response must never read as "switch cleared".
+		// `X-Sync-Mode: poll` — the pushes and pulls themselves KEEP WORKING,
+		// including the push-path projection drain that satisfies
+		// head_seq <= projected_seq (poll mode degrades socket latency, never
+		// correctness). Read BEFORE authenticate so auth-FAILURE responses
+		// are stamped too: incidents correlate, and a tripped switch during a
+		// degraded verify upstream (everything 401/503ing) must still tell
+		// clients "poll" — an unstamped error response must never read as
+		// "switch cleared".
 		const killSwitch = await readKillSwitch(env);
 
 		const auth = await authenticateRequest(request, env);
@@ -969,7 +1098,11 @@ export default {
 				return refusal;
 			}
 			const stub = env.SYNC_HUB.getByName(auth.userId);
-			return stub.fetch(request);
+			try {
+				return await stub.fetch(request);
+			} catch (error) {
+				return retryableStoreUnavailable("websocket upgrade", error);
+			}
 		}
 
 		// All non-WS routes funnel through one point so the poll-mode header
@@ -980,7 +1113,7 @@ export default {
 				if (request.method !== "POST") return errorResponse(405, "use POST");
 				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
 				return handlePushOps(request, env, auth.userId, auth.deviceId, auth.deviceName, {
-					skipProjectionDrain: killSwitch.tripped,
+					pollMode: killSwitch.tripped,
 				});
 			}
 

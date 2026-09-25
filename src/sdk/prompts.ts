@@ -160,8 +160,15 @@ function isDataUrl(url: string): boolean {
   return url.slice(0, 5).toLowerCase() === 'data:';
 }
 
-function elideImageSource(source: Record<string, unknown>): Record<string, unknown> {
-  const data = source.data;
+// A field is stripped twice — once before the condense pass, once when the
+// prompt is built — so a block that has already been elided has to survive the
+// second pass as it is, rather than losing the byte count it recorded.
+function isElided(container: Record<string, unknown>): boolean {
+  return typeof container.elided === 'string';
+}
+
+function elideImageSource(source: Record<string, unknown>, dataKey: string = 'data'): Record<string, unknown> {
+  const data = source[dataKey];
   const elided: Record<string, unknown> = { elided: 'image data withheld from the observer' };
   if (typeof source.media_type === 'string') elided.media_type = source.media_type;
   if (typeof data === 'string') elided.bytes = data.length;
@@ -172,7 +179,13 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
   if (depth > MAX_SANITIZE_DEPTH || value === null || typeof value !== 'object') return value;
 
   if (Array.isArray(value)) {
-    return value.map((entry) => stripImagePayloads(entry, depth + 1));
+    let changed = false;
+    const mapped = value.map((entry) => {
+      const next = stripImagePayloads(entry, depth + 1);
+      if (next !== entry) changed = true;
+      return next;
+    });
+    return changed ? mapped : value;
   }
 
   const record = value as Record<string, unknown>;
@@ -183,6 +196,7 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
   const source = record.source;
   if (record.type === 'image' && source !== null && typeof source === 'object') {
     const record_source = source as Record<string, unknown>;
+    if (isElided(record_source)) return value;
     const url = record_source.url;
     if (typeof url === 'string' && !isDataUrl(url)) {
       return value;
@@ -190,9 +204,23 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
     return { type: 'image', source: elideImageSource(record_source) };
   }
 
+  // Claude Code's Read returns an image file as
+  // { type: 'image', file: { base64: '<base64>' } } — no `source`, so the
+  // block above never matched it and a video frame or screenshot read off
+  // disk went to the model whole (#3606).
+  const file = record.file;
+  if (record.type === 'image' && file !== null && typeof file === 'object') {
+    const record_file = file as Record<string, unknown>;
+    if (isElided(record_file)) return value;
+    if (typeof record_file.base64 === 'string') {
+      return { type: 'image', file: elideImageSource(record_file, 'base64') };
+    }
+  }
+
   // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
   const imageUrl = record.image_url;
   if (record.type === 'image_url' && imageUrl !== null && typeof imageUrl === 'object') {
+    if (isElided(imageUrl as Record<string, unknown>)) return value;
     const url = (imageUrl as Record<string, unknown>).url;
     // A plain http(s) URL is short and can carry signal; only a data: URL is
     // the inlined payload this exists to remove.
@@ -205,11 +233,44 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
     return value;
   }
 
+  // Identity is the signal that nothing was stripped, so it is preserved all
+  // the way up: callers rely on an untouched payload staying the very object
+  // they passed in, and `stripImagePayloadsFromField` uses it to decide
+  // whether a field needs re-encoding at all.
   const out: Record<string, unknown> = {};
+  let changed = false;
   for (const [key, entry] of Object.entries(record)) {
-    out[key] = stripImagePayloads(entry, depth + 1);
+    const next = stripImagePayloads(entry, depth + 1);
+    if (next !== entry) changed = true;
+    out[key] = next;
   }
-  return out;
+  return changed ? out : value;
+}
+
+/**
+ * Strip the image payloads out of one observation field.
+ *
+ * The stripper matches on the *shape* of a content block, so it has to be
+ * handed parsed JSON. A field does not arrive that way: the ingest boundary
+ * stores a tool payload as JSON text (`http/shared.ts` JSON.stringify()s it),
+ * so what reaches the worker is a string. Passing that string straight to
+ * `stripImagePayloads` returns it unchanged — which is why the sanitizer never
+ * fired on a real observation, only in tests that build the field themselves.
+ *
+ * Text that is not JSON is returned as-is; it has no content blocks to find.
+ */
+export function stripImagePayloadsFromField(value: unknown): unknown {
+  if (typeof value !== 'string') return stripImagePayloads(value);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return value;
+  }
+  const stripped = stripImagePayloads(parsed);
+  // No image in it: hand back the original text, so every field that did not
+  // need this is encoded exactly as it was before.
+  return stripped === parsed ? value : stripped;
 }
 
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
@@ -251,8 +312,8 @@ export function buildObservationPrompt(obs: Observation): string {
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
-  <parameters>${truncateObservationField(stripImagePayloads(toolInput))}</parameters>
-  <outcome>${truncateObservationField(stripImagePayloads(toolOutput))}</outcome>
+  <parameters>${truncateObservationField(stripImagePayloadsFromField(toolInput))}</parameters>
+  <outcome>${truncateObservationField(stripImagePayloadsFromField(toolOutput))}</outcome>
 </observed_from_primary_session>
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
