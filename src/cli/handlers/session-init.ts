@@ -53,7 +53,7 @@ export function setSessionInitDependenciesForTesting(
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    const { sessionId, prompt: rawPrompt } = input;
+    const { sessionId, prompt: rawPrompt, submittedPrompt } = input;
     const cwd = input.cwd ?? process.cwd();  
 
     if (!sessionId) {
@@ -73,7 +73,24 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
+    // The host says this send carried no user-submitted text, so it is a
+    // continuation, retry, or tool-result send rather than a user turn. The
+    // `[media prompt]` placeholder is for genuinely image-only submissions
+    // (#928); storing it here wrote a fake prompt row for every tool round of
+    // an agent loop, and the session itself already exists from the turn that
+    // WAS submitted.
+    if (submittedPrompt === null) {
+      logger.debug('HOOK', 'session-init: host reported no user-submitted text; not storing a prompt', {
+        sessionId,
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // When the host does supply it, `submittedPrompt` outranks `prompt`: it is
+    // the text the human submitted, where `prompt` may be a tool result or a
+    // hook send that merely reuses this event.
+    const effectivePrompt = submittedPrompt ?? rawPrompt;
+    const prompt = (!effectivePrompt || !effectivePrompt.trim()) ? '[media prompt]' : effectivePrompt;
 
     const project = getProjectContext(cwd).primary;
     const platformSource = normalizePlatformSource(input.platform);
