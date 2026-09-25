@@ -6,6 +6,7 @@
 **Branch / worktree:** `work/cost-report-weekly` at `/workspace/claude-mem/.claude/worktrees/cost-report-weekly`. Never switch branches.
 **Execute with:** `/do` on this file, one phase per fresh session, commit at the end of each verified phase.
 **Revised 2026-09-25 (PT):** added Phase 2B, agent behavior metrics taken from Alex's own complaints, plus the matching render, verification, and green-checklist items. Status unchanged.
+**Revised again 2026-09-25 ~4:35 PM (PT):** Alex scoped a "Wins vs mistakes" section directly under the dollar headline (4:28 PM PT): a cost-of-mistakes line, wins with their cost, and two day-by-day timelines on one time axis. Added in 2.8 (wins and attribution), 2B.9 (mistakes line and timeline data), 3.8 (render), 8.6 (reconciliation). Phase 2B's metric list is now provisional pending the Frustration Arc seat. Out-of-scope section added. Status unchanged.
 **Supersedes:** the rendering-only plan at `/workspace/plans/2026-09-25-agent-cost-report-timing-style.md` (its data basis was `discovery_tokens` and its unit was cents; both are gone). Its mapping tables are reused in Phase 3.
 **All times in PT.** All secrets by env var name only. Never read `.env` or settings files for keys.
 **Scratch dir for every verification command:** define once per session, `ACR_TMP=${ACR_TMP:-/tmp/acr-weekly}`, then use `$ACR_TMP/p1`, `$ACR_TMP/p2`, … per phase. Phases 3 and 8 read Phase 2 output from `$ACR_TMP/p2`. Nothing under `$ACR_TMP` is committed.
@@ -40,6 +41,10 @@ Added by this plan, same spirit:
 - Keyword-derived category labels are drafts until a review pass confirms them. The label source is recorded.
 - Grok Bot seat usage and Mac transcripts are shown as "unavailable" or "extrapolated (low confidence)" until a sanctioned source exists. Never $0, never guessed.
 - The live database is never opened for writing. Every run works on a read-only snapshot.
+
+## Out of scope for this plan
+
+- **Auto-lessons at session start** (injecting lessons learned from past mistakes into new sessions) is out of scope. It is a separate claude-mem memory feature with its own plan. This report only measures and shows wins and mistakes; it does not feed anything back into agent sessions.
 
 ---
 
@@ -353,11 +358,47 @@ Unit tests: observer dedup (three observation rows with the same per-turn value 
 - Do not invent new failure types. The 16 in `SKILL.md:80` are the set.
 - Do not render anything in this phase.
 
+### 2.8 Wins and what each cost (new, feeds "Wins vs mistakes")
+
+**What counts as a win** (decision G12 can narrow this). One win per distinct thing, deduped by its key:
+- **Merged PR**: a successful `gh pr merge` tool result in a transcript, or a ship observation (`weekly_report.py:65,74-75` regex: merged/published/released/shipped) that names a PR number. Key = `repo#number`. Optional read-only confirmation with `gh pr view <n> --json mergedAt,url,title` (gh is authenticated on the box); `mergedAt` must fall in the window. No write calls.
+- **Published item**: a successful `npm publish` / release / tag push in a transcript, or a ship observation saying published/released/tagged. Key = `package@version` or tag.
+- **Finished work**: a line item with status `shipped` or `completed` (Phase 2.3 outcome rule) that has no PR or publish win of its own. Key = `content_session_id` (or `memory_session_id` for replica sessions).
+- Each win records `{win_id, kind: pr|publish|finished, title, url|null, ts_pt (the merge/publish/summary time), day_pt, project, evidence_ids, sessions: [...]}`. Titles come from the PR title, package name, or the completed summary's first line, never written by hand.
+
+**What a win cost (attribution)** — every dollar here is `ESTIMATED` and carries `attribution_method`:
+- **Default, "worktree lineage + time split"** (proposed in G11): the sessions that led to a win are the session holding the win event plus earlier sessions in the window with the same `project` value (which is `<repo>/<worktree>` inside a worktree, Phase 0 C) or that mention the same PR number or branch in their prompts. A win's cost = sum of `api_equiv()` of those sessions' turns up to the win timestamp. When one session feeds more than one win, each turn is assigned to the next win that happened after it, so no turn is counted twice.
+- **Alternatives for G11**: "direct session only" (only the session with the win event; cheapest to explain, undercounts), or "token-weighted split across the project" (spreads shared cost by each win's share of edited files; more judgment).
+- Spend not tied to any win shows as "not tied to a win: ≈$X.XX" so wins plus unattributed plus mistakes can be read against the headline. Mistake turns inside a win's lineage stay in the win's cost and are also shown in the mistakes line; the render says "win costs include the mistakes made on the way".
+- Wins from Mac replica sessions (no transcript on the box) get `cost_basis: extrapolated` and the `EXTRAPOLATED (low confidence)` tag, using the Phase 2.2 ratio. Never $0.
+- Each win also carries `tokens {input, output, cache_write_5m, cache_write_1h, cache_read}`, `sessions_n`, `turns_n`, `active_minutes`.
+
+**Outputs**: `report.json.wins = {items: [...], attribution_method, unattributed_usd, total_attributed_usd}` and `report.json.timeline.wins_by_day = [{day_pt, count, usd, win_ids}]` covering every PT day in the window (empty days present).
+
+**Verification** (add to 2.6):
+
+```bash
+python3 - <<PY
+import json;d=json.load(open('$ACR_TMP/p2/report.json'));w=d['wins']
+print(len(w['items']), w['attribution_method'], w['total_attributed_usd'], w['unattributed_usd'])
+assert len({i['win_id'] for i in w['items']})==len(w['items'])          # deduped
+assert w['total_attributed_usd'] <= d['spend']['agent_estimated_usd'] + d['spend']['extrapolated_unmeasured_usd']
+assert len(d['timeline']['wins_by_day'])==len(d['by_day'])
+PY
+# research window had 5 distinct ship events and 26 finished outcomes (Phase 0 A); expect win count <= 26 + 5 and >= 5
+```
+
+Unit tests: one PR seen in both a transcript merge and a ship observation counts once; a turn shared by two wins is assigned to exactly one; a win from a replica session is labeled extrapolated; finished work that already has a PR win is not counted twice; a win outside the window (by `mergedAt`) is dropped.
+
+**Guards**: no hand-written win titles; no `gh` write commands; never show a win cost without `ESTIMATED` and the attribution method; a win with no traceable session shows "cost not attributable", not $0.
+
 ---
 
 ## Phase 2B — Agent behavior metrics (from Alex's complaints)
 
 **Goal of the session:** add a behavior pass that finds the agent habits Alex has been angry about, counts them, prices what they cost with the same list-price method, and hands the numbers to the renderer. One commit. Runs after Phase 2 (it needs `usage.json`, the `rate()` table, and line items). Everything it produces is labeled **estimated**, and every count is labeled **heuristic** until a review or classifier pass confirms it.
+
+**PROVISIONAL metric list.** A separate seat, **Frustration Arc**, now owns mining Alex's complaints and will send the final behavior-metric list with detection methods. The six metrics below (M1–M6) are the starting set. Before Phase 2B executes, reconcile this section against Frustration Arc's list: keep, rename, add, or drop metrics to match it, carry over its detection methods where they differ, and note each change in the plan. The cost rules (2B.2), no-double-count union, layout limits (2B.5), and verification gates (2B.8, 8.5) stay as written whatever the final list is.
 
 ### 2B.0 Why these metrics (Alex's own words)
 
@@ -480,7 +521,15 @@ python3 -m unittest discover -s scripts/tests -v
 
 Unit tests (tiny hand-made jsonl fixtures): an `is_error` call followed by a similar retry that succeeds (1 wasted + 1 recovery turn); a permission denial not priced; the same call three times gives Looping; a headless session ending "Would you like me to…?" is flagged; "fixed" with a passing `pytest` is not flagged, without it is; "merged" plus a deploy claim with only `gh pr merge` is flagged; hedge density threshold; "estimated" and "low confidence" not counted as hedges; the union never exceeds agent cost; a fixture containing `sk-or-abc…` leaves no trace in outputs; the classifier stops at the cap (mocked).
 
-### 2B.9 Anti-pattern guards
+### 2B.9 Cost of mistakes line and mistakes timeline data (feeds "Wins vs mistakes")
+
+- **Failure signals at turn level.** Phase 2's failure signals are session-level keyword hits. For the mistakes line they get turn spans so they can join the union: Rework and Wrong turn = turns from the user message before the corrected work up to the steer/reset/correction message; Recovery after miss = turns from the miss (usage limit, dead token, 401) to the first successful tool result after resuming; Looping = the repeated calls after the first. Turns that cannot be placed stay session-level and are listed in Details as "not in the mistakes line (no turn span)".
+- **Cost of mistakes** = sum of `api_equiv()` over the **union** of turns flagged as waste by any behavior metric (2B.3) or any failure signal span. Each turn counts once. Stored as `spend.mistakes_estimated_usd` with `mistakes_turns_n`, `mistakes_basis: "behavior waste ∪ failure-signal waste, each turn once"`. Recovery (retries that eventually worked) is not in this number; it is `spend.recovery_estimated_usd`, shown as a small sub-line (decision G13).
+- **One source of truth.** The ribbon's waste segment, line-item `wasted_cost` totals, and this line all read the same union set. There is no second waste calculation anywhere in the codebase.
+- **Mistakes by day**: `report.json.timeline.mistakes_by_day = [{day_pt, usd, turns_n, by_metric: {key: usd}, top_examples: [{mistake_id, metric, content_session_id, ts_pt}]}]`, every PT day in the window. A turn is dated by its own timestamp in PT.
+- Each mistake cluster (consecutive flagged turns in one session) gets a stable `mistake_id` (hash of session id + first turn id) so the render can link to it.
+
+### 2B.10 Anti-pattern guards
 
 - Do not invent failure types. Map to the 16 or leave `failure_type` empty (jargon).
 - Do not price hedged or jargon text itself as waste. Price only the follow-up it caused.
@@ -554,6 +603,32 @@ python3 -m unittest discover -s scripts/tests -v
 ```
 
 Then view `$OUT/report.html` rendered to PNG (Chrome `--screenshot` for a fixed viewport is acceptable for a visual check; full-page needs Playwright, which is not required) and compare section order with `/workspace/timing-report-brief/mockup.png`.
+
+### 3.8 "Wins vs mistakes" section, directly under the dollar headline (new)
+
+Order becomes: hero + sub-line + story → **Wins vs mistakes** → cost ribbon → the rest as in `brief.md:33-42`. One card, three parts:
+
+- **(a) Cost of mistakes**: one line under the hero, "Cost of mistakes: ≈$X.XX estimated · N turns", with the ESTIMATE tag and a hover-free footnote "behavior waste plus failure-signal waste, each turn counted once". Recovery as a gray sub-line "+ ≈$Y.YY spent recovering (retries that worked)" if G13 keeps it separate. Source: `spend.mistakes_estimated_usd` only. The ribbon's waste segment is drawn from the same field and carries it as `data-waste-usd="X.XX"` so 8.6 can reconcile the two from the HTML.
+- **(b) Wins shipped**: a short list, most expensive first, capped at 5 with "+K more" folded into Details. Each row: kind icon (PR / publish / finished), title, day, "≈$X.XX estimated", and a tiny basis tag with the attribution method ("worktree lineage"). Extrapolated wins use the gray `EXTRAPOLATED · low confidence` tag. A last row "Not tied to a win: ≈$Z.ZZ". This replaces nothing; the existing "What got done" card stays below for the full outcome list, and 3.3's sidebar is unchanged.
+- **(c) Two timelines on one time axis**: one inline SVG, width computed from `by_day` length like the day chart (3.3). Shared x axis = PT days in the window, partial last day marked. Wins above the axis as dots sized by count (label = count, value = attributed dollars); mistakes below the axis as red bars of mistake dollars per day. Empty days show a small tick, not a gap. Each dot and bar is an `<a href="#win-<win_id>">` / `<a href="#mistakes-<day>">` link to its entry in Details. No `<script>`.
+- **Details additions**: a "Wins" sub-section (one entry per win with `id="win-<win_id>"`: title, url, sessions, tokens by type, cost, attribution method, evidence IDs) and a "Mistakes by day" sub-section (one entry per day with `id="mistakes-<day>"`: dollars by metric, top examples with session id and time, scrubbed excerpts). Chrome opens a closed `<details>` when navigating to a fragment inside it; verify this in the checks below. If it does not, keep these two sub-sections outside the fold (always open) and keep the rest folded. The PDF (`--print`) renders both timelines plus these entries as tables.
+- Everything is computed from `report.json`; no hand-written numbers.
+
+Verification:
+
+```bash
+grep -c 'Cost of mistakes' $OUT/report.html                         # expect 1
+grep -o 'href="#win-[^"]*"' $OUT/report.html | sort -u | while read h; do id=${h#href=\"#}; id=${id%\"}; grep -q "id=\"$id\"" $OUT/report.html || echo "MISSING $id"; done
+grep -o 'href="#mistakes-[^"]*"' $OUT/report.html | sort -u | while read h; do id=${h#href=\"#}; id=${id%\"}; grep -q "id=\"$id\"" $OUT/report.html || echo "MISSING $id"; done
+python3 - <<PY
+import re;h=open('$OUT/report.html').read()
+i_hero=h.find('class="hero');i_wm=h.find('class="wins-mistakes');i_rib=h.find('class="ribbon')
+assert 0<=i_hero<i_wm<i_rib, 'Wins vs mistakes must sit between hero and ribbon'
+PY
+# visual: open $OUT/report.html#win-<first id> in Chrome headless screenshot; the Details entry must be visible
+```
+
+Guards: no `<script>`; the mistakes line never reads anything but `spend.mistakes_estimated_usd`; no win row without ESTIMATE (or EXTRAPOLATED) and its method; at most 5 win rows in the summary.
 
 ### 3.7 Anti-pattern guards
 
@@ -827,6 +902,29 @@ python3 scripts/acr.py behavior-sample --in $OUT/report.json --per-metric 20 --s
 - `union_wasted_usd + union_recovery_usd <= agent_estimated_usd`; every behavior dollar in the HTML has an ESTIMATE tag; the strip has at most 4 tiles; no secrets in `behavior.json`, `evidence.json`, or the HTML (8.3 grep covers the directory).
 - If the classifier ran (G8), its spend is at or under the cap and appears only as "classifier cost (separate)".
 
+### 8.6 Wins vs mistakes reconciliation
+
+```bash
+python3 - <<PY
+import json,re
+d=json.load(open('$ACR_TMP/p8/report.json'));s=d['spend'];h=open('$ACR_TMP/p8/report.html').read()
+m=s['mistakes_estimated_usd']
+li=sum(x['wasted_cost'] for x in d['line_items'])
+rib=float(re.search(r'data-waste-usd="([0-9.]+)"',h).group(1))   # renderer writes the ribbon waste value as a data attribute
+days=sum(x['usd'] for x in d['timeline']['mistakes_by_day'])
+print(m,li,rib,days)
+assert abs(m-rib)<=0.01 and abs(m-li)<=0.01 and abs(m-days)<=0.01, 'mistakes line, ribbon waste, line items, and day timeline must reconcile to the cent'
+assert m <= s['agent_estimated_usd']
+w=d['wins'];assert abs(w['total_attributed_usd']-sum(i['usd'] for i in w['items']))<=0.01
+assert abs(sum(x['usd'] for x in d['timeline']['wins_by_day'])-w['total_attributed_usd'])<=0.01
+PY
+```
+
+- Hand-check 5 wins: the PR or publish really happened in the window (`gh pr view` read-only, or the transcript line), and the attributed sessions really led to it. Record in `VERIFICATION.md`.
+- Hand-check 3 mistake days: the day's dollars match the flagged turns listed in its Details entry.
+- Click-through: every timeline link resolves to a Details entry (3.8 checks), and the screenshot of `report.html#win-<id>` shows the entry.
+- Any gap outside one cent is a bug, not drift. Fix it before shipping.
+
 ---
 
 ## What ships
@@ -850,6 +948,9 @@ python3 scripts/acr.py behavior-sample --in $OUT/report.json --per-metric 20 --s
 - **G7 — Version bump size.** MINOR (proposed) or PATCH.
 - **G8 — Behavior classifier.** On or off (default off, heuristics only). If on: model (proposed Claude Haiku 4.5, list $1 in / $5 out per MTok), path (OpenRouter key per G5, or Claude Code headless on the Max plan), and the per-run spend cap (proposed $2.00, hard stop; expected ≈$0.45–$0.80 a week).
 - **G9 — Behavior tiles up top.** Are these the 4 numbers in the summary: Errors and retries, Asked you instead of doing it, Said done without proof, Hedging? Jargon and Wrong approach stay in Details.
+- **G11 — How a win's cost is attributed.** Proposed "worktree lineage + time split" (sessions on the same worktree/project or naming the same PR, up to the win time; shared turns go to the next win). Alternatives: "direct session only" or "token-weighted split across the project".
+- **G12 — What counts as a win.** Merged PRs + published items + finished work (proposed), or only merged PRs and published items?
+- **G13 — Recovery in the mistakes line.** Keep retries that eventually worked out of "Cost of mistakes" and show them as a sub-line (proposed), or fold them in?
 - **G10 — What counts as hedging.** Only hedges on a status or fact claim ("should be fixed", "probably deployed"), which is proposed, or also any message dense with hedge words?
 
 ## Risks
@@ -860,6 +961,8 @@ python3 scripts/acr.py behavior-sample --in $OUT/report.json --per-metric 20 --s
 - **Keyword labels in a manager report.** Without the review pass, categories are guesses. Phase 2's `label_source` and the footer count make the state visible; they do not make the labels right.
 - **Remote sessions cannot join transcripts on the box.** Only the Mac-side export fixes this; extrapolation stays low confidence until then.
 - **Price drift.** List prices change; the report states the fetch date and the 1h rule used, and the comparison run pins the saved price file.
+- **Win attribution is a judgment call.** Lineage rules can pull in unrelated sessions on a long-lived worktree or miss work done elsewhere. The method is printed next to every win cost, and 8.6 hand-checks 5 wins.
+- **Final behavior list comes from Frustration Arc.** Phase 2B may change after reconciliation; the mistakes line and its checks do not depend on which metrics are in the list.
 - **Behavior heuristics are noisy.** Keyword and structure rules will flag some honest turns and miss some bad ones. Counts stay labeled heuristic, and Phase 8 precision gates what reaches the summary.
 - **Alex's words behind the metrics are mostly relayed.** In Sep 20–25 the box holds no text he typed himself; the quotes come from agent-kept transcripts and locks (Phase 2B.0). Behaviors may be missing if they only came up in Grok Bot chats or on the Mac.
 - **`${CLAUDE_SKILL_DIR}` may not exist.** SKILL.md gives the "resolve this file's directory" instruction first.
