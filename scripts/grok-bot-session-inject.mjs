@@ -456,13 +456,43 @@ function collapse(value) {
   return String(value).replace(/\s+/g, ' ').trim();
 }
 
+function sanitizeInjectInlineText(value) {
+  return collapse(
+    String(value)
+      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+      .replace(/[<>`]/g, char => ({ '<': '‹', '>': '›', '`': 'ˋ' }[char] ?? char)),
+  );
+}
+
+function quoteRecalledText(value, label = 'title') {
+  const sanitized = sanitizeInjectInlineText(value || '') || 'Untitled';
+  return `recalled ${label}: "${sanitized.replace(/"/g, "'")}"`;
+}
+
+function truncateFactLine(value, maxChars) {
+  if (maxChars <= 0) return '';
+  const chars = Array.from(value);
+  if (chars.length <= maxChars) return value;
+  return maxChars === 1 ? '…' : `${chars.slice(0, maxChars - 1).join('')}…`;
+}
+
 function todayStamp(now) {
   return now.toISOString().slice(0, 10);
 }
 
 function factLine(date, body, maxChars, tier) {
-  const line = `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} ${collapse(body)}`;
-  return line.length <= maxChars ? line : `${line.slice(0, maxChars - 1)}…`;
+  const line = `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} ${sanitizeInjectInlineText(body)}`;
+  return truncateFactLine(line, maxChars);
+}
+
+function sanitizeTimelineRow(raw) {
+  const observation = /^(\d+\s+\S+\s+\S+)\s+(.*)$/.exec(raw);
+  if (observation) return `${observation[1]} ${quoteRecalledText(observation[2], 'title')}`;
+
+  const summary = /^(S\d+)\s+(.*)$/.exec(raw);
+  if (summary) return `${summary[1]} ${quoteRecalledText(summary[2], 'summary')}`;
+
+  return sanitizeInjectInlineText(raw);
 }
 
 function isBoilerplate(line) {
@@ -572,7 +602,7 @@ export function injectTextToFactLines(text, {
 
   const out = [emitHeader(head)];
   for (const row of kept) {
-    out.push(emit(row.raw));
+    out.push(emit(sanitizeTimelineRow(row.raw)));
   }
   return out;
 }
