@@ -3,9 +3,14 @@
  *
  * One KV flag. Tripped ⇒ the front Worker refuses WebSocket upgrades (503 +
  * a JSON body clients recognize) and stamps `X-Sync-Mode: poll` on every HTTP
- * sync response; clients fall back to the Phase 3 poll path. The product
- * stays COMPLETE in poll mode (~$0.03/user/mo indefinitely) — the switch
- * degrades latency, never correctness (prime directive #5: watchdog → poll
+ * sync response. That un-pins idle Durable Objects; it must not skip the
+ * push-path projection drain. Clients require `head_seq <= projected_seq` on
+ * every 200, so poll mode still drains on an active push (one bounded
+ * inline pass) and still exposes `/internal/v1/projection/drain`.
+ * Extra getProjectionState / heartbeatProjectionLease RPCs stay gone — those
+ * were automated DO storage knocks with no fencing value. The product stays
+ * COMPLETE in poll mode (~$0.03/user/mo indefinitely) — the switch degrades
+ * socket latency, never correctness (prime directive #5: watchdog → poll
  * mode, never "stop working").
  *
  * STORAGE CHOICE — reuse AUTH_CACHE with a distinct `control:` key, not a
@@ -28,10 +33,11 @@
  * propagation and drops KV read volume by orders of magnitude. Tests and
  * local e2e set KILL_SWITCH_CACHE_MS=0 for per-request reads.
  *
- * FAIL-OPEN — a KV read error counts as "not tripped". The switch is a cost
- * guardrail, not a security boundary: failing closed would let a KV outage
- * take down the sync speed layer for every user, which is a worse outcome
- * than a guardrail arriving one cron cycle late.
+ * FAIL-CLOSED — a KV read error counts as tripped when this isolate has no
+ * last-known value. The switch is the cost brake: a Workers KV daily-read-cap
+ * throw (or any other get failure) must not silently disable it. A warm
+ * isolate keeps serving the last successful read; a cold isolate with a
+ * failing get defaults ON (same tripped behavior as a present key).
  */
 
 /** The KV key (in AUTH_CACHE) holding the kill-switch flag. */
@@ -57,9 +63,13 @@ interface CacheEntry {
 /** Per-isolate cache. Module-level on purpose — isolates are the cache unit. */
 let cache: CacheEntry | null = null;
 
-/** Tests only: forget the per-isolate cache. */
+/** Latch so a KV outage logs once per isolate, not on every request. */
+let kvReadFailureLogged = false;
+
+/** Tests only: forget the per-isolate cache and the fail-closed log latch. */
 export function __resetKillSwitchCacheForTests(): void {
 	cache = null;
+	kvReadFailureLogged = false;
 }
 
 export function killSwitchCacheMs(env: Env): number {
@@ -87,10 +97,17 @@ export async function readKillSwitch(
 	try {
 		raw = await env.AUTH_CACHE.get(KILL_SWITCH_KEY);
 	} catch (e) {
-		// Fail-open (see module header). Logged so a broken KV binding is
-		// visible instead of silently disabling the guardrail.
-		console.error("kill-switch KV read failed (failing open):", e);
-		return { tripped: false, raw: null };
+		// Fail-closed (see module header). Keep the last successful read when
+		// we have one; otherwise treat the switch as ON. Never cache the
+		// failure, so a recovered get is visible on the next uncached read.
+		if (!kvReadFailureLogged) {
+			kvReadFailureLogged = true;
+			console.error("kill-switch KV read failed (failing closed):", e);
+		}
+		if (cache !== null) {
+			return cache.state;
+		}
+		return { tripped: true, raw: null };
 	}
 	const state: KillSwitchState = { tripped: raw !== null, raw };
 	cache = { state, fetchedAt: now() };

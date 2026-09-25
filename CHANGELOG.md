@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.25.3] - 2026-09-21
+
+- #4166 — security: harden unauthenticated settings writes and telemetry error scrubbing (reported privately by Theon Alleyne)
+
 ## [13.24.15] - 2026-09-11
 
 - #3727 / #3706 — daemon no longer inherits user project cwd; worker cwd is DATA_DIR (Windows folder lock fix)

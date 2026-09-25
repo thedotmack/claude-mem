@@ -50,6 +50,17 @@ export interface ActiveSession {
    * tool call spawns a generator that can only abort on the same budget check.
    */
   overflowPausedUntilMs?: number;
+  /**
+   * Consecutive generations that ended because a prompt went unanswered
+   * ('transport:response_stall'). Bounds their automatic resume; reset when a
+   * queued-work turn is answered (#4066).
+   */
+  consecutiveResponseStalls?: number;
+  /**
+   * The delayed resume a response stall scheduled. Any generator start cancels
+   * it, so a stale timer never restarts a session a newer generation paused.
+   */
+  stallResumeTimer?: ReturnType<typeof setTimeout>;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

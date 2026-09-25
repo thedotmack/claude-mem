@@ -437,10 +437,51 @@ export async function runWatchdog(env: Env, deps: WatchdogDeps = {}): Promise<Wa
 	const accountId = (env.ACCOUNT_ID ?? "").trim();
 	const token = (env.ANALYTICS_API_TOKEN ?? "").trim();
 	if (accountId === "" || token === "") {
-		// Unconfigured is a deliberate state (local dev, fresh deploy) — a
-		// loud log line, never a false alert and never a crash.
+		// Unconfigured is a deliberate state (local dev, fresh deploy) — never
+		// a fabricated metric alert and never a crash. It MUST be loud in
+		// prod: an empty ANALYTICS_API_TOKEN used to make the hourly
+		// kill-switch silently inert while DOs kept burning.
 		result.status = "skipped";
 		result.reason = "ACCOUNT_ID and/or ANALYTICS_API_TOKEN not configured";
+		console.error(
+			"sync-hub watchdog DISABLED:",
+			result.reason,
+			"— cost kill-switch cannot query Cloudflare Analytics. Set ANALYTICS_API_TOKEN",
+			"(Account Analytics Read) via `wrangler secret put`. Until then, trip poll mode",
+			"manually if spend is climbing: wrangler kv key put --binding AUTH_CACHE",
+			"control:kill-switch ... --remote",
+		);
+		const webhook = (env.DISCORD_WEBHOOK_URL ?? "").trim();
+		if (webhook === "") {
+			result.discord = "not_configured";
+			return result;
+		}
+		try {
+			await postDiscordEmbed(webhook, {
+				title: "🚨 sync-hub watchdog is INERT",
+				description:
+					"ACCOUNT_ID and/or ANALYTICS_API_TOKEN is missing, so the hourly cost " +
+					"kill-switch cannot run. This is not a metrics breach — it is a missing " +
+					"guardrail. Set the secret, or trip poll mode manually (see DEPLOY.md §3).",
+				color: 0xdc2626,
+				fields: [
+					{
+						name: "Missing",
+						value: [
+							accountId === "" ? "ACCOUNT_ID" : null,
+							token === "" ? "ANALYTICS_API_TOKEN" : null,
+						].filter((name) => name !== null).join(", "),
+						inline: false,
+					},
+				],
+				footer: { text: "sync-hub watchdog • poll mode keeps the product complete" },
+				timestamp: new Date().toISOString(),
+			}, fetchImpl);
+			result.discord = "sent";
+		} catch (e) {
+			result.discord = "failed";
+			console.error("sync-hub watchdog inert-config Discord alert failed:", e);
+		}
 		return result;
 	}
 

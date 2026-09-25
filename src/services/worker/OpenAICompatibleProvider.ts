@@ -415,6 +415,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       // credentials that are fixed by /login are no more fatal than a 429.
       case 'auth_invalid':
         return `auth:${error.kind}`;
+      // A timeout or network fault that outlived the retry policy. Finalizing
+      // would turn it into permanent data loss — the same reasoning as the
+      // observer-text transport path in ResponseProcessor (#3752).
+      case 'transient':
+        return `transport:${error.kind}`;
       default:
         return null;
     }
