@@ -140,8 +140,8 @@ class Supervisor {
     this.registry.register(id, processInfo, processRef);
   }
 
-  unregisterProcess(id: string): void {
-    this.registry.unregister(id);
+  unregisterProcess(id: string, expectedPid?: number): void {
+    this.registry.unregister(id, expectedPid);
   }
 
   getRegistry(): ProcessRegistry {

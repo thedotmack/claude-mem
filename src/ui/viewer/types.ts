@@ -72,6 +72,7 @@ export interface Settings {
   CLAUDE_MEM_WORKER_HOST: string;
 
   CLAUDE_MEM_PROVIDER?: string;  
+  CLAUDE_MEM_CODEX_MODEL?: string;
   CLAUDE_MEM_GEMINI_API_KEY?: string;
   CLAUDE_MEM_GEMINI_MODEL?: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED?: string;  
