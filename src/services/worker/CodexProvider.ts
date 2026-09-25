@@ -108,7 +108,10 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     session.lastModelId = config.model || 'codex-default';
   }
 
-  protected async query(history: ConversationMessage[], config: CodexConfig): Promise<ProviderQueryResult> {
+  protected async query(history: ConversationMessage[], config: CodexConfig, callerSignal?: AbortSignal): Promise<ProviderQueryResult> {
+    const abortSignal = config.signal && callerSignal
+      ? AbortSignal.any([config.signal, callerSignal])
+      : callerSignal ?? config.signal;
     const prompt = [
       'You are the claude-mem memory compression worker. Use only the supplied conversation; do not call tools.',
       'Follow the latest user request: XML for observations/summaries, plain text for payload compression.',
@@ -151,7 +154,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
           if (signal.aborted || error instanceof ClassifiedProviderError) throw error;
           throw classifyCodexError(error);
         }
-      }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: config.timeoutMs, abortSignal: config.signal });
+      }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: config.timeoutMs, abortSignal });
       clearQuotaCooldown('codex');
       clearQuotaCooldown('codex-setup');
       return result;
