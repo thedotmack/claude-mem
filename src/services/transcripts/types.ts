@@ -15,6 +15,10 @@ export interface MatchRule {
   not_in?: unknown[];
   contains?: string;
   not_contains?: string;
+  /** Literal prefix test. Use this, not `not_contains`, to reject a host-injected preamble. */
+  starts_with?: string;
+  /** Rejects only when the value STARTS with this; a mention elsewhere still matches. */
+  not_starts_with?: string;
   exists?: boolean;
   regex?: string;
   /**

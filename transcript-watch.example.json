@@ -30,8 +30,8 @@
               { "path": "payload.type", "equals": "message" },
               { "path": "payload.role", "equals": "user" },
               { "path": "payload.content[0].text", "exists": true },
-              { "path": "payload.content[0].text", "not_contains": "<recommended_plugins>" },
-              { "path": "payload.content[0].text", "not_contains": "<skills_instructions>" }
+              { "path": "payload.content[0].text", "not_starts_with": "<recommended_plugins>" },
+              { "path": "payload.content[0].text", "not_starts_with": "<skills_instructions>" }
             ]
           },
           "action": "session_init",

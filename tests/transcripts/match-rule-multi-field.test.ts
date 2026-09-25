@@ -114,6 +114,47 @@ describe('matchesRule cross-field rules', () => {
   });
 });
 
+describe('matchesRule prefix operators', () => {
+  const schema: TranscriptSchema = { name: 'test', eventTypePath: 'type', events: [] };
+
+  const preamble = {
+    type: 'response_item',
+    payload: { type: 'message', role: 'user', content: [{ text: '<recommended_plugins>\nHere is a list' }] },
+  };
+  const mentionsMarker = {
+    type: 'response_item',
+    payload: {
+      type: 'message',
+      role: 'user',
+      content: [{ text: 'why does <recommended_plugins> show up before my message?' }],
+    },
+  };
+
+  it('rejects a value that STARTS with the marker', () => {
+    expect(matchesRule(preamble, { path: 'payload.content[0].text', not_starts_with: '<recommended_plugins>' }, schema)).toBe(false);
+  });
+
+  it('keeps a value that only mentions the marker later in the text', () => {
+    expect(matchesRule(mentionsMarker, { path: 'payload.content[0].text', not_starts_with: '<recommended_plugins>' }, schema)).toBe(true);
+  });
+
+  it('separates the two cases that not_contains cannot', () => {
+    // The reason not_starts_with exists: a substring test rejects both.
+    expect(matchesRule(mentionsMarker, { path: 'payload.content[0].text', not_contains: '<recommended_plugins>' }, schema)).toBe(false);
+  });
+
+  it('starts_with requires the value to be a string with that prefix', () => {
+    expect(matchesRule(preamble, { path: 'payload.content[0].text', starts_with: '<recommended_plugins>' }, schema)).toBe(true);
+    expect(matchesRule(mentionsMarker, { path: 'payload.content[0].text', starts_with: '<recommended_plugins>' }, schema)).toBe(false);
+    expect(matchesRule({ type: 'x' }, { path: 'payload.content[0].text', starts_with: '<recommended_plugins>' }, schema)).toBe(false);
+  });
+
+  it('fails closed on a malformed composite instead of ignoring it', () => {
+    // A config typo that turns a filter into a no-op must not widen ingestion.
+    expect(matchesRule(mentionsMarker, { any: { path: 'payload.role', equals: 'assistant' } } as unknown as MatchRule, schema)).toBe(false);
+    expect(matchesRule(mentionsMarker, { all: { path: 'payload.role', equals: 'user' } } as unknown as MatchRule, schema)).toBe(false);
+  });
+});
 interface ExampleSchema {
   version?: string;
   events: Array<{ name: string; match?: MatchRule; action: string; fields?: Record<string, never> }>;
