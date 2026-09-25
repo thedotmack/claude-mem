@@ -48,6 +48,8 @@ export class ObserverResponsePacer {
   private stalled = false;
   private wake: (() => void) | null = null;
   private rearm: ((graceMs: number) => void) | null = null;
+  private suspend: (() => void) | null = null;
+  private processing = false;
 
   /** Snapshot taken BEFORE yielding a prompt; an answer can land before the feed resumes. */
   mark(): number {
@@ -73,6 +75,18 @@ export class ObserverResponsePacer {
    */
   activity(graceMs = 0): void {
     this.rearm?.(graceMs);
+  }
+
+  /** Storage and claim acknowledgement belong to the answer, not SDK silence. */
+  processingStarted(): void {
+    this.processing = true;
+    this.suspend?.();
+  }
+
+  /** Start a fresh silence window if the result frame has not arrived yet. */
+  processingFinished(): void {
+    this.processing = false;
+    this.rearm?.(0);
   }
 
   /**
@@ -102,6 +116,8 @@ export class ObserverResponsePacer {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const arm = (graceMs: number) => {
         if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+        if (this.processing) return;
         timer = setTimeout(() => {
           // Fence first, synchronously: from here on the SDK loop ignores frames.
           this.stalled = true;
@@ -115,6 +131,7 @@ export class ObserverResponsePacer {
         signal.removeEventListener('abort', onAbort);
         this.wake = null;
         this.rearm = null;
+        this.suspend = null;
         resolve(outcome);
       };
       const onAbort = () => finish('aborted');
@@ -123,6 +140,10 @@ export class ObserverResponsePacer {
         if (outcome) finish(outcome);
       };
       this.rearm = arm;
+      this.suspend = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+      };
       signal.addEventListener('abort', onAbort, { once: true });
       arm(0);
     });

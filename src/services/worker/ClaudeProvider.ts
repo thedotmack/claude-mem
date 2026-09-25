@@ -352,16 +352,18 @@ export class ClaudeProvider {
         if (info) {
           // The observer runs on the same account as the observed session,
           // so a `rejected` snapshot here means the user's own Claude Code
-          // session is out of usage too. set() dedupes: one event per
-          // exhausted window, not one per observer request against the wall.
-          if (globalRateLimitStore.set(info)) {
+          // session is out of usage too. The store dedupes and returns the
+          // exact exhausted buckets so unified snapshots are attributed to
+          // the right window.
+          const newRejections = globalRateLimitStore.setWithNewRejections(info);
+          for (const rejection of newRejections) {
             logger.warn('SDK', 'Subscription usage limit hit', {
               sessionDbId: session.sessionDbId,
-              window: info.rateLimitType,
-              overageStatus: info.overageStatus,
+              window: rejection.rateLimitType,
+              overageStatus: rejection.overageStatus,
             });
             captureEvent('usage_limit_hit', {
-              ...buildUsageLimitHitProps(info),
+              ...buildUsageLimitHitProps(rejection),
               ide: session.platformSource,
               provider: 'claude',
               observed_model: session.observedModel,
@@ -489,19 +491,24 @@ export class ClaudeProvider {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
-          await processAgentResponse(
-            textContent,
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            discoveryTokens,
-            originalTimestamp,
-            'SDK',
-            cwdTracker.lastCwd,
-            modelId,
-            activeResponseContext.current
-          );
+          pacer.processingStarted();
+          try {
+            await processAgentResponse(
+              textContent,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              discoveryTokens,
+              originalTimestamp,
+              'SDK',
+              cwdTracker.lastCwd,
+              modelId,
+              activeResponseContext.current
+            );
+          } finally {
+            pacer.processingFinished();
+          }
 
           discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
           turnDispatchedText = true;
@@ -571,19 +578,24 @@ export class ClaudeProvider {
               });
               await this.sessionManager.resetProcessingToPending(session.sessionDbId);
             } else {
-              await processAgentResponse(
-                '',
-                session,
-                this.dbManager,
-                this.sessionManager,
-                worker,
-                (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
-                session.earliestPendingTimestamp,
-                'SDK',
-                cwdTracker.lastCwd,
-                modelId,
-                activeResponseContext.current
-              );
+              pacer.processingStarted();
+              try {
+                await processAgentResponse(
+                  '',
+                  session,
+                  this.dbManager,
+                  this.sessionManager,
+                  worker,
+                  (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
+                  session.earliestPendingTimestamp,
+                  'SDK',
+                  cwdTracker.lastCwd,
+                  modelId,
+                  activeResponseContext.current
+                );
+              } finally {
+                pacer.processingFinished();
+              }
               discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
             }
           }

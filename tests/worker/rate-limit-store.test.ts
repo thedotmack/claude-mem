@@ -72,6 +72,74 @@ describe('RateLimitStore', () => {
     expect(snap.seven_day_opus?.utilization).toBe(0.3);
     expect(snap.seven_day).toBeUndefined();
   });
+
+  it('replaces stale buckets from a unified window snapshot', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      utilization: 1,
+      resetsAt: FIXED_NOW - 1,
+    });
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.01,
+      unifiedWindows: {
+        five_hour: {
+          status: 'allowed',
+          utilization: 0.01,
+          resetsAt: FIXED_NOW + 60 * 60 * 1000,
+        },
+        // Deliberately omit status: a fresh snapshot must not retain the old
+        // seven_day rejection from the previous cache entry.
+        seven_day: {
+          utilization: 0.01,
+          resetsAt: FIXED_NOW + 6 * 24 * 60 * 60 * 1000,
+        },
+      },
+    });
+
+    expect(store.get('seven_day')?.status).toBeUndefined();
+    expect(store.get('seven_day')?.utilization).toBe(0.01);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('replaces a high-utilization weekly bucket without a rejection', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', status: 'allowed_warning', utilization: 0.99 });
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: {
+        seven_day: { utilization: 0.01, resetsAt: FIXED_NOW + 6 * 24 * 60 * 60_000 },
+      },
+    });
+
+    expect(store.get('seven_day')?.status).toBeUndefined();
+    expect(store.get('seven_day')?.utilization).toBe(0.01);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('replaces a high-utilization five-hour bucket from a weekly event', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.95 });
+
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.8,
+      unifiedWindows: {
+        five_hour: { utilization: 0.73, resetsAt: FIXED_NOW + 60 * 60_000 },
+      },
+    });
+
+    expect(store.get('five_hour')?.status).toBeUndefined();
+    expect(store.get('five_hour')?.utilization).toBe(0.73);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
 });
 
 describe('isApiKeyAuth', () => {
@@ -164,6 +232,20 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
       isUsingOverage: false,
       status: 'allowed_warning',
       overageStatus: 'rejected',
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
+  it('keeps overage rejection active when only the primary reset has elapsed', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0,
+      isUsingOverage: false,
+      status: 'allowed_warning',
+      overageStatus: 'rejected',
+      resetsAt: FIXED_NOW - 1,
     });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(true);
@@ -294,6 +376,115 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.abort).toBe(false);
   });
 
+  it('ignores a rejected window after its reset time', () => {
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      utilization: 1,
+      // Exercise the epoch-seconds form seen in some provider payloads.
+      resetsAt: Math.floor(FIXED_NOW / 1000) - 1,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
+  it('ignores high utilization without rejection after its reset time', () => {
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.97,
+      resetsAt: Math.floor(FIXED_NOW / 1000) - 60,
+    });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('stops trusting a high-utilization reading after a cooldown without a refresh', () => {
+    store.set({ rateLimitType: 'seven_day', status: 'allowed_warning', utilization: 0.97 });
+    const observedAt = store.get('seven_day')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, observedAt + 29 * 60_000).abort).toBe(true);
+    expect(shouldAbortForQuota(cliAuth, store, observedAt + 30 * 60_000).abort).toBe(false);
+  });
+
+  it('ignores an old weekly utilization after a partial five-hour update, even before its reset', () => {
+    const observedAt = Date.now();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.97,
+      resetsAt: observedAt + 6 * 24 * 60 * 60_000,
+    });
+    const weeklyObservedAt = store.get('seven_day')!.observedAt;
+    store.set({ rateLimitType: 'five_hour', status: 'allowed', utilization: 0.1 });
+
+    expect(store.get('seven_day')!.observedAt).toBe(weeklyObservedAt);
+    expect(shouldAbortForQuota(cliAuth, store, weeklyObservedAt + 29 * 60_000).window).toBe('seven_day');
+    expect(shouldAbortForQuota(cliAuth, store, weeklyObservedAt + 30 * 60_000).abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, store, weeklyObservedAt + 31 * 60_000).abort).toBe(false);
+  });
+
+  it('preserves five-hour reset grace when a reading reaches 30 minutes old', () => {
+    const observedAt = Date.now();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.9,
+      resetsAt: observedAt + 45 * 60_000,
+    });
+    const storedAt = store.get('five_hour')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 29 * 60_000).abort).toBe(false);
+    const atGrace = shouldAbortForQuota(cliAuth, store, storedAt + 30 * 60_000);
+    expect(atGrace.abort).toBe(true);
+    expect(atGrace.reason).toContain('grace buffer');
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 31 * 60_000).abort).toBe(true);
+    expect(shouldAbortForQuota(cliAuth, store, observedAt + 45 * 60_000).abort).toBe(false);
+  });
+
+  it('does not trust old five-hour utilization until its reset grace begins', () => {
+    const observedAt = Date.now();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.96,
+      resetsAt: observedAt + 60 * 60_000,
+    });
+    const storedAt = store.get('five_hour')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 30 * 60_000).abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 45 * 60_000).abort).toBe(true);
+  });
+
+  it('retains an explicit weekly rejection with a future reset after a cooldown', () => {
+    const observedAt = Date.now();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      resetsAt: observedAt + 6 * 24 * 60 * 60_000,
+    });
+    const storedAt = store.get('seven_day')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, storedAt + 30 * 60_000).window).toBe('seven_day');
+  });
+
+  it('retains an explicit overage rejection without a reset after a cooldown', () => {
+    store.set({ rateLimitType: 'overage', overageStatus: 'rejected' });
+    const observedAt = store.get('overage')!.observedAt;
+
+    expect(shouldAbortForQuota(cliAuth, store, observedAt + 30 * 60_000).abort).toBe(true);
+  });
+
+  it('applies five-hour reset grace to an epoch-seconds timestamp', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      utilization: 0.9,
+      resetsAt: FIXED_NOW / 1000 + 10 * 60,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.reason).toContain('grace buffer');
+  });
+
   it('skips reset-grace check when utilization is below the floor', () => {
     // resetsAt within grace window but util well below the 0.85 floor —
     // no point aborting on a window that just reset.
@@ -330,12 +521,85 @@ describe('RateLimitStore.set → new-rejection signal', () => {
     expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 })).toBe(true);
   });
 
+  it('returns the exact rejected bucket from a unified snapshot', () => {
+    const store = freshStore();
+    const rejections = store.setWithNewRejections({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        seven_day: {
+          status: 'rejected',
+          resetsAt: FIXED_NOW + 7 * 24 * 60 * 60 * 1000,
+        },
+      },
+    });
+
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]?.rateLimitType).toBe('seven_day');
+    expect(rejections[0]?.status).toBe('rejected');
+  });
+
+  it('suppresses a transient rejection when unified snapshot allows the primary window', () => {
+    const store = freshStore();
+    const rejections = store.setWithNewRejections({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        five_hour: {
+          status: 'allowed',
+          utilization: 0.01,
+          resetsAt: FIXED_NOW + 60 * 60 * 1000,
+        },
+      },
+    });
+
+    // The unified snapshot is authoritative for its window: the top-level
+    // rejection is superseded, so no usage_limit_hit telemetry is emitted
+    // and the final cache reflects the fresh allowed state.
+    expect(rejections).toHaveLength(0);
+    expect(store.get('five_hour')?.status).toBe('allowed');
+    expect(store.get('five_hour')?.utilization).toBe(0.01);
+  });
+
+  it('emits one rejection using the authoritative nested reset when primary and unified reject the same window', () => {
+    const store = freshStore();
+    const rejections = store.setWithNewRejections({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        five_hour: {
+          status: 'rejected',
+          resetsAt: FIXED_NOW + 90 * 60_000,
+        },
+      },
+    });
+
+    // One event per exhaustion: the primary and nested snapshots describe the
+    // same window in the same event, so only the authoritative nested reset is
+    // reported and retained.
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]?.rateLimitType).toBe('five_hour');
+    expect(rejections[0]?.resetsAt).toBe(FIXED_NOW + 90 * 60_000);
+    expect(store.get('five_hour')?.status).toBe('rejected');
+    expect(store.get('five_hour')?.resetsAt).toBe(FIXED_NOW + 90 * 60_000);
+  });
+
   it('does not re-report the same rejection on later requests', () => {
     const store = freshStore();
     const rejected: RateLimitInfo = { rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 };
     expect(store.set(rejected)).toBe(true);
     expect(store.set(rejected)).toBe(false);
     expect(store.set({ ...rejected, utilization: 1 })).toBe(false);
+  });
+
+  it('does not re-report the same rejection when reset timestamp units differ', () => {
+    const store = freshStore();
+    const resetAtMs = FIXED_NOW + 60_000;
+    expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: resetAtMs / 1000 })).toBe(true);
+    expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: resetAtMs })).toBe(false);
   });
 
   it('reports again when the same window is exhausted after a reset', () => {
@@ -411,6 +675,26 @@ describe('buildUsageLimitHitProps', () => {
       overage_status: 'unknown',
       is_using_overage: false,
       resets_in_minutes: undefined,
+    });
+  });
+
+  it('uses overageResetsAt for overage telemetry', () => {
+    expect(
+      buildUsageLimitHitProps(
+        {
+          rateLimitType: 'overage',
+          status: 'allowed_warning',
+          overageStatus: 'rejected',
+          resetsAt: FIXED_NOW + 10 * 60_000,
+          overageResetsAt: FIXED_NOW + 90 * 60_000,
+        },
+        FIXED_NOW,
+      ),
+    ).toEqual({
+      limit_window: 'overage',
+      overage_status: 'rejected',
+      is_using_overage: false,
+      resets_in_minutes: 90,
     });
   });
 });
