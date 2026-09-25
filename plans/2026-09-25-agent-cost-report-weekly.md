@@ -2,12 +2,13 @@
 
 **Date:** 2026-09-25 (PT)
 **For:** Alex Newman
-**Status:** PLAN ONLY — do not execute until Alex greens it. Nothing implemented. Nothing committed by the planner.
+**Status:** GREENED by Alex 2026-09-25 4:42pm PT; merge/publish/version-bump still gated. Decisions G1–G16 are recorded in the green checklist. Nothing implemented yet; the only commits so far are to this plan file.
 **Branch / worktree:** `work/cost-report-weekly` at `/workspace/claude-mem/.claude/worktrees/cost-report-weekly`. Never switch branches.
 **Execute with:** `/do` on this file, one phase per fresh session, commit at the end of each verified phase.
 **Revised 2026-09-25 (PT):** added Phase 2B, agent behavior metrics taken from Alex's own complaints, plus the matching render, verification, and green-checklist items. Status unchanged.
 **Revised again 2026-09-25 ~4:35 PM (PT):** Alex scoped a "Wins vs mistakes" section directly under the dollar headline (4:28 PM PT): a cost-of-mistakes line, wins with their cost, and two day-by-day timelines on one time axis. Added in 2.8 (wins and attribution), 2B.9 (mistakes line and timeline data), 3.8 (render), 8.6 (reconciliation). Phase 2B's metric list is now provisional pending the Frustration Arc seat. Out-of-scope section added. Status unchanged.
 **Revised 2026-09-25 ~4:40 PM (PT):** Phase 2B reconciled with the Frustration Arc seat's final list (`/workspace/frustration-arc/metrics-ideas.md`). PROVISIONAL removed; M1–M6 merged into 12 patterns (P1–P12) plus 2 supporting metrics, 4 summary tiles. The mistakes line now headlines the low (same-session) figure, with the high figure as an upper bound in Details. Win cost shows "unmeasured" until sessions are linked to PRs. Added rule effectiveness (2B.10), a prerequisites list (0.5), a Frustration Arc comparison in Phase 8 (8.7), and a renumbered green checklist (G1–G16). Status unchanged.
+**Revised 2026-09-25 4:42 PM (PT), GREEN:** Alex greened the plan at commit `7f5e9e7d` (relayed by Ori). G1–G16 answers recorded in the green checklist. Plan text reconciled with the picks: G3 (default window = the last 7 full PT days, today excluded), G8 (classifier off by default, $2.00 cap per run when enabled), G11 (win cost "unmeasured" until sessions are linked to PRs; the lineage fallback is dropped), G13 (session id stamped as a commit trailer only, id only, no PR body line), plus G2 (mirrors carry the skill), G4 (Grok Bot "unavailable", no seat count), G10 (Alex's hedging definition), G12 (win = merged PR, published version, or Alex's praise; finished work is not a win). Pushing the work branch and opening the PR are routine. **Merging to `main`, npm publish, and `/version-bump` each still need Alex's separate go.**
 **Supersedes:** the rendering-only plan at `/workspace/plans/2026-09-25-agent-cost-report-timing-style.md` (its data basis was `discovery_tokens` and its unit was cents; both are gone). Its mapping tables are reused in Phase 3.
 **All times in PT.** All secrets by env var name only. Never read `.env` or settings files for keys.
 **Scratch dir for every verification command:** define once per session, `ACR_TMP=${ACR_TMP:-/tmp/acr-weekly}`, then use `$ACR_TMP/p1`, `$ACR_TMP/p2`, … per phase. Phases 3 and 8 read Phase 2 output from `$ACR_TMP/p2`. Nothing under `$ACR_TMP` is committed.
@@ -16,14 +17,14 @@
 
 ## Primary goal
 
-The Claude-Mem plugin skill `agent-cost-report` produces a believable agent cost report for any period, defaulting to the past 7 days in PT. The headline is dollars. The dollars come from Claude Code transcripts (exact per-reply token usage) priced at OpenRouter public list prices, and are labeled ESTIMATED. Measured provider spend appears only when a sanctioned source gives it. The note-taker's own tokens are priced separately and never counted as agent cost. The report looks like the Timing-app mockup: hero number, cost ribbon, five visuals, and a folded Details section.
+The Claude-Mem plugin skill `agent-cost-report` produces a believable agent cost report for any period, defaulting to the last 7 full days in PT, not counting today (G3). The headline is dollars. The dollars come from Claude Code transcripts (exact per-reply token usage) priced at OpenRouter public list prices, and are labeled ESTIMATED. Measured provider spend appears only when a sanctioned source gives it. The note-taker's own tokens are priced separately and never counted as agent cost. The report looks like the Timing-app mockup: hero number, cost ribbon, five visuals, and a folded Details section.
 
 ---
 
 ## Settled decisions (do not reopen)
 
 1. **Headline unit is DOLLARS** (settled by Alex via Ori). Hero and totals show dollars to two decimals (`$109.25`). No cents-first display anywhere. Every dollar figure carries its label (measured vs estimated) and its basis, for example "estimated at OpenRouter list prices from measured tokens". This supersedes the cents-under-$1 rule in the earlier plan (`/workspace/plans/2026-09-25-agent-cost-report-timing-style.md:390-408`) and in the brief (`/workspace/timing-report-brief/brief.md:44`).
-2. **Default scope = past 7 days in PT**, end exclusive, PT day boundaries. Any period supported: explicit start/end, a single session, or a single project plus a period.
+2. **Default scope = the last 7 full days in PT, not counting today** (G3, Alex 2026-09-25): `end` = the PT midnight that started today (exclusive), `start` = `end − 7 days`, PT day boundaries. The default window never contains a partial day. Any period supported: explicit start/end, a single session, or a single project plus a period.
 
 ## Binding constraints (from Alex's original spec, kept as-is)
 
@@ -46,7 +47,7 @@ Added by this plan, same spirit:
 ## Out of scope for this plan
 
 - **Auto-lessons at session start** (injecting lessons learned from past mistakes into new sessions) is out of scope. It is a separate claude-mem memory feature with its own plan. This report only measures and shows wins and mistakes; it does not feed anything back into agent sessions.
-- **Upstream data fixes** named in 0.5 (claude-mem tagging prompts when it writes them, logging the model id for Grok and Codex, stamping session ids in PRs, keeping Grok Bot chats) are changes to other products or house workflows. This plan lists them as prerequisites and builds only the report side. Each needs its own plan and Alex's go.
+- **Upstream data fixes** named in 0.5 (claude-mem tagging prompts when it writes them, logging the model id for Grok and Codex, stamping the session id as a commit trailer, keeping Grok Bot chats) are changes to other products or house workflows. This plan lists them as prerequisites and builds only the report side. Each needs its own plan and Alex's go.
 
 ---
 
@@ -191,7 +192,7 @@ git log --oneline -1 -- plugin/skills/agent-cost-report/SKILL.md
 ### 0.4 Anti-pattern guards
 
 - Do not edit SKILL.md content in Phase 0. Baseline first.
-- Do not add mirrors yet.
+- Do not add mirrors yet (mirrors are written in Phase 7, per G2).
 - Do not open any settings file to find device ids or keys.
 
 ### 0.5 Prerequisites for behavior counts, mistake cost, and win cost
@@ -200,10 +201,10 @@ From Frustration Arc's "Data hygiene the report needs" (`/workspace/frustration-
 
 | # | Prerequisite | Why | What this plan builds | Gate | Until it is met the report shows |
 |---|---|---|---|---|---|
-| R1 | Keep Alex's chat turns with timestamps on every agent surface | Grok Bot chats vanish from the box after Sep 16, so the last week cannot be scored firsthand (`trend.md`) | Reads whatever human turns exist (box transcripts, claude-mem `user_prompts`) | Keeping or exporting Grok Bot chats: needs Alex's explicit go and a sanctioned export (G14) | Grok Bot episodes "unavailable"; rule effectiveness "not enough data" where prompts are missing |
+| R1 | Keep Alex's chat turns with timestamps on every agent surface | Grok Bot chats vanish from the box after Sep 16, so the last week cannot be scored firsthand (`trend.md`) | Reads whatever human turns exist (box transcripts, claude-mem `user_prompts`) | Alex chose to keep Grok Bot chats (G14, 2026-09-25). The retention or export mechanism is an upstream change with its own plan; until it lands the report reads whatever human turns exist | Grok Bot episodes "unavailable"; rule effectiveness "not enough data" where prompts are missing |
 | R2 | Tag bot-authored prompts | About 31% of "user" messages were agents (`MI:7`) | Read-time tagger in `acr/behavior.py` (2B.1), with tests. **Required before any behavior count from "user" messages.** Write-time tagging in claude-mem is an upstream change | Upstream write-time tagging: separate plan, needs Alex's go | "unavailable (prompts not tagged human vs bot)" for every count that reads user messages |
 | R3 | Log the model id on every call, including Grok and Codex | Both were assumed in Frustration Arc's study (`MI:40`) | Uses `message.model` from box transcripts (already there, Phase 1); labels anything else `model: assumed` | Upstream logging for Grok and Codex: outside this plan | P3 counts only turns with a logged model; the rest are listed as "model not logged" |
-| R4 | Link session → PR → release | Win cost cannot be measured without it (`MI:32`) | Reads a session id from the PR body line `Session: <content_session_id>` or the commit trailer `Claude-Session: <content_session_id>`; release = npm version ↔ tag ↔ merge commit | Changing the house ship flow (`/do`, babysit, PR template, version-bump) to stamp the id, which puts session ids in public PRs: needs Alex's explicit go (G13) | Win cost "unmeasured" (2.8) |
+| R4 | Link session → PR → release | Win cost cannot be measured without it (`MI:32`) | Reads the session id from the commit trailer `Claude-Session: <content_session_id>` on the commits of a merged PR (G13: trailer only, value is the bare id, no PR body line); release = npm version ↔ tag ↔ merge commit | Approved in principle by G13 (Alex 2026-09-25: trailer, id only). Changing the house ship flow (`/do`, babysit, version-bump) to stamp the trailer is an upstream change with its own plan; the ids become visible in public commits | Win cost "unmeasured" (2.8) |
 
 Order: R2 is built in Phase 2B and must pass its tests before any other Phase 2B count that reads user messages. R1, R3 (Grok/Codex), and R4 are gated steps listed under "What ships".
 
@@ -236,7 +237,7 @@ Interpreter: `python3`, stdlib only (`json, csv, sqlite3, zoneinfo, urllib.reque
 ### 1.2 Period arguments (copy `parse_transcripts.py:8-14` and `weekly_report.py:11-14`, add defaults)
 
 - `--start YYYY-MM-DD --end YYYY-MM-DD` are PT calendar days, end exclusive, converted with `ZoneInfo("America/Los_Angeles")` to UTC epoch ms (DB) and aware datetimes (transcripts).
-- Default when neither is given: `end` = the next PT midnight after now, `start` = `end − 7 days`. This includes today as a partial day, matching how the research run included Sep 25. The report must show the last day tagged "partial, generated HH:MM PT". (Open decision G3 below can flip this to "last 7 complete days".)
+- Default when neither is given (G3, settled): `end` = the PT midnight that started today, so today is excluded; `start` = `end − 7 days`. That is the last 7 full PT days. The default window never has a partial day, so `partial_last_day` is false by construction. It is true only for an explicit `--end` later than today's PT date (for example the research window Sep 18–26 exclusive, run on Sep 25); then the report tags the last day "partial, generated HH:MM PT". Unit test: with a fixed clock of 2026-09-25 16:42 PT, the default window is `start_pt=2026-09-18`, `end_exclusive_pt=2026-09-25`, `partial_last_day=false`.
 - `--session <content_session_id>`: single session, no period filter on the DB, transcript filter by that `sessionId` only.
 - `--project <name>` with a period: filter `sdk_sessions.project` and transcript rows joined to those sessions.
 - Every output carries a `window` block copied from `weekly_report.py:207-238` shape: `start_pt`, `end_exclusive_pt`, `start_epoch_ms`, `end_epoch_ms`, `generated_at_pt`, `partial_last_day: bool`.
@@ -375,22 +376,23 @@ Unit tests: observer dedup (three observation rows with the same per-turn value 
 
 ### 2.8 Wins and what each cost (new, feeds "Wins vs mistakes")
 
-**What counts as a win** (decision G12 can narrow this). One win per distinct thing, deduped by its key:
+**What counts as a win** (G12, settled by Alex 2026-09-25: a merged PR, a published version, or Alex praising the work). One win per distinct thing, deduped by its key:
 - **Merged PR**: a successful `gh pr merge` tool result in a transcript, or a ship observation (`weekly_report.py:65,74-75` regex: merged/published/released/shipped) that names a PR number. Key = `repo#number`. Optional read-only confirmation with `gh pr view <n> --json mergedAt,url,title` (gh is authenticated on the box); `mergedAt` must fall in the window. No write calls.
 - **Published item**: a successful `npm publish` / release / tag push in a transcript, or a ship observation saying published/released/tagged. Key = `package@version` or tag.
-- **Finished work**: a line item with status `shipped` or `completed` (Phase 2.3 outcome rule) that has no PR or publish win of its own. Key = `content_session_id` (or `memory_session_id` for replica sessions).
-- Each win records `{win_id, kind: pr|publish|finished, title, url|null, ts_pt (the merge/publish/summary time), day_pt, project, evidence_ids, sessions: [...]}`. Titles come from the PR title, package name, or the completed summary's first line, never written by hand.
+- **Praise**: a human-tagged message from Alex (2B.1 tagger) matching `boom|love it|perfect|nice|hell yes|excellent|ship it|lfg|great job`, minus sarcasm via 2B.4. Key = `content_session_id` + turn id. Title = the first line of that session's completed summary (or "praise" when none exists), never written by hand.
+- **Not a win (G12):** finished work (line items with status `shipped` or `completed`) is not a win. It stays in the outcome count and the "What got done" card. Deploys that stayed up 24 hours are not a win.
+- Each win records `{win_id, kind: pr|publish|praise, title, url|null, ts_pt (the merge/publish/praise time), day_pt, project, evidence_ids, sessions: [...]}`. Titles come from the PR title, the package name, or the summary's first line, never written by hand.
 
 **What a win cost** — Frustration Arc found cost per win cannot be measured today because sessions are not linked to PRs (`/workspace/frustration-arc/metrics-ideas.md:32`; all 491 wins in `wins.jsonl` carry `cost_method: unmeasured`). So:
 - **Default: "unmeasured".** Each win row shows "cost: unmeasured (session not linked to PR)". Never $0, never a guess.
-- **Once R4 exists (session linking):** a win's cost = the sum of `api_equiv()` of the sessions named in its PR body (`Session: <content_session_id>`) or commit trailers (`Claude-Session: <content_session_id>`), up to the merge time. Labeled `ESTIMATED · session-linked` (measured tokens, list prices). A session named by more than one win has each turn assigned to the next win after it, so no turn counts twice.
-- **Fallback, only if G11 approves it:** "worktree lineage + time split" (the session holding the win event plus earlier sessions in the window with the same `project` value, which is `<repo>/<worktree>` inside a worktree (Phase 0 C), or that mention the same PR number or branch, up to the win time). Every such figure is labeled `ESTIMATED · attribution fallback (worktree lineage), not linked`, in the row and in Details. Without G11 this fallback is not computed.
+- **Once R4 exists (session linking):** a PR or publish win's cost = the sum of `api_equiv()` of the sessions named in the `Claude-Session: <content_session_id>` trailers of the PR's commits (G13: trailers only, id only; a `Session:` line in a PR body is ignored), up to the merge time. Praise wins have no PR to link, so they stay "unmeasured"; costing them is not decided and not built. Labeled `ESTIMATED · session-linked` (measured tokens, list prices). A session named by more than one win has each turn assigned to the next win after it, so no turn counts twice.
+- **No lineage fallback (G11, settled: no).** The "worktree lineage + time split" estimate is not computed, not rendered, and not in the schema. Win cost is "unmeasured" until R4 exists, then `ESTIMATED · session-linked`.
 - Spend not tied to any win shows as "not tied to a win: ≈$X.XX" only when at least one win cost is computed; otherwise "win costs unmeasured". Mistake turns inside a win's sessions stay in the win's cost and are also shown in the mistakes line; the render says "win costs include the mistakes made on the way".
-- Wins from Mac replica sessions (no transcript on the box) get `cost_basis: extrapolated` and the `EXTRAPOLATED (low confidence)` tag, using the Phase 2.2 ratio, only when a linked or fallback cost exists. Never $0.
+- Wins from Mac replica sessions (no transcript on the box) get `cost_basis: extrapolated` and the `EXTRAPOLATED (low confidence)` tag, using the Phase 2.2 ratio, only when a linked cost exists. Never $0.
 - Each win with a computed cost also carries `tokens {input, output, cache_write_5m, cache_write_1h, cache_read}`, `sessions_n`, `turns_n`, `active_minutes`.
-- **More win sources from Frustration Arc** (`MI:29-31`, decision G12): npm releases (`npm view <pkg> time`, read-only), deploys that stayed up 24 hours where a deploy check exists, and praise moments (human-tagged messages matching `boom|love it|perfect|nice|hell yes|excellent|ship it|lfg|great job`, minus sarcasm via 2B.4). Praise is counted and shown, but never costed.
+- **Frustration Arc's extra sources** (`MI:29-31`) after G12: npm releases are published versions (`npm view <pkg> time`, read-only, confirms the publish date); praise is a win kind of its own (above); deploys that stayed up 24 hours are not counted.
 
-**Outputs**: `report.json.wins = {items: [...], cost_status: unmeasured|session_linked|fallback_estimate, attribution_method|null, unattributed_usd|null, total_attributed_usd|null, praise_n}`; each item has `usd|null` and `cost_status` and `report.json.timeline.wins_by_day = [{day_pt, count, usd, win_ids}]` covering every PT day in the window (empty days present).
+**Outputs**: `report.json.wins = {items: [...], cost_status: unmeasured|session_linked, attribution_method|null, unattributed_usd|null, total_attributed_usd|null, praise_n}`; each item has `usd|null` and `cost_status` and `report.json.timeline.wins_by_day = [{day_pt, count, usd, win_ids}]` covering every PT day in the window (empty days present).
 
 **Verification** (add to 2.6):
 
@@ -403,13 +405,13 @@ if w['cost_status']=='unmeasured': assert all(i['usd'] is None for i in w['items
 else: assert w['total_attributed_usd'] <= d['spend']['agent_estimated_usd'] + d['spend']['extrapolated_unmeasured_usd']
 assert len(d['timeline']['wins_by_day'])==len(d['by_day'])
 PY
-# research window had 5 distinct ship events and 26 finished outcomes (Phase 0 A); expect win count <= 26 + 5 and >= 5
+# finished work is not a win (G12). Research window had 5 distinct ship events (Phase 0 A); expect PR + publish wins >= 5, plus however many praise turns the tagger finds
 # Frustration Arc's wins.jsonl has 19 merged PRs + 1 npm release dated Sep 18-25 (4 undated rows excluded); merged-PR + publish wins should be within ±3 of 20, or VERIFICATION.md says why
 ```
 
-Unit tests: with no session link and no G11, every win cost is `null` and renders "unmeasured"; a PR body with `Session: <id>` and a commit with `Claude-Session: <id>` link to that session; a fallback cost always carries the fallback label; one PR seen in both a transcript merge and a ship observation counts once; a turn shared by two wins is assigned to exactly one; a win from a replica session is labeled extrapolated; finished work that already has a PR win is not counted twice; a win outside the window (by `mergedAt`) is dropped.
+Unit tests: with no session link, every win cost is `null` and renders "unmeasured"; a commit with a `Claude-Session: <id>` trailer links to that session; a `Session: <id>` line in a PR body is ignored (G13); a trailer whose value is anything other than a bare session id is rejected; no code path produces a `fallback_estimate` cost status (G11); one PR seen in both a transcript merge and a ship observation counts once; a turn shared by two wins is assigned to exactly one; a win from a replica session is labeled extrapolated; a finished line item is never a win (G12); a praise turn tagged bot, or marked sarcastic by 2B.4, is not a win; a praise win always has `usd: null`; a win outside the window (by `mergedAt`) is dropped.
 
-**Guards**: no hand-written win titles; no `gh` write commands; never show a win cost without `ESTIMATED` and its method; no lineage fallback without G11; a win with no linked session shows "unmeasured", not $0.
+**Guards**: no hand-written win titles; no `gh` write commands; never show a win cost without `ESTIMATED` and its method; no lineage fallback at all (G11); a win with no linked session shows "unmeasured", not $0; never cost a praise win.
 
 ---
 
@@ -461,7 +463,7 @@ Where the words came from: the box has almost no text Alex typed himself in this
 - **Unmeasured**: an episode with no token rows tied to it (a Grok chat, or a Mac session without the Phase 5 export) is counted with `cost: unmeasured`, never $0. Every dollar figure shows "+ N unmeasured" next to it. For Frustration Arc's last 7 days, 8 of 13 episodes were unmeasured (`costs.md`). Mac episodes can show the Phase 2.2 extrapolation in Details, tagged `EXTRAPOLATED · low confidence`, and never in the low figure.
 - **Alex-minutes** (`MI:10`): time since the last agent output before the complaint (capped at 60) + episode span + 1 minute per message. Computed only when the episode has human-tagged messages with timestamps; otherwise "unknown". Shown next to dollars. For invented gates and bad outbound, Alex-minutes are the real cost.
 - **Agent time**: the Phase 2 `active_minutes(gap=15)` rule, so idle gaps are not billed. Waiting time is shown in hours, never as dollars.
-- **Retries that worked** (the old "recovery" number) are now part of the redo window, so they count only in the high figure. This settles the old recovery question (G13 in the previous revision).
+- **Retries that worked** (the old "recovery" number) are now part of the redo window, so they count only in the high figure. This settles the old recovery question (the previous revision's G13, before the checklist was renumbered; not today's G13).
 - **No double counting**: one turn can trip more than one pattern. Each pattern shows its own total and says "overlaps". The ribbon's waste sliver, the line-item `wasted_cost`, and the mistakes line all use the one union set. The union can never exceed `agent_estimated_usd` (tested).
 - Line items get `behavior_counts {…}`, and their existing `wasted_cost` (low) and `failure_type` fields fill from here. `recovery_cost` holds the redo part of the high figure.
 
@@ -471,10 +473,10 @@ Where the words came from: the box has almost no text Alex typed himself in this
 
 | Starting metric | Now |
 |---|---|
-| M1 Errors and retries | Kept as supporting metric S1 in Details. Not on Frustration Arc's list; G10 decides keep or drop. |
+| M1 Errors and retries | Kept as supporting metric S1 in Details (G10, settled: keep). Not on Frustration Arc's list. |
 | M2 Asked you instead of doing it | Merged into P1 Invented human gates. The old ask regex and boosts stay as extra detectors. |
 | M3 Said done without proof | Merged into P7 Skipped steps / false done. The old claim-without-proof rule stays as an extra detector. |
-| M4 Hedging | Kept as supporting metric S2 in Details, count only. Not on Frustration Arc's list; G10 decides. |
+| M4 Hedging | Kept as supporting metric S2 in Details, count only, with Alex's definition (G10): a caveat or "can't be sure" given when the answer was already available. Not on Frustration Arc's list. |
 | M5 Jargon | Became P11 Jargon / walls of text (adds message length and reading-time cost). |
 | M6 Wrong approach | Split into P4 Over-engineering and P5 Did something not asked. Its phrases stay in P5. |
 
@@ -486,7 +488,7 @@ Counts, dollars (low → high), and Alex-minutes below are Frustration Arc's all
 3. **Broke working things** (P2): the largest low figure ($12.65).
 4. **Wrong or expensive model** (P3): the largest high figure ($233.38), and detection is exact.
 
-Everything else goes in Details. Over-engineering has the most Alex-minutes (608), but its detection is fuzzy and 6 of 15 episodes are unmeasured, so it stays in Details unless G9 swaps it in. Bad outbound goes in Details as a count, plus a Worth-your-attention card whenever there is an incident.
+Everything else goes in Details. Over-engineering has the most Alex-minutes (608), but its detection is fuzzy and 6 of 15 episodes are unmeasured, so it stays in Details (G9, settled: the plan's 4 tiles). It is the first alternate only for the precision-gate swap in 2B.5. Bad outbound goes in Details as a count, plus a Worth-your-attention card whenever there is an incident.
 
 **P1 — Invented human gates / asking instead of doing** (12 episodes; 7d 5; $2.77 → $69.65; 4 unmeasured; 278 Alex-min) · `MI:16`
 - H: agent user-facing text matching `Blocked on Alex|needs your sign-off|initials|please click|open this link and|when you get a chance|human gate`, plus the old M2 rules:
@@ -504,7 +506,7 @@ Everything else goes in Details. Over-engineering has the most Alex-minutes (608
 - Type: Regression. Place: **summary tile 3**.
 
 **P3 — Wrong or expensive model** (13; 7d 1; $9.34 → $233.38; 182 Alex-min) · `MI:18`
-- H (exact, build first): `message.model` differs from the house default for that kind of work. The default table is a constant in `acr/behavior.py` seeded from `MI:18` (Claude for claude-mem work, deepseek-flash for cheap evals) and confirmed in G16. Human phrases: `gemini|gpt-5|why are you using|credits|spent`.
+- H (exact, build first): `message.model` differs from the house default for that kind of work. The default table is a constant in `acr/behavior.py` seeded from `MI:18` (Claude for claude-mem work, deepseek-flash for cheap evals), settled by G16 (plan defaults). Human phrases: `gemini|gpt-5|why are you using|credits|spent`.
 - Cost: the difference = actual list cost − the cost of the same tokens at the default model's list price. Exact tokens, estimated dollars. Counts only turns with a logged model id (R3). Turns with `model: assumed` are listed as "model not logged".
 - Type: Model thrash (closest of the 16). Place: **summary tile 4** (shows the difference, "≈$X.XX more than the default model").
 
@@ -540,7 +542,7 @@ Everything else goes in Details. Over-engineering has the most Alex-minutes (608
 - Type: Unauthorized action when it reached outside the box, otherwise Suboptimal path. Place: Details.
 
 **P9 — Bad outbound** (6; $0.20 → $0.30 in tokens, which says nothing; 252 Alex-min) · `MI:24`
-- H: any send, broadcast, or email tool call without explicit human approval in the preceding human-tagged turn; recipient count above a threshold (G16); a send using Alex's identity.
+- H: any send, broadcast, or email tool call without explicit human approval in the preceding human-tagged turn; recipient count above 10 (G16, settled); a send using Alex's identity.
 - Cost: **incidents × recipients**, plus Alex-minutes. Never dollars, and never described as cheap.
 - Type: Unauthorized action (risk exposure high). Place: Details, plus a Worth-your-attention card when there is at least 1 incident in the window.
 
@@ -550,7 +552,7 @@ Everything else goes in Details. Over-engineering has the most Alex-minutes (608
 - Type: none. It feeds rule effectiveness (2B.10). Place: Details.
 
 **P11 — Jargon / walls of text** (7; $0.10 → $12.27; 303 Alex-min) · `MI:26`
-- H: final agent message over N words (G16, proposed 150, because Alex reads only the last message); file paths instead of links; unexplained terms from the old M5 list:
+- H: final agent message over 150 words (G16, settled, because Alex reads only the last message); file paths instead of links; unexplained terms from the old M5 list:
   - User-facing text containing a word from one constant list copied from the cheat sheet in `ccs/house/HUMAN-GATES-PLAIN-ENGLISH.md` plus Alex's own example: drain, projection, projected_seq, head_seq, poll-mode, lag, kill-switch, BYOK, face-wall, chatty, Durable Object, idempotent, backfill, TOCTOU. It counts only when there is no plain-English gloss in the same sentence (a parenthesis, "—", "means", "i.e.", "that is").
 - Human phrases: `jargon|9000 things|single answer|plain english`.
 - Cost: Alex-minutes = words ÷ 200 words per minute. Dollars only for the clarification round trip.
@@ -560,7 +562,7 @@ Everything else goes in Details. Over-engineering has the most Alex-minutes (608
 - Base detector only. M attributes it to P1–P11 when it can.
 - Cost: the episode window. Place: Details, as "unclear cause".
 
-**Supporting metrics kept from the starting set (Details only, G10):**
+**Supporting metrics kept from the starting set (Details only; G10 settled: keep both):**
 - **S1 — Tool errors and retries** (was M1; failure types Recovery after miss, Looping). Detection unchanged:
   - Error: `tool_result.is_error == true`, or the first 2 KB of the result matches `(?i)^(error|fatal)|traceback \(most recent|exit code [1-9]|command not found|no such file|ENOENT|EACCES|timed out|rate.?limit|\b429\b|\b5\d\d\b`.
   - Permission denials (`Permission to use .* has been denied`, harness blocks) are counted separately as "blocked by a rule". They are shown in Details and not priced as agent waste.
@@ -568,25 +570,25 @@ Everything else goes in Details. Over-engineering has the most Alex-minutes (608
   - Loop: the same `(tool name, normalized input hash)` 3 or more times in a session, errors or not.
   - Cost: the turn that made the failed call is wasted. The retry turns up to the first success are recovery. A chain that never succeeds is all wasted. Time runs from the first failure to the first success.
   - Classifier: not needed (structural). Confidence high for `is_error`, medium for text-matched errors.
-- **S2 — Hedging** (was M4; failure type Hedging). Count only, not priced unless it caused a follow-up. Detection unchanged:
+- **S2 — Hedging** (was M4; failure type Hedging). **Alex's definition (G10):** hedging is a caveat or a "can't be sure" given when the answer was already available to the agent. Count only, not priced unless it caused a follow-up. Detection:
   - Scope: user-facing text only.
-  - Lexicon: `might|may|could potentially|possibly|perhaps|it seems|it appears|appears to|probably|likely|I think|I believe|not sure|should work|should be (fine|fixed|good|working)|in theory|hopefully|if you want|would you like|depending on`.
-  - Flag a message when (a) a hedge sits on a status or fact claim (`should be (fixed|deployed|working)`, `probably (works|fixed|deployed)`, `I think it's (done|fixed)`), or (b) density is at least 3 hedges per 100 words and at least 3 hits. Decision G10 picks (a) only, or (a) plus (b).
+  - Lexicon: `might|may|could potentially|possibly|perhaps|it seems|it appears|appears to|probably|likely|I think|I believe|not sure|can't be sure|cannot be sure|no way to (know|tell)|hard to say|should work|should be (fine|fixed|good|working)|in theory|hopefully|if you want|would you like|depending on`.
+  - Flag a message when a hedge sits on a status or fact claim (`should be (fixed|deployed|working)`, `probably (works|fixed|deployed)`, `I think it's (done|fixed)`, or a lexicon hit in the same sentence as a file path, command, test name, PR number, URL, or number) **and** the answer was already available: an earlier tool result in the same session names the same file path, command, test, PR number, or URL, or the agent had a read-only tool that could have checked the named target and did not run it. The old density rule (3 hedges per 100 words) is dropped. A hedge whose availability cannot be shown by these rules is listed in Details as "hedge, availability unknown" and is not counted.
   - Not hedging: the report's own required labels ("estimated", "low confidence", "unavailable", "measured spend unavailable") and stated numeric ranges. The truth rules require honest labels, so they are excluded by an allowlist.
   - Cost: the count comes first. Dollars only when the hedge caused a follow-up (next user message matches `(?i)is it|yes or no|did you|confirm|what do you mean|straight answer`). Then the follow-up round trip is priced as recovery. Otherwise the tile says "text only, not priced".
-  - Classifier: recommended. Keyword hedges have many false positives.
+  - Classifier: recommended. Keyword hedges have many false positives. Its question for S2 is exactly Alex's test: "was the answer already available to the agent when it hedged?"
 
-### 2B.4 Optional cheap classifier pass (off by default)
+### 2B.4 Optional cheap classifier pass (off by default; G8 settled)
 
 - `acr.py classify-behavior --model anthropic/claude-haiku-4.5 --budget-usd 2.00`. It only sees candidates the heuristics could not settle: frustration detector hits (about $0.001 per message, `MI:6`), P1 real vs invented gate, P4 was the extra scope asked for, P5 instruction vs actions, P6 sourced vs unsourced numbers, P12 attribution, S2 hedges, and praise vs sarcasm for 2.8. Input per candidate: the flagged text plus one message before and after, scrubbed, cut to 1,500 characters. Output JSON `{label: yes|no|unsure, pattern, reason (≤20 words)}`.
-- Model: Claude Haiku 4.5, list $1 in / $5 out per MTok (`out/openrouter_prices.json`). Run path per decision G8: OpenRouter with `OPENROUTER_API_KEY` (only if G5 is a go), or Claude Code headless on the Max plan (`claude -p --model haiku`), still priced at list in the report.
-- Expected size: about 200–400 candidates a week × ~1,600 tokens ≈ 0.3–0.6M input + ~0.03M output ≈ $0.45–$0.80 at list. Default cap **$2.00 per run**, a hard stop. It prints an estimate first. If candidates would go over the cap, it classifies a stratified random sample and scales up, labeled "estimated from a sample of N".
+- Model: Claude Haiku 4.5, list $1 in / $5 out per MTok (`out/openrouter_prices.json`). Run path (G5 and G8 settled): OpenRouter with the regular inference `OPENROUTER_API_KEY` (G5: a regular key, no management key), or Claude Code headless on the Max plan (`claude -p --model haiku`), still priced at list in the report.
+- Expected size: about 200–400 candidates a week × ~1,600 tokens ≈ 0.3–0.6M input + ~0.03M output ≈ $0.45–$0.80 at list. Off by default; enabled per run with `--classify` (G8). When enabled the cap is **$2.00 per run** (G8), a hard stop. It prints an estimate first. If candidates would go over the cap, it classifies a stratified random sample and scales up, labeled "estimated from a sample of N".
 - The classifier's own spend is shown in Details as "classifier cost (separate)" and never added to agent cost, the same as the note-taker rule.
 - Each flag carries `label_source: heuristic | classifier | human`, like 2.4. Items left at `heuristic` render with the "draft" mark.
 
 ### 2B.5 Where it goes in the Timing layout (summary stays clean)
 
-- **Behavior strip**, a row directly under the "How much was useful" ring, with at most 4 tiles (G9): *Invented gates / asking instead of doing* · *Made it up or said done when it wasn't* · *Broke working things* · *Wrong or expensive model*. Each tile shows the count, "≈$X.XX estimated" (the low, same-session figure), Alex-minutes where known, and "+ N unmeasured" when N > 0, with a small "heuristic" mark until reviewed. The model tile shows the difference vs the default model. A zero tile says "none found" and is never hidden. A tile whose Phase 8 spot-check precision is under 70% moves to Details marked "low confidence", and the next pattern by the same ranking takes its place only if it passes.
+- **Behavior strip**, a row directly under the "How much was useful" ring, with the 4 tiles Alex picked (G9, settled): *Invented gates / asking instead of doing* · *Made it up or said done when it wasn't* · *Broke working things* · *Wrong or expensive model*. Each tile shows the count, "≈$X.XX estimated" (the low, same-session figure), Alex-minutes where known, and "+ N unmeasured" when N > 0, with a small "heuristic" mark until reviewed. The model tile shows the difference vs the default model. A zero tile says "none found" and is never hidden. A tile whose Phase 8 spot-check precision is under 70% moves to Details marked "low confidence", and the next pattern by the same ranking takes its place only if it passes.
 - **Cost ribbon**: the striped waste sliver is drawn from the low figure, counted once per turn. The high figure and redo are never in the ribbon.
 - **Worth your attention**: at most 2 of the ≤3 cards come from Phase 2B, in this order: (1) any bad outbound incident ("N sends reached M recipients without your approval", P9); (2) a rule that clearly didn't stop repeats (2B.10); (3) otherwise the largest pattern by low dollars. Built only from computed fields.
 - **Details**: a table of every pattern (P1–P12, S1–S2) with count, low, high (labeled "upper bound, likely 5–10× too high"), Alex-minutes, unmeasured count, detection basis (H/M), and failure type. P9 shows incidents × recipients instead of dollars. Also: the rule-effectiveness section (2B.10), up to 10 scrubbed example excerpts per pattern, permission denials as their own line, label-source counts, the human/bot tag counts (how many user turns were bot, human, unknown), classifier cost, and coverage (box measured; Mac and Grok Bot unavailable unless R1/Phase 5).
@@ -646,7 +648,7 @@ Unit tests (tiny hand-made jsonl fixtures): every Frustration Arc bot marker tag
 
 ### 2B.10 Rule effectiveness (did a HARD rule stop repeats?)
 
-- **Metric** (`MI:34-35`): for each HARD rule, same-pattern episodes per 100 human prompts in the N days before and after `rule_landed_at`, with the denominator shown ("8 episodes / 211 human prompts = 3.8 per 100"). N = 7 days (proposed, G15).
+- **Metric** (`MI:34-35`): for each HARD rule, same-pattern episodes per 100 human prompts in the N days before and after `rule_landed_at`, with the denominator shown ("8 episodes / 211 human prompts = 3.8 per 100"). N = 7 days, minimum 50 human prompts per side (G15, settled: plan defaults).
 - **Rules and dates**: read from the house rule files that carry a "HARD (Alex YYYY-MM-DD…)" date (for example `ccs/house/NEVER.md`, `ccs/house/HUMAN-GATES-PLAIN-ENGLISH.md`). Each rule maps to one pattern through a small table `acr/rules.json`, seeded from `/workspace/frustration-arc/trend.md` ("HARD rules landing dates vs. the pattern afterwards"). No rule text in the summary.
 - **Which rules**: those that landed inside the report window or within N days before it.
 - **Needs**: R1 and R2. Human prompts are counted only from human-tagged turns. If either side has fewer than 50 human prompts, the row says "not enough data (P human prompts)" instead of a rate. Frustration Arc's Sep 21 week had 18 human prompts, which gave a meaningless 38.9 per 100 (`trend.md`).
@@ -664,7 +666,7 @@ Unit tests (tiny hand-made jsonl fixtures): every Frustration Arc bot marker tag
 - Do not price hedged or jargon text itself as waste. Price only the follow-up it caused; P11 reading time is Alex-minutes, not dollars.
 - Do not count permission denials or harness blocks as agent mistakes.
 - Do not show excerpts, regexes, rule text, or session ids in the summary. Details only, scrubbed.
-- Do not run the classifier without a cap, or through OpenRouter without G5.
+- Do not run the classifier without the $2.00 cap (G8), never by default, and never with anything but the regular inference `OPENROUTER_API_KEY` (G5: no management key).
 - Do not call a relayed agent prompt "Alex said". Use `asked: agent` unless the turn is human-tagged.
 - Do not read Grok Bot chats or Mac files to fill gaps. Show "unavailable" until R1 or the Phase 5 export.
 - Do not copy Frustration Arc's dollar figures into the report. They are comparison points for Phase 8 only.
@@ -692,7 +694,7 @@ Unit tests (tiny hand-made jsonl fixtures): every Frustration Arc bot marker tag
 ### 3.3 Generalise everything the mockup hard-codes (table at `/workspace/plans/2026-09-25-agent-cost-report-timing-style.md:39-60` plus the Phase 0 B bug list)
 
 - Six kinds of work always listed in the sidebar; empty ones grayed (`brief.md:42`). Colors: one fixed palette for the six kinds, plus waste red and in-progress stripe, defined once.
-- Day chart: column count and viewBox width computed from `by_day` length (7, 8, 1, or 30 days all render). Empty days show "no agent work". Partial last day shows "partial".
+- Day chart: column count and viewBox width computed from `by_day` length (7, 8, 1, or 30 days all render). Empty days show "no agent work". A partial last day (explicit windows only; never the default window, G3) shows "partial".
 - Ribbon: clamp block width to ≥ 0; stripe pattern per kind; waste sliver from `wasted_cost`.
 - `STAT` map covers all five statuses. `max()` guarded for empty lists. `failure_economics` may be empty.
 - Date pill from `window` ("Sep 18 – 25, 2026 (PT)"). Sessions list from `line_items` (top N by cost, "+K more" folded). Model list from `by_model` with price basis.
@@ -739,7 +741,7 @@ Then view `$OUT/report.html` rendered to PNG (Chrome `--screenshot` for a fixed 
 Order becomes: hero + sub-line + story → **Wins vs mistakes** → cost ribbon → the rest as in `brief.md:33-42`. One card, three parts:
 
 - **(a) Cost of mistakes**: one line under the hero, "Cost of mistakes: ≈$X.XX estimated · N episodes · M min of your time · K unmeasured", with the ESTIMATE tag and a hover-free footnote "same-session wasted turns, each counted once". The dollar figure is the **low** figure, `spend.mistakes_estimated_usd`. "M min of your time" is `spend.mistakes_alex_minutes`, shown only when known ("your time: unknown" otherwise). "K unmeasured" appears when K > 0. The **high** figure is never in this line. It appears only in Details as "Upper bound: ≈$Y.YY (adds 60-minute redo windows and project-wide fallback; likely 5–10× too high)". If there were bad outbound incidents, a second short line says "N sends to M recipients without your approval" (no dollars). The ribbon's waste segment is drawn from the same low field and carries it as `data-waste-usd="X.XX"` so 8.6 can reconcile the two from the HTML.
-- **(b) Wins shipped**: a short list, newest first while costs are unmeasured (most expensive first once costs exist), capped at 5 with "+K more" folded into Details. Each row: kind icon (PR / publish / finished / praise count), title, day, and the cost: "unmeasured (session not linked to PR)" by default; "≈$X.XX estimated · session-linked" once R4 exists; "≈$X.XX estimated · attribution fallback (worktree lineage)" only if G11 approves it. Extrapolated wins use the gray `EXTRAPOLATED · low confidence` tag. A last row "Not tied to a win: ≈$Z.ZZ" appears only when some win cost is computed. This replaces nothing; the existing "What got done" card stays below for the full outcome list, and 3.3's sidebar is unchanged.
+- **(b) Wins shipped**: a short list, newest first while costs are unmeasured (most expensive first once costs exist), capped at 5 with "+K more" folded into Details. Each row: kind icon (PR / publish / praise), title, day, and the cost: "unmeasured (session not linked to PR)" by default (G11); "≈$X.XX estimated · session-linked" once R4 exists; praise rows always "unmeasured". There is no fallback label (G11). Extrapolated wins use the gray `EXTRAPOLATED · low confidence` tag. A last row "Not tied to a win: ≈$Z.ZZ" appears only when some win cost is computed. This replaces nothing; the existing "What got done" card stays below for the full outcome list, and 3.3's sidebar is unchanged.
 - **(c) Two timelines on one time axis**: one inline SVG, width computed from `by_day` length like the day chart (3.3). Shared x axis = PT days in the window, partial last day marked. Wins above the axis as dots sized by count (label = count; value = attributed dollars, or "unmeasured"); mistakes below the axis as red bars of low mistake dollars per day, with a hollow marker on days that have only unmeasured episodes and a small outbound mark on days with a bad outbound incident. Empty days show a small tick, not a gap. Each dot and bar is an `<a href="#win-<win_id>">` / `<a href="#mistakes-<day>">` link to its entry in Details. No `<script>`.
 - **Details additions**: a "Wins" sub-section (one entry per win with `id="win-<win_id>"`: title, url, sessions, tokens by type, cost, attribution method, evidence IDs) and a "Mistakes by day" sub-section (one entry per day with `id="mistakes-<day>"`: low and high dollars by pattern, unmeasured episodes, Alex-minutes, outbound incidents, top examples with session id and time, scrubbed excerpts). Chrome opens a closed `<details>` when navigating to a fragment inside it; verify this in the checks below. If it does not, keep these two sub-sections outside the fold (always open) and keep the rest folded. The PDF (`--print`) renders both timelines plus these entries as tables.
 - Everything is computed from `report.json`; no hand-written numbers.
@@ -776,7 +778,7 @@ Guards: no `<script>`; the mistakes line never reads anything but `spend.mistake
 
 **Goal of the session:** when `OPENROUTER_API_KEY` is present in the environment, the report can show a MEASURED period total next to the estimate, with honest reconciliation. Without it, the estimate path stays as-is. One commit.
 
-**Needs Alex's explicit go:** providing `OPENROUTER_API_KEY` to a report run. The key is supplied as an environment variable through the house's secure secret request flow (mechanism UNVERIFIABLE, see Phase 0). The script never reads a settings file, never prints the key, never writes it to any output, and never calls the endpoint when the variable is unset.
+**Approved by G5 (Alex 2026-09-25):** a regular inference `OPENROUTER_API_KEY` may be provided to a report run; no management or provisioning key. The key is supplied as an environment variable through the house's secure secret request flow (mechanism UNVERIFIABLE, see Phase 0). The script never reads a settings file, never prints the key, never writes it to any output, and never calls the endpoint when the variable is unset.
 
 ### 4.1 What the endpoint gives (Phase 0 E)
 
@@ -787,7 +789,7 @@ Guards: no `<script>`; the mistakes line never reads anything but `spend.mistake
 - `acr.py measure-openrouter --out <dir>`: if `OPENROUTER_API_KEY` is unset, write `measured.json = {status: "unavailable", reason: "OPENROUTER_API_KEY not provided"}` and exit 0. If set, call the endpoint once, store `{status: "ok", fetched_at_utc, fetched_at_pt, usage_daily, usage_weekly, usage_monthly, usage_lifetime, key_hint: null}` and nothing else. No key material in outputs. Errors → `status: "error"` with the HTTP status only.
 - Reconciliation rule, because the buckets are UTC calendar and the report window is PT: the measured figure is shown only as `usage_weekly` or `usage_monthly` **with its own bucket label** ("OpenRouter measured, current UTC week Mon 21 Sep – now"). It is never re-cut to the PT window. If the report window is not fully inside one bucket, the render says "measured bucket does not match the report window; shown for reference".
 - Per-session measured cost is not available from this endpoint. Line items keep `cost_basis: estimated_usage`. Only the `spend.agent_measured_usd` total and `measured_status: "ok (period bucket)"` change. The hero switches to MEASURED only when the bucket fully covers the window (`bucket_start_utc <= window_start_utc and now >= window_end_utc`); otherwise the hero stays ESTIMATED and the measured figure sits beside it.
-- Sanctioned range source for later: `GET /api/v1/activity?date=` gives per-day per-model USD for the last 30 days, but needs a management/provisioning key, not the inference key. Document this in SKILL.md as the upgrade path and stop there. Do not implement it in this phase. (Open question O2.)
+- Sanctioned range source for later: `GET /api/v1/activity?date=` gives per-day per-model USD for the last 30 days, but needs a management/provisioning key, not the inference key. Document this in SKILL.md as a possible upgrade path and stop there. Do not implement it. G5 settled it: no management key, so O2 is closed.
 - The observer note-taker's OpenRouter spend is part of the same key's usage if the observer uses that key. The render must say: "measured total includes note-taker calls if they share this key; the estimate above excludes them".
 
 ### 4.3 Verification checklist
@@ -817,7 +819,7 @@ python3 scripts/acr.py render --in <report.json with measured status ok> --out .
 
 **Goal of the session:** define and test the path that turns Mac sessions from "extrapolated (low confidence)" into measured tokens. Until Alex runs it, nothing changes in the numbers. One commit (script + docs + tests only).
 
-**Needs Alex's explicit go:** running anything on Alex's Mac, and copying any file off it. Two sanctioned ways exist. (a) Alex runs the export and shares the file. (b) An orchestrating agent runs `acr.py collect --export-device mac` on Alex's registered Mac through the house's registered-machine tooling and copies the small export file to the box. Way (b) happens only after Alex's explicit go for that specific run (window, machine, destination path named). A go for one run is not a go for the next.
+**Needs Alex's explicit go:** running anything on Alex's Mac, and copying any file off it. Two sanctioned ways exist. (a) Alex runs the export and shares the file. (b) An orchestrating agent runs `acr.py collect --export-device mac` on Alex's registered Mac through the house's registered-machine tooling and copies the small export file to the box. Way (b) happens only after Alex's explicit go for that specific run (window, machine, destination path named). A go for one run is not a go for the next. **G6 (Alex 2026-09-25): yes to the Mac export for Sep 18–26.** That go covers one run: window 2026-09-18 to 2026-09-26 exclusive, Alex's registered Mac, destination `$ACR_TMP/p5/device-usage-mac.json` on the box. Any other window or a re-run needs its own go.
 
 ### 5.1 Facts that shape this
 
@@ -867,8 +869,8 @@ Grok Bot is Cursor's cloud agent. The house runs it with "No xAI key" (`/home/bo
 ### 6.2 What to implement
 
 - `spend.grok_bot_usage = {status: "unavailable", reason: "no documented API or export for Cursor Grok Bot seat usage", checked_sources: [...urls above...]}` written by `rollup`.
-- Render: a sidebar row and a Details line "Grok Bot usage: unavailable (Cursor exposes seat usage only on the plan screen)". No dollar figure. No seat count unless Alex provides one (open decision G4), in which case it renders as "N seats · usage unavailable".
-- SKILL.md: a short "Grok Bot" paragraph stating this, and that if Alex supplies a screenshot or manual figure it is entered as `measured_manual` with `entered_by: Alex` and the date, never inferred.
+- Render: a sidebar row and a Details line "Grok Bot usage: unavailable (Cursor exposes seat usage only on the plan screen)". No dollar figure. No seat count (G4, settled): the row reads exactly "Grok Bot usage: unavailable" and nothing else.
+- SKILL.md: a short "Grok Bot" paragraph stating this. Alex chose "unavailable" with no seat count (G4); if Alex ever supplies a manual figure it is entered as `measured_manual` with `entered_by: Alex` and the date, never inferred, and that would be a new decision.
 
 ### 6.3 Verification checklist
 
@@ -880,7 +882,7 @@ python3 -c "import json;d=json.load(open('<report.json>'));assert d['spend']['gr
 
 ### 6.4 Anti-pattern guards
 
-- Never $0.00 for Grok Bot. Never a guessed per-seat price from third-party sites.
+- Never $0.00 for Grok Bot. Never a guessed per-seat price from third-party sites. Never a seat count (G4).
 - Do not add an xAI API call; the house has no xAI key for this.
 
 ---
@@ -894,18 +896,18 @@ python3 -c "import json;d=json.load(open('<report.json>'));assert d['spend']['gr
 Keep verbatim: Purpose (`:14-18`), Questions (`:24-32`), Progressive Mem Search (`:49-72`), Work categories (`:74-76`), Failure types and Rework lock (`:78-84`), Money labeling table (`:119-128`), Truthfulness ALWAYS rules (`:184-195`), Creed (`:213-215`).
 
 Replace:
-- Frontmatter `description`: "Believable agent cost report for any period, default past 7 days PT. Measured tokens from Claude Code transcripts priced at OpenRouter list prices (ESTIMATED), measured provider spend when a sanctioned source exists, note-taker cost separate, Timing-style HTML/PDF plus report.json, line-items.csv, evidence.json." Add `allowed-tools: [Bash, Read, Write, AskUserQuestion]` in the list form of `plugin/skills/cloud-sync/SKILL.md:4-7` (and the MCP search tools the mem-search flow needs).
-- Default scope (`:42-47`): past 7 days PT, end exclusive; `--session`; `--project` + period.
+- Frontmatter `description`: "Believable agent cost report for any period, default the last 7 full days PT, not counting today. Measured tokens from Claude Code transcripts priced at OpenRouter list prices (ESTIMATED), measured provider spend when a sanctioned source exists, note-taker cost separate, Timing-style HTML/PDF plus report.json, line-items.csv, evidence.json." Add `allowed-tools: [Bash, Read, Write, AskUserQuestion]` in the list form of `plugin/skills/cloud-sync/SKILL.md:4-7` (and the MCP search tools the mem-search flow needs).
+- Default scope (`:42-47`): the last 7 full days PT, today excluded, end exclusive (G3); `--session`; `--project` + period.
 - Cost model (`:86-117`): the Phase 1/2 formulas. Delete the `discovery_tokens × input` line and the PRICE-TABLE path (`:117`). Add the observer line "priced separately, never agent cost".
 - Deliverables (`:161-182`): the Timing-style section order from `brief.md:33-42`, dollars to two decimals with labels, Details section contents.
 - Recipe (`:197-204`): the exact commands, in order: `prices` → `collect` → `rollup` → review (mem-search confirm pass, `review --apply`) → `render` → `pdf` → optional `measure-openrouter` (needs Alex's go) → optional `--device-usage` merge (needs Alex's go).
 - Add "Gaps and gates": OpenRouter key, Mac export, Grok Bot, each marked "needs Alex's explicit go".
-- Remove house-only links that do not resolve outside this box (`sand-workflow:*` at `:40,51`) or keep them only in the house copy (open decision G2).
+- Remove house-only links that do not resolve outside this box (`sand-workflow:*` at `:40,51`) or keep them only in the house copy (open question O3; G2 only settles that the mirrors ship, which makes the plugin copy and the mirrors public).
 
 ### 7.2 Sync: copy + checksum
 
 - Add `scripts/acr.py sync-check [--write]` that compares `sha256sum` of `SKILL.md` and every file under `scripts/` across: plugin dir (source of truth), `/home/box/agent-data/workflows/agent-cost-report/`, and the four mirrors `/workspace/claude-mem/{claude-mem-cursor,claude-mem-grok-bot,cowork,openclaw}/skills/agent-cost-report/`. Without `--write` it reports drift and exits 1. With `--write` it copies plugin → others and re-checks. Destinations are a list in one place, overridable by `--dest`.
-- The house copy path is outside the repo; the mirrors in the repo are only written if decision G2 says the mirrors ship (today the mirror `mem-search` files are host-adapted, but the six `agent-cost-report` copies are byte-identical, so byte-copy is the current truth).
+- The house copy path is outside the repo. The four mirrors in the repo are written too (G2, settled: the mirror plugins carry the skill as byte copies, tracked in git). Today the mirror `mem-search` files are host-adapted, but the six `agent-cost-report` copies are byte-identical, so byte-copy is the truth to keep.
 - Write a `CHECKSUMS.txt` next to SKILL.md in the plugin dir (sha256 of every shipped file) so drift is visible in git diffs.
 
 ### 7.3 Verification checklist
@@ -918,7 +920,7 @@ grep -c 'PRICE-TABLE' SKILL.md             # expect 0
 grep -c '¢\|cents' SKILL.md                # expect 0
 grep -n "needs Alex" SKILL.md              # OpenRouter key, Mac, Grok Bot, merge/publish
 python3 scripts/acr.py sync-check          # reports drift (expected before --write)
-python3 scripts/acr.py sync-check --write  # only for destinations decision G2 allows; house copy always
+python3 scripts/acr.py sync-check --write  # all destinations: house copy plus the four mirrors (G2)
 sha256sum -c CHECKSUMS.txt
 md5sum SKILL.md /home/box/agent-data/workflows/agent-cost-report/SKILL.md
 ```
@@ -927,7 +929,7 @@ md5sum SKILL.md /home/box/agent-data/workflows/agent-cost-report/SKILL.md
 
 - Do not drop or reword the eight truth rules.
 - Do not put CSS or code in SKILL.md; point to `scripts/`.
-- Do not write into mirrors that decision G2 excludes.
+- Do not write into any destination outside the 7.2 list (plugin dir, house copy, the four mirrors per G2).
 - Do not edit `CHANGELOG.md` (generated).
 
 ---
@@ -990,7 +992,7 @@ Any drift outside tolerance gets a written explanation in `VERIFICATION.md` with
 ```bash
 python3 scripts/acr.py rollup --session <a content_session_id with a transcript> --out $OUT/single && python3 scripts/acr.py render --in $OUT/single/report.json --out $OUT/single
 python3 scripts/acr.py rollup --project claude-mem --start 2026-09-18 --end 2026-09-26 --out $OUT/proj && python3 scripts/acr.py render --in $OUT/proj/report.json --out $OUT/proj
-python3 scripts/acr.py rollup --out $OUT/default && python3 -c "import json;w=json.load(open('$OUT/default/report.json'))['window'];print(w)"   # default = past 7 days PT, end exclusive
+python3 scripts/acr.py rollup --out $OUT/default && python3 -c "import json,datetime,zoneinfo;w=json.load(open('$OUT/default/report.json'))['window'];print(w);today=datetime.datetime.now(zoneinfo.ZoneInfo('America/Los_Angeles')).date();assert w['end_exclusive_pt']==today.isoformat() and w['start_pt']==(today-datetime.timedelta(days=7)).isoformat() and w['partial_last_day'] is False"   # default = last 7 full PT days, today excluded (G3)
 ```
 
 ### 8.3 Anti-pattern greps (all must pass)
@@ -1057,7 +1059,7 @@ assert sum(x['count'] for x in d['timeline']['wins_by_day'])==len(w['items'])
 PY
 ```
 
-- Hand-check 5 wins: the PR or publish really happened in the window (`gh pr view` read-only, or the transcript line). If costs are session-linked or fallback, check that the named sessions really led to it. Record in `VERIFICATION.md`.
+- Hand-check 5 wins: the PR or publish really happened in the window (`gh pr view` read-only, or the transcript line). If costs are session-linked, check that the sessions named in the commit trailers really led to it (there is no fallback path, G11). Record in `VERIFICATION.md`.
 - Hand-check 3 mistake days: the day's dollars match the flagged turns listed in its Details entry.
 - Click-through: every timeline link resolves to a Details entry (3.8 checks), and the screenshot of `report.html#win-<id>` shows the entry.
 - Any gap outside one cent is a bug, not drift. Fix it before shipping.
@@ -1082,34 +1084,40 @@ Any number outside tolerance gets a written reason in `VERIFICATION.md`. Frustra
 
 ## What ships
 
-- **PR:** from `work/cost-report-weekly` to `main` on `thedotmack/claude-mem`, opened as a draft after Phase 8, titled "feat(skills): agent-cost-report rebuilt on transcript-measured tokens, Timing-style, dollars". Opening the PR: routine. **Merging: needs Alex's explicit go** (house loop: PR → babysit → merge only if Alex's green covers it → version-bump).
+- **PR:** from `work/cost-report-weekly` to `main` on `thedotmack/claude-mem`, opened after Phase 8 (pushing the work branch and opening the PR: routine, Alex 2026-09-25), titled "feat(skills): agent-cost-report rebuilt on transcript-measured tokens, Timing-style, dollars". Opening the PR: routine. **Merging: needs Alex's explicit go** (house loop: PR → babysit → merge only if Alex's green covers it → version-bump).
 - **Babysit:** `/claude-mem:babysit` on the PR until CI and review comments are clear.
-- **Version bump:** a new bundled skill with scripts is a MINOR bump by the house precedent (`plans/2026-09-16-grok-bot-live-index.md`, Phase 4). **Needs Alex's explicit go.** npm publish stays a human step (`plugin/skills/version-bump/SKILL.md` description).
-- **Publishing consequence to decide first (G1):** `sync-marketplace.cjs` already installs the untracked dir locally, and `package.json` `files` includes `plugin/skills`, so merging makes this skill part of the public plugin and the npm package. If Alex wants it house-only, Phase 0 still tracks it on this branch, but the PR target changes (see G1).
-- **Gated steps, each "needs Alex's explicit go":** providing `OPENROUTER_API_KEY` (Phase 4); running the collector on the registered Mac and copying the export, per run (Phase 5); any manual Grok Bot figure (Phase 6); running the behavior classifier and its spend cap (Phase 2B, G8); keeping or exporting Grok Bot chat turns (R1, G14); write-time human/bot tagging in claude-mem (R2 upstream, separate plan); model-id logging for Grok and Codex (R3 upstream, separate plan); stamping session ids in PR bodies or commit trailers in the house ship flow (R4, G13); writing into mirror plugin dirs (Phase 7, G2); merge; version-bump; publish.
+- **Version bump:** MINOR (G7, settled by Alex 2026-09-25; matches the house precedent in `plans/2026-09-16-grok-bot-live-index.md`, Phase 4). **Running `/version-bump` still needs Alex's separate go.** npm publish stays a human step (`plugin/skills/version-bump/SKILL.md` description).
+- **Publishing consequence (G1, settled: public):** `sync-marketplace.cjs` already installs the untracked dir locally, and `package.json` `files` includes `plugin/skills`, so merging makes this skill part of the public claude-mem plugin and the npm package. Alex chose that. The PR target is `main`.
+- **Still gated, each needs Alex's separate go (Alex, 2026-09-25 4:42pm PT):** merging to `main`; npm publish; running `/version-bump`. Nothing else in this plan waits on Alex.
+- **Approved in principle by the green:** a regular `OPENROUTER_API_KEY` for report runs (G5); the Sep 18–26 Mac export, that one run only (G6; any later run needs its own go); the classifier when enabled, under the $2.00 cap (G8); the plugin dir plus the four mirrors as sync destinations (G2); keeping Grok Bot chats (G14); the session id as a commit trailer, id only (G13).
+- **Upstream changes that still need their own plan and go:** write-time human/bot tagging in claude-mem (R2); model-id logging for Grok and Codex (R3); the Grok Bot chat retention mechanism (R1); stamping the `Claude-Session` trailer in the house ship flow (R4). This plan builds only the report side and shows the listed fallbacks until they land.
 
 ---
 
-## Green checklist (decisions only Alex can make)
+## Green checklist (Alex's decisions, 2026-09-25 4:42pm PT, relayed by Ori, against commit `7f5e9e7d`)
 
-- **G1 — Public or house-only?** Merge to `main` ships the skill and its Python scripts in the public plugin and npm package. Default if unanswered: open the PR as draft and stop before merge.
-- **G2 — Mirrors.** Should `claude-mem-cursor`, `claude-mem-grok-bot`, `cowork`, `openclaw` carry `agent-cost-report` (byte copies, tracked in git), or only the plugin dir plus the house copy? Default: plugin + house copy only; mirrors untouched until answered.
-- **G3 — Default window edge.** "Past 7 days" including today as a partial day (default in this plan, matches the research run), or the last 7 complete days ending yesterday?
-- **G4 — Grok Bot seats.** Do you want a seat count shown next to "usage unavailable"? If yes, what is the number and where does it come from (plan screen)?
-- **G5 — OpenRouter key.** Go / no-go on providing `OPENROUTER_API_KEY` as an env var for report runs, and whether a management/provisioning key for `/api/v1/activity` is something you want at all.
-- **G6 — Mac export.** Go / no-go on running `acr.py collect --export-device mac` on your Mac for Sep 18–26 before the transcripts age out (about Oct 18 at the 30-day default).
-- **G7 — Version bump size.** MINOR (proposed) or PATCH.
-- **G8 — Behavior classifier.** On or off (default off, heuristics only). If on: model (proposed Claude Haiku 4.5, list $1 in / $5 out per MTok, about $0.001 per message per Frustration Arc), path (OpenRouter key per G5, or Claude Code headless on the Max plan), and the per-run spend cap (proposed $2.00, hard stop; expected ≈$0.45–$0.80 a week).
-- **G9 — Behavior tiles up top.** Are these the 4 numbers in the summary: Invented gates / asking instead of doing, Made it up or said done when it wasn't, Broke working things, Wrong or expensive model? Everything else (over-engineering, did something not asked, wrong tool/account, bad outbound, memory loss, jargon, unclear cause) stays in Details. Over-engineering (most of your minutes, 608) is the first alternate.
-- **G10 — Keep the two metrics Frustration Arc didn't list?** Tool errors and retries (S1) and hedging (S2), both Details only. Proposed: keep both. If hedging stays: only hedges on a status or fact claim ("should be fixed", "probably deployed"), which is proposed, or also any message dense with hedge words?
-- **G11 — Fallback win cost.** Win cost shows "unmeasured" until sessions are linked to PRs (R4). Do you want the "worktree lineage + time split" estimate shown meanwhile, labeled "attribution fallback, not linked"? Default: no, show "unmeasured".
-- **G12 — What counts as a win.** Merged PRs + published items + finished work (proposed), or only merged PRs and published items? Also count deploys that stayed up 24 hours and praise moments (counted, never costed), as Frustration Arc does?
-- **G13 — Session-id linking (R4).** Go / no-go on changing the house ship flow so every PR body carries `Session: <id>` and/or every commit a `Claude-Session: <id>` trailer (proposed: both). Session ids would then be visible in public PRs on `thedotmack/claude-mem`.
-- **G14 — Keep your Grok Bot chat turns (R1).** Grok Bot chats vanish from the box after Sep 16. Is there a sanctioned export or retention setting to use for behavior counts, or do they stay "unavailable"? (Replaces the old O5.)
-- **G15 — Rule effectiveness settings.** Window N = 7 days before and after each HARD rule (proposed), minimum 50 human prompts per side (proposed), and the rule-to-pattern table seeded from Frustration Arc's `trend.md`. OK?
-- **G16 — Detector thresholds.** House default model per kind of work for P3 (proposed from Frustration Arc: Claude for claude-mem work, deepseek-flash for cheap evals), bad outbound recipient threshold (proposed 10), and the final-message word limit for P11 (proposed 150).
+Each item keeps the question as asked and records the answer. The answers are binding; the plan text above has been reconciled with them.
 
-The old recovery question (G13 in the previous revision) is settled by Frustration Arc's rule: retries that worked are in the redo window, so they count only in the high figure.
+- **G1 — Public or house-only?** Merge to `main` ships the skill and its Python scripts in the public plugin and npm package. **Decision: ship in the public claude-mem plugin.** PR target is `main`; merge itself stays gated.
+- **G2 — Mirrors.** Should `claude-mem-cursor`, `claude-mem-grok-bot`, `cowork`, `openclaw` carry `agent-cost-report` (byte copies, tracked in git)? **Decision: yes, the mirror plugins carry the skill.** Phase 7's sync writes plugin dir, house copy, and all four mirrors.
+- **G3 — Default window edge.** "Past 7 days" including today as a partial day, or the last 7 complete days ending yesterday? **Decision: the last 7 full days in PT, not counting today.** `end` = the PT midnight that started today (exclusive), `start` = `end − 7 days`. The default window has no partial day (1.2, 3.3, 7.1, 8.2 updated).
+- **G4 — Grok Bot seats.** Seat count next to "usage unavailable"? **Decision: show "unavailable", no seat count.** (6.2 updated.)
+- **G5 — OpenRouter key.** Go / no-go on `OPENROUTER_API_KEY` for report runs, and whether a management key is wanted. **Decision: a regular inference key is fine; no management key.** O2 is closed (Phase 4 updated).
+- **G6 — Mac export.** Go / no-go on `acr.py collect --export-device mac` for Sep 18–26. **Decision: yes, for Sep 18–26.** One run; window, machine, and destination are named in Phase 5. Any other run needs its own go.
+- **G7 — Version bump size.** MINOR or PATCH? **Decision: MINOR.** Running `/version-bump` is still gated.
+- **G8 — Behavior classifier.** On or off; model, path, cap? **Decision: off by default; $2.00 cap per run when enabled.** Model Claude Haiku 4.5 at list, path per G5 or Claude Code headless (2B.4 updated).
+- **G9 — Behavior tiles up top.** The 4 proposed tiles? **Decision: the plan's 4 tiles** (Invented gates / asking instead of doing; Made it up or said done when it wasn't; Broke working things; Wrong or expensive model). Everything else in Details.
+- **G10 — Keep the two metrics Frustration Arc didn't list, and how to define hedging?** **Decision: keep both; hedging = caveats or "can't be sure" when the answer was already available.** S2's detector now requires that the answer was available (an earlier tool result covers it, or a read-only check was possible and not run); the density rule is dropped (2B.3 updated).
+- **G11 — Fallback win cost.** Show the "worktree lineage + time split" estimate meanwhile? **Decision: no. Win cost shows "unmeasured" until sessions are linked to PRs.** The fallback is removed from 2.8, 3.8, 8.6, and the schema.
+- **G12 — What counts as a win.** **Decision: a win is a merged PR, a published version, or Alex praising the work.** Finished work is not a win and stays in "What got done"; 24-hour deploys are not counted; praise wins are counted and never costed (2.8 updated).
+- **G13 — Session-id linking (R4).** PR body line and/or commit trailer? **Decision: stamp the session id as a commit trailer, id only.** `Claude-Session: <content_session_id>`, bare id, no PR body line. The house ship-flow change is a separate upstream plan; this report reads the trailer once it exists (0.5, 2.8 updated).
+- **G14 — Keep your Grok Bot chat turns (R1).** **Decision: keep Grok chats.** The retention mechanism is upstream with its own plan; until then Grok Bot episodes stay "unavailable" (0.5 updated).
+- **G15 — Rule effectiveness settings.** **Decision: plan defaults.** N = 7 days before and after, minimum 50 human prompts per side, rule table seeded from Frustration Arc's `trend.md`.
+- **G16 — Detector thresholds.** **Decision: plan defaults.** House default model table from Frustration Arc (Claude for claude-mem work, deepseek-flash for cheap evals), bad outbound recipient threshold 10, final-message limit 150 words.
+
+**Still gated after the green, each needs Alex's separate go:** merging to `main`, npm publish, `/version-bump`. Pushing the work branch and opening the PR are routine.
+
+The old recovery question (the previous revision's G13, before renumbering; unrelated to today's G13) is settled by Frustration Arc's rule: retries that worked are in the redo window, so they count only in the high figure.
 
 ## Risks
 
@@ -1119,21 +1127,23 @@ The old recovery question (G13 in the previous revision) is settled by Frustrati
 - **Keyword labels in a manager report.** Without the review pass, categories are guesses. Phase 2's `label_source` and the footer count make the state visible; they do not make the labels right.
 - **Remote sessions cannot join transcripts on the box.** Only the Mac-side export fixes this; extrapolation stays low confidence until then.
 - **Price drift.** List prices change; the report states the fetch date and the 1h rule used, and the comparison run pins the saved price file.
-- **Win attribution is a judgment call.** If G11 turns on the lineage fallback, it can pull in unrelated sessions on a long-lived worktree or miss work done elsewhere. It is labeled as a fallback estimate next to every win cost, and 8.6 hand-checks 5 wins.
+- **Win attribution is a judgment call.** G11 settled it: no lineage fallback, so every win cost is "unmeasured" until R4 lands. Once trailers exist, a linked cost is only as good as the id an agent stamped; 8.6 hand-checks 5 wins.
 - **Bot-written "user" messages.** About 31% of "user" messages were agents. Without the R2 tagger, behavior counts would be inflated and relayed text would be shown as Alex's words. Phase 2B refuses to count until the tagger passes, and 8.5 checks it by hand.
 - **Thin human data.** The box has few Alex-typed messages after Sep 19 and no Grok Bot chats after Sep 16. Most recent episodes (Frustration Arc's M01–M07) are invisible to the report, and per-100-prompt rates can collapse (Sep 21 week: 18 prompts, 38.9 per 100). The report shows denominators and "not enough data" rather than a rate.
 - **High figure overstates.** The high figure is 5–10× too high by Frustration Arc's own check. It stays in Details, labeled as an upper bound.
 - **Different cost basis from Frustration Arc.** Its dollars price `discovery_tokens`; this report prices transcript tokens. 8.7 compares episodes tightly and dollars loosely, and without the Mac export the last week's dollars are "unmeasured" here.
 - **Wins look free or unknown.** Until sessions are linked to PRs (R4), every win cost is "unmeasured", so "Wins vs mistakes" shows dollars on one side only. The render says why.
-- **Session ids in public PRs (R4).** Stamping ids makes them visible on a public repo. G13 decides; ids are opaque but still identify sessions.
+- **Session ids in public commits (R4).** G13 settled: the id goes in a commit trailer, id only, so it is visible in the public repo's history. Ids are opaque but still identify sessions.
 - **Behavior heuristics are noisy.** Keyword and structure rules will flag some honest turns and miss some bad ones. Counts stay labeled heuristic, and Phase 8 precision gates what reaches the summary.
 - **Alex's words behind the metrics are partly secondhand.** Frustration Arc's 142 episodes mix Alex-typed prompts with relayed lines; its Sep 21–25 episodes are rebuilt from rule files and an agent-written transcript. The planner's own quotes (2B.0) are mostly relayed too.
 - **`${CLAUDE_SKILL_DIR}` may not exist.** SKILL.md gives the "resolve this file's directory" instruction first.
 
 ## Open questions
 
+Not part of the green. O1, O3, and O4 are still open; the plan's proposed defaults apply until Alex says otherwise.
+
 - **O1 — Session count basis.** Research counted 80; the live probe counted 81 `sdk_sessions` (one codex). Which is the manager-facing number: all sessions, or Claude-only? Phase 2 counts all and shows platform in Details; confirm.
-- **O2 — Activity endpoint.** If a management key is acceptable (G5), per-day per-model measured USD for the last 30 days becomes possible, which could replace the estimate for the box. Out of scope until answered.
+- **O2 — Activity endpoint.** Closed by G5 (no management key). Per-day per-model measured USD from `/api/v1/activity` stays a documented upgrade path only.
 - **O3 — House copy of SKILL.md with `sand-workflow:*` links.** Keep those links only in the house copy, or drop them everywhere?
 - **O5 — Grok Bot chats as a source.** Moved to G14 (prerequisite R1).
 - **O4 — Where do report outputs go by default?** The current skill writes to a workspace path (`SKILL.md:163`). Proposed default: `~/.claude-mem/reports/agent-cost-report/<start>_<end>/`. Confirm or name another.
