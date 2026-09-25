@@ -9,7 +9,8 @@
  *   - Token verification. This happens HERE, never in the DO (anti-pattern
  *     #3: no outbound I/O of any kind from the DO). Verdicts are checked
  *     against the cmem.ai verify endpoint (TOKEN_VERIFY_URL) and positive
- *     verdicts are cached in Workers KV (AUTH_CACHE) with a short TTL.
+ *     verdicts are cached in isolate memory plus Workers KV (AUTH_CACHE).
+ *     Default TTL is 15 minutes (min 60s / max 60m).
  *   - Route to `env.SYNC_HUB.getByName(userId)` and call RPC methods on the
  *     stub — non-WS data never flows through stub.fetch().
  *
@@ -53,10 +54,16 @@ import { runWatchdog } from "./watchdog";
 // The DO class must be exported from the Worker entrypoint.
 export { SyncHub };
 
-/** KV minimum expirationTtl and the public token-rotation bound are both 60s. */
-const MIN_CACHE_TTL_SECONDS = 60;
-const MAX_CACHE_TTL_SECONDS = 60;
-const DEFAULT_CACHE_TTL_SECONDS = 60;
+/** Cloudflare KV's minimum expirationTtl. */
+export const AUTH_CACHE_TTL_MIN_SECONDS = 60;
+/** Upper clamp — revocation / rotation can linger this long on a warm cache. */
+export const AUTH_CACHE_TTL_MAX_SECONDS = 3_600;
+/** Default positive-verdict TTL. Cuts KV rewrites vs the old 60s bound. */
+export const AUTH_CACHE_TTL_DEFAULT_SECONDS = 900;
+
+const MIN_CACHE_TTL_SECONDS = AUTH_CACHE_TTL_MIN_SECONDS;
+const MAX_CACHE_TTL_SECONDS = AUTH_CACHE_TTL_MAX_SECONDS;
+const DEFAULT_CACHE_TTL_SECONDS = AUTH_CACHE_TTL_DEFAULT_SECONDS;
 
 /**
  * Batch caps for POST /v1/sync/ops, sized against live Cloudflare docs
@@ -143,15 +150,65 @@ interface AuthFail {
 export interface AuthDependencies {
 	readCachedVerdict(cacheKey: string): Promise<string | null>;
 	cacheVerifiedVerdict(cacheKey: string, ttlSeconds: number): Promise<void>;
+	invalidateCachedVerdict(cacheKey: string): Promise<void>;
 	verifyToken(request: Request): Promise<Response>;
-	logCacheFailure(operation: "get" | "put", error: unknown): void;
+	logCacheFailure(operation: "get" | "put" | "delete", error: unknown): void;
 }
 
-function defaultAuthDependencies(env: Env): AuthDependencies {
+interface MemoryVerdict {
+	expiresAtMs: number;
+}
+
+/** Per-isolate positive verdicts. Avoids a KV write on every miss this isolate can already serve. */
+const verdictMemory = new Map<string, MemoryVerdict>();
+
+/** Brief memo after a KV hit so a burst does not re-read KV or extend the 15–60m window. */
+const MEMORY_KV_HINT_SECONDS = 60;
+
+function readVerdictMemory(cacheKey: string, nowMs = Date.now()): boolean {
+	const entry = verdictMemory.get(cacheKey);
+	if (!entry) return false;
+	if (entry.expiresAtMs <= nowMs) {
+		verdictMemory.delete(cacheKey);
+		return false;
+	}
+	return true;
+}
+
+function writeVerdictMemory(cacheKey: string, ttlSeconds: number, nowMs = Date.now()): void {
+	verdictMemory.set(cacheKey, { expiresAtMs: nowMs + ttlSeconds * 1_000 });
+}
+
+function deleteVerdictMemory(cacheKey: string): void {
+	verdictMemory.delete(cacheKey);
+}
+
+/** Tests only: forget the per-isolate auth-verdict memo. */
+export function __resetAuthVerdictMemoryForTests(): void {
+	verdictMemory.clear();
+}
+
+export function defaultAuthDependencies(env: Env): AuthDependencies {
 	return {
-		readCachedVerdict: (cacheKey) => env.AUTH_CACHE.get(cacheKey),
-		cacheVerifiedVerdict: (cacheKey, ttlSeconds) =>
-			env.AUTH_CACHE.put(cacheKey, "1", { expirationTtl: ttlSeconds }),
+		async readCachedVerdict(cacheKey) {
+			if (readVerdictMemory(cacheKey)) return "1";
+			const stored = await env.AUTH_CACHE.get(cacheKey);
+			if (stored === "1") {
+				writeVerdictMemory(cacheKey, MEMORY_KV_HINT_SECONDS);
+			}
+			return stored;
+		},
+		async cacheVerifiedVerdict(cacheKey, ttlSeconds) {
+			// A live isolate memo means a concurrent miss already verified and
+			// wrote KV. Do not refresh the key — that was the 60s rewrite bill.
+			if (readVerdictMemory(cacheKey)) return;
+			writeVerdictMemory(cacheKey, ttlSeconds);
+			await env.AUTH_CACHE.put(cacheKey, "1", { expirationTtl: ttlSeconds });
+		},
+		async invalidateCachedVerdict(cacheKey) {
+			deleteVerdictMemory(cacheKey);
+			await env.AUTH_CACHE.delete(cacheKey);
+		},
 		verifyToken: (request) => fetch(request),
 		logCacheFailure(operation, error) {
 			// Never log the cache key: it is derived from a bearer credential.
@@ -307,8 +364,9 @@ export async function authenticateRequest(
 			};
 		}
 		// Cache positive verdicts only, and only after the user binding above —
-		// a newly-revoked token lingers at most 60 seconds; a newly-issued
-		// token is never wrongly rejected; a forged pair is never pinned.
+		// a newly-revoked token lingers at most AUTH_CACHE_TTL (default 15m,
+		// max 60m); a newly-issued token is never wrongly rejected; a forged
+		// pair is never pinned.
 		try {
 			await dependencies.cacheVerifiedVerdict(cacheKey, cacheTtlSeconds(env));
 		} catch (error) {
@@ -319,6 +377,13 @@ export async function authenticateRequest(
 		return { ok: true, userId, deviceId, deviceName };
 	}
 	if (verifyRes.status === 401 || verifyRes.status === 403) {
+		// The only revocation signal this Worker sees: upstream rejected the
+		// token. Drop a stale positive so a KV-read outage cannot pin it.
+		try {
+			await dependencies.invalidateCachedVerdict(cacheKey);
+		} catch (error) {
+			dependencies.logCacheFailure("delete", error);
+		}
 		return { ok: false, response: errorResponse(401, "invalid token") };
 	}
 	return {
