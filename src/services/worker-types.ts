@@ -56,6 +56,8 @@ export interface ActiveSession {
    * queued-work turn is answered (#4066).
    */
   consecutiveResponseStalls?: number;
+  /** Consecutive identity-missing exits; bounds automatic recovery attempts. */
+  consecutiveIdentityResumes?: number;
   /**
    * The delayed resume a response stall scheduled. Any generator start cancels
    * it, so a stale timer never restarts a session a newer generation paused.

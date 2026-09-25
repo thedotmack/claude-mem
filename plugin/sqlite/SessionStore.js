@@ -909,12 +909,12 @@ ${A.stack??""}
       FROM user_prompts
       WHERE content_session_id = ? AND prompt_number = ?
       LIMIT 1
-    `).get(e,s)?.prompt_text??null}storeObservation(e,s,t,n,o=0,r,a){if(!t.title||t.title.trim()==="")throw new Error("storeObservation requires a non-empty title");let d=this.storeObservations(e,s,[t],null,n,o,r,a);return{id:d.observationIds[0],createdAtEpoch:d.createdAtEpoch}}storeSummary(e,s,t,n,o=0,r){let a=r??Date.now(),d=new Date(a).toISOString(),l=this.db.prepare(`
+    `).get(e,s)?.prompt_text??null}storeObservation(e,s,t,n,o=0,r,a){if(!t.title||t.title.trim()==="")throw new Error("storeObservation requires a non-empty title");let d=this.storeObservations(e,s,[t],null,n,o,r,a);return{id:d.observationIds[0],createdAtEpoch:d.createdAtEpoch}}storeSummary(e,s,t,n,o=0,r){if(!e)throw new Error("storeSummary requires a non-null memorySessionId");let a=r??Date.now(),d=new Date(a).toISOString(),l=this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
        next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(e,s,t.request,t.investigated,t.learned,t.completed,t.next_steps,JSON.stringify(t.files_read??[]),JSON.stringify(t.files_edited??[]),t.notes,n||null,o,d,a);return{id:Number(l.lastInsertRowid),createdAtEpoch:a}}storeObservations(e,s,t,n,o,r=0,a,d){let u=a??Date.now(),l=new Date(u).toISOString();return this.db.transaction(()=>{let T=[],R=this.db.prepare(`
+    `).run(e,s,t.request,t.investigated,t.learned,t.completed,t.next_steps,JSON.stringify(t.files_read??[]),JSON.stringify(t.files_edited??[]),t.notes,n||null,o,d,a);return{id:Number(l.lastInsertRowid),createdAtEpoch:a}}storeObservations(e,s,t,n,o,r=0,a,d){if(!e)throw new Error("storeObservations requires a non-null memorySessionId");let u=a??Date.now(),l=new Date(u).toISOString();return this.db.transaction(()=>{let T=[],R=this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,

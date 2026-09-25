@@ -57,7 +57,7 @@ export async function handleGeneratorExit(
   // (except provider_switch, which parks a live buffer for a provider change).
   // Falling through to finalizeSession would remove the session and undo that
   // preservation — the second half of #3752.
-  const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
+  const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport', 'identity'];
   if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,

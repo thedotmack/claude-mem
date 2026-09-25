@@ -1255,6 +1255,8 @@ describe('ResponseProcessor', () => {
 
       expect(resetProcessingToPending).toHaveBeenCalledWith(1);
       expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('identity:memory_session_id');
+      expect(session.abortController.signal.aborted).toBe(true);
     });
   });
 

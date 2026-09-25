@@ -29,6 +29,8 @@ import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
+
+const MAX_CONSECUTIVE_IDENTITY_RESUMES = 3;
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
   clearDependencyStatus,
@@ -550,6 +552,28 @@ export class SessionRoutes extends BaseRouteHandler {
               });
           }, 0);
           resume.unref?.();
+        }
+
+        if (reason === 'identity:memory_session_id') {
+          const attempts = (session.consecutiveIdentityResumes ?? 0) + 1;
+          session.consecutiveIdentityResumes = attempts;
+          if (attempts <= MAX_CONSECUTIVE_IDENTITY_RESUMES) {
+            const resume = setTimeout(() => {
+              void this.ensureGeneratorRunning(session.sessionDbId, 'memory-session-id-missing')
+                .catch(error => {
+                  logger.error('SESSION', 'Failed to resume the observer after missing memory session identity', {
+                    sessionId: session.sessionDbId,
+                  }, error instanceof Error ? error : new Error(String(error)));
+                });
+            }, 0);
+            resume.unref?.();
+          } else {
+            logger.error('SESSION', 'Observer identity was not captured; pausing automatic recovery', {
+              sessionId: session.sessionDbId,
+              attempts,
+              maxResumes: MAX_CONSECUTIVE_IDENTITY_RESUMES,
+            });
+          }
         }
 
         // A response stall preserved its claimed batch but, like a recycle, has

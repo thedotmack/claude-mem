@@ -3070,6 +3070,9 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number
   ): { id: number; createdAtEpoch: number } {
+    if (!memorySessionId) {
+      throw new Error('storeSummary requires a non-null memorySessionId');
+    }
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
@@ -3134,6 +3137,9 @@ export class SessionStore {
     overrideTimestampEpoch?: number,
     generatedByModel?: string
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
+    if (!memorySessionId) {
+      throw new Error('storeObservations requires a non-null memorySessionId');
+    }
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
