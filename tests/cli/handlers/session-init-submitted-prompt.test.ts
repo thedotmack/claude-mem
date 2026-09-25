@@ -78,17 +78,23 @@ describe('sessionInitHandler host-submitted prompt', () => {
     const workerCalls: WorkerCall[] = [];
     install(workerCalls);
 
+    // The two values must differ. With identical text this assertion still
+    // passes if the handler stores the event `prompt`, which leaves the
+    // precedence the fix introduces completely untested. Here the event
+    // carries a tool result (the shape that used to become a fake prompt row)
+    // while the host reports the text the human actually submitted.
     await sessionInitHandler.execute({
       sessionId: 'qwen-real-submission',
       cwd,
       platform: 'claude-code',
-      prompt: 'ok commit and push',
+      prompt: '<tool_result>ok commit and push</tool_result>',
       submittedPrompt: 'ok commit and push',
     });
 
     expect(workerCalls).toHaveLength(1);
     expect(workerCalls[0].apiPath).toBe('/api/sessions/init');
     expect(workerCalls[0].body.prompt).toBe('ok commit and push');
+    expect(workerCalls[0].body.prompt).not.toContain('tool_result');
   });
 
   it('still stores the media placeholder when the host sends no field at all', async () => {
