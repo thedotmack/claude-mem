@@ -169,7 +169,7 @@ describe('TranscriptWatcher startAtEnd', () => {
 
   it('reads a file discovered by the root watcher from byte 0, keeping its opening turns', async () => {
     const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e576e';
-    const filePath = join(tmpRoot, ${sessionId}.jsonl);
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
     const statePath = join(tmpRoot, 'state.json');
     const schema = createSchema();
     const watch: WatchTarget = {
@@ -183,7 +183,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     // reports it, session_meta and the opening turns are already on disk, so
     // startAtEnd must not apply to it - jumping to EOF drops the head of the
     // transcript, including the user prompt (#4211).
-    writeFileSync(filePath, ${createUserMessage(sessionId, 'opening prompt')}\n, 'utf8');
+    writeFileSync(filePath, `${createUserMessage(sessionId, 'opening prompt')}\n`, 'utf8');
 
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
     await (watcher as any).addTailer(filePath, watch, schema, true);
