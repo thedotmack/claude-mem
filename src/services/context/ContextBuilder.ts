@@ -234,6 +234,29 @@ export function observerHealthWarning(forHuman: boolean = false): string {
   return forHuman ? paintRed(notice) : notice;
 }
 
+/**
+ * The health warning for one build, or `''` when the caller opted out.
+ *
+ * The outage banner ends with an instruction meant for the primary assistant
+ * ("tell the user about this outage at the very start of your first reply").
+ * The observer's own session-start briefing is read by a model that has no user
+ * to tell, so the banner is obeyed there instead of reported: the observer
+ * answers in prose, the parser logs "non-XML prose response" and confirms the
+ * claimed batch anyway, and the batch is dropped. Nothing parses, so
+ * `lastSuccessAt` never advances, so the banner stays up - the failure sustains
+ * itself long after the original cause cleared (#4221).
+ *
+ * Opting out is explicit rather than inferred from `source`, so a build's
+ * audience is stated at the call site instead of being guessed.
+ */
+export function healthWarningForContext(
+  input: ContextInput | undefined,
+  forHuman: boolean = false
+): string {
+  if (input?.includeHealthWarning === false) return '';
+  return observerHealthWarning(forHuman);
+}
+
 function appendObserverHealthWarning(warning: string, text: string): string {
   if (!warning) return text;
   return text ? `${text}\n\n${warning}` : warning;
@@ -313,7 +336,7 @@ export async function generateContextWithStats(
 
   const rawDb = initializeDatabase();
   if (!rawDb) {
-    return { text: withObserverHealthWarning('', forHuman), stats: null };
+    return { text: healthWarningForContext(input, forHuman), stats: null };
   }
 
   try {
@@ -326,7 +349,7 @@ export async function generateContextWithStats(
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
-      return { text: withObserverHealthWarning(renderEmptyState(project, forHuman), forHuman), stats: null };
+      return { text: appendObserverHealthWarning(healthWarningForContext(input, forHuman), renderEmptyState(project, forHuman)), stats: null };
     }
 
     // `--full` is an explicit human request for everything; only the block that
@@ -335,7 +358,7 @@ export async function generateContextWithStats(
       observations,
       summaries,
       config,
-      observerHealthWarning(forHuman),
+      healthWarningForContext(input, forHuman),
       (items, cfg) =>
         buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, forHuman),
       input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,

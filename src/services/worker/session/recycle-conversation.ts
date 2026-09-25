@@ -47,6 +47,12 @@ export async function loadSessionStartContext(
       projects: [session.project],
       platformSource: session.platformSource,
       source: 'compact',
+      // This briefing is read by the observer, not by a user. The outage banner
+      // ends with an instruction addressed to the primary assistant, and a
+      // model that reads it here obeys it rather than emitting <observation>
+      // XML, so the batch is confirmed and dropped while the banner keeps
+      // itself up (#4221).
+      includeHealthWarning: false,
     });
     logger.info('SESSION', 'Briefed the observer generation with session-start context', {
       sessionId: session.sessionDbId,
