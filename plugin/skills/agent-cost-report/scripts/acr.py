@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acr import measure, period, render, rollup, transcripts  # noqa: E402
+from acr import devices, measure, period, render, rollup, transcripts  # noqa: E402
 from acr import prices as prices_mod  # noqa: E402
 
 USAGE_FILE = "usage.json"
@@ -51,6 +51,12 @@ def cmd_collect(args):
     span = f"session {args.session}" if args.session else f"{w['start_pt']} .. {w['end_exclusive_pt']} (exclusive) PT"
     print(f"collect: {span}; files_seen={c['files_seen']} rows={c['rows']} dedup_dropped={c['dedup_dropped']} "
           f"tokens={tokens} partial_last_day={w['partial_last_day']} -> {path}")
+    if args.export_device:                              # Phase 5: per-device export (ids, timestamps, tokens, models; no text)
+        try:
+            ep, doc = devices.export(args.export_device, doc, args.out, block, live_db=getattr(args, "db", None))
+        except (OSError, ValueError) as ex:
+            sys.exit(f"acr.py collect --export-device: {ex}")
+        print(f"export: device={args.export_device} rows={len(doc['rows'])} sessions={len(doc['sessions'])} -> {ep} ({os.path.getsize(ep)} bytes; safe to copy: no prompt or observation text)")
 
 
 def cmd_prices(args):
@@ -114,6 +120,8 @@ def build_parser():
     c = sub.add_parser("collect", help="measured token usage from local Claude Code / Codex transcripts -> usage.json")
     add_period_args(c)
     c.add_argument("--out", required=True, metavar="DIR", help="output directory")
+    c.add_argument("--export-device", metavar="LABEL", help="also write device-usage-LABEL.json (usage rows + this machine's session id map; no text) for a rollup on another machine")
+    c.add_argument("--db", metavar="FILE", help=argparse.SUPPRESS)
     c.set_defaults(fn=cmd_collect)
 
     p = sub.add_parser("prices", help="snapshot OpenRouter public prices -> prices.json (USD per MTok)")
@@ -134,6 +142,7 @@ def build_parser():
     r.add_argument("--classify-model", metavar="MODEL", help=argparse.SUPPRESS)
     r.add_argument("--rules-dir", metavar="DIR", help="house rule files with dated HARD headers (rule effectiveness, 2B.10)")
     r.add_argument("--measured", metavar="FILE", help="measured.json from `measure-openrouter` (default: DIR/measured.json when present)")
+    r.add_argument("--device-usage", metavar="FILE", action="append", default=[], help="device-usage-<label>.json export(s) from other machines to merge (repeatable)")
     r.set_defaults(fn=cmd_rollup)
 
     v = sub.add_parser("review", help="merge confirmed labels from a reviewed labels.review.json into report.json")

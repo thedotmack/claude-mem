@@ -137,7 +137,9 @@ def hero(d):
     n = t["finished_outcomes"]; cpo = t.get("cost_per_completed_outcome")
     sub = (f"<b>{n} thing{'s' if n != 1 else ''} finished</b>, about <b>{usd2(cpo)} each</b>" if n and cpo is not None else "<b>Nothing finished yet</b>")
     ex = s.get("extrapolated_unmeasured_usd")
-    extra = f'<div class="meas">+ {usd2(ex)} extrapolated for sessions without transcripts {tag("extra")}</div>' if ex else ""
+    if ex: extra = f'<div class="meas">+ {usd2(ex)} extrapolated for sessions without transcripts {tag("extra")}</div>'
+    elif str(s.get("extrapolation_basis", "")).startswith("all sessions measured"): extra = '<div class="meas">All sessions measured; nothing extrapolated.</div>'
+    else: extra = ""
     return (f'<div class="hero" id="overview"><div><div class="big">{big}</div><div class="basis">{basis}</div><div class="herosub">{sub}</div>'
             f'{extra}<div class="meas">{meas}</div></div><div class="headline">{story(d)}</div></div>')
 

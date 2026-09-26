@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import os
 
-from . import costs, evidence, labels, measure, mistakes, period, snapshot, wins
+from . import costs, devices, evidence, labels, measure, mistakes, period, snapshot, wins
 from . import prices as prices_mod
 from .evidence import LOCAL
 
@@ -51,12 +51,13 @@ def waste_split(li):
     li["productive_cost"] = round(c - li["wasted_cost"] - li["recovery_cost"], 2)
 
 
-def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None, glob_pattern=None):
+def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None, glob_pattern=None, device_exports=()):
     now = now or period.now_pt(); pricer = costs.Pricer(prices)
     sess = evidence.load_sessions(db, scope)
     ev, dev_labels, counts, obs_unpriced = evidence.load_evidence(db, scope, sess, pricer.observer_input_rate)
     for m, tok in obs_unpriced.items(): pricer.unpriced[m]["observer"]["tokens"] += tok
     rows = usage["rows"]
+    device_merge = devices.merge(rows, list(device_exports), sess, window_block) if device_exports else []   # Phase 5
     if scope.kind == "project":                     # keep only transcripts of sessions in the project (+ nothing else)
         keep = {v["content_session_id"] for v in sess.values()}; rows = [r for r in rows if r["session"] in keep]
     elif scope.kind == "session":                   # a period usage.json holds other sessions' rows too
@@ -71,7 +72,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
         stamps = e["stamps"] + [r["ts_ms"] for r in trs] + [s["started_at_epoch"]] + ([s["completed_at_epoch"]] if s["completed_at_epoch"] else [])
         all_stamps += stamps; active = labels.active_minutes(stamps); has_tx = bool(t["calls"])
         draft = labels.classify(e, s); status = status_of(e, s); model = costs.dominant_model(t)
-        devs = sorted({dev_labels.get(d, d) for d in e["devices"]} | ({LOCAL} if has_tx else set()))
+        devs = sorted({dev_labels.get(d, d) for d in e["devices"]} | {r.get("device") or LOCAL for r in trs})
         title = (s["custom_title"] or (s["user_prompt"] or (e["prompts"][0] if e["prompts"] else "") or (e["text"][0] if e["text"] else "")))[:120].replace("\n", " ")
         proj = s["project"] or ""
         li = dict(work_item_id=f"WI-{n}", title=title, scope=scope.kind, project=proj.split("/")[0], worktree=proj.split("/", 1)[1] if "/" in proj else "",
@@ -87,7 +88,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
                   trivial=(e["obs"] == 0 and not has_tx and active < 1), platform=s["platform_source"], session_status=s["status"],
                   observations=e["obs"], summaries=e["sums"], ship_events=len(set(e["ship_titles"])), ship_titles=sorted(set(e["ship_titles"])),
                   notes=(f"{status.replace('_', ' ')}; {e['obs']} observations, {e['sums']} summaries, {len(e['prompts'])} prompts; "
-                         + ("tokens measured from the transcript on this box" if has_tx else "no transcript on this box (remote device)")),
+                         + (("tokens measured from the transcript on this box" if all((r.get("device") or LOCAL) == LOCAL for r in trs) else "tokens measured from a device export: " + ", ".join(sorted({r["device"] for r in trs if r.get("device")}))) if has_tx else "no transcript on this box (remote device)")),
                   observer_tokens=e["obs_tok_dedup"], cost_x1e6=t["usd_x1e6"])
         items.append(li); review.append(labels.review_entry(li, draft))
         evid.append(dict(work_item_id=li["work_item_id"], memory_session_id=mid, content_session_id=cs, observation_ids=e["obs_ids"],
@@ -192,7 +193,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
                   loaded_from=prices.get("loaded_from"), rule_1h=RULE_1H, models_listed=len(prices["models"])),
                   unmatched_transcripts=unmatched_block, unpriced_models=pricer.unpriced_list(), wins=wins_block, timeline=dict(wins_by_day=wins_by_day, mistakes_by_day=mistakes_by_day),
                   behavior=behavior_block,
-                  observer=observer, devices=[dict(device=lbl, id_hash=evidence.device_hash(d)) for d, lbl in dev_labels.items()],
+                  observer=observer, devices=[dict(device=lbl, id_hash=evidence.device_hash(d)) for d, lbl in dev_labels.items()], device_exports=device_merge,
                   trivial_definition="no observations, no transcript on this box, and <1 active minute")
     aggregate(report)
     return report, evid, dict(generated_at_pt=report["generated_at_pt"], scope=scope.block(), items=review)
@@ -287,11 +288,15 @@ def run_rollup(args):
     scope, window_block = resolve_scope(args, usage)
     if scope.kind == "session" and usage["window"].get("session") not in (None, args.session):
         raise SystemExit("acr.py rollup: usage.json was collected for a different --session")
+    exports = []
+    for f in getattr(args, "device_usage", None) or []:
+        try: exports.append(devices.load(f))
+        except (OSError, ValueError) as ex: raise SystemExit(f"acr.py rollup --device-usage: {ex}")
     snap = snapshot.snapshot(args.out, live=getattr(args, "db", None)); db = snapshot.open_snapshot(snap)
     try:
         cl = dict(enabled=True, cap_usd=getattr(args, "classify_budget", None) or mistakes.classify_mod.CAP_USD, model=getattr(args, "classify_model", None)) if getattr(args, "classify", False) else None
         report, evid, review = build(usage, prices, db, scope, window_block, use_gh=not getattr(args, "no_gh", False),
-                                     behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None))
+                                     behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None), device_exports=exports)
     finally:
         db.close()
     mp = getattr(args, "measured", None) or os.path.join(args.out, "measured.json")

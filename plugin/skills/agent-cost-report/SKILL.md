@@ -203,6 +203,17 @@ Positive truth rules only:
 5. Emit HTML + JSON + CSV + evidence (+ PDF if tool present) with Scope + the five manager sections.
 6. Return absolute paths, skill slug `agent-cost-report`, totals, PDF yes/no, and how the report answers the five product questions.
 
+## Mac transcripts (needs Alex)
+
+Sessions from Alex's Mac have no transcript on the box, so their cost is EXTRAPOLATED (low confidence) until a device export is merged. Two sanctioned paths, either one needs Alex:
+
+1. Ask Alex to run, on the Mac, from a plain checkout of this skill (system `python3` 3.9+):
+   `python3 scripts/acr.py collect --export-device mac --start YYYY-MM-DD --end YYYY-MM-DD --out ~/acr-export`
+   and share `~/acr-export/device-usage-mac.json` (ids, timestamps, token counts, model names; no prompt or observation text, no settings).
+2. Only after Alex's explicit go for that specific run (window, machine, destination named), run the same command on the registered Mac through the house's registered-machine tooling and copy only `device-usage-mac.json` to the box. A go for one run is not a go for the next.
+
+Merge on the box with `python3 scripts/acr.py rollup ... --device-usage <file>`. Joined sessions flip to `estimated_usage` with `device: mac`; whatever stays unmeasured is extrapolated again and keeps its label.
+
 ## Related
 
 - [mem-search](sand-workflow:mem-search) — progressive recall (Claude-Mem)

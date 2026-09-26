@@ -113,6 +113,7 @@ def extrapolation(items):
         else:
             i["extrapolated_x1e6"] = 0
     n_un = sum(1 for i in items if not i["has_transcript"])
+    if n_un == 0 and items: return 0.0, "all sessions measured (no extrapolation needed)", ratio      # plan 5.4: say so, never drop the line silently
     basis = (f"EXTRAPOLATED (low confidence): on this box, measured sessions cost ${ratio:.2f} API-equivalent per 1M observer tokens; "
              f"applied to {u_obs:,} observer tokens from {n_un} sessions with no transcript here (remote devices). "
              f"Assumes remote work looks like box work.") if ratio is not None else "n/a (no measured session to derive a ratio from)"
