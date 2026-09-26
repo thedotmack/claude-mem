@@ -8,8 +8,8 @@ import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
-import { captureProcessStartToken, isSameProcess } from '../shared/process-identity.js';
-export { captureProcessStartToken, isSameProcess };
+import { captureProcessStartToken, captureProcessStartTimeMs, isSameProcess } from '../shared/process-identity.js';
+export { captureProcessStartToken, captureProcessStartTimeMs, isSameProcess };
 import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;

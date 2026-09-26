@@ -167,6 +167,60 @@ export function captureProcessStartToken(pid: number): string | null {
   return readStartToken(pid, false);
 }
 
+/**
+ * Best-effort process start time in epoch ms. Returns null when it cannot be
+ * read. Used only where no start token was recorded, so it is not cached.
+ *
+ * - Windows: CIM CreationDate converted to Unix ms by PowerShell itself, so the
+ *   result does not depend on this process's time zone.
+ * - Linux: /proc starttime is clock ticks since boot; add /proc/stat btime
+ *   (assumes the standard USER_HZ of 100).
+ * - Other POSIX: `ps -o lstart=` output, which Date.parse understands.
+ */
+export function captureProcessStartTimeMs(pid: number): number | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+
+  if (process.platform === 'win32') {
+    try {
+      const result = spawnSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `([DateTimeOffset](Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate).ToUnixTimeMilliseconds()`
+        ],
+        {
+          encoding: 'utf-8',
+          timeout: 5000,
+          windowsHide: true,
+          env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+        }
+      );
+      const ms = result.status === 0 ? Number(result.stdout.trim()) : NaN;
+      return Number.isFinite(ms) && ms > 0 ? ms : null;
+    } catch {
+      return null;
+    }
+  }
+
+  const token = captureProcessStartToken(pid);
+  if (token === null) return null;
+
+  if (process.platform === 'linux') {
+    try {
+      const btime = /^btime (\d+)$/m.exec(readFileSync('/proc/stat', 'utf-8'));
+      if (!btime) return null;
+      return (Number(btime[1]) + Number(token) / 100) * 1000;
+    } catch {
+      return null;
+    }
+  }
+
+  const parsed = Date.parse(token);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function isSameProcess(pid: number, snapshotToken: string | null): boolean {
   if (snapshotToken === null) return true;
   // DELIBERATELY BYPASSES THE CACHE.

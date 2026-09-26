@@ -14,7 +14,7 @@ import { killProcessTree, collectDescendantIdentities } from '../../shared/kill-
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, isSameProcess, isPidAlive } from '../../supervisor/process-registry.js';
+import { captureProcessStartToken, captureProcessStartTimeMs, isSameProcess, isPidAlive } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -37,6 +37,9 @@ const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 // An unparseable lock (typically a 0-byte file left by a crash mid-write) has no
 // owner to probe; once it is this old no concurrent writer is still filling it in.
 const CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS = 10_000;
+// A null-token lock is treated as reused only when the PID's process started
+// clearly after the lock was written (start times can be second-granular).
+const CHROMA_WRITER_LOCK_START_SLACK_MS = 2_000;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -610,6 +613,16 @@ export class ChromaMcpManager {
       return false;
     }
     if (!lock.startToken) {
+      // No identity was recorded (the capture can fail, e.g. a slow PowerShell
+      // CIM lookup on Windows). A live PID whose process started after the lock
+      // was acquired cannot be the writer that acquired it: the OS reused the
+      // PID, and treating it as the owner would disable vector sync until
+      // someone deletes the lock by hand.
+      const acquiredAtMs = Date.parse(lock.acquiredAt);
+      const startedAtMs = captureProcessStartTimeMs(lock.pid);
+      if (startedAtMs !== null && Number.isFinite(acquiredAtMs) && startedAtMs > acquiredAtMs + CHROMA_WRITER_LOCK_START_SLACK_MS) {
+        return false;
+      }
       return true;
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
