@@ -137,6 +137,41 @@ export function cacheTtlSeconds(env: SyncApiEnv): number {
 	);
 }
 
+const INVALID_TOKEN_MESSAGE =
+	"This sync token is no longer valid. Reconnect at https://cmem.ai (Connect) to resume cloud sync.";
+const SUBSCRIPTION_INACTIVE_MESSAGE =
+	"Your CMEM Pro subscription is not active. Renew at https://cmem.ai/pro to resume cloud sync.";
+
+/**
+ * Map the Pro verify rejection to a stable client contract. The plugin stops
+ * retrying on any 401/403 and shows `message`; `code` tells a lapsed plan
+ * (renew) apart from a revoked/rotated token (reconnect). `error` stays
+ * "invalid token" / "subscription inactive" for older clients that match on it.
+ */
+export async function authRejection(verifyRes: Response): Promise<Response> {
+	let code: unknown = null;
+	let status: unknown = null;
+	try {
+		const data = (await verifyRes.json()) as Record<string, unknown> | null;
+		if (data && typeof data === "object") {
+			code = data.code;
+			status = data.status;
+			if (code === undefined && data.error === "Subscription not active") code = "subscription_inactive";
+		}
+	} catch {
+		// Non-JSON body: fall through to invalid_token.
+	}
+	if (code === "subscription_inactive") {
+		return json(403, {
+			code: "subscription_inactive",
+			error: "subscription inactive",
+			status: typeof status === "string" ? status : null,
+			message: SUBSCRIPTION_INACTIVE_MESSAGE,
+		});
+	}
+	return json(401, { code: "invalid_token", error: "invalid token", message: INVALID_TOKEN_MESSAGE });
+}
+
 export async function authenticateRequest(
 	request: Request,
 	env: SyncApiEnv,
@@ -213,13 +248,13 @@ export async function authenticateRequest(
 		}
 		return { ok: true, userId, deviceId, deviceName };
 	}
-	if (verifyRes.status === 401 || verifyRes.status === 403) {
+	if (verifyRes.status === 401 || verifyRes.status === 403 || verifyRes.status === 402) {
 		try {
 			await dependencies.invalidateCachedVerdict(cacheKey);
 		} catch (error) {
 			dependencies.logCacheFailure("delete", error);
 		}
-		return { ok: false, response: errorResponse(401, "invalid token") };
+		return { ok: false, response: await authRejection(verifyRes) };
 	}
 	return {
 		ok: false,

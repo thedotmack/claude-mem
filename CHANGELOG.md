@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.27.1] - 2026-09-26
+
+## Fixes
+- **Grok Bot live INDEX lists the seat's own rows first** (#4240). Each seat's 80-row `zz-claude-mem-inject.md` now lists that seat's project rows before any house-wide rows; house rows only fill the remaining slots, and the house query is skipped when the seat fills the window.
+- **Seat self-saves show up in the INDEX.** Rows saved through `POST /api/memory/save` (for example Grok Bot `grok-seat-save`) were excluded by the concept filter; the seat query now includes them, and a successful manual save triggers an INDEX refresh.
+
+## Also in this range
+- Agent cost report: read-only GitHub merged-PR wins source (#4241).
+
+## [13.27.0] - 2026-09-26
+
+## Agent Cost Report — weekly rebuild
+
+The `agent-cost-report` skill is rebuilt around measured data (#4238):
+
+- **Dollars from transcripts.** Claude Code and Codex transcript tokens priced at OpenRouter list prices, labeled ESTIMATED; note-taker (observer) cost priced separately and never added to the headline; measured provider spend only from a sanctioned source (OpenRouter per-key snapshot, shown with its UTC bucket label); "unavailable" is never shown as $0.
+- **Default window** is the last 7 full days in PT, today excluded; single-session and project scopes supported.
+- **Timing-style report.** Self-contained `report.html` (no script, no external resources) plus PDF, `report.json`, `line-items.csv`, `evidence.json`: hero, Wins vs mistakes with two timelines on one day axis, cost ribbon, donut, day chart, useful ring, folded Details.
+- **Behavior metrics.** A human/bot tagger on every user turn, frustration episodes, the Frustration Arc patterns P1–P12 plus tool errors and hedging, a low same-session mistakes line (upper bound in Details only), rule effectiveness, and a 70% spot-check gate for summary tiles. Optional classifier, off by default, capped at $2.00.
+- **Gaps stay honest.** Mac transcripts extrapolated (low confidence) until a device export is merged; Grok Bot usage shown as unavailable; win cost unmeasured until sessions are linked to PRs.
+- **Pipeline CLI** (`scripts/acr.py`, stdlib Python): `prices`, `collect`, `rollup`, `review`, `render`, `pdf`, `measure-openrouter`, `collect --export-device`, `rollup --device-usage`, `behavior-sample`, `sync-check`. 117 unit tests; `VERIFICATION.md` records the checks.
+- The four mirror plugins carry byte copies of the skill, and `agent-cost-report` is pinned as a first-party skill id.
+
+## [13.26.1] - 2026-09-26
+
+## Cloud sync fixes (CMEM Pro)
+
+- **Lapsed trial or revoked token no longer retries forever.** When the sync server answers 401/403, claude-mem pauses cloud sync, re-checks once an hour, and resumes on its own after a renewal. Status explains the cause: renew at cmem.ai/pro (subscription inactive) or reconnect at cmem.ai → Connect (token no longer valid).
+- **Sync failures are no longer silent.** A paused or long-failing sync now shows one plain-language line in the SessionStart context, and `/api/sync/status` gains `authError` and `health`. HTML error pages are summarized instead of dumped.
+- **#4228:** installs with cloud sync off clear the leftover `sync_outbox` backlog on worker start.
+- **#4086:** one op the sync server keeps rejecting (e.g. `revision_hash_conflict`) is quarantined after 3 attempts so the rest of the queue keeps uploading.
+
+PR: #4236
+
 ## [13.26.0] - 2026-09-26
 
 ## CMEM Pro cloud sync moves off Cloudflare
