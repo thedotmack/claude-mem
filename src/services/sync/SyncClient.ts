@@ -158,6 +158,12 @@ export interface SyncClientOptions {
   backoffInitialMs?: number;
   backoffMaxMs?: number;
   /**
+   * Pause after a 401/403 (bad token or lapsed subscription): the same
+   * credentials cannot succeed, so pulls re-check at this interval and the
+   * advisory socket stays down meanwhile. Default 1h.
+   */
+  authPauseMs?: number;
+  /**
    * pullOnce() skips when a pull finished this recently — protects the
    * hot context-inject path from hammering the hub on hook bursts while
    * keeping session-start data at worst this stale.
@@ -215,6 +221,9 @@ export class SyncClient {
   private readonly requestTimeoutMs: number;
   private readonly backoffInitialMs: number;
   private readonly backoffMaxMs: number;
+  private readonly authPauseMs: number;
+  /** Epoch ms until which the socket lane stays down after a 401/403 pull. */
+  private authPausedUntil = 0;
   private readonly minPullGapMs: number;
   private readonly isSessionActive: (() => boolean) | null;
   private readonly now: () => number;
@@ -275,6 +284,7 @@ export class SyncClient {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.backoffInitialMs = options.backoffInitialMs ?? 30_000;
     this.backoffMaxMs = options.backoffMaxMs ?? 600_000;
+    this.authPauseMs = options.authPauseMs ?? 3_600_000;
     this.minPullGapMs = options.minPullGapMs ?? 2_000;
     this.isSessionActive = options.isSessionActive ?? null;
     this.now = options.now ?? Date.now;
@@ -576,6 +586,11 @@ export class SyncClient {
         this.failStreak = 0;
         this.failCursor = null;
         this.backoffMs = 0;
+        if (this.authPausedUntil !== 0) {
+          this.authPausedUntil = 0;
+          logger.info('SYNC_CLIENT', 'Pull credentials accepted again; resuming the advisory socket');
+          if (this.started && !this.stopped) this.connectSocket();
+        }
 
         if (page.more !== true || decodedOps.length === 0) return;
         if (pages >= this.maxPagesPerCycle) return;
@@ -605,6 +620,8 @@ export class SyncClient {
     // pollModeOnly gate: while the hub says poll, the socket lane stays
     // down — that is the kill switch doing its job (un-pinning hub DOs).
     if (!this.wsEnabled || this.stopped || this.socket || !this.webSocketImpl || this.pollModeOnly) return;
+    // Auth pause: a socket with rejected credentials would only reconnect-loop.
+    if (this.authPausedUntil > this.now()) return;
     try {
       const ws = new this.webSocketImpl(this.wsUrl, {
         // Bun extension: headers on the constructor (plan Phase 0.3) — the
@@ -804,6 +821,7 @@ export class SyncClient {
   /** Full-jitter backoff: delay = random(0, min(cap, base·2^attempt)). */
   private scheduleReconnect(): void {
     if (!this.wsEnabled || this.stopped || this.reconnectTimer || this.socket || this.pollModeOnly) return;
+    if (this.authPausedUntil > this.now()) return;
     const exp = Math.min(this.wsAttempts, 30); // clamp 2^n against overflow
     const ceiling = Math.min(this.wsBackoffMaxMs, this.wsBackoffBaseMs * 2 ** exp);
     const delay = this.random() * ceiling;
@@ -880,6 +898,28 @@ export class SyncClient {
     } else {
       this.failCursor = cursor;
       this.failStreak = 1;
+    }
+    if (/^sync hub pull 40[13]:/.test(err.message)) {
+      // 401/403: retrying on the normal ladder cannot succeed (#4231-class
+      // storm). Hold pulls and the socket for the auth pause; CloudSync owns
+      // the user-facing status for this cause.
+      const firstPause = this.authPausedUntil === 0;
+      this.backoffMs = Math.max(this.backoffMs, this.authPauseMs);
+      this.authPausedUntil = this.now() + this.authPauseMs;
+      if (this.socket) {
+        this.teardownSocket();
+        this.setSocketLive(false);
+      }
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      if (firstPause) {
+        logger.warn('SYNC_CLIENT', 'Pull rejected by the sync server (auth); pausing pulls', {
+          pauseMs: this.authPauseMs,
+        }, err);
+      }
+      return;
     }
     this.backoffMs = this.backoffMs === 0
       ? this.backoffInitialMs

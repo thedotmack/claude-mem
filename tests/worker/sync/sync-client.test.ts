@@ -234,6 +234,18 @@ describe('SyncClient', () => {
     expect(count('observations')).toBe(1);
   });
 
+  it('pauses the poll loop on a 401/403 instead of retrying on the normal ladder', async () => {
+    let requests = 0;
+    const impl = (async () => {
+      requests++;
+      return new Response('{"code":"subscription_inactive","error":"subscription inactive"}', { status: 403 });
+    }) as typeof fetch;
+    const client = makeClient(impl, { isSessionActive: () => true, authPauseMs: 3_600_000 });
+    client.start();
+    await sleep(300); // ~15 polls at 20ms without the pause
+    expect(requests).toBe(1);
+  });
+
   it('a malformed page fails the batch without moving the cursor, then applies once fixed', async () => {
     const bad = hubOp(1, '11');
     bad.body = 'not json{';
