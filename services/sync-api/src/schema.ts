@@ -65,6 +65,7 @@ CREATE INDEX IF NOT EXISTS sync_devices_user_seen
 `;
 
 export async function applyMigrations(sql: import("postgres").Sql): Promise<void> {
+	await sql`SET client_min_messages TO WARNING`;
 	await sql.unsafe(SCHEMA_SQL);
 	await sql`
 		INSERT INTO schema_migrations (id) VALUES ('001_init')

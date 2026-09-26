@@ -42,7 +42,7 @@ describe("advisory WebSocket", () => {
 		}
 		expect(pongs).toContain("pong");
 
-		const op = await observationOp("ws-1", "1", "dev-a");
+		const op = await observationOp("1", "1", "dev-a");
 		const push = await fetch(`${app.url}/v1/sync/ops`, {
 			method: "POST",
 			headers: { ...authHeaders(userId, "dev-a"), "Content-Type": "application/json" },
