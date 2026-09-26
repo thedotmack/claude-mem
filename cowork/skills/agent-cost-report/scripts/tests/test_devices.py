@@ -40,6 +40,16 @@ class Export(unittest.TestCase):
         with self.assertRaises(ValueError): devices.load(p)
 
 
+class OutsideWindow(unittest.TestCase):
+    def test_rows_outside_the_report_window_are_never_appended(self):
+        rows = []; export = dict(device="mac", window=dict(start_pt="2026-09-21", end_exclusive_pt="2026-09-22"), sessions={},
+                                 rows=[tr.row("x", tr.ms(0, 9)), tr.row("x", tr.ms(3, 1)), tr.row("x", tr.ms(-1, 23))])   # one inside, two outside
+        out = devices.merge(rows, [export], {}, tr.W.block())
+        self.assertEqual(len(rows), 1); self.assertEqual((out[0]["outside_window"], out[0]["unmatched"], out[0]["window_matches_report"]), (2, 1, False))
+        rows = []; devices.merge(rows, [export], {}, dict(start_epoch_ms=None, end_epoch_ms=None))   # a --session run has no bounds
+        self.assertEqual(len(rows), 3)
+
+
 class Merge(unittest.TestCase):
     """cs2 is a replica session on the box (remote observations, no transcript). A Mac export whose local
     session map names its memory id m2 must join it."""

@@ -151,7 +151,6 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
         d = by_day.get(li["date_pt"])
         if d is None: continue
         d["sessions_started"] += 1; d["ship_events"] += li["ship_events"]; d["extrapolated_usd"] += li.get("extrapolated_x1e6", 0)
-        if li["status"] in FINISHED and not li["trivial"]: d["finished_outcomes"] += 1
     for x in all_stamps:
         d = by_day.get(evidence.day_pt(x))
         if d is not None: d["events"] += 1
@@ -234,6 +233,10 @@ def aggregate(report):
     items = report["line_items"]; real = [li for li in items if not li["trivial"] and not li.get("orphan")]   # claude-mem sessions; transcript-only sessions are counted apart
     for li in items: waste_split(li)
     finished = [li for li in real if li["status"] in FINISHED]
+    byd = {d["day_pt"]: d for d in report["by_day"]}                     # per-day outcomes follow the same statuses (stale after review otherwise)
+    for d in byd.values(): d["finished_outcomes"] = 0
+    for li in items:
+        if li["status"] in FINISHED and not li["trivial"] and li["date_pt"] in byd: byd[li["date_pt"]]["finished_outcomes"] += 1
     total = sum(li["attributed_usd"] for li in items); wasted = sum(li["wasted_cost"] for li in items); rec = sum(li["recovery_cost"] for li in items)
     t = report["totals"]
     t.update(real_work_sessions=len(real), trivial_sessions=sum(1 for li in items if li["trivial"]),

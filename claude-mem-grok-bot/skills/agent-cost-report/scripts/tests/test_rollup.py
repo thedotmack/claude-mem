@@ -204,6 +204,20 @@ class Rollup(Fixture):
         li = {x["session_ids"][0]: x for x in r["line_items"]}
         self.assertEqual((li["m1"]["cost_status"], li["m2"]["cost_status"]), ("estimated", "extrapolated"))
 
+    def test_project_scope_metadata_excludes_other_projects(self):
+        r, _, _ = self.build(scope=evidence.Scope("project", S=W.start_epoch_ms, E=W.end_epoch_ms, project="claude-mem"))
+        self.assertEqual(r["observer"]["rows_in_scope"], dict(observations=5, summaries=2, prompts=1, tool_uses=1))   # m4's "other" project rows stay out
+        self.assertEqual(r["totals"]["devices"], 2)
+
+    def test_review_recomputes_per_day_finished_outcomes(self):
+        r, _, _ = self.build()
+        self.assertEqual(sum(d["finished_outcomes"] for d in r["by_day"]), r["totals"]["finished_outcomes"])
+        li = {x["session_ids"][0]: x for x in r["line_items"]}; self.assertEqual(li["m4"]["status"], "abandoned")
+        labels.apply_review(r["line_items"], [dict(work_item_id=li["m4"]["work_item_id"], category="Investigation", reviewed_by="Alex", status="completed")], "t")
+        rollup.aggregate(r)
+        self.assertEqual(r["totals"]["finished_outcomes"], 3); self.assertEqual(sum(d["finished_outcomes"] for d in r["by_day"]), 3)
+        self.assertEqual(next(d for d in r["by_day"] if d["day_pt"] == li["m4"]["date_pt"])["finished_outcomes"], 2)
+
     def test_project_scope_includes_worktrees_and_session_scope(self):
         r, _, _ = self.build(scope=evidence.Scope("project", S=W.start_epoch_ms, E=W.end_epoch_ms, project="claude-mem"))
         self.assertEqual({x["session_ids"][0] for x in r["line_items"]}, {"m1", "m2"}); self.assertEqual(r["unmatched_transcripts"]["count"], 0)

@@ -97,6 +97,9 @@ def load_evidence(db, scope, sess, observer_rate):
     first_seen = {}                                                                   # device_id -> first epoch
     seen_reply = set(); observer_unpriced = collections.Counter(); counts = collections.Counter()
 
+    def in_scope(m):
+        return scope.kind != "project" or m in sess                                  # project runs: other projects' rows never enter the metadata
+
     def dev(m, device_id, t):
         d = device_id or LOCAL
         if d not in first_seen or t < first_seen[d]: first_seen[d] = t
@@ -105,7 +108,9 @@ def load_evidence(db, scope, sess, observer_rate):
     # observer (note-taker) cost only: discovery_tokens are the observer model's own tokens, deduped below, never agent cost
     for o in _rows(db, "observations", ("id", "memory_session_id", "project", "type", "title", "discovery_tokens",   # observer tokens
                                         "created_at_epoch", "generated_by_model", "origin_device_id"), scope, "memory_session_id", mids or ()):
-        counts["observations"] += 1; m = o["memory_session_id"]; e = ev[m]
+        m = o["memory_session_id"]
+        if not in_scope(m): continue
+        counts["observations"] += 1; e = ev[m]
         e["obs"] += 1; e["types"][o["type"]] += 1; e["obs_ids"].append(o["id"])
         e["obs_tok"] += o["discovery_tokens"] or 0; e["models"].add(o["generated_by_model"]); e["stamps"].append(o["created_at_epoch"])   # observer tokens
         key = (m, o["created_at_epoch"], o["discovery_tokens"])                       # :70 observer dedup key
@@ -121,7 +126,9 @@ def load_evidence(db, scope, sess, observer_rate):
     # observer tokens on summaries (note-taker), same dedup rule
     for s_ in _rows(db, "session_summaries", ("id", "memory_session_id", "request", "completed", "discovery_tokens",   # observer tokens
                                              "created_at_epoch", "origin_device_id"), scope, "memory_session_id", mids or ()):
-        counts["summaries"] += 1; m = s_["memory_session_id"]; e = ev[m]
+        m = s_["memory_session_id"]
+        if not in_scope(m): continue
+        counts["summaries"] += 1; e = ev[m]
         e["sums"] += 1; e["sum_ids"].append(s_["id"]); e["stamps"].append(s_["created_at_epoch"])
         if s_["completed"] and len(s_["completed"]) > COMPLETED_MIN_LEN:                # :79
             e["completed_sums"] += 1
@@ -130,11 +137,15 @@ def load_evidence(db, scope, sess, observer_rate):
         dev(m, s_["origin_device_id"], s_["created_at_epoch"])
     for p in _rows(db, "user_prompts", ("content_session_id", f"substr(prompt_text,1,{PROMPT_CHARS}) as prompt_text",
                                         "created_at_epoch", "origin_device_id"), scope, "content_session_id", csids or ()):
-        counts["prompts"] += 1; m = bycs.get(p["content_session_id"])
+        m = bycs.get(p["content_session_id"])
+        if not in_scope(m): continue
+        counts["prompts"] += 1
         if m: ev[m]["prompts"].append(p["prompt_text"]); ev[m]["stamps"].append(p["created_at_epoch"])
         dev(m, p["origin_device_id"], p["created_at_epoch"])
     for t in _rows(db, "tool_uses", ("content_session_id", "created_at_epoch"), scope, "content_session_id", csids or ()):
-        counts["tool_uses"] += 1; m = bycs.get(t["content_session_id"])
+        m = bycs.get(t["content_session_id"])
+        if not in_scope(m): continue
+        counts["tool_uses"] += 1
         if m: ev[m]["stamps"].append(t["created_at_epoch"])
     # device labels: local first, then remote-N in first-seen order (never the UUID)
     labels = {LOCAL: LOCAL}; n = 0

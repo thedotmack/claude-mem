@@ -69,14 +69,15 @@ def run(candidates, rate, model=DEFAULT_MODEL, cap_usd=CAP_USD, key=None, call=_
         for kind, cs in by_kind.items():
             k = max(1, round(n * len(cs) / len(candidates))); chosen += rnd.sample(cs, min(k, len(cs)))
         sampled = True
-    labels = {}; spent = 0; in_tok = out_tok = 0
+    labels = {}; spent = 0; in_tok = out_tok = 0; last = 0; stopped = False
+    cap_x1e6 = int(round(cap_usd * 1e6)); per_x1e6 = int(EST_IN_TOKENS * rate["input_usd_per_mtok"] + EST_OUT_TOKENS * rate["output_usd_per_mtok"])
     for c in chosen:
-        if costs.usd(spent) >= cap_usd: break                                     # hard stop
+        if spent + max(per_x1e6, last) > cap_x1e6: stopped = True; break         # hard stop: never send a request the cap cannot pay for
         prompt = f"{QUESTIONS.get(c['kind'], QUESTIONS['P12_unclear'])}\n\nBEFORE: {behavior.scrub(c.get('before',''), 400)}\nFLAGGED: {behavior.scrub(c['text'], CANDIDATE_CHARS)}\nAFTER: {behavior.scrub(c.get('after',''), 400)}"
         out, i, o = call(model, prompt, key); in_tok += i; out_tok += o
-        spent += int(i * rate["input_usd_per_mtok"] + o * rate["output_usd_per_mtok"])
+        last = int(i * rate["input_usd_per_mtok"] + o * rate["output_usd_per_mtok"]); spent += last
         labels[c["id"]] = dict(label=out.get("label", "unsure"), pattern=out.get("pattern"), reason=str(out.get("reason", ""))[:120], label_source="classifier")
     scale = (len(candidates) / len(labels)) if (sampled and labels) else 1.0
     return labels, dict(ran=True, model=model, spend_usd=costs.usd(spent), cap_usd=cap_usd, sampled_n=len(labels) if sampled else 0,
-                        candidates_n=len(candidates), estimated_usd=est, scale=round(scale, 2), input_tokens=in_tok, output_tokens=out_tok,
+                        candidates_n=len(candidates), estimated_usd=est, scale=round(scale, 2), input_tokens=in_tok, output_tokens=out_tok, stopped_at_cap=stopped,
                         note="estimated from a sample of %d" % len(labels) if sampled else None)

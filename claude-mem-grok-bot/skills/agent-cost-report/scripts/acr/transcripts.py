@@ -83,13 +83,16 @@ def collect_claude(s, e, session=None, pattern=CLAUDE_GLOB):
 
 
 def collect_codex(s, e, session=None, pattern=CODEX_GLOB):
-    """Codex: last cumulative token_count per session file (copied from parse_transcripts.py:39-57)."""
+    """Codex: token_count events carry a cumulative total_token_usage per session file (parse_transcripts.py:39-57
+    took the last one). Each event becomes one row holding the growth since the previous event, so usage before
+    the window is subtracted and every day is charged its own tokens; a session that starts before the window
+    contributes only its in-window growth."""
     rows = []; files_seen = 0
     for f in glob.glob(os.path.expanduser(pattern), recursive=True):
         if s is not None and dt.datetime.fromtimestamp(os.path.getmtime(f), PT) < s: continue
         if session is not None and os.path.basename(f) != session: continue  # (+) --session filter
         files_seen += 1
-        last = None; model = None
+        prev = dict(input_tokens=0, cached_input_tokens=0, output_tokens=0); model = None
         with open(f, errors="ignore") as fh:
             for line in fh:
                 try: d = json.loads(line)
@@ -97,15 +100,14 @@ def collect_codex(s, e, session=None, pattern=CODEX_GLOB):
                 p = d.get("payload") or {}
                 if d.get("type") == "turn_context": model = p.get("model", model)
                 if p.get("type") == "token_count" and p.get("info"):
-                    t = ts(d["timestamp"])
-                    if s is None or s <= t < e:
-                        last = (t, p["info"].get("total_token_usage") or {})
-        if last:
-            t, u = last
-            rows.append(dict(src="codex", file=f, dir="codex", cwd=None, session=os.path.basename(f), sidechain=False, model=model,
-                ts=t.astimezone(PT).isoformat(), input=(u.get("input_tokens", 0) - u.get("cached_input_tokens", 0)),
-                output=u.get("output_tokens", 0), cache_write=0, cache_write_1h=0, cache_write_5m=0, cache_read=u.get("cached_input_tokens", 0),
-                cost_usd_reported=None, device=DEVICE))
+                    t = ts(d["timestamp"]); u = p["info"].get("total_token_usage") or {}
+                    cur = {k: int(u.get(k, 0) or 0) for k in prev}
+                    delta = {k: max(cur[k] - prev[k], 0) for k in prev}; prev = cur       # cumulative counter: growth since the last event
+                    if not any(delta.values()) or (s is not None and not (s <= t < e)): continue
+                    rows.append(dict(src="codex", file=f, dir="codex", cwd=None, session=os.path.basename(f), sidechain=False, model=model,
+                        ts=t.astimezone(PT).isoformat(), input=max(delta["input_tokens"] - delta["cached_input_tokens"], 0),
+                        output=delta["output_tokens"], cache_write=0, cache_write_1h=0, cache_write_5m=0, cache_read=delta["cached_input_tokens"],
+                        cost_usd_reported=None, device=DEVICE))
     return rows, dict(files_seen=files_seen)
 
 

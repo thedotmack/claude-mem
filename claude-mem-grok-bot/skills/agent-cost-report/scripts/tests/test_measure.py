@@ -104,5 +104,15 @@ class Bucket(unittest.TestCase):
         h = render.page(d); self.assertGreaterEqual(h.count("MEASURED"), 1); self.assertIn("note-taker calls", h); self.assertIn("$99.00", h)
 
 
+class SessionScope(unittest.TestCase):
+    def test_session_window_without_bounds_is_reference_only_not_a_crash(self):
+        ok = dict(status="ok", fetched_at_utc="2026-09-25T19:00:00+00:00", usage_weekly=12.5, usage_monthly=40.0)
+        b = measure.bucket_rule(ok, period.session_block("cs1"))
+        self.assertEqual((b["covers_window"], b["usd"], b["bucket"]), (False, 12.5, "usage_weekly")); self.assertIn("reference only", b["note"])
+        report = dict(window=period.session_block("cs1"), spend=dict(agent_estimated_usd=1.0))
+        s = measure.apply(report, ok)
+        self.assertIsNone(s["agent_measured_usd"]); self.assertTrue(s["measured_status"].startswith("reference only"))
+
+
 if __name__ == "__main__":
     unittest.main()

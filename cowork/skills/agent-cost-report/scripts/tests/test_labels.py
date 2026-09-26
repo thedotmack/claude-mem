@@ -48,6 +48,13 @@ class Review(unittest.TestCase):
         self.assertEqual((n, li[0]["label_source"], li[0]["reviewed_by"]), (1, "human", "Alex"))
         self.assertEqual(labels.apply_review(li, dict(items=[dict(work_item_id="WI-2", category="Feature")]), "t"), 0)
 
+    def test_confirming_a_category_keeps_the_draft_failure_signals(self):
+        li = self.items(); li[0]["failure_signals"] = ["Recovery after miss"]; li[0]["failure_type"] = "Recovery after miss"
+        labels.apply_review(li, [dict(work_item_id="WI-1", category="Investigation", reviewed_by="Alex", failure_type=None, failure_signals=None)], "t")
+        self.assertEqual((li[0]["failure_signals"], li[0]["failure_type"], li[0]["label_source"]), (["Recovery after miss"], "Recovery after miss", "human"))
+        labels.apply_review(li, [dict(work_item_id="WI-1", category="Investigation", reviewed_by="Alex", failure_signals=[])], "t")
+        self.assertEqual((li[0]["failure_signals"], li[0]["failure_type"]), ([], ""))
+
     def test_reviewed_title_replaces_the_draft_title(self):
         li = self.items(); li[0]["title"] = li[1]["title"] = "first prompt text"
         labels.apply_review(li, [dict(work_item_id="WI-1", category="Feature", reviewed_by="Alex", title="Rollup shipped"), dict(work_item_id="WI-2", category="Feature", reviewed_by="Alex", title="")], "t")

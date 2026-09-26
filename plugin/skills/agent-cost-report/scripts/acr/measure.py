@@ -55,6 +55,11 @@ def bucket_rule(measured, window_block, now=None):
     the PT report window (bucket_start_utc <= window_start_utc and now >= window_end_utc), and label it."""
     if not measured or measured.get("status") != "ok": return None
     fetched = dt.datetime.fromisoformat(measured["fetched_at_utc"]); now = now or fetched
+    if window_block.get("start_epoch_ms") is None or window_block.get("end_epoch_ms") is None:      # --session run: no period window
+        week0 = _week_start(fetched)
+        return dict(bucket="usage_weekly", bucket_start_utc=week0.isoformat(timespec="seconds"), usd=measured.get("usage_weekly"),
+                    label=f"OpenRouter measured, current UTC week {week0.strftime('%a %-d %b')} – now", covers_window=False, window_inside_bucket=False,
+                    note="a session run has no period window; the measured bucket is shown for reference only", note_taker=NOTE_TAKER)
     ws = dt.datetime.fromtimestamp(window_block["start_epoch_ms"] / 1000, dt.timezone.utc); we = dt.datetime.fromtimestamp(window_block["end_epoch_ms"] / 1000, dt.timezone.utc)
     week0 = _week_start(fetched); month0 = fetched.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if ws >= week0: name, start, usd = "usage_weekly", week0, measured.get("usage_weekly")

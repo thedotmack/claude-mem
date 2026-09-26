@@ -11,6 +11,7 @@ joined sessions flip from cost_basis extrapolated to estimated_usage with device
 unmeasured is extrapolated again and keeps its low-confidence label. Rows that match no box session are
 counted as unmatched, like any other transcript.
 """
+import datetime as dt
 import json
 import os
 import platform
@@ -62,11 +63,13 @@ def merge(rows, exports, sess, window_block):
     by_mem = {mid: v["content_session_id"] for mid, v in sess.items()}
     by_cs = {v["content_session_id"] for v in sess.values()}
     seen = {(r["session"], r["ts"], r["input"], r["output"], r["cache_read"]) for r in rows}
+    S, E = window_block.get("start_epoch_ms"), window_block.get("end_epoch_ms")           # None for a --session run (no period)
     out = []
     for d in exports:
         label = d["device"]; mem_by_cs = {v["content_session_id"]: mid for mid, v in d["sessions"].items()}
-        joined = unmatched = dup = 0
+        joined = unmatched = dup = outside = 0
         for r in d["rows"]:
+            if S is not None and not (S <= _ts_ms(r["ts"]) < E): outside += 1; continue    # a wrong-period export never inflates the headline
             cs = r["session"]; mid = mem_by_cs.get(cs)
             if mid in by_mem: cs2 = by_mem[mid]; joined += 1
             elif cs in by_cs: cs2 = cs; joined += 1
@@ -77,5 +80,9 @@ def merge(rows, exports, sess, window_block):
             rows.append(dict(r, session=cs2, device=label, file=None, dir=f"device:{label}", cwd=None, export_memory_session_id=mid, export_session=cs))
         same_window = (d["window"].get("start_pt"), d["window"].get("end_exclusive_pt")) == (window_block.get("start_pt"), window_block.get("end_exclusive_pt"))
         out.append(dict(device=label, host_label=d.get("host_label"), exported_at_pt=d.get("exported_at_pt"), rows=len(d["rows"]), joined=joined, unmatched=unmatched, duplicates_skipped=dup,
-                        window=d["window"], window_matches_report=same_window))
+                        outside_window=outside, window=d["window"], window_matches_report=same_window))
     return out
+
+
+def _ts_ms(iso):
+    return int(dt.datetime.fromisoformat(iso).timestamp() * 1000)

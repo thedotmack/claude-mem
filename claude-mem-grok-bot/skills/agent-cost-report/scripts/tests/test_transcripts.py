@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import os
 import platform
 import shutil
@@ -92,17 +93,32 @@ class Collector(unittest.TestCase):
         self.assertFalse(doc["window"]["partial_last_day"])
         self.assertEqual(c["glob"], [self.claude_glob, self.codex_glob])
 
-    def test_codex_last_cumulative_count_in_window(self):
+    def test_codex_cumulative_counter_becomes_per_event_growth_in_window(self):
         doc = self.collect()
         codex = [r for r in doc["rows"] if r["src"] == "codex"]
-        self.assertEqual(len(codex), 1)
+        # two token_count events inside the window (the 2026-09-19T07:00Z one == end is excluded); each row is the growth since the previous event
+        self.assertEqual(len(codex), 2)
+        self.assertEqual([(r["input"], r["output"], r["cache_read"]) for r in codex], [(100 - 40, 10, 40), (400 - 160, 70, 160)])
+        self.assertEqual((sum(r["input"] for r in codex), sum(r["output"] for r in codex), sum(r["cache_read"] for r in codex)), (500 - 200, 80, 200))
         r = codex[0]
-        # last token_count inside the window is the 16:10Z one (the 2026-09-19T07:00Z one == end is excluded)
-        self.assertEqual((r["input"], r["output"], r["cache_read"]), (500 - 200, 80, 200))
         self.assertEqual(r["model"], "gpt-5-codex")
         self.assertEqual(r["session"], "rollout-codex-1.jsonl")
         self.assertEqual(r["device"], "local")
         self.assertEqual(r["cache_write_5m"], 0)
+
+    def test_codex_usage_before_the_window_is_subtracted(self):
+        d = os.path.join(self.tmp, "codex", "sessions", "2026", "09", "17"); os.makedirs(d, exist_ok=True); self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        ev = lambda t, i, c, o: json.dumps(dict(timestamp=t, type="event_msg", payload=dict(type="token_count", info=dict(total_token_usage=dict(input_tokens=i, cached_input_tokens=c, output_tokens=o)))))
+        with open(os.path.join(d, "rollout-boundary.jsonl"), "w") as fh:
+            fh.write(json.dumps(dict(timestamp="2026-09-17T20:00:00.000Z", type="turn_context", payload=dict(model="gpt-5-codex"))) + "\n")
+            fh.write(ev("2026-09-17T20:00:05.000Z", 300000, 100000, 50000) + "\n")     # before the window: cumulative 300k/100k/50k
+            fh.write(ev("2026-09-18T15:00:00.000Z", 300000, 100000, 50000) + "\n")     # no growth: no row
+            fh.write(ev("2026-09-18T16:00:00.000Z", 350000, 120000, 60000) + "\n")     # +50k in (+20k cached), +10k out
+            fh.write(ev("2026-09-18T23:00:00.000Z", 360000, 120000, 61000) + "\n")     # +10k in, +1k out
+        doc = self.collect()
+        rows = [r for r in doc["rows"] if r["src"] == "codex" and r["session"] == "rollout-boundary.jsonl"]
+        self.assertEqual([(r["input"], r["cache_read"], r["output"]) for r in rows], [(30000, 20000, 10000), (10000, 0, 1000)])
+        self.assertEqual(sum(r["input"] + r["cache_read"] for r in rows), 360000 - 300000)   # only in-window growth, never the pre-window 300k
 
     def test_session_filter_has_no_period_filter(self):
         block = period.session_block("sess-aaaa", now=self.now)

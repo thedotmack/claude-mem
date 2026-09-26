@@ -86,6 +86,17 @@ class Files(unittest.TestCase):
         self.assertNotIn("def " + "cen" + "ts", src); self.assertNotIn(chr(0xA2), src); self.assertEqual(render.usd2(1234.5), "$1,234.50")
 
 
+class Excerpts(unittest.TestCase):
+    def test_top_example_episode_is_listed_once(self):
+        d = load(os.path.join(_paths.FIXTURES, "report-1day.json")); day = d["timeline"]["mistakes_by_day"][0]
+        ep = dict(episode_id="EP-1", session="cs-ep", ts_pt="2026-09-18 10:00 PT", day_pt=day["day_pt"], pattern="P12_unclear", messages_n=1, low_usd=0.2, high_usd=0.3,
+                  cost_status="measured_tokens", alex_minutes=1.0, model=None, model_status="assumed", source="claude-code", device="local", excerpt="UNIQUE-EXCERPT-MARKER", wasted_keys=[])
+        d["behavior"]["episodes"] = [ep]
+        day["top_examples"] = [dict(mistake_id="MK-x", episode_id=ep["episode_id"], pattern=ep["pattern"], content_session_id=ep["session"], ts_pt=ep["ts_pt"])]
+        h = render.page(d)
+        self.assertEqual(h.count("UNIQUE-EXCERPT-MARKER"), 1); self.assertIn(ep["cost_status"], h)
+
+
 class Unmeasured(unittest.TestCase):
     def test_no_ratio_never_prints_zero_extrapolated(self):
         li = dict(has_transcript=False, cost_extrapolated=None, attributed_usd=0.0, cost_basis="extrapolated")

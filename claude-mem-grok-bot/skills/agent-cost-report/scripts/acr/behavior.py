@@ -45,6 +45,8 @@ CORRECTION = re.compile(r"^\s*(STEER|RESET|CORRECTION) from Alex|\bSTEER\b.{0,10
 PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|wtf|goddamn)\b", re.I)
 FRUSTRATION_PHRASE = re.compile(r"\b(i told you|i said|why did you|who (said|made|told)|stop|never|again)\b", re.I)
 SECRET_RE = re.compile(r"(sk-or-[\w-]+|sk-[\w-]{8,}|Bearer\s+\S+|ghp_\w+|gho_\w+|xox[abp]-[\w-]+|AKIA\w{12,}|[A-Za-z0-9+/=_-]{32,})")
+# key=value / key: value credentials of any length (password=hunter2, token: abc, api_key="x"); the key stays, the value goes
+KV_SECRET_RE = re.compile(r"\b(pass(?:word|wd|phrase|code)?|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credentials?)\b(\s*[:=]\s*)[\"']?[^\s\"',;]+[\"']?", re.I)
 FENCE_RE = re.compile(r"```.*?```", re.S)
 QUOTE_RE = re.compile(r"^\s*>.*$", re.M)
 MISS_RE = re.compile(r"usage limit|rate.?limit|\b429\b|\b401\b|dead token|token (has )?expired|unauthori[sz]ed|quota", re.I)
@@ -54,7 +56,8 @@ FIELDS = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 
 def scrub(text, n=EXCERPT_CHARS):
     """Excerpts: at most 160 chars after the secret scrubber (plan 2B.1)."""
-    t = SECRET_RE.sub("[redacted]", (text or "").replace("\n", " ").strip())
+    t = KV_SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", (text or "").replace("\n", " ").strip())
+    t = SECRET_RE.sub("[redacted]", t)
     return t[:n]
 
 
@@ -168,8 +171,9 @@ def session_tag(S):
     """alex_direct (interactive cli, no agent-prompt markers) | agent_relayed | unknown (plan 2B.1)."""
     prompts = [u for u in S["users"] if u["text"] and not u["sidechain"] and not u["results"]]
     if S["entrypoint"] in HEADLESS: return "agent_relayed"
-    if any(BOT_MARKERS.search(u["text"]) for u in prompts): return "agent_relayed"
-    if S["entrypoint"] == "cli" and prompts: return "alex_direct"
+    marked = [bool(BOT_MARKERS.search(u["text"])) for u in prompts]
+    if marked and (marked[0] or all(marked)): return "agent_relayed"        # launched by an agent, or nothing but relays
+    if S["entrypoint"] == "cli" and prompts: return "alex_direct"           # a marker later on tags that prompt alone (tag_user_turns)
     return "unknown"
 
 

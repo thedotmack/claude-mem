@@ -82,7 +82,8 @@ def apply_review(line_items, reviewed, reviewed_at_pt):
     """Merge confirmed labels into line items. An entry counts as reviewed when it names a category
     (and optionally failure_type / failure_signals) and a reviewed_by; label_source becomes
     'human' for reviewed_by 'Alex' (case-insensitive) or an explicit entry label_source, else 'llm'.
-    Unreviewed entries are left as keyword drafts. Returns the number applied."""
+    Unreviewed entries are left as keyword drafts. failure_signals / failure_type left null keep the draft's
+    signals; pass failure_signals: [] to clear them. Returns the number applied."""
     entries = reviewed.get("items", reviewed) if isinstance(reviewed, dict) else reviewed
     default_by = reviewed.get("reviewed_by") if isinstance(reviewed, dict) else None   # file-level default
     by_id = {li["work_item_id"]: li for li in line_items}; n = 0
@@ -92,7 +93,8 @@ def apply_review(line_items, reviewed, reviewed_at_pt):
         if li is None or not en.get("category") or not en.get("reviewed_by"): continue
         if en["category"] not in CATEGORIES: raise ReviewError(f"{en['work_item_id']}: unknown category {en['category']!r}")
         fails = en.get("failure_signals")
-        if fails is None: fails = [en["failure_type"]] if en.get("failure_type") else []
+        if fails is None and en.get("failure_type"): fails = [en["failure_type"]]
+        if fails is None: fails = list(li["failure_signals"])          # neither field set: the draft's signals stand (an explicit [] clears them)
         for f in fails:
             if f not in FAILURE_TYPES: raise ReviewError(f"{en['work_item_id']}: unknown failure type {f!r} (SKILL.md:80 is the set)")
         src = en.get("label_source")

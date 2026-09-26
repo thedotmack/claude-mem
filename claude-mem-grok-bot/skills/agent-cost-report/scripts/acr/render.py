@@ -410,8 +410,10 @@ def details(d, open_):
     eps = {e["episode_id"]: e for e in b.get("episodes", [])}
     for x in d["timeline"].get("mistakes_by_day", []):
         pats = ", ".join(f"{PAT_SHORT.get(k, k)} {usd2(v)}" for k, v in sorted(x.get("by_pattern", {}).items(), key=lambda kv: -kv[1]))
-        ex = "".join(f'<li>{esc(e["pattern"])} · <span class="id">{esc(e["content_session_id"])}</span> · {esc(e["ts_pt"])}' + (f' · <span class="ex">{esc(eps[e["episode_id"]]["excerpt"])}</span>' if e.get("episode_id") in eps else "") + "</li>" for e in x.get("top_examples", []))
-        day_eps = [e for e in b.get("episodes", []) if e["day_pt"] == x["day_pt"]]
+        top = x.get("top_examples", []); shown = {e.get("episode_id") for e in top if e.get("episode_id") in eps}
+        ex = "".join(f'<li>{esc(PAT_SHORT.get(e["pattern"], e["pattern"]))} · {esc(eps[e["episode_id"]]["cost_status"]) if e.get("episode_id") in eps else "top example"} · <span class="id">{esc(e["content_session_id"])}</span> · {esc(e["ts_pt"])}'
+                     + (f' · <span class="ex">{esc(eps[e["episode_id"]]["excerpt"])}</span>' if e.get("episode_id") in eps else "") + "</li>" for e in top)
+        day_eps = [e for e in b.get("episodes", []) if e["day_pt"] == x["day_pt"] and e["episode_id"] not in shown]   # each episode once
         ex += "".join(f'<li>{esc(PAT_SHORT.get(e["pattern"], e["pattern"]))} · {esc(e["cost_status"])} · <span class="id">{esc(e["session"])}</span> · {esc(e["ts_pt"])} · <span class="ex">{esc(e["excerpt"])}</span></li>' for e in day_eps)
         out.append(f'<div id="mistakes-{esc(x["day_pt"])}"><b>{esc(day_label(x["day_pt"]))}</b> · low {usd2(x["usd"])} · high {usd2(x["high_usd"])} · {x["turns_n"]} turns · {x["unmeasured_n"]} unmeasured episode(s) · {x["alex_minutes"]:g} Alex-min · {x["outbound_incidents"]} outbound'
                    + (f'<br><span class="muted">{esc(pats)}</span>' if pats else "") + (f"<ul>{ex}</ul>" if ex else "") + "</div>")

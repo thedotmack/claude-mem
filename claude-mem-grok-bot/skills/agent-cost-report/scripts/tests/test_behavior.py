@@ -89,6 +89,21 @@ class Tagger(Base):
         self.assertEqual({u["author"] for u in s["b"]["users"]}, {"bot"})
         self.assertEqual(s["c"]["users"][0]["author"], "human")
 
+    def test_one_marker_mid_session_does_not_hide_alex(self):
+        a = Tx("a", "cli"); a.user(BASE, "fix the build"); a.user(BASE + 5000, "<command-name>/clear</command-name>"); a.user(BASE + 9000, "why is this fucking broken again"); a.assistant(BASE + 10000, "ok")
+        self.write(a); s = self.scan()
+        self.assertEqual(s["a"]["tag"], "alex_direct"); self.assertEqual([u["author"] for u in s["a"]["users"]], ["human", "bot", "human"])
+        block, spend, _ = self.run_all(items=[self.item("a")])
+        self.assertEqual(spend["mistakes_episodes_n"], 1)
+        b = Tx("b", "cli"); b.user(BASE, "<system-reminder>x"); b.user(BASE + 5000, "[Cross-session idle notice] y"); b.assistant(BASE + 6000, "ok")
+        self.write(b); s = self.scan(); self.assertEqual(s["b"]["tag"], "agent_relayed")      # nothing but relays
+
+    def test_scrub_redacts_key_value_credentials(self):
+        t = behavior.scrub("log in with password=hunter2 then Token: abc123 and api_key=\"q9\" ok", 300)
+        self.assertNotIn("hunter2", t); self.assertNotIn("abc123", t); self.assertNotIn("q9", t)
+        self.assertEqual(t, "log in with password=[redacted] then Token: [redacted] and api_key=[redacted] ok")
+        self.assertEqual(behavior.scrub("the token limit was hit", 100), "the token limit was hit")
+
     def test_tagger_off_renders_unavailable(self):
         a = Tx("a"); a.user(BASE, "this is fucking broken"); a.assistant(BASE + 1000, "ok")
         self.write(a); block, spend, _ = self.run_all(tagger=False)
@@ -222,6 +237,13 @@ class Classifier(unittest.TestCase):
         labels, summary = classify.run(cands, rate, cap_usd=2.0, key="k", call=fake)
         self.assertLessEqual(summary["spend_usd"], 2.0 + 1.6); self.assertLess(len(labels), 50); self.assertTrue(summary["sampled_n"] > 0)
         with self.assertRaises(classify.ClassifierError): classify.run(cands, rate, key="", call=fake)
+
+    def test_cap_is_a_hard_limit_not_rounded_to_cents(self):
+        rate = dict(input_usd_per_mtok=1.0, output_usd_per_mtok=10.0)      # a call of 1000 in / 100 out costs $0.002; the estimate is $0.0022
+        def fake(model, prompt, key): return dict(label="yes", pattern="P1", reason="r"), 1000, 100
+        cands = [dict(id=str(i), kind="P1_invented_gates", text="x") for i in range(20)]
+        labels, summary = classify.run(cands, rate, cap_usd=0.005, key="k", call=fake)
+        self.assertEqual(len(labels), 2); self.assertTrue(summary["stopped_at_cap"]); self.assertLessEqual(summary["spend_usd"], 0.005)
 
 
 class Rules(unittest.TestCase):
