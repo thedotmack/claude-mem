@@ -236,7 +236,9 @@ export function refreshSeatIndex(
 
   const platformSource = cfg.platformSource || undefined;
   const seatRows = queries.querySeat(seat.projects, cfg.window, platformSource);
-  const houseRows = cfg.fallback === 'house'
+  // Seat rows claim the window first; skip the house query when they already fill it.
+  const seatUnique = new Set(seatRows.map(row => row.id)).size;
+  const houseRows = cfg.fallback === 'house' && seatUnique < resolveIndexWindow(cfg.window)
     ? queries.queryHouse(cfg.window, platformSource)
     : [];
   const merged = mergeIndexObservations(seatRows, houseRows, cfg.window);

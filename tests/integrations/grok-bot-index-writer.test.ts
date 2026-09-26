@@ -348,6 +348,28 @@ describe('refreshSeatIndex live write', () => {
     expect(text).not.toContain('house fill');
   });
 
+  it('skips the house query entirely when seat rows fill the window', () => {
+    const root = tempRoot();
+    writeSeat(root, PRIORITIZER, 'Prioritizer');
+    const seatRows = Array.from({ length: 80 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
+    let houseCalls = 0;
+    const result = refreshSeatIndex(
+      makeCfg(root),
+      { id: PRIORITIZER, name: 'Prioritizer', projects: ['cmem_work_prioritizer'] },
+      {
+        querySeat: () => seatRows,
+        queryHouse: () => {
+          houseCalls += 1;
+          throw new Error('house query must not run');
+        },
+      },
+      NOW,
+    );
+    expect(houseCalls).toBe(0);
+    expect(result.status).toBe('written');
+    expect(result.houseFilled).toBe(false);
+  });
+
   it('skips CCS as a required intermediate even when a TIMELINE.md already exists', () => {
     const root = tempRoot();
     writeSeat(root, ORIFICE, 'Orifice');
