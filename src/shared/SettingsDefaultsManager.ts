@@ -161,6 +161,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: string;
   CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: string;
   CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: string;
   // CCS Align (Worker Watch seat, Phase 0 breathing slice). Seat-owned middle
   // cache under ~/.claude-mem/ccs-align/<viewerId>/; pull-only, never a second
   // writer on LFG/Orifice logs. See plans/2026-09-09-ccs-align.md.
@@ -307,6 +308,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: '',
     CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: '160',
     CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: '1500',
+    CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: '',
     CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
     CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: 'ccs-align',
     // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.

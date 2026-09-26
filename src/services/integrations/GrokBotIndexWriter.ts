@@ -13,6 +13,7 @@ import {
   DEFAULT_INDEX_LINE_CHARS,
   DEFAULT_INDEX_WINDOW,
   assertSafeInjectPath,
+  collapseWhitespace,
   formatIndexFactLines,
   injectLogPath,
   mergeIndexObservations,
@@ -38,6 +39,7 @@ export interface GrokBotIndexConfig {
   window: number;
   maxLineChars: number;
   debounceMs: number;
+  standingLine: string;
   agentDataRoot: string;
   watchConfigFile: string;
 }
@@ -122,6 +124,7 @@ export function loadGrokBotIndexConfig(
       480,
     ),
     debounceMs: Number.isFinite(debounceRaw) && debounceRaw >= 0 ? debounceRaw : DEFAULT_DEBOUNCE_MS,
+    standingLine: collapseWhitespace(pick('CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE')),
     agentDataRoot: discoverGrokBotAgentDataRoot(env),
     watchConfigFile: pick('CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH') || path.join(
       env.CLAUDE_MEM_DATA_DIR?.trim() || path.join(process.env.HOME || '', '.claude-mem'),
@@ -246,6 +249,7 @@ export function refreshSeatIndex(
     tier: cfg.tier,
     now,
     houseFilled,
+    standingLine: cfg.standingLine,
   });
   const contents = renderIndexFile(factLines);
   const existing = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
