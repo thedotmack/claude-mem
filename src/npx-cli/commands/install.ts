@@ -2057,9 +2057,12 @@ export function validateNonInteractiveProvider(
         // consulted here for validation only and never written to disk. A
         // persisted cmem gateway tuple is the exception: the worker locks it to
         // the saved key and ignores a key-only override, so that key must be
-        // on disk.
+        // on disk. An exported base URL unlocks the tuple (the worker then runs
+        // on the exported URL and key), so the lock is mirrored exactly:
+        // gateway URL on disk AND no base-URL override in the environment.
         const persistedCmemGateway = persistedProvider === 'openrouter'
-          && isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''));
+          && isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))
+          && !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');
         const envKey = persistedCmemGateway ? '' : String(process.env[persistedKeyName] ?? '').trim();
         if (!persistedKey && !envKey) {
           installerError(ErrorSeverity.ABORT, {

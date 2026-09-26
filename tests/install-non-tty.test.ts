@@ -120,6 +120,10 @@ describe('Install Non-TTY Support', () => {
       // worker, so an exported key must not satisfy the check for it.
       expect(branch).toContain("const persistedCmemGateway = persistedProvider === 'openrouter'");
       expect(branch).toContain("isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))");
+      // ...unless a base-URL override is exported: the worker then detaches
+      // from the gateway and runs on the exported URL and key, so the exported
+      // key counts again (mirrors lockPersistedCmemTuple in OpenRouterProvider).
+      expect(branch).toContain("&& !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');");
       // The cmem gateway rejection stays on the explicit-flag path only.
       expect(branch).not.toContain('configuredCmemKey');
     });
