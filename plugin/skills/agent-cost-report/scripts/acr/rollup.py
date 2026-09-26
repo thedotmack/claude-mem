@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import os
 
-from . import costs, evidence, labels, mistakes, period, snapshot, wins
+from . import costs, evidence, labels, measure, mistakes, period, snapshot, wins
 from . import prices as prices_mod
 from .evidence import LOCAL
 
@@ -294,7 +294,12 @@ def run_rollup(args):
                                      behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None))
     finally:
         db.close()
-    report["inputs"] = dict(usage=usage_path, prices=prices.get("loaded_from"), snapshot=snap)
+    mp = getattr(args, "measured", None) or os.path.join(args.out, "measured.json")
+    measured = None
+    if os.path.exists(mp):
+        with open(mp) as fh: measured = json.load(fh)
+    measure.apply(report, measured)                        # Phase 4: MEASURED only when the UTC bucket covers the PT window
+    report["inputs"] = dict(usage=usage_path, prices=prices.get("loaded_from"), snapshot=snap, measured=mp if measured else None)
     write_outputs(args.out, report, evid, review)
     t, s = report["totals"], report["spend"]
     print(f"rollup: {scope.kind} sessions={t['sessions']} real_work={t['real_work_sessions']} projects={t['projects']} devices={t['devices']} "

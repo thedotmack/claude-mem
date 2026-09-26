@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acr import period, render, rollup, transcripts  # noqa: E402
+from acr import measure, period, render, rollup, transcripts  # noqa: E402
 from acr import prices as prices_mod  # noqa: E402
 
 USAGE_FILE = "usage.json"
@@ -98,6 +98,11 @@ def cmd_pdf(args):
     print(msg)
 
 
+def cmd_measure(args):
+    out = measure.measure(args.out)
+    print(f"measure-openrouter: status={out['status']}" + (f" weekly={out.get('usage_weekly')} monthly={out.get('usage_monthly')} (USD, current UTC buckets)" if out["status"] == "ok" else f" ({out.get('reason') or out.get('http_status')})") + f" -> {args.out}/measured.json")
+
+
 def cmd_not_yet(args):
     sys.exit(f"acr.py {args.cmd}: not implemented in this phase (Phases 1-2 ship collect, prices, rollup, review)")
 
@@ -128,6 +133,7 @@ def build_parser():
     r.add_argument("--classify-budget", type=float, metavar="USD", help="hard cap per run for --classify (default $2.00, G8)")
     r.add_argument("--classify-model", metavar="MODEL", help=argparse.SUPPRESS)
     r.add_argument("--rules-dir", metavar="DIR", help="house rule files with dated HARD headers (rule effectiveness, 2B.10)")
+    r.add_argument("--measured", metavar="FILE", help="measured.json from `measure-openrouter` (default: DIR/measured.json when present)")
     r.set_defaults(fn=cmd_rollup)
 
     v = sub.add_parser("review", help="merge confirmed labels from a reviewed labels.review.json into report.json")
@@ -146,6 +152,10 @@ def build_parser():
     pf.add_argument("--out", required=True, metavar="DIR", help="directory holding report.print.html (or report.json to render it)")
     pf.add_argument("--chrome", default="google-chrome", help=argparse.SUPPRESS)
     pf.set_defaults(fn=cmd_pdf)
+
+    mo = sub.add_parser("measure-openrouter", help="per-key OpenRouter usage snapshot -> DIR/measured.json (unavailable without OPENROUTER_API_KEY in the environment)")
+    mo.add_argument("--out", required=True, metavar="DIR", help="output directory")
+    mo.set_defaults(fn=cmd_measure)
 
     for name in NOT_YET:
         n = sub.add_parser(name, help="(later phase)")

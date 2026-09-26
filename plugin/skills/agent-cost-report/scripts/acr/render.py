@@ -125,12 +125,15 @@ CSS = """
 def hero(d):
     s, t = d["spend"], d["totals"]
     measured = s.get("agent_measured_usd")
+    ref = s.get("measured_reference")
     if isinstance(measured, (int, float)):
-        big = f'{usd2(measured)}{tag("meas")}'; basis = f'measured provider spend · estimate from tokens {usd2(s["headline_usd"])} for comparison'
-        meas = f'Estimate from measured tokens: {usd2(s["headline_usd"])} {tag("est")}'
+        big = f'{usd2(measured)}{tag("meas")}'; basis = esc((ref or {}).get("label") or "measured provider spend") + f' · estimate from tokens {usd2(s["headline_usd"])} for comparison'
+        meas = f'Estimate from measured tokens: {usd2(s["headline_usd"])} {tag("est")} · {esc((ref or {}).get("note_taker") or "")}'
     else:
         big = f'{usd2(s["headline_usd"])}{tag("est")}'; basis = esc(s["headline_label"]) + f' · prices fetched {esc((d["pricing"].get("fetched") or "")[:10])} PT'
-        meas = "Measured provider spend: unavailable"
+        if ref and ref.get("usd") is not None:
+            meas = f'{esc(ref["label"])}: {usd2(ref["usd"])} {tag("meas")} · {esc(ref.get("note") or "")} · {esc(ref.get("note_taker") or "")}'
+        else: meas = "Measured provider spend: unavailable" + (f' ({esc(s["measured_status"])})' if s.get("measured_status") not in (None, "unavailable") else "")
     n = t["finished_outcomes"]; cpo = t.get("cost_per_completed_outcome")
     sub = (f"<b>{n} thing{'s' if n != 1 else ''} finished</b>, about <b>{usd2(cpo)} each</b>" if n and cpo is not None else "<b>Nothing finished yet</b>")
     ex = s.get("extrapolated_unmeasured_usd")
