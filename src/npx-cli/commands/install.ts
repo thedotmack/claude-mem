@@ -1104,6 +1104,14 @@ async function promptProvider(
     log.info('Configured claude-mem to use your logged-in Claude SDK account.');
   };
 
+  // A provider reused from settings on a non-interactive run is already fully
+  // configured. Re-running the claude branch would call useSubscriptionAuth(),
+  // which blanks cloud-sync and the Pro memory key — a persisted Pro config
+  // must survive a non-TTY `npx claude-mem update` untouched.
+  if (options.providerSource === 'persisted' && options.provider) {
+    return options.provider;
+  }
+
   let selectedProvider: ProviderChoice;
   if (options.provider) {
     selectedProvider = options.provider;
@@ -1111,6 +1119,7 @@ async function promptProvider(
     if (!isInteractive) {
       throw new Error('Non-interactive provider validation did not run.');
     }
+    options.providerSource = 'prompt';
     const labels = buildProviderLabels();
 
     // Multiselect gives both choices square controls. Exactly one provider is
@@ -1859,6 +1868,14 @@ export function providerNeedsAccount(provider: InstallOptions['provider']): bool
 export interface InstallOptions {
   ide?: string;
   provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
+  /**
+   * How `provider` was decided. `flag` for an explicit `--provider` (and the
+   * grok-bot implicit cmem default set in index.ts), `default` when a fresh
+   * non-interactive run fell back to claude, `persisted` when a non-interactive
+   * run reused the provider already in settings, `prompt` for the interactive
+   * multiselect. Reported on install_completed as `provider_source`.
+   */
+  providerSource?: 'flag' | 'default' | 'persisted' | 'prompt';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -1918,12 +1935,26 @@ function validateNonInteractiveProvider(
   if (isInteractive) return;
 
   if (!options.provider) {
-    installerError(ErrorSeverity.ABORT, {
-      component: 'provider-selection',
-      phase: 'non-interactive-validation',
-      cause: new Error('A provider must be explicit when stdin is not interactive.'),
-      remediation: 'Re-run with `--provider claude`, or run the installer in an interactive terminal to compare CMEM Pro and local benefits.',
-    }, summary);
+    // No `--provider` on a non-TTY run. Aborting here taught agents to re-run
+    // with `--provider claude`, which reached the same place with more friction,
+    // so the missing flag now resolves instead of failing.
+    //
+    // A persisted provider wins: `npx claude-mem update` calls this path with no
+    // options, and defaulting an existing Pro (openrouter) config to claude would
+    // run useSubscriptionAuth() and wipe cloud sync. Returning before the key
+    // check below is deliberate — the persisted config already carries its key,
+    // and a persisted Pro config must not trip the configuredCmemKey abort.
+    const persisted = readPersistedInstallerSettings();
+    const persistedProvider = persisted.CLAUDE_MEM_PROVIDER;
+    if (persistedProvider === 'claude' || persistedProvider === 'gemini' || persistedProvider === 'openrouter') {
+      options.provider = persistedProvider;
+      options.providerSource = 'persisted';
+      log.info(`Non-interactive run: keeping the configured provider (${persistedProvider}).`);
+      return;
+    }
+    options.provider = 'claude';
+    options.providerSource = 'default';
+    log.info('No --provider given on a non-interactive run: defaulting to your Anthropic plan (local memory).');
   }
 
   if (options.provider === 'host') return;
@@ -2202,15 +2233,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   // Login is account-first for every install EXCEPT one that has already named
-  // a provider needing no claude-mem account. `--provider claude` runs memory
-  // on the user's own Anthropic plan and never touches cmem.ai, so gating it on
-  // browser OAuth made an unrelated cmem.ai outage fail an install that could
-  // have completed offline — and there is no account question left to ask,
-  // because the flag already answered it.
+  // a provider needing no claude-mem account. `--provider claude` (or the
+  // non-interactive default to claude) runs memory on the user's own Anthropic
+  // plan, so gating it on browser OAuth made an unrelated cmem.ai outage fail
+  // an install that could have completed offline — and there is no account
+  // question left to ask, because the provider already answered it. Such a
+  // non-interactive install still prints an optional, non-blocking sign-in
+  // link at the very end (offerDeferredLogin).
   //
-  // Deliberately keyed on the explicit flag, not on reachability: a silent
+  // Deliberately keyed on the resolved provider, not on reachability: a silent
   // fallback to a local install whenever cmem.ai is down would quietly change
-  // what the user gets. This only skips a step the user's own flag made moot.
+  // what the user gets. This only skips a step the provider choice made moot.
   let oauthPairing: InstallerOAuthPairing | null = null;
   if (providerNeedsAccount(options.provider)) {
     oauthPairing = await requireInstallerOAuthLogin(version);
