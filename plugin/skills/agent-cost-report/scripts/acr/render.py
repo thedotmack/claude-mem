@@ -259,7 +259,7 @@ def sidebar(d, sums, cats):
     mrows = "".join(f'<div class="srow" style="font-size:12px;color:#555;display:block">{esc(m["model"].split("/")[-1])}<br><span class="muted">{"list price" if m.get("priced") else "unpriced"} · {usd2(m["agent_estimated_usd"])}</span></div>' for m in models)
     return (f'<aside class="side"><div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>'
             f'<div class="nav"><a class="on" href="#overview">Overview</a><a href="#outcomes">Outcomes</a><a href="#details">Details &amp; evidence</a></div>'
-            f'<div class="sh">Kinds of work</div>{"".join(rows)}<div class="sh">Sessions</div>{sess}<div class="sh">Models</div>{mrows}</aside>')
+            f'<div class="sh">Kinds of work</div>{"".join(rows)}<div class="sh">Sessions</div>{sess}<div class="sh">Models</div>{mrows}<div class="sh">Other seats</div><div class="srow dim" title="{esc((d["spend"].get("grok_bot_usage") or {}).get("reason") or "")}">Grok Bot usage: unavailable</div></aside>')
 
 
 # ---- donut: build_mockup.py:47-56 (mapping #18-19) ----
@@ -424,7 +424,7 @@ def details(d, open_):
         ("extrapolated (sessions without transcripts)", f'{usd2(s.get("extrapolated_unmeasured_usd") or 0)} {tag("extra")} · {esc(s.get("extrapolation_basis") or "")}'),
         ("total estimate", f'{usd2(s["total_estimate_usd"])} = {usd2(s["agent_estimated_usd"])} + {usd2(s.get("extrapolated_unmeasured_usd") or 0)}'),
         ("Note-taker (observer) cost, separate", f'{usd2(s["observer_note_taker_est_usd"])} {tag("est")} · never added to the agent figures'),
-        ("Grok Bot seat usage", esc(str(s.get("grok_bot_usage")))), ("pricing", f'{esc(d["pricing"].get("source") or "")} fetched {esc(d["pricing"].get("fetched") or "")} · 1h rule: {esc(d["pricing"].get("rule_1h") or "")}')]))
+        ("Grok Bot usage", "unavailable (Cursor exposes seat usage only on the plan screen) · sources checked: " + esc(", ".join((s.get("grok_bot_usage") or {}).get("checked_sources") or []))), ("pricing", f'{esc(d["pricing"].get("source") or "")} fetched {esc(d["pricing"].get("fetched") or "")} · 1h rule: {esc(d["pricing"].get("rule_1h") or "")}')]))
     out.append("<h4>Models</h4>" + _table(["source", "model", "calls", "input", "output", "cache write 5m", "cache write 1h", "cache read", "est. $", "$/MTok in/out/read/write/write1h"],
                                        [(esc(m["source"]), esc(m["model"]), m["calls"], f'{m["input"]:,}', f'{m["output"]:,}', f'{m["cache_write_5m"]:,}', f'{m["cache_write_1h"]:,}', f'{m["cache_read"]:,}', usd2(m["agent_estimated_usd"]),
                                          esc("/".join(str(m["prices_usd_per_mtok"].get(k)) for k in ("input", "output", "cache_read", "cache_write", "cache_write_1h")) if m.get("prices_usd_per_mtok") else "unpriced")) for m in d["by_model"]]))

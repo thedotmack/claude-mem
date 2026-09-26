@@ -214,6 +214,10 @@ Sessions from Alex's Mac have no transcript on the box, so their cost is EXTRAPO
 
 Merge on the box with `python3 scripts/acr.py rollup ... --device-usage <file>`. Joined sessions flip to `estimated_usage` with `device: mac`; whatever stays unmeasured is extrapolated again and keeps its label.
 
+## Grok Bot (ALWAYS unavailable, no seat count)
+
+Grok Bot is Cursor's cloud agent. Cursor shows its weekly usage only on the plan screen; there is no API or export, and the house has no xAI key for it. The report says exactly "Grok Bot usage: unavailable" (G4, Alex 2026-09-25): no dollars, no guessed per-seat price, no seat count. If Alex ever supplies a figure by hand it is entered as `measured_manual` with `entered_by: Alex` and the date, never inferred; that would be a new decision.
+
 ## Related
 
 - [mem-search](sand-workflow:mem-search) — progressive recall (Claude-Mem)

@@ -17,6 +17,10 @@ from .evidence import LOCAL
 
 FINISHED = ("shipped", "completed")
 HEADLINE_LABEL = "estimated at OpenRouter list prices from measured tokens"
+# Phase 6 (plan 6.1-6.2; G4 settled: "unavailable", no seat count, never $0, never a guessed price)
+GROK_BOT_UNAVAILABLE = dict(status="unavailable", reason="no documented API or export for Cursor Grok Bot seat usage",
+                            checked_sources=["https://cursor.com/docs/grok-bot", "https://cursor.com/pricing", "https://docs.x.ai/developers/rest-api-reference/management/billing"],
+                            note="Cursor exposes seat usage only on the plan screen; the xAI Management API covers xAI API keys only and the house has no xAI key for Grok Bot")
 RULE_1H = "explicit input_cache_write_1h when listed, else 2 x input (weekly_report.py:95)"
 CSV_COLUMNS = ("work_item_id", "title", "scope", "project", "worktree", "session_ids", "content_session_id", "status", "category",
                "failure_type", "failure_signals", "cost_measured", "cost_estimated", "cost_extrapolated", "attributed_usd", "wasted_cost",
@@ -106,7 +110,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
     agent_usd = costs.usd(agent_x1e6)
     spend = dict(agent_estimated_usd=agent_usd, agent_estimated_label="ESTIMATED", agent_measured_usd=None, measured_status="unavailable",
                  extrapolated_unmeasured_usd=extrapolated_usd, extrapolated_label="EXTRAPOLATED (low confidence)", extrapolation_basis=basis,
-                 observer_note_taker_est_usd=costs.usd(observer_x1e6), grok_bot_usage=dict(status="unavailable"),
+                 observer_note_taker_est_usd=costs.usd(observer_x1e6), grok_bot_usage=GROK_BOT_UNAVAILABLE,
                  headline_usd=agent_usd, headline_label=HEADLINE_LABEL, total_estimate_usd=round(agent_usd + (extrapolated_usd or 0), 2))
     # ---- days ----
     if scope.kind == "session":
