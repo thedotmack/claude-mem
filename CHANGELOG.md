@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.26.1] - 2026-09-26
+
+## Cloud sync fixes (CMEM Pro)
+
+- **Lapsed trial or revoked token no longer retries forever.** When the sync server answers 401/403, claude-mem pauses cloud sync, re-checks once an hour, and resumes on its own after a renewal. Status explains the cause: renew at cmem.ai/pro (subscription inactive) or reconnect at cmem.ai → Connect (token no longer valid).
+- **Sync failures are no longer silent.** A paused or long-failing sync now shows one plain-language line in the SessionStart context, and `/api/sync/status` gains `authError` and `health`. HTML error pages are summarized instead of dumped.
+- **#4228:** installs with cloud sync off clear the leftover `sync_outbox` backlog on worker start.
+- **#4086:** one op the sync server keeps rejecting (e.g. `revision_hash_conflict`) is quarantined after 3 attempts so the rest of the queue keeps uploading.
+
+PR: #4236
+
 ## [13.26.0] - 2026-09-26
 
 ## CMEM Pro cloud sync moves off Cloudflare
