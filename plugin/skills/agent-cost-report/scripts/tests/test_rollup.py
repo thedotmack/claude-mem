@@ -69,13 +69,13 @@ class Fixture(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def build(self, rows=None, scope=None, prices=None):
+    def build(self, rows=None, scope=None, prices=None, behavior=False):   # Phase 2 tests exercise the draft waste split; Phase 2B has its own tests
         import sqlite3
         db = sqlite3.connect(self.dbp); db.row_factory = sqlite3.Row
         try:
             usage = dict(window=W.block(), rows=copy.deepcopy(rows if rows is not None else self.rows))
             return rollup.build(usage, prices or PRICES, db, scope or evidence.Scope("period", S=W.start_epoch_ms, E=W.end_epoch_ms), W.block(),
-                                now=NOW, use_gh=False, remote=lambda cwd: None)
+                                now=NOW, use_gh=False, remote=lambda cwd: None, behavior=behavior)
         finally:
             db.close()
 

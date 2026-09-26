@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import os
 
-from . import costs, evidence, labels, period, snapshot, wins
+from . import costs, evidence, labels, mistakes, period, snapshot, wins
 from . import prices as prices_mod
 from .evidence import LOCAL
 
@@ -42,14 +42,16 @@ def status_of(e, s):
 
 
 def waste_split(li):
-    """Draft money split (SKILL.md:88-109): abandoned work is wasted; 'Recovery after miss' spend is recovery."""
+    """Draft money split (SKILL.md:88-109): abandoned work is wasted; 'Recovery after miss' spend is recovery.
+    Once the Phase 2B behavior pass has run, its same-session union is the only waste figure (2B.9)."""
+    if "behavior_counts" in li: return
     c = li["attributed_usd"]
     li["wasted_cost"] = round(c, 2) if li["status"] == "abandoned" else 0.0
     li["recovery_cost"] = round(c, 2) if ("Recovery after miss" in li["failure_signals"] and not li["wasted_cost"]) else 0.0
     li["productive_cost"] = round(c - li["wasted_cost"] - li["recovery_cost"], 2)
 
 
-def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote):
+def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None):
     now = now or period.now_pt(); pricer = costs.Pricer(prices)
     sess = evidence.load_sessions(db, scope)
     ev, dev_labels, counts, obs_unpriced = evidence.load_evidence(db, scope, sess, pricer.observer_input_rate)
@@ -149,6 +151,12 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
     wins_block, wins_by_day = wins.build(files, scope.S, scope.E, ship_obs, sessions_by_cs, rows_by_cs, ratio, days, gh=gh, remote=remote, use_gh=use_gh)
     if wins_block["cost_status"] == "session_linked":   # spend not tied to any win, only once at least one win cost exists (2.8)
         wins_block["unattributed_usd"] = round(max(spend["total_estimate_usd"] - wins_block["total_attributed_usd"], 0.0), 2)
+    # ---- Phase 2B: behavior pass, mistakes line, mistakes timeline (one union set) ----
+    behavior_block = None; mistakes_by_day = []
+    if behavior:
+        session_projects = {li["content_session_id"]: sess[li["session_ids"][0]]["project"] for li in items}
+        behavior_block, mspend, mistakes_by_day = mistakes.run(db, scope, window_block, pricer, session_projects, items, classify=classify, rules_dir=rules_dir, usage_rows=rows)
+        spend.update(mspend)
     # ---- the rest ----
     um = [dict(session=cs, dir=rs[0]["dir"], src=rs[0]["src"], calls=len(rs), tokens=sum(sum(r[f] for f in costs.TOKEN_FIELDS) for r in rs),
                usd=costs.usd(sum(r["x1e6"] or 0 for r in rs)), first_ts=min(r["ts"] for r in rs)) for cs, rs in unmatched.items()]
@@ -182,7 +190,8 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
                   by_day=list(by_day.values()), by_model=by_model_list, by_device=by_device_list, line_items=items,
                   labels=dict(reviewed=0, total=len(items)), pricing=dict(source=prices.get("source"), fetched=prices.get("fetched"),
                   loaded_from=prices.get("loaded_from"), rule_1h=RULE_1H, models_listed=len(prices["models"])),
-                  unmatched_transcripts=unmatched_block, unpriced_models=pricer.unpriced_list(), wins=wins_block, timeline=dict(wins_by_day=wins_by_day),
+                  unmatched_transcripts=unmatched_block, unpriced_models=pricer.unpriced_list(), wins=wins_block, timeline=dict(wins_by_day=wins_by_day, mistakes_by_day=mistakes_by_day),
+                  behavior=behavior_block,
                   observer=observer, devices=[dict(device=lbl, id_hash=evidence.device_hash(d)) for d, lbl in dev_labels.items()],
                   trivial_definition="no observations, no transcript on this box, and <1 active minute")
     aggregate(report)
@@ -220,6 +229,14 @@ def aggregate(report):
     report["failure_economics"] = [dict(failure_type=k, sessions=v["sessions"], attributed_usd=round(v["attributed_usd"], 2), wasted_usd=round(v["wasted_usd"], 2),
                                         recovery_usd=round(v["recovery_usd"], 2), work_item_ids=v["work_item_ids"]) for k, v in sorted(fe.items(), key=lambda kv: -kv[1]["attributed_usd"])]
     att = []
+    b = report.get("behavior")
+    if b:                                            # 2B.5: at most 2 cards from the behavior pass, in this order
+        ob = b["outbound"]
+        if ob["incidents"]: att.append(dict(kind="bad_outbound", text=f"{ob['incidents']} send(s) reached {ob['recipients']} recipient(s) without your approval"))
+        bad_rule = next((r for r in b["rule_effectiveness"] if r.get("card")), None)
+        if bad_rule and len(att) < 2: att.append(dict(kind="rule_not_stopped", rule_key=bad_rule["rule_key"], text=f"Rule '{bad_rule['name']}' ({bad_rule['landed_pt']}) did not stop repeats: {bad_rule['before']['per_100']} -> {bad_rule['after']['per_100']} per 100 human prompts"))
+        top = max((p for p in b["patterns"] if p["low_usd"]), key=lambda p: p["low_usd"], default=None)
+        if top and len(att) < 2: att.append(dict(kind="pattern", pattern=top["key"], usd=top["low_usd"], text=f"Largest behavior cost: {top['name']} at ${top['low_usd']:.2f} ESTIMATED (heuristic, {top['count']} found)"))
     w = max((li for li in real if li["wasted_cost"]), key=lambda li: li["wasted_cost"], default=None)
     if w: att.append(dict(kind="waste", work_item_id=w["work_item_id"], usd=w["wasted_cost"], text=f"Biggest waste: {w['work_item_id']} ({w['status']}, {w['category']}) at ${w['wasted_cost']:.2f} ESTIMATED"))
     u = max((li for li in real if li["status"] == "in_progress"), key=lambda li: li["attributed_usd"], default=None)
@@ -272,7 +289,9 @@ def run_rollup(args):
         raise SystemExit("acr.py rollup: usage.json was collected for a different --session")
     snap = snapshot.snapshot(args.out, live=getattr(args, "db", None)); db = snapshot.open_snapshot(snap)
     try:
-        report, evid, review = build(usage, prices, db, scope, window_block, use_gh=not getattr(args, "no_gh", False))
+        cl = dict(enabled=True, cap_usd=getattr(args, "classify_budget", None) or mistakes.classify_mod.CAP_USD, model=getattr(args, "classify_model", None)) if getattr(args, "classify", False) else None
+        report, evid, review = build(usage, prices, db, scope, window_block, use_gh=not getattr(args, "no_gh", False),
+                                     behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None))
     finally:
         db.close()
     report["inputs"] = dict(usage=usage_path, prices=prices.get("loaded_from"), snapshot=snap)
@@ -281,7 +300,9 @@ def run_rollup(args):
     print(f"rollup: {scope.kind} sessions={t['sessions']} real_work={t['real_work_sessions']} projects={t['projects']} devices={t['devices']} "
           f"finished={t['finished_outcomes']} ship_events={t['ship_events']} agent_hours={t['agent_hours']} | agent_est=${s['agent_estimated_usd']} "
           f"extrapolated=${s['extrapolated_unmeasured_usd']} observer=${s['observer_note_taker_est_usd']} measured={s['measured_status']} | "
-          f"wins={len(report['wins']['items'])} ({report['wins']['cost_status']}) unpriced={len(report['unpriced_models'])} -> {args.out}/report.json")
+          f"wins={len(report['wins']['items'])} ({report['wins']['cost_status']}) unpriced={len(report['unpriced_models'])}"
+          + (f" | mistakes=${s['mistakes_estimated_usd']} low ({s['mistakes_turns_n']} turns, {s['mistakes_episodes_n']} episodes, {s['mistakes_unmeasured_n']} unmeasured)" if 'mistakes_estimated_usd' in s else "")
+          + f" -> {args.out}/report.json")
 
 
 def run_review(args):

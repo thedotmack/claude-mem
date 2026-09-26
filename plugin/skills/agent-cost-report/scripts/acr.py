@@ -105,6 +105,11 @@ def build_parser():
     r.add_argument("--prices", metavar="FILE", help="price table to use instead of DIR/prices.json")
     r.add_argument("--db", metavar="FILE", help=argparse.SUPPRESS)
     r.add_argument("--no-gh", action="store_true", help="skip the read-only `gh pr view` confirmation of merged-PR wins")
+    r.add_argument("--no-behavior", action="store_true", help="skip the Phase 2B behavior pass (no mistakes line)")
+    r.add_argument("--classify", action="store_true", help="run the optional classifier on unsettled candidates (off by default, G8)")
+    r.add_argument("--classify-budget", type=float, metavar="USD", help="hard cap per run for --classify (default $2.00, G8)")
+    r.add_argument("--classify-model", metavar="MODEL", help=argparse.SUPPRESS)
+    r.add_argument("--rules-dir", metavar="DIR", help="house rule files with dated HARD headers (rule effectiveness, 2B.10)")
     r.set_defaults(fn=cmd_rollup)
 
     v = sub.add_parser("review", help="merge confirmed labels from a reviewed labels.review.json into report.json")
