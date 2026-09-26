@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acr import devices, measure, period, render, rollup, sync, transcripts  # noqa: E402
+from acr import devices, measure, period, render, rollup, sample, sync, transcripts  # noqa: E402
 from acr import prices as prices_mod  # noqa: E402
 
 USAGE_FILE = "usage.json"
@@ -109,6 +109,14 @@ def cmd_measure(args):
     print(f"measure-openrouter: status={out['status']}" + (f" weekly={out.get('usage_weekly')} monthly={out.get('usage_monthly')} (USD, current UTC buckets)" if out["status"] == "ok" else f" ({out.get('reason') or out.get('http_status')})") + f" -> {args.out}/measured.json")
 
 
+def cmd_sample(args):
+    try:
+        path, st = sample.write(args.inp, args.out, per_metric=args.per_metric, seed=args.seed)
+    except (FileNotFoundError, KeyError) as ex:
+        sys.exit(f"acr.py behavior-sample: {ex} (run rollup first; behavior.json must sit next to report.json)")
+    print(f"behavior-sample: {st} -> {path}")
+
+
 def cmd_sync(args):
     drift = sync.run(write=args.write, dests=args.dest or None)
     if drift: sys.exit(1)
@@ -147,6 +155,7 @@ def build_parser():
     r.add_argument("--classify-model", metavar="MODEL", help=argparse.SUPPRESS)
     r.add_argument("--rules-dir", metavar="DIR", help="house rule files with dated HARD headers (rule effectiveness, 2B.10)")
     r.add_argument("--measured", metavar="FILE", help="measured.json from `measure-openrouter` (default: DIR/measured.json when present)")
+    r.add_argument("--precision", metavar="FILE", help="JSON {pattern_key: precision} from the Phase 8.5 spot-check; tiles under 70% move to Details")
     r.add_argument("--device-usage", metavar="FILE", action="append", default=[], help="device-usage-<label>.json export(s) from other machines to merge (repeatable)")
     r.set_defaults(fn=cmd_rollup)
 
@@ -170,6 +179,12 @@ def build_parser():
     mo = sub.add_parser("measure-openrouter", help="per-key OpenRouter usage snapshot -> DIR/measured.json (unavailable without OPENROUTER_API_KEY in the environment)")
     mo.add_argument("--out", required=True, metavar="DIR", help="output directory")
     mo.set_defaults(fn=cmd_measure)
+
+    bs = sub.add_parser("behavior-sample", help="Markdown spot-check sheet from behavior.json (Phase 8.5): random human/bot turns, flagged turns per tile, unflagged sessions")
+    bs.add_argument("--in", dest="inp", required=True, metavar="FILE", help="report.json (behavior.json is read from the same directory)")
+    bs.add_argument("--per-metric", type=int, default=20); bs.add_argument("--seed", type=int, default=7)
+    bs.add_argument("--out", required=True, metavar="FILE", help="behavior-spotcheck.md")
+    bs.set_defaults(fn=cmd_sample)
 
     sc = sub.add_parser("sync-check", help="compare SKILL.md, CHECKSUMS.txt and scripts/** against the house copy and the four mirrors; --write copies plugin -> destinations")
     sc.add_argument("--write", action="store_true", help="copy the plugin dir to every destination, then re-check")

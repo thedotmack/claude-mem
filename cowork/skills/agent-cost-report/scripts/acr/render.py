@@ -246,7 +246,7 @@ def ribbon(d, cats):
 
 # ---- sidebar: build_mockup.py:134-145 generalised (mapping #13-17) ----
 def sidebar(d, sums, cats):
-    t = d["totals"]; total = sum(li["attributed_usd"] for li in d["line_items"])
+    t = d["totals"]; total = d["spend"].get("total_estimate_usd") or sum(li["attributed_usd"] for li in d["line_items"])   # the same figure as the hero
     rows = [f'<div class="srow"><span class="dot" style="background:{GRAY}"></span><b>All work</b><span class="sv">{usd2(total)}</span></div>']
     for c, v in cats.items(): rows.append(f'<div class="srow"><span class="dot" style="background:{COL[c]}"></span>{esc(c)}<span class="sv">{usd2(v)}</span></div>')
     for c in KINDS:
@@ -333,8 +333,8 @@ def behavior_strip(d):
         ps = [pats[m] for m in members if m in pats and pats[m]["placement"] == "tile"]
         if not ps: continue
         count = sum(p["count"] for p in ps); low = sum(p["low_usd"] or 0 for p in ps); unm = sum(p["unmeasured_n"] for p in ps); mins = sum(p.get("alex_minutes") or 0 for p in ps)
-        if key == "P3_wrong_model": money = f'≈{usd2(ps[0].get("delta_usd") or 0)} more than the default model {tag("est")}' if count else ""
-        elif count and not low and unm: money = "unmeasured"                         # never $0 for unmeasured (2B.11)
+        if count and not low and unm and not (key == "P3_wrong_model" and ps[0].get("delta_usd")): money = "unmeasured"   # never $0 for unmeasured (2B.11)
+        elif key == "P3_wrong_model": money = f'≈{usd2(ps[0].get("delta_usd") or 0)} more than the default model {tag("est")}' if count else ""
         else: money = f'≈{usd2(low)} {tag("est")}' if count else ""
         body = (f'<span class="bn">{count}</span>{money}' if count else '<span class="bz">none found</span>')
         extra = (f' · {mins:g} min of your time' if mins else "") + (f' · +{unm} unmeasured' if unm else "")

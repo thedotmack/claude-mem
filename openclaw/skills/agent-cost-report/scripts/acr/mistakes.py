@@ -75,8 +75,28 @@ def add_usage_turns(sessions, usage_rows, src="codex"):
 UNTAGGED = "unavailable (prompts not tagged human vs bot)"
 
 
+ALTERNATES = ("P4_over_engineering", "P5_not_asked", "P8_wrong_tool", "P10_memory_loss")   # 2B.5 swap order when a tile fails the 70% gate
+PRECISION_GATE = 0.70
+
+
+def precision_gate(pats, precision):
+    """Phase 8.5 / 2B.5: a tile pattern whose spot-check precision is under 70% moves to Details as low
+    confidence; the next pattern by ranking takes its place only if it passes."""
+    if not precision: return
+    freed = 0
+    for p in pats:
+        pr = precision.get(p["key"])
+        if pr is None: continue
+        p["precision"] = pr
+        if p["placement"] == "tile" and pr < PRECISION_GATE: p["placement"] = "details"; p["confidence"] = "low"; p["gate"] = f"spot-check precision {pr:.0%} < 70%: moved to Details"; freed += 1
+    for key in ALTERNATES:
+        if freed <= 0: break
+        p = next((x for x in pats if x["key"] == key), None)
+        if p and precision.get(key) is not None and precision[key] >= PRECISION_GATE: p["placement"] = "tile"; p["gate"] = f"promoted: precision {precision[key]:.0%}"; freed -= 1
+
+
 def run(db, scope, window_block, pricer, session_projects, items, classify=None, rules_dir=None, now_ms=None, usage_rows=(),
-        glob_pattern=None, tagger=True):
+        glob_pattern=None, tagger=True, precision=None):
     """session_projects: {content_session_id: project}. items: Phase 2 line items (mutated: behavior_counts,
     wasted_cost, recovery_cost, productive_cost, failure_signals). tagger=False models the R2 gate: no count
     that reads user messages runs, and those counts render UNTAGGED."""
@@ -120,14 +140,15 @@ def run(db, scope, window_block, pricer, session_projects, items, classify=None,
 
     # ---- episodes (need human-tagged messages) ----
     episodes = []; ep_flag_keys = set(); ep_redo_keys = set(); project_fallback = set()
-    for ep in behavior.find_episodes(msgs):
+    for ep in behavior.find_episodes(msgs, phrase_hit=patterns.human_phrase_patterns):
         S = sessions.get(ep["session"])
         wasted, redo, last_agent = behavior.episode_windows(ep, S, msgs)
         wkeys = {T["key"] for T in wasted}
         pat = next((p for p in patterns.TILE_ORDER + tuple(k for k, *_ in patterns.PATTERNS) if flagged.get(p) and flagged[p] & wkeys), None)
-        if pat is None:
-            hp = [p for m in ep["messages"] for p in patterns.human_phrase_patterns(m["text"])]
-            pat = hp[0] if hp else "P12_unclear"
+        if pat is None:                                   # human phrases over every message of the episode; ties break in P1..P12 order
+            hp = collections.Counter(p for m in ep["messages"] for p in patterns.human_phrase_patterns(m["text"]))
+            order = [k for k, *_ in patterns.PATTERNS]
+            pat = min(hp, key=lambda k: (-hp[k], order.index(k))) if hp else "P12_unclear"
         measured = S is not None and bool(S["turns"])
         if measured:
             ep_flag_keys |= wkeys; ep_redo_keys |= {T["key"] for T in redo}
@@ -194,6 +215,7 @@ def run(db, scope, window_block, pricer, session_projects, items, classify=None,
         if key == "S2_hedging": p["availability_unknown_n"] = stats["hedge_availability_unknown"]; p["cost_note"] = "text only, not priced" if not keys else "follow-up round trip priced as recovery"
         if key == "P11_jargon": p["cost_note"] = "Alex-minutes = words ÷ 200; dollars only for a clarification round trip"
         pats.append(p)
+    precision_gate(pats, precision)
     tiles = [p for p in pats if p["placement"] == "tile"]
     assert len(tiles) <= 5 and len({("tile2" if p["key"] in patterns.MERGED_TILE else p["key"]) for p in tiles}) <= TILE_MAX
 
@@ -209,11 +231,21 @@ def run(db, scope, window_block, pricer, session_projects, items, classify=None,
         ft = f.get("failure_type") or dict((k, t) for k, _, _, t, _ in patterns.PATTERNS).get(f["pattern"])
         if ft: per_session[f["session"]]["failures"].add(ft)
     for e in episodes: per_session[e["session"]]["counts"][e["pattern"]] += 1
+    def _reconciled(field, total_x1e6):
+        """Round per item, then give the cent remainder to the largest item so the items sum to the total exactly (8.6)."""
+        vals = {li["content_session_id"]: (per_session[li["content_session_id"]][field] if li["content_session_id"] in per_session else 0) for li in items}
+        rounded = {k: costs.usd(v) for k, v in vals.items()}; diff = round(costs.usd(total_x1e6) - sum(rounded.values()), 2)
+        if diff and vals:
+            k = max(vals, key=vals.get); rounded[k] = round(rounded[k] + diff, 2)
+        return rounded
+    in_items = {li["content_session_id"] for li in items}
+    low_in_items = sum(v["low"] for k, v in per_session.items() if k in in_items); redo_in_items = sum(v["redo"] for k, v in per_session.items() if k in in_items)
+    wasted_by = _reconciled("low", low_in_items); redo_by = _reconciled("redo", redo_in_items)
     for li in items:
         ps = per_session.get(li["content_session_id"])
         li["behavior_counts"] = dict(ps["counts"]) if ps else {}
-        li["wasted_cost"] = costs.usd(ps["low"]) if ps else 0.0
-        li["recovery_cost"] = costs.usd(ps["redo"]) if ps else 0.0
+        li["wasted_cost"] = wasted_by.get(li["content_session_id"], 0.0)
+        li["recovery_cost"] = redo_by.get(li["content_session_id"], 0.0)
         li["productive_cost"] = round(max(li["attributed_usd"] - li["wasted_cost"], 0.0), 2)
         if ps and ps["failures"]:
             li["failure_signals"] = sorted(set(li["failure_signals"]) | ps["failures"]); li["failure_type"] = li["failure_type"] or li["failure_signals"][0]
@@ -276,4 +308,12 @@ def run(db, scope, window_block, pricer, session_projects, items, classify=None,
                  unconfirmed=dict(P1_candidates=[dict(content_session_id=f["session"], ts_pt=behavior.pt_iso(f["ts_ms"]), excerpt=f["excerpt"]) for f in flags if f.get("unconfirmed")][:50]),
                  default_model=dm, scan=scan_stats, mistake_clusters=mistake_ids, prompt_rows_n=len(prompt_rows),
                  not_in_mistakes_line="session-level keyword failure signals with no turn span stay in Details (2B.9)")
+    # raw material for behavior.json (Phase 8.5 spot-check); scrubbed excerpts only, no turn keys
+    raw = dict(flags=[dict(pattern=f["pattern"], session=f["session"], ts_pt=behavior.pt_iso(f["ts_ms"]) if f.get("ts_ms") else None, excerpt=f["excerpt"], basis=f["basis"],
+                           label_source=f["label_source"], unconfirmed=bool(f.get("unconfirmed"))) for f in flags],
+               user_turns=[dict(session=sid, ts_pt=behavior.pt_iso(m["ts_ms"]), author=m["author"], source=m["source"], excerpt=behavior.scrub(m["text"])) for sid, ms in msgs.items() for m in ms],
+               episodes=block["episodes"],
+               sessions=[dict(session=sid, tag=S.get("tag", "unknown"), turns=len(S["turns"]), tool_errors=sum(1 for u in S["users"] for r in u["results"] if r["is_error"]),
+                              last_text=behavior.scrub(next((behavior.user_facing(T["text"]) for T in reversed(behavior.ordered_turns(S)) if T["text"].strip()), ""))) for sid, S in sessions.items()])
+    block["_raw"] = raw
     return block, spend, list(by_day.values())

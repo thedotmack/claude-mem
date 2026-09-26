@@ -55,7 +55,7 @@ def waste_split(li):
     li["productive_cost"] = round(c - li["wasted_cost"] - li["recovery_cost"], 2)
 
 
-def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None, glob_pattern=None, device_exports=()):
+def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None, glob_pattern=None, device_exports=(), precision=None):
     now = now or period.now_pt(); pricer = costs.Pricer(prices)
     sess = evidence.load_sessions(db, scope)
     ev, dev_labels, counts, obs_unpriced = evidence.load_evidence(db, scope, sess, pricer.observer_input_rate)
@@ -99,6 +99,23 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
                          summary_ids=e["sum_ids"], titles=[x[:100] for x in e["text"][:20]], ship_titles=li["ship_titles"], ship_ids=e["ship_ids"],
                          observer_tokens=e["obs_tok_dedup"], observer_tokens_raw=e["obs_tok"], observer_est_usd=costs.usd(e["obs_cost_x1e6"]),
                          generated_by_model=sorted(m for m in e["models"] if m), devices=[evidence.device_hash(d) for d in sorted(e["devices"])]))
+    # ---- transcripts that matched no claude-mem session become their own line items (outcome unknown -> in_progress) ----
+    for cs, rs in sorted(unmatched.items(), key=lambda kv: min(r["ts"] for r in kv[1])):
+        n += 1; t = by_session.get(cs) or costs._zero(); model = costs.dominant_model(t); rs = sorted(rs, key=lambda r: r["ts"])
+        d0 = rs[0].get("dir") or ""; proj = (os.path.basename(rs[0]["cwd"]) if rs[0].get("cwd") else d0.strip("-").split("-")[-1] or "unknown")
+        active = labels.active_minutes([r["ts_ms"] for r in rs]); all_stamps += [r["ts_ms"] for r in rs]
+        draft = dict(category="Investigation", failure_signals=[], matched=dict(category_where="default"), head="", tail="")
+        li = dict(work_item_id=f"WI-{n}", title=f"Transcript with no claude-mem session ({rs[0]['src']}, {d0 or proj})", scope=scope.kind, project=proj, worktree="",
+                  session_ids=[f"nomem-{cs}"], content_session_id=cs, status="in_progress", category="Investigation", work_category="Investigation", failure_type="", failure_signals=[],
+                  cost_measured="unavailable", cost_estimated=costs.usd(t["usd_x1e6"]), cost_extrapolated=None, risk_exposure="none", evidence_ids=[], summary_ids=[],
+                  agent_tokens={f: t[f] for f in costs.TOKEN_FIELDS}, agent_calls=t["calls"], unpriced_calls=t["unpriced_calls"], model=model,
+                  model_prices_usd_per_mtok=costs.price_block(pricer.rate(model)) if model else None, cost_basis="estimated_usage", label_source="keyword",
+                  device=sorted({r.get("device") or LOCAL for r in rs}), recommended_action="", confidence="low", date_pt=evidence.day_pt(rs[0]["ts_ms"]), active_minutes=round(active, 1),
+                  has_transcript=True, trivial=False, orphan=True, platform=rs[0]["src"], session_status="unknown", observations=0, summaries=0, ship_events=0, ship_titles=[],
+                  notes=f"no claude-mem session for this transcript ({len(rs)} API calls); outcome unknown, counted in the totals", observer_tokens=0, cost_x1e6=t["usd_x1e6"])
+        items.append(li); review.append(labels.review_entry(li, draft))
+        evid.append(dict(work_item_id=li["work_item_id"], memory_session_id=None, content_session_id=cs, observation_ids=[], summary_ids=[], titles=[], ship_titles=[], ship_ids=[],
+                         observer_tokens=0, observer_tokens_raw=0, observer_est_usd=0.0, generated_by_model=[], devices=li["device"]))
     extrapolated_usd, basis, ratio = costs.extrapolation(items)
     for li in items:
         if not li["has_transcript"]: li["cost_extrapolated"] = costs.usd(li["extrapolated_x1e6"]) if ratio is not None else None
@@ -147,7 +164,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
             chunk = ids[i:i + 200]
             for r in db.execute(f"select id, created_at_epoch from observations where id in ({','.join('?' * len(chunk))})", chunk): stamp[r[0]] = r[1]
         for o in ship_obs: o["ts_ms"] = stamp.get(o["id"])
-    sessions_by_cs = {li["content_session_id"]: dict(project=sess[li["session_ids"][0]]["project"], memory_session_id=li["session_ids"][0],
+    sessions_by_cs = {li["content_session_id"]: dict(project=li["project"], memory_session_id=li["session_ids"][0],
                       has_transcript=li["has_transcript"], observer_tokens=li["observer_tokens"],
                       cwd=next((r["cwd"] for r in matched.get(li["session_ids"][0], []) if r.get("cwd")), None)) for li in items}
     rows_by_cs = collections.defaultdict(list)
@@ -159,8 +176,8 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
     # ---- Phase 2B: behavior pass, mistakes line, mistakes timeline (one union set) ----
     behavior_block = None; mistakes_by_day = []
     if behavior:
-        session_projects = {li["content_session_id"]: sess[li["session_ids"][0]]["project"] for li in items}
-        behavior_block, mspend, mistakes_by_day = mistakes.run(db, scope, window_block, pricer, session_projects, items, classify=classify, rules_dir=rules_dir, usage_rows=rows, glob_pattern=glob_pattern)
+        session_projects = {li["content_session_id"]: li["project"] for li in items}
+        behavior_block, mspend, mistakes_by_day = mistakes.run(db, scope, window_block, pricer, session_projects, items, classify=classify, rules_dir=rules_dir, usage_rows=rows, glob_pattern=glob_pattern, precision=precision)
         spend.update(mspend)
     # ---- the rest ----
     um = [dict(session=cs, dir=rs[0]["dir"], src=rs[0]["src"], calls=len(rs), tokens=sum(sum(r[f] for f in costs.TOKEN_FIELDS) for r in rs),
@@ -188,7 +205,8 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
                     unpriced_tokens=dict(obs_unpriced), basis="ESTIMATED: observer model's own tokens (deduped per reply) x its input list price; "
                     "kept separate from the agent figures above", rows_in_scope=dict(counts))
     report = dict(window=window_block, scope=scope.block(), generated_at_pt=now.strftime("%Y-%m-%d %H:%M PT"), spend=spend,
-                  totals=dict(sessions=len(items), agent_hours=round(sum(li["active_minutes"] for li in items) / 60, 1),
+                  totals=dict(sessions=sum(1 for li in items if not li.get("orphan")), transcript_only_sessions=sum(1 for li in items if li.get("orphan")),
+                              agent_hours=round(sum(li["active_minutes"] for li in items if not li.get("orphan")) / 60, 1), transcript_only_hours=round(sum(li["active_minutes"] for li in items if li.get("orphan")) / 60, 1),
                               wall_clock_hours=round(labels.active_minutes(all_stamps) / 60, 1), tokens=tok,
                               hours_method="sum of gaps <=15 min between consecutive events (prompts, observations, summaries, tool calls, transcript API calls); "
                                            "parallel sessions add up in agent_hours but not in wall_clock_hours"),
@@ -200,18 +218,21 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
                   observer=observer, devices=[dict(device=lbl, id_hash=evidence.device_hash(d)) for d, lbl in dev_labels.items()], device_exports=device_merge,
                   trivial_definition="no observations, no transcript on this box, and <1 active minute")
     aggregate(report)
+    raw = (behavior_block or {}).pop("_raw", None)
+    if raw is not None: report["_behavior_raw"] = raw           # written to behavior.json by write_outputs, never into report.json
     return report, evid, dict(generated_at_pt=report["generated_at_pt"], scope=scope.block(), items=review)
 
 
 def aggregate(report):
     """Everything that follows from the line items' labels; re-run after review --apply."""
-    items = report["line_items"]; real = [li for li in items if not li["trivial"]]
+    items = report["line_items"]; real = [li for li in items if not li["trivial"] and not li.get("orphan")]   # claude-mem sessions; transcript-only sessions are counted apart
     for li in items: waste_split(li)
     finished = [li for li in real if li["status"] in FINISHED]
     total = sum(li["attributed_usd"] for li in items); wasted = sum(li["wasted_cost"] for li in items); rec = sum(li["recovery_cost"] for li in items)
     t = report["totals"]
-    t.update(real_work_sessions=len(real), trivial_sessions=len(items) - len(real),
-             projects=len({(li["project"], li["worktree"]) for li in items}), repos=len({li["project"] for li in items}),
+    t.update(real_work_sessions=len(real), trivial_sessions=sum(1 for li in items if li["trivial"]),
+             projects=len({(li["project"], li["worktree"]) for li in items if not li.get("orphan")}), repos=len({li["project"] for li in items if not li.get("orphan")}),
+             transcript_only_projects=len({li["project"] for li in items if li.get("orphan")}),
              devices=len({d for li in items for d in li["device"]}), finished_outcomes=len(finished),
              ship_events=len({x for li in items for x in li["ship_titles"]}),
              cost_per_completed_outcome=round(sum(li["attributed_usd"] for li in finished) / len(finished), 2) if finished else None,
@@ -255,6 +276,9 @@ def aggregate(report):
 
 def write_outputs(outdir, report, evid=None, review=None):
     os.makedirs(outdir, exist_ok=True)
+    raw = report.pop("_behavior_raw", None)
+    if raw is not None:
+        with open(os.path.join(outdir, "behavior.json"), "w") as fh: json.dump(dict(window=report["window"], scope=report["scope"], **raw), fh, indent=1, default=str)
     with open(os.path.join(outdir, "report.json"), "w") as fh: json.dump(report, fh, indent=1, default=str)
     with open(os.path.join(outdir, "line-items.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, extrasaction="ignore"); w.writeheader()
@@ -298,9 +322,12 @@ def run_rollup(args):
         except (OSError, ValueError) as ex: raise SystemExit(f"acr.py rollup --device-usage: {ex}")
     snap = snapshot.snapshot(args.out, live=getattr(args, "db", None)); db = snapshot.open_snapshot(snap)
     try:
+        precision = None
+        if getattr(args, "precision", None):
+            with open(args.precision) as fh: precision = json.load(fh)
         cl = dict(enabled=True, cap_usd=getattr(args, "classify_budget", None) or mistakes.classify_mod.CAP_USD, model=getattr(args, "classify_model", None)) if getattr(args, "classify", False) else None
         report, evid, review = build(usage, prices, db, scope, window_block, use_gh=not getattr(args, "no_gh", False),
-                                     behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None), device_exports=exports)
+                                     behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None), device_exports=exports, precision=precision)
     finally:
         db.close()
     mp = getattr(args, "measured", None) or os.path.join(args.out, "measured.json")

@@ -102,8 +102,9 @@ def extrapolation(items):
     """copied from weekly_report.py:239-246: ratio = measured agent USD per 1M observer tokens over sessions
     with a transcript, applied to the observer tokens of sessions with none. Only those sessions are touched.
     items: line-item dicts with has_transcript, observer_tokens, cost_x1e6 (measured micro-dollars)."""
-    m_obs = sum(i["observer_tokens"] for i in items if i["has_transcript"])
-    m_usd = sum(i["cost_x1e6"] for i in items if i["has_transcript"]) / 1e6
+    # transcripts with no claude-mem session (orphan=True) have no observer tokens and stay out of the ratio (weekly_report.py:239-246 basis)
+    m_obs = sum(i["observer_tokens"] for i in items if i["has_transcript"] and not i.get("orphan"))
+    m_usd = sum(i["cost_x1e6"] for i in items if i["has_transcript"] and not i.get("orphan")) / 1e6
     u_obs = sum(i["observer_tokens"] for i in items if not i["has_transcript"])
     ratio = m_usd / m_obs * 1e6 if m_obs else None
     total = 0

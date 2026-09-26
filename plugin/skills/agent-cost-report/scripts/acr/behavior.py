@@ -38,7 +38,9 @@ BOT_MARKERS = re.compile(
     r"\[Request interrupted|MAKE-PLAN\b|make-plan ONLY|# make-plan|Branch: [\w/.-]+ \(this worktree|"
     r"\[Cross-session idle notice\]|\[Group chat:|\[Artifact comment|Agent sweep|AJ email check|Quiet overnight|"
     r"You name new code workspaces|You are\b|/do\b|/make-plan\b|/loop\b|/claude-mem:|/ccs-|/[a-z][\w-]*:[a-z][\w-]*\b|"
-    r"(STEER|RESET|CORRECTION) from Alex|Resuming after|\[SYSTEM NOTIFICATION|<task-notification>|<pasted_content)", re.I)
+    r"(STEER|RESET|CORRECTION) from Alex|Resuming after|\[SYSTEM NOTIFICATION|<task-notification>|<pasted_content)"
+    r"|^.{0,200}\bAlex (asked|said|wants|greened|approved)\b"            # third-person relays of Alex are agent-written
+    r"|^(?=.{400,})[^\n]{0,300}\bYou are (a|an|the|in|one|running|working)\b", re.I | re.S)   # long briefs that address the agent
 CORRECTION = re.compile(r"^\s*(STEER|RESET|CORRECTION) from Alex|\bSTEER\b.{0,10}\bfrom Alex\b|^\s*(RESET|CORRECTION):", re.I)
 PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|wtf|goddamn)\b", re.I)
 FRUSTRATION_PHRASE = re.compile(r"\b(i told you|i said|why did you|who (said|made|told)|stop|never|again)\b", re.I)
@@ -237,13 +239,14 @@ def episode_id(session, first_ts):
     return "EP-" + hashlib.sha1(f"{session}|{first_ts}".encode()).hexdigest()[:10]
 
 
-def find_episodes(msgs):
-    """Frustrated human-tagged messages in one session with gaps ≤45 min form one episode."""
+def find_episodes(msgs, phrase_hit=None):
+    """Frustrated human-tagged messages in one session with gaps ≤45 min form one episode. A human message
+    that matches a pattern's own human phrase (2B.3) is a candidate too; the pattern detector is its confirmation."""
     eps = []
     for sid, ms in msgs.items():
         cur = None
         for m in ms:
-            if m["author"] != "human" or not is_frustrated(m["text"]): continue
+            if m["author"] != "human" or not (is_frustrated(m["text"]) or (phrase_hit and phrase_hit(m["text"]))): continue
             if cur and m["ts_ms"] - cur["messages"][-1]["ts_ms"] <= GAP_MIN * 60_000: cur["messages"].append(m)
             else:
                 cur = dict(session=sid, messages=[m]); eps.append(cur)

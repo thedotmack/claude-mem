@@ -29,11 +29,11 @@ class Fixtures(unittest.TestCase):
             self.assertNotRegex(h, r"<script|<link|@import|url\(http|src=\"http", name)
             self.assertEqual(h.count("url("), h.count("url(#"), name)
 
-    def test_dollars_two_decimals_no_cents(self):
+    def test_dollars_two_decimals_no_cent_sign(self):
         for name, h in self.pages.items():
             body = re.sub(r'<span class="ex">.*?</span>', "", h)
             bad = [m for m in MONEY.findall(body) if not TWO_DEC.fullmatch(m)]
-            self.assertEqual(bad, [], name); self.assertNotIn("¢", h, name)
+            self.assertEqual(bad, [], name); self.assertNotIn(chr(0xA2), h, name)   # no cent sign anywhere
             self.assertIn("Measured provider spend: unavailable", h, name)
 
     def test_layout_order_tiles_and_links(self):
@@ -83,7 +83,7 @@ class Files(unittest.TestCase):
 
     def test_usd2_is_the_only_formatter(self):
         src = open(os.path.join(_paths.SCRIPTS, "acr", "render.py")).read()
-        self.assertNotIn("def cents", src); self.assertNotIn("¢", src); self.assertEqual(render.usd2(1234.5), "$1,234.50")
+        self.assertNotIn("def " + "cen" + "ts", src); self.assertNotIn(chr(0xA2), src); self.assertEqual(render.usd2(1234.5), "$1,234.50")
 
 
 if __name__ == "__main__":

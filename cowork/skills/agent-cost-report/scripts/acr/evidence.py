@@ -102,12 +102,13 @@ def load_evidence(db, scope, sess, observer_rate):
         if d not in first_seen or t < first_seen[d]: first_seen[d] = t
         if m is not None: ev[m]["devices"].add(d)
 
-    for o in _rows(db, "observations", ("id", "memory_session_id", "project", "type", "title", "discovery_tokens",
+    # observer (note-taker) cost only: discovery_tokens are the observer model's own tokens, deduped below, never agent cost
+    for o in _rows(db, "observations", ("id", "memory_session_id", "project", "type", "title", "discovery_tokens",   # observer tokens
                                         "created_at_epoch", "generated_by_model", "origin_device_id"), scope, "memory_session_id", mids or ()):
         counts["observations"] += 1; m = o["memory_session_id"]; e = ev[m]
         e["obs"] += 1; e["types"][o["type"]] += 1; e["obs_ids"].append(o["id"])
-        e["obs_tok"] += o["discovery_tokens"] or 0; e["models"].add(o["generated_by_model"]); e["stamps"].append(o["created_at_epoch"])
-        key = (m, o["created_at_epoch"], o["discovery_tokens"])                       # :70
+        e["obs_tok"] += o["discovery_tokens"] or 0; e["models"].add(o["generated_by_model"]); e["stamps"].append(o["created_at_epoch"])   # observer tokens
+        key = (m, o["created_at_epoch"], o["discovery_tokens"])                       # :70 observer dedup key
         if key not in seen_reply:
             seen_reply.add(key); tok = o["discovery_tokens"] or 0; e["obs_tok_dedup"] += tok
             r = observer_rate(o["generated_by_model"])                                 # :72-73, priced at the input rate only
@@ -117,7 +118,8 @@ def load_evidence(db, scope, sess, observer_rate):
             e["ship_titles"].append(o["title"]); e["ship_ids"].append(o["id"])
         e["text"].append(o["title"] or "")
         dev(m, o["origin_device_id"], o["created_at_epoch"])
-    for s_ in _rows(db, "session_summaries", ("id", "memory_session_id", "request", "completed", "discovery_tokens",
+    # observer tokens on summaries (note-taker), same dedup rule
+    for s_ in _rows(db, "session_summaries", ("id", "memory_session_id", "request", "completed", "discovery_tokens",   # observer tokens
                                              "created_at_epoch", "origin_device_id"), scope, "memory_session_id", mids or ()):
         counts["summaries"] += 1; m = s_["memory_session_id"]; e = ev[m]
         e["sums"] += 1; e["sum_ids"].append(s_["id"]); e["stamps"].append(s_["created_at_epoch"])

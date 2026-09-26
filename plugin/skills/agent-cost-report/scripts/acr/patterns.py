@@ -45,7 +45,7 @@ P1_AGENT = re.compile(r"Blocked on Alex|needs your sign-off|initials|please clic
 P1_ASK = re.compile(r"(?i)would you like me to|do you want me to|want me to|should I\b|shall I\b|let me know if|can you (paste|provide|send|share|click|confirm|approve|log ?in)|"
                     r"please (paste|provide|click|approve|confirm|run)|I need you to|waiting (for|on) (you|your)|blocked on (you|Alex)|needs? Alex|human gate")
 P1_ANNOYED = re.compile(r"(?i)already|I told you|just do it|stop asking|why do I have to|no .{0,20}human gate|fuck|wtf")
-P1_HUMAN = re.compile(r"who (made|makes) up|no one said|you're allowed|just do it", re.I)
+P1_HUMAN = re.compile(r"who (made|makes) up|no one said|you're allowed|just do it|(arbitrary|fake|invented|made.up) gate|human gates?\b", re.I)
 P1_ANSWER_SHAPE = re.compile(r"sk-[\w-]{6,}|ghp_\w+|https?://\S+|/[\w.-]+/[\w./-]+|\bpassword\b|\bapproved?\b|\byes\b|\bgo ahead\b", re.I)
 # real gates on the house allow-list (HUMAN-GATES-PLAIN-ENGLISH.md, Alex 2026-09-23): never flagged
 P1_REAL_GATE = re.compile(r"cold (allow|start)|payment method|wet[- ]ink|signature|2FA|two[- ]factor", re.I)

@@ -131,14 +131,14 @@ class Rollup(Fixture):
     def test_labels_start_keyword_and_only_review_changes_them(self):
         r, _, review = self.build()
         self.assertTrue(all(li["label_source"] == "keyword" for li in r["line_items"]))
-        self.assertEqual(r["labels"], dict(reviewed=0, total=4))
+        self.assertEqual(r["labels"], dict(reviewed=0, total=5))
         self.assertTrue(all(en["label_source"] == "keyword" and en["draft_category"] for en in review["items"]))
         rollup.aggregate(r)                                     # aggregation alone never promotes a label
         self.assertEqual(r["labels"]["reviewed"], 0)
         n = labels.apply_review(r["line_items"], dict(items=[dict(work_item_id="WI-1", category="Feature", failure_type="Rework", reviewed_by="Alex"),
                                                            dict(work_item_id="WI-2", category="Bug fix", reviewed_by="anthropic/claude-x")]), "2026-09-25 12:00 PT")
         rollup.aggregate(r)
-        self.assertEqual(n, 2); self.assertEqual(r["labels"], dict(reviewed=2, total=4))
+        self.assertEqual(n, 2); self.assertEqual(r["labels"], dict(reviewed=2, total=5))
         li = {x["work_item_id"]: x for x in r["line_items"]}
         self.assertEqual((li["WI-1"]["label_source"], li["WI-1"]["category"], li["WI-1"]["failure_type"]), ("human", "Feature", "Rework"))
         self.assertEqual(li["WI-2"]["label_source"], "llm"); self.assertEqual(li["WI-3"]["label_source"], "keyword")
@@ -176,7 +176,9 @@ class Rollup(Fixture):
         self.assertEqual(li["m3"]["status"], "abandoned"); self.assertTrue(li["m3"]["trivial"]); self.assertEqual(li["m4"]["status"], "abandoned")
         self.assertEqual(li["m4"]["failure_signals"], ["Recovery after miss"]); self.assertEqual(li["m4"]["failure_type"], "Recovery after miss")
         t = r["totals"]
-        self.assertEqual((t["sessions"], t["real_work_sessions"], t["finished_outcomes"], t["ship_events"], t["projects"], t["repos"]), (4, 3, 2, 1, 4, 3))
+        self.assertEqual((t["sessions"], t["real_work_sessions"], t["finished_outcomes"], t["ship_events"], t["projects"], t["repos"]), (4, 3, 2, 1, 4, 3)); self.assertEqual(t["transcript_only_sessions"], 1)   # the orphan transcript is its own line item, counted apart
+        orphan = next(li for li in r["line_items"] if li["content_session_id"] == "orphan")
+        self.assertEqual((orphan["status"], orphan["cost_basis"], orphan["has_transcript"], orphan["confidence"]), ("in_progress", "estimated_usage", True, "low"))
         self.assertEqual(li["m4"]["wasted_cost"], li["m4"]["attributed_usd"]); self.assertGreater(t["waste_rate"], 0)
         self.assertEqual(r["trivial_sessions"][0]["work_item_id"], li["m3"]["work_item_id"])
         self.assertIsInstance(r["failure_economics"], list); self.assertLessEqual(len(r["attention"]), 3)
@@ -210,7 +212,7 @@ class Cli(Fixture):
         r = subprocess.run([sys.executable, _paths.ACR_PY, "review", "--apply", rf, "--out", out], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         rep = json.load(open(os.path.join(out, "report.json")))
-        self.assertEqual(rep["labels"], dict(reviewed=1, total=4)); self.assertEqual(rep["line_items"][0]["label_source"], "human")
+        self.assertEqual(rep["labels"], dict(reviewed=1, total=5)); self.assertEqual(rep["line_items"][0]["label_source"], "human")
         rv["items"][1].update(category="Feature", failure_type="Made-up type", reviewed_by="Alex"); json.dump(rv, open(rf, "w"))
         r = subprocess.run([sys.executable, _paths.ACR_PY, "review", "--apply", rf, "--out", out], capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0); self.assertIn("unknown failure type", r.stderr)
