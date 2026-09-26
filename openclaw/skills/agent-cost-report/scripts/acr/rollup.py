@@ -55,7 +55,7 @@ def waste_split(li):
     li["productive_cost"] = round(c - li["wasted_cost"] - li["recovery_cost"], 2)
 
 
-def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None, glob_pattern=None, device_exports=(), precision=None):
+def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None, glob_pattern=None, device_exports=(), precision=None, wins_repos=wins.WINS_REPOS, gh_list=wins.gh_merged_prs):
     now = now or period.now_pt(); pricer = costs.Pricer(prices)
     sess = evidence.load_sessions(db, scope)
     ev, dev_labels, counts, obs_unpriced = evidence.load_evidence(db, scope, sess, pricer.observer_input_rate)
@@ -175,7 +175,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
     rows_by_cs = collections.defaultdict(list)
     for r in rows: rows_by_cs[r["session"]].append(r)
     files = sorted({r["file"] for r in rows if r.get("file")})
-    wins_block, wins_by_day = wins.build(files, scope.S, scope.E, ship_obs, sessions_by_cs, rows_by_cs, ratio, days, gh=gh, remote=remote, use_gh=use_gh)
+    wins_block, wins_by_day = wins.build(files, scope.S, scope.E, ship_obs, sessions_by_cs, rows_by_cs, ratio, days, gh=gh, remote=remote, use_gh=use_gh, repos=tuple(wins_repos), gh_list=gh_list)
     if wins_block["cost_status"] == "session_linked":   # spend not tied to any win, only once at least one win cost exists (2.8)
         wins_block["unattributed_usd"] = round(max(spend["total_estimate_usd"] - wins_block["total_attributed_usd"], 0.0), 2)
     # ---- Phase 2B: behavior pass, mistakes line, mistakes timeline (one union set) ----
@@ -336,7 +336,7 @@ def run_rollup(args):
             with open(args.precision) as fh: precision = json.load(fh)
         cl = dict(enabled=True, cap_usd=getattr(args, "classify_budget", None) or mistakes.classify_mod.CAP_USD, model=getattr(args, "classify_model", None)) if getattr(args, "classify", False) else None
         report, evid, review = build(usage, prices, db, scope, window_block, use_gh=not getattr(args, "no_gh", False),
-                                     behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None), device_exports=exports, precision=precision)
+                                     behavior=not getattr(args, "no_behavior", False), classify=cl, rules_dir=getattr(args, "rules_dir", None), device_exports=exports, precision=precision, wins_repos=tuple(getattr(args, "wins_repo", None) or wins.WINS_REPOS))
     finally:
         db.close()
     mp = getattr(args, "measured", None) or os.path.join(args.out, "measured.json")

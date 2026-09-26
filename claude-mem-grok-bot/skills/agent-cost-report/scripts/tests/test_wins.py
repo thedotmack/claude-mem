@@ -102,8 +102,9 @@ class Build(Transcripts):
     def ship(self, n=4125, ms=S + 6 * H):
         return [dict(id=9, title=f"PR #{n} merged to main: x", ts_ms=ms, project="claude-mem", memory_session_id="m1", content_session_id="cs1")]
 
-    def build(self, files=(), ship_obs=(), rows=None, gh=None, ratio=None, remote=lambda cwd: "o/r"):
-        return wins.build(list(files), S, E, list(ship_obs), self.sessions(), rows or {}, ratio, DAYS, gh=gh or fake_gh({}), remote=remote, use_gh=gh is not None)
+    def build(self, files=(), ship_obs=(), rows=None, gh=None, ratio=None, remote=lambda cwd: "o/r", gh_list=None, repos=("o/r",)):
+        return wins.build(list(files), S, E, list(ship_obs), self.sessions(), rows or {}, ratio, DAYS, gh=gh or fake_gh({}), remote=remote,
+                          use_gh=(gh is not None or gh_list is not None), repos=repos, gh_list=gh_list)
 
     def test_no_link_means_every_usd_null(self):
         f = self.write("a.jsonl", tool_lines("cs1", S + 2 * H, "gh pr merge 5 --repo o/r"))
@@ -169,6 +170,47 @@ class Build(Transcripts):
     def test_finished_work_is_not_a_win(self):
         block, by_day = self.build([], [])                       # completed sessions exist in sessions(), but no merge/publish evidence
         self.assertEqual(block["items"], []); self.assertEqual([d["count"] for d in by_day], [0, 0, 0])
+
+    # ---- read-only GitHub merged-PR source ----
+    def test_gh_list_adds_wins_dedupes_and_labels_source(self):
+        f = self.write("a.jsonl", tool_lines("cs1", S + 2 * H, "gh pr merge 4125 --repo o/r"))
+        lister = lambda repo, s, e: ([dict(number=4125, title="from github", url="https://github.com/o/r/pull/4125", ts_ms=S + 3 * H),
+                                      dict(number=4200, title="only on github", url="https://github.com/o/r/pull/4200", ts_ms=S + 30 * H)], "ok")
+        block, by_day = self.build([f], self.ship(4125), gh_list=lister)
+        keys = {i["key"]: i for i in block["items"]}
+        self.assertEqual(sorted(keys), ["o/r#4125", "o/r#4200"])                                   # 4125 counted once across three sources
+        self.assertEqual(set(keys["o/r#4125"]["sources"]), {"transcript", "ship_observation", wins.GH_SOURCE}); self.assertTrue(keys["o/r#4125"]["confirmed"])
+        self.assertEqual((keys["o/r#4200"]["sources"], keys["o/r#4200"]["title"], keys["o/r#4200"]["usd"], keys["o/r#4200"]["cost_status"]), ([wins.GH_SOURCE], "only on github", None, "unmeasured"))
+        src = block["sources"][wins.GH_SOURCE]; self.assertEqual((src["status"], src["found"], src["repos"]["o/r"]["status"]), ("ok", 2, "ok"))
+        self.assertEqual([d["count"] for d in by_day], [1, 1, 0])
+
+    def test_gh_list_unavailable_never_zero_and_report_completes(self):
+        f = self.write("a.jsonl", tool_lines("cs1", S + 2 * H, "gh pr merge 4125 --repo o/r"))
+        for reason in ("gh missing", "unauthenticated", "rate-limited"):
+            block, _ = self.build([f], gh_list=lambda repo, s, e, r=reason: ([], r))
+            src = block["sources"][wins.GH_SOURCE]
+            self.assertEqual((src["status"], src["repos"]["o/r"]["status"], src["repos"]["o/r"]["found"]), ("unavailable", reason, None), reason)
+            self.assertEqual(len(block["items"]), 1)                                                # the other sources still ship
+        block, _ = self.build([f], gh=fake_gh({}), gh_list=None)
+        self.assertEqual(block["sources"][wins.GH_SOURCE]["repos"]["o/r"]["status"], "unavailable (gh disabled for this run)")
+
+    def test_gh_merged_prs_window_edges_and_failures(self):
+        rows = [dict(number=1, title="a", url="u1", mergedAt=iso(S)), dict(number=2, title="b", url="u2", mergedAt=iso(E)), dict(number=3, title="c", url="u3", mergedAt=iso(E - 1000)), dict(number=4, title="no merge", url="u4", mergedAt=None)]
+        ok = lambda cmd, **k: type("R", (), dict(returncode=0, stdout=json.dumps(rows), stderr=""))()
+        out, st = wins.gh_merged_prs("o/r", S, E, run=ok)
+        self.assertEqual((st, [x["number"] for x in out]), ("ok", [1, 3]))                        # start inclusive, end exclusive, unmerged dropped
+        def missing(cmd, **k): raise FileNotFoundError("gh")
+        self.assertEqual(wins.gh_merged_prs("o/r", S, E, run=missing), ([], "gh missing"))
+        auth = lambda cmd, **k: type("R", (), dict(returncode=4, stdout="", stderr="To get started with GitHub CLI, please run:  gh auth login"))()
+        self.assertEqual(wins.gh_merged_prs("o/r", S, E, run=auth)[1], "unauthenticated")
+        rl = lambda cmd, **k: type("R", (), dict(returncode=1, stdout="", stderr="GraphQL: API rate limit exceeded for user"))()
+        self.assertEqual(wins.gh_merged_prs("o/r", S, E, run=rl)[1], "rate-limited")
+        junk = lambda cmd, **k: type("R", (), dict(returncode=0, stdout="not json", stderr=""))()
+        self.assertEqual(wins.gh_merged_prs("o/r", S, E, run=junk)[1], "gh error (unparseable output)")
+        seen = []
+        def spy(cmd, **k): seen.append(cmd); return ok(cmd)
+        wins.gh_merged_prs("o/r", S, E, run=spy)
+        self.assertEqual(seen[0][:6], ["gh", "pr", "list", "--repo", "o/r", "--state"]); self.assertEqual(seen[0][1:3], ["pr", "list"]); self.assertNotIn("merge", seen[0][2])   # read-only: list, never merge
 
     def test_publish_from_transcript_and_observation_dedup(self):
         f = self.write("a.jsonl", tool_lines("cs1", S + 2 * H, "npm publish", "npm notice Publishing to https://registry.npmjs.org/\n+ claude-mem@13.25.3"))

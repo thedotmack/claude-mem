@@ -395,12 +395,16 @@ def details(d, open_):
     out = [f'<details id="details" {"open" if open_ else ""}><summary>Details &amp; evidence</summary>']
     # wins (3.8) and mistakes by day, first so fragment links land near the top
     out.append("<h4>Wins</h4>")
+    gs = (d["wins"].get("sources") or {}).get("github_merged_prs")
+    if gs:
+        rep = "; ".join(f'{esc(r)}: {esc(v["status"])}' + (f' ({v["found"]} found)' if v.get("found") is not None else "") for r, v in (gs.get("repos") or {}).items())
+        out.append(f'<div class="muted">GitHub merged PRs (read-only gh pr list): {esc(gs["status"])} · {rep}</div>')
     for w in d["wins"].get("items", []):
         cost = "unmeasured (session not linked to PR)" if w.get("usd") is None else f'≈{usd2(w["usd"])} {tag("extra") if w.get("cost_basis") == "extrapolated" else tag("est")} · {esc(w.get("cost_basis") or "")}'
         tok = w.get("tokens"); tok_s = ", ".join(f"{k} {v:,}" for k, v in tok.items()) if tok else "—"
         out.append(f'<div id="win-{esc(w["win_id"])}"><b>{esc(w["win_id"])}</b> · {esc(w["kind"])} · {esc(w["title"])} · {esc(w.get("ts_pt") or "")}'
                    + (f' · <a href="{esc(w["url"])}">{esc(w["url"])}</a>' if w.get("url") else "")
-                   + f'<br><span class="muted">cost {cost} · sessions {esc(", ".join(w.get("sessions") or []) or "—")} · tokens {tok_s} · attribution {esc(d["wins"].get("attribution_method") or "none")} · evidence {esc(", ".join(map(str, w.get("evidence_ids") or [])) or "—")}</span></div>')
+                   + f'<br><span class="muted">sources {esc(", ".join(w.get("sources") or []))} · cost {cost} · sessions {esc(", ".join(w.get("sessions") or []) or "—")} · tokens {tok_s} · attribution {esc(d["wins"].get("attribution_method") or "none")} · evidence {esc(", ".join(map(str, w.get("evidence_ids") or [])) or "—")}</span></div>')
     if not d["wins"].get("items"): out.append('<div class="muted">No wins found (merged PR, published version, or praise).</div>')
     if d["wins"].get("dropped"): out.append(f'<div class="muted">{len(d["wins"]["dropped"])} candidate(s) dropped: ' + esc("; ".join(str(x.get("reason")) for x in d["wins"]["dropped"][:6])) + "</div>")
     out.append("<h4>Mistakes by day</h4>")
