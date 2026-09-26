@@ -113,7 +113,7 @@ class Cli(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "prices.json")))
 
     def test_placeholders_exit_with_clear_error(self):
-        for cmd in ("render", "pdf", "sync-check"):
+        for cmd in ("sync-check",):   # render and pdf ship in Phase 3
             r = self.run_acr(cmd)
             self.assertNotEqual(r.returncode, 0, cmd)
             self.assertIn("not implemented in this phase", r.stderr, cmd)
