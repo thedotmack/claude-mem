@@ -1340,7 +1340,10 @@ function nonEmptyTrimmedString(value: unknown): string | null {
 
 const OAUTH_START_TIMEOUT_MS = 10_000;
 const OAUTH_POLL_TIMEOUT_MS = 10_000;
+// Fallback budget when the server does not report `expires_in`. The server
+// pairing lives 30 minutes; polling past that only yields `gone`.
 const OAUTH_POLL_BUDGET_MS = 240_000;
+const OAUTH_POLL_BUDGET_MAX_MS = 30 * 60 * 1000;
 const OAUTH_DEFAULT_POLL_INTERVAL_S = 3;
 
 type InstallerPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
@@ -1353,6 +1356,12 @@ export interface InstallerOAuthPairing {
   authorizationUrl: string;
   checkoutUrl: string;
   pollIntervalMs: number;
+  /**
+   * Absolute epoch ms after which polling stops, derived from the server's
+   * `expires_in` at parse time and clamped to OAUTH_POLL_BUDGET_MAX_MS.
+   * Undefined when the server did not report one (fallback budget applies).
+   */
+  expiresAt?: number;
   /** Defensive compatibility for a server that returns ready during login. */
   delivered?: TrialReadyResult;
 }
@@ -1414,6 +1423,7 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
     authorization_url?: unknown;
     checkout_url?: unknown;
     poll_interval?: unknown;
+    expires_in?: unknown;
   };
   const pairingId = nonEmptyTrimmedString(b.pairing_id);
   const secret = nonEmptyTrimmedString(b.secret);
@@ -1452,6 +1462,11 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
       ? Math.min(Math.max(b.poll_interval, 1), 30)
       : OAUTH_DEFAULT_POLL_INTERVAL_S;
 
+  const expiresAt =
+    typeof b.expires_in === 'number' && Number.isFinite(b.expires_in) && b.expires_in > 0
+      ? Date.now() + Math.min(b.expires_in * 1000, OAUTH_POLL_BUDGET_MAX_MS)
+      : undefined;
+
   return {
     pairingId,
     secret,
@@ -1459,23 +1474,44 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
     authorizationUrl: authorizationUrl.toString(),
     checkoutUrl: checkoutUrl.toString(),
     pollIntervalMs: pollIntervalS * 1000,
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
   };
 }
 
+export type OAuthStartFailure = 'http_error' | 'network' | 'timeout' | 'bad_body';
+
+// Why the most recent startInstallerOAuthPairing() returned null. A closed enum
+// for the installer_oauth_start_failed telemetry event — never a URL, status
+// text, or error message.
+let lastStartFailure: OAuthStartFailure | null = null;
+export function lastOAuthStartFailure(): OAuthStartFailure | null {
+  return lastStartFailure;
+}
+
 /** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
-export async function startInstallerOAuthPairing(): Promise<InstallerOAuthPairing | null> {
+export async function startInstallerOAuthPairing(
+  opts: { source?: string } = {},
+): Promise<InstallerOAuthPairing | null> {
+  const source = opts.source ?? 'npx-installer';
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), OAUTH_START_TIMEOUT_MS);
+  lastStartFailure = null;
   try {
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: 'npx-installer', device_name: hostname() }),
+      body: JSON.stringify({ source, device_name: hostname() }),
       signal: controller.signal,
     });
-    if (!response.ok) return null;
-    return parseInstallerOAuthStartBody(await response.json());
-  } catch {
+    if (!response.ok) {
+      lastStartFailure = 'http_error';
+      return null;
+    }
+    const pairing = parseInstallerOAuthStartBody(await response.json());
+    if (!pairing) lastStartFailure = 'bad_body';
+    return pairing;
+  } catch (error: unknown) {
+    lastStartFailure = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'network';
     return null;
   } finally {
     clearTimeout(timer);
@@ -1649,7 +1685,10 @@ async function waitForInstallerPairing(
 
   try {
     let consecutiveFailures = 0;
-    while (Date.now() - startedAt < OAUTH_POLL_BUDGET_MS) {
+    // The deadline belongs to the pairing, not the phase: login and enrollment
+    // share one pairing, so both poll until the server's own expiry.
+    const deadline = pairing.expiresAt ?? (startedAt + OAUTH_POLL_BUDGET_MS);
+    while (Date.now() < deadline) {
       if (cancelled) return null;
       const result = await pollInstallerPairingOnce(pairing);
       if (cancelled) return null;
@@ -1751,6 +1790,12 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
   spinner?.start('Starting secure OAuth login…');
   const pairing = await startInstallerOAuthPairing();
   if (!pairing) {
+    await captureCliEvent('installer_oauth_start_failed', {
+      version,
+      outcome: lastOAuthStartFailure() ?? 'network',
+      interactive: isInteractive,
+      phase: 'login',
+    });
     spinner?.stop(styleText('red', 'Could not start OAuth login.'));
     log.error('OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
     return null;
@@ -1767,6 +1812,39 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
 
   const completed = await completeInstallerOAuthLogin(pairing, version);
   return completed ? pairing : null;
+}
+
+/**
+ * Best-effort, non-blocking sign-in offer for non-interactive installs that
+ * skipped login (provider needs no account). Agents run `npx claude-mem install`
+ * in non-TTY shells; the blocking OAuth step cannot run there, so the install
+ * completes and the login-only link is printed last for the agent to relay.
+ *
+ * Never polls, never opens a browser, never prints the device code or the
+ * checkout URL, and never touches exit status. Skipped under CI. Not gated on
+ * the do-not-track env var: only telemetry is, and captureCliEvent already honors it.
+ * The server ignores `source` today and will allowlist it separately.
+ */
+export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<void> {
+  if (isInteractive) return;
+  if (providerNeedsAccount(options.provider)) return;
+  if (process.env.CI) return;
+
+  const pairing = await startInstallerOAuthPairing({ source: 'npx-installer-deferred' });
+  if (!pairing) {
+    await captureCliEvent('installer_oauth_start_failed', {
+      version,
+      outcome: lastOAuthStartFailure() ?? 'network',
+      interactive: false,
+      phase: 'deferred',
+    });
+    return;
+  }
+
+  log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
+  log.info(`Sign-in link: ${pairing.authorizationUrl}`);
+  log.info('AGENT: show this link to the user so they can finish signing in. Do not open it yourself; the install is already complete.');
+  await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
 }
 
 function noteDeviceCode(pairing: InstallerOAuthPairing): void {
@@ -1928,7 +2006,8 @@ async function requireWorkerStopped(
   }
 }
 
-function validateNonInteractiveProvider(
+/** Exported for the non-interactive contract tests; not part of the CLI surface. */
+export function validateNonInteractiveProvider(
   options: InstallOptions,
   summary: InstallSummary,
 ): void {
@@ -2470,6 +2549,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } else {
       console.log('\nclaude-mem installed successfully!');
     }
+    // Last line of a non-interactive install so an agent relaying the output
+    // sees the link after the success line. Nothing here may change the exit
+    // status or throw past the summary.
+    try {
+      await offerDeferredLogin(options, version);
+    } catch {
+      // best-effort only
+    }
   }
 
   // After promptTelemetryOptIn so a just-made consent choice is honored.
@@ -2478,6 +2565,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   await captureCliEvent('install_completed', {
     ide: selectedIDEs.join(','),
     provider: selectedProvider,
+    provider_source: options.providerSource ?? 'prompt',
     runtime_mode: selectedRuntime,
     is_update: alreadyInstalled,
     outcome: failedIDEs.length > 0 ? 'partial' : 'ok',

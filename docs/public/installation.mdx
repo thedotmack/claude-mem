@@ -30,7 +30,7 @@ npx claude-mem install
 The interactive installer runs in three stages — runtime first, sign in second, then pick your memory provider:
 
 1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
-2. **Sign in.** Skipped only for `--provider claude` (that path never talks to cmem.ai). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
+2. **Sign in.** Skipped for `--provider claude` (memory runs on your own Anthropic plan). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
 3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, Anthropic plan, or `--provider host` (local loopback observer).
 
 Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-headless) for the exact settings the installer writes.
@@ -45,7 +45,7 @@ Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-head
 
 ### Skipping the Sign-In
 
-`--provider claude` never touches cmem.ai and skips OAuth. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
+Interactive `--provider claude` skips the sign-in step. Non-interactive runs (no TTY, as when an AI agent runs the installer) without `--provider` default to the Anthropic plan on a fresh install and reuse the configured provider otherwise. Every non-interactive install that skipped sign-in prints an optional sign-in link at the very end; it is best-effort, never blocks or changes the exit status, and is skipped when `CI` is set. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
 
 ### Option 3: Plugin Marketplace
 

@@ -76,6 +76,8 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `trial_variant` | `test_14` | Canonical trial experiment arm: control_7 / test_14 / test_30 |
 | `offer_surface` / `funnel_source` | `installer` / `installer` | Closed source labels on the installer offer exposure event |
 | `stage` | `awaiting_checkout` | Installer trial polling stage: awaiting_login / awaiting_checkout / awaiting_approval |
+| `phase` | `login` | Installer OAuth pairing phase — a closed enum: login / enrollment / deferred |
+| `provider_source` | `default` | How the installer decided the provider — a closed enum: flag (`--provider` given) / default (non-interactive fresh install fell back to claude) / persisted (non-interactive run reused the configured provider) / prompt (interactive choice) |
 | `mode` | `code` | Active claude-mem mode id (our mode list) |
 | `model` | `claude-haiku-4-5` | Model id used for compression |
 | `observed_model` | `claude-fable-5-1` | Model id the observed IDE session itself was running (read from its transcript) — distinct from `model`, which is the compression model. `unknown` when not determinable |
@@ -131,7 +133,12 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 
 | Event | When | Extra properties |
 |---|---|---|
-| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
+| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `provider_source`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
+| `installer_oauth_started` | The installer opened the browser sign-in link | `version` — never the link, pairing id, secret, or device code |
+| `installer_oauth_completed` | Browser sign-in finished | `version` |
+| `installer_oauth_timeout` | Sign-in polling reached the pairing's expiry (the server's `expires_in`, capped at 30 minutes; 4 minutes when the server reports none) | `version`, `phase` (login / enrollment), `duration_ms` |
+| `installer_oauth_start_failed` | `POST /api/installer/oauth/start` did not return a usable pairing | `version`, `outcome` (http_error / network / timeout / bad_body), `interactive`, `phase` (login / deferred) |
+| `installer_oauth_deferred` | A non-interactive install that skipped sign-in printed the optional sign-in link at the end | `version`, `interactive` (always `false`) |
 | `install_failed` | The installer aborts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
 | `pro_offer_viewed` | A CMEM Pro offer is displayed in the installer | `trial_days`, `trial_variant`, `offer_surface` (`installer`), `funnel_source` (`installer`) |
 | `trial_email_submitted` | The user submits an email to start the installer trial flow | `version` only — never the email |

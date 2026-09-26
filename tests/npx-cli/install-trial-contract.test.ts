@@ -67,15 +67,59 @@ function runCompletedPairingChild(body: Record<string, unknown>): {
   }
 }
 
+const validStartBody = {
+  pairing_id: pairingId,
+  secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  user_code: 'ABCD-2345',
+  authorization_url: authorizationUrl,
+  checkout_url: checkoutUrl,
+  poll_interval: 3,
+};
+
+function runDeferredLoginChild(
+  status: number,
+  extraEnv: Record<string, string> = {},
+  unsetEnv: string[] = [],
+): { output: string; exitCode: number } {
+  const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-installer-deferred-'));
+  try {
+    const script = `
+      globalThis.fetch = async () => {
+        console.log('__FETCH_CALLED__');
+        return new Response(${JSON.stringify(status === 200 ? JSON.stringify(validStartBody) : '')}, {
+          status: ${status},
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+      const { offerDeferredLogin } = await import('./src/npx-cli/commands/install.ts');
+      await offerDeferredLogin({ provider: 'claude', providerSource: 'default' }, 'test-version');
+      console.log('__DEFERRED_DONE__');
+    `;
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      CLAUDE_MEM_DATA_DIR: dataDir,
+      CLAUDE_MEM_TELEMETRY: '0',
+      ...extraEnv,
+    };
+    for (const key of unsetEnv) delete env[key];
+    const result = Bun.spawnSync([process.execPath, '--eval', script], {
+      cwd: repoRoot,
+      env,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const output = decoder.decode(result.stdout) + decoder.decode(result.stderr);
+    return { output, exitCode: result.exitCode };
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
 describe('installer trial-ready contract', () => {
   it('parses an OAuth-only pairing without accepting an email or identity', () => {
     expect(parseInstallerOAuthStartBody({
-      pairing_id: pairingId,
-      secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      user_code: 'ABCD-2345',
-      authorization_url: authorizationUrl,
-      checkout_url: checkoutUrl,
-      poll_interval: 3,
+      ...validStartBody,
       email: 'must-not-be-read@example.com',
     })).toEqual({
       pairingId,
@@ -85,6 +129,53 @@ describe('installer trial-ready contract', () => {
       checkoutUrl,
       pollIntervalMs: 3000,
     });
+  });
+
+  it('derives an absolute poll deadline from expires_in, clamped to 30 minutes', () => {
+    const before = Date.now();
+    const parsed = parseInstallerOAuthStartBody({ ...validStartBody, expires_in: 1800 });
+    const after = Date.now();
+    expect(parsed).toEqual(expect.objectContaining({ pairingId, expiresAt: expect.any(Number) }));
+    expect(parsed!.expiresAt!).toBeGreaterThanOrEqual(before + 1800_000 - 2000);
+    expect(parsed!.expiresAt!).toBeLessThanOrEqual(after + 1800_000);
+
+    const clamped = parseInstallerOAuthStartBody({ ...validStartBody, expires_in: 7200 });
+    expect(clamped!.expiresAt!).toBeLessThanOrEqual(Date.now() + 30 * 60 * 1000);
+    expect(clamped!.expiresAt!).toBeGreaterThanOrEqual(before + 30 * 60 * 1000 - 2000);
+
+    expect(parseInstallerOAuthStartBody(validStartBody)).not.toHaveProperty('expiresAt');
+    expect(parseInstallerOAuthStartBody({ ...validStartBody, expires_in: 'soon' })).not.toHaveProperty('expiresAt');
+    expect(parseInstallerOAuthStartBody({ ...validStartBody, expires_in: -5 })).not.toHaveProperty('expiresAt');
+  });
+
+  it('prints only the login-only link for a deferred non-interactive sign-in', () => {
+    const { output, exitCode } = runDeferredLoginChild(200, {}, ['CI']);
+    expect(exitCode, output).toBe(0);
+    expect(output).toContain('__FETCH_CALLED__');
+    expect(output).toContain('Sign-in link: https://cmem.ai/login?next=');
+    expect(output).toContain('AGENT: show this link to the user');
+    expect(output).not.toContain(checkoutUrl);
+    expect(output).not.toContain('trial=7');
+    expect(output).not.toContain('ABCD-2345');
+    expect(output).not.toContain('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(output).toContain('__DEFERRED_DONE__');
+  });
+
+  it('stays silent and exits 0 when the deferred start request fails', () => {
+    const { output, exitCode } = runDeferredLoginChild(503, {}, ['CI']);
+    expect(exitCode, output).toBe(0);
+    expect(output).toContain('__FETCH_CALLED__');
+    expect(output).not.toContain('Sign-in link:');
+    expect(output).not.toContain('AGENT:');
+    expect(output).toContain('__DEFERRED_DONE__');
+  });
+
+  it('never contacts cmem.ai for the deferred offer under CI', () => {
+    const { output, exitCode } = runDeferredLoginChild(200, { CI: '1' });
+    expect(exitCode, output).toBe(0);
+    expect(output).not.toContain('__FETCH_CALLED__');
+    expect(output).not.toContain('Sign-in link:');
+    expect(output).toContain('__DEFERRED_DONE__');
   });
 
   it('rejects OAuth starts without both browser destinations', () => {
