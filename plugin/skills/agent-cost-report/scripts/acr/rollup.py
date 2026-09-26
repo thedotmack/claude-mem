@@ -51,7 +51,7 @@ def waste_split(li):
     li["productive_cost"] = round(c - li["wasted_cost"] - li["recovery_cost"], 2)
 
 
-def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None):
+def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins.gh_pr_view, remote=wins.git_remote, behavior=True, classify=None, rules_dir=None, glob_pattern=None):
     now = now or period.now_pt(); pricer = costs.Pricer(prices)
     sess = evidence.load_sessions(db, scope)
     ev, dev_labels, counts, obs_unpriced = evidence.load_evidence(db, scope, sess, pricer.observer_input_rate)
@@ -155,7 +155,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
     behavior_block = None; mistakes_by_day = []
     if behavior:
         session_projects = {li["content_session_id"]: sess[li["session_ids"][0]]["project"] for li in items}
-        behavior_block, mspend, mistakes_by_day = mistakes.run(db, scope, window_block, pricer, session_projects, items, classify=classify, rules_dir=rules_dir, usage_rows=rows)
+        behavior_block, mspend, mistakes_by_day = mistakes.run(db, scope, window_block, pricer, session_projects, items, classify=classify, rules_dir=rules_dir, usage_rows=rows, glob_pattern=glob_pattern)
         spend.update(mspend)
     # ---- the rest ----
     um = [dict(session=cs, dir=rs[0]["dir"], src=rs[0]["src"], calls=len(rs), tokens=sum(sum(r[f] for f in costs.TOKEN_FIELDS) for r in rs),

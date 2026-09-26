@@ -11,11 +11,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acr import period, rollup, transcripts  # noqa: E402
+from acr import period, render, rollup, transcripts  # noqa: E402
 from acr import prices as prices_mod  # noqa: E402
 
 USAGE_FILE = "usage.json"
-NOT_YET = ("render", "pdf", "sync-check")
+NOT_YET = ("sync-check",)
 
 
 def add_period_args(p):
@@ -80,6 +80,24 @@ def cmd_review(args):
         sys.exit(f"acr.py review: {ex}")
 
 
+def cmd_render(args):
+    try:
+        html_path = render.render_file(args.inp, args.out, print_mode=False)
+        print(f"render: {html_path}")
+        if args.print or args.pdf_ready:
+            print(f"render: {render.render_file(args.inp, args.out, print_mode=True)}")
+    except (FileNotFoundError, KeyError, ValueError) as ex:
+        sys.exit(f"acr.py render: {ex}")
+
+
+def cmd_pdf(args):
+    try:
+        path, msg = render.pdf(args.out, chrome=args.chrome)
+    except FileNotFoundError as ex:
+        sys.exit(f"acr.py pdf: {ex}")
+    print(msg)
+
+
 def cmd_not_yet(args):
     sys.exit(f"acr.py {args.cmd}: not implemented in this phase (Phases 1-2 ship collect, prices, rollup, review)")
 
@@ -116,6 +134,18 @@ def build_parser():
     v.add_argument("--apply", required=True, metavar="FILE", help="reviewed copy of labels.review.json")
     v.add_argument("--out", required=True, metavar="DIR", help="directory holding report.json")
     v.set_defaults(fn=cmd_review)
+
+    rd = sub.add_parser("render", help="report.json -> self-contained report.html (Timing-style); --print also writes report.print.html with Details open")
+    rd.add_argument("--in", dest="inp", required=True, metavar="FILE", help="report.json from `rollup`")
+    rd.add_argument("--out", required=True, metavar="DIR", help="output directory (report.html lands here)")
+    rd.add_argument("--print", action="store_true", help="also write report.print.html with the Details section open (for `pdf`)")
+    rd.add_argument("--pdf-ready", action="store_true", help=argparse.SUPPRESS)
+    rd.set_defaults(fn=cmd_render)
+
+    pf = sub.add_parser("pdf", help="print DIR/report.print.html to DIR/report.pdf with headless Chrome (skipped if Chrome is missing)")
+    pf.add_argument("--out", required=True, metavar="DIR", help="directory holding report.print.html (or report.json to render it)")
+    pf.add_argument("--chrome", default="google-chrome", help=argparse.SUPPRESS)
+    pf.set_defaults(fn=cmd_pdf)
 
     for name in NOT_YET:
         n = sub.add_parser(name, help="(later phase)")

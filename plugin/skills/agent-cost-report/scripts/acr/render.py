@@ -85,7 +85,7 @@ CSS = """
 .wrow{display:grid;grid-template-columns:22px 1fr 70px 190px;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #f2f2f5;font-size:13px} .wrow .wk{font-size:11px;color:#555;background:#f2f2f5;border-radius:4px;text-align:center}
 .wrow .wc{color:#6e6e73;font-size:12px;text-align:right} .wrow a{color:#1d1d1f;text-decoration:none}
 .tl{grid-column:1/3} .tlab{font:11px -apple-system,Inter,Arial;fill:#6e6e73} .tnum{font:600 11px -apple-system,Inter,Arial;fill:#1d1d1f} .tred{font:600 11px -apple-system,Inter,Arial;fill:#b3261e}
-.ribbonwrap{margin:18px 0 6px} .scale{display:flex;font-size:12.5px;color:#444;margin-top:8px} .seg{display:flex;align-items:center;gap:6px;padding-right:8px;white-space:nowrap;overflow:visible}
+.ribbonwrap{margin:18px 0 6px} .scale{display:flex;flex-wrap:wrap;font-size:12.5px;color:#444;margin-top:8px;row-gap:4px} .seg{display:flex;align-items:center;gap:6px;padding-right:8px;white-space:nowrap;min-width:max-content}
 .muted{color:#8e8e93} .ribbonnote{font-size:12px;color:#6e6e73;margin-top:6px;display:flex;gap:18px} .key{display:inline-block;width:14px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:5px}
 .grid{display:grid;grid-template-columns:1.05fr 1fr 1fr;gap:18px;margin-top:22px}
 .card{border:1px solid #ececf0;border-radius:12px;padding:16px 18px} .card h3{margin:0 0 10px;font-size:13.5px;font-weight:600;color:#1d1d1f} .card h3 span{font-weight:400;color:#8e8e93}
@@ -175,7 +175,7 @@ def wins_mistakes(d):
     if not items: rows.append('<div class="mnote">No merged PR or published version found in this window.</div>')
     if measured and w.get("unattributed_usd") is not None: rows.append(f'<div class="wrow"><span></span><span>Not tied to a win</span><span></span><span class="wc">≈{usd2(w["unattributed_usd"])} {tag("est")}</span></div>')
     elif items: rows.append('<div class="mnote">win costs unmeasured (G11: no fallback estimate)</div>')
-    return (f'<div class="wins-mistakes"><div><h3>Cost of mistakes <span>· low, same-session figure</span></h3>{line}</div>'
+    return (f'<div class="wins-mistakes"><div><h3>Mistakes <span>· low, same-session figure</span></h3>{line}</div>'
             f'<div><h3>Wins shipped <span>· {"most expensive first" if measured else "newest first"}</span></h3>{"".join(rows)}{more}</div>'
             f'<div class="tl">{timelines(d)}</div></div>')
 
@@ -183,7 +183,7 @@ def wins_mistakes(d):
 def timelines(d):
     """Two timelines on one PT-day axis (plan 3.8c): wins as dots above, mistakes as red bars below. Links to Details."""
     days = [x["day_pt"] for x in d["by_day"]]; wbd = {x["day_pt"]: x for x in d["timeline"].get("wins_by_day", [])}; mbd = {x["day_pt"]: x for x in d["timeline"].get("mistakes_by_day", [])}
-    n = max(len(days), 1); colw = 90; W = 40 + n * colw; H = 150; axis = 84
+    n = max(len(days), 1); colw = 90 if n <= 10 else max(30, int(900 / n)); W = 40 + n * colw; H = 196; axis = 96
     maxm = max([x.get("usd") or 0 for x in mbd.values()] or [0]); maxw = max([x.get("count") or 0 for x in wbd.values()] or [0])
     out = [f'<line x1="20" x2="{W - 10}" y1="{axis}" y2="{axis}" stroke="#e5e5ea"/>']
     partial = d["window"].get("partial_last_day")
@@ -193,8 +193,8 @@ def timelines(d):
         if c:
             r = 6 + (10 * c / maxw if maxw else 0)
             val = usd2(wd["usd"]) if wd.get("usd") is not None else "unmeasured"
-            out.append(f'<a href="#win-{esc(wd["win_ids"][0])}"><circle cx="{cx:.1f}" cy="{axis - 34:.1f}" r="{r:.1f}" fill="#34C759"/><text x="{cx:.1f}" y="{axis - 30:.1f}" text-anchor="middle" class="tnum" fill="#fff">{c}</text>'
-                       f'<text x="{cx:.1f}" y="{axis - 52:.1f}" text-anchor="middle" class="tlab">{esc(val)}</text></a>')
+            out.append(f'<a href="#win-{esc(wd["win_ids"][0])}"><circle cx="{cx:.1f}" cy="{axis - 30:.1f}" r="{r:.1f}" fill="#34C759"/><text x="{cx:.1f}" y="{axis - 26:.1f}" text-anchor="middle" class="tnum" fill="#fff">{c}</text>'
+                       f'<text x="{cx:.1f}" y="{axis - 50:.1f}" text-anchor="middle" class="tlab">{esc(val)}</text></a>')
         else: out.append(f'<line x1="{cx:.1f}" x2="{cx:.1f}" y1="{axis - 6}" y2="{axis}" stroke="#c5cad1"/>')
         usd = md.get("usd") or 0
         if usd:
@@ -206,7 +206,7 @@ def timelines(d):
         if md.get("outbound_incidents"): out.append(f'<text x="{cx + 18:.1f}" y="{axis + 12}" class="tred">✉{md["outbound_incidents"]}</text>')
         lab = day_label(day, True) + (" · partial" if (partial and i == n - 1) else "")
         out.append(f'<text x="{cx:.1f}" y="{H - 4}" text-anchor="middle" class="cax">{esc(lab)}</text>')
-    out.append(f'<text x="20" y="{axis - 60}" class="tlab">wins</text><text x="20" y="{axis + 60}" class="tlab">mistakes (low, estimated)</text>')
+    out.append(f'<text x="20" y="14" class="tlab">wins above the line (count; cost unmeasured until sessions are linked) · mistakes below (low, estimated, per day)</text>')
     return f'<svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="xMinYMid meet">{"".join(out)}</svg>'
 
 
@@ -274,7 +274,7 @@ def donut(d, cats):
 
 # ---- day columns: build_mockup.py:58-73, column count and viewBox from by_day (mapping #20) ----
 def day_chart(d, cats):
-    days = d["by_day"]; n = max(len(days), 1); colw = 95 if n <= 8 else max(24, int(700 / n)); bw = int(colw * 0.6); W = 40 + n * colw; H = 150
+    days = d["by_day"]; n = max(len(days), 1); colw = 95 if n <= 3 else max(22, min(60, int(330 / n))); bw = int(colw * 0.62); W = 40 + n * colw; H = 150
     perday = {x["day_pt"]: {} for x in days}
     for li in d["line_items"]:
         if li.get("trivial") or li["date_pt"] not in perday: continue
@@ -290,8 +290,9 @@ def day_chart(d, cats):
                 cols.append(f'<rect x="{cx}" y="{y:.1f}" width="{bw}" height="{max(h - 1.5, 0):.1f}" rx="3" fill="{COL[c]}"/>')
         lab = usd2(s) if s else "no agent work"
         if partial and i == n - 1: lab += " · partial"
-        cols.append(f'<text x="{cx + bw / 2:.1f}" y="{(y - 7) if s else H + 2:.1f}" text-anchor="middle" class="{"ctop" if s else "cnone"}">{esc(lab)}</text>')
-        if n <= 12 or i % max(1, n // 8) == 0: cols.append(f'<text x="{cx + bw / 2:.1f}" y="{H + 30}" text-anchor="middle" class="cax">{esc(day_label(day, True))}</text>')
+        if n <= 3 or s: cols.append(f'<text x="{cx + bw / 2:.1f}" y="{(y - 7) if s else H + 2:.1f}" text-anchor="middle" class="{"ctop" if s else "cnone"}" font-size="{12.5 if n <= 3 else 9}">{esc(lab if n <= 3 or s else "")}</text>')
+        else: cols.append(f'<text x="{cx + bw / 2:.1f}" y="{H + 2}" text-anchor="middle" class="cnone" font-size="7">no agent work</text>')
+        if n <= 12 or i % max(1, n // 8) == 0: cols.append(f'<text x="{cx + bw / 2:.1f}" y="{H + 30}" text-anchor="middle" class="cax" font-size="{12 if n <= 3 else 9}">{esc(day_label(day, True))}</text>')
     return f'<svg viewBox="0 0 {W} {H + 40}" width="100%" height="{H + 40}">{"".join(cols)}</svg>'
 
 
@@ -328,6 +329,7 @@ def behavior_strip(d):
         if not ps: continue
         count = sum(p["count"] for p in ps); low = sum(p["low_usd"] or 0 for p in ps); unm = sum(p["unmeasured_n"] for p in ps); mins = sum(p.get("alex_minutes") or 0 for p in ps)
         if key == "P3_wrong_model": money = f'≈{usd2(ps[0].get("delta_usd") or 0)} more than the default model {tag("est")}' if count else ""
+        elif count and not low and unm: money = "unmeasured"                         # never $0 for unmeasured (2B.11)
         else: money = f'≈{usd2(low)} {tag("est")}' if count else ""
         body = (f'<span class="bn">{count}</span>{money}' if count else '<span class="bz">none found</span>')
         extra = (f' · {mins:g} min of your time' if mins else "") + (f' · +{unm} unmeasured' if unm else "")
@@ -346,12 +348,15 @@ def outcomes(d):
         if li["failure_type"]: flag = '<span class="flag">⟲ recovery</span>' if li["failure_type"] == "Recovery after miss" else f'<span class="flag">⚠ {esc(li["failure_type"])}</span>'
         draft = tag("draft") if li["label_source"] == "keyword" else ""
         basis = tag("extra") if li["cost_basis"] == "extrapolated" else tag("meas") if li["cost_basis"] == "measured_provider" else tag("est")
+        if li["attributed_usd"] == 0 and li.get("unpriced_calls"): money = "unpriced (model not in price list)"
+        elif li["attributed_usd"] == 0 and not li.get("has_transcript"): money = "unmeasured"
+        else: money = usd2(li["attributed_usd"]) + basis
         bc = sorted(li.get("behavior_counts", {}).items(), key=lambda kv: -kv[1])
         det = (f'{esc(li["notes"])} · evidence {", ".join(map(str, li["evidence_ids"][:12]))}{" …" if len(li["evidence_ids"]) > 12 else ""} · session <span class="id">{esc(li["content_session_id"])}</span>'
                f' · confidence {esc(li["confidence"])} · risk {esc(li["risk_exposure"])}' + (f' · wasted {usd2(li["wasted_cost"])}' if li["wasted_cost"] else "")
                + (f' · behavior: {esc(", ".join(f"{PAT_SHORT.get(k, k)} ×{v}" for k, v in bc[:4]))}' if bc else ""))
         rows.append(f'<details class="orow"><summary><span class="tri">›</span><span class="dot" style="background:{c}"></span><span class="otitle">{esc(li["title"][:90])} {flag}{draft}</span>'
-                    f'<span class="obar"><i style="width:{bw:.1f}%;background:{c}{"80" if st[1] == "wip" else ""}"></i></span><span class="oval">{usd2(li["attributed_usd"])}{basis}</span>'
+                    f'<span class="obar"><i style="width:{bw:.1f}%;background:{c}{"80" if st[1] == "wip" else ""}"></i></span><span class="oval">{money}</span>'
                     f'<span class="pill {st[1]}">{esc(st[0])}</span></summary><div class="odet">{det}</div></details>')
     return "".join(rows)
 
@@ -428,9 +433,9 @@ def details(d, open_):
     out.append(f'<h4>Unmatched transcripts</h4><div class="muted">{um["count"]} transcript session(s) on this box matched no claude-mem session: {usd2(um["usd"])} {tag("est")}, {um["tokens"]:,} tokens, counted in the totals. {esc(um.get("note") or "")}</div>')
     out.append("<h4>Unpriced models</h4>" + (_table(["model", "role", "calls", "tokens", "reason"], [(esc(x["model"]), esc(x["role"]), x["calls"], f'{x["tokens"]:,}', esc(x["reason"])) for x in d["unpriced_models"]]) if d["unpriced_models"] else '<div class="muted">none</div>'))
     out.append(f'<h4>Labels</h4><div>{d["labels"]["reviewed"]} of {d["labels"]["total"]} labels reviewed; the rest are keyword drafts marked "draft label". Trivial sessions (no observations, no transcript, under a minute): {t.get("trivial_sessions", 0)}.</div>')
-    out.append("<h4>Honesty rules</h4><ul><li>Every dollar figure is labeled ESTIMATE, MEASURED, or EXTRAPOLATED with its basis.</li><li>Measured provider spend is never shown as $0 when it is unavailable.</li>"
+    out.append("<h4>Honesty rules</h4><ul><li>Every dollar figure is labeled ESTIMATE, MEASURED, or EXTRAPOLATED with its basis.</li><li>Measured provider spend is never shown as zero when it is unavailable.</li>"
                "<li>Completed outcomes are the unit of work; Rework is a failure type, never a work kind.</li><li>The note-taker's own tokens are priced separately and never added to the agent headline.</li>"
-               "<li>Keyword labels are drafts until reviewed; behavior counts are heuristic until reviewed or classified.</li><li>Grok Bot usage and Mac transcripts show unavailable or extrapolated (low confidence), never $0.</li>"
+               "<li>Keyword labels are drafts until reviewed; behavior counts are heuristic until reviewed or classified.</li><li>Grok Bot usage and Mac transcripts show unavailable or extrapolated (low confidence), never zero.</li>"
                "<li>The mistakes headline is the low, same-session figure; the upper bound stays in this section.</li></ul>")
     out.append('<div class="muted">Files: <a href="line-items.csv">line-items.csv</a> · <a href="evidence.json">evidence.json</a> · <a href="report.json">report.json</a></div></details>')
     return "".join(out)
@@ -445,7 +450,7 @@ def _side(x):
 def page(d, print_mode=False):
     items = [li for li in d["line_items"] if not li.get("trivial")]
     sums, cats = cat_sums(items)
-    foot = ("All dollar figures are estimates from measured token counts × OpenRouter list price unless tagged MEASURED. Provider-measured spend is unavailable for these sessions, so it is not shown as $0. "
+    foot = ("All dollar figures are estimates from measured token counts × OpenRouter list price unless tagged MEASURED. Provider-measured spend is unavailable for these sessions, so it is never shown as zero. "
             "Behavior counts are heuristic until reviewed.")
     body = (f'<div class="win">{sidebar(d, sums, cats)}<main class="main"><div class="bar"><span class="arrow">‹</span><span class="range">{esc(date_pill(d["window"], d["scope"]))}</span><span class="arrow">›</span></div>'
             f'<div class="content">{hero(d)}{wins_mistakes(d)}{ribbon(d, cats)}'
@@ -457,3 +462,35 @@ def page(d, print_mode=False):
             f'<div class="foot"><span>{foot} Generated {esc(d.get("generated_at_pt") or "")}.</span><a class="disc" href="#details">› Details: evidence IDs, sessions, tokens, CSV</a></div>'
             f'</div>{details(d, print_mode)}</main></div>')
     return f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Agent Cost Report — {esc(date_pill(d["window"], d["scope"]))}</title><style>{CSS}</style></head><body>{body}</body></html>'
+
+
+# ---- entry points (plan 3.5) ----
+def render_file(inp, outdir, print_mode=False):
+    import json, os
+    with open(inp) as fh: d = json.load(fh)
+    os.makedirs(outdir, exist_ok=True)
+    name = "report.print.html" if print_mode else "report.html"
+    path = os.path.join(outdir, name)
+    with open(path, "w") as fh: fh.write(page(d, print_mode))
+    return path
+
+
+def pdf(outdir, chrome="google-chrome"):
+    """google-chrome --headless=new ... --print-to-pdf; if Chrome is missing: 'PDF skipped, HTML is canonical' (SKILL.md:165)."""
+    import os, shutil, subprocess
+    src = os.path.join(outdir, "report.print.html")
+    if not os.path.exists(src):
+        rp = os.path.join(outdir, "report.json")
+        if not os.path.exists(rp): raise FileNotFoundError(f"{src} not found and no report.json to render it from")
+        render_file(rp, outdir, print_mode=True)
+    exe = shutil.which(chrome)
+    if not exe: return None, "PDF skipped, HTML is canonical (google-chrome not found)"
+    out = os.path.join(outdir, "report.pdf")
+    profile = os.path.join(os.path.abspath(outdir), ".chrome-profile")   # a private profile; the box has no D-Bus session
+    cmd = [exe, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", f"--user-data-dir={profile}", "--timeout=60000",
+           f"--print-to-pdf={out}", "--no-pdf-header-footer", "file://" + os.path.abspath(src)]
+    try: r = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
+    except subprocess.TimeoutExpired: return None, "PDF skipped, HTML is canonical (chrome timed out)"
+    finally: shutil.rmtree(profile, ignore_errors=True)
+    if r.returncode != 0 or not os.path.exists(out): return None, f"PDF skipped, HTML is canonical (chrome exit {r.returncode}: {r.stderr.strip()[-200:]})"
+    return out, f"pdf: {out}"
