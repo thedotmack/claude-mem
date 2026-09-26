@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.27.0] - 2026-09-26
+
+## Agent Cost Report — weekly rebuild
+
+The `agent-cost-report` skill is rebuilt around measured data (#4238):
+
+- **Dollars from transcripts.** Claude Code and Codex transcript tokens priced at OpenRouter list prices, labeled ESTIMATED; note-taker (observer) cost priced separately and never added to the headline; measured provider spend only from a sanctioned source (OpenRouter per-key snapshot, shown with its UTC bucket label); "unavailable" is never shown as $0.
+- **Default window** is the last 7 full days in PT, today excluded; single-session and project scopes supported.
+- **Timing-style report.** Self-contained `report.html` (no script, no external resources) plus PDF, `report.json`, `line-items.csv`, `evidence.json`: hero, Wins vs mistakes with two timelines on one day axis, cost ribbon, donut, day chart, useful ring, folded Details.
+- **Behavior metrics.** A human/bot tagger on every user turn, frustration episodes, the Frustration Arc patterns P1–P12 plus tool errors and hedging, a low same-session mistakes line (upper bound in Details only), rule effectiveness, and a 70% spot-check gate for summary tiles. Optional classifier, off by default, capped at $2.00.
+- **Gaps stay honest.** Mac transcripts extrapolated (low confidence) until a device export is merged; Grok Bot usage shown as unavailable; win cost unmeasured until sessions are linked to PRs.
+- **Pipeline CLI** (`scripts/acr.py`, stdlib Python): `prices`, `collect`, `rollup`, `review`, `render`, `pdf`, `measure-openrouter`, `collect --export-device`, `rollup --device-usage`, `behavior-sample`, `sync-check`. 117 unit tests; `VERIFICATION.md` records the checks.
+- The four mirror plugins carry byte copies of the skill, and `agent-cost-report` is pinned as a first-party skill id.
+
 ## [13.26.1] - 2026-09-26
 
 ## Cloud sync fixes (CMEM Pro)
