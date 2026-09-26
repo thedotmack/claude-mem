@@ -77,6 +77,60 @@ export const REQUEST_TIMEOUT_MS_MAX = 180_000;
 const MAX_BODY_BYTES = 4_000_000;
 // Hub cap: ≤500 ops per POST /v1/sync/ops request.
 const MAX_OPS_PER_PUSH = 500;
+/** Cloudflare HTML 429 (error 1027) means the edge quota is exhausted. */
+const HTML_429_MIN_RETRY_MS = 10 * 60 * 1_000;
+const RETRY_AFTER_MAX_MS = 60 * 60 * 1_000;
+
+/**
+ * Typed hub HTTP failure. Carries Retry-After so scheduleRetry can wait
+ * instead of immediately re-arming a 1.5s notify() debounce (#4231).
+ */
+export class HubHttpError extends Error {
+  readonly status: number;
+  readonly retryAfterMs: number | null;
+  readonly retryable: boolean;
+
+  constructor(label: string, status: number, body: string, retryAfterMs: number | null) {
+    super(`${label} ${status}: ${body}`);
+    this.name = 'HubHttpError';
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+    this.retryable = status === 429 || (status >= 500 && status <= 599);
+  }
+}
+
+/** Parse `Retry-After` as delta-seconds or an HTTP-date. */
+export function parseRetryAfterMs(header: string | null | undefined, nowMs = Date.now()): number | null {
+  if (header == null) return null;
+  const trimmed = header.trim();
+  if (trimmed.length === 0) return null;
+  if (/^[0-9]+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    return Math.min(seconds * 1_000, RETRY_AFTER_MAX_MS);
+  }
+  const date = Date.parse(trimmed);
+  if (Number.isNaN(date)) return null;
+  return Math.max(0, Math.min(date - nowMs, RETRY_AFTER_MAX_MS));
+}
+
+export function hubRetryAfterMs(
+  status: number,
+  body: string,
+  retryAfterHeader: string | null | undefined,
+  nowMs = Date.now(),
+): number | null {
+  const parsed = parseRetryAfterMs(retryAfterHeader, nowMs);
+  if (status === 429 && /<!DOCTYPE html/i.test(body)) {
+    return Math.max(parsed ?? 0, HTML_429_MIN_RETRY_MS);
+  }
+  return parsed;
+}
+
+function applyBackoffJitter(baseMs: number): number {
+  if (!Number.isFinite(baseMs) || baseMs <= 0) return 0;
+  return Math.round(baseMs * (0.8 + Math.random() * 0.4));
+}
 
 function parseBoundedInt(raw: string | undefined, fallback: number, min: number, max: number): number {
   if (raw == null || raw === '') return fallback;
@@ -547,6 +601,13 @@ export class CloudSync {
   notify(): void {
     try {
       if (this.stopped || !this.isActive()) return;
+      // #4231: write-site nudges must not bypass an in-flight 429/5xx backoff.
+      // The retry timer owns the next flush; mark a follow-up so a success
+      // path (or the timer itself) still drains rows written during the wait.
+      if (this.retryTimer) {
+        this.flushAgainRequested = true;
+        return;
+      }
       if (this.debounceTimer) clearTimeout(this.debounceTimer);
       const timer = setTimeout(() => {
         this.debounceTimer = null;
@@ -595,10 +656,12 @@ export class CloudSync {
       const err = error instanceof Error ? error : new Error(String(error));
       this.lastError = err.message;
       // Rows stay NULL — retried by the backoff timer below and on next notify().
+      const retryAfterMs = err instanceof HubHttpError ? err.retryAfterMs : null;
       logger.warn('CLOUD_SYNC', 'Cloud sync flush failed; unsynced rows remain queued', {
-        retryInMs: this.nextBackoffMs,
+        retryInMs: Math.max(this.nextBackoffMs, retryAfterMs ?? 0),
+        status: err instanceof HubHttpError ? err.status : undefined,
       }, err);
-      this.scheduleRetry();
+      this.scheduleRetry(retryAfterMs ?? 0);
     } finally {
       this.flushing = false;
     }
@@ -653,7 +716,12 @@ export class CloudSync {
       if (syncMode !== null || response.ok) this.emitSyncMode(syncMode);
       if (!response.ok) {
         const body = (await response.text().catch(() => '')).slice(0, 200);
-        throw new Error(`sync hub status ${response.status}: ${body}`);
+        throw new HubHttpError(
+          'sync hub status',
+          response.status,
+          body,
+          hubRetryAfterMs(response.status, body, response.headers.get('Retry-After')),
+        );
       }
 
       let parsed: unknown;
@@ -1193,7 +1261,12 @@ export class CloudSync {
     }
     if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 200);
-      throw new Error(`sync hub push ${res.status}: ${body}`);
+      throw new HubHttpError(
+        'sync hub push',
+        res.status,
+        body,
+        hubRetryAfterMs(res.status, body, res.headers.get('Retry-After')),
+      );
     }
     let parsed: unknown;
     try {
@@ -1293,9 +1366,10 @@ export class CloudSync {
       throw new Error('sync hub push: 200 response acknowledgment multiset mismatch');
     }
 
-    if (compareCanonicalDecimals(response.head_seq, response.projected_seq) > 0) {
-      throw new Error('sync hub push: checkpoint order requires head_seq <= projected_seq');
-    }
+    // Do not require head_seq <= projected_seq on the whole checkpoint
+    // (#4191 / #4198). A lagging projector, or an empty push while the
+    // durable head is ahead of the client, is not an inconsistency in this
+    // batch. Reject only when a sent ack is actually uncovered.
     for (const ack of response.acked) {
       if (compareCanonicalDecimals(ack.seq, response.head_seq) > 0) {
         throw new Error('sync hub push: acknowledgment seq exceeds head_seq');
@@ -1618,9 +1692,9 @@ export class CloudSync {
     });
   }
 
-  private scheduleRetry(): void {
+  private scheduleRetry(minDelayMs = 0): void {
     if (this.stopped || this.retryTimer) return;
-    const delay = this.nextBackoffMs;
+    const delay = applyBackoffJitter(Math.max(this.nextBackoffMs, minDelayMs));
     this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, this.backoffMaxMs);
     const timer = setTimeout(() => {
       this.retryTimer = null;
