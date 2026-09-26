@@ -905,6 +905,74 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(1);
   });
 
+  it('replaces a null-token Chroma writer lock whose live PID now runs a different program', async () => {
+    // The lock was written without a start token (identity capture failed), and
+    // its PID now belongs to an unrelated program: PID reuse, common on Windows.
+    // Without the process-name check this wedged vector sync until manual cleanup.
+    const reused = process.platform === 'win32'
+      ? realChildProcess.spawn('cmd.exe', ['/c', 'ping -n 30 127.0.0.1 >NUL'], { stdio: 'ignore', windowsHide: true })
+      : realChildProcess.spawn('sleep', ['30'], { stdio: 'ignore' });
+    try {
+      mkdirSync(mockedChromaDir, { recursive: true });
+      writeFileSync(chromaWriterLockPath(), JSON.stringify({
+        pid: reused.pid,
+        ownerId: 'long-gone-worker-owner',
+        dataDir: mockedChromaDir,
+        acquiredAt: new Date().toISOString(),
+        startToken: null,
+      }, null, 2));
+      const mgr = ChromaMcpManager.getInstance();
+
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+      const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+      expect(lock.pid).toBe(process.pid);
+      expect(lock.ownerId).not.toBe('long-gone-worker-owner');
+      expect(transportInstances.length).toBe(1);
+    } finally {
+      reused.kill();
+    }
+  });
+
+  it('keeps a null-token Chroma writer lock whose live PID runs the writer runtime, regardless of timestamps', async () => {
+    // Same runtime as a writer -> cannot prove reuse -> keep the lock. A lock
+    // dated in the future (clock rollback) must not change that.
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaWriterLockPath(), JSON.stringify({
+      pid: process.pid,
+      ownerId: 'other-worker-owner',
+      dataDir: mockedChromaDir,
+      acquiredAt: new Date(Date.now() + 3_600_000).toISOString(),
+      startToken: null,
+    }, null, 2));
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+    expect(transportInstances.length).toBe(0);
+  });
+
+  it('keeps a legacy null-token lock (no processName) whose live PID runs another JS runtime', async () => {
+    // Older locks do not record the writer's runtime. A Node-owned lock checked
+    // from Bun (or the reverse) must not be mistaken for PID reuse.
+    const other = realChildProcess.spawn('node', ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore', windowsHide: true });
+    try {
+      mkdirSync(mockedChromaDir, { recursive: true });
+      writeFileSync(chromaWriterLockPath(), JSON.stringify({
+        pid: other.pid,
+        ownerId: 'node-worker-owner',
+        dataDir: mockedChromaDir,
+        acquiredAt: new Date().toISOString(),
+        startToken: null,
+      }, null, 2));
+      const mgr = ChromaMcpManager.getInstance();
+
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+      expect(transportInstances.length).toBe(0);
+    } finally {
+      other.kill();
+    }
+  });
+
   it('allows a new manager instance in this process to re-acquire its writer lock', async () => {
     const firstManager = ChromaMcpManager.getInstance();
     await firstManager.callTool('chroma_list_collections', { limit: 1 });

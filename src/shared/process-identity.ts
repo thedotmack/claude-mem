@@ -74,7 +74,9 @@ function queryWindowsCreationDate(pid: number): string | null {
 function captureWindowsStartToken(pid: number, bypassCache = false): string | null {
   if (!bypassCache) {
     const cached = windowsStartTokenCache.get(pid);
-    if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
+    // Our own PID cannot be reissued while we are running, so a token read for
+    // it stays valid for the life of the process.
+    if (cached && (pid === process.pid || Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS)) {
       return cached.token;
     }
   }
@@ -90,7 +92,12 @@ function captureWindowsStartToken(pid: number, bypassCache = false): string | nu
     token = null;
   }
 
-  windowsStartTokenCache.set(pid, { token, capturedAtMs: Date.now() });
+  // A failed read of our own PID is not cached: one slow CIM query would
+  // otherwise make every self-read in the next TTL return null — including the
+  // Chroma writer lock's, which then persists a token-less lock (#4239).
+  if (token !== null || pid !== process.pid) {
+    windowsStartTokenCache.set(pid, { token, capturedAtMs: Date.now() });
+  }
   return token;
 }
 
@@ -165,6 +172,43 @@ function readStartToken(pid: number, bypassCache: boolean): string | null {
  */
 export function captureProcessStartToken(pid: number): string | null {
   return readStartToken(pid, false);
+}
+
+/**
+ * Lower-case executable name of `pid` without directory or `.exe` (e.g. "bun",
+ * "node"), or null when it cannot be read. Uncached: used only where no start
+ * token was recorded.
+ */
+export function captureProcessName(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const result = process.platform === 'win32'
+      ? spawnSync(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).ProcessName`],
+          { encoding: 'utf-8', timeout: 5000, windowsHide: true, env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' } }
+        )
+      : spawnSync('ps', ['-p', String(pid), '-o', 'comm='], {
+          encoding: 'utf-8',
+          timeout: 2000,
+          env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+        });
+    if (result.status !== 0) return null;
+    const name = normalizeProcessName(result.stdout.trim());
+    return name.length > 0 ? name : null;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'captureProcessName: lookup failed', {
+      pid,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/** "C:\\x\\Bun.EXE" / "/usr/bin/node" -> "bun" / "node" */
+export function normalizeProcessName(nameOrPath: string): string {
+  const base = nameOrPath.split(/[\\/]/).pop() ?? '';
+  return base.replace(/\.exe$/i, '').toLowerCase();
 }
 
 export function isSameProcess(pid: number, snapshotToken: string | null): boolean {
