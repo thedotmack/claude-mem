@@ -122,8 +122,10 @@ describe("OpenCode plugin event contract", () => {
         external: [],
       });
       const bundle = await import(pathToFileURL(outfile).href);
-      expect(Object.keys(bundle).sort()).not.toEqual(["default"]);
-      expect(typeof (bundle as Record<string, unknown>).LEAKED).not.toBe("function");
+      // Exact export list: proves the synthetic leak was actually emitted, so a
+      // green run of this control is meaningful (per review feedback).
+      expect(Object.keys(bundle).sort()).toEqual(["LEAKED", "default"]);
+      expect(Array.isArray((bundle as Record<string, unknown>).LEAKED)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
