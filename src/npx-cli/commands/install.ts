@@ -1339,6 +1339,9 @@ function nonEmptyTrimmedString(value: unknown): string | null {
 }
 
 const OAUTH_START_TIMEOUT_MS = 10_000;
+// The optional end-of-install sign-in offer must not hold a finished install
+// hostage to a stalled cmem.ai: give up well before the blocking login would.
+const OAUTH_DEFERRED_START_TIMEOUT_MS = 3_000;
 const OAUTH_POLL_TIMEOUT_MS = 10_000;
 // Fallback budget when the server does not report `expires_in`. The server
 // pairing lives 30 minutes; polling past that only yields `gone`.
@@ -1490,11 +1493,11 @@ export function lastOAuthStartFailure(): OAuthStartFailure | null {
 
 /** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
 export async function startInstallerOAuthPairing(
-  opts: { source?: string } = {},
+  opts: { source?: string; timeoutMs?: number } = {},
 ): Promise<InstallerOAuthPairing | null> {
   const source = opts.source ?? 'npx-installer';
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), OAUTH_START_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? OAUTH_START_TIMEOUT_MS);
   lastStartFailure = null;
   try {
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
@@ -1507,7 +1510,16 @@ export async function startInstallerOAuthPairing(
       lastStartFailure = 'http_error';
       return null;
     }
-    const pairing = parseInstallerOAuthStartBody(await response.json());
+    // A 2xx with unparseable JSON is a server-response problem, not a
+    // connection failure; keep it out of the `network` bucket.
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      lastStartFailure = 'bad_body';
+      return null;
+    }
+    const pairing = parseInstallerOAuthStartBody(body);
     if (!pairing) lastStartFailure = 'bad_body';
     return pairing;
   } catch (error: unknown) {
@@ -1830,7 +1842,10 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
   if (providerNeedsAccount(options.provider)) return;
   if (process.env.CI) return;
 
-  const pairing = await startInstallerOAuthPairing({ source: 'npx-installer-deferred' });
+  const pairing = await startInstallerOAuthPairing({
+    source: 'npx-installer-deferred',
+    timeoutMs: OAUTH_DEFERRED_START_TIMEOUT_MS,
+  });
   if (!pairing) {
     await captureCliEvent('installer_oauth_start_failed', {
       version,
@@ -1841,10 +1856,12 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
     return;
   }
 
+  // Telemetry first so that, in CLAUDE_MEM_TELEMETRY_DEBUG=1 mode, its stderr
+  // line cannot land after the relay instruction an agent reads last.
+  await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
   log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
   log.info(`Sign-in link: ${pairing.authorizationUrl}`);
   log.info('AGENT: show this link to the user so they can finish signing in. Do not open it yourself; the install is already complete.');
-  await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
 }
 
 function noteDeviceCode(pairing: InstallerOAuthPairing): void {
@@ -2020,12 +2037,28 @@ export function validateNonInteractiveProvider(
     //
     // A persisted provider wins: `npx claude-mem update` calls this path with no
     // options, and defaulting an existing Pro (openrouter) config to claude would
-    // run useSubscriptionAuth() and wipe cloud sync. Returning before the key
-    // check below is deliberate — the persisted config already carries its key,
-    // and a persisted Pro config must not trip the configuredCmemKey abort.
+    // run useSubscriptionAuth() and wipe cloud sync. A persisted personal
+    // provider still needs a non-empty key, or the install would report success
+    // with a worker that cannot talk to its provider. Unlike the explicit-flag
+    // check below, a cmem gateway URL is accepted here: a persisted Pro config
+    // keeps its memory key in CLAUDE_MEM_OPENROUTER_API_KEY by design.
     const persisted = readPersistedInstallerSettings();
     const persistedProvider = persisted.CLAUDE_MEM_PROVIDER;
     if (persistedProvider === 'claude' || persistedProvider === 'gemini' || persistedProvider === 'openrouter') {
+      if (persistedProvider !== 'claude') {
+        const persistedKeyName = persistedProvider === 'gemini'
+          ? 'CLAUDE_MEM_GEMINI_API_KEY'
+          : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+        const persistedKey = String(persisted[persistedKeyName] ?? '').trim();
+        if (!persistedKey) {
+          installerError(ErrorSeverity.ABORT, {
+            component: 'provider-credentials',
+            phase: 'non-interactive-validation',
+            cause: new Error(`The configured ${persistedProvider} provider has no API key saved, so a non-interactive run cannot keep it.`),
+            remediation: `Save ${persistedKeyName} in ~/.claude-mem/settings.json, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
+          }, summary);
+        }
+      }
       options.provider = persistedProvider;
       options.providerSource = 'persisted';
       log.info(`Non-interactive run: keeping the configured provider (${persistedProvider}).`);

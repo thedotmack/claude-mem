@@ -4,8 +4,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   buildTrialReadySettings,
+  lastOAuthStartFailure,
   parseInstallerOAuthStartBody,
   parseTrialReadyBody,
+  startInstallerOAuthPairing,
 } from '../../src/npx-cli/commands/install';
 import {
   buildProviderLabels,
@@ -115,6 +117,61 @@ function runDeferredLoginChild(
     rmSync(dataDir, { recursive: true, force: true });
   }
 }
+
+describe('installer OAuth start failure classification', () => {
+  const realFetch = globalThis.fetch;
+  const withFetch = async (impl: (init?: RequestInit) => Promise<Response>, opts?: { timeoutMs?: number }) => {
+    globalThis.fetch = ((_url: unknown, init?: RequestInit) => impl(init)) as typeof fetch;
+    try {
+      return await startInstallerOAuthPairing({ source: 'npx-installer-deferred', ...opts });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  };
+
+  it('labels a non-2xx response http_error', async () => {
+    expect(await withFetch(async () => new Response('', { status: 503 }))).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('http_error');
+  });
+
+  it('labels a 2xx with malformed JSON bad_body, not network', async () => {
+    expect(await withFetch(async () => new Response('<html>not json</html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+    }))).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('bad_body');
+  });
+
+  it('labels a 2xx whose JSON fails the pairing contract bad_body', async () => {
+    expect(await withFetch(async () => Response.json({ pairing_id: 'nope' }))).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('bad_body');
+  });
+
+  it('labels a thrown fetch network and an abort timeout', async () => {
+    expect(await withFetch(async () => { throw new TypeError('fetch failed'); })).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('network');
+
+    expect(await withFetch((init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    }), { timeoutMs: 20 })).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('timeout');
+  });
+
+  it('clears the failure and sends the deferred source on success', async () => {
+    const seen: string[] = [];
+    const pairing = await withFetch(async (init) => {
+      seen.push(String(init?.body));
+      return Response.json(validStartBody);
+    });
+    expect(pairing?.pairingId).toBe(pairingId);
+    expect(lastOAuthStartFailure()).toBeNull();
+    expect(seen[0]).toContain('"source":"npx-installer-deferred"');
+  });
+});
 
 describe('installer trial-ready contract', () => {
   it('parses an OAuth-only pairing without accepting an email or identity', () => {

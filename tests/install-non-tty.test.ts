@@ -104,6 +104,17 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain("providerSource = 'persisted'");
     });
 
+    it('refuses to keep a persisted personal provider whose key is blank', () => {
+      const fnStart = installSource.indexOf('export function validateNonInteractiveProvider(');
+      const persistedAssign = installSource.indexOf("options.providerSource = 'persisted'", fnStart);
+      const branch = installSource.slice(fnStart, persistedAssign);
+      expect(branch).toContain("component: 'provider-credentials'");
+      expect(branch).toContain('const persistedKey = String(persisted[persistedKeyName] ?? \'\').trim();');
+      expect(branch).toContain('if (!persistedKey) {');
+      // The cmem gateway rejection stays on the explicit-flag path only.
+      expect(branch).not.toContain('configuredCmemKey');
+    });
+
     it('offers a deferred login-only sign-in link at the end of a non-interactive install', () => {
       expect(installSource).toContain("'npx-installer-deferred'");
       expect(installSource).toContain('AGENT: show this link to the user so they can finish signing in.');
