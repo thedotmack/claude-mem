@@ -131,6 +131,55 @@ def gh_pr_view(number, repo):
     except Exception: return None
 
 
+# ---- read-only merged-PR source (GitHub) ----
+WINS_REPOS = ("thedotmack/claude-mem",)      # default repos for the merged-PR list; override with `rollup --wins-repo`
+GH_SOURCE = "github_merged_prs"
+GH_LIST_LIMIT = 200
+
+
+def _gh_status(returncode, stderr):
+    """Map a failed `gh` call to an honest status; never a number."""
+    t = (stderr or "").lower()
+    if "rate limit" in t or "api rate limit" in t or "secondary rate" in t: return "rate-limited"
+    if "auth login" in t or "authentication" in t or "not logged in" in t or "http 401" in t or "bad credentials" in t: return "unauthenticated"
+    return f"gh error (exit {returncode})"
+
+
+def gh_merged_prs(repo, s_ms, e_ms, run=subprocess.run):
+    """Read-only: gh pr list --repo <repo> --state merged --json number,title,mergedAt,url, searched by merge date
+    (UTC days covering the PT window) and then filtered by mergedAt inside [s_ms, e_ms). Returns (rows, status)
+    with status "ok" or a reason: "gh missing" | "unauthenticated" | "rate-limited" | "gh error (exit n)"."""
+    a = dt.datetime.fromtimestamp(s_ms / 1000, dt.timezone.utc).date() - dt.timedelta(days=1)
+    b = dt.datetime.fromtimestamp(e_ms / 1000, dt.timezone.utc).date() + dt.timedelta(days=1)
+    cmd = ["gh", "pr", "list", "--repo", repo, "--state", "merged", "--limit", str(GH_LIST_LIMIT), "--json", "number,title,mergedAt,url",
+           "--search", f"merged:{a.isoformat()}..{b.isoformat()}"]
+    try:
+        r = run(cmd, capture_output=True, text=True, timeout=40)
+    except FileNotFoundError: return [], "gh missing"
+    except (subprocess.TimeoutExpired, OSError) as ex: return [], f"gh error ({type(ex).__name__})"
+    if r.returncode != 0: return [], _gh_status(r.returncode, r.stderr)
+    try: rows = json.loads(r.stdout or "[]")
+    except ValueError: return [], "gh error (unparseable output)"
+    out = []
+    for x in rows:
+        if not x.get("mergedAt") or not x.get("number"): continue
+        ms = _ts_ms(x["mergedAt"])
+        if s_ms <= ms < e_ms: out.append(dict(number=int(x["number"]), title=x.get("title") or "", url=x.get("url"), ts_ms=ms))
+    return out, "ok"
+
+
+def gh_list_candidates(repos, s_ms, e_ms, lister=gh_merged_prs):
+    """Candidates from the merged-PR list per repo plus a per-repo status for the report."""
+    cands = []; status = {}
+    for repo in repos:
+        rows, st = lister(repo, s_ms, e_ms)
+        status[repo] = dict(status=st, found=len(rows) if st == "ok" else None)
+        for x in rows:
+            cands.append(dict(kind="pr", source=GH_SOURCE, repo=repo, number=x["number"], title=x["title"], url=x["url"], ts_ms=x["ts_ms"],
+                              project=repo.split("/")[-1], sessions=[], evidence_ids=[], gh_listed=True))
+    return cands, status
+
+
 def session_trailers(message):
     """Bare content_session_ids named by `Claude-Session:` trailers in one commit message (G13).
     Non-bare values (URLs, ids with spaces or parentheses, anything else) are rejected; `Session:`
@@ -182,7 +231,8 @@ def _key(c, dropped):
     dropped.append(dict(source=c["source"], reason="tag push without an identifiable tag", cmd=c.get("cmd"))); return None
 
 
-def build(files, s_ms, e_ms, ship_obs, sessions_by_cs, rows_by_cs, ratio, days, gh=gh_pr_view, remote=git_remote, use_gh=True):
+def build(files, s_ms, e_ms, ship_obs, sessions_by_cs, rows_by_cs, ratio, days, gh=gh_pr_view, remote=git_remote, use_gh=True,
+          repos=WINS_REPOS, gh_list=gh_merged_prs):
     """Returns (wins_block, wins_by_day). sessions_by_cs: cs -> dict(project, memory_session_id, has_transcript,
     observer_tokens, cwd); rows_by_cs: cs -> usage rows with ts_ms and x1e6 (None when unpriced)."""
     repo_cache = {}
@@ -202,6 +252,10 @@ def build(files, s_ms, e_ms, ship_obs, sessions_by_cs, rows_by_cs, ratio, days, 
         if c["kind"] == "pr" and not c.get("repo"): c["repo"] = (remote(c["cwd"]) if remote and c.get("cwd") else None) or project_repo(c["project"])
         cands.append(c)
     cands += list(observation_candidates(ship_obs, project_repo))
+    gh_status = {}
+    if use_gh and gh_list and s_ms is not None and e_ms is not None:
+        gh_cands, gh_status = gh_list_candidates(repos, s_ms, e_ms, lister=gh_list); cands += gh_cands
+    elif repos: gh_status = {r: dict(status="unavailable (gh disabled for this run)", found=None) for r in repos}
     merged = collections.OrderedDict()
     for c in cands:
         key = _key(c, dropped)
@@ -210,16 +264,18 @@ def build(files, s_ms, e_ms, ship_obs, sessions_by_cs, rows_by_cs, ratio, days, 
         if w is None:
             w = merged[key] = dict(win_id=None, kind=c["kind"], key=key, title=c.get("title") or key, url=None, ts_ms=c["ts_ms"],
                                    project=c.get("project"), repo=c.get("repo"), number=c.get("number"), evidence_ids=[], sessions=[],
-                                   sources=[], confirmed=False, linked_sessions=[])
+                                   sources=[], confirmed=False, linked_sessions=[], gh_listed=False)
         for eid in c.get("evidence_ids", []):
             if eid not in w["evidence_ids"]: w["evidence_ids"].append(eid)
         for sid in c.get("sessions", []):
             if sid and sid not in w["sessions"]: w["sessions"].append(sid)
         if c["source"] not in w["sources"]: w["sources"].append(c["source"])
-        if c["ts_ms"] and (w["ts_ms"] is None or c["ts_ms"] < w["ts_ms"]): w["ts_ms"] = c["ts_ms"]
+        if c.get("gh_listed"):                       # the registry's own merge time, title and url win over transcript guesses
+            w["gh_listed"] = True; w["confirmed"] = True; w["ts_ms"] = c["ts_ms"]; w["url"] = w["url"] or c.get("url"); w["title"] = c.get("title") or w["title"]
+        elif c["ts_ms"] and (w["ts_ms"] is None or c["ts_ms"] < w["ts_ms"]): w["ts_ms"] = c["ts_ms"]
     items = []
     for key, w in merged.items():
-        if w["kind"] == "pr" and use_gh and gh and w.get("repo") and w.get("number"):
+        if w["kind"] == "pr" and use_gh and gh and w.get("repo") and w.get("number") and not (w["gh_listed"] and w["sources"] == [GH_SOURCE]):   # listed-only wins need no second call
             info = gh(w["number"], w["repo"])
             if info is not None:
                 if not info.get("mergedAt"): dropped.append(dict(key=key, reason="gh pr view: not merged")); continue
@@ -249,6 +305,10 @@ def build(files, s_ms, e_ms, ship_obs, sessions_by_cs, rows_by_cs, ratio, days, 
     total = round(sum(w["usd"] for w in items if w["usd"] is not None), 2) if linked else None
     block = dict(items=out, cost_status="session_linked" if linked else "unmeasured", attribution_method=ATTRIBUTION if linked else None,
                  unattributed_usd=None, total_attributed_usd=total, praise_n=len(praise), dropped=dropped, gh_unconfirmed=gh_unconfirmed,
+                 sources=dict(transcripts="box transcripts (gh pr merge / npm publish / release / tag push)", ship_observations="claude-mem ship observations",
+                              **{GH_SOURCE: dict(label="GitHub merged PRs (read-only gh pr list)", repos={r: v for r, v in gh_status.items()},
+                                                 status=("ok" if gh_status and all(v["status"] == "ok" for v in gh_status.values()) else "unavailable" if gh_status else "off"),
+                                                 found=sum(v["found"] or 0 for v in gh_status.values()) if gh_status else 0)}),
                  note="finished line items (shipped/completed) are outcomes, not wins (G12); praise detection is a Phase 2B hook")
     by_day = [dict(day_pt=d, count=sum(1 for w in out if w["day_pt"] == d),
                    usd=(round(sum(w["usd"] for w in out if w["day_pt"] == d and w["usd"] is not None), 2) if linked else None),
