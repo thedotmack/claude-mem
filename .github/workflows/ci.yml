@@ -88,7 +88,7 @@ jobs:
           bun-version: latest
 
       - name: Install uv (with cache)
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-python: true
