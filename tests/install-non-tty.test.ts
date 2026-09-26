@@ -112,9 +112,14 @@ describe('Install Non-TTY Support', () => {
       // An env-only key is a working configuration (the worker reads the same
       // env var ahead of settings.json), so it must satisfy the check without
       // ever being copied to disk.
-      expect(branch).toContain('const persistedKey = String(persisted[persistedKeyName] ?? process.env[persistedKeyName] ?? \'\').trim();');
-      expect(branch).toContain('if (!persistedKey) {');
+      expect(branch).toContain('const persistedKey = String(persisted[persistedKeyName] ?? \'\').trim();');
+      expect(branch).toContain("const envKey = persistedCmemGateway ? '' : String(process.env[persistedKeyName] ?? '').trim();");
+      expect(branch).toContain('if (!persistedKey && !envKey) {');
       expect(branch).not.toContain('mergeSettings');
+      // A persisted cmem gateway tuple is locked to its saved key by the
+      // worker, so an exported key must not satisfy the check for it.
+      expect(branch).toContain("const persistedCmemGateway = persistedProvider === 'openrouter'");
+      expect(branch).toContain("isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))");
       // The cmem gateway rejection stays on the explicit-flag path only.
       expect(branch).not.toContain('configuredCmemKey');
     });

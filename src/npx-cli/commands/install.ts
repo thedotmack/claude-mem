@@ -2051,16 +2051,24 @@ export function validateNonInteractiveProvider(
         const persistedKeyName = persistedProvider === 'gemini'
           ? 'CLAUDE_MEM_GEMINI_API_KEY'
           : 'CLAUDE_MEM_OPENROUTER_API_KEY';
-        // The worker reads the same key from the environment ahead of
-        // settings.json, so an env-only key is a working configuration. It is
-        // consulted here for validation only and is never written to disk.
-        const persistedKey = String(persisted[persistedKeyName] ?? process.env[persistedKeyName] ?? '').trim();
-        if (!persistedKey) {
+        const persistedKey = String(persisted[persistedKeyName] ?? '').trim();
+        // The worker reads a personal key from the environment ahead of
+        // settings.json, so an env-only key is a working configuration; it is
+        // consulted here for validation only and never written to disk. A
+        // persisted cmem gateway tuple is the exception: the worker locks it to
+        // the saved key and ignores a key-only override, so that key must be
+        // on disk.
+        const persistedCmemGateway = persistedProvider === 'openrouter'
+          && isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''));
+        const envKey = persistedCmemGateway ? '' : String(process.env[persistedKeyName] ?? '').trim();
+        if (!persistedKey && !envKey) {
           installerError(ErrorSeverity.ABORT, {
             component: 'provider-credentials',
             phase: 'non-interactive-validation',
-            cause: new Error(`The configured ${persistedProvider} provider has no API key saved or exported, so a non-interactive run cannot keep it.`),
-            remediation: `Save ${persistedKeyName} in ~/.claude-mem/settings.json or export it in the environment, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
+            cause: new Error(`The configured ${persistedProvider} provider has no API key saved${persistedCmemGateway ? '' : ' or exported'}, so a non-interactive run cannot keep it.`),
+            remediation: persistedCmemGateway
+              ? `Save ${persistedKeyName} in ~/.claude-mem/settings.json (the cmem gateway ignores an exported key), pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`
+              : `Save ${persistedKeyName} in ~/.claude-mem/settings.json or export it in the environment, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
           }, summary);
         }
       }
@@ -2582,7 +2590,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link; nothing else is sent.`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, only to create your sign-in link; nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
     ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
