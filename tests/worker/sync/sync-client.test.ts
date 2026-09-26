@@ -249,6 +249,25 @@ describe('SyncClient', () => {
     expect(requests).toBe(1);
   });
 
+  it('lifts the auth pause when a successful push reports head_seq', async () => {
+    let reject = true;
+    const { state, impl: hubImpl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
+    const impl = (async (input: any, init?: any) => {
+      if (reject) return new Response('{"error":"invalid token"}', { status: 401 });
+      return hubImpl(input, init);
+    }) as typeof fetch;
+    const client = makeClient(impl, { isSessionActive: () => true, authPauseMs: 3_600_000 });
+    client.start();
+    await sleep(100);
+    expect(apply.getCursor()).toBe('0');
+
+    reject = false;
+    client.onHeadSeq('1'); // CloudSync push succeeded with the same credentials
+    await sleep(150);
+    expect(apply.getCursor()).toBe('1');
+    expect(state.requests.length).toBeGreaterThan(0);
+  });
+
   it('a malformed page fails the batch without moving the cursor, then applies once fixed', async () => {
     const bad = hubOp(1, '11');
     bad.body = 'not json{';

@@ -378,6 +378,9 @@ export class SyncClient {
   onHeadSeq(headSeq: string): void {
     try {
       if (this.stopped || !this.started) return;
+      // head_seq only arrives from a SUCCESSFUL push: the server accepts
+      // these credentials again, so lift a pull-side auth pause now.
+      this.clearAuthPause();
       const head = assertCanonicalDecimal(headSeq);
       if (compareCanonicalDecimals(head, this.apply.getCursor()) <= 0) return;
       this.resumeIfSuspended(); // socket back up alongside the loop
@@ -444,8 +447,24 @@ export class SyncClient {
     this.timer = timer;
   }
 
+  /** Lift the 401/403 pause (credentials proven good) and restore the normal ladder. */
+  private clearAuthPause(): void {
+    if (this.authPausedUntil === 0) return;
+    this.authPausedUntil = 0;
+    this.backoffMs = 0;
+    logger.info('SYNC_CLIENT', 'Sync credentials accepted again; resuming pulls and the advisory socket');
+    if (this.started && !this.stopped) this.connectSocket();
+  }
+
   private async tick(): Promise<void> {
     if (this.stopped) return;
+    const pausedFor = this.authPausedUntil - this.now();
+    if (pausedFor > 0) {
+      // Woken early during an auth pause: wait out only what is left, never
+      // a fresh full pause.
+      this.schedule(pausedFor);
+      return;
+    }
     // Background cycles have no overall deadline — each page request is
     // individually timeout-bounded and the cycle is page-capped.
     await this.pullCycle(Number.MAX_SAFE_INTEGER);
@@ -589,11 +608,7 @@ export class SyncClient {
         this.failStreak = 0;
         this.failCursor = null;
         this.backoffMs = 0;
-        if (this.authPausedUntil !== 0) {
-          this.authPausedUntil = 0;
-          logger.info('SYNC_CLIENT', 'Pull credentials accepted again; resuming the advisory socket');
-          if (this.started && !this.stopped) this.connectSocket();
-        }
+        this.clearAuthPause();
 
         if (page.more !== true || decodedOps.length === 0) return;
         if (pages >= this.maxPagesPerCycle) return;
