@@ -100,7 +100,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     expect(matches.map(match => resolve(match))).toEqual([resolve(transcriptPath)]);
   });
 
-  it('does not replay history from transcript files discovered after startup', async () => {
+  it('does not replay history from transcript files present at startup', async () => {
     const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763a';
     const filePath = join(tmpRoot, `${sessionId}.jsonl`);
     const statePath = join(tmpRoot, 'state.json');
@@ -165,6 +165,32 @@ describe('TranscriptWatcher startAtEnd', () => {
     const prompts = sessionInitCalls.map(call => call.prompt);
     expect(prompts).toContain('live prompt');
     expect(prompts).not.toContain('historical prompt that must not be replayed');
+  });
+
+  it('reads a file discovered by the root watcher from byte 0, keeping its opening turns', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e576e';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+    const schema = createSchema();
+    const watch: WatchTarget = {
+      name: 'codex',
+      path: join(tmpRoot, '*.jsonl'),
+      schema,
+      startAtEnd: true,
+    };
+
+    // A freshly created rollout. By the time the recursive root watcher
+    // reports it, session_meta and the opening turns are already on disk, so
+    // startAtEnd must not apply to it - jumping to EOF drops the head of the
+    // transcript, including the user prompt (#4211).
+    writeFileSync(filePath, `${createUserMessage(sessionId, 'opening prompt')}\n`, 'utf8');
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (watcher as any).addTailer(filePath, watch, schema, true);
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['opening prompt']);
   });
 
   it('serializes overlapping poke calls for the same appended data', async () => {

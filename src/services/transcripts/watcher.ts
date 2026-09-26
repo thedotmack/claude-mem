@@ -182,7 +182,7 @@ export class TranscriptWatcher {
     const matches = this.resolveWatchFiles(resolvedPath);
     for (const filePath of matches) {
       if (!this.tailers.has(filePath)) {
-        void this.addTailer(filePath, watch, schema);
+        void this.addTailer(filePath, watch, schema, true);
       }
     }
   }
@@ -258,14 +258,21 @@ export class TranscriptWatcher {
   private async addTailer(
     filePath: string,
     watch: WatchTarget,
-    schema: TranscriptSchema
+    schema: TranscriptSchema,
+    discoveredAfterStartup: boolean = false
   ): Promise<void> {
     if (this.tailers.has(filePath)) return;
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
-    if (offset === 0 && watch.startAtEnd) {
+    // `startAtEnd` is a statement about the INITIAL scan: it means "do not
+    // replay history that predates this worker". A file the root watcher turns
+    // up afterwards is new by construction, and by the time a recursive watch
+    // reports it, session_meta and the opening turns are already on disk -
+    // jumping to EOF drops the head of that transcript, including the user
+    // prompt the schema exists to capture (#4211). Read those from byte 0.
+    if (offset === 0 && watch.startAtEnd && !discoveredAfterStartup) {
       try {
         offset = statSync(filePath).size;
       } catch (error: unknown) {
