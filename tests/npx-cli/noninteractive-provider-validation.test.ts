@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { promptProvider, validateNonInteractiveProvider, type InstallOptions } from '../../src/npx-cli/commands/install.js';
 import { createInstallSummary, InstallAbortError } from '../../src/npx-cli/install/error-reporter.js';
 import { CMEM_PRO_BASE_URL } from '../../src/npx-cli/cmem-pro-costs.js';
+import { resolveOpenRouterConfig } from '../../src/services/worker/OpenRouterProvider.js';
 import { USER_SETTINGS_PATH } from '../../src/shared/paths.js';
 
 const credentialPath = join(dirname(USER_SETTINGS_PATH), '.env');
@@ -113,7 +114,19 @@ describe('non-interactive persisted provider validation', () => {
     const options: InstallOptions = { provider: 'openrouter', providerSource: 'flag' };
     validateNonInteractiveProvider(options, createInstallSummary());
     expect(await promptProvider(options, null, 'test')).toBe('openrouter');
-    expect(readFileSync(USER_SETTINGS_PATH, 'utf-8')).not.toContain('personal-key');
+    const savedText = readFileSync(USER_SETTINGS_PATH, 'utf-8');
+    const saved = JSON.parse(savedText);
+    expect(savedText).not.toContain('personal-key');
+    expect(saved.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('');
+    expect(saved.CLAUDE_MEM_OPENROUTER_BASE_URL).toBe('');
+    expect(saved.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('gateway-key');
+    expect(saved.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe(CMEM_PRO_BASE_URL);
+
+    delete process.env.CLAUDE_MEM_OPENROUTER_BASE_URL;
+    const worker = resolveOpenRouterConfig();
+    expect(worker.apiKey).toBe('personal-key');
+    expect(worker.apiUrl).toContain('openrouter.ai');
+    expect(worker.apiUrl).not.toContain('cmem.ai');
   });
 
   it('stops on malformed existing settings without replacing them', () => {
