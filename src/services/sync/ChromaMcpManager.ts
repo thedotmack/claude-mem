@@ -104,6 +104,9 @@ function trackChild(child: ChildProcess): TrackedChild | null {
   return { pid, startToken: captureProcessStartToken(pid) };
 }
 
+/** Runtimes a Chroma writer (the worker) can run under. */
+const CHROMA_WRITER_RUNTIMES = new Set(['bun', 'node']);
+
 interface ChromaWriterLockPayload {
   pid: number;
   ownerId: string;
@@ -615,14 +618,15 @@ export class ChromaMcpManager {
     if (!lock.startToken) {
       // No identity was recorded (the capture can fail, e.g. a slow PowerShell
       // CIM lookup on Windows). If the PID now runs a different program than the
-      // writer (older locks lack processName; the writer ran under this same
-      // runtime), the OS reused the PID and the lock is stale. Keeping it would
+      // writer, the OS reused the PID and the lock is stale. Keeping it would
       // disable vector sync until someone deletes the file by hand. This check
       // does not depend on wall-clock ordering; an unreadable name keeps the
-      // lock, as before.
-      const expectedName = lock.processName || normalizeProcessName(process.execPath);
+      // lock, as before. Older locks lack processName and may have been written
+      // under either JS runtime, so any of them keeps such a lock.
       const currentName = captureProcessName(lock.pid);
-      return currentName === null || currentName === expectedName;
+      if (currentName === null) return true;
+      if (lock.processName) return currentName === lock.processName;
+      return currentName === normalizeProcessName(process.execPath) || CHROMA_WRITER_RUNTIMES.has(currentName);
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
     return currentStartToken === null || currentStartToken === lock.startToken;
