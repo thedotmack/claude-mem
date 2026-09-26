@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """agent-cost-report CLI: collect | prices | rollup | review | render | pdf | sync-check.
 
-Phase 1 implements `collect` (measured token usage from local transcripts) and `prices`
-(OpenRouter public price snapshot). The other subcommands are registered and exit with a
-clear "not implemented in this phase" error. Stdlib only; python3.
+Phase 1: `collect` (measured token usage from local transcripts) and `prices` (OpenRouter public
+price snapshot). Phase 2: `rollup` (report.json, line-items.csv, evidence.json, labels.review.json)
+and `review --apply`. The other subcommands are registered and exit with a clear "not implemented" error. Stdlib only; python3.
 """
 import argparse
 import json
@@ -11,11 +11,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acr import period, transcripts  # noqa: E402
+from acr import period, rollup, transcripts  # noqa: E402
 from acr import prices as prices_mod  # noqa: E402
 
 USAGE_FILE = "usage.json"
-NOT_YET = ("rollup", "review", "render", "pdf", "sync-check")
+NOT_YET = ("render", "pdf", "sync-check")
 
 
 def add_period_args(p):
@@ -64,8 +64,24 @@ def cmd_prices(args):
     print(f"prices: {len(p['models'])} models, {basis} -> {path}")
 
 
+def cmd_rollup(args):
+    if args.session and (args.start or args.end or args.project):
+        sys.exit("acr.py rollup: --session takes no --start/--end/--project")
+    try:
+        rollup.run_rollup(args)
+    except (ValueError, rollup.prices_mod.PriceError, FileNotFoundError) as ex:
+        sys.exit(f"acr.py rollup: {ex}")
+
+
+def cmd_review(args):
+    try:
+        rollup.run_review(args)
+    except (OSError, ValueError) as ex:
+        sys.exit(f"acr.py review: {ex}")
+
+
 def cmd_not_yet(args):
-    sys.exit(f"acr.py {args.cmd}: not implemented in this phase (Phase 1 ships only `collect` and `prices`)")
+    sys.exit(f"acr.py {args.cmd}: not implemented in this phase (Phases 1-2 ship collect, prices, rollup, review)")
 
 
 def build_parser():
@@ -82,6 +98,19 @@ def build_parser():
     p.add_argument("--prices", metavar="FILE", help="use a saved prices.json instead of fetching")
     p.add_argument("--url", default=prices_mod.SOURCE_URL, help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_prices)
+
+    r = sub.add_parser("rollup", help="usage.json + prices.json + fresh DB snapshot -> report.json, line-items.csv, evidence.json, labels.review.json")
+    add_period_args(r)
+    r.add_argument("--out", required=True, metavar="DIR", help="directory holding usage.json and prices.json; outputs land here")
+    r.add_argument("--prices", metavar="FILE", help="price table to use instead of DIR/prices.json")
+    r.add_argument("--db", metavar="FILE", help=argparse.SUPPRESS)
+    r.add_argument("--no-gh", action="store_true", help="skip the read-only `gh pr view` confirmation of merged-PR wins")
+    r.set_defaults(fn=cmd_rollup)
+
+    v = sub.add_parser("review", help="merge confirmed labels from a reviewed labels.review.json into report.json")
+    v.add_argument("--apply", required=True, metavar="FILE", help="reviewed copy of labels.review.json")
+    v.add_argument("--out", required=True, metavar="DIR", help="directory holding report.json")
+    v.set_defaults(fn=cmd_review)
 
     for name in NOT_YET:
         n = sub.add_parser(name, help="(later phase)")
