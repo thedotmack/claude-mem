@@ -24,8 +24,8 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider non-interactively
-  ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model
+  ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
+  ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
   ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
@@ -105,6 +105,9 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   return {
     ide,
     provider: resolvedProvider,
+    // Both the explicit flag and the grok-bot implicit cmem default are
+    // explicit product choices; install.ts only defaults when this is unset.
+    providerSource: resolvedProvider ? 'flag' : undefined,
     model: flag('model'),
     noAutoStart: values['no-auto-start'] === true,
     disableAutoMemory: values['disable-auto-memory'] === true,
