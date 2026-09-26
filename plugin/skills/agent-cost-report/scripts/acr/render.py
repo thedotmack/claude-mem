@@ -360,3 +360,100 @@ def attention(d):
     att = (d.get("attention") or [])[:3]
     if not att: return "<ol><li><b>Nothing flagged.</b><span class=\"muted\">No waste, unfinished work, or unpriced model stood out.</span></li></ol>"
     return "<ol>" + "".join(f'<li><b>{esc(a["text"])}</b></li>' for a in att) + "</ol>"
+
+
+# ---- Details (plan 3.4, 3.8): everything folded; --print opens it ----
+def _table(headers, rows):
+    return "<table><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>" + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows) + "</table>"
+
+
+def details(d, open_):
+    s, t, b = d["spend"], d["totals"], d.get("behavior") or {}
+    out = [f'<details id="details" {"open" if open_ else ""}><summary>Details &amp; evidence</summary>']
+    # wins (3.8) and mistakes by day, first so fragment links land near the top
+    out.append("<h4>Wins</h4>")
+    for w in d["wins"].get("items", []):
+        cost = "unmeasured (session not linked to PR)" if w.get("usd") is None else f'≈{usd2(w["usd"])} {tag("extra") if w.get("cost_basis") == "extrapolated" else tag("est")} · {esc(w.get("cost_basis") or "")}'
+        tok = w.get("tokens"); tok_s = ", ".join(f"{k} {v:,}" for k, v in tok.items()) if tok else "—"
+        out.append(f'<div id="win-{esc(w["win_id"])}"><b>{esc(w["win_id"])}</b> · {esc(w["kind"])} · {esc(w["title"])} · {esc(w.get("ts_pt") or "")}'
+                   + (f' · <a href="{esc(w["url"])}">{esc(w["url"])}</a>' if w.get("url") else "")
+                   + f'<br><span class="muted">cost {cost} · sessions {esc(", ".join(w.get("sessions") or []) or "—")} · tokens {tok_s} · attribution {esc(d["wins"].get("attribution_method") or "none")} · evidence {esc(", ".join(map(str, w.get("evidence_ids") or [])) or "—")}</span></div>')
+    if not d["wins"].get("items"): out.append('<div class="muted">No wins found (merged PR, published version, or praise).</div>')
+    if d["wins"].get("dropped"): out.append(f'<div class="muted">{len(d["wins"]["dropped"])} candidate(s) dropped: ' + esc("; ".join(str(x.get("reason")) for x in d["wins"]["dropped"][:6])) + "</div>")
+    out.append("<h4>Mistakes by day</h4>")
+    if s.get("mistakes_high_usd") is not None:
+        out.append(f'<div class="muted">Upper bound: ≈{usd2(s["mistakes_high_usd"])} (adds 60-minute redo windows and project-wide fallback; {esc(s.get("mistakes_high_label", ""))}). '
+                   f'Low figure in the summary: {usd2(s["mistakes_estimated_usd"])} over {s.get("mistakes_turns_n", 0)} turns' + (f', {usd2(s["mistakes_unmatched_usd"])} of it in transcripts with no claude-mem session' if s.get("mistakes_unmatched_usd") else "") + ".</div>")
+    eps = {e["episode_id"]: e for e in b.get("episodes", [])}
+    for x in d["timeline"].get("mistakes_by_day", []):
+        pats = ", ".join(f"{PAT_SHORT.get(k, k)} {usd2(v)}" for k, v in sorted(x.get("by_pattern", {}).items(), key=lambda kv: -kv[1]))
+        ex = "".join(f'<li>{esc(e["pattern"])} · <span class="id">{esc(e["content_session_id"])}</span> · {esc(e["ts_pt"])}' + (f' · <span class="ex">{esc(eps[e["mistake_id"].replace("MK-", "")]["excerpt"])}</span>' if e["mistake_id"] in eps else "") + "</li>" for e in x.get("top_examples", []))
+        day_eps = [e for e in b.get("episodes", []) if e["day_pt"] == x["day_pt"]]
+        ex += "".join(f'<li>{esc(PAT_SHORT.get(e["pattern"], e["pattern"]))} · {esc(e["cost_status"])} · <span class="id">{esc(e["session"])}</span> · {esc(e["ts_pt"])} · <span class="ex">{esc(e["excerpt"])}</span></li>' for e in day_eps)
+        out.append(f'<div id="mistakes-{esc(x["day_pt"])}"><b>{esc(day_label(x["day_pt"]))}</b> · low {usd2(x["usd"])} · high {usd2(x["high_usd"])} · {x["turns_n"]} turns · {x["unmeasured_n"]} unmeasured episode(s) · {x["alex_minutes"]:g} Alex-min · {x["outbound_incidents"]} outbound'
+                   + (f'<br><span class="muted">{esc(pats)}</span>' if pats else "") + (f"<ul>{ex}</ul>" if ex else "") + "</div>")
+    # behavior pattern table (2B.5)
+    if b:
+        rows = [(esc(p["key"]), esc(p["name"]), p["count"], ("incidents × recipients: %s × %s" % (p.get("incidents", 0), p.get("recipients", 0))) if p["key"] == "P9_bad_outbound" else usd2(p["low_usd"] or 0),
+                 "—" if p["high_usd"] is None else usd2(p["high_usd"]), f'{p.get("alex_minutes") or 0:g}', p["unmeasured_n"], esc(p.get("detection", "H")), esc(p["failure_type"] or "—"), esc(p["placement"]), esc(p["count_basis"])) for p in b["patterns"]]
+        out.append("<h4>Behavior patterns</h4>" + _table(["key", "pattern", "count", "low (est.)", f"high ({esc(b['patterns'][0].get('high_label', ''))})", "Alex-min", "unmeasured", "basis", "failure type", "place", "count basis"], rows))
+        for p in b["patterns"]:
+            if p.get("examples"): out.append(f'<div><b>{esc(p["name"])}</b> examples<ul>' + "".join(f'<li><span class="id">{esc(e["content_session_id"] or "")}</span> {esc(e.get("ts_pt") or "")} · {esc(e["basis"])} · <span class="ex">{esc(e["excerpt"])}</span> · {esc(e["label_source"])}</li>' for e in p["examples"][:10]) + "</ul></div>")
+        out.append("<h4>Rule effectiveness</h4>")
+        rr = b.get("rule_effectiveness") or []
+        if rr: out.append(_table(["rule", "landed", "pattern", "before (eps / prompts / per 100)", "after", "verdict", "episodes after"],
+                                [(esc(r.get("name") or r["rule_key"]), r["landed_pt"], esc(r.get("pattern") or "—"), _side(r.get("before")), _side(r.get("after")), esc(r["verdict"].replace("_", " ")), esc(", ".join(r.get("episode_ids_after") or []) or "—")) for r in rr]))
+        else: out.append('<div class="muted">No HARD rule landed inside or within 7 days before this window.</div>')
+        pd = b.get("permission_denials") or {}
+        at = b.get("author_tags"); at_s = esc(str(at)) if isinstance(at, str) else f'human {at.get("human", 0)}, bot {at.get("bot", 0)}, unknown {at.get("unknown", 0)}'
+        out.append(f'<div>Permission denials (blocked by a rule, not priced): {pd.get("count", 0)} · user turns tagged: {at_s} · label sources: {esc(str(dict(b.get("label_sources") or {})))} · '
+                   f'classifier: {"ran, " + usd2(b["classifier"].get("spend_usd") or 0) + " (separate)" if b.get("classifier", {}).get("ran") else "off"} · coverage: {esc(str(b.get("coverage")))}</div>')
+    # money and pricing
+    out.append("<h4>Spend</h4>" + _table(["field", "value"], [
+        ("agent, estimated from measured tokens", f'{usd2(s["agent_estimated_usd"])} {tag("est")}'), ("agent, measured by provider", esc(str(s.get("agent_measured_usd") if s.get("agent_measured_usd") is not None else s.get("measured_status")))),
+        ("extrapolated (sessions without transcripts)", f'{usd2(s.get("extrapolated_unmeasured_usd") or 0)} {tag("extra")} · {esc(s.get("extrapolation_basis") or "")}'),
+        ("total estimate", f'{usd2(s["total_estimate_usd"])} = {usd2(s["agent_estimated_usd"])} + {usd2(s.get("extrapolated_unmeasured_usd") or 0)}'),
+        ("Note-taker (observer) cost, separate", f'{usd2(s["observer_note_taker_est_usd"])} {tag("est")} · never added to the agent figures'),
+        ("Grok Bot seat usage", esc(str(s.get("grok_bot_usage")))), ("pricing", f'{esc(d["pricing"].get("source") or "")} fetched {esc(d["pricing"].get("fetched") or "")} · 1h rule: {esc(d["pricing"].get("rule_1h") or "")}')]))
+    out.append("<h4>Models</h4>" + _table(["source", "model", "calls", "input", "output", "cache write 5m", "cache write 1h", "cache read", "est. $", "$/MTok in/out/read/write/write1h"],
+                                       [(esc(m["source"]), esc(m["model"]), m["calls"], f'{m["input"]:,}', f'{m["output"]:,}', f'{m["cache_write_5m"]:,}', f'{m["cache_write_1h"]:,}', f'{m["cache_read"]:,}', usd2(m["agent_estimated_usd"]),
+                                         esc("/".join(str(m["prices_usd_per_mtok"].get(k)) for k in ("input", "output", "cache_read", "cache_write", "cache_write_1h")) if m.get("prices_usd_per_mtok") else "unpriced")) for m in d["by_model"]]))
+    out.append("<h4>Failure accounting</h4>" + (_table(["failure type", "sessions", "attributed", "wasted", "recovery", "items"], [(esc(f["failure_type"]), f["sessions"], usd2(f["attributed_usd"]), usd2(f["wasted_usd"]), usd2(f["recovery_usd"]), esc(", ".join(f["work_item_ids"][:12]))) for f in d.get("failure_economics") or []]) if d.get("failure_economics") else '<div class="muted">none</div>'))
+    out.append("<h4>Line items</h4>" + _table(["id", "title", "status", "category", "label", "attributed", "basis", "wasted", "tokens in/out/cw5/cw1h/read", "model", "device", "sessions", "evidence ids"],
+                                           [(esc(li["work_item_id"]), esc(li["title"][:70]), esc(li["status"]), esc(li["category"]), esc(li["label_source"]), usd2(li["attributed_usd"]), esc(li["cost_basis"]), usd2(li["wasted_cost"]),
+                                             "/".join(f'{li["agent_tokens"][k]:,}' for k in ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")), esc(li["model"] or "—"), esc(", ".join(li["device"])),
+                                             f'<span class="id">{esc(li["content_session_id"])}<br>{esc(li["session_ids"][0])}</span>', esc(", ".join(map(str, li["evidence_ids"][:10])) + (" …" if len(li["evidence_ids"]) > 10 else ""))) for li in d["line_items"]]))
+    out.append("<h4>Devices</h4>" + _table(["device", "id (short hash)", "sessions", "est. $", "extrapolated $"], [(esc(x["device"]), esc(x["id_hash"]), x["sessions"], usd2(x["agent_estimated_usd"]), usd2(x["extrapolated_usd"])) for x in d["by_device"]]))
+    um = d["unmatched_transcripts"]
+    out.append(f'<h4>Unmatched transcripts</h4><div class="muted">{um["count"]} transcript session(s) on this box matched no claude-mem session: {usd2(um["usd"])} {tag("est")}, {um["tokens"]:,} tokens, counted in the totals. {esc(um.get("note") or "")}</div>')
+    out.append("<h4>Unpriced models</h4>" + (_table(["model", "role", "calls", "tokens", "reason"], [(esc(x["model"]), esc(x["role"]), x["calls"], f'{x["tokens"]:,}', esc(x["reason"])) for x in d["unpriced_models"]]) if d["unpriced_models"] else '<div class="muted">none</div>'))
+    out.append(f'<h4>Labels</h4><div>{d["labels"]["reviewed"]} of {d["labels"]["total"]} labels reviewed; the rest are keyword drafts marked "draft label". Trivial sessions (no observations, no transcript, under a minute): {t.get("trivial_sessions", 0)}.</div>')
+    out.append("<h4>Honesty rules</h4><ul><li>Every dollar figure is labeled ESTIMATE, MEASURED, or EXTRAPOLATED with its basis.</li><li>Measured provider spend is never shown as $0 when it is unavailable.</li>"
+               "<li>Completed outcomes are the unit of work; Rework is a failure type, never a work kind.</li><li>The note-taker's own tokens are priced separately and never added to the agent headline.</li>"
+               "<li>Keyword labels are drafts until reviewed; behavior counts are heuristic until reviewed or classified.</li><li>Grok Bot usage and Mac transcripts show unavailable or extrapolated (low confidence), never $0.</li>"
+               "<li>The mistakes headline is the low, same-session figure; the upper bound stays in this section.</li></ul>")
+    out.append('<div class="muted">Files: <a href="line-items.csv">line-items.csv</a> · <a href="evidence.json">evidence.json</a> · <a href="report.json">report.json</a></div></details>')
+    return "".join(out)
+
+
+def _side(x):
+    if not x: return "—"
+    return f'{x["episodes"]} / {x["human_prompts"]} / {x["per_100"] if x["per_100"] is not None else "not enough data"}'
+
+
+# ---- page ----
+def page(d, print_mode=False):
+    items = [li for li in d["line_items"] if not li.get("trivial")]
+    sums, cats = cat_sums(items)
+    foot = ("All dollar figures are estimates from measured token counts × OpenRouter list price unless tagged MEASURED. Provider-measured spend is unavailable for these sessions, so it is not shown as $0. "
+            "Behavior counts are heuristic until reviewed.")
+    body = (f'<div class="win">{sidebar(d, sums, cats)}<main class="main"><div class="bar"><span class="arrow">‹</span><span class="range">{esc(date_pill(d["window"], d["scope"]))}</span><span class="arrow">›</span></div>'
+            f'<div class="content">{hero(d)}{wins_mistakes(d)}{ribbon(d, cats)}'
+            f'<div class="grid"><div class="card"><h3>Where the money went <span>· by kind of work</span></h3>{donut(d, cats)}</div>'
+            f'<div class="card"><h3>Day by day <span>· estimated</span></h3>{day_chart(d, cats)}</div>'
+            f'<div class="card"><h3>How much was useful</h3>{ring(d)}</div>'
+            f'<div class="card wide" id="outcomes"><h3>What got done <span>· most expensive first</span></h3>{outcomes(d)}</div>'
+            f'<div class="card attn"><h3>Worth your attention</h3>{attention(d)}</div></div>'
+            f'<div class="foot"><span>{foot} Generated {esc(d.get("generated_at_pt") or "")}.</span><a class="disc" href="#details">› Details: evidence IDs, sessions, tokens, CSV</a></div>'
+            f'</div>{details(d, print_mode)}</main></div>')
+    return f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Agent Cost Report — {esc(date_pill(d["window"], d["scope"]))}</title><style>{CSS}</style></head><body>{body}</body></html>'
