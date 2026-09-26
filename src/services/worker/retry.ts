@@ -32,6 +32,18 @@ export function parseRetryAfterMs(value: string | null): number | undefined {
   return undefined;
 }
 
+/**
+ * Parse a Google API RetryInfo.retryDelay duration ("3s", "1.5s").
+ * Returns ms or undefined for missing/malformed values.
+ */
+export function parseRetryDelayMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = /^(\d+(?:\.\d+)?)s$/.exec(value.trim());
+  if (!match) return undefined;
+  const ms = Math.round(Number(match[1]) * 1000);
+  return ms >= 0 ? ms : undefined;
+}
+
 export interface RetryOptions {
   /** Maximum retry attempts (in addition to the initial attempt). Cap=2 by default for non-idempotent POSTs. */
   maxRetries?: number;
