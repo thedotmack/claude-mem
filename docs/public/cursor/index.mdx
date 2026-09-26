@@ -30,7 +30,7 @@ npx claude-mem install
 
 When the installer lists your apps, pick **Cursor**. The three stages are: install runtime, sign in (device code, no email in the CLI), then pick a memory provider. **CMEM Pro is pre-selected.**
 
-Other provider choices: your Gemini key, your OpenRouter key, or your Anthropic plan (`--provider claude`, which skips cmem.ai). Details: [Installation](/installation).
+Other provider choices: your Gemini key, your OpenRouter key, or your Anthropic plan (`--provider claude`, which skips the sign-in step; local installs contact cmem.ai once, at signup, to create the sign-in link, and nothing else is sent to cmem.ai). Details: [Installation](/installation).
 
 <Warning>
 `npm install -g claude-mem` installs the library only. It does **not** register Cursor hooks or start the worker. Always use `npx claude-mem install`.

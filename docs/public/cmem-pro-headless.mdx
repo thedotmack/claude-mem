@@ -16,7 +16,7 @@ Never paste real `cm_pro_…` keys, setup tokens, or OpenRouter `sk-or-` keys in
 Three stages:
 
 1. **Runtime** — Bun/uv if needed, IDE plugin files, worker deps.
-2. **Sign in** — skipped only for `--provider claude` (that path never talks to cmem.ai). Otherwise the CLI does **not** ask for an email:
+2. **Sign in** — skipped for `--provider claude`, and for non-interactive runs without `--provider` (fresh install defaults to claude; an existing config keeps its provider). A non-interactive install that skipped sign-in prints an optional sign-in link as its last line; agents should show that link to the user rather than open it. Local installs contact cmem.ai once, at signup, to create the sign-in link; nothing else is sent to cmem.ai. Otherwise the CLI does **not** ask for an email:
    - `POST https://cmem.ai/api/installer/oauth/start` with `{ source: "npx-installer", device_name: <hostname> }`
    - prints a device code `XXXX-XXXX` and opens `authorization_url`
    - polls `https://cmem.ai/api/pro/trial/poll` until authenticated

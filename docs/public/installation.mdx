@@ -30,7 +30,7 @@ npx claude-mem install
 The interactive installer runs in three stages — runtime first, sign in second, then pick your memory provider:
 
 1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
-2. **Sign in.** Skipped only for `--provider claude` (that path never talks to cmem.ai). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
+2. **Sign in.** Skipped for `--provider claude` (memory runs on your own Anthropic plan). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
 3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, Anthropic plan, or `--provider host` (local loopback observer).
 
 Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-headless) for the exact settings the installer writes.
@@ -40,12 +40,12 @@ Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-head
 - **CMEM Pro / claude-mem observer (pre-selected)** — memory runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. Free trial, then subscribe or fall back. Fallback is **event-driven** (`CLAUDE_MEM_PRO_FALLBACK_AT` after a terminal gateway quota/key error), not the trial end date. See [CMEM Pro (manual / headless)](/cmem-pro-headless).
 - **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit. Empty base URL (or `https://openrouter.ai/api/v1`). **Never** send a personal `sk-or-` key to the cmem.ai inference gateway.
 - **Gemini API key** — memory runs off-plan on your Gemini key.
-- **Anthropic plan** (`--provider claude`) — memory shares your Claude plan usage. Skips cmem.ai entirely. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
+- **Anthropic plan** (`--provider claude`) — memory shares your Claude plan usage. Skips the sign-in step; local installs contact cmem.ai once, at signup, to create the sign-in link, and nothing else is sent to cmem.ai. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
 - **Host observer (opt-in)** — `--provider host` uses the already-logged-in agent over a local loopback. No API key. See [Grok Bot Integration](/grok-bot).
 
 ### Skipping the Sign-In
 
-`--provider claude` never touches cmem.ai and skips OAuth. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
+Interactive `--provider claude` skips the sign-in step. Non-interactive runs (no TTY, as when an AI agent runs the installer) without `--provider` default to the Anthropic plan on a fresh install and reuse the configured provider otherwise. Every non-interactive install that skipped sign-in prints an optional sign-in link at the very end; it is best-effort, never blocks or changes the exit status, and is skipped when `CI` is set. Local installs contact cmem.ai once, at signup, to create the sign-in link; nothing else is sent to cmem.ai. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
 
 ### Option 3: Plugin Marketplace
 

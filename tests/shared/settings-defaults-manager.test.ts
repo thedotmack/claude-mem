@@ -331,6 +331,42 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    describe('legacy cloud sync hub URL migration', () => {
+      it('rewrites the pinned workers.dev host to sync.cmem.ai and persists', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync-hub.black-pond-afbb.workers.dev',
+          CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'tok',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.cmem.ai');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.cmem.ai');
+        expect(parsed.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe('tok');
+      });
+
+      it('rewrites even when the stored URL has a trailing slash or http scheme', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'http://sync-hub.black-pond-afbb.workers.dev/',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.cmem.ai');
+      });
+
+      it('leaves a different hub host untouched', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.example.test',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.example.test');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.example.test');
+      });
+    });
+
     // loadFromFile only carries keys declared in DEFAULTS, so before the Pro
     // sign-in keys were declared, an installer-written settings.json lost
     // them on every load (the round-trip-loss gap fixed by the install-first
