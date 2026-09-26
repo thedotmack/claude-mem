@@ -19,7 +19,7 @@ import { logger } from '../../../../src/utils/logger.js';
 import * as realProviderDispatch from '../../../../src/services/worker/provider-dispatch.js';
 const realProviderDispatchSnapshot = { ...realProviderDispatch };
 
-const providerSelectionBox: { current: 'claude' | 'gemini' | 'openrouter' } = { current: 'claude' };
+const providerSelectionBox: { current: 'claude' | 'gemini' | 'openrouter' | 'codex' } = { current: 'claude' };
 
 mock.module('../../../../src/services/worker/provider-dispatch.js', () => ({
   ...realProviderDispatchSnapshot,
@@ -33,6 +33,7 @@ import { getProcessRegistry, waitForSlot, isSessionParkedForSlot } from '../../.
 import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process-registry-singleton-guard.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
 import { clearDependencyStatus } from '../../../../src/shared/dependency-health.js';
+import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted, CODEX_SETUP_RECHECK_COOLDOWN_MS } from '../../../../src/shared/quota-cooldown.js';
 import type { ActiveSession, ConversationMessage } from '../../../../src/services/worker-types.js';
 
 /**
@@ -99,6 +100,7 @@ function makeRoutes(session: ActiveSession, agents: {
   sdkAgent: { startSession: ReturnType<typeof mock> };
   geminiAgent: { startSession: ReturnType<typeof mock> };
   openRouterAgent: { startSession: ReturnType<typeof mock> };
+  codexAgent?: { startSession: ReturnType<typeof mock> };
 }) {
   const messageBuffer = makeFakeMessageBuffer();
   const sessionManager = {
@@ -119,6 +121,7 @@ function makeRoutes(session: ActiveSession, agents: {
     {} as any, // eventBroadcaster — unused by ensureGeneratorRunning
     {} as any, // workerService
     completionHandler as any,
+    agents.codexAgent as any,
   );
 
   return { routes, sessionManager, completionHandler, messageBuffer };
@@ -177,11 +180,53 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     clearDependencyStatus('claude_cli');
+    clearQuotaCooldown('codex');
+    clearQuotaCooldown('codex-setup');
     while (registeredIds.length > 0) {
       const id = registeredIds.pop();
       if (id) registry.unregister(id);
     }
   });
+
+  for (const mode of ['live', 'replay', 'default-model', 'unavailable'] as const) {
+    it(`keeps ${mode} Codex Telegram wrap-ups on the selected provider`, async () => {
+      const session = makeFakeSession(900010);
+      session.currentProvider = mode === 'replay' ? null : 'codex';
+      session.lastModelId = mode === 'default-model' ? 'codex-default' : 'active-codex-model';
+      providerSelectionBox.current = 'codex';
+      const sdkAgent = {
+        startSession: mock(() => Promise.resolve()),
+        formatTelegramWrapup: mock(() => Promise.resolve('wrong provider')),
+      };
+      const codexAgent = {
+        startSession: mock(() => Promise.resolve()),
+        formatTelegramWrapup: mock(() => Promise.resolve('Codex wrap-up')),
+      };
+      const { routes } = makeRoutes(session, {
+        sdkAgent,
+        geminiAgent: { startSession: mock(() => Promise.resolve()) },
+        openRouterAgent: { startSession: mock(() => Promise.resolve()) },
+        codexAgent: mode === 'unavailable' ? undefined : codexAgent,
+      });
+      const input = {
+        sessionDbId: session.sessionDbId,
+        contentSessionId: session.contentSessionId,
+        project: session.project,
+        platformSource: 'codex',
+        summaryText: 'Stored summary',
+      };
+      const result = (routes as any).formatTelegramWrapup(input);
+      if (mode === 'unavailable') {
+        await expect(result).rejects.toThrow('Codex provider is not available');
+      } else {
+        await expect(result).resolves.toBe('Codex wrap-up');
+        expect(codexAgent.formatTelegramWrapup).toHaveBeenCalledWith(
+          input, mode === 'live' ? 'active-codex-model' : undefined,
+        );
+      }
+      expect(sdkAgent.formatTelegramWrapup).not.toHaveBeenCalled();
+    });
+  }
 
   it('aborts a PARKED generator and switches immediately when the provider changes', async () => {
     const sessionDbId = 900001;
@@ -262,6 +307,48 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
   });
+
+  for (const parkedSwitch of [false, true]) {
+    it(`honors Codex setup cooldown and admits one recovery probe on ${parkedSwitch ? 'parked switch' : 'fresh start'}`, async () => {
+      const session = makeFakeSession(parkedSwitch ? 900007 : 900006);
+      const sdkAgent = {
+        startSession: mock((s: ActiveSession) => waitForSlot(1, s.abortController.signal, s.sessionDbId)),
+      };
+      const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+      const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+      const codexAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+      const { routes, sessionManager, completionHandler } = makeRoutes(session, {
+        sdkAgent, geminiAgent, openRouterAgent, codexAgent,
+      });
+      if (parkedSwitch) {
+        registerFakeOccupant('codex-switch-occupant');
+        await routes.ensureGeneratorRunning(session.sessionDbId, 'init');
+        expect(isSessionParkedForSlot(session.sessionDbId)).toBe(true);
+      }
+      const history = session.conversationHistory;
+      recordQuotaExhausted('codex-setup', 'login required');
+      providerSelectionBox.current = 'codex';
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'ingest');
+      expect(codexAgent.startSession).not.toHaveBeenCalled();
+      expect(session.generatorPromise).toBeNull();
+      expect(session.conversationHistory).toBe(history);
+      expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+      expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+      expect(geminiAgent.startSession).not.toHaveBeenCalled();
+      expect(openRouterAgent.startSession).not.toHaveBeenCalled();
+
+      recordQuotaExhausted('codex-setup', 'login required', undefined,
+        Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+      await Promise.all([
+        routes.ensureGeneratorRunning(session.sessionDbId, 'retry-a'),
+        routes.ensureGeneratorRunning(session.sessionDbId, 'retry-b'),
+      ]);
+      expect(codexAgent.startSession).toHaveBeenCalledTimes(1);
+      expect(session.currentProvider).toBe('codex');
+      expect(session.codexSetupProbeClaimId).toBe(getQuotaCooldown('codex-setup')?.probeClaimId);
+      expect(session.codexSetupProbeClaimId).not.toBeNull();
+    });
+  }
 
   it('does not touch a generator that already acquired its slot (mid-response)', async () => {
     const sessionDbId = 900002;
