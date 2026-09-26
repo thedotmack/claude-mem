@@ -869,6 +869,20 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // A prompt this route ACCEPTS on a row a previous end already completed
+    // means the session carried on, so put it back to active and let the next
+    // end stamp the real completion time (#4080).
+    //
+    // After the privacy and duplicate gates, not before them. Both of those
+    // return early without saving a prompt or starting a generator, so a
+    // reopen above them would clear the completion of a session nothing is
+    // going to finalize again — a retry of an already-saved prompt would leave
+    // the row 'active' for good, which is the bug in the other direction
+    // (#2373). Only this route reopens at all: the observation and summarize
+    // routes can carry trailing traffic from the turn that just ended, where
+    // 'completed' is the truth.
+    store.reopenCompletedSession(sessionDbId);
+
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
