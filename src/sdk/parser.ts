@@ -49,7 +49,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   raw = stripCodeFences(raw);
 
-  const skipMatch = /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/.exec(raw);
+  const skipMatch = /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/i.exec(raw);
   if (skipMatch) {
     return {
       valid: true,
@@ -91,7 +91,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 function parseObservationBlocks(text: string, correlationId?: string | number): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
-  const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  const observationRegex = /<observation>([\s\S]*?)<\/observation>/gi;
 
   let match;
   while ((match = observationRegex.exec(text)) !== null) {
@@ -176,7 +176,7 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
 }
 
 function parseSummaryBlock(text: string, correlationId?: string | number): ParsedSummary | null {
-  const summaryRegex = /<summary>([\s\S]*?)<\/summary>/;
+  const summaryRegex = /<summary>([\s\S]*?)<\/summary>/i;
   const summaryMatch = summaryRegex.exec(text);
   if (!summaryMatch) return null;
 
@@ -219,7 +219,7 @@ function unwrapLabelWrappedTitle(title: string | null): string | null {
 }
 
 function extractField(content: string, fieldName: string): string | null {
-  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`);
+  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`, 'i');
   const match = regex.exec(content);
   if (!match) return null;
 
@@ -230,7 +230,7 @@ function extractField(content: string, fieldName: string): string | null {
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
   const elements: string[] = [];
 
-  const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`);
+  const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`, 'i');
   const arrayMatch = arrayRegex.exec(content);
 
   if (!arrayMatch) {
@@ -239,7 +239,7 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
 
   const arrayContent = arrayMatch[1];
 
-  const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'g');
+  const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'gi');
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
     const trimmed = elementMatch[1].trim();
@@ -258,7 +258,7 @@ function extractUnstructuredObservationText(content: string): string | null {
 
   const stripped = content
     .replace(
-      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/g,
+      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
       ' '
     )
     .replace(/<[^>]+>/g, ' ')
