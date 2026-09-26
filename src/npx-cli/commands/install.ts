@@ -1068,7 +1068,8 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(
+/** Exported for the non-interactive provider setup contract tests. */
+export async function promptProvider(
   options: InstallOptions,
   /**
    * Null only when login was skipped, which happens solely for an explicit
@@ -1207,15 +1208,10 @@ async function promptProvider(
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
-  const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
-  const existingOpenRouterBaseUrl = selectedProvider === 'openrouter'
-    ? String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? '')
-    : '';
-  const existingKeyIsCmem = selectedProvider === 'openrouter'
-    && isCmemGatewayUrl(existingOpenRouterBaseUrl);
-  if (existingKey && existingKey.trim().length > 0 && !existingKeyIsCmem) {
+  if (resolvePersonalProviderKey(selectedProvider, persistedSettings)) {
     const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
-    if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
+    if (!wrote) throw new Error(`Could not save the ${providerLabel} provider configuration.`);
+    log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
     return selectedProvider;
   }
 
@@ -2026,6 +2022,24 @@ async function requireWorkerStopped(
   }
 }
 
+/** Use the same personal credential source for validation and provider setup. */
+function resolvePersonalProviderKey(provider: 'gemini' | 'openrouter', persisted: Record<string, unknown>): string {
+  const keyName = provider === 'gemini' ? 'CLAUDE_MEM_GEMINI_API_KEY' : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+  const credentialFileKey = String(getCredential(provider === 'gemini' ? 'GEMINI_API_KEY' : 'OPENROUTER_API_KEY') ?? '').trim();
+  if (provider === 'gemini') {
+    return String(getSetting(keyName) ?? '').trim() || credentialFileKey;
+  }
+
+  const baseUrl = String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? '').trim()
+    || process.env.OPENROUTER_BASE_URL?.trim() || '';
+  if (isCmemGatewayUrl(baseUrl)) return '';
+  const detachedCmemGateway = isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))
+    && Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');
+  return detachedCmemGateway
+    ? String(process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '').trim() || credentialFileKey
+    : String(getSetting(keyName) ?? '').trim() || credentialFileKey;
+}
+
 /** Exported for the non-interactive contract tests; not part of the CLI surface. */
 export function validateNonInteractiveProvider(
   options: InstallOptions,
@@ -2114,18 +2128,7 @@ export function validateNonInteractiveProvider(
   const keyName = options.provider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
-  const credentialFileKey = String(getCredential(options.provider === 'gemini' ? 'GEMINI_API_KEY' : 'OPENROUTER_API_KEY') ?? '').trim();
-  const baseUrl = String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? '').trim()
-    || process.env.OPENROUTER_BASE_URL?.trim() || '';
-  const configuredCmemKey = options.provider === 'openrouter' && isCmemGatewayUrl(baseUrl);
-  const detachedCmemGateway = options.provider === 'openrouter'
-    && isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))
-    && Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL')
-    && !isCmemGatewayUrl(baseUrl);
-  const key = detachedCmemGateway
-    ? String(process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '').trim() || credentialFileKey
-    : String(getSetting(keyName as keyof SettingsDefaults) ?? '').trim() || credentialFileKey;
-  if (!key || configuredCmemKey) {
+  if (!resolvePersonalProviderKey(options.provider, persisted)) {
     installerError(ErrorSeverity.ABORT, {
       component: 'provider-credentials',
       phase: 'non-interactive-validation',
