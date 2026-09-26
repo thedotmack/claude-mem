@@ -161,7 +161,9 @@ def run(db, scope, window_block, pricer, session_projects, items, classify=None,
                         for T in S2["turns"].values():
                             if ep["first_ts"] - behavior.WASTED_CAP_MS <= T["ts_ms"] < ep["first_ts"]: project_fallback.add(T["key"])
         model = None
-        if S: model = costs.dominant_model(collections.Counter(prices.norm(T["model"]) for T in S["turns"].values() if T["model"]))
+        if S:
+            mc = collections.Counter(prices.norm(T["model"]) for T in S["turns"].values() if T["model"])
+            model = mc.most_common(1)[0][0] if mc else None
         low = behavior.turn_cost(wasted) if measured else None
         high = (low + behavior.turn_cost(redo)) if measured else None
         episodes.append(dict(episode_id=ep["episode_id"], session=ep["session"], ts_pt=behavior.pt_iso(ep["first_ts"]), day_pt=behavior.day_pt(ep["first_ts"]),
@@ -269,7 +271,7 @@ def run(db, scope, window_block, pricer, session_projects, items, classify=None,
         if d is None: continue
         d["alex_minutes"] += e["alex_minutes"]
         if e["cost_status"] == "unmeasured": d["unmeasured_n"] += 1
-        if len(d["top_examples"]) < 3: d["top_examples"].append(dict(mistake_id=mistake_id(e["session"], e["episode_id"]), pattern=e["pattern"], content_session_id=e["session"], ts_pt=e["ts_pt"]))
+        if len(d["top_examples"]) < 3: d["top_examples"].append(dict(mistake_id=mistake_id(e["session"], e["episode_id"]), episode_id=e["episode_id"], pattern=e["pattern"], content_session_id=e["session"], ts_pt=e["ts_pt"]))
     for f in flags:
         if f["pattern"] == "P9_bad_outbound" and f["ts_ms"] and behavior.day_pt(f["ts_ms"]) in by_day: by_day[behavior.day_pt(f["ts_ms"])]["outbound_incidents"] += 1
     for d in by_day.values():

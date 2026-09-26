@@ -66,11 +66,15 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
         keep = {v["content_session_id"] for v in sess.values()}; rows = [r for r in rows if r["session"] in keep]
     elif scope.kind == "session":                   # a period usage.json holds other sessions' rows too
         rows = [r for r in rows if r["session"] == scope.session]
+    for r in rows: r["ts_ms"] = _ts_ms(r["ts"])
+    rows_outside = 0
+    if scope.S is not None:                         # a shared or wider collect: only rows inside the PT window are priced
+        kept = [r for r in rows if scope.S <= r["ts_ms"] < scope.E]; rows_outside = len(rows) - len(kept); rows = kept
     by_session, by_model, _ = costs.price_rows(rows, pricer)
     matched, unmatched = evidence.join_transcripts(rows, sess)
-    for r in rows: r["ts_ms"] = _ts_ms(r["ts"]); r["x1e6"] = costs.api_equiv_x1e6(r, pricer.rate(r["model"]))
+    for r in rows: r["x1e6"] = costs.api_equiv_x1e6(r, pricer.rate(r["model"]))
     # ---- line items (one per session) ----
-    items = []; evid = []; review = []; all_stamps = []
+    items = []; evid = []; review = []; all_stamps = []; n = 0
     for n, (mid, s) in enumerate(sorted(sess.items(), key=lambda kv: kv[1]["started_at_epoch"]), 1):
         e = ev[mid]; cs = s["content_session_id"]; t = by_session.get(cs) or costs._zero(); trs = matched.get(mid, [])
         stamps = e["stamps"] + [r["ts_ms"] for r in trs] + [s["started_at_epoch"]] + ([s["completed_at_epoch"]] if s["completed_at_epoch"] else [])
@@ -120,6 +124,8 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
     for li in items:
         if not li["has_transcript"]: li["cost_extrapolated"] = costs.usd(li["extrapolated_x1e6"]) if ratio is not None else None
         li["attributed_usd"] = li["cost_estimated"] if li["has_transcript"] else (li["cost_extrapolated"] or 0.0)
+        # attributed_usd stays numeric for the sums; cost_status says when that 0.0 is "unknown", never a measured zero
+        li["cost_status"] = "estimated" if li["has_transcript"] else "extrapolated" if ratio is not None else "unmeasured"
         waste_split(li)
     # ---- spend ----
     agent_x1e6 = sum(m["usd_x1e6"] for m in by_model.values())                       # matched + unmatched, all measured rows
@@ -204,7 +210,7 @@ def build(usage, prices, db, scope, window_block, now=None, use_gh=True, gh=wins
                     models=sorted({m for x in evid for m in x["generated_by_model"]}),
                     unpriced_tokens=dict(obs_unpriced), basis="ESTIMATED: observer model's own tokens (deduped per reply) x its input list price; "
                     "kept separate from the agent figures above", rows_in_scope=dict(counts))
-    report = dict(window=window_block, scope=scope.block(), generated_at_pt=now.strftime("%Y-%m-%d %H:%M PT"), spend=spend,
+    report = dict(window=dict(window_block, usage_rows_outside_window=rows_outside) if scope.S is not None else window_block, scope=scope.block(), generated_at_pt=now.strftime("%Y-%m-%d %H:%M PT"), spend=spend,
                   totals=dict(sessions=sum(1 for li in items if not li.get("orphan")), transcript_only_sessions=sum(1 for li in items if li.get("orphan")),
                               agent_hours=round(sum(li["active_minutes"] for li in items if not li.get("orphan")) / 60, 1), transcript_only_hours=round(sum(li["active_minutes"] for li in items if li.get("orphan")) / 60, 1),
                               wall_clock_hours=round(labels.active_minutes(all_stamps) / 60, 1), tokens=tok,

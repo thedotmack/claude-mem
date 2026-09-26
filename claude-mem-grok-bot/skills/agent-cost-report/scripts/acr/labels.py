@@ -105,5 +105,6 @@ def apply_review(line_items, reviewed, reviewed_at_pt):
         li["failure_type"] = fails[0] if fails else ""; li["label_source"] = src
         li["reviewed_by"] = en["reviewed_by"]; li["reviewed_at_pt"] = reviewed_at_pt
         if en.get("note"): li["notes"] = en["note"]
+        if en.get("title"): li["title"] = str(en["title"])[:120].replace("\n", " ")
         n += 1
     return n

@@ -184,6 +184,26 @@ class Rollup(Fixture):
         self.assertIsInstance(r["failure_economics"], list); self.assertLessEqual(len(r["attention"]), 3)
         self.assertNotIn("Rework", [c["category"] for c in r["by_category"]])
 
+    def test_session_scope_on_transcript_only_id_builds(self):
+        r, _, _ = self.build(scope=evidence.Scope("session", session="orphan"))       # no claude-mem session: n must still be bound
+        self.assertEqual([li["work_item_id"] for li in r["line_items"]], ["WI-1"]); self.assertTrue(r["line_items"][0]["orphan"])
+        self.assertEqual(r["unmatched_transcripts"]["count"], 1)
+
+    def test_usage_rows_outside_window_are_not_priced(self):
+        r, _, _ = self.build(rows=self.rows + [row("cs1", ms(-1, 5), inp=999999), row("cs1", ms(3, 0), inp=999999)])   # a wider shared collect
+        self.assertEqual(r["window"]["usage_rows_outside_window"], 2)
+        self.assertEqual(r["totals"]["tokens"]["input"], 1000 + 1000 + CS4["inp"] + 100)
+        self.assertEqual(r["spend"]["agent_estimated_usd"], self.build()[0]["spend"]["agent_estimated_usd"])
+
+    def test_no_ratio_marks_sessions_without_transcript_unmeasured(self):
+        r, _, _ = self.build(rows=[])                                                 # nothing measured on this box: no ratio
+        li = {x["session_ids"][0]: x for x in r["line_items"]}
+        self.assertEqual((li["m2"]["cost_status"], li["m2"]["cost_extrapolated"], li["m2"]["attributed_usd"]), ("unmeasured", None, 0.0))
+        self.assertIsNone(r["spend"]["extrapolated_unmeasured_usd"]); self.assertTrue(r["spend"]["extrapolation_basis"].startswith("n/a"))
+        r, _, _ = self.build()
+        li = {x["session_ids"][0]: x for x in r["line_items"]}
+        self.assertEqual((li["m1"]["cost_status"], li["m2"]["cost_status"]), ("estimated", "extrapolated"))
+
     def test_project_scope_includes_worktrees_and_session_scope(self):
         r, _, _ = self.build(scope=evidence.Scope("project", S=W.start_epoch_ms, E=W.end_epoch_ms, project="claude-mem"))
         self.assertEqual({x["session_ids"][0] for x in r["line_items"]}, {"m1", "m2"}); self.assertEqual(r["unmatched_transcripts"]["count"], 0)

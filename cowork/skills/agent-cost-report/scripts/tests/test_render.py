@@ -86,5 +86,18 @@ class Files(unittest.TestCase):
         self.assertNotIn("def " + "cen" + "ts", src); self.assertNotIn(chr(0xA2), src); self.assertEqual(render.usd2(1234.5), "$1,234.50")
 
 
+class Unmeasured(unittest.TestCase):
+    def test_no_ratio_never_prints_zero_extrapolated(self):
+        li = dict(has_transcript=False, cost_extrapolated=None, attributed_usd=0.0, cost_basis="extrapolated")
+        self.assertEqual((render._li_money(li), render._li_basis(li)), ("unmeasured", "unmeasured (no ratio)"))
+        li = dict(has_transcript=False, cost_extrapolated=1.5, attributed_usd=1.5, cost_basis="extrapolated")
+        self.assertEqual((render._li_money(li), render._li_basis(li)), ("$1.50", "extrapolated"))
+        d = load(FIXTURES[0]); d["spend"]["extrapolated_unmeasured_usd"] = None; d["spend"]["extrapolation_basis"] = "n/a (no measured session to derive a ratio from)"
+        for li in d["line_items"]:
+            if not li.get("has_transcript"): li["cost_extrapolated"] = None; li["attributed_usd"] = 0.0
+        h = render.page(d)
+        self.assertIn("unavailable (no measured session to derive a ratio from)", h); self.assertNotIn("$0.00 <span class=\"est extra\">", h)
+
+
 if __name__ == "__main__":
     unittest.main()

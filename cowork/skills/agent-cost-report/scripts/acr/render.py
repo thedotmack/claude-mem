@@ -354,7 +354,7 @@ def outcomes(d):
         draft = tag("draft") if li["label_source"] == "keyword" else ""
         basis = tag("extra") if li["cost_basis"] == "extrapolated" else tag("meas") if li["cost_basis"] == "measured_provider" else tag("est")
         if li["attributed_usd"] == 0 and li.get("unpriced_calls"): money = "unpriced (model not in price list)"
-        elif li["attributed_usd"] == 0 and not li.get("has_transcript"): money = "unmeasured"
+        elif not li.get("has_transcript") and li.get("cost_extrapolated") is None: money = "unmeasured"; basis = ""
         else: money = usd2(li["attributed_usd"]) + basis
         bc = sorted(li.get("behavior_counts", {}).items(), key=lambda kv: -kv[1])
         det = (f'{esc(li["notes"])} · evidence {", ".join(map(str, li["evidence_ids"][:12]))}{" …" if len(li["evidence_ids"]) > 12 else ""} · session <span class="id">{esc(li["content_session_id"])}</span>'
@@ -377,6 +377,19 @@ def _table(headers, rows):
     return "<table><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>" + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows) + "</table>"
 
 
+def _unmeasured(li):
+    """No transcript and no extrapolation ratio: the spend is unknown, never a measured zero (money-labeling rules)."""
+    return not li.get("has_transcript") and li.get("cost_extrapolated") is None
+
+
+def _li_money(li):
+    return "unmeasured" if _unmeasured(li) else usd2(li["attributed_usd"])
+
+
+def _li_basis(li):
+    return "unmeasured (no ratio)" if _unmeasured(li) else esc(li["cost_basis"])
+
+
 def details(d, open_):
     s, t, b = d["spend"], d["totals"], d.get("behavior") or {}
     out = [f'<details id="details" {"open" if open_ else ""}><summary>Details &amp; evidence</summary>']
@@ -397,7 +410,7 @@ def details(d, open_):
     eps = {e["episode_id"]: e for e in b.get("episodes", [])}
     for x in d["timeline"].get("mistakes_by_day", []):
         pats = ", ".join(f"{PAT_SHORT.get(k, k)} {usd2(v)}" for k, v in sorted(x.get("by_pattern", {}).items(), key=lambda kv: -kv[1]))
-        ex = "".join(f'<li>{esc(e["pattern"])} · <span class="id">{esc(e["content_session_id"])}</span> · {esc(e["ts_pt"])}' + (f' · <span class="ex">{esc(eps[e["mistake_id"].replace("MK-", "")]["excerpt"])}</span>' if e["mistake_id"] in eps else "") + "</li>" for e in x.get("top_examples", []))
+        ex = "".join(f'<li>{esc(e["pattern"])} · <span class="id">{esc(e["content_session_id"])}</span> · {esc(e["ts_pt"])}' + (f' · <span class="ex">{esc(eps[e["episode_id"]]["excerpt"])}</span>' if e.get("episode_id") in eps else "") + "</li>" for e in x.get("top_examples", []))
         day_eps = [e for e in b.get("episodes", []) if e["day_pt"] == x["day_pt"]]
         ex += "".join(f'<li>{esc(PAT_SHORT.get(e["pattern"], e["pattern"]))} · {esc(e["cost_status"])} · <span class="id">{esc(e["session"])}</span> · {esc(e["ts_pt"])} · <span class="ex">{esc(e["excerpt"])}</span></li>' for e in day_eps)
         out.append(f'<div id="mistakes-{esc(x["day_pt"])}"><b>{esc(day_label(x["day_pt"]))}</b> · low {usd2(x["usd"])} · high {usd2(x["high_usd"])} · {x["turns_n"]} turns · {x["unmeasured_n"]} unmeasured episode(s) · {x["alex_minutes"]:g} Alex-min · {x["outbound_incidents"]} outbound'
@@ -421,8 +434,8 @@ def details(d, open_):
     # money and pricing
     out.append("<h4>Spend</h4>" + _table(["field", "value"], [
         ("agent, estimated from measured tokens", f'{usd2(s["agent_estimated_usd"])} {tag("est")}'), ("agent, measured by provider", esc(str(s.get("agent_measured_usd") if s.get("agent_measured_usd") is not None else s.get("measured_status")))),
-        ("extrapolated (sessions without transcripts)", f'{usd2(s.get("extrapolated_unmeasured_usd") or 0)} {tag("extra")} · {esc(s.get("extrapolation_basis") or "")}'),
-        ("total estimate", f'{usd2(s["total_estimate_usd"])} = {usd2(s["agent_estimated_usd"])} + {usd2(s.get("extrapolated_unmeasured_usd") or 0)}'),
+        ("extrapolated (sessions without transcripts)", (f'{usd2(s["extrapolated_unmeasured_usd"])} {tag("extra")}' if s.get("extrapolated_unmeasured_usd") is not None else "unavailable (no measured session to derive a ratio from)") + f' · {esc(s.get("extrapolation_basis") or "")}'),
+        ("total estimate", f'{usd2(s["total_estimate_usd"])} = {usd2(s["agent_estimated_usd"])} + ' + (usd2(s["extrapolated_unmeasured_usd"]) if s.get("extrapolated_unmeasured_usd") is not None else "unavailable")),
         ("Note-taker (observer) cost, separate", f'{usd2(s["observer_note_taker_est_usd"])} {tag("est")} · never added to the agent figures'),
         ("Grok Bot usage", "unavailable (Cursor exposes seat usage only on the plan screen) · sources checked: " + esc(", ".join((s.get("grok_bot_usage") or {}).get("checked_sources") or []))), ("pricing", f'{esc(d["pricing"].get("source") or "")} fetched {esc(d["pricing"].get("fetched") or "")} · 1h rule: {esc(d["pricing"].get("rule_1h") or "")}')]))
     out.append("<h4>Models</h4>" + _table(["source", "model", "calls", "input", "output", "cache write 5m", "cache write 1h", "cache read", "est. $", "$/MTok in/out/read/write/write1h"],
@@ -430,7 +443,7 @@ def details(d, open_):
                                          esc("/".join(str(m["prices_usd_per_mtok"].get(k)) for k in ("input", "output", "cache_read", "cache_write", "cache_write_1h")) if m.get("prices_usd_per_mtok") else "unpriced")) for m in d["by_model"]]))
     out.append("<h4>Failure accounting</h4>" + (_table(["failure type", "sessions", "attributed", "wasted", "recovery", "items"], [(esc(f["failure_type"]), f["sessions"], usd2(f["attributed_usd"]), usd2(f["wasted_usd"]), usd2(f["recovery_usd"]), esc(", ".join(f["work_item_ids"][:12]))) for f in d.get("failure_economics") or []]) if d.get("failure_economics") else '<div class="muted">none</div>'))
     out.append("<h4>Line items</h4>" + _table(["id", "title", "status", "category", "label", "attributed", "basis", "wasted", "tokens in/out/cw5/cw1h/read", "model", "device", "sessions", "evidence ids"],
-                                           [(esc(li["work_item_id"]), esc(li["title"][:70]), esc(li["status"]), esc(li["category"]), esc(li["label_source"]), usd2(li["attributed_usd"]), esc(li["cost_basis"]), usd2(li["wasted_cost"]),
+                                           [(esc(li["work_item_id"]), esc(li["title"][:70]), esc(li["status"]), esc(li["category"]), esc(li["label_source"]), _li_money(li), _li_basis(li), usd2(li["wasted_cost"]),
                                              "/".join(f'{li["agent_tokens"][k]:,}' for k in ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")), esc(li["model"] or "—"), esc(", ".join(li["device"])),
                                              f'<span class="id">{esc(li["content_session_id"])}<br>{esc(li["session_ids"][0])}</span>', esc(", ".join(map(str, li["evidence_ids"][:10])) + (" …" if len(li["evidence_ids"]) > 10 else ""))) for li in d["line_items"]]))
     out.append("<h4>Devices</h4>" + _table(["device", "id (short hash)", "sessions", "est. $", "extrapolated $"], [(esc(x["device"]), esc(x["id_hash"]), x["sessions"], usd2(x["agent_estimated_usd"]), usd2(x["extrapolated_usd"])) for x in d["by_device"]]))

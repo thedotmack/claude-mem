@@ -129,6 +129,15 @@ class Episodes(Base):
         self.assertEqual(spend["mistakes_unmeasured_n"], 1)
 
 
+    def test_measured_episode_records_observed_model_and_day_example_carries_episode_id(self):
+        a = Tx("a"); a.user(BASE - 3600_000, "do the thing"); a.assistant(BASE - 1800_000, "working", tools=[("t1", "Bash", dict(command="ls"))]); a.user(BASE, "why did you break it again")
+        self.write(a); block, _, by_day = self.run_all(items=[self.item("a")])
+        ep = block["episodes"][0]
+        self.assertEqual((ep["model_status"], ep["model"]), ("observed", prices.norm("claude-fable-5-1")))
+        ex = next(d for d in by_day if d["day_pt"] == ep["day_pt"])["top_examples"][0]
+        self.assertEqual(ex["episode_id"], ep["episode_id"]); self.assertTrue(ex["mistake_id"].startswith("MK-"))
+
+
 class Detectors(Base):
     def test_model_tile_prices_difference_and_assumed_not_counted(self):
         a = Tx("a"); a.user(BASE, "x"); a.assistant(BASE + 1000, "y", model="gpt-5-codex"); a.assistant(BASE + 2000, "z", model=None)
