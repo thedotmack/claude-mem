@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, unwatchFile, watchFile } from 'fs';
 import path from 'path';
 import { Database } from 'bun:sqlite';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
@@ -13,6 +13,7 @@ import {
   DEFAULT_INDEX_LINE_CHARS,
   DEFAULT_INDEX_WINDOW,
   assertSafeInjectPath,
+  collapseWhitespace,
   formatIndexFactLines,
   injectLogPath,
   mergeIndexObservations,
@@ -38,6 +39,7 @@ export interface GrokBotIndexConfig {
   window: number;
   maxLineChars: number;
   debounceMs: number;
+  standingLine: string;
   agentDataRoot: string;
   watchConfigFile: string;
 }
@@ -122,6 +124,7 @@ export function loadGrokBotIndexConfig(
       480,
     ),
     debounceMs: Number.isFinite(debounceRaw) && debounceRaw >= 0 ? debounceRaw : DEFAULT_DEBOUNCE_MS,
+    standingLine: collapseWhitespace(pick('CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE')),
     agentDataRoot: discoverGrokBotAgentDataRoot(env),
     watchConfigFile: pick('CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH') || path.join(
       env.CLAUDE_MEM_DATA_DIR?.trim() || path.join(process.env.HOME || '', '.claude-mem'),
@@ -246,6 +249,7 @@ export function refreshSeatIndex(
     tier: cfg.tier,
     now,
     houseFilled,
+    standingLine: cfg.standingLine,
   });
   const contents = renderIndexFile(factLines);
   const existing = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
@@ -338,8 +342,62 @@ async function runDebouncedRefresh(): Promise<void> {
   }
 }
 
+/**
+ * Settings that change what every seat INDEX renders even when no new
+ * observation lands (so the observation-driven notify never fires).
+ */
+export function indexSettingsFingerprint(cfg: GrokBotIndexConfig): string {
+  const projects = [...cfg.projectsByAgent.entries()]
+    .map(([id, list]) => `${id}=${list.join(',')}`)
+    .sort()
+    .join(';');
+  return JSON.stringify([cfg.enabled, cfg.standingLine, projects]);
+}
+
+let settingsWatchPath: string | null = null;
+let lastSettingsFingerprint: string | null = null;
+
+/**
+ * Returns true (and schedules a refresh) when the INDEX-relevant settings
+ * differ from the last check. Exported for tests.
+ */
+export function checkGrokBotIndexSettings(settingsPath: string = USER_SETTINGS_PATH): boolean {
+  try {
+    const cfg = loadGrokBotIndexConfig(settingsPath);
+    const next = indexSettingsFingerprint(cfg);
+    const previous = lastSettingsFingerprint;
+    lastSettingsFingerprint = next;
+    if (previous === null || previous === next) return false;
+    logger.info('GROK_INDEX', 'INDEX settings changed; refreshing idle seats', {});
+    notifyGrokBotIndex();
+    return true;
+  } catch (error) {
+    logger.warn('GROK_INDEX', 'Grok Bot INDEX settings check failed', {}, error instanceof Error ? error : undefined);
+    return false;
+  }
+}
+
+/**
+ * Poll settings.json (cheap stat, covers hand edits and POST /api/settings)
+ * so adding, changing or clearing the standing line or project map refreshes
+ * idle seats without waiting for the next observation or a worker restart.
+ */
+export function watchGrokBotIndexSettings(settingsPath: string = USER_SETTINGS_PATH, intervalMs = 5000): void {
+  if (settingsWatchPath) return;
+  settingsWatchPath = settingsPath;
+  checkGrokBotIndexSettings(settingsPath);
+  watchFile(settingsPath, { interval: intervalMs, persistent: false }, () => {
+    checkGrokBotIndexSettings(settingsPath);
+  });
+}
+
 /** Test helper: drop in-flight debounce so unit tests do not leak timers. */
 export function resetGrokBotIndexWriterForTests(): void {
+  if (settingsWatchPath) {
+    unwatchFile(settingsWatchPath);
+    settingsWatchPath = null;
+  }
+  lastSettingsFingerprint = null;
   if (debounceTimer) {
     clearTimeout(debounceTimer);
     debounceTimer = null;

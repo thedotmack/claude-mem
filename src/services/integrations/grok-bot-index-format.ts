@@ -122,6 +122,8 @@ export function formatIndexFactLines(
     tier?: GrokBotIndexTier;
     now?: Date;
     houseFilled?: boolean;
+    /** Operator line pinned above the header; survives every worker rewrite. */
+    standingLine?: string;
   },
 ): string[] {
   const now = options.now ?? new Date();
@@ -136,7 +138,10 @@ export function formatIndexFactLines(
     `${observations.length} rows; fetch get_observations by ID`,
   ].join(' — ');
 
-  const lines = [factLine(date, head, headerMax, tier)];
+  const lines: string[] = [];
+  const standingLine = collapseWhitespace(options.standingLine ?? '');
+  if (standingLine) lines.push(factLine(date, standingLine, headerMax, tier));
+  lines.push(factLine(date, head, headerMax, tier));
   for (const obs of observations) {
     lines.push(factLine(date, formatIndexRow(obs), maxLineChars, tier));
   }

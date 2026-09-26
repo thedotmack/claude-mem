@@ -16,6 +16,7 @@ import {
   type GrokBotIndexObservation,
 } from '../../src/services/integrations/grok-bot-index-format.js';
 import {
+  checkGrokBotIndexSettings,
   loadGrokBotIndexConfig,
   projectsForAgent,
   refreshGrokBotIndexes,
@@ -74,6 +75,7 @@ function makeCfg(root: string, overrides: Partial<GrokBotIndexConfig> = {}): Gro
     window: 80,
     maxLineChars: 160,
     debounceMs: 0,
+    standingLine: '',
     agentDataRoot: root,
     watchConfigFile: path.join(root, 'transcript-watch.json'),
     ...overrides,
@@ -127,6 +129,52 @@ describe('formatIndexFactLines', () => {
     expect(lines[0]).toContain('house fill');
     expect(lines[1]).toContain('17401');
     expect(lines[1]).toContain('Grew the inject allowlist');
+  });
+
+  it('pins an optional standing line above the header as a host fact', () => {
+    const rows = [obs(17401, 'Grew the inject allowlist', Date.parse('2026-09-16T14:03:00Z'))];
+    const standing = 'Before ending a turn,   run the\n self-save skill.';
+    const lines = formatIndexFactLines(rows, {
+      primaryProject: 'cmem_work_prioritizer',
+      now: NOW,
+      standingLine: standing,
+    });
+    expect(lines.length).toBe(3);
+    expect(lines[0]).toBe('- (2026-09-16) [episode] [claude-mem] Before ending a turn, run the self-save skill.');
+    expect(HOST_MEMORY_FACT_LINE.test(lines[0])).toBe(true);
+    expect(lines[1]).toContain('Claude-Mem timeline index for cmem_work_prioritizer');
+  });
+
+  it('caps a long standing line under the host fact limit', () => {
+    const lines = formatIndexFactLines([], {
+      primaryProject: 'p',
+      now: NOW,
+      standingLine: 'x'.repeat(2000),
+    });
+    expect(lines[0].length).toBeLessThan(HOST_MAX_FACT_CHARS);
+    expect(lines[0].endsWith('…')).toBe(true);
+    expect(HOST_MEMORY_FACT_LINE.test(lines[0])).toBe(true);
+  });
+
+  it('emits identical output when the standing line is empty or blank', () => {
+    const rows = [obs(1, 'Same', 1)];
+    const base = formatIndexFactLines(rows, { primaryProject: 'p', now: NOW });
+    expect(formatIndexFactLines(rows, { primaryProject: 'p', now: NOW, standingLine: '' })).toEqual(base);
+    expect(formatIndexFactLines(rows, { primaryProject: 'p', now: NOW, standingLine: '  \n ' })).toEqual(base);
+    expect(base[0]).toContain('Claude-Mem timeline index');
+  });
+
+  it('rewrites the inject when the standing line is added, changed or removed', () => {
+    const rows = [obs(1, 'Same', 1)];
+    const render = (standingLine?: string) =>
+      renderIndexFile(formatIndexFactLines(rows, { primaryProject: 'p', now: NOW, standingLine }));
+    const none = render();
+    const a = render('Use the self-save skill.');
+    const b = render('Use the self-save skill v2.');
+    expect(shouldRewriteInject(none, a)).toBe(true);
+    expect(shouldRewriteInject(a, b)).toBe(true);
+    expect(shouldRewriteInject(b, none)).toBe(true);
+    expect(shouldRewriteInject(a, render('Use the self-save skill.'))).toBe(false);
   });
 });
 
@@ -254,6 +302,29 @@ describe('seat mapping', () => {
   });
 });
 
+describe('checkGrokBotIndexSettings', () => {
+  it('flags standing line and project map edits so idle seats refresh', () => {
+    const settingsPath = path.join(tempRoot(), 'settings.json');
+    const write = (extra: Record<string, string>) => writeFileSync(settingsPath, JSON.stringify({
+      CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false',
+      ...extra,
+    }));
+    write({});
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(false); // first read only records
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(false);
+    write({ CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: 'Use the self-save skill.' });
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(true);
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(false);
+    write({
+      CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: 'Use the self-save skill.',
+      CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: `${ORIFICE}=Orifice`,
+    });
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(true);
+    write({ CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: `${ORIFICE}=Orifice` });
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(true); // cleared line
+  });
+});
+
 describe('loadGrokBotIndexConfig', () => {
   it('defaults to enabled house-fill for every live seat', () => {
     const settingsPath = path.join(tempRoot(), 'settings.json');
@@ -270,6 +341,20 @@ describe('loadGrokBotIndexConfig', () => {
     expect(cfg.fallback).toBe('house');
     expect(cfg.window).toBe(80);
     expect(cfg.tier).toBe('episode');
+    expect(cfg.standingLine).toBe('');
+  });
+
+  it('loads the standing line trimmed with whitespace collapsed', () => {
+    const settingsPath = path.join(tempRoot(), 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({
+      CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: '  Run   the\nself-save skill.  ',
+    }));
+    const cfg = loadGrokBotIndexConfig(settingsPath, {
+      ...process.env,
+      CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: undefined,
+      GROK_BOT_AGENT_DATA: '/tmp/agent-data-does-not-need-to-exist',
+    });
+    expect(cfg.standingLine).toBe('Run the self-save skill.');
   });
 
   it('can be turned off without touching Claude Code hooks', () => {
