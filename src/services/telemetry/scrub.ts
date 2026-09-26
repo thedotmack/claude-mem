@@ -41,8 +41,15 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // trial_poll_timeout — never an email, token, pairing secret, or device
   // user code (those never enter any event property).
   'stage',
+  // phase is the installer OAuth pairing phase, a closed enum
+  // (login | enrollment | deferred) on installer_oauth_timeout and
+  // installer_oauth_start_failed.
+  'phase',
   'install_method',
   'interactive',
+  // provider_source is how the installer decided the provider, a closed enum
+  // (flag | default | persisted | prompt) on install_completed.
+  'provider_source',
   'bun_version',
   'uv_version',
   'claude_code_version',

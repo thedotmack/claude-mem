@@ -72,6 +72,25 @@ describe('error taxonomy', () => {
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
   });
 
+  it('classifies a non-interactive provider-selection abort with its own id', () => {
+    const cat = classifyError(new Error('A provider must be explicit when stdin is not interactive.'), {
+      component: 'provider-selection',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('provider-selection-non-interactive');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+    expect(cat.remediation({ platform: 'linux', dataDir: '/x' })).toContain('--provider claude');
+  });
+
+  it('classifies missing non-interactive provider credentials with its own id', () => {
+    const cat = classifyError(new Error('gemini requires a preconfigured personal API key when stdin is not interactive.'), {
+      component: 'provider-credentials',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('provider-credentials-missing');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+  });
+
   it('defaults unknown errors to ABORT (fail-loud)', () => {
     const cat = classifyError(new Error('something we have never seen'), {
       component: 'mystery',
