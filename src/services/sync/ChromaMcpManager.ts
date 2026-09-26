@@ -14,7 +14,7 @@ import { killProcessTree, collectDescendantIdentities } from '../../shared/kill-
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, captureProcessStartTimeMs, isSameProcess, isPidAlive } from '../../supervisor/process-registry.js';
+import { captureProcessName, captureProcessStartToken, isSameProcess, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -37,9 +37,6 @@ const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 // An unparseable lock (typically a 0-byte file left by a crash mid-write) has no
 // owner to probe; once it is this old no concurrent writer is still filling it in.
 const CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS = 10_000;
-// A null-token lock is treated as reused only when the PID's process started
-// clearly after the lock was written (start times can be second-granular).
-const CHROMA_WRITER_LOCK_START_SLACK_MS = 2_000;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -113,6 +110,7 @@ interface ChromaWriterLockPayload {
   dataDir: string;
   acquiredAt: string;
   startToken?: string | null;
+  processName?: string | null;
 }
 
 // Keep one writer identity for the lifetime of this process. Multiple manager
@@ -469,6 +467,7 @@ export class ChromaMcpManager {
       dataDir: normalizedDataDir,
       acquiredAt: new Date().toISOString(),
       startToken: captureProcessStartToken(process.pid),
+      processName: normalizeProcessName(process.execPath),
     };
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -593,6 +592,7 @@ export class ChromaMcpManager {
         dataDir: raw.dataDir,
         acquiredAt: raw.acquiredAt,
         startToken: typeof raw.startToken === 'string' || raw.startToken === null ? raw.startToken : undefined,
+        processName: typeof raw.processName === 'string' ? raw.processName : undefined,
       };
     } catch {
       return null;
@@ -614,16 +614,15 @@ export class ChromaMcpManager {
     }
     if (!lock.startToken) {
       // No identity was recorded (the capture can fail, e.g. a slow PowerShell
-      // CIM lookup on Windows). A live PID whose process started after the lock
-      // was acquired cannot be the writer that acquired it: the OS reused the
-      // PID, and treating it as the owner would disable vector sync until
-      // someone deletes the lock by hand.
-      const acquiredAtMs = Date.parse(lock.acquiredAt);
-      const startedAtMs = captureProcessStartTimeMs(lock.pid);
-      if (startedAtMs !== null && Number.isFinite(acquiredAtMs) && startedAtMs > acquiredAtMs + CHROMA_WRITER_LOCK_START_SLACK_MS) {
-        return false;
-      }
-      return true;
+      // CIM lookup on Windows). If the PID now runs a different program than the
+      // writer (older locks lack processName; the writer ran under this same
+      // runtime), the OS reused the PID and the lock is stale. Keeping it would
+      // disable vector sync until someone deletes the file by hand. This check
+      // does not depend on wall-clock ordering; an unreadable name keeps the
+      // lock, as before.
+      const expectedName = lock.processName || normalizeProcessName(process.execPath);
+      const currentName = captureProcessName(lock.pid);
+      return currentName === null || currentName === expectedName;
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
     return currentStartToken === null || currentStartToken === lock.startToken;
