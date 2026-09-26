@@ -26,6 +26,7 @@ export const FIRST_PARTY_SKILL_IDS = [
   'smart-explore',
   'standup',
   'timeline-report',
+  'token-savings-scan',
   'version-bump',
   'weekly-digests',
   'what-the',
