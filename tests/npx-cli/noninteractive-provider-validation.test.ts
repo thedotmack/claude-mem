@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { validateNonInteractiveProvider, type InstallOptions } from '../../src/npx-cli/commands/install.js';
+import { promptProvider, validateNonInteractiveProvider, type InstallOptions } from '../../src/npx-cli/commands/install.js';
 import { createInstallSummary, InstallAbortError } from '../../src/npx-cli/install/error-reporter.js';
 import { CMEM_PRO_BASE_URL } from '../../src/npx-cli/cmem-pro-costs.js';
 import { USER_SETTINGS_PATH } from '../../src/shared/paths.js';
@@ -89,6 +89,31 @@ describe('non-interactive persisted provider validation', () => {
     expect(() => validateNonInteractiveProvider({ provider: 'openrouter' }, createInstallSummary())).toThrow(InstallAbortError);
     writeFileSync(credentialPath, 'OPENROUTER_API_KEY=personal-key\n');
     expect(() => validateNonInteractiveProvider({ provider: 'openrouter' }, createInstallSummary())).not.toThrow();
+  });
+
+  it('configures explicit Gemini using only a worker credential-file key', async () => {
+    writeSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+    writeFileSync(credentialPath, 'GEMINI_API_KEY=file-gemini-key\n');
+    const options: InstallOptions = { provider: 'gemini', providerSource: 'flag' };
+    validateNonInteractiveProvider(options, createInstallSummary());
+    expect(await promptProvider(options, null, 'test')).toBe('gemini');
+    const saved = readFileSync(USER_SETTINGS_PATH, 'utf-8');
+    expect(JSON.parse(saved).CLAUDE_MEM_PROVIDER).toBe('gemini');
+    expect(saved).not.toContain('file-gemini-key');
+  });
+
+  it('configures explicit OpenRouter with a personal file key after detaching a saved gateway', async () => {
+    writeSettings({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_PRO_BASE_URL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'gateway-key',
+    });
+    process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = '';
+    writeFileSync(credentialPath, 'OPENROUTER_API_KEY=personal-key\n');
+    const options: InstallOptions = { provider: 'openrouter', providerSource: 'flag' };
+    validateNonInteractiveProvider(options, createInstallSummary());
+    expect(await promptProvider(options, null, 'test')).toBe('openrouter');
+    expect(readFileSync(USER_SETTINGS_PATH, 'utf-8')).not.toContain('personal-key');
   });
 
   it('stops on malformed existing settings without replacing them', () => {
