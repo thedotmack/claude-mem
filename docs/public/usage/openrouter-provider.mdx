@@ -78,6 +78,7 @@ All free models support:
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_OPENROUTER_API_KEY` | string | — | Your OpenRouter API key |
 | `CLAUDE_MEM_OPENROUTER_MODEL` | string or array | `xiaomi/mimo-v2-flash:free` | Model identifier, or a list to fall back through (see [Model fallbacks](#model-fallbacks)) |
+| `CLAUDE_MEM_OPENROUTER_BASE_URL` | string | — | Optional: custom OpenAI-compatible base URL (see [Custom OpenAI-compatible gateways](#custom-openai-compatible-gateways)) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
 
@@ -135,6 +136,23 @@ export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
 ```
 
 The settings file takes precedence over the environment variable.
+
+### Custom OpenAI-compatible gateways
+
+The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to any server that speaks `/chat/completions` — the model id is sent as-is, and the first id of a fallback list is used (plain OpenAI has no `models` field).
+
+For example, [IO Intelligence](https://io.net) by io.net:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://api.intelligence.io.solutions/api/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "meta-llama/Llama-3.3-70B-Instruct",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_IO_INTELLIGENCE_API_KEY"
+}
+```
+
+Model ids are org/name pairs from the [IO Intelligence model list](https://api.intelligence.io.solutions/api/v1/models), for example `deepseek-ai/DeepSeek-R1-0528` or `zai-org/GLM-4.6`. A trailing slash on the base URL is fine; `/chat/completions` is appended automatically.
 
 ## Model Selection Guide
 
