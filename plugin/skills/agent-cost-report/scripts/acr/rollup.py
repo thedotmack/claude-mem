@@ -235,8 +235,8 @@ def aggregate(report):
     finished = [li for li in real if li["status"] in FINISHED]
     byd = {d["day_pt"]: d for d in report["by_day"]}                     # per-day outcomes follow the same statuses (stale after review otherwise)
     for d in byd.values(): d["finished_outcomes"] = 0
-    for li in items:
-        if li["status"] in FINISHED and not li["trivial"] and li["date_pt"] in byd: byd[li["date_pt"]]["finished_outcomes"] += 1
+    for li in finished:                                                  # the same set as the headline: never a transcript-only item
+        if li["date_pt"] in byd: byd[li["date_pt"]]["finished_outcomes"] += 1
     total = sum(li["attributed_usd"] for li in items); wasted = sum(li["wasted_cost"] for li in items); rec = sum(li["recovery_cost"] for li in items)
     t = report["totals"]
     t.update(real_work_sessions=len(real), trivial_sessions=sum(1 for li in items if li["trivial"]),

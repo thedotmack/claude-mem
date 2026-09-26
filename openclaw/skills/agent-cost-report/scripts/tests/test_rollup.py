@@ -217,6 +217,10 @@ class Rollup(Fixture):
         rollup.aggregate(r)
         self.assertEqual(r["totals"]["finished_outcomes"], 3); self.assertEqual(sum(d["finished_outcomes"] for d in r["by_day"]), 3)
         self.assertEqual(next(d for d in r["by_day"] if d["day_pt"] == li["m4"]["date_pt"])["finished_outcomes"], 2)
+        orphan = next(x for x in r["line_items"] if x.get("orphan"))     # a reviewed transcript-only item stays out of both the headline and the days
+        labels.apply_review(r["line_items"], [dict(work_item_id=orphan["work_item_id"], category="Feature", reviewed_by="Alex", status="shipped")], "t")
+        rollup.aggregate(r)
+        self.assertEqual((r["totals"]["finished_outcomes"], sum(d["finished_outcomes"] for d in r["by_day"])), (3, 3))
 
     def test_project_scope_includes_worktrees_and_session_scope(self):
         r, _, _ = self.build(scope=evidence.Scope("project", S=W.start_epoch_ms, E=W.end_epoch_ms, project="claude-mem"))
