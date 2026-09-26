@@ -16,7 +16,7 @@ import {
   type ServerGenerationJobPayload,
 } from '../jobs/types.js';
 import { ServerClassifiedProviderError } from './providers/shared/error-classification.js';
-import type { ServerGenerationProvider } from './providers/shared/types.js';
+import type { ServerGenerationProvider, ServerGenerationResult } from './providers/shared/types.js';
 import {
   markGenerationFailed,
   processGeneratedResponse,
@@ -58,7 +58,16 @@ export interface ProviderObservationGeneratorOptions {
   pool: PostgresPool;
   provider: ServerGenerationProvider;
   workerId?: string;
+  // Upper bound on one provider.generate() call. Defaults to
+  // DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS; tests pass a small value.
+  providerTimeoutMs?: number;
 }
+
+// #4100: nothing bounded the provider call, so one hung request held the
+// generation lane (concurrency 1) indefinitely. Well above the ~325s longest
+// job observed in production. A timeout is rethrown as a transient
+// ServerClassifiedProviderError so it takes the normal retry path.
+const DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS = 600_000;
 
 
 // The `limit` on listUnprocessedEvents caps the event COUNT, not the payload
@@ -292,16 +301,32 @@ export class ProviderObservationGenerator {
     const events = await this.loadEvents(fresh, payload);
     const project = await this.loadProject(fresh);
 
-    const result = await this.options.provider.generate({
-      job: fresh,
-      events,
-      project: {
-        projectId: fresh.projectId,
-        teamId: fresh.teamId,
-        serverSessionId: fresh.serverSessionId,
-        projectName: project?.name ?? null,
-      },
-    });
+    const timeoutMs = this.options.providerTimeoutMs ?? DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS;
+    const signal = AbortSignal.timeout(timeoutMs);
+    let result: ServerGenerationResult;
+    try {
+      result = await this.options.provider.generate({
+        job: fresh,
+        events,
+        project: {
+          projectId: fresh.projectId,
+          teamId: fresh.teamId,
+          serverSessionId: fresh.serverSessionId,
+          projectName: project?.name ?? null,
+        },
+      }, signal);
+    } catch (error) {
+      // An abort can surface from fetch (already transient) or from reading the
+      // response body (classified parse_error, non-retryable). Either way the
+      // cause is the timeout, so report it as transient.
+      if (signal.aborted) {
+        throw new ServerClassifiedProviderError(
+          `${this.options.provider.providerLabel} request timed out after ${timeoutMs}ms`,
+          { kind: 'transient', cause: error },
+        );
+      }
+      throw error;
+    }
 
     const persistInput = {
       pool: this.options.pool,
