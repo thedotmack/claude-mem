@@ -237,3 +237,126 @@ def ribbon(d, cats):
     if any(li.get("wasted_cost") for li in items): keys.append(f'<span><i class="key" style="background:{WASTE}"></i>wasted turns ({usd2(waste_total)} {tag("est")})</span>')
     if stripes: keys.append('<span><i class="key" style="background:repeating-linear-gradient(45deg,#4FC3F7 0 3px,#d6f1fd 3px 6px)"></i>still in progress</span>')
     return f'<div class="ribbonwrap">{svg}<div class="scale">{scale}</div><div class="ribbonnote">{"".join(keys)}</div></div>'
+
+
+# ---- sidebar: build_mockup.py:134-145 generalised (mapping #13-17) ----
+def sidebar(d, sums, cats):
+    t = d["totals"]; total = sum(li["attributed_usd"] for li in d["line_items"])
+    rows = [f'<div class="srow"><span class="dot" style="background:{GRAY}"></span><b>All work</b><span class="sv">{usd2(total)}</span></div>']
+    for c, v in cats.items(): rows.append(f'<div class="srow"><span class="dot" style="background:{COL[c]}"></span>{esc(c)}<span class="sv">{usd2(v)}</span></div>')
+    for c in KINDS:
+        if c not in cats: rows.append(f'<div class="srow dim"><span class="dot hollow"></span>{esc(c)}<span class="sv">—</span></div>')
+    top = sorted((li for li in d["line_items"] if not li.get("trivial")), key=lambda l: -l["attributed_usd"])[:6]
+    sess = "".join(f'<div class="srow" title="{esc(li["content_session_id"])}">{esc(li["work_item_id"])} · {esc(day_label(li["date_pt"], True))}</div>' for li in top)
+    k = t["sessions"] - len(top)
+    if k > 0: sess += f'<div class="srow dim">+{k} more in Details</div>'
+    models = sorted(d["by_model"], key=lambda m: -m["agent_estimated_usd"])[:4]
+    mrows = "".join(f'<div class="srow" style="font-size:12px;color:#555;display:block">{esc(m["model"].split("/")[-1])}<br><span class="muted">{"list price" if m.get("priced") else "unpriced"} · {usd2(m["agent_estimated_usd"])}</span></div>' for m in models)
+    return (f'<aside class="side"><div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>'
+            f'<div class="nav"><a class="on" href="#overview">Overview</a><a href="#outcomes">Outcomes</a><a href="#details">Details &amp; evidence</a></div>'
+            f'<div class="sh">Kinds of work</div>{"".join(rows)}<div class="sh">Sessions</div>{sess}<div class="sh">Models</div>{mrows}</aside>')
+
+
+# ---- donut: build_mockup.py:47-56 (mapping #18-19) ----
+def donut(d, cats):
+    total = sum(cats.values())
+    if total <= 0: return '<div class="mnote">No priced work.</div>'
+    R, SW = 70, 34; C = 2 * math.pi * R; off = 0; arcs = []
+    for c, v in cats.items():
+        L = v / total * C
+        arcs.append(f'<circle r="{R}" cx="100" cy="100" fill="none" stroke="{COL[c]}" stroke-width="{SW}" stroke-dasharray="{max(L - 2, 0):.2f} {C - max(L - 2, 0):.2f}" stroke-dashoffset="{-off:.2f}" transform="rotate(-90 100 100)"/>')
+        off += L
+    word = "measured" if isinstance(d["spend"].get("agent_measured_usd"), (int, float)) else "estimated"
+    svg = f'<svg viewBox="0 0 200 200" width="190" height="190">{"".join(arcs)}<text x="100" y="96" text-anchor="middle" class="dnum">{usd2(total)}</text><text x="100" y="116" text-anchor="middle" class="dsub">{word}</text></svg>'
+    rows = "".join(f'<div class="lrow"><span class="dot" style="background:{COL[c]}"></span><span class="lname">{esc(c)}</span><span class="lval">{usd2(v)}</span></div>' for c, v in cats.items())
+    return f'<div class="dn">{svg}<div>{rows}</div></div>'
+
+
+# ---- day columns: build_mockup.py:58-73, column count and viewBox from by_day (mapping #20) ----
+def day_chart(d, cats):
+    days = d["by_day"]; n = max(len(days), 1); colw = 95 if n <= 8 else max(24, int(700 / n)); bw = int(colw * 0.6); W = 40 + n * colw; H = 150
+    perday = {x["day_pt"]: {} for x in days}
+    for li in d["line_items"]:
+        if li.get("trivial") or li["date_pt"] not in perday: continue
+        perday[li["date_pt"]][li["category"]] = perday[li["date_pt"]].get(li["category"], 0.0) + li["attributed_usd"]
+    maxd = max([sum(v.values()) for v in perday.values()] or [0]); cols = [f'<line x1="20" x2="{W - 10}" y1="{H + 10}" y2="{H + 10}" stroke="#e5e5ea"/>']
+    partial = d["window"].get("partial_last_day")
+    for i, x in enumerate(days):
+        day = x["day_pt"]; cx = 30 + i * colw; y = H + 10; s = sum(perday[day].values())
+        for c in cats:
+            v = perday[day].get(c, 0)
+            if v and maxd:
+                h = v / maxd * H; y -= h
+                cols.append(f'<rect x="{cx}" y="{y:.1f}" width="{bw}" height="{max(h - 1.5, 0):.1f}" rx="3" fill="{COL[c]}"/>')
+        lab = usd2(s) if s else "no agent work"
+        if partial and i == n - 1: lab += " · partial"
+        cols.append(f'<text x="{cx + bw / 2:.1f}" y="{(y - 7) if s else H + 2:.1f}" text-anchor="middle" class="{"ctop" if s else "cnone"}">{esc(lab)}</text>')
+        if n <= 12 or i % max(1, n // 8) == 0: cols.append(f'<text x="{cx + bw / 2:.1f}" y="{H + 30}" text-anchor="middle" class="cax">{esc(day_label(day, True))}</text>')
+    return f'<svg viewBox="0 0 {W} {H + 40}" width="100%" height="{H + 40}">{"".join(cols)}</svg>'
+
+
+# ---- useful ring: build_mockup.py:87-92, color bands (mapping #21-23) + behavior strip (plan 2B.5 / 3.3) ----
+def ring(d):
+    t = d["totals"]; w = t.get("waste_rate"); prod = 1 - w if w is not None else None
+    RR = 54; CC = 2 * math.pi * RR; pct = (prod or 0) * 100
+    color = "#34C759" if pct >= 90 else "#FFB14E" if pct >= 70 else "#FF6B6B"
+    num = f"{pct:.1f}%" if prod is not None else "n/a"
+    svg = (f'<svg viewBox="0 0 140 140" width="112" height="112"><circle r="{RR}" cx="70" cy="70" fill="none" stroke="#f0f0f3" stroke-width="14"/>'
+           f'<circle r="{RR}" cx="70" cy="70" fill="none" stroke="{color}" stroke-width="14" stroke-linecap="round" stroke-dasharray="{(prod or 0) * CC:.2f} {CC:.2f}" transform="rotate(-90 70 70)"/>'
+           f'<text x="70" y="78" text-anchor="middle" class="gnum" fill="{color}">{num}</text></svg>')
+    fe = d.get("failure_economics") or []
+    if fe:
+        top = max(fe, key=lambda f: f["wasted_usd"] + f["recovery_usd"])
+        sent = (f'<b>Useful work.</b> {esc(top["failure_type"])} touched {top["sessions"]} session{"s" if top["sessions"] != 1 else ""}: {usd2(top["wasted_usd"])} wasted, {usd2(top["recovery_usd"])} spent recovering {tag("est")}.')
+        others = [f["failure_type"] for f in fe if f is not top]
+        sent += f'<br><span class="muted">Also seen: {esc(", ".join(others[:4]))}.</span>' if others else '<br><span class="muted">No other failure signals.</span>'
+    else: sent = '<b>Useful work.</b> No failure signals in the drafted labels.<br><span class="muted">Labels are keyword drafts until reviewed.</span>'
+    blocked = sum(1 for li in d["line_items"] if li["status"] == "blocked"); unauth = sum(1 for f in fe if f["failure_type"] == "Unauthorized action" for _ in range(f["sessions"]))
+    chips = (f'<span class="chip{" bad" if blocked else ""}">{"✕" if blocked else "✓"} {blocked} blocked</span>'
+             f'<span class="chip{" bad" if unauth else ""}">{"✕" if unauth else "✓"} {unauth} unauthorized attempts</span>')
+    return f'<div class="gwrap">{svg}<div class="gtext">{sent}</div></div><div class="chips">{chips}</div>{behavior_strip(d)}'
+
+
+def behavior_strip(d):
+    b = d.get("behavior")
+    if not b: return '<div class="mnote" style="margin-top:10px">Behavior pass not run.</div>'
+    pats = {p["key"]: p for p in b["patterns"]}
+    groups = [("P1_invented_gates", ["P1_invented_gates"]), ("tile2", ["P6_fake_output", "P7_false_done"]), ("P2_broke_things", ["P2_broke_things"]), ("P3_wrong_model", ["P3_wrong_model"])]
+    tiles = []
+    for key, members in groups:
+        ps = [pats[m] for m in members if m in pats and pats[m]["placement"] == "tile"]
+        if not ps: continue
+        count = sum(p["count"] for p in ps); low = sum(p["low_usd"] or 0 for p in ps); unm = sum(p["unmeasured_n"] for p in ps); mins = sum(p.get("alex_minutes") or 0 for p in ps)
+        if key == "P3_wrong_model": money = f'≈{usd2(ps[0].get("delta_usd") or 0)} more than the default model {tag("est")}' if count else ""
+        else: money = f'≈{usd2(low)} {tag("est")}' if count else ""
+        body = (f'<span class="bn">{count}</span>{money}' if count else '<span class="bz">none found</span>')
+        extra = (f' · {mins:g} min of your time' if mins else "") + (f' · +{unm} unmeasured' if unm else "")
+        tiles.append(f'<div class="behavior-tile"><b>{esc(TILE_NAMES[key])}</b>{body}{esc(extra)} {tag("heur") if count else ""}</div>')
+    return f'<div class="bstrip">{"".join(tiles[:4])}</div>'
+
+
+# ---- outcomes: build_mockup.py:75-85, rows fold as native <details> (mapping #24-26) ----
+def outcomes(d):
+    items = [li for li in d["line_items"] if not li.get("trivial")]
+    if not items: return '<div class="mnote">No work items.</div>'
+    maxc = max(li["attributed_usd"] for li in items) or 1; rows = []
+    for li in sorted(items, key=lambda l: -l["attributed_usd"]):
+        c = COL.get(li["category"], GRAY); st = STAT.get(li["status"], (li["status"], "wip")); bw = li["attributed_usd"] / maxc * 100
+        flag = ""
+        if li["failure_type"]: flag = '<span class="flag">⟲ recovery</span>' if li["failure_type"] == "Recovery after miss" else f'<span class="flag">⚠ {esc(li["failure_type"])}</span>'
+        draft = tag("draft") if li["label_source"] == "keyword" else ""
+        basis = tag("extra") if li["cost_basis"] == "extrapolated" else tag("meas") if li["cost_basis"] == "measured_provider" else tag("est")
+        bc = sorted(li.get("behavior_counts", {}).items(), key=lambda kv: -kv[1])
+        det = (f'{esc(li["notes"])} · evidence {", ".join(map(str, li["evidence_ids"][:12]))}{" …" if len(li["evidence_ids"]) > 12 else ""} · session <span class="id">{esc(li["content_session_id"])}</span>'
+               f' · confidence {esc(li["confidence"])} · risk {esc(li["risk_exposure"])}' + (f' · wasted {usd2(li["wasted_cost"])}' if li["wasted_cost"] else "")
+               + (f' · behavior: {esc(", ".join(f"{PAT_SHORT.get(k, k)} ×{v}" for k, v in bc[:4]))}' if bc else ""))
+        rows.append(f'<details class="orow"><summary><span class="tri">›</span><span class="dot" style="background:{c}"></span><span class="otitle">{esc(li["title"][:90])} {flag}{draft}</span>'
+                    f'<span class="obar"><i style="width:{bw:.1f}%;background:{c}{"80" if st[1] == "wip" else ""}"></i></span><span class="oval">{usd2(li["attributed_usd"])}{basis}</span>'
+                    f'<span class="pill {st[1]}">{esc(st[0])}</span></summary><div class="odet">{det}</div></details>')
+    return "".join(rows)
+
+
+def attention(d):
+    att = (d.get("attention") or [])[:3]
+    if not att: return "<ol><li><b>Nothing flagged.</b><span class=\"muted\">No waste, unfinished work, or unpriced model stood out.</span></li></ol>"
+    return "<ol>" + "".join(f'<li><b>{esc(a["text"])}</b></li>' for a in att) + "</ol>"
