@@ -2323,8 +2323,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // Deliberately keyed on the resolved provider, not on reachability: a silent
   // fallback to a local install whenever cmem.ai is down would quietly change
   // what the user gets. This only skips a step the provider choice made moot.
+  //
+  // A provider reused from settings on a non-interactive run (`persisted`) is
+  // exempt too, even when it is account-backed: the machine already holds its
+  // account and credentials, and promptProvider returns early for it without
+  // enrolling anything. Running the blocking browser login here would hang an
+  // agent shell polling for up to the pairing TTL and then exit 1.
   let oauthPairing: InstallerOAuthPairing | null = null;
-  if (providerNeedsAccount(options.provider)) {
+  if (options.providerSource === 'persisted') {
+    log.info(`Skipping claude-mem login: keeping the existing account and ${options.provider} configuration.`);
+  } else if (providerNeedsAccount(options.provider)) {
     oauthPairing = await requireInstallerOAuthLogin(version);
     if (!oauthPairing) {
       if (isInteractive) p.cancel('OAuth login is required to finish installation.');
@@ -2334,7 +2342,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
-      : '--provider claude runs memory on your own Anthropic plan.';
+      : options.providerSource === 'default'
+        ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
+        : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);

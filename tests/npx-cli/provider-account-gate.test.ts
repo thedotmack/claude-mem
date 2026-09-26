@@ -28,6 +28,26 @@ describe('install flow wiring', () => {
     );
   });
 
+  it('never runs the blocking OAuth login for a persisted non-interactive provider', () => {
+    // A non-TTY run that reused CLAUDE_MEM_PROVIDER=openrouter|gemini from
+    // settings must not enter requireInstallerOAuthLogin: it would open a
+    // browser in an agent shell and poll until the pairing expires.
+    const gateStart = source.indexOf('let oauthPairing: InstallerOAuthPairing | null = null;');
+    const gateEnd = source.indexOf('const selectedProvider = await promptProvider(options, oauthPairing, version);');
+    expect(gateStart).toBeGreaterThan(-1);
+    expect(gateEnd).toBeGreaterThan(gateStart);
+    const gate = source.slice(gateStart, gateEnd);
+    const persistedBranch = gate.indexOf("if (options.providerSource === 'persisted') {");
+    const oauthCall = gate.indexOf('oauthPairing = await requireInstallerOAuthLogin(version);');
+    expect(persistedBranch).toBeGreaterThan(-1);
+    expect(persistedBranch).toBeLessThan(oauthCall);
+    expect(gate.slice(persistedBranch, oauthCall)).toContain('} else if (providerNeedsAccount(options.provider)) {');
+    expect(gate.slice(persistedBranch, gate.indexOf('} else if'))).not.toContain('requireInstallerOAuthLogin');
+    expect(gate).toContain('keeping the existing account');
+    // promptProvider must also short-circuit for the same source so nothing enrolls.
+    expect(source).toContain("if (options.providerSource === 'persisted' && options.provider) {");
+  });
+
   it('refuses CMEM Pro enrollment without a pairing', () => {
     expect(source).toContain("throw new Error('CMEM Pro requires a signed-in claude-mem account.');");
   });
