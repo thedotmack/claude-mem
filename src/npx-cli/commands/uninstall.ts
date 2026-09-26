@@ -378,6 +378,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
       return uninstallAntigravityCliHooks();
     }},
+    { label: 'Copilot CLI hooks', fn: async () => {
+      const { uninstallCopilotCliHooks } = await import('../../services/integrations/CopilotCliHooksInstaller.js');
+      return uninstallCopilotCliHooks();
+    }},
   ];
 
   for (const { label, fn } of ideCleanups) {
