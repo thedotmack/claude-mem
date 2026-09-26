@@ -74,7 +74,9 @@ function queryWindowsCreationDate(pid: number): string | null {
 function captureWindowsStartToken(pid: number, bypassCache = false): string | null {
   if (!bypassCache) {
     const cached = windowsStartTokenCache.get(pid);
-    if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
+    // Our own PID cannot be reissued while we are running, so a token read for
+    // it stays valid for the life of the process.
+    if (cached && (pid === process.pid || Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS)) {
       return cached.token;
     }
   }
@@ -90,7 +92,12 @@ function captureWindowsStartToken(pid: number, bypassCache = false): string | nu
     token = null;
   }
 
-  windowsStartTokenCache.set(pid, { token, capturedAtMs: Date.now() });
+  // A failed read of our own PID is not cached: one slow CIM query would
+  // otherwise make every self-read in the next TTL return null — including the
+  // Chroma writer lock's, which then persists a token-less lock (#4239).
+  if (token !== null || pid !== process.pid) {
+    windowsStartTokenCache.set(pid, { token, capturedAtMs: Date.now() });
+  }
   return token;
 }
 

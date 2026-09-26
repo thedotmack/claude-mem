@@ -1,5 +1,6 @@
 import { describe, it, expect, afterAll } from 'bun:test';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import path from 'path';
 import { collectDescendantIdentities } from '../../src/shared/kill-process-tree.js';
 import {
   captureProcessStartToken,
@@ -141,5 +142,41 @@ describe('identity revalidation never trusts the cache', () => {
     const after = __identityProbeCountForTesting();
 
     expect(after).toBe(before);
+  });
+
+  it.if(process.platform === 'win32')('a failed read of our own PID is not cached (Windows)', () => {
+    // A null must not stick for the TTL: the Chroma writer lock captures its
+    // own token through this accessor and persisted a token-less lock (#4239).
+    // Runs in a fresh process so this file's earlier self-reads are not cached;
+    // an empty PATH makes the first powershell.exe spawn fail.
+    const modulePath = path.resolve(import.meta.dir, '../../src/shared/process-identity.ts').replace(/\\/g, '/');
+    const script = `
+      const { captureProcessStartToken } = await import('${modulePath}');
+      const saved = process.env.PATH;
+      process.env.PATH = '';
+      const first = captureProcessStartToken(process.pid);
+      process.env.PATH = saved;
+      console.log(JSON.stringify({ first, second: captureProcessStartToken(process.pid) }));
+    `;
+    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const { first, second } = JSON.parse(result.stdout.trim().split('\n').pop()!);
+
+    expect(first).toBeNull();
+    expect(second).not.toBeNull();
+  });
+
+  it.if(process.platform === 'win32')('our own token outlives the TTL (Windows)', () => {
+    const token = captureProcessStartToken(process.pid);
+    expect(token).not.toBeNull();
+
+    const realNow = Date.now;
+    Date.now = () => realNow() + 60 * 60 * 1000;
+    try {
+      const before = __identityProbeCountForTesting();
+      expect(captureProcessStartToken(process.pid)).toBe(token);
+      expect(__identityProbeCountForTesting()).toBe(before);
+    } finally {
+      Date.now = realNow;
+    }
   });
 });
