@@ -43,7 +43,7 @@ import {
   releaseQuotaProbe,
   recordQuotaExhausted,
   getQuotaCooldown,
-  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  resolveQuotaCooldownMs,
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
@@ -310,8 +310,11 @@ export class SessionRoutes extends BaseRouteHandler {
         provider: selectedProvider,
         ...(cooldown?.window ? { window: cooldown.window } : {}),
         probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+        // Asked of the window for the same reason the breaker is: a throttle
+        // resolves in ninety seconds, and reporting the quota cooldown here
+        // would log a half-hour wait that nobody is actually serving.
         retryInMs: cooldown
-          ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+          ? Math.max(0, resolveQuotaCooldownMs(cooldown.window) - (Date.now() - cooldown.armedAtMs))
           : 0,
       });
       return;
