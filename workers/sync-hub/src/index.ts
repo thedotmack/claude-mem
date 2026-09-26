@@ -126,6 +126,39 @@ function errorResponse(status: number, error: string): Response {
 
 const STORE_RETRY_AFTER_SECONDS = "5";
 
+/**
+ * When FORWARD_ORIGIN is a non-empty origin, every fetch — including
+ * WebSocket upgrades — is proxied there unchanged. The Worker then touches
+ * zero Durable Objects and zero KV. Empty / unset keeps the DO path.
+ */
+export function resolveForwardOrigin(raw: string | undefined | null): string | null {
+	const origin = (raw ?? "").trim().replace(/\/+$/, "");
+	if (origin.length === 0) return null;
+	try {
+		const parsed = new URL(origin);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+		if (parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") {
+			// Accept a bare origin only; strip accidental path/query/hash.
+			return `${parsed.protocol}//${parsed.host}`;
+		}
+		return `${parsed.protocol}//${parsed.host}`;
+	} catch {
+		return null;
+	}
+}
+
+export function rewriteForwardUrl(request: Request, origin: string): URL {
+	const incoming = new URL(request.url);
+	const target = new URL(origin);
+	target.pathname = incoming.pathname;
+	target.search = incoming.search;
+	return target;
+}
+
+export function buildForwardRequest(request: Request, origin: string): Request {
+	return new Request(rewriteForwardUrl(request, origin), request);
+}
+
 /** Unguarded DO failures used to become uncaught exceptions (quota / rows-read). */
 function retryableStoreUnavailable(label: string, error: unknown): Response {
 	console.error(`sync-hub ${label} failed:`, error);
@@ -1025,6 +1058,11 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 
 export default {
 	async fetch(request, env, _ctx): Promise<Response> {
+		const forwardOrigin = resolveForwardOrigin(env.FORWARD_ORIGIN);
+		if (forwardOrigin !== null) {
+			return fetch(buildForwardRequest(request, forwardOrigin));
+		}
+
 		const url = new URL(request.url);
 		const { pathname } = url;
 		if (pathname === "/internal/v1/projection/drain") {
@@ -1155,6 +1193,9 @@ export default {
 	 * scheduled handler — and can never affect the sync routes either way.
 	 */
 	async scheduled(controller, env, _ctx): Promise<void> {
+		// Forward mode: the hub lives at FORWARD_ORIGIN, so the watchdog and
+		// control-plane probe have nothing to guard here. Touch zero DO / KV.
+		if (resolveForwardOrigin(env.FORWARD_ORIGIN) !== null) return;
 		if (controller.cron === CONTROL_PLANE_PROBE_CRON) {
 			try {
 				const result = await runControlPlaneProbe(env, {

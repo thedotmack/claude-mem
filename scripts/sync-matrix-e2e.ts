@@ -3,11 +3,11 @@
  * Canonical protocol-v2 sync E2E.
  *
  * Safety is structural: a Bun loopback sidecar owns token verification and
- * projection, while the existing Node Miniflare wrapper starts the actual
- * bundled Worker and SQLite Durable Object on an ephemeral loopback port.
- * Every client fetch is guarded as loopback-only. Exactly two real client
- * stacks (SessionStore + CloudSync + SyncApply + SyncClient) exercise both
- * the advisory WebSocket and authoritative HTTP lanes.
+ * projection, while services/sync-api starts the protocol-v2 hub on an
+ * ephemeral loopback port against local Postgres. Every client fetch is
+ * guarded as loopback-only. Exactly two real client stacks (SessionStore +
+ * CloudSync + SyncApply + SyncClient) exercise both the advisory WebSocket
+ * and authoritative HTTP lanes.
  */
 
 import { mkdtempSync, rmSync } from 'fs';
@@ -27,11 +27,13 @@ import { SyncApply } from '../src/services/sync/SyncApply.js';
 import { SyncClient } from '../src/services/sync/SyncClient.js';
 import { emitRemapProject } from '../src/services/sync/remap-outbox.js';
 
-const HUB_DIR = resolve(import.meta.dir, '../workers/sync-hub');
-const HUB_RUNNER = resolve(HUB_DIR, 'test/run-miniflare-pro-e2e.mjs');
+const SYNC_API_DIR = resolve(import.meta.dir, '../services/sync-api');
+const SYNC_API_ENTRY = resolve(SYNC_API_DIR, 'src/index.ts');
 const USER_ID = `matrix-user-${crypto.randomUUID()}`;
 const TOKEN = `matrix-token-${crypto.randomUUID()}`;
 const PROJECTOR_SECRET = 'matrix-projector-secret-32-characters-minimum';
+const DATABASE_URL = process.env.DATABASE_URL
+  ?? 'postgres://postgres:postgres@127.0.0.1:5432/sync_api_test';
 const DEVICE_IDS = { a: 'matrix-device-a', b: 'matrix-device-b' } as const;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const CHILD_ENV_ALLOWLIST = ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL'] as const;
@@ -255,16 +257,17 @@ async function startHub(sidecarUrl: string): Promise<void> {
     rejectReady = rejectPromise;
   });
   const proc = Bun.spawn([
-    'node',
-    HUB_RUNNER,
-    '--worker-root', HUB_DIR,
-    '--host', '127.0.0.1',
-    '--port', '0',
+    'bun',
+    'run',
+    SYNC_API_ENTRY,
   ], {
-    cwd: HUB_DIR,
+    cwd: SYNC_API_DIR,
     stdout: 'pipe',
     stderr: 'pipe',
     env: childEnvironment({
+      DATABASE_URL,
+      HOST: '127.0.0.1',
+      PORT: '0',
       INTERNAL_PROJECTOR_URL: `${sidecarUrl}/project`,
       TOKEN_VERIFY_URL: `${sidecarUrl}/verify`,
       CMEM_INTERNAL_PROJECTOR_SECRET: PROJECTOR_SECRET,
@@ -277,16 +280,16 @@ async function startHub(sidecarUrl: string): Promise<void> {
       events.push(event);
       if (event.event === 'ready' && typeof event.url === 'string') resolveReady(event.url);
     } catch {
-      // Miniflare dependency output is diagnostic only; ready/stopped are JSON.
+      // Non-JSON process output is diagnostic only; ready/stopped are JSON.
     }
   }).catch(error => rejectReady(error));
   const stderrDone = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
   hubRuntime = { proc, events, stdoutDone, stderrDone };
   const earlyExit = proc.exited.then(async code => {
     const stderr = await stderrDone;
-    throw new Error(`Miniflare Hub exited before ready (${code}): ${stderr.slice(0, 500)}`);
+    throw new Error(`sync-api exited before ready (${code}): ${stderr.slice(0, 500)}`);
   });
-  hubUrl = (await withTimeout(Promise.race([ready, earlyExit]), 30_000, 'Miniflare Hub ready')).replace(/\/$/, '');
+  hubUrl = (await withTimeout(Promise.race([ready, earlyExit]), 30_000, 'sync-api ready')).replace(/\/$/, '');
   loopbackUrl(hubUrl, 'Hub');
 }
 
@@ -297,7 +300,7 @@ async function stopHub(): Promise<void> {
   runtime.proc.kill(15);
   let code: number;
   try {
-    code = await withTimeout(runtime.proc.exited, 10_000, 'clean Miniflare shutdown');
+    code = await withTimeout(runtime.proc.exited, 10_000, 'clean sync-api shutdown');
   } catch (error) {
     runtime.proc.kill(9);
     await runtime.proc.exited;
@@ -305,8 +308,8 @@ async function stopHub(): Promise<void> {
   }
   await runtime.stdoutDone;
   const stderr = await runtime.stderrDone;
-  check(code === 0, 'Miniflare wrapper exits cleanly', { code, stderr: stderr.slice(0, 500) });
-  check(runtime.events.some(event => event.event === 'stopped'), 'Miniflare disposes the Worker and Durable Object');
+  check(code === 0, 'sync-api exits cleanly', { code, stderr: stderr.slice(0, 500) });
+  check(runtime.events.some(event => event.event === 'stopped'), 'sync-api reports stopped');
 }
 
 function authHeaders(deviceId?: string): Record<string, string> {

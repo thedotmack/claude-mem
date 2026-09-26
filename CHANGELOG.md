@@ -4,6 +4,91 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.26.0] - 2026-09-26
+
+## CMEM Pro cloud sync moves off Cloudflare
+
+The old Cloudflare Worker hub (`sync-hub.black-pond-afbb.workers.dev`) was failing every request because it hit Cloudflare Free plan caps. Cloud sync now runs on a new protocol-v2 hub at **https://sync.cmem.ai** (Fly + Neon Postgres).
+
+### Plugin changes
+- **Automatic hub URL migration:** on startup, a `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` that still points at the legacy workers.dev host is rewritten to `https://sync.cmem.ai`. You don't need to reconnect.
+- **Retry-After backoff:** cloud sync now honors `Retry-After` on 429/503 responses and stops hammering the hub.
+- **Looser checkpoint check:** the push checkpoint validation is more tolerant, so a hub that moved no longer wedges sync.
+
+### Infrastructure (#4232, #4233)
+- New `services/sync-api`: a protocol-v2 port of `workers/sync-hub` on Postgres.
+- The Worker gets `FORWARD_ORIGIN` pass-through mode, which proxies every request to the new hub and touches no Durable Objects or KV.
+
+## [13.24.23] - 2026-09-11
+
+- fix(supervisor): jail SDK subprocess cwd (#4054)
+- fix(hooks): anchor project names to Claude project dir (#4055)
+
+npm publish is handled separately.
+
+## [13.24.22] - 2026-09-11
+
+- fix(sqlite): skip empty-title observations at capture (#3176)
+
+npm publish is handled separately.
+
+## [13.24.21] - 2026-09-11
+
+- fix(session): use latest user_prompts text on rehydration (#4049 / #4047)
+
+npm publish is handled separately.
+
+## [13.24.20] - 2026-09-11
+
+- fix(build): stop regex bundle rewrite that can delete a declaration (#4044)
+- fix(sync-hub): bound scheduled projection repair work (#4046 / #3555)
+
+npm publish is handled separately.
+
+## [13.24.20] - 2026-09-11
+
+- fix(build): stop regex bundle rewrite that can delete a declaration (#4044)
+- fix(sync-hub): bound scheduled projection repair work (#4046 / #3555)
+
+npm publish is handled separately.
+
+## [13.24.19] - 2026-09-11
+
+- fix(cli-resolve): stop cold-start false "too old" and name spawn failures (#4036)
+- fix(install): find bun/uv where installers place them (#4038)
+- fix(worker): stop ENOENT when Bun runtime path is bad (#4039)
+- fix(hooks): skip plugin cache sessions (#4042)
+- fix(chroma): stop JSON parse crashes aborting sync (#4040)
+- fix(settings): normalize localhost worker host to 127.0.0.1 (#4041)
+- fix(oauth): sanitize macOS keychain account to match Claude Code (#4045 / #4037)
+
+npm publish is handled separately.
+
+## [13.24.18] - 2026-09-11
+
+Ships from main since v13.24.17:
+
+- #4029 — stop discarding session-summary responses (server-beta; rehost #3587 / recurrence of #1345)
+- #4030 — bound session-summary input by payload size not event count (rehost #3584)
+- #4032 — reuse OpenAI-compatible synthetic session IDs (rehost #3597)
+- #4033 — trip worker-unavailable fail-loud latch once, then fail-open (rehost #3489)
+- #4034 — test pin observation type handling against mode enum (rehost #3593)
+- #4031 — bound sync_outbox growth when cloud sync unconfigured (rehost #3616; complementary to #4027)
+
+Does not npm publish from this release authoring step. Prioritizer publishes from tag.
+
+## [13.24.17] - 2026-09-11
+
+- #4026 / #3575 — health probes honor the caller's remaining deadline
+- #3445 — detect macOS Codex desktop-bundled CLI
+- #4027 — register memory_session_id once (NULL-only); keep first id so sync outbox stops amplifying
+
+## [13.24.16] - 2026-09-11
+
+- #3629 — fix(observer): stop writing NULL memory_session_id at generator start
+- #3640 — fix(install): write a runtime-only package.json / stop shipping dev tree-sitter grammars into the marketplace
+- #3631 — fix(chroma): classify a dead-transport handshake as ChromaUnavailableError
+
 ## [13.25.3] - 2026-09-21
 
 - #4166 — security: harden unauthenticated settings writes and telemetry error scrubbing (reported privately by Theon Alleyne)
