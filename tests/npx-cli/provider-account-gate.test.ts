@@ -51,8 +51,17 @@ describe('install flow wiring', () => {
     const summaryEnd = source.indexOf(';', summaryStart);
     const summary = source.slice(summaryStart, summaryEnd);
     expect(summary).toContain('const accountStatus = oauthPairing');
-    expect(summary).not.toContain('providerNeedsAccount');
-    expect(summary).toContain("options.providerSource === 'persisted'");
+    // Order matters: the pairing decides first, then a provider that needs no
+    // account reports "not required" before the persisted branch can call a
+    // local claude/host config a kept account.
+    const pairingIdx = summary.indexOf('oauthPairing');
+    const noAccountIdx = summary.indexOf('!providerNeedsAccount(options.provider)');
+    const persistedIdx = summary.indexOf("options.providerSource === 'persisted'");
+    expect(pairingIdx).toBeGreaterThan(-1);
+    expect(noAccountIdx).toBeGreaterThan(pairingIdx);
+    expect(persistedIdx).toBeGreaterThan(noAccountIdx);
+    expect(summary.slice(noAccountIdx, persistedIdx)).toContain("'Not required (local provider)'");
+    expect(summary.slice(persistedIdx)).toContain("'Kept existing account (no login this run)'");
   });
 
   it('refuses CMEM Pro enrollment without a pairing', () => {

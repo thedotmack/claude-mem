@@ -1515,8 +1515,10 @@ export async function startInstallerOAuthPairing(
     let body: unknown;
     try {
       body = await response.json();
-    } catch {
-      lastStartFailure = 'bad_body';
+    } catch (error: unknown) {
+      // The request timer can fire while the body is still streaming; that is
+      // the same timeout as a stalled connect, not a malformed response.
+      lastStartFailure = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'bad_body';
       return null;
     }
     const pairing = parseInstallerOAuthStartBody(body);
@@ -2049,13 +2051,16 @@ export function validateNonInteractiveProvider(
         const persistedKeyName = persistedProvider === 'gemini'
           ? 'CLAUDE_MEM_GEMINI_API_KEY'
           : 'CLAUDE_MEM_OPENROUTER_API_KEY';
-        const persistedKey = String(persisted[persistedKeyName] ?? '').trim();
+        // The worker reads the same key from the environment ahead of
+        // settings.json, so an env-only key is a working configuration. It is
+        // consulted here for validation only and is never written to disk.
+        const persistedKey = String(persisted[persistedKeyName] ?? process.env[persistedKeyName] ?? '').trim();
         if (!persistedKey) {
           installerError(ErrorSeverity.ABORT, {
             component: 'provider-credentials',
             phase: 'non-interactive-validation',
-            cause: new Error(`The configured ${persistedProvider} provider has no API key saved, so a non-interactive run cannot keep it.`),
-            remediation: `Save ${persistedKeyName} in ~/.claude-mem/settings.json, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
+            cause: new Error(`The configured ${persistedProvider} provider has no API key saved or exported, so a non-interactive run cannot keep it.`),
+            remediation: `Save ${persistedKeyName} in ~/.claude-mem/settings.json or export it in the environment, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
           }, summary);
         }
       }
@@ -2439,12 +2444,18 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const hasFailures = summary.failedIDEs.length > 0;
   const installStatus = hasFailures ? 'Installation Partial' : 'Installation Complete';
   // Keyed on whether a pairing actually ran, not on the provider class: a
-  // persisted account-backed provider skips login and must not claim it.
+  // persisted account-backed provider skips login and must not claim it. A
+  // persisted claude/host provider holds no claude-mem account at all, so it
+  // reports "not required" rather than a kept account.
   const accountStatus = oauthPairing
     ? 'OAuth login complete'
-    : options.providerSource === 'persisted'
-      ? 'Kept existing account (no login this run)'
-      : (options.provider === 'host' ? 'Not required (host observer)' : 'Not required (local provider)');
+    : options.provider === 'host'
+      ? 'Not required (host observer)'
+      : !providerNeedsAccount(options.provider)
+        ? 'Not required (local provider)'
+        : options.providerSource === 'persisted'
+          ? 'Kept existing account (no login this run)'
+          : 'No login this run';
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,

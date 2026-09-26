@@ -161,6 +161,23 @@ describe('installer OAuth start failure classification', () => {
     expect(lastOAuthStartFailure()).toBe('timeout');
   });
 
+  it('labels an abort that fires while the 2xx body is still streaming timeout, not bad_body', async () => {
+    expect(await withFetch((init) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"pairing_id":'));
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            controller.error(err);
+          });
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } }));
+    }, { timeoutMs: 20 })).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('timeout');
+  });
+
   it('clears the failure and sends the deferred source on success', async () => {
     const seen: string[] = [];
     const pairing = await withFetch(async (init) => {

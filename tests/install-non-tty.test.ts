@@ -109,8 +109,12 @@ describe('Install Non-TTY Support', () => {
       const persistedAssign = installSource.indexOf("options.providerSource = 'persisted'", fnStart);
       const branch = installSource.slice(fnStart, persistedAssign);
       expect(branch).toContain("component: 'provider-credentials'");
-      expect(branch).toContain('const persistedKey = String(persisted[persistedKeyName] ?? \'\').trim();');
+      // An env-only key is a working configuration (the worker reads the same
+      // env var ahead of settings.json), so it must satisfy the check without
+      // ever being copied to disk.
+      expect(branch).toContain('const persistedKey = String(persisted[persistedKeyName] ?? process.env[persistedKeyName] ?? \'\').trim();');
       expect(branch).toContain('if (!persistedKey) {');
+      expect(branch).not.toContain('mergeSettings');
       // The cmem gateway rejection stays on the explicit-flag path only.
       expect(branch).not.toContain('configuredCmemKey');
     });
