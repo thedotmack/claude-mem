@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.28.0] - 2026-09-26
+
+## Non-interactive installs now finish, and capture the signup
+
+`npx claude-mem install` run without a TTY (an AI agent, CI, a script) used to stop on "provider must be explicit". It now completes on its own and still gives the user a way to sign in afterwards.
+
+### Installer
+
+- **Provider resolves instead of aborting.** A fresh non-interactive install with no `--provider` defaults to your Anthropic plan (local memory). An existing config keeps its saved provider, so `npx claude-mem update` never flips a CMEM Pro install to something else.
+- **Saved personal providers are validated, not assumed.** A kept `gemini` / `openrouter` provider needs a usable key: saved in `~/.claude-mem/settings.json`, or exported in the environment. A saved CMEM gateway config still requires its saved key, because the worker locks that tuple to the key on disk (an exported replacement base URL and key together are accepted).
+- **Deferred sign-in link.** Every non-interactive install that skipped sign-in prints an optional sign-in link as its last line, after the success line, so an agent relaying the output can show it to the user. It is best-effort, never changes the exit status, and is skipped when `CI` is set.
+- **30-minute browser sign-in wait.** Interactive OAuth polling now honours the pairing's `expires_in` (capped at 30 minutes; 4 minutes when the server reports none) instead of a fixed short budget.
+- **Persisted providers skip the blocking OAuth gate.** A non-interactive run that reuses a saved account-backed provider no longer opens a browser and polls until the pairing expires.
+- **Accurate install summary.** The `Account:` line reflects whether a login actually ran: `OAuth login complete`, `Kept existing account (no login this run)`, or `Not required (local provider / host observer)`.
+- **Provider error labels.** OAuth start failures are classified as `http_error` / `network` / `timeout` / `bad_body`; an abort that fires while the 2xx body is still streaming is a `timeout`, not `bad_body`.
+
+### Telemetry
+
+- New events: `installer_oauth_start_failed` (`outcome`, `interactive`, `phase`: login / deferred) and `installer_oauth_deferred` (`interactive`, always `false`).
+- `install_completed` gains `provider_source`: `flag` / `default` / `persisted` / `prompt`.
+- `installer_oauth_timeout` gains `phase` (login / enrollment).
+- The installer scrubber drops persisted key values before any event leaves the machine.
+
+### Privacy note
+
+Local installs contact cmem.ai once, at signup, to create the sign-in link. Nothing else is sent to cmem.ai. Product telemetry is a separate, opt-out channel (`npx claude-mem telemetry`). The public docs, the `/how-it-works` skill, and the installer summary line now all say this plainly.
+
+### Docs
+
+- Installation, CMEM Pro headless, Cursor, and Telemetry pages updated for the non-interactive flow, the deferred link, and the new events.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.27.1...v13.28.0
+
 ## [13.27.1] - 2026-09-26
 
 ## Fixes

@@ -1104,6 +1104,14 @@ async function promptProvider(
     log.info('Configured claude-mem to use your logged-in Claude SDK account.');
   };
 
+  // A provider reused from settings on a non-interactive run is already fully
+  // configured. Re-running the claude branch would call useSubscriptionAuth(),
+  // which blanks cloud-sync and the Pro memory key — a persisted Pro config
+  // must survive a non-TTY `npx claude-mem update` untouched.
+  if (options.providerSource === 'persisted' && options.provider) {
+    return options.provider;
+  }
+
   let selectedProvider: ProviderChoice;
   if (options.provider) {
     selectedProvider = options.provider;
@@ -1111,6 +1119,7 @@ async function promptProvider(
     if (!isInteractive) {
       throw new Error('Non-interactive provider validation did not run.');
     }
+    options.providerSource = 'prompt';
     const labels = buildProviderLabels();
 
     // Multiselect gives both choices square controls. Exactly one provider is
@@ -1330,8 +1339,14 @@ function nonEmptyTrimmedString(value: unknown): string | null {
 }
 
 const OAUTH_START_TIMEOUT_MS = 10_000;
+// The optional end-of-install sign-in offer must not hold a finished install
+// hostage to a stalled cmem.ai: give up well before the blocking login would.
+const OAUTH_DEFERRED_START_TIMEOUT_MS = 3_000;
 const OAUTH_POLL_TIMEOUT_MS = 10_000;
+// Fallback budget when the server does not report `expires_in`. The server
+// pairing lives 30 minutes; polling past that only yields `gone`.
 const OAUTH_POLL_BUDGET_MS = 240_000;
+const OAUTH_POLL_BUDGET_MAX_MS = 30 * 60 * 1000;
 const OAUTH_DEFAULT_POLL_INTERVAL_S = 3;
 
 type InstallerPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
@@ -1344,6 +1359,12 @@ export interface InstallerOAuthPairing {
   authorizationUrl: string;
   checkoutUrl: string;
   pollIntervalMs: number;
+  /**
+   * Absolute epoch ms after which polling stops, derived from the server's
+   * `expires_in` at parse time and clamped to OAUTH_POLL_BUDGET_MAX_MS.
+   * Undefined when the server did not report one (fallback budget applies).
+   */
+  expiresAt?: number;
   /** Defensive compatibility for a server that returns ready during login. */
   delivered?: TrialReadyResult;
 }
@@ -1405,6 +1426,7 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
     authorization_url?: unknown;
     checkout_url?: unknown;
     poll_interval?: unknown;
+    expires_in?: unknown;
   };
   const pairingId = nonEmptyTrimmedString(b.pairing_id);
   const secret = nonEmptyTrimmedString(b.secret);
@@ -1443,6 +1465,11 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
       ? Math.min(Math.max(b.poll_interval, 1), 30)
       : OAUTH_DEFAULT_POLL_INTERVAL_S;
 
+  const expiresAt =
+    typeof b.expires_in === 'number' && Number.isFinite(b.expires_in) && b.expires_in > 0
+      ? Date.now() + Math.min(b.expires_in * 1000, OAUTH_POLL_BUDGET_MAX_MS)
+      : undefined;
+
   return {
     pairingId,
     secret,
@@ -1450,23 +1477,55 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
     authorizationUrl: authorizationUrl.toString(),
     checkoutUrl: checkoutUrl.toString(),
     pollIntervalMs: pollIntervalS * 1000,
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
   };
 }
 
+export type OAuthStartFailure = 'http_error' | 'network' | 'timeout' | 'bad_body';
+
+// Why the most recent startInstallerOAuthPairing() returned null. A closed enum
+// for the installer_oauth_start_failed telemetry event — never a URL, status
+// text, or error message.
+let lastStartFailure: OAuthStartFailure | null = null;
+export function lastOAuthStartFailure(): OAuthStartFailure | null {
+  return lastStartFailure;
+}
+
 /** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
-export async function startInstallerOAuthPairing(): Promise<InstallerOAuthPairing | null> {
+export async function startInstallerOAuthPairing(
+  opts: { source?: string; timeoutMs?: number } = {},
+): Promise<InstallerOAuthPairing | null> {
+  const source = opts.source ?? 'npx-installer';
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), OAUTH_START_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? OAUTH_START_TIMEOUT_MS);
+  lastStartFailure = null;
   try {
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: 'npx-installer', device_name: hostname() }),
+      body: JSON.stringify({ source, device_name: hostname() }),
       signal: controller.signal,
     });
-    if (!response.ok) return null;
-    return parseInstallerOAuthStartBody(await response.json());
-  } catch {
+    if (!response.ok) {
+      lastStartFailure = 'http_error';
+      return null;
+    }
+    // A 2xx with unparseable JSON is a server-response problem, not a
+    // connection failure; keep it out of the `network` bucket.
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (error: unknown) {
+      // The request timer can fire while the body is still streaming; that is
+      // the same timeout as a stalled connect, not a malformed response.
+      lastStartFailure = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'bad_body';
+      return null;
+    }
+    const pairing = parseInstallerOAuthStartBody(body);
+    if (!pairing) lastStartFailure = 'bad_body';
+    return pairing;
+  } catch (error: unknown) {
+    lastStartFailure = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'network';
     return null;
   } finally {
     clearTimeout(timer);
@@ -1640,7 +1699,10 @@ async function waitForInstallerPairing(
 
   try {
     let consecutiveFailures = 0;
-    while (Date.now() - startedAt < OAUTH_POLL_BUDGET_MS) {
+    // The deadline belongs to the pairing, not the phase: login and enrollment
+    // share one pairing, so both poll until the server's own expiry.
+    const deadline = pairing.expiresAt ?? (startedAt + OAUTH_POLL_BUDGET_MS);
+    while (Date.now() < deadline) {
       if (cancelled) return null;
       const result = await pollInstallerPairingOnce(pairing);
       if (cancelled) return null;
@@ -1742,6 +1804,12 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
   spinner?.start('Starting secure OAuth login…');
   const pairing = await startInstallerOAuthPairing();
   if (!pairing) {
+    await captureCliEvent('installer_oauth_start_failed', {
+      version,
+      outcome: lastOAuthStartFailure() ?? 'network',
+      interactive: isInteractive,
+      phase: 'login',
+    });
     spinner?.stop(styleText('red', 'Could not start OAuth login.'));
     log.error('OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
     return null;
@@ -1758,6 +1826,44 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
 
   const completed = await completeInstallerOAuthLogin(pairing, version);
   return completed ? pairing : null;
+}
+
+/**
+ * Best-effort, non-blocking sign-in offer for non-interactive installs that
+ * skipped login (provider needs no account). Agents run `npx claude-mem install`
+ * in non-TTY shells; the blocking OAuth step cannot run there, so the install
+ * completes and the login-only link is printed last for the agent to relay.
+ *
+ * Never polls, never opens a browser, never prints the device code or the
+ * checkout URL, and never touches exit status. Skipped under CI. Not gated on
+ * the do-not-track env var: only telemetry is, and captureCliEvent already honors it.
+ * The server ignores `source` today and will allowlist it separately.
+ */
+export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<void> {
+  if (isInteractive) return;
+  if (providerNeedsAccount(options.provider)) return;
+  if (process.env.CI) return;
+
+  const pairing = await startInstallerOAuthPairing({
+    source: 'npx-installer-deferred',
+    timeoutMs: OAUTH_DEFERRED_START_TIMEOUT_MS,
+  });
+  if (!pairing) {
+    await captureCliEvent('installer_oauth_start_failed', {
+      version,
+      outcome: lastOAuthStartFailure() ?? 'network',
+      interactive: false,
+      phase: 'deferred',
+    });
+    return;
+  }
+
+  // Telemetry first so that, in CLAUDE_MEM_TELEMETRY_DEBUG=1 mode, its stderr
+  // line cannot land after the relay instruction an agent reads last.
+  await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
+  log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
+  log.info(`Sign-in link: ${pairing.authorizationUrl}`);
+  log.info('AGENT: show this link to the user so they can finish signing in. Do not open it yourself; the install is already complete.');
 }
 
 function noteDeviceCode(pairing: InstallerOAuthPairing): void {
@@ -1859,6 +1965,14 @@ export function providerNeedsAccount(provider: InstallOptions['provider']): bool
 export interface InstallOptions {
   ide?: string;
   provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
+  /**
+   * How `provider` was decided. `flag` for an explicit `--provider` (and the
+   * grok-bot implicit cmem default set in index.ts), `default` when a fresh
+   * non-interactive run fell back to claude, `persisted` when a non-interactive
+   * run reused the provider already in settings, `prompt` for the interactive
+   * multiselect. Reported on install_completed as `provider_source`.
+   */
+  providerSource?: 'flag' | 'default' | 'persisted' | 'prompt';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -1911,19 +2025,64 @@ async function requireWorkerStopped(
   }
 }
 
-function validateNonInteractiveProvider(
+/** Exported for the non-interactive contract tests; not part of the CLI surface. */
+export function validateNonInteractiveProvider(
   options: InstallOptions,
   summary: InstallSummary,
 ): void {
   if (isInteractive) return;
 
   if (!options.provider) {
-    installerError(ErrorSeverity.ABORT, {
-      component: 'provider-selection',
-      phase: 'non-interactive-validation',
-      cause: new Error('A provider must be explicit when stdin is not interactive.'),
-      remediation: 'Re-run with `--provider claude`, or run the installer in an interactive terminal to compare CMEM Pro and local benefits.',
-    }, summary);
+    // No `--provider` on a non-TTY run. Aborting here taught agents to re-run
+    // with `--provider claude`, which reached the same place with more friction,
+    // so the missing flag now resolves instead of failing.
+    //
+    // A persisted provider wins: `npx claude-mem update` calls this path with no
+    // options, and defaulting an existing Pro (openrouter) config to claude would
+    // run useSubscriptionAuth() and wipe cloud sync. A persisted personal
+    // provider still needs a non-empty key, or the install would report success
+    // with a worker that cannot talk to its provider. Unlike the explicit-flag
+    // check below, a cmem gateway URL is accepted here: a persisted Pro config
+    // keeps its memory key in CLAUDE_MEM_OPENROUTER_API_KEY by design.
+    const persisted = readPersistedInstallerSettings();
+    const persistedProvider = persisted.CLAUDE_MEM_PROVIDER;
+    if (persistedProvider === 'claude' || persistedProvider === 'gemini' || persistedProvider === 'openrouter') {
+      if (persistedProvider !== 'claude') {
+        const persistedKeyName = persistedProvider === 'gemini'
+          ? 'CLAUDE_MEM_GEMINI_API_KEY'
+          : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+        const persistedKey = String(persisted[persistedKeyName] ?? '').trim();
+        // The worker reads a personal key from the environment ahead of
+        // settings.json, so an env-only key is a working configuration; it is
+        // consulted here for validation only and never written to disk. A
+        // persisted cmem gateway tuple is the exception: the worker locks it to
+        // the saved key and ignores a key-only override, so that key must be
+        // on disk. An exported base URL unlocks the tuple (the worker then runs
+        // on the exported URL and key), so the lock is mirrored exactly:
+        // gateway URL on disk AND no base-URL override in the environment.
+        const persistedCmemGateway = persistedProvider === 'openrouter'
+          && isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))
+          && !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');
+        const envKey = persistedCmemGateway ? '' : String(process.env[persistedKeyName] ?? '').trim();
+        if (!persistedKey && !envKey) {
+          installerError(ErrorSeverity.ABORT, {
+            component: 'provider-credentials',
+            phase: 'non-interactive-validation',
+            cause: new Error(`The configured ${persistedProvider} provider has no API key saved${persistedCmemGateway ? '' : ' or exported'}, so a non-interactive run cannot keep it.`),
+            remediation: persistedCmemGateway
+              ? `Save ${persistedKeyName} in ~/.claude-mem/settings.json (the cmem gateway ignores an exported key), pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`
+              : `Save ${persistedKeyName} in ~/.claude-mem/settings.json or export it in the environment, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
+          }, summary);
+        }
+      }
+      options.provider = persistedProvider;
+      options.providerSource = 'persisted';
+      log.info(`Non-interactive run: keeping the configured provider (${persistedProvider}).`);
+      return;
+    }
+    options.provider = 'claude';
+    options.providerSource = 'default';
+    log.info('No --provider given on a non-interactive run: defaulting to your Anthropic plan (local memory).');
   }
 
   if (options.provider === 'host') return;
@@ -2202,17 +2361,27 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   // Login is account-first for every install EXCEPT one that has already named
-  // a provider needing no claude-mem account. `--provider claude` runs memory
-  // on the user's own Anthropic plan and never touches cmem.ai, so gating it on
-  // browser OAuth made an unrelated cmem.ai outage fail an install that could
-  // have completed offline — and there is no account question left to ask,
-  // because the flag already answered it.
+  // a provider needing no claude-mem account. `--provider claude` (or the
+  // non-interactive default to claude) runs memory on the user's own Anthropic
+  // plan, so gating it on browser OAuth made an unrelated cmem.ai outage fail
+  // an install that could have completed offline — and there is no account
+  // question left to ask, because the provider already answered it. Such a
+  // non-interactive install still prints an optional, non-blocking sign-in
+  // link at the very end (offerDeferredLogin).
   //
-  // Deliberately keyed on the explicit flag, not on reachability: a silent
+  // Deliberately keyed on the resolved provider, not on reachability: a silent
   // fallback to a local install whenever cmem.ai is down would quietly change
-  // what the user gets. This only skips a step the user's own flag made moot.
+  // what the user gets. This only skips a step the provider choice made moot.
+  //
+  // A provider reused from settings on a non-interactive run (`persisted`) is
+  // exempt too, even when it is account-backed: the machine already holds its
+  // account and credentials, and promptProvider returns early for it without
+  // enrolling anything. Running the blocking browser login here would hang an
+  // agent shell polling for up to the pairing TTL and then exit 1.
   let oauthPairing: InstallerOAuthPairing | null = null;
-  if (providerNeedsAccount(options.provider)) {
+  if (options.providerSource === 'persisted') {
+    log.info(`Skipping claude-mem login: keeping the existing account and ${options.provider} configuration.`);
+  } else if (providerNeedsAccount(options.provider)) {
     oauthPairing = await requireInstallerOAuthLogin(version);
     if (!oauthPairing) {
       if (isInteractive) p.cancel('OAuth login is required to finish installation.');
@@ -2222,7 +2391,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
-      : '--provider claude runs memory on your own Anthropic plan.';
+      : options.providerSource === 'default'
+        ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
+        : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);
@@ -2283,9 +2454,19 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // stale local count.
   const hasFailures = summary.failedIDEs.length > 0;
   const installStatus = hasFailures ? 'Installation Partial' : 'Installation Complete';
-  const accountStatus = providerNeedsAccount(options.provider)
+  // Keyed on whether a pairing actually ran, not on the provider class: a
+  // persisted account-backed provider skips login and must not claim it. A
+  // persisted claude/host provider holds no claude-mem account at all, so it
+  // reports "not required" rather than a kept account.
+  const accountStatus = oauthPairing
     ? 'OAuth login complete'
-    : (options.provider === 'host' ? 'Not required (host observer)' : 'Not required (local provider)');
+    : options.provider === 'host'
+      ? 'Not required (host observer)'
+      : !providerNeedsAccount(options.provider)
+        ? 'Not required (local provider)'
+        : options.providerSource === 'persisted'
+          ? 'Kept existing account (no login this run)'
+          : 'No login this run';
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
@@ -2412,7 +2593,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine.`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link; nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
     ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
@@ -2437,6 +2618,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } else {
       console.log('\nclaude-mem installed successfully!');
     }
+    // Last line of a non-interactive install so an agent relaying the output
+    // sees the link after the success line. Nothing here may change the exit
+    // status or throw past the summary.
+    try {
+      await offerDeferredLogin(options, version);
+    } catch {
+      // best-effort only
+    }
   }
 
   // After promptTelemetryOptIn so a just-made consent choice is honored.
@@ -2445,6 +2634,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   await captureCliEvent('install_completed', {
     ide: selectedIDEs.join(','),
     provider: selectedProvider,
+    provider_source: options.providerSource ?? 'prompt',
     runtime_mode: selectedRuntime,
     is_update: alreadyInstalled,
     outcome: failedIDEs.length > 0 ? 'partial' : 'ok',
