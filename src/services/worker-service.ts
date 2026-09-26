@@ -77,7 +77,7 @@ import {
 import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
-import { notifyGrokBotIndex } from './integrations/GrokBotIndexWriter.js';
+import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
@@ -724,6 +724,8 @@ export class WorkerService implements WorkerRef {
       // Seed Grok Bot Memory INDEX files from current observations so seats
       // do not wait for the next store before the mid-attach file exists.
       notifyGrokBotIndex();
+      // Standing line / project-map edits must reach idle seats too.
+      watchGrokBotIndexSettings();
 
       if (this.chromaMcpManager) {
         ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {

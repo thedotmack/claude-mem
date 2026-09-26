@@ -16,6 +16,7 @@ import {
   type GrokBotIndexObservation,
 } from '../../src/services/integrations/grok-bot-index-format.js';
 import {
+  checkGrokBotIndexSettings,
   loadGrokBotIndexConfig,
   projectsForAgent,
   refreshGrokBotIndexes,
@@ -298,6 +299,29 @@ describe('seat mapping', () => {
     writeSeat(root, PRIORITIZER, 'Prioritizer');
     writeFileSync(path.join(root, 'transcript-watch.json'), JSON.stringify({ watches: [] }));
     expect(projectsForAgent(makeCfg(root), PRIORITIZER, 'Prioritizer')).toEqual(['cmem_work_prioritizer']);
+  });
+});
+
+describe('checkGrokBotIndexSettings', () => {
+  it('flags standing line and project map edits so idle seats refresh', () => {
+    const settingsPath = path.join(tempRoot(), 'settings.json');
+    const write = (extra: Record<string, string>) => writeFileSync(settingsPath, JSON.stringify({
+      CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false',
+      ...extra,
+    }));
+    write({});
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(false); // first read only records
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(false);
+    write({ CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: 'Use the self-save skill.' });
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(true);
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(false);
+    write({
+      CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: 'Use the self-save skill.',
+      CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: `${ORIFICE}=Orifice`,
+    });
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(true);
+    write({ CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: `${ORIFICE}=Orifice` });
+    expect(checkGrokBotIndexSettings(settingsPath)).toBe(true); // cleared line
   });
 });
 
