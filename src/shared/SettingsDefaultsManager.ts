@@ -19,6 +19,25 @@ import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 // the feature dead on arrival for every pre-existing install.
 const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 
+/** Pinned workers.dev hub from the Cloudflare SyncHub era. */
+const LEGACY_CLOUD_SYNC_HUB_HOST = 'sync-hub.black-pond-afbb.workers.dev';
+/** Canonical Pro hub after the Fly cutover. */
+const CANONICAL_CLOUD_SYNC_HUB_URL = 'https://sync.cmem.ai';
+
+function migratedCloudSyncHubUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  try {
+    if (new URL(trimmed).hostname === LEGACY_CLOUD_SYNC_HUB_HOST) {
+      return CANONICAL_CLOUD_SYNC_HUB_URL;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
@@ -410,6 +429,24 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with the in-memory migration even if the write fails
+        }
+      }
+
+      const rewrittenHubUrl = migratedCloudSyncHubUrl(flatSettings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL);
+      if (rewrittenHubUrl !== null) {
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: rewrittenHubUrl,
+        };
+
+        try {
+          writeJsonFileAtomic(
+            settingsPath,
+            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+          );
+          console.warn('[SETTINGS] Migrated cloud sync hub URL off the legacy workers.dev host:', settingsPath);
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
         }
       }
 
