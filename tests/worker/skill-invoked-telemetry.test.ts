@@ -289,4 +289,43 @@ describe('skill_invoked from session-init slash prompts', () => {
     expect(response.ok).toBe(true);
     expect(skillInvokedCalls()).toHaveLength(0);
   });
+
+  it('does not persist or number the media prompt placeholder', async () => {
+    const initialResponse = await postInit({
+      contentSessionId: 'promptless-session',
+      project: 'claude-mem',
+      prompt: '[media prompt]',
+      platformSource: 'cursor',
+    });
+    const initialResult = await initialResponse.json() as {
+      sessionDbId: number;
+      promptNumber: number;
+      skipped: boolean;
+      reason: string;
+    };
+
+    expect(initialResponse.ok).toBe(true);
+    expect(initialResult).toMatchObject({
+      promptNumber: 0,
+      skipped: true,
+      reason: 'no_prompt',
+    });
+    expect(store!.getSessionById(initialResult.sessionDbId)?.user_prompt).toBe('');
+    expect(store!.getPromptNumberFromUserPrompts('promptless-session', initialResult.sessionDbId)).toBe(0);
+
+    const realPromptResponse = await postInit({
+      contentSessionId: 'promptless-session',
+      project: 'claude-mem',
+      prompt: 'the first real prompt',
+      platformSource: 'cursor',
+    });
+    const realPromptResult = await realPromptResponse.json() as {
+      sessionDbId: number;
+      promptNumber: number;
+    };
+
+    expect(realPromptResponse.ok).toBe(true);
+    expect(realPromptResult.promptNumber).toBe(1);
+    expect(store!.getUserPrompt('promptless-session', 1, realPromptResult.sessionDbId)).toBe('the first real prompt');
+  });
 });
