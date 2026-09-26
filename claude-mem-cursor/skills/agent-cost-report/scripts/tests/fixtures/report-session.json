@@ -1,0 +1,662 @@
+{
+ "attention": [],
+ "behavior": {
+  "author_tags": {
+   "bot": 0,
+   "human": 1,
+   "unknown": 0
+  },
+  "classifier": {
+   "cap_usd": 2.0,
+   "model": null,
+   "note": "off by default (G8); enable with --classify",
+   "ran": false,
+   "sampled_n": 0,
+   "spend_usd": null
+  },
+  "coverage": {
+   "box": "measured",
+   "grok_bot": "unavailable",
+   "mac": "unavailable (no Phase 5 export)"
+  },
+  "default_model": "anthropic/claude-sonnet-5",
+  "episodes": [],
+  "episodes_status": "measured",
+  "high_turns_n": 0,
+  "human_message_counts": "computed from human-tagged turns",
+  "label_sources": {},
+  "mistake_clusters": [],
+  "not_in_mistakes_line": "session-level keyword failure signals with no turn span stay in Details (2B.9)",
+  "outbound": {
+   "alex_minutes": null,
+   "incidents": 0,
+   "recipients": 0
+  },
+  "patterns": [
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Unnecessary escalation",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P1_invented_gates",
+    "low_usd": 0.0,
+    "name": "Invented human gates / asking instead of doing",
+    "never_answered_n": 0,
+    "overlaps": true,
+    "placement": "tile",
+    "source_ref": "metrics-ideas.md:16",
+    "unconfirmed_n": 0,
+    "unmeasured_n": 0,
+    "waiting_minutes": 0
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Regression",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P2_broke_things",
+    "low_usd": 0.0,
+    "name": "Broke working things",
+    "overlaps": true,
+    "placement": "tile",
+    "source_ref": "metrics-ideas.md:17",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "high",
+    "count": 0,
+    "count_basis": "heuristic",
+    "default_model": "anthropic/claude-sonnet-5",
+    "delta_usd": 0.0,
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Model thrash",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P3_wrong_model",
+    "low_usd": 0.0,
+    "model_not_logged": 0,
+    "name": "Wrong or expensive model",
+    "overlaps": true,
+    "placement": "tile",
+    "source_ref": "metrics-ideas.md:18",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Suboptimal path",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P4_over_engineering",
+    "low_usd": 0.0,
+    "name": "Over-engineering / overthinking",
+    "overlaps": true,
+    "placement": "details",
+    "source_ref": "metrics-ideas.md:19",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Missed requirement",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P5_not_asked",
+    "low_usd": 0.0,
+    "name": "Did something not asked",
+    "overlaps": true,
+    "placement": "details",
+    "source_ref": "metrics-ideas.md:20",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Premature completion",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P6_fake_output",
+    "low_usd": 0.0,
+    "name": "Fake or invented output",
+    "overlaps": true,
+    "placement": "tile",
+    "source_ref": "metrics-ideas.md:21",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Premature completion",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P7_false_done",
+    "low_usd": 0.0,
+    "name": "Skipped steps / false done",
+    "overlaps": true,
+    "placement": "tile",
+    "source_ref": "metrics-ideas.md:22",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Suboptimal path",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P8_wrong_tool",
+    "low_usd": 0.0,
+    "name": "Wrong tool, account, or contact",
+    "overlaps": true,
+    "placement": "details",
+    "source_ref": "metrics-ideas.md:23",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "high",
+    "cost_note": "incidents \u00d7 recipients, never dollars",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Unauthorized action",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": null,
+    "incidents": 0,
+    "key": "P9_bad_outbound",
+    "low_usd": null,
+    "name": "Bad outbound",
+    "overlaps": true,
+    "placement": "details",
+    "recipients": 0,
+    "source_ref": "metrics-ideas.md:24",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P10_memory_loss",
+    "low_usd": 0.0,
+    "name": "Memory or rule loss",
+    "overlaps": true,
+    "placement": "details",
+    "source_ref": "metrics-ideas.md:25",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "cost_note": "Alex-minutes = words \u00f7 200; dollars only for a clarification round trip",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P11_jargon",
+    "low_usd": 0.0,
+    "name": "Jargon / walls of text",
+    "overlaps": true,
+    "placement": "details",
+    "source_ref": "metrics-ideas.md:26",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "medium",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "base detector; M attributes when it can",
+    "examples": [],
+    "failure_type": "",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "P12_unclear",
+    "low_usd": 0.0,
+    "name": "Unclear cause",
+    "overlaps": true,
+    "placement": "details",
+    "source_ref": "metrics-ideas.md:27",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "confidence": "high",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "error_chains": 0,
+    "examples": [],
+    "failure_type": "Recovery after miss",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "S1_tool_errors",
+    "loops": 0,
+    "low_usd": 0.0,
+    "name": "Tool errors and retries",
+    "overlaps": true,
+    "placement": "details",
+    "recovered_usd": 0.0,
+    "source_ref": "plan 2B.3 supporting metric",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   },
+   {
+    "agent_minutes": null,
+    "alex_minutes": 0,
+    "availability_unknown_n": 0,
+    "confidence": "medium",
+    "cost_note": "text only, not priced",
+    "count": 0,
+    "count_basis": "heuristic",
+    "detection": "H",
+    "examples": [],
+    "failure_type": "Hedging",
+    "high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+    "high_usd": 0.0,
+    "key": "S2_hedging",
+    "low_usd": 0.0,
+    "name": "Hedging",
+    "overlaps": true,
+    "placement": "details",
+    "source_ref": "plan 2B.3 supporting metric",
+    "unmeasured_n": 0,
+    "waiting_minutes": null
+   }
+  ],
+  "permission_denials": {
+   "count": 0,
+   "examples": [],
+   "note": "blocked by a rule; not priced as agent waste"
+  },
+  "prompt_rows_n": 1,
+  "rule_effectiveness": [],
+  "scan": {
+   "files_seen": 0
+  },
+  "session_tags": {},
+  "tagger_ran": true,
+  "unconfirmed": {
+   "P1_candidates": []
+  },
+  "union_high_usd": 0.0,
+  "union_low_usd": 0.0,
+  "union_turns_n": 0
+ },
+ "by_category": [
+  {
+   "active_minutes": 42.0,
+   "agent_estimated_usd": 0.09,
+   "category": "Feature",
+   "extrapolated_usd": 0.0,
+   "finished": 1,
+   "recovery_usd": 0.0,
+   "sessions": 1,
+   "wasted_usd": 0.0
+  }
+ ],
+ "by_day": [
+  {
+   "agent_calls": 2,
+   "agent_estimated_usd": 0.09,
+   "day_pt": "2026-09-18",
+   "events": 11,
+   "extrapolated_usd": 0.0,
+   "finished_outcomes": 1,
+   "no_agent_work": false,
+   "sessions_started": 1,
+   "ship_events": 1,
+   "tokens": 55200
+  }
+ ],
+ "by_device": [
+  {
+   "agent_estimated_usd": 0.09,
+   "device": "local",
+   "extrapolated_usd": 0.0,
+   "id_hash": "local",
+   "sessions": 1
+  }
+ ],
+ "by_model": [
+  {
+   "agent_estimated_usd": 0.09,
+   "cache_read": 50000,
+   "cache_write_1h": 1000,
+   "cache_write_5m": 2000,
+   "calls": 2,
+   "input": 2000,
+   "model": "claude-fable-5-1",
+   "output": 200,
+   "priced": true,
+   "prices_usd_per_mtok": {
+    "cache_read": 0.25,
+    "cache_write": 12.5,
+    "cache_write_1h": 20.0,
+    "input": 10.0,
+    "key": "anthropic/claude-fable-5.1",
+    "output": 50.0,
+    "price_source": {
+     "cache_read": "listed",
+     "cache_write": "listed",
+     "cache_write_1h": "input*2"
+    }
+   },
+   "source": "claude-code",
+   "unpriced_calls": 0
+  }
+ ],
+ "devices": [
+  {
+   "device": "local",
+   "id_hash": "local"
+  }
+ ],
+ "failure_economics": [],
+ "generated_at_pt": "2026-09-25 12:00 PT",
+ "labels": {
+  "reviewed": 0,
+  "total": 1
+ },
+ "line_items": [
+  {
+   "active_minutes": 42.0,
+   "agent_calls": 2,
+   "agent_tokens": {
+    "cache_read": 50000,
+    "cache_write_1h": 1000,
+    "cache_write_5m": 2000,
+    "input": 2000,
+    "output": 200
+   },
+   "attributed_usd": 0.09,
+   "behavior_counts": {},
+   "category": "Feature",
+   "confidence": "high",
+   "content_session_id": "cs1",
+   "cost_basis": "estimated_usage",
+   "cost_estimated": 0.09,
+   "cost_extrapolated": null,
+   "cost_measured": "unavailable",
+   "cost_x1e6": 87500,
+   "date_pt": "2026-09-18",
+   "device": [
+    "local"
+   ],
+   "evidence_ids": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "extrapolated_x1e6": 0,
+   "failure_signals": [],
+   "failure_type": "",
+   "has_transcript": true,
+   "label_source": "keyword",
+   "model": "claude-fable-5-1",
+   "model_prices_usd_per_mtok": {
+    "cache_read": 0.25,
+    "cache_write": 12.5,
+    "cache_write_1h": 20.0,
+    "input": 10.0,
+    "key": "anthropic/claude-fable-5.1",
+    "output": 50.0,
+    "price_source": {
+     "cache_read": "listed",
+     "cache_write": "listed",
+     "cache_write_1h": "input*2"
+    }
+   },
+   "notes": "shipped; 4 observations, 1 summaries, 1 prompts; tokens measured from the transcript on this box",
+   "observations": 4,
+   "observer_tokens": 12000,
+   "platform": "claude",
+   "productive_cost": 0.09,
+   "project": "claude-mem",
+   "recommended_action": "",
+   "recovery_cost": 0.0,
+   "risk_exposure": "none",
+   "scope": "session",
+   "session_ids": [
+    "m1"
+   ],
+   "session_status": "completed",
+   "ship_events": 1,
+   "ship_titles": [
+    "PR #4125 merged to main"
+   ],
+   "status": "shipped",
+   "summaries": 1,
+   "summary_ids": [
+    1
+   ],
+   "title": "implement the rollup",
+   "trivial": false,
+   "unpriced_calls": 0,
+   "wasted_cost": 0.0,
+   "work_category": "Feature",
+   "work_item_id": "WI-1",
+   "worktree": ""
+  }
+ ],
+ "observer": {
+  "basis": "ESTIMATED: observer model's own tokens (deduped per reply) x its input list price; kept separate from the agent figures above",
+  "est_usd": 0.0,
+  "models": [
+   "gemini-2.5-flash-lite"
+  ],
+  "rows_in_scope": {
+   "observations": 4,
+   "prompts": 1,
+   "summaries": 1,
+   "tool_uses": 1
+  },
+  "tokens_dedup": 12000,
+  "unpriced_tokens": {}
+ },
+ "pricing": {
+  "fetched": "2026-09-25T17:00:00-07:00",
+  "loaded_from": null,
+  "models_listed": 7,
+  "rule_1h": "explicit input_cache_write_1h when listed, else 2 x input (weekly_report.py:95)",
+  "source": "https://openrouter.ai/api/v1/models"
+ },
+ "scope": {
+  "kind": "session",
+  "project": null,
+  "session": "cs1"
+ },
+ "spend": {
+  "agent_estimated_label": "ESTIMATED",
+  "agent_estimated_usd": 0.09,
+  "agent_measured_usd": null,
+  "extrapolated_label": "EXTRAPOLATED (low confidence)",
+  "extrapolated_unmeasured_usd": 0.0,
+  "extrapolation_basis": "EXTRAPOLATED (low confidence): on this box, measured sessions cost $7.29 API-equivalent per 1M observer tokens; applied to 0 observer tokens from 0 sessions with no transcript here (remote devices). Assumes remote work looks like box work.",
+  "grok_bot_usage": {
+   "status": "unavailable"
+  },
+  "headline_label": "estimated at OpenRouter list prices from measured tokens",
+  "headline_usd": 0.09,
+  "measured_status": "unavailable",
+  "mistakes_alex_minutes": 0,
+  "mistakes_alex_minutes_known_n": 0,
+  "mistakes_basis": "same-session wasted turns, each turn once",
+  "mistakes_episodes_n": 0,
+  "mistakes_estimated_usd": 0.0,
+  "mistakes_high_label": "upper bound, likely 5\u201310\u00d7 too high (Frustration Arc)",
+  "mistakes_high_usd": 0.0,
+  "mistakes_label": "ESTIMATED",
+  "mistakes_turns_n": 0,
+  "mistakes_unmatched_usd": 0.0,
+  "mistakes_unmeasured_n": 0,
+  "observer_note_taker_est_usd": 0.0,
+  "total_estimate_usd": 0.09
+ },
+ "timeline": {
+  "mistakes_by_day": [],
+  "wins_by_day": [
+   {
+    "count": 1,
+    "day_pt": "2026-09-18",
+    "usd": null,
+    "win_ids": [
+     "W-1"
+    ]
+   }
+  ]
+ },
+ "totals": {
+  "agent_hours": 0.7,
+  "cost_per_completed_outcome": 0.09,
+  "devices": 1,
+  "finished_outcomes": 1,
+  "hours_method": "sum of gaps <=15 min between consecutive events (prompts, observations, summaries, tool calls, transcript API calls); parallel sessions add up in agent_hours but not in wall_clock_hours",
+  "projects": 1,
+  "real_work_sessions": 1,
+  "recovery_share": 0.0,
+  "recovery_usd": 0.0,
+  "repos": 1,
+  "sessions": 1,
+  "ship_events": 1,
+  "tokens": {
+   "api_calls": 2,
+   "cache_read": 50000,
+   "cache_write_1h": 1000,
+   "cache_write_5m": 2000,
+   "input": 2000,
+   "output": 200,
+   "total": 55200
+  },
+  "trivial_sessions": 0,
+  "wall_clock_hours": 0.7,
+  "waste_rate": 0.0,
+  "wasted_usd": 0.0
+ },
+ "trivial_definition": "no observations, no transcript on this box, and <1 active minute",
+ "trivial_sessions": [],
+ "unmatched_transcripts": {
+  "by_dir": {},
+  "count": 0,
+  "note": "transcripts on this box that matched no sdk_sessions row (work claude-mem never saw); counted in the totals above",
+  "sessions": [],
+  "tokens": 0,
+  "usd": 0
+ },
+ "unpriced_models": [],
+ "window": {
+  "end_epoch_ms": null,
+  "end_exclusive_pt": null,
+  "generated_at_pt": "2026-09-25 12:00 PT",
+  "partial_last_day": false,
+  "session": "cs1",
+  "start_epoch_ms": null,
+  "start_pt": null
+ },
+ "wins": {
+  "attribution_method": null,
+  "cost_status": "unmeasured",
+  "dropped": [],
+  "gh_unconfirmed": [],
+  "items": [
+   {
+    "active_minutes": null,
+    "confirmed": false,
+    "cost_basis": null,
+    "cost_label": "unmeasured (session not linked to PR)",
+    "cost_status": "unmeasured",
+    "day_pt": "2026-09-18",
+    "evidence_ids": [
+     4
+    ],
+    "key": "claude-mem#4125",
+    "kind": "pr",
+    "linked_sessions": [],
+    "project": "claude-mem",
+    "sessions": [
+     "cs1"
+    ],
+    "sessions_n": 0,
+    "sources": [
+     "ship_observation"
+    ],
+    "title": "PR #4125 merged to main",
+    "tokens": null,
+    "ts_pt": "2026-09-18T09:30-0700",
+    "turns_n": 0,
+    "url": null,
+    "usd": null,
+    "win_id": "W-1"
+   }
+  ],
+  "note": "finished line items (shipped/completed) are outcomes, not wins (G12); praise detection is a Phase 2B hook",
+  "praise_n": 0,
+  "total_attributed_usd": null,
+  "unattributed_usd": null
+ }
+}
