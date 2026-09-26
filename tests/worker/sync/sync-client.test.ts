@@ -244,6 +244,9 @@ describe('SyncClient', () => {
     client.start();
     await sleep(300); // ~15 polls at 20ms without the pause
     expect(requests).toBe(1);
+    // Forced / session-start pulls wait out the pause too.
+    await client.pullOnce({ timeoutMs: 1_000, force: true });
+    expect(requests).toBe(1);
   });
 
   it('a malformed page fails the batch without moving the cursor, then applies once fixed', async () => {

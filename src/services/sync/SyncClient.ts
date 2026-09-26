@@ -520,6 +520,9 @@ export class SyncClient {
    */
   private async pullCycle(deadlineMs: number): Promise<void> {
     if (this.pulling) return;
+    // Auth pause (401/403): every lane waits it out, including forced and
+    // session-start pulls — the same credentials cannot succeed sooner.
+    if (this.authPausedUntil > this.now()) return;
     this.pulling = true;
     try {
       let pages = 0;

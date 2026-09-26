@@ -1301,20 +1301,27 @@ export class CloudSync {
     this.poisonRejections.set(op.operation_sha256, count);
     if (count < POISON_OP_REJECTION_THRESHOLD) return null;
     if (this.poisonQuarantinesThisFlush >= MAX_POISON_QUARANTINES_PER_FLUSH) return null;
+    const reason = friendlySyncError(error.rawBody).slice(0, 500);
+    // Only drop the op from the batch once no outbox row can resend it;
+    // otherwise keep the count and let the normal backoff path rethrow.
+    if (!this.quarantineRejectedOp(op, `rejected by sync server ${count}x: ${reason}`)) return null;
     this.poisonQuarantinesThisFlush++;
     this.poisonRejections.delete(op.operation_sha256);
-    const reason = friendlySyncError(error.rawBody).slice(0, 500);
-    this.quarantineRejectedOp(op, `rejected by sync server ${count}x: ${reason}`);
     return ops.filter((_, i) => i !== index);
   }
 
-  /** Dead-letter one rejected wire op from whichever outbox holds it. */
-  private quarantineRejectedOp(op: WireOp, reason: string): void {
+  /**
+   * Dead-letter one rejected wire op from whichever outbox holds it. True when
+   * no outbox row can resend it any more (quarantined now, or already gone);
+   * false when the op could not be matched to its lane, so the caller must
+   * leave it in the batch.
+   */
+  private quarantineRejectedOp(op: WireOp, reason: string): boolean {
     let body: { kind?: unknown; id?: unknown; entity_rev?: unknown };
     try {
       body = JSON.parse(op.body) as typeof body;
     } catch {
-      return;
+      return false;
     }
     if (body.kind === 'mutation' && typeof body.id === 'string' && body.id.startsWith('mutation:')) {
       const row = this.db.prepare(`
@@ -1324,16 +1331,16 @@ export class CloudSync {
         WHERE op_uuid = ? AND (operation_sha256 IS NULL OR operation_sha256 = ?)
       `).get(body.id.slice('mutation:'.length), op.operation_sha256) as MutationOutboxRow | undefined;
       if (row) this.quarantineMutation(row, reason);
-      return;
+      return true;
     }
-    if (typeof body.id !== 'string' || typeof body.entity_rev !== 'string') return;
+    if (typeof body.id !== 'string' || typeof body.entity_rev !== 'string') return false;
     const row = this.db.prepare(`
       SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
              body, operation_sha256, deleted
       FROM sync_content_outbox
       WHERE entity_id = ? AND entity_rev = ? AND operation_sha256 = ?
     `).get(body.id, body.entity_rev, op.operation_sha256) as ContentOutboxRow | undefined;
-    if (!row) return;
+    if (!row) return true;
     const table = TABLE_BY_KIND[row.kind as RowKind];
     const tx = this.db.transaction(() => {
       this.db.prepare(`
@@ -1360,7 +1367,7 @@ export class CloudSync {
       originLocalId: row.origin_local_id,
       entityRev: row.entity_rev,
       reason,
-    });
+    });    return true;
   }
 
   /**
