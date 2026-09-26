@@ -2438,9 +2438,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // stale local count.
   const hasFailures = summary.failedIDEs.length > 0;
   const installStatus = hasFailures ? 'Installation Partial' : 'Installation Complete';
-  const accountStatus = providerNeedsAccount(options.provider)
+  // Keyed on whether a pairing actually ran, not on the provider class: a
+  // persisted account-backed provider skips login and must not claim it.
+  const accountStatus = oauthPairing
     ? 'OAuth login complete'
-    : (options.provider === 'host' ? 'Not required (host observer)' : 'Not required (local provider)');
+    : options.providerSource === 'persisted'
+      ? 'Kept existing account (no login this run)'
+      : (options.provider === 'host' ? 'Not required (host observer)' : 'Not required (local provider)');
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,

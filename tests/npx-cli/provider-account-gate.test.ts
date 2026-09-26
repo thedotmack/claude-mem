@@ -46,6 +46,13 @@ describe('install flow wiring', () => {
     expect(gate).toContain('keeping the existing account');
     // promptProvider must also short-circuit for the same source so nothing enrolls.
     expect(source).toContain("if (options.providerSource === 'persisted' && options.provider) {");
+    // And the summary must not claim a login that never ran.
+    const summaryStart = source.indexOf('const accountStatus = ');
+    const summaryEnd = source.indexOf(';', summaryStart);
+    const summary = source.slice(summaryStart, summaryEnd);
+    expect(summary).toContain('const accountStatus = oauthPairing');
+    expect(summary).not.toContain('providerNeedsAccount');
+    expect(summary).toContain("options.providerSource === 'persisted'");
   });
 
   it('refuses CMEM Pro enrollment without a pairing', () => {
