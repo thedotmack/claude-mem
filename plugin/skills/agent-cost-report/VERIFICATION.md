@@ -1,6 +1,6 @@
 # Verification — agent-cost-report rebuild (Phase 8, 2026-09-26 PT)
 
-Plan: `plans/2026-09-25-agent-cost-report-weekly.md`. Branch `work/cost-report-weekly`. All runs on the box with the read-only DB snapshot; the live DB mtime was unchanged by every run (`2026-09-26 04:56:43 -0700` before and after). 117 unit tests pass.
+Plan: `plans/2026-09-25-agent-cost-report-weekly.md`. Branch `work/cost-report-weekly`. All runs on the box with the read-only DB snapshot; the live DB mtime was unchanged by every run (`2026-09-26 04:56:43 -0700` before and after). 117 unit tests passed at Phase 8; 133 after the review round (§8.8).
 
 ## 8.1 Research window (Sep 18 → 26 PT exclusive, saved price snapshot)
 
@@ -78,6 +78,28 @@ Frustration Arc (`/workspace/frustration-arc/costs.md`): 13 episodes, 8 unmeasur
 | E091 2026-09-19 23:50 overengineering (also fake) | 23:48 episode start | P4 over-engineering | yes |
 
 6 of 6 found; 5 of 6 match a Frustration Arc category (≥5 required). All 6 are Alex-typed Mac prompts synced into the box's claude-mem, so they are `unmeasured` without the Phase 5 Mac export (Frustration Arc: 8 of 13 unmeasured). Three extra episodes were found that Frustration Arc did not list: two on Sep 18 (11:35 and 23:13, both long relayed briefs the tagger still treats as human) and two short "stop" messages on Sep 19 23:21–23:25 (P12 unclear). M01–M07 (Sep 21–25) are outside the report's sources (rebuilt from rule files and an agent-written transcript; the R2 filter drops relayed text and R1 retention is missing) and are not counted, as the plan specifies. Low dollars: all found episodes are unmeasured, so the Mac share of the mistakes line is "unmeasured", never $0; the $30.75 low figure comes from box-side detector hits (tool errors, jargon follow-ups, false-done candidates) that Frustration Arc's study did not cover.
+
+## 8.8 Re-verification after the PR #4238 review fixes (2026-09-26 06:05 PT, head 5d173e6 + `--help` fix)
+
+The Bugbot and Greptile fixes touched three inputs to the headline (usage rows clipped to the PT window, Codex token counts taken as per-event growth instead of the last cumulative total, device-export rows outside the window skipped). The Sep 18 → 26 run was repeated on the current head with the same saved prices, the same precision file and the Phase 8 DB snapshot (`/tmp/acr-weekly/p8/snapshot.db`, backup-copied to `p8b/`); transcripts were re-collected because the Codex reader changed. Live DB mtime unchanged before and after (`2026-09-26 06:02:18`).
+
+| Number | Phase 8 (05:03) | After fixes (p8b) | Research target |
+|---|---|---|---|
+| box estimated USD | $216.68 | $216.68 | $109.25 |
+| Mac extrapolated USD | $67.35 | $67.35 | $54.69 |
+| note-taker USD | $9.30 | $9.30 | $5.84 |
+| total estimate | $284.03 | $284.03 | $163.94 |
+| sessions / finished / ships | 98 / 40 / 10 | 98 / 40 / 10 | 80 / 26 / 5 |
+| measured tokens | 147,412,369 | 147,412,369 | 81,783,140 |
+| mistakes low / high | $30.75 / $32.30 | $30.75 / $32.30 | Frustration Arc $6.70 / $14.43 |
+| behavior episodes / unmeasured | 9 / 9 | 9 / 9 | Frustration Arc 13 / 8 |
+
+Every dollar, token and count figure is unchanged, so the drift against the research targets is still data growth (§8.1) and the Frustration Arc comparison in §8.7 stands (6 of 6 listed episodes found, M01–M07 outside the sources). What did move, none of it in the headline:
+
+- `usage.json` rows 1,409 → 1,444: the four Codex sessions now contribute 39 per-event rows instead of 4 last-cumulative rows, same 2,803,076 tokens and $4.64. All four started inside the window, so nothing was subtracted; Sep 24 shows 538 API calls instead of 503 (Sep 25 unchanged). `window.usage_rows_outside_window = 0`, as expected for a collect run with the same window.
+- Human/bot tags 89 / 234 → 94 / 229: five prompts in interactive sessions that carried a lone agent marker later in the session (slash-command output, a pasted notice) are now tagged human; none of them starts an episode, so the mistakes line and the union are unchanged.
+- Line items carry `cost_status` (52 estimated, 58 extrapolated, 0 unmeasured: the box has a ratio); per-day `finished_outcomes` sum to the headline 40 and are recomputed by `aggregate()` after review.
+- `report.html` re-rendered from p8b: no "Measured provider spend" followed by a dollar, no cent sign, two decimals on every dollar outside excerpts, no script/link/external URL, no key material, no `$0.00 EXTRAPOLATED`.
 
 ## Gated steps not run
 

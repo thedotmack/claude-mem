@@ -155,7 +155,7 @@ def build_parser():
     r.add_argument("--classify-model", metavar="MODEL", help=argparse.SUPPRESS)
     r.add_argument("--rules-dir", metavar="DIR", help="house rule files with dated HARD headers (rule effectiveness, 2B.10)")
     r.add_argument("--measured", metavar="FILE", help="measured.json from `measure-openrouter` (default: DIR/measured.json when present)")
-    r.add_argument("--precision", metavar="FILE", help="JSON {pattern_key: precision} from the Phase 8.5 spot-check; tiles under 70% move to Details")
+    r.add_argument("--precision", metavar="FILE", help="JSON {pattern_key: precision} from the Phase 8.5 spot-check; tiles under 70%% move to Details")
     r.add_argument("--device-usage", metavar="FILE", action="append", default=[], help="device-usage-<label>.json export(s) from other machines to merge (repeatable)")
     r.set_defaults(fn=cmd_rollup)
 
