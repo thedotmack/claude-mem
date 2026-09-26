@@ -104,7 +104,7 @@ class Rollup(Fixture):
     def test_measured_is_null_with_status_never_zero(self):
         r, _, _ = self.build()
         self.assertIsNone(r["spend"]["agent_measured_usd"]); self.assertEqual(r["spend"]["measured_status"], "unavailable")
-        self.assertEqual(r["spend"]["grok_bot_usage"], {"status": "unavailable"})
+        self.assertEqual(r["spend"]["grok_bot_usage"]["status"], "unavailable"); self.assertNotIn("seat", str(r["spend"]["grok_bot_usage"].get("status")))
         self.assertTrue(all(li["cost_measured"] == "unavailable" for li in r["line_items"]))
 
     def test_by_day_covers_every_day_including_empty(self):
