@@ -200,7 +200,7 @@ export function defaultIndexQueries(): GrokBotIndexQueryFns {
       const db = openReadonlyObservationDb();
       if (!db) return [];
       try {
-        return queryObservationsNewest({ db }, config, { limit, platformSource, projects });
+        return queryObservationsNewest({ db }, config, { limit, platformSource, projects, includeManualSaves: true });
       } finally {
         db.close();
       }
@@ -240,7 +240,8 @@ export function refreshSeatIndex(
     ? queries.queryHouse(cfg.window, platformSource)
     : [];
   const merged = mergeIndexObservations(seatRows, houseRows, cfg.window);
-  const houseFilled = cfg.fallback === 'house' && merged.some(row => !seatRows.some(seatRow => seatRow.id === row.id));
+  const seatIds = new Set(seatRows.map(row => row.id));
+  const houseFilled = cfg.fallback === 'house' && merged.some(row => !seatIds.has(row.id));
 
   const factLines = formatIndexFactLines(merged, {
     primaryProject: seat.projects[seat.projects.length - 1] ?? seat.name,
