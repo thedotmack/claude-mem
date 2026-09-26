@@ -1209,7 +1209,13 @@ export async function promptProvider(
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   if (resolvePersonalProviderKey(selectedProvider, persistedSettings)) {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
+    const updates = selectedProvider === 'openrouter'
+      ? buildNonInteractiveOpenRouterSettings(
+        persistedSettings,
+        SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
+      )
+      : { CLAUDE_MEM_PROVIDER: selectedProvider };
+    const wrote = mergeSettings(updates);
     if (!wrote) throw new Error(`Could not save the ${providerLabel} provider configuration.`);
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
     return selectedProvider;
