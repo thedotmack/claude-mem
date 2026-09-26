@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
-import { isRetryableKind } from '../../src/services/worker/retry.js';
+import { isRetryableKind, parseRetryDelayMs } from '../../src/services/worker/retry.js';
 
 // Pins the retry policy: quota/auth/unrecoverable errors must fail fast (no
 // pointless retries of something that cannot succeed); transient and
@@ -35,4 +35,24 @@ describe('isRetryableKind', () => {
     });
     expect(isRetryableKind(err)).toBe(false);
   });
+});
+
+describe('parseRetryDelayMs', () => {
+  for (const [input, expected] of [
+    ['3s', 3000],
+    ['1.5s', 1500],
+    ['0.25s', 250],
+    ['0s', 0],
+    [' 7s ', 7000],
+  ] as const) {
+    it(`parses "${input}" as ${expected}ms`, () => {
+      expect(parseRetryDelayMs(input)).toBe(expected);
+    });
+  }
+
+  for (const input of ['', 'abc', '5', '5ms', '-1s', '1.5', 's', null, undefined]) {
+    it(`returns undefined for ${JSON.stringify(input)}`, () => {
+      expect(parseRetryDelayMs(input)).toBeUndefined();
+    });
+  }
 });

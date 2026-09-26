@@ -8,7 +8,7 @@ import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
-import { withRetry, parseRetryAfterMs } from './retry.js';
+import { withRetry, parseRetryAfterMs, parseRetryDelayMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
 // v1beta is required: the current Gemini 3.x models and the Google-maintained
@@ -22,6 +22,60 @@ const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
  * because Gemini surfaces auth/quota/rate-limit signals via specific status
  * codes and body strings (e.g. "quota exceeded", "API key not valid").
  */
+/**
+ * Structured signals parsed from a Gemini error response body.
+ */
+interface GeminiErrorDetails {
+  /** True when a QuotaFailure violation names a per-day quota (daily quota really is exhausted). */
+  dailyQuotaExhausted: boolean;
+  /** RetryInfo.retryDelay converted to ms, when present. */
+  retryAfterMs?: number;
+}
+
+/**
+ * Extract QuotaFailure / RetryInfo signals from a Gemini error body.
+ * Gemini error bodies are JSON like:
+ *   { "error": { "code": 429, "message": "...", "status": "RESOURCE_EXHAUSTED",
+ *     "details": [
+ *       { "@type": ".../QuotaFailure", "violations": [{ "quotaId": "GenerateRequestsPerMinutePerProjectPerModel", ... }] },
+ *       { "@type": ".../RetryInfo", "retryDelay": "7s" }
+ *     ] } }
+ * Returns empty signals for non-JSON bodies.
+ */
+function parseGeminiErrorDetails(bodyText: string): GeminiErrorDetails {
+  const details: GeminiErrorDetails = { dailyQuotaExhausted: false };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return details;
+  }
+  const errorDetails = (parsed as { error?: { details?: unknown[] } })?.error?.details;
+  if (!Array.isArray(errorDetails)) return details;
+  for (const detail of errorDetails) {
+    if (typeof detail !== 'object' || detail === null) continue;
+    const type = String((detail as { '@type'?: unknown })['@type'] ?? '');
+    if (type.includes('QuotaFailure')) {
+      const violations = (detail as { violations?: unknown[] }).violations;
+      if (Array.isArray(violations)) {
+        for (const violation of violations) {
+          const quotaId = String(
+            (violation as { quotaId?: unknown } | null)?.quotaId ?? '',
+          ).toLowerCase();
+          if (quotaId.includes('perday')) {
+            details.dailyQuotaExhausted = true;
+          }
+        }
+      }
+    } else if (type.includes('RetryInfo')) {
+      const retryDelay = (detail as { retryDelay?: unknown }).retryDelay;
+      const ms = parseRetryDelayMs(typeof retryDelay === 'string' ? retryDelay : undefined);
+      if (ms !== undefined) details.retryAfterMs = ms;
+    }
+  }
+  return details;
+}
+
 export function classifyGeminiError(input: {
   status?: number;
   bodyText?: string;
@@ -33,23 +87,38 @@ export function classifyGeminiError(input: {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
   const headers = input.headers;
-  const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
   const cause = status === undefined
     ? input.cause
     : new Error(`Gemini HTTP error (status ${status}${input.requestId ? `, request ${input.requestId}` : ''})`);
 
-  // Quota exceeded — by body marker — even on 500 (Gemini quirk).
+  // 429s are handled before the body-marker check below: Gemini labels EVERY
+  // 429 RESOURCE_EXHAUSTED, so letting the marker check run first swallowed
+  // all 429s as quota_exhausted (→ 30-min cooldown) and made the rate_limit
+  // branch unreachable. QuotaFailure violations refine the verdict — a PerDay
+  // quotaId means the daily quota really is exhausted; anything else on a 429
+  // is a transient per-minute rate limit.
+  if (status === 429) {
+    const details = parseGeminiErrorDetails(body);
+    if (details.dailyQuotaExhausted) {
+      return new ClassifiedProviderError(
+        'Gemini quota exhausted (status 429)',
+        { kind: 'quota_exhausted', cause },
+      );
+    }
+    const retryAfterMs = details.retryAfterMs
+      ?? (headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined);
+    return new ClassifiedProviderError(
+      'Gemini rate limit (429)',
+      { kind: 'rate_limit', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
+
+  // Quota exceeded — by body marker — on non-429 statuses (Gemini quirk: it
+  // can surface "quota exceeded" on a 500).
   if (lower.includes('quota exceeded') || lower.includes('resource_exhausted')) {
     return new ClassifiedProviderError(
       `Gemini quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
       { kind: 'quota_exhausted', cause },
-    );
-  }
-
-  if (status === 429) {
-    return new ClassifiedProviderError(
-      'Gemini rate limit (429)',
-      { kind: 'rate_limit', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
     );
   }
 

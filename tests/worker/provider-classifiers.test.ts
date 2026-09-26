@@ -56,6 +56,118 @@ describe('classifyGeminiError', () => {
     expect(err.retryAfterMs).toBe(5000);
   });
 
+  // Regression: Gemini labels EVERY 429 RESOURCE_EXHAUSTED, so the old
+  // body-marker check swallowed per-minute 429s as quota_exhausted.
+  const perMinute429Body = JSON.stringify({
+    error: {
+      code: 429,
+      message: 'Resource has been exhausted (e.g. check quota).',
+      status: 'RESOURCE_EXHAUSTED',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+          violations: [
+            {
+              quotaId: 'GenerateRequestsPerMinutePerProjectPerModel',
+              quotaValue: '10',
+            },
+          ],
+        },
+        {
+          '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+          retryDelay: '7s',
+        },
+      ],
+    },
+  });
+
+  it('classifies 429 RESOURCE_EXHAUSTED with PerMinute quotaId as rate_limit (not quota_exhausted)', () => {
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: perMinute429Body,
+      headers: new Headers(),
+      cause: new Error('429 RESOURCE_EXHAUSTED'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(7000);
+  });
+
+  it('classifies 429 with PerDay quotaId as quota_exhausted', () => {
+    const body = JSON.stringify({
+      error: {
+        code: 429,
+        message: 'Resource has been exhausted (e.g. check quota).',
+        status: 'RESOURCE_EXHAUSTED',
+        details: [
+          {
+            '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+            violations: [
+              {
+                quotaId: 'GenerateRequestsPerDayPerProjectPerModel',
+                quotaValue: '250',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: body,
+      headers: new Headers(),
+      cause: new Error('429 RESOURCE_EXHAUSTED'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+    expect(err.retryAfterMs).toBeUndefined();
+  });
+
+  it('prefers RetryInfo.retryDelay over the Retry-After header on 429', () => {
+    const headers = new Headers({ 'Retry-After': '60' });
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: perMinute429Body,
+      headers,
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(7000);
+  });
+
+  it('falls back to the Retry-After header when RetryInfo is absent on 429', () => {
+    const body = JSON.stringify({
+      error: {
+        code: 429,
+        status: 'RESOURCE_EXHAUSTED',
+        details: [
+          {
+            '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+            violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }],
+          },
+        ],
+      },
+    });
+    const headers = new Headers({ 'Retry-After': '12' });
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: body,
+      headers,
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(12000);
+  });
+
+  it('classifies 429 with non-JSON RESOURCE_EXHAUSTED body as rate_limit', () => {
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: 'RESOURCE_EXHAUSTED: quota exceeded for metric',
+      headers: new Headers(),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBeUndefined();
+  });
+
   it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
     const err = classifyGeminiError({
       status: 500,
