@@ -1193,6 +1193,9 @@ export default {
 	 * scheduled handler — and can never affect the sync routes either way.
 	 */
 	async scheduled(controller, env, _ctx): Promise<void> {
+		// Forward mode: the hub lives at FORWARD_ORIGIN, so the watchdog and
+		// control-plane probe have nothing to guard here. Touch zero DO / KV.
+		if (resolveForwardOrigin(env.FORWARD_ORIGIN) !== null) return;
 		if (controller.cron === CONTROL_PLANE_PROBE_CRON) {
 			try {
 				const result = await runControlPlaneProbe(env, {

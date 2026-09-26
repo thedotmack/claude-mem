@@ -44,3 +44,31 @@ describe("FORWARD_ORIGIN proxy helpers", () => {
 		expect(forwarded.headers.get("Upgrade")).toBe("websocket");
 	});
 });
+
+describe("scheduled handler in forward mode", () => {
+	it("returns without touching DO, KV, or the watchdog when FORWARD_ORIGIN is set", async () => {
+		const { default: worker } = await import("../src/index");
+		const logs: unknown[] = [];
+		const originalLog = console.log;
+		console.log = (...args: unknown[]) => { logs.push(args); };
+		try {
+			const env = new Proxy({ FORWARD_ORIGIN: "https://sync.cmem.ai" } as Record<string, unknown>, {
+				get(target, key) {
+					if (key in target) return target[key as string];
+					if (key === "then") return undefined;
+					throw new Error(`forward-mode cron touched env.${String(key)}`);
+				},
+			});
+			for (const cron of ["7 * * * *", "*/5 * * * *"]) {
+				await worker.scheduled!(
+					{ cron, scheduledTime: Date.now(), noRetry() {} } as ScheduledController,
+					env as unknown as Env,
+					{} as ExecutionContext,
+				);
+			}
+		} finally {
+			console.log = originalLog;
+		}
+		expect(logs).toEqual([]);
+	});
+});
