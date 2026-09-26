@@ -64,6 +64,7 @@ function redactSecretSettings<T extends object>(settings: T): T {
 // the HTTP write list below, this set keeps it from being persisted via POST.
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
+  'CLAUDE_MEM_CODEX_PATH',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -184,14 +185,18 @@ export class SettingsRoutes extends BaseRouteHandler {
     // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
     // Telegram / CloudSync / Redis tokens remain file/env only.
     //
-    // Executable spawn paths (CLAUDE_CODE_PATH) are also file/env only: that
-    // value is the binary passed to posix_spawn, so it must not be HTTP-writable.
+    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH) are also
+    // file/env only: each value is a binary the worker spawns, so it must not be
+    // HTTP-writable.
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_CODEX_MODEL',
+      'CLAUDE_MEM_CODEX_REASONING_EFFORT',
+      'CLAUDE_MEM_CODEX_TIMEOUT_MS',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
@@ -258,9 +263,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
+    const validProviders = ['claude', 'gemini', 'openrouter', 'codex'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "codex"' };
       }
     }
 
