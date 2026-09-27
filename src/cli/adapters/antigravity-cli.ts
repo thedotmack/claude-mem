@@ -94,7 +94,6 @@ export const antigravityCliAdapter: PlatformAdapter = {
         : { status: 'completed' };
     }
 
-    const transcriptPath = r.transcriptPath ?? r.transcript_path;
     if (!toolName && transcriptPath && typeof transcriptPath === 'string') {
       try {
         if (existsSync(transcriptPath)) {
