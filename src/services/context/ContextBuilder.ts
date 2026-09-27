@@ -246,6 +246,18 @@ function appendObserverHealthWarning(warning: string, text: string): string {
   return text ? `${text}\n\n${warning}` : warning;
 }
 
+/** Truncate presentation only; selection always belongs to the model budget. */
+function truncateTerminalPreview(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+
+  const notice = `${colors.reset}\n\n[Terminal preview truncated. The model received the full selected context, including additional observations not shown here.]`;
+  const prefix = text.slice(0, Math.max(0, limit - notice.length));
+  // Prefer a complete line so an ANSI escape or observation is not cut in half.
+  const lastNewline = prefix.lastIndexOf('\n');
+  return prefix.slice(0, lastNewline >= 0 ? lastNewline : prefix.length)
+    .replace(/\x1b\[[0-9;]*$/, '') + notice;
+}
+
 /**
  * Fit the block to `limit` and report on exactly what survived.
  *
@@ -265,6 +277,10 @@ function appendObserverHealthWarning(warning: string, text: string): string {
  * observations to three still reported seven, so telemetry read as healthy
  * precisely when context was being dropped. `sessionCount` is the same slice
  * `buildContextOutput` takes for `displaySummaries`.
+ *
+ * `renderBlock` is always the model rendering. An optional terminal preview
+ * uses that fitted selection and config exactly, then truncates presentation
+ * without running another selection pass (#4252).
  */
 export function fitContextForDelivery(
   observations: Observation[],
@@ -273,7 +289,8 @@ export function fitContextForDelivery(
   healthWarning: string,
   renderBlock: (items: Observation[], cfg: ContextConfig) => string,
   limit: number,
-  full: boolean
+  full: boolean,
+  renderPreview?: (items: Observation[], cfg: ContextConfig) => string
 ): { text: string; stats: ContextInjectStats } {
   const budget = fitContextToBudget(
     observations,
@@ -292,10 +309,21 @@ export function fitContextForDelivery(
     });
   }
 
+  const selected = observations.slice(0, budget.observationCount);
+  let text = budget.text;
+  if (renderPreview) {
+    const warning = paintRed(healthWarning);
+    const warningLength = warning ? warning.length + 2 : 0;
+    text = appendObserverHealthWarning(warning, truncateTerminalPreview(
+      renderPreview(selected, budget.config),
+      limit - warningLength
+    ));
+  }
+
   return {
-    text: budget.text,
+    text,
     stats: buildInjectStats(
-      observations.slice(0, budget.observationCount),
+      selected,
       summaries.slice(0, budget.config.sessionCount),
       full
     ),
@@ -342,11 +370,13 @@ export async function generateContextWithStats(
       observations,
       summaries,
       config,
-      observerHealthWarning(forHuman),
+      observerHealthWarning(),
       (items, cfg) =>
-        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, forHuman),
+        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false),
       input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,
-      Boolean(input?.full)
+      Boolean(input?.full),
+      forHuman ? (items, cfg) =>
+        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, true) : undefined
     );
   } finally {
     rawDb.close();
