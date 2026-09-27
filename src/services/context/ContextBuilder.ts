@@ -9,7 +9,7 @@ import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 
-import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
+import type { ContextInput, ContextConfig, Observation, SessionSummary, TimelineItem } from './types.js';
 import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
@@ -23,11 +23,13 @@ import {
   getFullObservationIds,
 } from './ObservationCompiler.js';
 import { renderHeader } from './sections/HeaderRenderer.js';
-import { renderTimeline } from './sections/TimelineRenderer.js';
+import { groupTimelineByDay, renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
+import * as Human from './formatters/HumanFormatter.js';
+import { formatTime, formatDateTime, extractFirstFile, parseJsonArray } from '../../shared/timeline-formatting.js';
 import {
   readObserverHealth,
   isObserverUnhealthy,
@@ -84,6 +86,79 @@ interface RenderedContext {
   text: string;
   timelineStart: number;
   timelineEnd: number;
+  entries?: HumanTimelineEntry[];
+  summaryEnd: number;
+  previousEnd: number;
+}
+
+interface HumanTimelineEntry {
+  day: string;
+  file: string | null;
+  lines: string[];
+  summary: boolean;
+}
+
+// Keep row boundaries as data. Titles and narratives may contain newlines or
+// text that looks like an observation ID, so rendered lines cannot identify
+// where a complete entry begins or ends.
+function humanTimelineEntries(
+  timeline: TimelineItem[],
+  fullObservationIds: Set<number>,
+  config: ContextConfig,
+  cwd: string
+): HumanTimelineEntry[] {
+  const entries: HumanTimelineEntry[] = [];
+  for (const [day, dayItems] of groupTimelineByDay(timeline)) {
+    let lastTime = '';
+    for (const item of dayItems) {
+      if (item.type === 'summary') {
+        lastTime = '';
+        entries.push({
+          day, file: null, summary: true,
+          lines: Human.renderHumanSummaryItem(item.data, formatDateTime(item.data.displayTime)),
+        });
+        continue;
+      }
+      const obs = item.data;
+      const time = formatTime(obs.created_at);
+      const showTime = time !== lastTime;
+      lastTime = time;
+      const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
+      const detail = config.fullObservationField === 'narrative'
+        ? obs.narrative
+        : obs.facts ? parseJsonArray(obs.facts).join('\n') : null;
+      entries.push({
+        day, file, summary: false,
+        lines: fullObservationIds.has(obs.id)
+          ? Human.renderHumanFullObservation(obs, time, showTime, detail, config)
+          : [Human.renderHumanTableRow(obs, time, showTime, config)],
+      });
+    }
+  }
+  return entries;
+}
+
+function renderHumanEntries(entries: HumanTimelineEntry[]): string[] {
+  const lines: string[] = [];
+  let day = '';
+  let file: string | null = null;
+  for (const entry of entries) {
+    if (entry.day !== day) {
+      if (day) lines.push('');
+      lines.push(...Human.renderHumanDayHeader(entry.day));
+      day = entry.day;
+      file = null;
+    }
+    if (entry.summary) {
+      file = null;
+    } else if (entry.file !== file) {
+      lines.push(...Human.renderHumanFileHeader(entry.file!));
+      file = entry.file;
+    }
+    lines.push(...entry.lines);
+  }
+  if (day) lines.push('');
+  return lines;
 }
 
 function buildContextOutput(
@@ -106,8 +181,9 @@ function buildContextOutput(
   const timeline = buildTimeline(observations, summariesForTimeline);
   const fullObservationIds = getFullObservationIds(observations, config.fullObservationCount);
 
+  const entries = forHuman ? humanTimelineEntries(timeline, fullObservationIds, config, cwd) : undefined;
   const timelineStart = output.join('\n').length + 1;
-  output.push(...renderTimeline(timeline, fullObservationIds, config, cwd, forHuman));
+  output.push(...(entries ? renderHumanEntries(entries) : renderTimeline(timeline, fullObservationIds, config, cwd, false)));
   const timelineEnd = output.join('\n').length;
 
   const mostRecentSummary = summaries[0];
@@ -116,13 +192,15 @@ function buildContextOutput(
   if (shouldShowSummary(config, mostRecentSummary, mostRecentObservation)) {
     output.push(...renderSummaryFields(mostRecentSummary, forHuman));
   }
+  const summaryEnd = output.join('\n').length;
 
   const priorMessages = getPriorSessionMessages(observations, config, sessionId, cwd);
   output.push(...renderPreviouslySection(priorMessages, forHuman));
+  const previousEnd = output.join('\n').length;
 
   output.push(...renderFooter(economics, config, forHuman));
 
-  return { text: output.join('\n').trimEnd(), timelineStart, timelineEnd };
+  return { text: output.join('\n').trimEnd(), timelineStart, timelineEnd, entries, summaryEnd, previousEnd };
 }
 
 /**
@@ -256,41 +334,38 @@ function appendObserverHealthWarning(warning: string, text: string): string {
 
 /** Truncate presentation only; selection always belongs to the model budget. */
 function truncateTerminalPreview(rendered: RenderedContext | string, limit: number): string {
-  const { text, timelineStart, timelineEnd } = typeof rendered === 'string'
-    ? { text: rendered, timelineStart: 0, timelineEnd: rendered.length }
+  const { text, timelineStart, timelineEnd, entries, summaryEnd, previousEnd } = typeof rendered === 'string'
+    ? { text: rendered, timelineStart: 0, timelineEnd: rendered.length,
+        entries: undefined, summaryEnd: rendered.length, previousEnd: rendered.length }
     : rendered;
   if (text.length <= limit) return text;
 
   const notice = `${colors.reset}\n\n[Terminal preview truncated. The model received the full selected context, including additional observations not shown here.]`;
-  const prefix = text.slice(0, timelineStart);
-  const timeline = text.slice(timelineStart, Math.min(timelineEnd, text.length));
-  const suffix = text.slice(Math.min(timelineEnd, text.length));
-  const lines = timeline.split('\n');
-  let omitted = 0;
-  const previewLength = () => prefix.length + notice.length + 1
-    + lines.slice(omitted).join('\n').length + suffix.length;
+  const prefix = text.slice(0, timelineStart) + notice + '\n';
+  const footer = text.slice(previousEnd);
+  const summary = text.slice(timelineEnd, summaryEnd);
+  const previous = text.slice(summaryEnd, previousEnd);
+  if (!entries) return (prefix + text.slice(timelineStart)).slice(0, limit);
 
-  // The timeline is oldest-first. Drop complete lines from its beginning,
-  // then advance to the next observation/summary row so a full observation's
-  // detail lines are never left orphaned. Keep the header count and trailing
-  // context from the full selected render.
-  while (omitted < lines.length && previewLength() > limit) {
+  // The footer is short and useful. Fit complete, newest-first timeline entries
+  // before spending any of the remaining display budget on the prior message.
+  let omitted = 0;
+  let timeline = renderHumanEntries(entries).join('\n');
+  while (omitted < entries.length && prefix.length + timeline.length + footer.length > limit) {
     omitted++;
+    timeline = renderHumanEntries(entries.slice(omitted)).join('\n');
   }
-  const startsEntry = (line: string) => /^\s*#(?:S)?\d+\b/.test(line.replace(/\x1b\[[0-9;]*m/g, ''));
-  while (omitted < lines.length && !startsEntry(lines[omitted])) {
-    omitted++;
+  const room = limit - prefix.length - timeline.length - footer.length;
+  const keptSummary = summary.length <= room ? summary : '';
+  const previousRoom = room - keptSummary.length;
+  let keptPrevious = '';
+  if (previous.length <= previousRoom) {
+    keptPrevious = previous;
+  } else if (previousRoom > 24) {
+    keptPrevious = previous.slice(0, previousRoom - 1 - colors.reset.length)
+      + '…' + colors.reset;
   }
-  const keptTimeline = lines.slice(omitted).join('\n');
-  let keptSuffix = suffix;
-  // A very large trailing section can still exceed the terminal limit after
-  // the timeline is gone. Drop its oldest complete lines, keeping its end.
-  while (prefix.length + notice.length + 1 + keptTimeline.length + keptSuffix.length > limit) {
-    const newline = keptSuffix.indexOf('\n');
-    keptSuffix = newline < 0 ? '' : keptSuffix.slice(newline + 1);
-    if (!keptSuffix) break;
-  }
-  return prefix + notice + '\n' + keptTimeline + keptSuffix;
+  return prefix + timeline + keptSummary + keptPrevious + footer;
 }
 
 /**
