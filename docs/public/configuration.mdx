@@ -311,8 +311,6 @@ Control how many observations are injected:
 | **Include all sources at session start** | Off | On/Off | Include observations from Claude, Codex, and other harnesses in startup context |
 | **Sessions** | 10 | 1-50 | Number of recent sessions to pull observations from |
 
-The observation setting is a maximum. SessionStart fits each render within the hook's 10,000-character output limit, so the longer colored terminal preview can show fewer observations than the model-facing context from the same startup.
-
 **Considerations**:
 - **Higher values** = More context but slower SessionStart and more tokens used
 - **Lower values** = Faster SessionStart but less historical awareness
