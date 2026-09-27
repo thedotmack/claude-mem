@@ -73,11 +73,22 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(preview.text).toContain('model received the full selected context, including additional observations');
     expect(records(preview.text).length).toBeGreaterThan(0);
     expect(records(preview.text).length).toBeLessThan(50);
-    expect(records(preview.text)).toEqual(records(model.text).slice(0, records(preview.text).length));
-    // Everything before the notice must be an unchanged prefix of the full render.
+    const visible = records(preview.text);
+    expect(visible).toEqual(records(model.text).slice(-visible.length));
+    expect(visible).toContain('RECORD_049');
+    expect(visible).not.toContain('RECORD_000');
+    // Header count still describes the model selection, and trailing context
+    // remains after the newest timeline entry.
     const noticeStart = preview.text.indexOf('\x1b[0m\n\n[Terminal preview truncated');
     expect(noticeStart).toBeGreaterThan(0);
     expect(fullPreview.text.startsWith(preview.text.slice(0, noticeStart))).toBe(true);
+    expect(preview.text.indexOf('RECORD_049')).toBeGreaterThan(noticeStart);
+    expect(preview.text).toContain('Access ');
+    expect(preview.text.slice(preview.text.lastIndexOf('Access ')))
+      .toBe(fullPreview.text.slice(fullPreview.text.lastIndexOf('Access ')));
+    for (const line of preview.text.split('\n').filter(line => line.includes('RECORD_'))) {
+      expect(fullPreview.text.split('\n')).toContain(line);
+    }
     expect(model.text).not.toContain('Terminal preview truncated');
     expect(fullPreview.text).not.toContain('Terminal preview truncated');
   }, 15_000);

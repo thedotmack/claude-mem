@@ -80,6 +80,12 @@ function renderEmptyState(project: string, forHuman: boolean): string {
   return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
 }
 
+interface RenderedContext {
+  text: string;
+  timelineStart: number;
+  timelineEnd: number;
+}
+
 function buildContextOutput(
   project: string,
   observations: Observation[],
@@ -88,7 +94,7 @@ function buildContextOutput(
   cwd: string,
   sessionId: string | undefined,
   forHuman: boolean
-): string {
+): RenderedContext {
   const output: string[] = [];
 
   const economics = calculateTokenEconomics(observations);
@@ -100,7 +106,9 @@ function buildContextOutput(
   const timeline = buildTimeline(observations, summariesForTimeline);
   const fullObservationIds = getFullObservationIds(observations, config.fullObservationCount);
 
+  const timelineStart = output.join('\n').length + 1;
   output.push(...renderTimeline(timeline, fullObservationIds, config, cwd, forHuman));
+  const timelineEnd = output.join('\n').length;
 
   const mostRecentSummary = summaries[0];
   const mostRecentObservation = observations[0];
@@ -114,7 +122,7 @@ function buildContextOutput(
 
   output.push(...renderFooter(economics, config, forHuman));
 
-  return output.join('\n').trimEnd();
+  return { text: output.join('\n').trimEnd(), timelineStart, timelineEnd };
 }
 
 /**
@@ -247,15 +255,42 @@ function appendObserverHealthWarning(warning: string, text: string): string {
 }
 
 /** Truncate presentation only; selection always belongs to the model budget. */
-function truncateTerminalPreview(text: string, limit: number): string {
+function truncateTerminalPreview(rendered: RenderedContext | string, limit: number): string {
+  const { text, timelineStart, timelineEnd } = typeof rendered === 'string'
+    ? { text: rendered, timelineStart: 0, timelineEnd: rendered.length }
+    : rendered;
   if (text.length <= limit) return text;
 
   const notice = `${colors.reset}\n\n[Terminal preview truncated. The model received the full selected context, including additional observations not shown here.]`;
-  const prefix = text.slice(0, Math.max(0, limit - notice.length));
-  // Prefer a complete line so an ANSI escape or observation is not cut in half.
-  const lastNewline = prefix.lastIndexOf('\n');
-  return prefix.slice(0, lastNewline >= 0 ? lastNewline : prefix.length)
-    .replace(/\x1b\[[0-9;]*$/, '') + notice;
+  const prefix = text.slice(0, timelineStart);
+  const timeline = text.slice(timelineStart, Math.min(timelineEnd, text.length));
+  const suffix = text.slice(Math.min(timelineEnd, text.length));
+  const lines = timeline.split('\n');
+  let omitted = 0;
+  const previewLength = () => prefix.length + notice.length + 1
+    + lines.slice(omitted).join('\n').length + suffix.length;
+
+  // The timeline is oldest-first. Drop complete lines from its beginning,
+  // then advance to the next observation/summary row so a full observation's
+  // detail lines are never left orphaned. Keep the header count and trailing
+  // context from the full selected render.
+  while (omitted < lines.length && previewLength() > limit) {
+    omitted++;
+  }
+  const startsEntry = (line: string) => /^\s*#(?:S)?\d+\b/.test(line.replace(/\x1b\[[0-9;]*m/g, ''));
+  while (omitted < lines.length && !startsEntry(lines[omitted])) {
+    omitted++;
+  }
+  const keptTimeline = lines.slice(omitted).join('\n');
+  let keptSuffix = suffix;
+  // A very large trailing section can still exceed the terminal limit after
+  // the timeline is gone. Drop its oldest complete lines, keeping its end.
+  while (prefix.length + notice.length + 1 + keptTimeline.length + keptSuffix.length > limit) {
+    const newline = keptSuffix.indexOf('\n');
+    keptSuffix = newline < 0 ? '' : keptSuffix.slice(newline + 1);
+    if (!keptSuffix) break;
+  }
+  return prefix + notice + '\n' + keptTimeline + keptSuffix;
 }
 
 /**
@@ -290,7 +325,7 @@ export function fitContextForDelivery(
   renderBlock: (items: Observation[], cfg: ContextConfig) => string,
   limit: number,
   full: boolean,
-  renderPreview?: (items: Observation[], cfg: ContextConfig) => string
+  renderPreview?: (items: Observation[], cfg: ContextConfig) => RenderedContext | string
 ): { text: string; stats: ContextInjectStats } {
   const budget = fitContextToBudget(
     observations,
@@ -372,7 +407,7 @@ export async function generateContextWithStats(
       config,
       observerHealthWarning(),
       (items, cfg) =>
-        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false),
+        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false).text,
       input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,
       Boolean(input?.full),
       forHuman ? (items, cfg) =>
