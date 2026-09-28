@@ -95,6 +95,7 @@ interface HumanTimelineEntry {
   day: string;
   file: string | null;
   lines: string[];
+  linesWithTime?: string[];
   summary: boolean;
 }
 
@@ -127,11 +128,15 @@ function humanTimelineEntries(
       const detail = config.fullObservationField === 'narrative'
         ? obs.narrative
         : obs.facts ? parseJsonArray(obs.facts).join('\n') : null;
+      const full = fullObservationIds.has(obs.id);
       entries.push({
         day, file, summary: false,
-        lines: fullObservationIds.has(obs.id)
+        lines: full
           ? Human.renderHumanFullObservation(obs, time, showTime, detail, config)
           : [Human.renderHumanTableRow(obs, time, showTime, config)],
+        linesWithTime: showTime ? undefined : full
+          ? Human.renderHumanFullObservation(obs, time, true, detail, config)
+          : [Human.renderHumanTableRow(obs, time, true, config)],
       });
     }
   }
@@ -142,12 +147,14 @@ function renderHumanEntries(entries: HumanTimelineEntry[]): string[] {
   const lines: string[] = [];
   let day = '';
   let file: string | null = null;
+  let seenObservation = false;
   for (const entry of entries) {
     if (entry.day !== day) {
       if (day) lines.push('');
       lines.push(...Human.renderHumanDayHeader(entry.day));
       day = entry.day;
       file = null;
+      seenObservation = false;
     }
     if (entry.summary) {
       file = null;
@@ -155,7 +162,8 @@ function renderHumanEntries(entries: HumanTimelineEntry[]): string[] {
       lines.push(...Human.renderHumanFileHeader(entry.file!));
       file = entry.file;
     }
-    lines.push(...entry.lines);
+    lines.push(...(!entry.summary && !seenObservation ? entry.linesWithTime ?? entry.lines : entry.lines));
+    if (!entry.summary) seenObservation = true;
   }
   if (day) lines.push('');
   return lines;
@@ -340,17 +348,22 @@ function truncateTerminalPreview(rendered: RenderedContext | string, limit: numb
     : rendered;
   if (text.length <= limit) return text;
 
-  const notice = `${colors.reset}\n\n[Terminal preview truncated. The model received the full selected context, including additional observations not shown here.]`;
-  const prefix = text.slice(0, timelineStart) + notice + '\n';
+  const prefixWithNotice = (omitted: boolean) => text.slice(0, timelineStart)
+    + `${colors.reset}\n\n[Terminal preview truncated. The model received the full selected context; ${omitted
+      ? 'additional observations are not shown here.'
+      : 'some presentation text is not shown here.'}]\n`;
   const footer = text.slice(previousEnd);
   const summary = text.slice(timelineEnd, summaryEnd);
   const previous = text.slice(summaryEnd, previousEnd);
-  if (!entries) return (prefix + text.slice(timelineStart)).slice(0, limit);
+  if (!entries) return (prefixWithNotice(false) + text.slice(timelineStart)).slice(0, limit);
 
   // The footer is short and useful. Fit complete, newest-first timeline entries
   // before spending any of the remaining display budget on the prior message.
   let omitted = 0;
   let timeline = renderHumanEntries(entries).join('\n');
+  const allVisiblePrefix = prefixWithNotice(false);
+  const prefix = allVisiblePrefix.length + timeline.length + footer.length <= limit
+    ? allVisiblePrefix : prefixWithNotice(true);
   while (omitted < entries.length && prefix.length + timeline.length + footer.length > limit) {
     omitted++;
     timeline = renderHumanEntries(entries.slice(omitted)).join('\n');

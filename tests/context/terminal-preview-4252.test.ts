@@ -22,7 +22,7 @@ const script = `
         ? 'DETAIL_' + String(i).padStart(3, '0') + '_START\\n#123 looks like a row\\nDETAIL_' + String(i).padStart(3, '0') + '_END'
         : 'narrative', facts: [], concepts: ['how-it-works'],
       files_read: [], files_modified: ['src/record-' + i + '.ts'],
-    }, 1, 100, 1_700_000_000_000 + i * 60_000);
+    }, 1, 100, 1_700_000_000_000 + (process.env.PREVIEW_SAME_MINUTE === 'true' ? 0 : i * 60_000));
   }
   store.close();
   if (Number(process.env.PREVIEW_MESSAGE_LENGTH) > 0) {
@@ -39,7 +39,7 @@ const script = `
   console.log(JSON.stringify({ model, preview, fullPreview }));
 `;
 
-function generate(count: number, options: { narrative?: boolean; messageLength?: number; titleLength?: number } = {}) {
+function generate(count: number, options: { narrative?: boolean; messageLength?: number; titleLength?: number; sameMinute?: boolean } = {}) {
   const dataDir = mkdtempSync(join(import.meta.dir, '.preview-4252-'));
   try {
     writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
@@ -60,6 +60,7 @@ function generate(count: number, options: { narrative?: boolean; messageLength?:
         CLAUDE_MEM_MODES_DIR: join(process.cwd(), 'plugin', 'modes'),
         PREVIEW_COUNT: String(count),
         PREVIEW_NARRATIVE: String(Boolean(options.narrative)),
+        PREVIEW_SAME_MINUTE: String(Boolean(options.sameMinute)),
         PREVIEW_MESSAGE_LENGTH: String(options.messageLength ?? 0),
         PREVIEW_TITLE_LENGTH: String(options.titleLength ?? 120),
       },
@@ -85,7 +86,7 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(preview.text).toContain('Loading: 50 observations');
     expect(preview.text.length).toBeLessThanOrEqual(10_000);
     expect(preview.text).toContain('Terminal preview truncated');
-    expect(preview.text).toContain('model received the full selected context, including additional observations');
+    expect(preview.text).toContain('additional observations are not shown here');
     expect(records(preview.text).length).toBeGreaterThan(0);
     expect(records(preview.text).length).toBeLessThan(50);
     const visible = records(preview.text);
@@ -115,7 +116,8 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(preview.text).toContain('Loading: 3 observations');
     expect(records(preview.text)).toEqual(records(model.text));
     expect(records(preview.text)).toHaveLength(3);
-    expect(preview.text).toBe(fullPreview.text);
+    const withoutRenderTime = (text: string) => text.replace(/(\[preview-test\] recent context, )[^\n]+/, '$1<rendered-at>');
+    expect(withoutRenderTime(preview.text)).toBe(withoutRenderTime(fullPreview.text));
     expect(preview.text).not.toContain('Terminal preview truncated');
   }, 15_000);
 
@@ -128,6 +130,24 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(preceding).toContain(`src/record-${Number(first.slice(-3))}.ts`);
     expect(firstIndex).toBeGreaterThan(preview.text.indexOf('Terminal preview truncated'));
   }, 15_000);
+
+  it('shows the time on the first retained same-minute row without changing the full rendering', () => {
+    for (const narrative of [false, true]) {
+      const { model, preview, fullPreview } = generate(50, { narrative, sameMinute: true, titleLength: narrative ? 60 : 120 });
+      const visible = records(preview.text);
+      expect(visible.length).toBeGreaterThan(0);
+      expect(visible.length).toBeLessThan(model.stats.observation_count);
+      expect(visible).toEqual(records(model.text).slice(-visible.length));
+      const first = visible[0];
+      const firstRow = preview.text.split('\n').find(line => line.includes(first))!;
+      const untruncatedRow = fullPreview.text.split('\n').find(line => line.includes(first))!;
+      const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, '');
+      expect(plain(firstRow)).toMatch(/\d{1,2}:\d{2} [AP]M/);
+      expect(plain(untruncatedRow)).not.toMatch(/\d{1,2}:\d{2} [AP]M/);
+      if (narrative) expect(preview.text).toContain(`DETAIL_${first.slice(-3)}_START`);
+      expect(preview.text.length).toBeLessThanOrEqual(10_000);
+    }
+  }, 30_000);
 
   it('keeps full rows when a narrative line looks like an observation ID', () => {
     const { model, preview } = generate(50, { narrative: true, titleLength: 60 });
@@ -159,5 +179,20 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(preview.text).toContain('PRIOR_MESSAGE');
     expect(preview.text).not.toContain('m'.repeat(8_500));
     expect(preview.text).toContain('Access ');
+  }, 15_000);
+
+  it('reports presentation-only truncation when every selected observation remains visible', () => {
+    const { model, preview, fullPreview } = generate(3, { messageLength: 9_000, titleLength: 80 });
+    expect(model.stats.observation_count).toBe(3);
+    expect(fullPreview.text.length).toBeGreaterThan(10_000);
+    expect(preview.text.length).toBeLessThanOrEqual(10_000);
+    expect(preview.text).toContain('Loading: 3 observations');
+    expect(preview.text).toContain('Terminal preview truncated');
+    expect(preview.text).toContain('some presentation text is not shown here');
+    expect(preview.text).not.toContain('additional observations are not shown here');
+    expect(records(preview.text)).toEqual(records(model.text));
+    expect(preview.text).toContain('PRIOR_MESSAGE');
+    expect(preview.text).not.toContain('m'.repeat(9_000));
+    expect(preview.stats).toEqual(model.stats);
   }, 15_000);
 });
