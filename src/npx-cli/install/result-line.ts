@@ -5,6 +5,10 @@
  * a call site cannot leak a secret, path or email by passing extra fields.
  */
 
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { resolveDataDir } from '../../shared/paths.js';
+
 export const RESULT_LINE_PREFIX = 'CLAUDE_MEM_RESULT ';
 
 export type ResultCommand = 'install' | 'update' | 'repair' | 'login' | 'advisor' | 'fix';
@@ -119,10 +123,23 @@ export function formatResultLine(input: ResultLineInput): string {
   return RESULT_LINE_PREFIX + JSON.stringify(buildResultLine(input));
 }
 
-/** Prints to stdout. Never throws: the result line must not break a run. */
+const LAST_RESULT_FILE = 'last-result.json';
+
+/**
+ * Prints to stdout and keeps a copy in <dataDir>/last-result.json, which
+ * `npx claude-mem advisor fix` reads. Never throws: the result line must not
+ * break a run.
+ */
 export function printResultLine(input: ResultLineInput): void {
+  const line = buildResultLine(input);
   try {
-    process.stdout.write('\n' + formatResultLine(input) + '\n');
+    mkdirSync(resolveDataDir(), { recursive: true });
+    writeFileSync(join(resolveDataDir(), LAST_RESULT_FILE), JSON.stringify(line) + '\n');
+  } catch {
+    // [ANTI-PATTERN IGNORED]: the saved copy only feeds `advisor fix`; the printed line below is the contract.
+  }
+  try {
+    process.stdout.write('\n' + RESULT_LINE_PREFIX + JSON.stringify(line) + '\n');
   } catch {
     // [ANTI-PATTERN IGNORED]: a closed stdout cannot carry the line anyway; the exit status still reports the outcome.
   }
@@ -136,6 +153,17 @@ export function parseLastResultLine(output: string): ResultLineV1 | null {
   try {
     return JSON.parse(last.slice(RESULT_LINE_PREFIX.length)) as ResultLineV1;
   } catch {
+    return null;
+  }
+}
+
+/** The last result line this machine printed (any command), or null. */
+export function readLastResult(): ResultLineV1 | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(resolveDataDir(), LAST_RESULT_FILE), 'utf-8'));
+    return raw && raw.v === 1 ? raw as ResultLineV1 : null;
+  } catch {
+    // [ANTI-PATTERN IGNORED]: no saved line (or a corrupt one) means there is no failure to explain.
     return null;
   }
 }
