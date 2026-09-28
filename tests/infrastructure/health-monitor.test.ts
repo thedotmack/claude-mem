@@ -109,6 +109,25 @@ describe('HealthMonitor', () => {
       
       spy.mockRestore();
     });
+
+    it('should treat an inconclusive socket probe as occupied after its deadline', async () => {
+      const closeMock = mock(() => {});
+      const createServerMock = mock(() => ({
+        once: mock(() => {}),
+        listen: mock(() => {}),
+        close: closeMock,
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const start = Date.now();
+      const result = await isPortInUse(37777, 50);
+      const elapsed = Date.now() - start;
+
+      expect(result).toBe(true);
+      expect(elapsed).toBeLessThan(1000);
+      expect(closeMock).toHaveBeenCalled();
+      spy.mockRestore();
+    });
   });
 
   describe('waitForHealth', () => {
@@ -308,6 +327,25 @@ describe('HealthMonitor', () => {
       expect(result).toBe(false);
       expect(elapsed).toBeGreaterThanOrEqual(1400);
       expect(elapsed).toBeLessThan(2500);
+      spy.mockRestore();
+    });
+
+    it('should honor the caller deadline when a socket probe never settles', async () => {
+      const closeMock = mock(() => {});
+      const createServerMock = mock(() => ({
+        once: mock(() => {}),
+        listen: mock(() => {}),
+        close: closeMock,
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const start = Date.now();
+      const result = await waitForPortFree(37777, 50);
+      const elapsed = Date.now() - start;
+
+      expect(result).toBe(false);
+      expect(elapsed).toBeLessThan(1000);
+      expect(closeMock).toHaveBeenCalled();
       spy.mockRestore();
     });
 
