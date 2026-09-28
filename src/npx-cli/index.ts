@@ -24,15 +24,19 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${styleText('cyan', 'npx claude-mem install --provider claude|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
+  ${styleText('cyan', 'npx claude-mem install --provider claude|gemini|openrouter|host')}   Set LLM provider. Without it, a non-interactive install runs memory on the user's own Anthropic plan (no account). Sign-in is separate and needs the person (free): npx claude-mem login --request
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
+  ${styleText('cyan', 'npx claude-mem install --no-browser')}   Never open a sign-in page in the browser (also CLAUDE_MEM_NO_BROWSER=1)
   ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
+  ${styleText('cyan', 'npx claude-mem login --request [--json] [--no-browser]')}   New sign-in link for the person (free account)
+  ${styleText('cyan', 'npx claude-mem login --check [--json]')}   Whether the person finished signing in
+  ${styleText('cyan', 'npx claude-mem login --dismiss')}      Stop sign-in reminders on this machine
   ${styleText('cyan', 'npx claude-mem version')}              Print version
 
 ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed plugin):
@@ -74,6 +78,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
       'server-url': { type: 'string' },
       'no-auto-start': { type: 'boolean' },
       'disable-auto-memory': { type: 'boolean' },
+      'no-browser': { type: 'boolean' },
     },
     strict: false,
     allowPositionals: true,
@@ -113,6 +118,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     disableAutoMemory: values['disable-auto-memory'] === true,
     runtime: runtime as InstallOptions['runtime'],
     serverUrl: flag('server-url'),
+    noBrowser: values['no-browser'] === true,
   };
 }
 
@@ -134,7 +140,13 @@ async function main(): Promise<void> {
     case 'update':
     case 'upgrade': {
       const { runInstallCommand } = await import('./commands/install.js');
-      await runInstallCommand(parseInstallOptions(args.slice(1)), 'update');
+      await runInstallCommand({ noBrowser: args.includes('--no-browser') }, 'update');
+      break;
+    }
+
+    case 'login': {
+      const { runLoginCommand } = await import('./commands/login.js');
+      process.exitCode = await runLoginCommand(args.slice(1));
       break;
     }
 
