@@ -134,7 +134,7 @@ async function main(): Promise<void> {
     case 'update':
     case 'upgrade': {
       const { runInstallCommand } = await import('./commands/install.js');
-      await runInstallCommand();
+      await runInstallCommand(parseInstallOptions(args.slice(1)), 'update');
       break;
     }
 

@@ -2251,19 +2251,42 @@ export function validateNonInteractiveProvider(
   }
 }
 
-export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
+/** The step the abort happened in, for the result line's failed_step. */
+function abortedStep(err: InstallAbortError): string | null {
+  if (steps?.current) return steps.current;
+  return err.category.id.startsWith('provider') ? 'provider' : null;
+}
+
+export async function runInstallCommand(
+  options: InstallOptions = {},
+  command: Extract<ResultCommand, 'install' | 'update'> = 'install',
+): Promise<void> {
   const summary = createInstallSummary();
+  const version = readPluginVersion();
+  steps = new StepTracker({
+    version,
+    agent_context: detectAgentContext(process.env, isInteractive),
+    interactive: isInteractive,
+  });
   try {
-    await runInstallCommandInner(options, summary);
+    await runInstallCommandInner(options, summary, command);
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     if (err instanceof InstallAbortError) {
-      // err.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
+      const attempt = recordFailedAttempt(err.category.id);
+      const bun = lastBunSetupReport();
+      // err.category.id is OUR taxonomy id (error-taxonomy.ts), never a message;
+      // bun_fail_reason / fix_* / attempt_n are closed enums and a counter.
       await captureCliEvent('install_failed', {
         error_category: err.category.id,
         interactive: isInteractive,
         install_method: detectInstallMethod(),
         claude_code_version: detectClaudeCodeVersion(),
+        agent_context: detectAgentContext(process.env, isInteractive),
+        attempt_n: attempt.attemptN,
+        ...(bun.failReason ? { bun_fail_reason: bun.failReason } : {}),
+        ...(bun.fixId ? { fix_id: bun.fixId } : {}),
+        ...(bun.fixOutcome ? { fix_outcome: bun.fixOutcome } : {}),
       }, { person: true });
       // Flush whatever warnings accrued before the abort, then print the
       // remediation headline and exit non-zero. ABORT must never reach the
@@ -2279,13 +2302,40 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         console.error(`  ${err.remediation}`);
         console.error(`  ${err.message}`);
       }
+      if (attempt.isRepeat) {
+        const repeatLine = `Same failure as last run (${err.category.id}). Re-running will not fix it. Manual fix: ${err.remediation}`;
+        if (isInteractive) p.log.warn(repeatLine);
+        else console.error(`  ${repeatLine}`);
+      }
+      await steps?.flush();
+      // A packaged fix the installer has not already run this time is the one
+      // useful next command; bun's npm-package fix runs inside ensureBun.
+      const fixId = err.category.fixId ?? null;
+      const fixTried = bun.fixId;
+      printResultLine({
+        command,
+        status: 'failed',
+        version,
+        failedStep: abortedStep(err),
+        errorCategory: err.category.id,
+        fixTried,
+        attemptN: attempt.attemptN,
+        retrySameCommand: !attempt.isRepeat,
+        nextCommand: fixId && fixId !== fixTried ? `npx claude-mem fix ${fixId}` : null,
+      });
       process.exit(1);
     }
+    await steps?.flush();
+    printResultLine({ command, status: 'failed', version, failedStep: steps?.current ?? null, errorCategory: 'unknown-install-error' });
     throw error;
   }
 }
 
-async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
+async function runInstallCommandInner(
+  options: InstallOptions,
+  summary: InstallSummary,
+  command: Extract<ResultCommand, 'install' | 'update'>,
+): Promise<void> {
   const installStartedAt = Date.now();
   const version = readPluginVersion();
   validateNonInteractiveProvider(options, summary);
@@ -2482,6 +2532,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   const failedIDEs = await setupIDEs(selectedIDEs, summary);
+  let deferredSignin: DeferredSigninResult | null = null;
 
   // Optionally disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
   // when the user explicitly opts in, either through the interactive prompt or
@@ -2547,6 +2598,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     if (!oauthPairing) {
       if (isInteractive) p.cancel('OAuth login is required to finish installation.');
       else console.error('OAuth login is required to finish installation.');
+      await steps?.flush();
+      printResultLine({ command, status: 'failed', version, failedStep: 'signin', humanActionRequired: 'sign-in' });
       process.exit(1);
     }
   } else {
@@ -2780,14 +2833,21 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } else {
       console.log('\nclaude-mem installed successfully!');
     }
-    // Last line of a non-interactive install so an agent relaying the output
-    // sees the link after the success line. Nothing here may change the exit
-    // status or throw past the summary.
+    // Printed after the success line so an agent relaying the output sees
+    // the link last (only the result line follows). Nothing here may change
+    // the exit status or throw past the summary.
+    const signinStartedAt = Date.now();
     try {
-      await offerDeferredLogin(options, version);
+      deferredSignin = await offerDeferredLogin(options, version);
     } catch {
-      // best-effort only
+      // [ANTI-PATTERN IGNORED]: the sign-in offer is optional; the install already succeeded and says so above.
     }
+    steps?.record(
+      'signin',
+      deferredSignin ? 'ok' : 'skipped',
+      Date.now() - signinStartedAt,
+      deferredSignin ? { signin_arm: deferredSignin.arm, browser_open: deferredSignin.browserOpen } : {},
+    );
   }
 
   // After promptTelemetryOptIn so a just-made consent choice is honored.
@@ -2806,7 +2866,18 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     bun_version: installedBunVersion,
     uv_version: installedUvVersion,
     claude_code_version: detectClaudeCodeVersion(),
+    agent_context: detectAgentContext(process.env, isInteractive),
+    ...(deferredSignin ? { signin_arm: deferredSignin.arm, browser_open: deferredSignin.browserOpen } : {}),
   }, { person: true });
+
+  await steps?.flush();
+  if (failedIDEs.length === 0) clearAttempts();
+  printResultLine({
+    command,
+    status: failedIDEs.length > 0 ? 'partial' : 'ok',
+    version,
+    signin: oauthPairing ? { status: 'signed_in' } : deferredSignin?.signin ?? null,
+  });
 }
 
 async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
