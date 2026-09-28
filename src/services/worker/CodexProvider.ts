@@ -2,7 +2,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
-import { CodexAppServerClient } from './CodexAppServerClient.js';
+import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
 import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted } from '../../shared/quota-cooldown.js';
@@ -63,7 +63,9 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   protected readonly providerName = 'Codex';
   protected readonly syntheticIdPrefix = 'codex';
   protected readonly forwardEmptyMessageResponse = true;
-  private readonly appServer = new CodexAppServerClient();
+  private readonly appServer = new CodexAppServerPool(boundedInteger(
+    SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS, 2, 8,
+  ));
 
   async close(): Promise<void> {
     await this.appServer.close();
@@ -126,6 +128,8 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       'Follow the latest user request: XML for observations/summaries, plain text for payload compression.',
       ...history.map(message => `${message.role.toUpperCase()}:\n${message.content}`),
     ].join('\n\n');
+    const admittedQuota = getQuotaCooldown('codex');
+    const admittedSetup = getQuotaCooldown('codex-setup');
     try {
       const result = await withRetry(async signal => {
         try {
@@ -151,6 +155,9 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
             onFailure: error => {
               if (signal.aborted) return;
               const classified = error instanceof ClassifiedProviderError ? error : classifyCodexError(error);
+              if (classified.kind === 'quota_exhausted') {
+                recordQuotaExhausted('codex', classified.message);
+              }
               if (classified.kind === 'unrecoverable' || classified.kind === 'auth_invalid') {
                 recordQuotaExhausted('codex-setup', classified.message);
                 logger.warn('SDK', 'Codex setup failure; pausing Codex requests until a recovery probe succeeds', {
@@ -165,8 +172,9 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
           throw classifyCodexError(error);
         }
       }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: config.timeoutMs, abortSignal });
-      clearQuotaCooldown('codex');
-      clearQuotaCooldown('codex-setup');
+      // A concurrent success cannot clear a newer failure from another slot.
+      if (getQuotaCooldown('codex') === admittedQuota) clearQuotaCooldown('codex');
+      if (getQuotaCooldown('codex-setup') === admittedSetup) clearQuotaCooldown('codex-setup');
       return result;
     } catch (error) {
       if (error instanceof ClassifiedProviderError && error.kind === 'quota_exhausted') {

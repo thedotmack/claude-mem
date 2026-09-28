@@ -13,11 +13,12 @@ const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 
 function stubCompletedAppServerTurns(provider: any, contents: Array<string | null>): string[] {
   const methods: string[] = [];
   let turn = 0;
-  provider.appServer.ensureStarted = async () => {};
-  provider.appServer.workspace = 'private-test-workspace';
-  provider.appServer.readInheritedMcpServerNames = async () => [];
-  provider.appServer.attestMcpServersDisabled = async () => {};
-  provider.appServer.request = async (method: string) => {
+  for (const client of provider.appServer.clients) {
+  client.ensureStarted = async () => {};
+  client.workspace = 'private-test-workspace';
+  client.readInheritedMcpServerNames = async () => [];
+  client.attestMcpServersDisabled = async () => {};
+  client.request = async (method: string) => {
     methods.push(method);
     if (method === 'thread/start') return { thread: { id: `thread-${turn + 1}` }, instructionSources: [] };
     if (method === 'turn/start') {
@@ -29,6 +30,7 @@ function stubCompletedAppServerTurns(provider: any, contents: Array<string | nul
     if (method === 'thread/unsubscribe') return {};
     throw new Error(`Unexpected request: ${method}`);
   };
+  }
   return methods;
 }
 let savedProvider: string | undefined;
@@ -211,7 +213,7 @@ describe('Codex provider integration', () => {
       const blocked = new Promise<void>(resolve => { release = resolve; });
       const starts = mock(async () => { await blocked; throw new Error(message); });
       // Keep the real client queue and failure callback; only replace process startup.
-      provider.appServer.ensureStarted = starts;
+      for (const client of provider.appServer.clients) client.ensureStarted = starts;
       const runs = Array.from({ length: 3 }, () => harness(async s => {
         const c = { ...config };
         provider.prepareSessionExtras(s, c);
@@ -222,7 +224,7 @@ describe('Codex provider integration', () => {
         expect(runs.every(h => h.codex.mock.calls.length === 1)).toBe(true);
         release();
         await Promise.all(runs.map(h => h.s.generatorPromise));
-        expect(starts).toHaveBeenCalledTimes(1);
+        expect(starts).toHaveBeenCalledTimes(2);
         expect(getQuotaCooldown('codex-setup')).not.toBeNull();
         expect(getQuotaCooldown('codex')).toBeNull();
         for (const h of runs) {
@@ -233,7 +235,7 @@ describe('Codex provider integration', () => {
         recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
         await runs[0].routes.ensureGeneratorRunning(runs[0].s.sessionDbId, 'recovery');
         await runs[0].s.generatorPromise;
-        expect(starts).toHaveBeenCalledTimes(2);
+        expect(starts).toHaveBeenCalledTimes(3);
         expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
       } finally {
         release();

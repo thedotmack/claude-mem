@@ -105,7 +105,7 @@ function readTrace(path: string): Array<Record<string, any>> {
   return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
-it('leaves model and effort selection to Codex when no override is configured', async () => {
+itPosix('leaves model and effort selection to Codex when no override is configured', async () => {
   const fake = createFakeCodex();
   const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
   try {
@@ -137,7 +137,7 @@ it('rejects API-key login before launching a model process', async () => {
   }
 });
 
-it('keeps usage-limit details from app-server error notifications', async () => {
+itPosix('keeps usage-limit details from app-server error notifications', async () => {
   const fake = createFakeCodex({ mode: 'usage-limit' });
   const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
   try {
@@ -152,7 +152,7 @@ it('keeps usage-limit details from app-server error notifications', async () => 
   }
 });
 
-it('waits for the final turn state when Codex retries an error itself', async () => {
+itPosix('waits for the final turn state when Codex retries an error itself', async () => {
   const fake = createFakeCodex({ mode: 'retried-error' });
   const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
   try {

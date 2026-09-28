@@ -36,3 +36,7 @@ existing behavior.
 When testing from source, build the worker with `node scripts/build-hooks.js`
 before starting it. Release versions and generated distribution files are not
 changed by this contribution.
+
+### Concurrent requests
+
+`CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS` defaults to `2` (integer 1–8; invalid values use 2). Restart the worker after changing it. Requests enter a FIFO pool of exclusive app-server clients, each with its own private workspace and process. Queued cancellation does not send a request; shutdown cancels work and closes every client. Quota/setup admission is checked immediately before sending, and failures publish cooldowns before the slot is reused. Already admitted concurrent requests may still finish after a quota failure.
