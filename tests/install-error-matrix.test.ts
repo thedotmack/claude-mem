@@ -4,7 +4,9 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 import {
+  BUN_FAIL_REASONS,
   ErrorSeverity,
+  classifyBunFailure,
   classifyError,
   ERROR_CATEGORIES,
 } from '../src/npx-cli/install/error-taxonomy';
@@ -318,4 +320,38 @@ describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
       });
     }
   }
+});
+
+describe('bun_fail_reason classification', () => {
+  // Real-shaped stderr from the official install scripts (bun.sh/install,
+  // bun.sh/install.ps1) as wrapped by installBun's describeExecError output.
+  const fixtures: Array<[string, string]> = [
+    ['/bin/bash: line 1: curl: command not found', 'curl-missing'],
+    ["'curl' is not recognized as an internal or external command", 'curl-missing'],
+    ['error: unzip is required to install bun', 'unzip-missing'],
+    ['curl: (6) Could not resolve host: bun.sh', 'network'],
+    ['curl: (7) Failed to connect to github.com port 443 after 3 ms: Connection refused', 'network'],
+    ['Command failed: curl -fsSL https://bun.sh/install | bash ETIMEDOUT', 'network'],
+    ['curl: (60) SSL certificate problem: unable to get local issuer certificate', 'tls'],
+    ['mkdir: cannot create directory \'/home/u/.bun\': Permission denied', 'permission'],
+    ['Error: EACCES: permission denied, open', 'permission'],
+    ['File C:\\x.ps1 cannot be loaded because running scripts is disabled on this system.', 'powershell-policy'],
+    ['install.ps1 : cannot be loaded. For more information, see about_Execution_Policies', 'powershell-policy'],
+    ['Bun installation completed but binary not found. Please restart your terminal', 'binary-not-found'],
+    ['something nobody has seen before', 'other'],
+  ];
+
+  for (const [stderr, reason] of fixtures) {
+    it(`${reason} <- ${stderr.slice(0, 50)}`, () => {
+      expect(classifyBunFailure(`Failed to install Bun.\nUnderlying error: ${stderr}`)).toBe(reason);
+    });
+  }
+
+  it('covers every reason in the closed list', () => {
+    expect(new Set(fixtures.map(([, r]) => r))).toEqual(new Set(BUN_FAIL_REASONS));
+  });
+
+  it('bun-missing-after-install ships the npm-package fix id', () => {
+    expect(ERROR_CATEGORIES.find((c) => c.id === 'bun-missing-after-install')?.fixId).toBe('fix.bun.npm-package');
+  });
 });

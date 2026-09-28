@@ -3,7 +3,9 @@ import { execFile, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding 
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
-import { ErrorSeverity } from './error-taxonomy.js';
+import { classifyBunFailure, ErrorSeverity, type BunFailReason } from './error-taxonomy.js';
+import { BUN_NPM_FIX_ID, installBunFromNpmPackage, type BunNpmFallbackResult } from './bun-npm-fallback.js';
+import { previousFailureInWindow } from './attempt-guard.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
@@ -329,21 +331,76 @@ function summaryOrEphemeral(summary?: InstallSummary): InstallSummary {
   return summary ?? { warnings: [], failedIDEs: [] };
 }
 
-export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: string; version: string }> {
+/**
+ * What happened to Bun setup in this process, for install_failed /
+ * install_step telemetry and the result line. Closed enums only.
+ */
+export interface BunSetupReport {
+  failReason: BunFailReason | null;
+  fixId: string | null;
+  fixOutcome: 'ok' | 'error' | null;
+  /** The official script was skipped because it already failed within 24h. */
+  skippedRepeat: boolean;
+}
+
+let bunSetupReport: BunSetupReport = { failReason: null, fixId: null, fixOutcome: null, skippedRepeat: false };
+
+export function lastBunSetupReport(): BunSetupReport {
+  return { ...bunSetupReport };
+}
+
+/** Seams for tests; production uses the real installers. */
+export interface EnsureBunDeps {
+  isInstalled: () => boolean;
+  runOfficialInstaller: () => void;
+  runNpmFallback: () => BunNpmFallbackResult | null;
+  repeatedFailure: () => boolean;
+}
+
+const DEFAULT_ENSURE_BUN_DEPS: EnsureBunDeps = {
+  isInstalled: () => isBunInstalled(),
+  runOfficialInstaller: () => installBun(),
+  runNpmFallback: () => installBunFromNpmPackage(),
+  repeatedFailure: () => previousFailureInWindow('bun-missing-after-install'),
+};
+
+export async function ensureBun(
+  summary?: InstallSummary,
+  deps: EnsureBunDeps = DEFAULT_ENSURE_BUN_DEPS,
+): Promise<{ bunPath: string; version: string }> {
   const sum = summaryOrEphemeral(summary);
-  if (!isBunInstalled()) {
-    // installBun throws a platform-specific Error on failure; route it through
-    // the central decision point so it becomes a loud ABORT (bun is mandatory
-    // for hooks — there is no opt-out).
-    try {
-      installBun();
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      // installerError(ABORT) reports the cause loudly and always throws.
+  if (!deps.isInstalled()) {
+    bunSetupReport = { failReason: null, fixId: null, fixOutcome: null, skippedRepeat: false };
+    // The official script already failed in the last 24h: running it again
+    // only repeats that failure, so go straight to the packaged fix.
+    const skipOfficial = deps.repeatedFailure();
+    let officialError: Error | null = null;
+    if (skipOfficial) {
+      bunSetupReport.skippedRepeat = true;
+      officialError = new Error(
+        'Failed to install Bun: skipped the official install script because it already failed on a previous run (bun-missing-after-install).',
+      );
+    } else {
+      try {
+        deps.runOfficialInstaller();
+      } catch (error: unknown) {
+        officialError = error instanceof Error ? error : new Error(String(error));
+        bunSetupReport.failReason = classifyBunFailure(officialError.message);
+      }
+    }
+
+    if (officialError) {
+      bunSetupReport.fixId = BUN_NPM_FIX_ID;
+      const fallback = deps.runNpmFallback();
+      bunSetupReport.fixOutcome = fallback ? 'ok' : 'error';
+      if (fallback) return fallback;
+      // installBun threw a platform-specific Error and the packaged fix could
+      // not recover; route it through the central decision point so it becomes
+      // a loud ABORT (bun is mandatory for hooks — there is no opt-out).
       installerError(ErrorSeverity.ABORT, {
         component: 'bun-install',
         phase: 'setup-runtime',
-        cause: err,
+        cause: officialError,
         remediation: platformBunRemediation(),
       }, sum);
     }

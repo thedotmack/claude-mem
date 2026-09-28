@@ -61,12 +61,12 @@ export const BUN_FAIL_REASONS = [
 export type BunFailReason = (typeof BUN_FAIL_REASONS)[number];
 
 export function classifyBunFailure(text: string): BunFailReason {
-  if (/execution polic|running scripts is disabled|PSSecurityException/i.test(text)) return 'powershell-policy';
+  if (/execution[_ ]polic|running scripts is disabled|PSSecurityException/i.test(text)) return 'powershell-policy';
   if (/curl: (command )?not found|'curl' is not recognized|curl: No such file/i.test(text)) return 'curl-missing';
   if (/unzip is required|unzip: (command )?not found/i.test(text)) return 'unzip-missing';
   if (/\b(EACCES|EPERM)\b|Permission denied|Access is denied/i.test(text)) return 'permission';
-  if (/SSL|TLS|certificate/i.test(text)) return 'tls';
-  if (/Could not resolve host|ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|Failed to connect|Connection (timed out|refused|reset)|Operation timed out|timed out|unable to connect|network/i.test(text)) return 'network';
+  if (/\bSSL\b|\bTLS\b|certificate/i.test(text)) return 'tls';
+  if (/Could not resolve host|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|Failed to connect|Connection (timed out|refused|reset)|Operation timed out|timed out|unable to connect|network/i.test(text)) return 'network';
   if (/binary not found|executable not found/i.test(text)) return 'binary-not-found';
   return 'other';
 }
