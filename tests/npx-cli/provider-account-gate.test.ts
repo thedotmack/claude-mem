@@ -24,7 +24,7 @@ describe('provider account gate', () => {
 describe('install flow wiring', () => {
   it('gates the OAuth login call behind providerNeedsAccount', () => {
     expect(source).toMatch(
-      /if \(providerNeedsAccount\(options\.provider\)\) \{\s*\n\s*oauthPairing = await requireInstallerOAuthLogin\(version\);/,
+      /if \(providerNeedsAccount\(options\.provider\)\) \{\s*\n\s*let loginSucceeded = false;\s*\n\s*oauthPairing = await trackStep\('signin', async \(\) => \{\s*\n\s*const pairing = await requireInstallerOAuthLogin\(version\);/,
     );
   });
 
@@ -33,12 +33,12 @@ describe('install flow wiring', () => {
     // settings must not enter requireInstallerOAuthLogin: it would open a
     // browser in an agent shell and poll until the pairing expires.
     const gateStart = source.indexOf('let oauthPairing: InstallerOAuthPairing | null = null;');
-    const gateEnd = source.indexOf('const selectedProvider = await promptProvider(options, oauthPairing, version);');
+    const gateEnd = source.indexOf("const selectedProvider = await trackStep('provider', () => promptProvider(options, oauthPairing, version));");
     expect(gateStart).toBeGreaterThan(-1);
     expect(gateEnd).toBeGreaterThan(gateStart);
     const gate = source.slice(gateStart, gateEnd);
     const persistedBranch = gate.indexOf("if (options.providerSource === 'persisted') {");
-    const oauthCall = gate.indexOf('oauthPairing = await requireInstallerOAuthLogin(version);');
+    const oauthCall = gate.indexOf('await requireInstallerOAuthLogin(version);');
     expect(persistedBranch).toBeGreaterThan(-1);
     expect(persistedBranch).toBeLessThan(oauthCall);
     expect(gate.slice(persistedBranch, oauthCall)).toContain('} else if (providerNeedsAccount(options.provider)) {');
