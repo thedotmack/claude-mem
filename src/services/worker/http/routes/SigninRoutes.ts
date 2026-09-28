@@ -1,4 +1,5 @@
 import express, { Request, Response } from 'express';
+import { logger } from '../../../../utils/logger.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -26,6 +27,7 @@ export class SigninRoutes extends BaseRouteHandler {
   private handleReminder = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const sessionId = typeof req.query.session_id === 'string' ? req.query.session_id.slice(0, 200) : '';
     const reminder = await resolveSigninReminder(sessionId, this.deps);
+    logger.debug('OAUTH', 'Sign-in reminder resolved', { show: reminder.show, reason: reminder.show ? 'shown' : reminder.reason });
     res.json(reminder.show
       ? { show: true, url: reminder.url, expires_in: reminder.expiresIn }
       : { show: false, reason: reminder.reason });
