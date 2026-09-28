@@ -197,14 +197,14 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
     severity: ErrorSeverity.ABORT,
     match: (_cause, ctx) => ctx.component === 'provider-selection',
     remediation: () =>
-      'Non-interactive installs need a provider. Pass `--provider claude` for local memory on your Anthropic plan, or run `npx claude-mem install` in an interactive terminal.',
+      'Non-interactive installs need a provider. `--provider claude` runs memory on the user\'s own Anthropic plan (no account). Sign-in is separate and needs the person (free): `npx claude-mem login --request`. Or run `npx claude-mem install` in an interactive terminal.',
   },
   {
     id: 'provider-credentials-missing',
     severity: ErrorSeverity.ABORT,
     match: (_cause, ctx) => ctx.component === 'provider-credentials',
     remediation: () =>
-      'The selected provider needs a personal API key on non-interactive runs. Save it in settings first, or run the installer interactively so it can ask securely.',
+      'The selected provider needs a personal API key on non-interactive runs. Save it in settings first, or run the installer interactively so it can ask securely. `--provider claude` needs no key (the user\'s own Anthropic plan); sign-in is separate and needs the person (free): `npx claude-mem login --request`.',
   },
   {
     id: 'unknown-install-error',

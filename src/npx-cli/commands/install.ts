@@ -2218,8 +2218,8 @@ export function validateNonInteractiveProvider(
             phase: 'non-interactive-validation',
             cause: new Error(`The configured ${persistedProvider} provider has no API key saved${persistedCmemGateway ? '' : ' or exported'}, so a non-interactive run cannot keep it.`),
             remediation: persistedCmemGateway
-              ? `Save ${persistedKeyName} in ~/.claude-mem/settings.json (the cmem gateway ignores an exported key), pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`
-              : `Save ${persistedKeyName} in ~/.claude-mem/settings.json or export it in the environment, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.`,
+              ? `Save ${persistedKeyName} in ~/.claude-mem/settings.json (the cmem gateway ignores an exported key), pass --provider claude to run memory on the user's own Anthropic plan (no account; sign-in is separate and needs the person, free: npx claude-mem login --request), or run the installer in an interactive terminal.`
+              : `Save ${persistedKeyName} in ~/.claude-mem/settings.json or export it in the environment, pass --provider claude to run memory on the user's own Anthropic plan (no account; sign-in is separate and needs the person, free: npx claude-mem login --request), or run the installer in an interactive terminal.`,
           }, summary);
         }
       }
@@ -2230,7 +2230,8 @@ export function validateNonInteractiveProvider(
     }
     options.provider = 'claude';
     options.providerSource = 'default';
-    log.info('No --provider given on a non-interactive run: defaulting to your Anthropic plan (local memory).');
+    log.info("No --provider given: memory will run on the user's own Anthropic plan (no account).");
+    log.info('Sign-in is separate and needs the person (free): npx claude-mem login --request');
   }
 
   if (options.provider === 'host') return;
@@ -2606,8 +2607,8 @@ async function runInstallCommandInner(
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
       : options.providerSource === 'default'
-        ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
-        : '--provider claude runs memory on your own Anthropic plan.';
+        ? "no --provider was given, so memory runs on the user's own Anthropic plan (sign-in is separate: npx claude-mem login --request)."
+        : "--provider claude runs memory on the user's own Anthropic plan (sign-in is separate: npx claude-mem login --request).";
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await trackStep('provider', () => promptProvider(options, oauthPairing, version));
@@ -2943,6 +2944,8 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
   } else {
     console.log('claude-mem repair complete.');
   }
+  clearAttempts();
+  printResultLine({ command: 'repair', status: 'ok', version });
 }
 
 export async function runRepairCommand(): Promise<void> {
@@ -2963,8 +2966,20 @@ export async function runRepairCommand(): Promise<void> {
         console.error(`  ${err.remediation}`);
         console.error(`  ${err.message}`);
       }
+      const attempt = recordFailedAttempt(err.category.id);
+      const bun = lastBunSetupReport();
+      printResultLine({
+        command: 'repair',
+        status: 'failed',
+        version: readPluginVersion(),
+        errorCategory: err.category.id,
+        fixTried: bun.fixId,
+        attemptN: attempt.attemptN,
+        retrySameCommand: !attempt.isRepeat,
+      });
       process.exit(1);
     }
+    printResultLine({ command: 'repair', status: 'failed', version: readPluginVersion(), errorCategory: 'unknown-install-error' });
     throw error;
   }
 }
