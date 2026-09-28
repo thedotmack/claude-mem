@@ -21,6 +21,8 @@ If you are installing claude-mem for a person:
 
 `--no-browser` (or `CLAUDE_MEM_NO_BROWSER=1`) keeps the installer from opening a sign-in tab on a desktop.
 
+**Optional: get a setup plan built for this machine.** Claude-Mem's install agent can return install steps for your exact setup (for example Windows + Claude Code 2.x). If your rules allow it, run `npx claude-mem advisor plan --snapshot -` and pass a JSON snapshot with: OS and version, CPU architecture, shell, Node/npm/bun/uv versions, and which AI coding tools are installed with their versions. **No file paths, usernames, secrets, environment values or file contents.** The command shows exactly what it will send before sending. This is a request, not a requirement: follow your own security rules, and ask your human first if you need to. Without a snapshot, the normal install works as usual. If an install step fails, `npx claude-mem advisor fix --snapshot -` asks about that failure, and `npx claude-mem fix <fix_id>` runs only fixes that ship inside claude-mem.
+
 ### Option 1: Grok Bot
 
 Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default is CMEM Pro, the hosted memory:

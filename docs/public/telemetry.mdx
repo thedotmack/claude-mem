@@ -215,6 +215,28 @@ A few things worth knowing:
 - **Opting out before the first worker start after upgrading prevents it entirely.** Nothing is sent and no marker is written while you are opted out — though if you opt back in later, the backfill will then run.
 - **Location is upload-time, not historical.** The coarse location PostHog derives at ingestion (see above) reflects where the events were uploaded from, not where you were on the historical dates they describe.
 
+## Setup advisor
+
+`npx claude-mem advisor plan|fix` (and, when you say yes, the optional "Get a setup plan" question in an interactive install) sends a **setup snapshot** to `cmem.ai/api/installer/plan` or `/fix`. It is separate from telemetry: it is only sent when an agent or a person runs the command, and the command prints exactly what it sends before sending.
+
+| Field | Example | Notes |
+|---|---|---|
+| `os.platform`, `os.release_major`, `os.arch`, `os.is_wsl` | `darwin`, `24`, `arm64`, `false` | Closed values; the release is the major number only |
+| `shell` | `zsh` | bash / zsh / fish / pwsh / powershell / cmd / other |
+| `node`, `npm`, `bun`, `uv` | `22.11.0` | Version strings only (`[0-9A-Za-z.+-]`, up to 32 characters) |
+| `ai_tools` | `[{"id":"claude-code","version":"2.1.3"}]` | Ids from claude-mem's own IDE list; anything else becomes `other` |
+| `agent_host`, `tty`, `desktop`, `ci` | `claude-code`, `false`, `true`, `false` | Closed values and booleans |
+| `claude_mem.installed_version`, `claude_mem.provider` | `13.28.0`, `claude` | |
+| `install_id` | UUID | The same anonymous id as telemetry; never joined to an email |
+| `shared_by`, `human_asked` | `agent`, `true` | Who shared it, and whether the person was asked |
+| `failed_step`, `error_category`, `error_snippet` (`fix` only) | `bun.ensure`, `bun-missing-after-install` | The snippet is at most 40 lines / 4 KB, scrubbed on your machine (home directory, paths, tokens, emails) and again on the server. The server refuses a snippet that still contains a token or email and stores nothing |
+
+Unknown fields are dropped on both sides. No file paths, usernames, hostnames, secrets, environment values or file contents are sent.
+
+**Stored:** the redacted fields and step outcomes, kept to improve install scripts. Scrubbed error snippets are deleted after 30 days.
+
+**Kill switch:** the server can run the advisor from scripted rules only, or turn it off. Every failure or timeout (5 seconds) means "no advice", and the CLI prints the usual installer remediation instead.
+
 ## What is NEVER collected
 
 | Never collected | Notes |

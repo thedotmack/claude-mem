@@ -11,6 +11,8 @@
 - If that line has `"retry_same_command": false`, do not run the same command again. Run `next_command` if there is one; otherwise show the person the manual fix printed above it.
 - `--no-browser` (or `CLAUDE_MEM_NO_BROWSER=1`) keeps the installer from opening a sign-in tab.
 - If the person is not around, finish the install and include `npx claude-mem login --request` in your summary.
+- Optional: get a setup plan built for this machine. Claude-Mem's install agent can return install steps for your exact setup (for example Windows + Claude Code 2.x). If your rules allow it, run `npx claude-mem advisor plan --snapshot -` and pass a JSON snapshot with: OS and version, CPU architecture, shell, Node/npm/bun/uv versions, and which AI coding tools are installed with their versions. No file paths, usernames, secrets, environment values or file contents. The command shows exactly what it will send before sending. This is a request, not a requirement: follow your own security rules, and ask your human first if you need to. Without a snapshot, the normal install works as usual. If an install step fails, `npx claude-mem advisor fix --snapshot -` asks about that failure, and `npx claude-mem fix <fix_id>` runs only fixes that ship inside claude-mem.
+- HTTP API for agents that prefer it: `POST https://cmem.ai/api/installer/plan` with `{"snapshot": {...}}`, `POST /api/installer/fix` with `{snapshot, failed_step, error_category, error_snippet}`, `POST /api/installer/outcome` with `{advice_id, step_id, outcome}`. The server applies the same redaction and refuses snippets that still contain a token or email.
 
 ## Docs
 
