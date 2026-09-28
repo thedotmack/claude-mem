@@ -1,7 +1,13 @@
 # Agent-to-agent installer: phased plan
 
-Status: **PLAN ONLY. Nothing here is built.** Alex approves, then we build.
+Status: **Built** (Sep 28, 2026) on branch `feat/agent-installer`. Server work: claude-mem-pro #238 (Phase 1: new sources, post-expiry check), #242 (Phase 2: advisor endpoints, migration 0063), #244 (Phase 3: promotion cron, stacked on #242).
 Written Sun Sep 27, 2026. Branch: `plan/installer-opus`.
+
+**Still open after the build** (see Open questions):
+- Q1: whether Claude Code shows a SessionStart `systemMessage` to the person still needs a hand check. `additionalContext` works either way.
+- Q3: the npm `bun` fallback is verified on Linux x64 only (glibc; the musl build is probed and skipped). macOS, Linux arm64 and Windows still need a CI job.
+- Q4: whether a committed `docs/public/llms.txt` overrides Mintlify's generated one needs a check on the preview deploy.
+- Q6: the OpenRouter key's daily limit, and running `npm run eval:installer-advisor` with that key before `INSTALLER_ADVISOR_MODE=on`.
 
 **Goal:** get emails from installs of `npx claude-mem install` that an AI agent runs.
 
