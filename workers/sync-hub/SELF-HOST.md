@@ -45,6 +45,10 @@ See "Self-hosted, end-to-end encrypted hub" in `docs/public/cloud-sync.mdx`.
 the hub to accept them and writes `~/.cloudflare/cmem-sync.env` (0600). Keep
 that file and the exported key; both are needed on every device.
 
+Claude Code cloud sessions (claude.ai/code) take the same values as
+`CLAUDE_MEM_CLOUD_SYNC_*` environment variables and are wired up by
+`scripts/cloud-setup.mjs`; see "Claude Code cloud sessions" in the same page.
+
 ## Tests
 
 ```bash

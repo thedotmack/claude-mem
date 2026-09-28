@@ -184,6 +184,82 @@ kinds (observation/summary/prompt), device ids and deletion markers.
 
 Details: `workers/sync-hub/SELF-HOST.md`.
 
+### Claude Code cloud sessions
+
+[Cloud sessions](https://code.claude.com/docs/en/claude-code-on-the-web)
+(Claude Code on the web, `claude --cloud`) don't install plugins, so
+`scripts/cloud-setup.mjs`, run from the cloud environment's setup script,
+wires claude-mem into the session VM from a claude-mem checkout: hooks in the
+VM's `~/.claude/settings.json` and the search MCP server in its
+`~/.claude.json`. The session then pulls your memories from the self-hosted
+hub, injects them at SessionStart, and pushes what it learns back, sealed with
+the same key.
+
+<Warning>
+This relies on behavior the Claude Code documentation doesn't cover. The
+[cloud environment docs](https://code.claude.com/docs/en/cloud-environments#what-carries-over-from-your-setup)
+say your machine's user-level settings and user-scope MCP servers don't carry
+over, and that hosted sessions run the repository's and your organization's
+hooks. Hooks and the MCP server that the setup script writes inside the VM
+itself did run in our testing, but that isn't a documented guarantee and may
+change.
+</Warning>
+
+In the [cloud environment](https://code.claude.com/docs/en/cloud-environments)
+settings:
+
+1. **Environment variables** (values from `~/.cloudflare/cmem-sync.env` and
+   `bun scripts/sync-e2e.ts export`):
+
+   ```bash
+   CLAUDE_MEM_CLOUD_SYNC_HUB_URL=https://<your-hub>.workers.dev
+   CLAUDE_MEM_CLOUD_SYNC_TOKEN=<SELF_HOST_TOKEN>
+   CLAUDE_MEM_CLOUD_SYNC_USER_ID=<SELF_HOST_USER_ID>
+   CLAUDE_MEM_CLOUD_SYNC_E2E_KEY=<the exported key, cmem-e2e-v1:…>
+   ```
+
+   A key in `CLAUDE_MEM_CLOUD_SYNC_E2E_KEY` turns E2E on by itself (no key
+   file needed), so a session never pushes plaintext. In our testing the
+   setup script didn't see these variables; the worker reads them when the
+   session starts.
+
+2. **Network access**: choose the **Custom** level and add your hub's domain
+   to the allowed domains, keeping the default list.
+
+3. **Setup script**:
+
+   ```bash
+   git clone --depth 1 https://github.com/thedotmack/claude-mem.git ~/claude-mem \
+     && node ~/claude-mem/scripts/cloud-setup.mjs
+   ```
+
+   The setup profile is SQLite-only search (no Chroma download) with no
+   welcome hint, and the worker is pinned to this checkout even when the
+   session's own repository is claude-mem. The setup result is cached as a
+   filesystem snapshot and rebuilt when the setup script or allowed network
+   hosts change, or after about seven days; edit the script (a trailing
+   `# v2` comment is enough) to pick up a newer checkout sooner.
+
+In our testing, observations and summaries were generated inside the session
+without any extra API key configuration. To check a session, ask it to run
+`curl -s localhost:37700/api/sync/status` (the port is `37700 + uid % 100`,
+37700 for root) and look for `End-to-end encryption enabled` in
+`~/.claude-mem/logs/`. From any device, `bun scripts/sync-e2e.ts verify`
+confirms that everything on the hub, including what cloud sessions pushed,
+decrypts with your key.
+
+<Warning>
+**Use a personal cloud environment only.** Per the cloud environment docs,
+anyone who uses an environment can read its environment variables and setup
+script, and they warn against putting secrets there; every member of an
+organization-shared environment reads its variables. Here the variables hold
+your hub token and your E2E key, which must be readable inside the VM to
+open your memories. Don't add them to a shared environment.
+</Warning>
+
+Every session is a new VM and so registers a new device, and the hub admits
+at most 64 devices per account (see above).
+
 ## Status endpoint
 
 The worker exposes `GET /api/sync/status` (on the same port as the rest of the
