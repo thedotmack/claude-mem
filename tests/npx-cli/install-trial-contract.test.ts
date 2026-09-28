@@ -226,8 +226,11 @@ describe('installer trial-ready contract', () => {
     const { output, exitCode } = runDeferredLoginChild(200, {}, ['CI']);
     expect(exitCode, output).toBe(0);
     expect(output).toContain('__FETCH_CALLED__');
-    expect(output).toContain('Sign-in link: https://cmem.ai/login?next=');
-    expect(output).toContain('AGENT: show this link to the user');
+    expect(output).toContain('Sign-in not finished. The user needs to open this link');
+    expect(output).toContain('  Link:  https://cmem.ai/login?next=');
+    expect(output).toContain('  Check: npx claude-mem login --check');
+    expect(output).toContain('  New link later: npx claude-mem login --request');
+    expect(output).not.toContain('AGENT:');
     expect(output).not.toContain(checkoutUrl);
     expect(output).not.toContain('trial=7');
     expect(output).not.toContain('ABCD-2345');
@@ -239,7 +242,7 @@ describe('installer trial-ready contract', () => {
     const { output, exitCode } = runDeferredLoginChild(503, {}, ['CI']);
     expect(exitCode, output).toBe(0);
     expect(output).toContain('__FETCH_CALLED__');
-    expect(output).not.toContain('Sign-in link:');
+    expect(output).not.toContain('Link:  ');
     expect(output).not.toContain('AGENT:');
     expect(output).toContain('__DEFERRED_DONE__');
   });
@@ -248,7 +251,7 @@ describe('installer trial-ready contract', () => {
     const { output, exitCode } = runDeferredLoginChild(200, { CI: '1' });
     expect(exitCode, output).toBe(0);
     expect(output).not.toContain('__FETCH_CALLED__');
-    expect(output).not.toContain('Sign-in link:');
+    expect(output).not.toContain('Link:  ');
     expect(output).toContain('__DEFERRED_DONE__');
   });
 
@@ -326,7 +329,7 @@ describe('installer trial-ready contract', () => {
   it('requires OAuth before provider selection and contains no retired email path', () => {
     const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
     const oauthIndex = source.indexOf('await requireInstallerOAuthLogin(version)');
-    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
+    const providerIndex = source.indexOf('promptProvider(options, oauthPairing, version)');
     expect(oauthIndex).toBeGreaterThan(-1);
     expect(providerIndex).toBeGreaterThan(oauthIndex);
     expect(source).toContain('p.multiselect<ProviderChoice>');
@@ -338,7 +341,7 @@ describe('installer trial-ready contract', () => {
 
   it('stops any respawned worker after provider settings are persisted', () => {
     const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
-    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
+    const providerIndex = source.indexOf('promptProvider(options, oauthPairing, version)');
     const cutoverIndex = source.indexOf("'provider-cutover'", providerIndex);
     const workerStartIndex = source.indexOf('workerStartResult = await ensureWorkerStarted', cutoverIndex);
     expect(providerIndex).toBeGreaterThan(-1);

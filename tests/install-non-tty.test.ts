@@ -55,7 +55,7 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('has interactive branch using p.tasks', () => {
-      expect(installSource).toContain('await p.tasks(tasks)');
+      expect(installSource).toContain('await p.tasks(tracked)');
     });
 
     it('has non-interactive fallback using console.log', () => {
@@ -129,8 +129,10 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('offers a deferred login-only sign-in link at the end of a non-interactive install', () => {
-      expect(installSource).toContain("'npx-installer-deferred'");
-      expect(installSource).toContain('AGENT: show this link to the user so they can finish signing in.');
+      // The arm picks the source (npx-installer-deferred | -deferred-open).
+      expect(installSource).toContain('const source = deferredSourceForArm(arm);');
+      // Facts, not directives: the old AGENT: line is gone for good.
+      expect(installSource).not.toContain('AGENT:');
       const helperStart = installSource.indexOf('export async function offerDeferredLogin(');
       const helperEnd = installSource.indexOf('\n}\n', helperStart);
       const helper = installSource.slice(helperStart, helperEnd);
@@ -143,6 +145,10 @@ describe('Install Non-TTY Support', () => {
       const callIndex = installSource.indexOf('await offerDeferredLogin(options, version)');
       expect(callIndex).toBeGreaterThan(installSource.indexOf("'\\nclaude-mem installed successfully!'"));
       expect(callIndex).toBeLessThan(installSource.indexOf("captureCliEvent('install_completed'"));
+      // The CLAUDE_MEM_RESULT line is printed after the sign-in block.
+      const resultIndex = installSource.indexOf("status: failedIDEs.length > 0 ? 'partial' : 'ok'");
+      expect(resultIndex).toBeGreaterThan(callIndex);
+      expect(installSource.lastIndexOf('printResultLine({', resultIndex)).toBeGreaterThan(callIndex);
     });
 
     it('never opens an API-key prompt on non-interactive stdin', () => {
