@@ -10,6 +10,8 @@ function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
 }
 
+const PORT_PROBE_TIMEOUT_MS = 5_000;
+
 // Bracket IPv6 literals so a `CLAUDE_MEM_WORKER_HOST` of `::1` yields a valid
 // `http://[::1]:port` URL instead of the malformed `http://::1:port`.
 function formatHostForUrl(host: string): string {
@@ -32,33 +34,60 @@ async function httpRequestToWorker(
   return { ok: response.ok, statusCode: response.status, body };
 }
 
-export async function isPortInUse(port: number): Promise<boolean> {
+export async function isPortInUse(port: number, timeoutMs: number = PORT_PROBE_TIMEOUT_MS): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   if (process.platform === 'win32') {
     try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {
+        signal: AbortSignal.timeout(Math.max(1, Math.min(PORT_PROBE_TIMEOUT_MS, deadline - Date.now()))),
+      });
+      if (response.ok) return true;
+      logger.debug('SYSTEM', 'Windows health check returned non-ok; falling through to socket probe', {
+        port,
+        status: response.status,
+      });
     } catch (error) {
       if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {}, error);
       } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', { error: String(error) });
       }
-      return false;
     }
   }
 
-  return new Promise((resolve) => {
+  return new Promise<boolean>((resolve) => {
     const server = net.createServer();
     const workerHost = getWorkerHost();
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      } else {
-        resolve(false);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const settle = (inUse: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(inUse);
+    };
+    const closeServer = () => {
+      try {
+        server.close(() => {});
+      } catch {
+        // The bind may not have reached `listening` yet.
       }
+    };
+    timer = setTimeout(() => {
+      // An inconclusive probe must be treated as occupied so callers never
+      // launch another worker while the port state is unknown.
+      settle(true);
+      closeServer();
+    }, Math.max(1, deadline - Date.now()));
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      settle(err.code === 'EADDRINUSE');
     });
     server.once('listening', () => {
-      server.close(() => resolve(false));
+      if (settled) {
+        closeServer();
+        return;
+      }
+      server.close(() => settle(false));
     });
     server.listen(port, workerHost);
   });
@@ -96,10 +125,14 @@ export function waitForReadiness(port: number, timeoutMs: number = 30000): Promi
 }
 
 export async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!(await isPortInUse(port))) return true;
-    await new Promise(r => setTimeout(r, 500));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (!(await isPortInUse(port, remainingMs))) return true;
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }
