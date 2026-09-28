@@ -30,4 +30,15 @@ interface Env {
 	 * `wrangler secret put DISCORD_WEBHOOK_URL`
 	 */
 	DISCORD_WEBHOOK_URL?: string;
+	/**
+	 * Self-host mode (wrangler.self-host.jsonc): one user, one shared bearer
+	 * token instead of the cmem.ai verifier. `wrangler secret put SELF_HOST_TOKEN`.
+	 */
+	SELF_HOST_TOKEN?: string;
+	/** The only X-User-Id accepted in self-host mode (a secret, like the token). */
+	SELF_HOST_USER_ID?: string;
+	/** "none" = no external projector: a push is fully acked once it is durable. */
+	PROJECTION_MODE?: string;
+	/** "1" = payloads/mutations must be end-to-end sealed; the hub never sees plaintext. */
+	OPAQUE_PAYLOADS?: string;
 }

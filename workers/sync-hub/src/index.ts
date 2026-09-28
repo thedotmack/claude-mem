@@ -352,6 +352,23 @@ export async function authenticateRequest(
 		return { ok: false, response: errorResponse(401, "missing X-User-Id header") };
 	}
 
+	// Self-host mode: a single user and a shared bearer secret, no cmem.ai
+	// verifier and no KV. Fail-closed like the verifier path.
+	const selfHostToken = env.SELF_HOST_TOKEN ?? "";
+	if (selfHostToken === "" && (env.SELF_HOST_USER_ID ?? "") !== "") {
+		// Half-configured self-host deploy: never fall through to the cmem.ai verifier.
+		return { ok: false, response: errorResponse(503, "self-host token not configured") };
+	}
+	if (selfHostToken !== "") {
+		if (!(await timingSafeEqualStrings(token, selfHostToken))) {
+			return { ok: false, response: errorResponse(401, "invalid token") };
+		}
+		if (userId !== (env.SELF_HOST_USER_ID ?? "").trim()) {
+			return { ok: false, response: errorResponse(403, "token does not belong to the presented user id") };
+		}
+		return { ok: true, userId, deviceId, deviceName };
+	}
+
 	const cacheKey = await verdictCacheKey(userId, token);
 	let cached: string | null = null;
 	try {
@@ -1065,6 +1082,11 @@ export default {
 
 		const url = new URL(request.url);
 		const { pathname } = url;
+		// The /internal/* control plane belongs to cmem.ai Pro; a self-hosted
+		// hub exposes only the sync routes.
+		if ((env.SELF_HOST_TOKEN ?? "") !== "" && pathname.startsWith("/internal/")) {
+			return errorResponse(404, "not found");
+		}
 		if (pathname === "/internal/v1/projection/drain") {
 			if (request.method !== "POST") return errorResponse(405, "use POST");
 			return handleRepairDrain(request, env);
@@ -1211,3 +1233,12 @@ export default {
 		console.log("sync-hub watchdog:", JSON.stringify(result));
 	},
 } satisfies ExportedHandler<Env>;
+
+/** Constant-time string comparison (both sides hashed to equal length first). */
+async function timingSafeEqualStrings(a: string, b: string): Promise<boolean> {
+	const [da, db] = await Promise.all([
+		crypto.subtle.digest("SHA-256", encoder.encode(a)),
+		crypto.subtle.digest("SHA-256", encoder.encode(b)),
+	]);
+	return crypto.subtle.timingSafeEqual(da, db);
+}

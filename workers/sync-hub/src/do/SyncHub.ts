@@ -372,7 +372,7 @@ export class SyncHub extends DurableObject<Env> {
 			if (!Array.isArray(ops)) throw invalid("ops must be an array");
 			rows = await Promise.all(ops.map(async (op, index) => {
 				try {
-					const parsed = await parseCanonicalOperation(op);
+					const parsed = await parseCanonicalOperation(op, { opaque: this.env.OPAQUE_PAYLOADS === "1" });
 					if (parsed.body.origin_device_id !== deviceId) {
 						throw new Error("origin_device_id does not match authenticated X-Device-Id");
 					}
@@ -460,6 +460,8 @@ export class SyncHub extends DurableObject<Env> {
 						seq,
 					);
 					this.setMeta("head_seq", seq);
+					// No external projector: durable in the log means fully acked.
+					if (this.env.PROJECTION_MODE === "none") this.setMeta("projected_seq", seq);
 					acked.push({
 						id: body.id,
 						kind: body.kind,

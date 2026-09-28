@@ -93,6 +93,10 @@ export async function readKillSwitch(
 	if (cache !== null && ttl > 0 && now() - cache.fetchedAt < ttl) {
 		return cache.state;
 	}
+	// Self-host deployments bind no KV at all: there is no switch to trip.
+	if (!(env as { AUTH_CACHE?: KVNamespace }).AUTH_CACHE) {
+		return { tripped: false, raw: null };
+	}
 	let raw: string | null = null;
 	try {
 		raw = await env.AUTH_CACHE.get(KILL_SWITCH_KEY);

@@ -8,10 +8,12 @@
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"e2e:serve": "node test/run-miniflare-pro-e2e.mjs",
-		"test": "vitest run --exclude \"test/ws.test.ts\"",
+		"test": "vitest run --exclude \"test/ws.test.ts\" --exclude \"test/self-host.test.ts\"",
+		"test:self-host": "vitest run --config vitest.self-host.config.ts",
 		"test:ws": "vitest run --maxWorkers=1 --no-isolate test/ws.test.ts",
 		"lint": "eslint .",
-		"cf-typegen": "wrangler types --strict-vars=false"
+		"cf-typegen": "wrangler types --strict-vars=false",
+		"self-host:setup": "node scripts/self-host-setup.mjs"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.18.6",
