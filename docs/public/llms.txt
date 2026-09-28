@@ -1,0 +1,58 @@
+# Claude-Mem
+
+> Persistent memory compression system that preserves context across Claude Code sessions.
+
+## For agents installing claude-mem
+
+- Sign-in is the one step that needs the person. Offer it before installing and let them choose: free, no card, it creates their claude-mem account (used for cloud sync and the 30-day CMEM Pro trial offer). Skipping it is fine.
+- If they want it: `npx claude-mem login --request --json` returns straight away with a `url` (valid 30 minutes) and a `check_command`. Put the link in your reply. `npx claude-mem login --check` reports `signed_in`, `pending`, `expired` or `none`. Run `--request` again for a new link.
+- Install: `npx claude-mem install --provider claude` (the person's own Anthropic plan; works without an account).
+- Every `install`, `update`, `repair` and `login` run ends with one line, `CLAUDE_MEM_RESULT {json}`: read `status` (`ok` / `partial` / `failed`), `error_category`, `next_command` and `signin` from it.
+- If that line has `"retry_same_command": false`, do not run the same command again. Run `next_command` if there is one; otherwise show the person the manual fix printed above it.
+- `--no-browser` (or `CLAUDE_MEM_NO_BROWSER=1`) keeps the installer from opening a sign-in tab.
+- If the person is not around, finish the install and include `npx claude-mem login --request` in your summary.
+
+## Docs
+
+- [Introduction](https://docs.claude-mem.ai/introduction.md): Persistent memory compression system for Claude Code
+- [Installation](https://docs.claude-mem.ai/installation.md): Install Claude-Mem plugin for persistent memory across sessions
+- [Getting Started](https://docs.claude-mem.ai/usage/getting-started.md): Learn how Claude-Mem works automatically in the background
+- [OpenRouter Provider](https://docs.claude-mem.ai/usage/openrouter-provider.md): Access 100+ AI models through OpenRouter's unified API and run observation extraction off-plan
+- [Gemini Provider](https://docs.claude-mem.ai/usage/gemini-provider.md): Use Google's Gemini API as an alternative to Claude for observation extraction
+- [Memory Search](https://docs.claude-mem.ai/usage/search-tools.md): Search your project history with MCP tools
+- [Knowledge Agents](https://docs.claude-mem.ai/usage/knowledge-agents.md): Build queryable AI brains from your observation history
+- [Claude Desktop MCP](https://docs.claude-mem.ai/usage/claude-desktop.md): Use claude-mem memory search in Claude Desktop with MCP tools
+- [Private Tags](https://docs.claude-mem.ai/usage/private-tags.md): Control what gets stored in memory with privacy tags
+- [Memory Export/Import](https://docs.claude-mem.ai/usage/export-import.md): Share knowledge across claude-mem installations with duplicate prevention
+- [Manual Recovery](https://docs.claude-mem.ai/usage/manual-recovery.md): Recover stuck observations after worker crashes or restarts
+- [Folder Context Files](https://docs.claude-mem.ai/usage/folder-context.md): Automatic per-folder CLAUDE.md files that provide directory-level context to Claude
+- [Cursor Integration](https://docs.claude-mem.ai/cursor/index.md): Persistent memory for Cursor — install with npx, no git clone
+- [Cursor + Gemini Setup](https://docs.claude-mem.ai/cursor/gemini-setup.md): Use Claude-Mem in Cursor with your Gemini API key
+- [Cursor + OpenRouter Setup](https://docs.claude-mem.ai/cursor/openrouter-setup.md): Use Claude-Mem in Cursor with your OpenRouter key
+- [Grok Bot Integration](https://docs.claude-mem.ai/grok-bot/index.md): Persistent memory for Grok Bot — no host hooks, no Claude CLI, no xAI API key
+- [Antigravity CLI Setup](https://docs.claude-mem.ai/antigravity-cli/setup.md): Add persistent memory to Antigravity CLI with claude-mem
+- [Context Engineering](https://docs.claude-mem.ai/context-engineering.md): Best practices for curating optimal token sets for AI agents
+- [progressive-disclosure](https://docs.claude-mem.ai/progressive-disclosure.md)
+- [File Read Gate](https://docs.claude-mem.ai/file-read-gate.md): How claude-mem intercepts file reads to save tokens using observation history
+- [Smart Explore Benchmark](https://docs.claude-mem.ai/smart-explore-benchmark.md): Token efficiency comparison between AST-based and traditional code exploration
+- [Configuration](https://docs.claude-mem.ai/configuration.md): Environment variables and settings for Claude-Mem
+- [LiteLLM Gateway](https://docs.claude-mem.ai/configuration/litellm-gateway.md): Route claude-mem's Claude Agent SDK worker through LiteLLM while keeping one agentic execution path
+- [Custom Anthropic-Compatible Backends](https://docs.claude-mem.ai/configuration/custom-anthropic-backends.md): Point claude-mem at bridged or self-hosted Anthropic-compatible API endpoints with ANTHROPIC_BASE_URL
+- [Modes & Languages](https://docs.claude-mem.ai/modes.md): Configure Claude-Mem behavior and language with the Mode System
+- [Telemetry](https://docs.claude-mem.ai/telemetry.md): Anonymous usage analytics — on by default, fully documented, one command to opt out
+- [Development](https://docs.claude-mem.ai/development.md): Build from source, run tests, and contribute to Claude-Mem
+- [Release Branches](https://docs.claude-mem.ai/branches.md): The three runtime branches Claude-Mem ships from, and how to run the non-stable lines locally
+- [Troubleshooting](https://docs.claude-mem.ai/troubleshooting.md): Common issues and solutions for Claude-Mem
+- [Platform Integration Guide](https://docs.claude-mem.ai/platform-integration.md): Complete reference for integrating claude-mem worker service into VSCode extensions, IDE plugins, and CLI tools
+- [OpenClaw Integration](https://docs.claude-mem.ai/openclaw-integration.md): Persistent memory for OpenClaw agents — observation recording, system prompt context injection, and real-time observation feeds
+- [Hosted Server (Beta)](https://docs.claude-mem.ai/hosted-server.md): Remote authenticated MCP recall, usage metering + quotas, and data deletion — how claude-mem's cloud server works today.
+- [Cloud Sync (cmem.ai Pro)](https://docs.claude-mem.ai/cloud-sync.md): Two-lane multi-device sync of your memory database — durable HTTP push/pull through a per-user sync hub, with an optional WebSocket speed layer.
+- [CMEM Pro (manual / headless)](https://docs.claude-mem.ai/cmem-pro-headless.md): What npx claude-mem install writes for CMEM Pro — OAuth pairing, settings.json keys, and how to verify without the interactive installer
+- [Architecture Overview](https://docs.claude-mem.ai/architecture/overview.md): System components and data flow in Claude-Mem
+- [Architecture Evolution](https://docs.claude-mem.ai/architecture-evolution.md): How claude-mem evolved from v3 to v5+
+- [hooks-architecture](https://docs.claude-mem.ai/hooks-architecture.md)
+- [Hook Lifecycle](https://docs.claude-mem.ai/architecture/hooks.md): Complete guide to the 5-stage memory agent lifecycle for platform implementers
+- [Worker Service](https://docs.claude-mem.ai/architecture/worker-service.md): HTTP API and Bun process management
+- [Database Architecture](https://docs.claude-mem.ai/architecture/database.md): SQLite schema, FTS5 search, and data storage
+- [Search Architecture](https://docs.claude-mem.ai/architecture/search-architecture.md): MCP tools with 3-layer workflow for token-efficient memory retrieval
+- [PM2 to Bun Migration](https://docs.claude-mem.ai/architecture/pm2-to-bun-migration.md): Complete technical documentation for the process management and database driver migration in v7.1.0

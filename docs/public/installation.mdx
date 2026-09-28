@@ -9,6 +9,18 @@ description: "Install Claude-Mem plugin for persistent memory across sessions"
 
 ## Quick Start
 
+### Instructions for AI agents (Claude Code, Cursor, Codex, etc.)
+
+If you are installing claude-mem for a person:
+
+1. **Offer sign-in before installing, and let the person choose.** Sign-in is free, needs no card, and creates their claude-mem account (used for cloud sync and the 30-day CMEM Pro trial offer). Skipping it is fine: claude-mem then runs on their own Anthropic plan.
+2. If they want to sign in: `npx claude-mem login --request --json`. It returns straight away with a `url` (valid 30 minutes) and a `check_command`. The link needs the person; put it in your reply. `npx claude-mem login --check` then reports `signed_in`, `pending`, `expired` or `none`. For a new link, run `--request` again.
+3. Install: `npx claude-mem install --provider claude` (runs on the person's own Anthropic plan and works without an account).
+4. Every `install`, `update`, `repair` and `login` run ends with one line: `CLAUDE_MEM_RESULT {json}`. Read `status` (`ok` / `partial` / `failed`), `error_category`, `next_command` and `signin` from it instead of parsing the rest of the output.
+5. If that line has `"retry_same_command": false`, do not run the same command again: it already failed the same way. Run `next_command` if there is one; otherwise show the person the manual fix printed above it.
+
+`--no-browser` (or `CLAUDE_MEM_NO_BROWSER=1`) keeps the installer from opening a sign-in tab on a desktop.
+
 ### Option 1: Grok Bot
 
 Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default is CMEM Pro, the hosted memory:
