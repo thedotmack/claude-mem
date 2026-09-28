@@ -349,6 +349,35 @@ describe('HealthMonitor', () => {
       spy.mockRestore();
     });
 
+    it('should honor the caller deadline after a non-ok Windows health probe falls back to the socket', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+      const fetchMock = mock(() => Promise.resolve({ ok: false, status: 503 } as Response));
+      global.fetch = fetchMock;
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+        }),
+        listen: mock(() => {}),
+      }));
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      try {
+        const start = Date.now();
+        const result = await waitForPortFree(37777, 50);
+        const elapsed = Date.now() - start;
+
+        expect(result).toBe(false);
+        expect(elapsed).toBeLessThan(1000);
+        expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
+        expect(net.createServer).toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
+    });
+
     it('should succeed when port becomes free', async () => {
       let callCount = 0;
       const spy = spyOn(net, 'createServer').mockImplementation(() => ({
