@@ -40,3 +40,11 @@ changed by this contribution.
 ### Concurrent requests
 
 `CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS` defaults to `2` (integer 1–8; invalid values use 2). Restart the worker after changing it. Requests enter a FIFO pool of exclusive app-server clients, each with its own private workspace and process. Queued cancellation does not send a request; shutdown cancels work and closes every client. Quota/setup admission is checked immediately before sending, and failures publish cooldowns before the slot is reused. Already admitted concurrent requests may still finish after a quota failure.
+
+### Observation backlog batching
+
+Codex immediately combines up to `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE=8` observations (integer 1–32). The rendered observation turn is capped by `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS=32000` (integer 4000–128000); invalid settings use defaults. This budget excludes prior conversation history. There is no wait to fill a batch. FIFO summaries, prompt numbers, working directories, and agent attribution changes stop a batch. Each input retains its timestamp, tool fields, tool-use ID and pending ID. Oversized next items run separately through existing field compression; an oversized first item uses explicit field elision after compression to respect the cap. Metadata too large to fit pauses with the item retained.
+
+Only included items are claimed, and the existing response/storage path acknowledges them after an accepted response (including an explicit skip). Errors, quota pauses, aborts and conversation recycling retain buffered work. Other providers keep single-observation requests. The queue remains in RAM: process crashes still require transcript replay.
+
+Validation: the focused Codex pool/client/provider/batch, session-buffer, shared init/summary, and recycle suites pass (78 tests; 16 POSIX-only transport tests skipped on Windows). `bun run typecheck` checks both worker and viewer. Live Codex throughput and POSIX subprocess behavior still need validation on their target runtime.

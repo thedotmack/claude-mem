@@ -1,11 +1,14 @@
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
 import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted } from '../../shared/quota-cooldown.js';
+import { OBS_PROMPT_FIELD_MAX_CHARS } from '../../sdk/prompts.js';
+import { observationMetadata, queuedObservationPrompt, boundObservationPrompt, sameObservationContext } from './codex-observation-batch.js';
+import type { WorkerRef } from './agents/index.js';
 import { logger } from '../../utils/logger.js';
 
 interface CodexConfig {
@@ -86,6 +89,38 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       reasoningEffort: settings.CLAUDE_MEM_CODEX_REASONING_EFFORT.trim() || null,
       timeoutMs: Number.isSafeInteger(timeout) && timeout > 0 ? timeout : 120_000,
     };
+  }
+
+  protected override readonly rejectAbortedObservation = true;
+
+  protected override observationTurnPrompt(session: ActiveSession, first: PendingMessageWithId, prompt: string): string {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const count = boundedInteger(settings.CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE, 8, 32);
+    const configuredChars = boundedInteger(settings.CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS, 32_000, 128_000);
+    const maxChars = configuredChars >= 4_000 ? configuredChars : 32_000;
+    let combined = boundObservationPrompt(observationMetadata(first) + prompt, maxChars);
+    for (let size = 1; size < count; size++) {
+      let addition = '';
+      const next = this.sessionManager.claimNextObservation(session.sessionDbId, candidate => {
+        if (!sameObservationContext(first, candidate)) return false;
+        // Do not add an oversized field that would need its own compression pass.
+        if ([candidate.tool_input, candidate.tool_response].some(field =>
+          (JSON.stringify(field, null, 2) ?? '').length > OBS_PROMPT_FIELD_MAX_CHARS)) return false;
+        const rawChars = JSON.stringify([candidate.tool_input, candidate.tool_response]).length;
+        addition = queuedObservationPrompt(candidate);
+        return Math.max(rawChars, addition.length) + combined.length + 2 <= maxChars;
+      });
+      if (!next) break;
+      combined += '\n\n' + addition;
+    }
+    return combined;
+  }
+
+  protected override handleSessionError(error: unknown, session: ActiveSession, worker?: WorkerRef): never {
+    // Storage/serialization errors must not finalize and discard an unacknowledged batch.
+    const preservingError = error instanceof ClassifiedProviderError || session.abortController.signal.aborted
+      ? error : new ClassifiedProviderError('Codex observation processing failed', { kind: 'transient', cause: error });
+    return super.handleSessionError(preservingError, session, worker);
   }
 
   protected missingApiKeyError(): Error {

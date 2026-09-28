@@ -51,6 +51,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
   CLAUDE_MEM_CODEX_TIMEOUT_MS: string;
   CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS: string;
+  CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE: string;
+  CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
@@ -211,6 +213,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CODEX_REASONING_EFFORT: '',
     CLAUDE_MEM_CODEX_TIMEOUT_MS: '120000',
     CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS: '2',
+    CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE: '8',
+    CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS: '32000',
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)

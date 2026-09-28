@@ -114,6 +114,7 @@ describe('OpenAICompatibleProvider init response', () => {
       getMessageIterator: async function* () {
         yield { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/main.ts' }, tool_response: 'file contents', prompt_number: 1 };
       },
+      claimNextObservation: mock(() => null),
       getClaimedMessages: mock(() => []),
       confirmClaimedMessages: mock(() => Promise.resolve(0)),
       resetProcessingToPending: mock(() => Promise.resolve(0)),
