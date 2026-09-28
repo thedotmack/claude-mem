@@ -80,3 +80,12 @@ describe('detectAgentContext', () => {
     expect(detectAgentContext({}, true)).toBe('tty');
   });
 });
+
+describe('StepTracker skipped steps', () => {
+  it('records skipped when the step says it did not run', async () => {
+    const { t, events } = tracker();
+    await t.run('worker.start', async () => 'Skipped (non-TTY)', { skipped: () => true });
+    await t.flush();
+    expect(events[0].props.outcome).toBe('skipped');
+  });
+});

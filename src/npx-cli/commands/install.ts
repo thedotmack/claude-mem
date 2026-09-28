@@ -127,6 +127,8 @@ interface TaskDescriptor {
   stepId?: InstallStepId;
   /** For steps that record failure on the summary instead of throwing. */
   failed?: () => boolean;
+  /** For steps that returned without doing their work (e.g. autostart off). */
+  skipped?: () => boolean;
 }
 
 /** Per-run install_step telemetry; set by runInstallCommand / runRepairCommand. */
@@ -150,7 +152,7 @@ function bunStepExtra() {
 function withStepTracking(t: TaskDescriptor): TaskDescriptor {
   if (!t.stepId) return t;
   const stepId = t.stepId;
-  return { ...t, task: (message) => trackStep(stepId, () => t.task(message), { failed: t.failed }) };
+  return { ...t, task: (message) => trackStep(stepId, () => t.task(message), { failed: t.failed, skipped: t.skipped }) };
 }
 
 async function runTasks(tasks: TaskDescriptor[]): Promise<void> {
@@ -2342,6 +2344,7 @@ async function runInstallCommandInner(
     {
       title: selectedRuntime === 'server' ? 'Starting server daemon' : 'Starting worker daemon',
       stepId: 'worker.start',
+      skipped: () => selectedRuntime === 'server' || autoStartSkipped,
       task: async (message) => {
         if (selectedRuntime === 'server') {
           return `Server runtime selected — start it with ${styleText('bold', 'npx claude-mem server start')} ${styleText('dim', '(or via Docker compose)')}`;

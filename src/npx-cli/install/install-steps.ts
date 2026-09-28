@@ -92,14 +92,14 @@ export class StepTracker {
   async run<T>(
     stepId: InstallStepId,
     fn: () => Promise<T>,
-    opts: { failed?: () => boolean; extra?: () => StepExtra } = {},
+    opts: { failed?: () => boolean; skipped?: () => boolean; extra?: () => StepExtra } = {},
   ): Promise<T> {
     const started = Date.now();
     this.current = stepId;
     try {
       const result = await fn();
       this.current = null;
-      this.record(stepId, opts.failed?.() ? 'error' : 'ok', Date.now() - started, opts.extra?.() ?? {});
+      this.record(stepId, opts.failed?.() ? 'error' : opts.skipped?.() ? 'skipped' : 'ok', Date.now() - started, opts.extra?.() ?? {});
       return result;
     } catch (error: unknown) {
       this.record(stepId, 'error', Date.now() - started, {
