@@ -48,6 +48,16 @@ function usage(): void {
   console.error('Usage: npx claude-mem login --request [--json] [--no-browser] | --check [--json] | --dismiss');
 }
 
+/** The version is only reported, so a missing package.json must not stop a sign-in. */
+function safePluginVersion(): string {
+  try {
+    return readPluginVersion();
+  } catch {
+    // [ANTI-PATTERN IGNORED]: reported as `unknown` in the result line; login itself does not need the version.
+    return 'unknown';
+  }
+}
+
 function emitJson(value: unknown): void {
   process.stdout.write(JSON.stringify(value) + '\n');
 }
@@ -72,7 +82,7 @@ export async function runLoginCommand(argv: string[]): Promise<number> {
   }
   const mode: LoginMode = modes[0];
   const json = values.json === true;
-  const version = readPluginVersion();
+  const version = safePluginVersion();
 
   if (mode === 'dismiss') return dismiss(version);
   if (mode === 'check') return check(version, json);
