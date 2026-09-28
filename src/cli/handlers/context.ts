@@ -24,6 +24,31 @@ import {
   markProFallbackNoticeShown,
   trialDaysRemaining,
 } from '../../shared/cmem-gateway.js';
+import { readSigninState, reminderShownForSession } from '../../npx-cli/install/signin-state.js';
+import { armShowsReminder } from '../../npx-cli/install/signin-arm.js';
+import { formatSigninReminder } from '../../services/signin-reminder.js';
+
+/**
+ * Sign-in reminder for an unclaimed agent-run install (arm C). The local
+ * state check runs first so every other install makes no extra worker call;
+ * the worker then polls the old pairing and mints a fresh link (3s budget).
+ * Any failure means no reminder.
+ */
+async function fetchSigninReminder(sessionId: string): Promise<{ systemMessage: string; additionalContext: string } | null> {
+  const state = readSigninState();
+  if (!sessionId || state?.state !== 'unclaimed' || !state.arm || !armShowsReminder(state.arm)) return null;
+  if (reminderShownForSession(sessionId)) return null;
+  const result = await executeWithWorkerFallback<{ show?: boolean; url?: unknown; expires_in?: unknown }>(
+    `/api/signin/reminder?session_id=${encodeURIComponent(sessionId)}`,
+    'GET',
+    undefined,
+    { timeoutMs: 4_000 },
+  );
+  if (isWorkerFallback(result) || !result || result.show !== true) return null;
+  if (typeof result.url !== 'string' || !result.url.startsWith('https://')) return null;
+  const expiresIn = typeof result.expires_in === 'number' ? result.expires_in : 1800;
+  return formatSigninReminder(result.url, expiresIn);
+}
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -114,6 +139,13 @@ export const contextHandler: EventHandler = {
       markProFallbackNoticeShown();
     }
 
+    const signinReminder = await fetchSigninReminder(input.sessionId);
+    if (signinReminder) {
+      additionalContext = additionalContext
+        ? `${signinReminder.additionalContext}\n\n${additionalContext}`
+        : signinReminder.additionalContext;
+    }
+
     let coloredTimeline = '';
     if (showTerminalOutput) {
       const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
@@ -140,9 +172,12 @@ export const contextHandler: EventHandler = {
       ? `claude-mem free trial: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
       : null;
 
-    const systemMessage = showTerminalOutput && displayContent
+    const timelineMessage = showTerminalOutput && displayContent
       ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
+    const systemMessage = signinReminder
+      ? (timelineMessage ? `${timelineMessage}\n${signinReminder.systemMessage}` : signinReminder.systemMessage)
+      : timelineMessage;
 
     return {
       hookSpecificOutput: {
