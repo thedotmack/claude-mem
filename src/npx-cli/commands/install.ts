@@ -2564,6 +2564,9 @@ async function runInstallCommandInner(
   } else {
     console.log('\n  Next Steps');
     nextSteps.forEach(l => console.log(`  ${l}`));
+    // Agent path only: the advisor is opt-in and the command shows what it
+    // sends before sending (docs: "Setup advisor" in telemetry.mdx).
+    console.log('  Optional setup plan for this machine: npx claude-mem advisor plan --snapshot - (shows the snapshot before sending; no paths, names, secrets or file contents).');
     if (failedIDEs.length > 0) {
       console.log('\nclaude-mem installed with some IDE setup failures.');
       process.exitCode = 1;
