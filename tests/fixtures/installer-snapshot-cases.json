@@ -1,0 +1,488 @@
+[
+ {
+  "name": "a valid snapshot passes unchanged",
+  "input": {
+   "v": 1,
+   "os": {
+    "platform": "darwin",
+    "release_major": "24",
+    "arch": "arm64",
+    "is_wsl": false
+   },
+   "shell": "zsh",
+   "node": "22.11.0",
+   "npm": "10.9.0",
+   "bun": "1.3.1",
+   "uv": null,
+   "ai_tools": [
+    {
+     "id": "claude-code",
+     "version": "2.1.3"
+    },
+    {
+     "id": "cursor",
+     "version": null
+    }
+   ],
+   "agent_host": "claude-code",
+   "tty": false,
+   "desktop": true,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": "13.28.0",
+    "provider": "claude"
+   },
+   "install_id": "3f9d7c1e-2b4a-4e8f-9a61-0c5d2e7b8a90",
+   "shared_by": "agent",
+   "human_asked": true
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": "darwin",
+    "release_major": "24",
+    "arch": "arm64",
+    "is_wsl": false
+   },
+   "shell": "zsh",
+   "node": "22.11.0",
+   "npm": "10.9.0",
+   "bun": "1.3.1",
+   "uv": null,
+   "ai_tools": [
+    {
+     "id": "claude-code",
+     "version": "2.1.3"
+    },
+    {
+     "id": "cursor",
+     "version": null
+    }
+   ],
+   "agent_host": "claude-code",
+   "tty": false,
+   "desktop": true,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": "13.28.0",
+    "provider": "claude"
+   },
+   "install_id": "3f9d7c1e-2b4a-4e8f-9a61-0c5d2e7b8a90",
+   "shared_by": "agent",
+   "human_asked": true
+  }
+ },
+ {
+  "name": "empty input gives the all-unknown snapshot",
+  "input": {},
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "non-object input gives the all-unknown snapshot",
+  "input": "rm -rf /",
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "unknown top-level and nested keys are dropped",
+  "input": {
+   "hostname": "alex-mbp",
+   "username": "alex",
+   "cwd": "/Users/alex/code",
+   "env": {
+    "OPENROUTER_API_KEY": "sk-or-v1-abc"
+   },
+   "os": {
+    "platform": "linux",
+    "hostname": "box"
+   },
+   "claude_mem": {
+    "provider": "claude",
+    "api_key": "sk-x"
+   }
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": "linux",
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": "claude"
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "paths in version fields become null",
+  "input": {
+   "node": "/usr/local/bin/node",
+   "npm": "C:\\\\Program Files\\\\nodejs",
+   "bun": "~/.bun/bin/bun",
+   "uv": "file:///x"
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "emails and hosts in version fields become null",
+  "input": {
+   "node": "alex@example.com",
+   "npm": "host.local:8080",
+   "bun": "1.3.1 (alex)"
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "a leading v is stripped from versions",
+  "input": {
+   "node": "v22.11.0"
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": "22.11.0",
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "unknown ai tool ids become other and duplicates collapse",
+  "input": {
+   "ai_tools": [
+    {
+     "id": "claude-code",
+     "version": "2.1.3"
+    },
+    {
+     "id": "claude-code",
+     "version": "9"
+    },
+    {
+     "id": "/Applications/Evil.app",
+     "version": "1"
+    },
+    {
+     "id": "alex@example.com"
+    }
+   ]
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [
+    {
+     "id": "claude-code",
+     "version": "2.1.3"
+    },
+    {
+     "id": "other",
+     "version": "1"
+    },
+    {
+     "id": "other",
+     "version": null
+    }
+   ],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "enums outside their lists fall back",
+  "input": {
+   "os": {
+    "platform": "freebsd",
+    "arch": "mips",
+    "release_major": "24.1"
+   },
+   "shell": "/bin/zsh",
+   "agent_host": "my-laptop",
+   "shared_by": "root",
+   "claude_mem": {
+    "provider": "sk-live"
+   }
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "booleans must be real booleans",
+  "input": {
+   "tty": "true",
+   "desktop": 1,
+   "ci": "yes",
+   "human_asked": "true",
+   "os": {
+    "is_wsl": "1"
+   }
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "install_id must be a lowercase uuid",
+  "input": {
+   "install_id": "alex@example.com"
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": null,
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ },
+ {
+  "name": "release_major accepts a number",
+  "input": {
+   "os": {
+    "release_major": 24
+   }
+  },
+  "expected": {
+   "v": 1,
+   "os": {
+    "platform": null,
+    "release_major": "24",
+    "arch": null,
+    "is_wsl": false
+   },
+   "shell": "other",
+   "node": null,
+   "npm": null,
+   "bun": null,
+   "uv": null,
+   "ai_tools": [],
+   "agent_host": "other",
+   "tty": false,
+   "desktop": false,
+   "ci": false,
+   "claude_mem": {
+    "installed_version": null,
+    "provider": null
+   },
+   "install_id": null,
+   "shared_by": "agent",
+   "human_asked": false
+  }
+ }
+]
