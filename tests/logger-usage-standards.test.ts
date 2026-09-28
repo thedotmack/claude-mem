@@ -86,12 +86,12 @@ async function findTypeScriptFiles(dir: string): Promise<string[]> {
 }
 
 function shouldExclude(filePath: string): boolean {
-  const relativePath = relative(SRC_DIR, filePath);
+  const relativePath = relative(SRC_DIR, filePath).replaceAll("\\", "/");
   return EXCLUDED_PATTERNS.some(pattern => pattern.test(relativePath));
 }
 
 function isHighPriority(filePath: string): boolean {
-  const relativePath = relative(SRC_DIR, filePath);
+  const relativePath = relative(SRC_DIR, filePath).replaceAll("\\", "/");
 
   if (isUIFile(relativePath)) {
     return false;
@@ -103,7 +103,7 @@ function isHighPriority(filePath: string): boolean {
 function analyzeFile(filePath: string): FileAnalysis {
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
-  const relativePath = relative(PROJECT_ROOT, filePath);
+  const relativePath = relative(PROJECT_ROOT, filePath).replaceAll("\\", "/");
 
   const hasLoggerImport = /import\s+.*logger.*from\s+['"].*logger(\.(js|ts))?['"]/.test(content);
 

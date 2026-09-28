@@ -1,4 +1,5 @@
 import { buildObservationPrompt, renderObservationPrompt, type ObservationPromptParts } from '../../sdk/prompts.js';
+import { logger } from '../../utils/logger.js';
 import type { PendingMessageWithId } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 
@@ -35,7 +36,9 @@ export function boundObservationPrompt(parts: ObservationPromptParts, maxChars: 
     if (shrink(mid).length <= maxChars) low = mid;
     else high = mid - 1;
   }
-  return shrink(low);
+  const bounded = shrink(low);
+  logger.debug('SDK', 'Codex observation elided to batch limit', { originalChars: prompt.length, boundedChars: bounded.length, maxChars });
+  return bounded;
 }
 
 /** Storage has one attribution context per response, so changes are batch barriers. */

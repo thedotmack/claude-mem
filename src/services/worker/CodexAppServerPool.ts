@@ -1,4 +1,5 @@
 import { CodexAppServerClient, type CodexAppServerTurnOptions, type CodexAppServerTurnResult } from './CodexAppServerClient.js';
+import { logger } from '../../utils/logger.js';
 
 export function boundedInteger(value: unknown, fallback: number, max: number): number {
   const number = Number(value);
@@ -26,6 +27,7 @@ export class CodexAppServerPool {
   constructor(size = 2, factory: () => Client = () => new CodexAppServerClient()) {
     this.clients = Array.from({ length: boundedInteger(size, 2, 8) }, factory);
     this.idle = [...this.clients];
+    logger.debug('SDK', 'App-server pool initialized', { concurrency: this.clients.length });
   }
 
   runTurn(options: CodexAppServerTurnOptions): Promise<CodexAppServerTurnResult> {
@@ -69,6 +71,7 @@ export class CodexAppServerPool {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
+    logger.debug('SDK', 'Closing app-server pool', { active: this.active.size, queued: this.queue.length });
     this.shutdown.abort(new Error('Codex app-server pool closed'));
     for (const job of this.queue.splice(0)) {
       job.cleanup();
