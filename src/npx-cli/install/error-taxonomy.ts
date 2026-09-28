@@ -35,6 +35,40 @@ export interface ErrorCategory {
   severity: ErrorSeverity;
   match: (cause: unknown, ctx: MatchContext) => boolean;
   remediation: (ctx: RemediationContext) => string;
+  /**
+   * Scripted fix shipped in this package for this category, run by
+   * `npx claude-mem fix <id>` (see install/fix-catalog.ts). Null when the
+   * only fix is manual.
+   */
+  fixId?: string;
+}
+
+/**
+ * Why the official Bun install script failed, as a closed list parsed from the
+ * script's error output. Only the enum value ever leaves the machine
+ * (install_failed / install_step `bun_fail_reason`), never the text.
+ */
+export const BUN_FAIL_REASONS = [
+  'curl-missing',
+  'unzip-missing',
+  'network',
+  'tls',
+  'permission',
+  'powershell-policy',
+  'binary-not-found',
+  'other',
+] as const;
+export type BunFailReason = (typeof BUN_FAIL_REASONS)[number];
+
+export function classifyBunFailure(text: string): BunFailReason {
+  if (/execution polic|running scripts is disabled|PSSecurityException/i.test(text)) return 'powershell-policy';
+  if (/curl: (command )?not found|'curl' is not recognized|curl: No such file/i.test(text)) return 'curl-missing';
+  if (/unzip is required|unzip: (command )?not found/i.test(text)) return 'unzip-missing';
+  if (/\b(EACCES|EPERM)\b|Permission denied|Access is denied/i.test(text)) return 'permission';
+  if (/SSL|TLS|certificate/i.test(text)) return 'tls';
+  if (/Could not resolve host|ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|Failed to connect|Connection (timed out|refused|reset)|Operation timed out|timed out|unable to connect|network/i.test(text)) return 'network';
+  if (/binary not found|executable not found/i.test(text)) return 'binary-not-found';
+  return 'other';
 }
 
 function causeMessage(cause: unknown): string {
@@ -74,6 +108,7 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
       );
     },
     remediation: BUN_REMEDIATION,
+    fixId: 'fix.bun.npm-package',
   },
   {
     id: 'uv-missing-after-install',
