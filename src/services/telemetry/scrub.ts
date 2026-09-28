@@ -211,7 +211,36 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'observations_created',
   'total_observations_injected',
   'total_tokens_saved_vs_naive',
+  // install_step (npx installer) — one event per step. Every string value
+  // below must match its closed pattern in CLOSED_VALUE_PATTERNS or it is
+  // dropped: step_id is OUR step id (or ide.<our ide id>), agent_context an
+  // env-marker enum, signin_arm A|B|C, browser_open an outcome enum,
+  // bun_fail_reason the closed list from error-taxonomy.ts, fix_id one of OUR
+  // fix ids, fix_outcome ok|error, attempt_n an integer. Never free text.
+  'step_id',
+  'agent_context',
+  'signin_arm',
+  'browser_open',
+  'bun_fail_reason',
+  'fix_id',
+  'fix_outcome',
+  'attempt_n',
 ]);
+
+/**
+ * Keys whose string values must come from a closed vocabulary. A value that
+ * does not match is dropped, so a call site cannot smuggle free text (an
+ * error message, a path) through an allowlisted enum key.
+ */
+export const CLOSED_VALUE_PATTERNS: Record<string, RegExp> = {
+  step_id: /^(?:detect|marketplace\.copy|plugin\.cache|marketplace\.register|plugin\.register|plugin\.enable|bun\.ensure|uv\.ensure|plugin\.deps|marketplace\.deps|provider|worker\.start|signin|ide\.[a-z0-9-]{1,40})$/,
+  agent_context: /^(?:claude-code|cursor|codex|unknown-non-tty|tty)$/,
+  signin_arm: /^[ABC]$/,
+  browser_open: /^(?:opened|skipped-no-desktop|skipped-flag|skipped-marker|skipped-arm|failed)$/,
+  bun_fail_reason: /^(?:curl-missing|unzip-missing|network|tls|permission|powershell-policy|binary-not-found|other)$/,
+  fix_id: /^fix\.[a-z0-9-]+(?:\.[a-z0-9-]+)*$/,
+  fix_outcome: /^(?:ok|error)$/,
+};
 
 const MAX_STRING_LENGTH = 200;
 
@@ -228,6 +257,8 @@ function copyAllowedProperties(
     if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
     const value = props[key];
     if (typeof value === 'string') {
+      const closed = CLOSED_VALUE_PATTERNS[key];
+      if (closed && !closed.test(value)) continue;
       const truncated = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
       // Allowed keys are supposed to be enums/counters, but a call site can
       // still stuff a URL-shaped token into e.g. `endpoint`. Run the error
