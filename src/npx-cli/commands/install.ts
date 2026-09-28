@@ -47,6 +47,7 @@ import {
   type ResultSignin,
 } from '../install/result-line.js';
 import { clearAttempts, recordFailedAttempt } from '../install/attempt-guard.js';
+import { clearLastAdvice, readLastAdvice, reportAdviceOutcome } from '../install/advisor-client.js';
 import { getOrCreateInstallId } from '../../services/telemetry/consent.js';
 import {
   createInstallSummary,
@@ -1965,6 +1966,18 @@ export function validateNonInteractiveProvider(
   }
 }
 
+/**
+ * When this install followed an advisor answer (last-advice.json, 24h), tell
+ * the advisor how it went, once. Best-effort and silent: the result line stays
+ * the last line of output.
+ */
+async function reportFollowedAdvice(outcome: 'ok' | 'error'): Promise<void> {
+  const adviceId = readLastAdvice();
+  if (!adviceId) return;
+  clearLastAdvice();
+  await reportAdviceOutcome(adviceId, 'install', outcome);
+}
+
 /** The step the abort happened in, for the result line's failed_step. */
 function abortedStep(err: InstallAbortError): string | null {
   if (steps?.current) return steps.current;
@@ -2022,6 +2035,7 @@ export async function runInstallCommand(
         else console.error(`  ${repeatLine}`);
       }
       await steps?.flush();
+      await reportFollowedAdvice('error');
       // A packaged fix the installer has not already run this time is the one
       // useful next command; bun's npm-package fix runs inside ensureBun.
       const fixId = err.category.fixId ?? null;
@@ -2112,6 +2126,14 @@ async function runInstallCommandInner(
         process.exit(0);
       }
     }
+  }
+
+  if (isInteractive && getSetting('CLAUDE_MEM_ADVISOR_TTY_OFFER') === 'true') {
+    const { offerSetupPlan } = await import('./advisor.js');
+    await offerSetupPlan(async (message) => {
+      const answer = await p.confirm({ message, initialValue: false });
+      return answer === true;
+    });
   }
 
   const detectStartedAt = Date.now();
@@ -2587,6 +2609,7 @@ async function runInstallCommandInner(
 
   await steps?.flush();
   if (failedIDEs.length === 0) clearAttempts();
+  await reportFollowedAdvice(failedIDEs.length === 0 ? 'ok' : 'error');
   printResultLine({
     command,
     status: failedIDEs.length > 0 ? 'partial' : 'ok',

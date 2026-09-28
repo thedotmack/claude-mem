@@ -163,3 +163,54 @@ describe('fix <id>', () => {
     expect(parseLastResultLine(res.stdout)).toMatchObject({ command: 'fix', status: 'ok', fix_tried: 'fix.attempts.reset', next_command: 'npx claude-mem install' });
   });
 });
+
+describe('Path 2: the interactive setup-plan offer', () => {
+  function runOffer(answer: boolean) {
+    const script = `
+      const requests = [];
+      const asked = [];
+      globalThis.fetch = async (url, init) => {
+        requests.push(String(url));
+        return new Response(${JSON.stringify(JSON.stringify(planAnswer))}, { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      const { offerSetupPlan } = await import('./src/npx-cli/commands/advisor.ts');
+      await offerSetupPlan(async (message) => { asked.push(message); return ${answer}; });
+      process.stderr.write('__OUT__=' + JSON.stringify({ requests, asked }) + '\\n');
+    `;
+    const child = Bun.spawnSync([process.execPath, '--eval', script], {
+      cwd: repoRoot,
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_TELEMETRY: '0', CMEM_PRO_ORIGIN: 'https://cmem.test' },
+      stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
+    });
+    const stderr = decoder.decode(child.stderr);
+    const out = JSON.parse(stderr.split('\n').find((l) => l.startsWith('__OUT__='))!.slice(8));
+    return { stdout: decoder.decode(child.stdout), ...out };
+  }
+
+  it('a No (the default) sends nothing', () => {
+    const res = runOffer(false);
+    expect(res.asked).toHaveLength(1);
+    expect(res.asked[0]).toContain('No file paths, names, keys or file contents');
+    expect(res.requests).toEqual([]);
+    expect(res.stdout).not.toContain('Sending to');
+  });
+
+  it('a Yes shows the snapshot, then sends it and prints the plan', () => {
+    const res = runOffer(true);
+    expect(res.requests).toEqual(['https://cmem.test/api/installer/plan']);
+    expect(res.stdout.indexOf('Sending to cmem.ai/api/installer/plan:')).toBeLessThan(res.stdout.indexOf('Setup plan'));
+    expect(res.stdout).toContain('"shared_by": "human"');
+  });
+});
+
+describe('installer reports the outcome of followed advice', () => {
+  it('reports before the result line on both the success and abort paths', () => {
+    const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
+    const okReport = source.indexOf("await reportFollowedAdvice(failedIDEs.length === 0 ? 'ok' : 'error');");
+    const errReport = source.indexOf("await reportFollowedAdvice('error');");
+    expect(okReport).toBeGreaterThan(-1);
+    expect(errReport).toBeGreaterThan(-1);
+    expect(source.indexOf('printResultLine({', okReport)).toBeGreaterThan(okReport);
+    expect(source.indexOf('printResultLine({', errReport)).toBeGreaterThan(errReport);
+  });
+});

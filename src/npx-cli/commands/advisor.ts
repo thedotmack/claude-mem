@@ -211,3 +211,25 @@ export async function runAdvisorCommand(argv: string[]): Promise<number> {
   });
   return 0;
 }
+
+/** The consent question for a person in a terminal (Path 2). The default is No. */
+export const TTY_PLAN_OFFER = 'Get a setup plan from the Claude-Mem install agent? It sends your OS, CPU type, shell, and tool versions (Node, bun, uv, installed AI coding tools). No file paths, names, keys or file contents. Details: docs.claude-mem.ai/telemetry';
+
+/**
+ * Path 2: an interactive install may offer a plan. Our code collects the
+ * snapshot (no LLM), shows it, and sends it only after a yes. The install
+ * continues the same way whatever the answer; the plan is advice to read.
+ */
+export async function offerSetupPlan(confirm: (message: string) => Promise<boolean>): Promise<void> {
+  if (!(await confirm(TTY_PLAN_OFFER))) return;
+  const snapshot = localSnapshot();
+  console.log('Sending to cmem.ai/api/installer/plan:');
+  console.log(JSON.stringify({ snapshot }, null, 2));
+  const answer = parseAdvisorAnswer(await postAdvisor('plan', { snapshot }));
+  if (!answer) {
+    console.log('No advice available right now; continuing with the standard install.');
+    return;
+  }
+  saveLastAdvice(answer.adviceId);
+  printAnswer(answer);
+}
