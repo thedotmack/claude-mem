@@ -70,6 +70,59 @@ function harness(startSession: (s: ActiveSession) => Promise<void>) {
 }
 
 describe('Codex provider integration', () => {
+  for (const [message, key, kind] of [
+    ['usage limit reached', 'codex', 'quota_exhausted'],
+    ['not logged in', 'codex-setup', 'auth_invalid'],
+    ['Codex executable not found', 'codex-setup', 'unrecoverable'],
+  ] as const) {
+    it(`does not republish delayed ${kind} rejection after a successful probe`, async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const failure = new Error(message);
+      let rejectOld!: (error: unknown) => void;
+      let sends = 0;
+      provider.appServer.runTurn = (options: any) => {
+        options.beforeSend();
+        if (++sends === 1) {
+          options.onFailure(failure);
+          return new Promise((_, reject) => { rejectOld = reject; });
+        }
+        return Promise.resolve({ content: 'Recovered' });
+      };
+      const old = provider.query([], config).catch((error: unknown) => error);
+      const published = getQuotaCooldown(key)!;
+      expect(published).not.toBeNull();
+      const claim = tryAdmitQuotaProbe(key, published.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
+      expect(claim.admitted).toBe(true);
+      await provider.query([], { ...config,
+        quotaProbeClaimId: key === 'codex' ? claim.claimId : null,
+        setupProbeClaimId: key === 'codex-setup' ? claim.claimId : null });
+      expect(getQuotaCooldown(key)).toBeNull();
+      rejectOld(failure);
+      expect(await old).toHaveProperty('kind', kind);
+      expect(getQuotaCooldown(key)).toBeNull();
+      await provider.query([], config);
+      expect(sends).toBe(3);
+      // A genuinely new failure still arms a fresh cooldown, even without the callback.
+      provider.appServer.runTurn = async () => { throw new Error(message); };
+      await expect(provider.query([], config)).rejects.toMatchObject({ kind });
+      expect(getQuotaCooldown(key)).not.toBeNull();
+      expect(getQuotaCooldown(key)).not.toBe(published);
+    });
+  }
+
+  it('publishes quota failure from a retry after a transient attempt', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    let sends = 0;
+    provider.appServer.runTurn = async (options: any) => {
+      const failure = new Error(++sends === 1 ? 'connection closed' : 'usage limit reached');
+      options.onFailure(failure);
+      throw failure;
+    };
+    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'quota_exhausted' });
+    expect(sends).toBe(2);
+    expect(getQuotaCooldown('codex')).not.toBeNull();
+  });
+
   it('accepts an empty structured initialization reply without retrying', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const methods = stubCompletedAppServerTurns(provider, ['']);

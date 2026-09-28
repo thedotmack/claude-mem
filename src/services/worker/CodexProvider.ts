@@ -132,6 +132,28 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     const admittedSetup = getQuotaCooldown('codex-setup');
     try {
       const result = await withRetry(async signal => {
+        // The client publishes before releasing its slot. Its rejection may arrive
+        // after a recovery probe, so catching that same failure must not publish it
+        // again. Scope this identity to the attempt so retries can report new failures.
+        let published: { cause: unknown; classified: ClassifiedProviderError } | undefined;
+        const publishFailure = (cause: unknown): ClassifiedProviderError => {
+          if (published && (cause === published.cause || cause === published.classified)) return published.classified;
+          const classified = cause instanceof ClassifiedProviderError ? cause : classifyCodexError(cause);
+          if (!signal.aborted) {
+            if (classified.kind === 'quota_exhausted') {
+              recordQuotaExhausted('codex', classified.message);
+            }
+            if (classified.kind === 'unrecoverable' || classified.kind === 'auth_invalid') {
+              recordQuotaExhausted('codex-setup', classified.message);
+              logger.warn('SDK', 'Codex setup failure; pausing Codex requests until a recovery probe succeeds', {
+                kind: classified.kind,
+                message: classified.message,
+              });
+            }
+          }
+          published = { cause, classified };
+          return classified;
+        };
         try {
           return await this.appServer.runTurn({
             codexPath: config.codexPath,
@@ -152,24 +174,11 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
                 throw new ClassifiedProviderError('Codex quota cooldown is active', { kind: 'quota_paused', cause: null });
               }
             },
-            onFailure: error => {
-              if (signal.aborted) return;
-              const classified = error instanceof ClassifiedProviderError ? error : classifyCodexError(error);
-              if (classified.kind === 'quota_exhausted') {
-                recordQuotaExhausted('codex', classified.message);
-              }
-              if (classified.kind === 'unrecoverable' || classified.kind === 'auth_invalid') {
-                recordQuotaExhausted('codex-setup', classified.message);
-                logger.warn('SDK', 'Codex setup failure; pausing Codex requests until a recovery probe succeeds', {
-                  kind: classified.kind,
-                  message: classified.message,
-                });
-              }
-            },
+            onFailure: publishFailure,
           });
         } catch (error) {
-          if (signal.aborted || error instanceof ClassifiedProviderError) throw error;
-          throw classifyCodexError(error);
+          if (signal.aborted) throw error;
+          throw publishFailure(error);
         }
       }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: config.timeoutMs, abortSignal });
       // A concurrent success cannot clear a newer failure from another slot.
@@ -178,7 +187,6 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       return result;
     } catch (error) {
       if (error instanceof ClassifiedProviderError && error.kind === 'quota_exhausted') {
-        recordQuotaExhausted('codex', error.message);
         logger.warn('SDK', 'Codex usage limit reached; pausing Codex requests until a quota probe succeeds', {
           message: error.message,
         });
