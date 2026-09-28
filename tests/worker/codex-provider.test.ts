@@ -7,6 +7,8 @@ import { ClassifiedProviderError } from '../../src/services/worker/provider-erro
 import { getSelectedProvider, selectProviderForGenerator } from '../../src/services/worker/provider-dispatch.js';
 import { getQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, tryAdmitQuotaProbe, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS, CODEX_SETUP_RECHECK_COOLDOWN_MS } from '../../src/shared/quota-cooldown.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex', timeoutMs: 1000 };
 
@@ -70,6 +72,77 @@ function harness(startSession: (s: ActiveSession) => Promise<void>) {
 }
 
 describe('Codex provider integration', () => {
+  const observation = `<observation><type>bugfix</type><title>Preserve quota pause</title>
+    <subtitle>Concurrent storage</subtitle><narrative>Storage preserves newer quota failures.</narrative>
+    <facts><fact>Two turns can finish out of order.</fact></facts>
+    <concepts><concept>problem-solution</concept></concepts>
+    <files_read></files_read><files_modified></files_modified></observation>`;
+
+  function storageHarness() {
+    ModeManager.getInstance().loadMode('code');
+    const store = mock(() => ({ observationIds: [1], summaryId: null, createdAtEpoch: 1 }));
+    const confirm = mock(async () => 1);
+    const db = { getSessionStore: () => ({ storeObservations: store,
+      ensureMemorySessionIdRegistered: () => 'codex-test' }),
+      getChromaSync: () => null, getCloudSync: () => null };
+    const manager = { getClaimedMessages: () => [], confirmClaimedMessages: confirm };
+    const process = (text: string, s = session()) =>
+      processAgentResponse(text, s, db as any, manager as any, undefined, 0, 1, 'Codex');
+    return { store, confirm, process };
+  }
+
+  for (const failureBeforeSuccess of [true, false]) {
+    it(`preserves concurrent quota refusal through valid observation storage (failure before success: ${failureBeforeSuccess})`, async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const pending: Array<{ options: any; resolve: (value: any) => void; reject: (error: unknown) => void }> = [];
+      provider.appServer.runTurn = (options: any) => {
+        options.beforeSend();
+        return new Promise((resolve, reject) => { pending.push({ options, resolve, reject }); });
+      };
+      const earlier = provider.query([], config);
+      const later = provider.query([], config).catch((error: unknown) => error);
+      expect(pending).toHaveLength(2);
+      const fail = async () => {
+        const error = new Error('usage limit reached');
+        pending[1].options.onFailure(error);
+        pending[1].reject(error);
+        expect(await later).toHaveProperty('kind', 'quota_exhausted');
+      };
+      if (failureBeforeSuccess) await fail();
+      pending[0].resolve({ content: observation });
+      const result = await earlier;
+      if (!failureBeforeSuccess) await fail();
+      const newer = getQuotaCooldown('codex');
+      expect(newer).not.toBeNull();
+      const h = storageHarness();
+      await h.process(result.content);
+      expect(h.store).toHaveBeenCalledTimes(1);
+      expect((h.store.mock.calls[0] as any)[2]).toMatchObject([{ title: 'Preserve quota pause' }]);
+      expect(h.confirm).toHaveBeenCalledTimes(1);
+      expect(getQuotaCooldown('codex')).toBe(newer);
+      expect(tryAdmitQuotaProbe('codex').admitted).toBe(false);
+
+      // The owned recovery probe can still clear the pause and store its reply.
+      const claim = tryAdmitQuotaProbe('codex', newer!.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
+      const recovery = provider.query([], { ...config, quotaProbeClaimId: claim.claimId });
+      pending[2].resolve({ content: observation });
+      await h.process((await recovery).content);
+      expect(h.store).toHaveBeenCalledTimes(2);
+      expect(getQuotaCooldown('codex')).toBeNull();
+    });
+  }
+
+  for (const currentProvider of ['claude', 'gemini', 'openrouter', 'cmem-gateway'] as const) {
+    it(`still clears ${currentProvider} cooldown after valid observation storage`, async () => {
+      recordQuotaExhausted(currentProvider, 'fixture');
+      const h = storageHarness();
+      await h.process(observation, { ...session(), currentProvider });
+      expect(h.store).toHaveBeenCalledTimes(1);
+      expect(h.confirm).toHaveBeenCalledTimes(1);
+      expect(getQuotaCooldown(currentProvider)).toBeNull();
+    });
+  }
+
   for (const [message, key, kind] of [
     ['usage limit reached', 'codex', 'quota_exhausted'],
     ['not logged in', 'codex-setup', 'auth_invalid'],
