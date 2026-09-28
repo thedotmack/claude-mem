@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { isDesktopSession, isWsl } from '../../src/npx-cli/install/desktop-detect';
+import { decideSigninBrowserOpen, isDesktopSession, isWsl } from '../../src/npx-cli/install/desktop-detect';
 
 type Row = [NodeJS.Platform, Record<string, string>, boolean, string];
 
@@ -31,5 +31,27 @@ describe('isDesktopSession', () => {
     expect(isWsl('linux', { WSL_DISTRO_NAME: 'Ubuntu' })).toBe(true);
     expect(isWsl('win32', { WSL_DISTRO_NAME: 'Ubuntu' })).toBe(false);
     expect(isWsl('linux', {})).toBe(false);
+  });
+});
+
+describe('decideSigninBrowserOpen', () => {
+  const base = { armOpensBrowser: true, noBrowserFlag: false, markerExists: false, platform: 'darwin' as NodeJS.Platform, env: {} };
+  it('opens on a desktop in an opening arm with no marker', () => {
+    expect(decideSigninBrowserOpen(base)).toBe('open');
+  });
+  it('--no-browser and CLAUDE_MEM_NO_BROWSER=1 win over everything', () => {
+    expect(decideSigninBrowserOpen({ ...base, noBrowserFlag: true })).toBe('skipped-flag');
+    expect(decideSigninBrowserOpen({ ...base, env: { CLAUDE_MEM_NO_BROWSER: '1' } })).toBe('skipped-flag');
+  });
+  it('arm A never opens', () => {
+    expect(decideSigninBrowserOpen({ ...base, armOpensBrowser: false })).toBe('skipped-arm');
+  });
+  it('the marker stops a second tab', () => {
+    expect(decideSigninBrowserOpen({ ...base, markerExists: true })).toBe('skipped-marker');
+  });
+  it('CI, SSH and headless Linux never open', () => {
+    expect(decideSigninBrowserOpen({ ...base, env: { CI: '1' } })).toBe('skipped-no-desktop');
+    expect(decideSigninBrowserOpen({ ...base, env: { SSH_TTY: '/dev/pts/0' } })).toBe('skipped-no-desktop');
+    expect(decideSigninBrowserOpen({ ...base, platform: 'linux' })).toBe('skipped-no-desktop');
   });
 });

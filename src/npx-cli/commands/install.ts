@@ -26,7 +26,7 @@ import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag } from './server-runtime-setup.js';
 import { ErrorSeverity } from '../install/error-taxonomy.js';
 import { detectAgentContext, StepTracker, type InstallStepId } from '../install/install-steps.js';
-import { isDesktopSession } from '../install/desktop-detect.js';
+import { decideSigninBrowserOpen, type BrowserOpenOutcome } from '../install/desktop-detect.js';
 import {
   armOpensBrowser,
   deferredSourceForArm,
@@ -39,7 +39,13 @@ import {
   savePendingSignin,
   writeSigninState,
 } from '../install/signin-state.js';
-import { printResultLine, type ResultCommand, type ResultSignin } from '../install/result-line.js';
+import {
+  LOGIN_CHECK_COMMAND,
+  LOGIN_REQUEST_COMMAND,
+  printResultLine,
+  type ResultCommand,
+  type ResultSignin,
+} from '../install/result-line.js';
 import { clearAttempts, recordFailedAttempt } from '../install/attempt-guard.js';
 import { getOrCreateInstallId } from '../../services/telemetry/consent.js';
 import {
@@ -59,7 +65,7 @@ import {
   PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
-import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import { PRO_TRIAL_DAYS, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 import {
   buildAnthropicMaxLocalSettings,
   buildCmemActivationSettings,
@@ -1650,14 +1656,14 @@ export function parseTrialReadyBody(body: unknown): TrialReadyResult | null {
   };
 }
 
-type InstallerPollOutcome =
+export type InstallerPollOutcome =
   | { kind: 'authenticated'; userId: string }
   | { kind: 'pending'; stage: InstallerPollStage }
   | ({ kind: 'ready' } & TrialReadyResult)
   | { kind: 'gone' }
   | { kind: 'unreachable' };
 
-async function pollInstallerPairingOnce(pairing: InstallerOAuthPairing): Promise<InstallerPollOutcome> {
+export async function pollInstallerPairingOnce(pairing: InstallerOAuthPairing): Promise<InstallerPollOutcome> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), OAUTH_POLL_TIMEOUT_MS);
   try {
@@ -1881,24 +1887,88 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
   return completed ? pairing : null;
 }
 
+/** The pairing's absolute expiry (server `expires_in`, else the 30-minute TTL). */
+function pairingExpiresAt(pairing: InstallerOAuthPairing): number {
+  return pairing.expiresAt ?? Date.now() + OAUTH_POLL_BUDGET_MAX_MS;
+}
+
+/**
+ * Save a login-only pairing to <dataDir>/pending-signin.json (mode 0600) so
+ * `npx claude-mem login --check` can poll it with no arguments. The secret is
+ * written only there, never printed.
+ */
+export function rememberLoginOnlyPairing(pairing: InstallerOAuthPairing, source: string): void {
+  savePendingSignin({
+    pairingId: pairing.pairingId,
+    secret: pairing.secret,
+    url: pairing.authorizationUrl,
+    expiresAt: new Date(pairingExpiresAt(pairing)).toISOString(),
+    source,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+/** Auto-open the sign-in page when the arm, flags, marker and desktop allow it. */
+export function maybeOpenSigninBrowser(url: string, arm: SigninArm, noBrowserFlag: boolean): BrowserOpenOutcome {
+  const decision = decideSigninBrowserOpen({
+    armOpensBrowser: armOpensBrowser(arm),
+    noBrowserFlag,
+    markerExists: browserAlreadyOpened(),
+    platform: process.platform,
+    env: process.env,
+  });
+  if (decision !== 'open') return decision;
+  // The marker is written on the attempt, not the success: one tab per
+  // install, ever, even when the opener reported an error after launching.
+  markBrowserOpened();
+  return openBrowser(url) ? 'opened' : 'failed';
+}
+
+/**
+ * The sign-in facts printed for an agent to relay. States facts only — no
+ * line addressed to the agent, nothing phrased as an order — because
+ * directive installer output gets flagged as prompt injection.
+ */
+export function formatSigninFacts(url: string, expiresAtMs: number, browserOpened: boolean): string[] {
+  const minutes = Math.max(1, Math.round((expiresAtMs - Date.now()) / 60_000));
+  return [
+    'Sign-in not finished. The user needs to open this link to finish claude-mem',
+    `setup (free; it creates the account used for cloud sync and the ${PRO_TRIAL_DAYS}-day CMEM Pro trial offer).`,
+    `  Link:  ${url}   (valid ${minutes} min)`,
+    `  Check: ${LOGIN_CHECK_COMMAND}`,
+    `  New link later: ${LOGIN_REQUEST_COMMAND}`,
+    ...(browserOpened ? ['A sign-in page opened in your browser.'] : []),
+  ];
+}
+
+export interface DeferredSigninResult {
+  signin: ResultSignin;
+  arm: SigninArm;
+  browserOpen: BrowserOpenOutcome;
+}
+
 /**
  * Best-effort, non-blocking sign-in offer for non-interactive installs that
  * skipped login (provider needs no account). Agents run `npx claude-mem install`
  * in non-TTY shells; the blocking OAuth step cannot run there, so the install
- * completes and the login-only link is printed last for the agent to relay.
+ * completes and the login-only link is printed after the success line.
  *
- * Never polls, never opens a browser, never prints the device code or the
- * checkout URL, and never touches exit status. Skipped under CI. Not gated on
- * the do-not-track env var: only telemetry is, and captureCliEvent already honors it.
- * The server ignores `source` today and will allowlist it separately.
+ * Never polls, never prints the device code, the checkout URL or the pairing
+ * secret, and never touches exit status. Skipped under CI. The install's
+ * experiment arm (signin-arm.ts) decides the pairing source and whether a
+ * desktop browser tab is opened (at most once per install, honoring
+ * --no-browser / CLAUDE_MEM_NO_BROWSER=1). Not gated on the do-not-track env
+ * var: only telemetry is, and captureCliEvent already honors it.
  */
-export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<void> {
-  if (isInteractive) return;
-  if (providerNeedsAccount(options.provider)) return;
-  if (process.env.CI) return;
+export async function offerDeferredLogin(options: InstallOptions, version: string): Promise<DeferredSigninResult | null> {
+  if (isInteractive) return null;
+  if (providerNeedsAccount(options.provider)) return null;
+  if (process.env.CI) return null;
 
+  const arm = signinArmForInstallId(getOrCreateInstallId());
+  const source = deferredSourceForArm(arm);
   const pairing = await startInstallerOAuthPairing({
-    source: 'npx-installer-deferred',
+    source,
     timeoutMs: OAUTH_DEFERRED_START_TIMEOUT_MS,
   });
   if (!pairing) {
@@ -1907,16 +1977,39 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
       outcome: lastOAuthStartFailure() ?? 'network',
       interactive: false,
       phase: 'deferred',
+      signin_arm: arm,
     });
-    return;
+    return null;
   }
 
+  const expiresAt = pairingExpiresAt(pairing);
+  try {
+    rememberLoginOnlyPairing(pairing, source);
+    writeSigninState('unclaimed', arm);
+  } catch (error: unknown) {
+    // `login --check` and the reminder need these files; the printed link
+    // still works without them.
+    console.warn('[install] Could not save the pending sign-in:', error instanceof Error ? error.message : String(error));
+  }
+  const browserOpen = maybeOpenSigninBrowser(pairing.authorizationUrl, arm, options.noBrowser === true);
+
   // Telemetry first so that, in CLAUDE_MEM_TELEMETRY_DEBUG=1 mode, its stderr
-  // line cannot land after the relay instruction an agent reads last.
-  await captureCliEvent('installer_oauth_deferred', { version, interactive: false });
-  log.info('Optional: sign in to claude-mem to unlock cloud sync and the CMEM Pro trial.');
-  log.info(`Sign-in link: ${pairing.authorizationUrl}`);
-  log.info('AGENT: show this link to the user so they can finish signing in. Do not open it yourself; the install is already complete.');
+  // line cannot land after the facts an agent reads last.
+  await captureCliEvent('installer_oauth_deferred', {
+    version,
+    interactive: false,
+    signin_arm: arm,
+    browser_open: browserOpen,
+  });
+  console.log('');
+  for (const line of formatSigninFacts(pairing.authorizationUrl, expiresAt, browserOpen === 'opened')) {
+    console.log(line);
+  }
+  return {
+    signin: { status: 'pending', url: pairing.authorizationUrl, expiresIn: (expiresAt - Date.now()) / 1000 },
+    arm,
+    browserOpen,
+  };
 }
 
 function noteDeviceCode(pairing: InstallerOAuthPairing): void {
