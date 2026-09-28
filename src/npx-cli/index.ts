@@ -37,6 +37,10 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem login --request [--json] [--no-browser]')}   New sign-in link for the person (free account)
   ${styleText('cyan', 'npx claude-mem login --check [--json]')}   Whether the person finished signing in
   ${styleText('cyan', 'npx claude-mem login --dismiss')}      Stop sign-in reminders on this machine
+  ${styleText('cyan', 'npx claude-mem advisor plan --snapshot -')}   Setup plan from the Claude-Mem install agent (snapshot JSON on stdin; shown before it is sent)
+  ${styleText('cyan', 'npx claude-mem advisor plan --collect')}   Same, with claude-mem collecting the snapshot itself
+  ${styleText('cyan', 'npx claude-mem advisor fix --collect')}    Ask the install agent about the last failed run
+  ${styleText('cyan', 'npx claude-mem fix <fix_id>')}          Run a fix that ships with claude-mem (e.g. fix.bun.npm-package)
   ${styleText('cyan', 'npx claude-mem version')}              Print version
 
 ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed plugin):
@@ -141,6 +145,18 @@ async function main(): Promise<void> {
     case 'upgrade': {
       const { runInstallCommand } = await import('./commands/install.js');
       await runInstallCommand({ noBrowser: args.includes('--no-browser') }, 'update');
+      break;
+    }
+
+    case 'advisor': {
+      const { runAdvisorCommand } = await import('./commands/advisor.js');
+      process.exitCode = await runAdvisorCommand(args.slice(1));
+      break;
+    }
+
+    case 'fix': {
+      const { runFixCommand } = await import('./commands/fix.js');
+      process.exitCode = await runFixCommand(args.slice(1));
       break;
     }
 
