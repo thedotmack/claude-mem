@@ -473,3 +473,49 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.get(project).observations).toBe(malformedRowId);
   });
 });
+
+describe('ChromaSync empty-row drain and truthful backfill outcomes (#4069)', () => {
+  const project = `empty-row-${Date.now()}`;
+
+  beforeEach(() => {
+    process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-emptyrow-'));
+    existingObservationIds = new Set<number>();
+    addDocumentCalls.length = 0;
+    addDocumentPayloads.length = 0;
+    ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
+  });
+
+  function emptyRow(id: number) {
+    // Title-only observation: title lives in metadata, formats to zero documents.
+    return { ...makeObservationRow(id, project), narrative: null, text: null, facts: '[]' };
+  }
+
+  it('drains rows with no indexable content instead of reporting them missing forever', async () => {
+    const store = makeStoreFromRows(project, [emptyRow(1), emptyRow(2)]);
+    const sync = new ChromaSync(project);
+
+    expect(await sync.ensureBackfilled(project, store)).toBe('completed');
+    // Nothing written — but the rows are drained, not left pending.
+    expect(addDocumentCalls.length).toBe(0);
+    expect(ChromaSyncState.get(project).observations).toBe(2);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+
+    // A second sweep finds nothing to do and reports nothing missing.
+    expect(await sync.ensureBackfilled(project, store)).toBe('completed');
+    expect(addDocumentCalls.length).toBe(0);
+    expect(ChromaSyncState.get(project).observations).toBe(2);
+  });
+
+  it('reports aborted on repeated write failures without advancing the watermark', async () => {
+    const store = makeStoreFromRows(project, [1, 2, 3].map(id => makeObservationRow(id, project)));
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    sync.addDocuments = async () => 0; // Chroma refusing writes
+
+    expect(await sync.ensureBackfilled(project, store)).toBe('aborted');
+    // Nothing landed: the watermark must not advance past unwritten rows.
+    expect(ChromaSyncState.get(project).observations).toBe(0);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 3]);
+  });
+});
