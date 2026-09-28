@@ -355,3 +355,50 @@ describe('bun_fail_reason classification', () => {
     expect(ERROR_CATEGORIES.find((c) => c.id === 'bun-missing-after-install')?.fixId).toBe('fix.bun.npm-package');
   });
 });
+
+describe('result line + remediation copy for every category', () => {
+  const ctx = { platform: 'linux' as NodeJS.Platform, dataDir: '/tmp/cm-data' };
+
+  it('every ABORT category yields status failed with a non-null error_category', async () => {
+    const { buildResultLine } = await import('../src/npx-cli/install/result-line');
+    const aborts = ERROR_CATEGORIES.filter((c) => c.severity === ErrorSeverity.ABORT);
+    expect(aborts.length).toBeGreaterThan(5);
+    for (const category of aborts) {
+      const line = buildResultLine({ command: 'install', status: 'failed', version: '13.29.0', errorCategory: category.id });
+      expect(line.status).toBe('failed');
+      expect(line.error_category).toBe(category.id);
+    }
+  });
+
+  it('no remediation steers to --provider claude without also naming login --request', () => {
+    for (const category of ERROR_CATEGORIES) {
+      for (const platform of ['linux', 'darwin', 'win32'] as NodeJS.Platform[]) {
+        const text = category.remediation({ ...ctx, platform });
+        if (text.includes('--provider claude')) {
+          expect(text, category.id).toContain('npx claude-mem login --request');
+        }
+      }
+    }
+  });
+
+  it('remediation strings are pinned', () => {
+    const snapshot = Object.fromEntries(ERROR_CATEGORIES.map((c) => [c.id, c.remediation(ctx)]));
+    expect(snapshot['provider-selection-non-interactive']).toBe(
+      "Non-interactive installs need a provider. `--provider claude` runs memory on the user's own Anthropic plan (no account). Sign-in is separate and needs the person (free): `npx claude-mem login --request`. Or run `npx claude-mem install` in an interactive terminal.",
+    );
+    expect(snapshot['provider-credentials-missing']).toBe(
+      "The selected provider needs a personal API key on non-interactive runs. Save it in settings first, or run the installer interactively so it can ask securely. `--provider claude` needs no key (the user's own Anthropic plan); sign-in is separate and needs the person (free): `npx claude-mem login --request`.",
+    );
+    expect(snapshot['bun-missing-after-install']).toContain('curl -fsSL https://bun.sh/install | bash');
+    expect(snapshot['unknown-install-error']).toBe(
+      'An unexpected installer error occurred. Capture /tmp/cm-data/last-install-error.json and open an issue at https://github.com/thedotmack/claude-mem/issues.',
+    );
+  });
+
+  it('install.ts copy that names --provider claude also names login --request', () => {
+    const source = readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'commands', 'install.ts'), 'utf-8');
+    const lines = source.split('\n').filter((l) => l.includes('--provider claude') && !l.trim().startsWith('//') && !l.trim().startsWith('*'));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) expect(line, line.trim()).toContain('login --request');
+  });
+});
