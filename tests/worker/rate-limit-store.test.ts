@@ -444,3 +444,131 @@ describe('extractRateLimitInfo', () => {
     expect(extractRateLimitInfo({ type: 'rate_limit_event', rate_limit_info: null })).toBeUndefined();
   });
 });
+
+// Unified sibling-window hydration (#4076, #4068 defect 1).
+//
+// The SDK bundles per-window snapshots in `unifiedWindows` on each
+// rate-limit event. set() must hydrate sibling buckets from it so a fresh
+// event replaces stale utilization/rejection state for windows the event
+// did not name; otherwise a stale snapshot whose reset is still in the
+// future keeps aborting generation after the provider reports the window
+// healthy.
+describe('RateLimitStore unifiedWindows hydration (#4076)', () => {
+  const sec = (ms: number) => Math.floor(ms / 1000);
+
+  it('replaces a stale rejected sibling bucket from a fresh unified snapshot', () => {
+    const store = freshStore();
+
+    // Stale: seven_day was rejected with a reset still in the future.
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: FIXED_NOW + 60_000 });
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(true);
+
+    // A fresh five_hour event reports seven_day as healthy via unifiedWindows.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        // epoch seconds, like the SDK emits
+        seven_day: { status: 'allowed', utilization: 0.07, resetsAt: sec(FIXED_NOW) + 3600 },
+      },
+    });
+
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).window).toBeUndefined();
+  });
+
+  it('replaces stale high utilization before its reset', () => {
+    const store = freshStore();
+
+    // Stale: five_hour at 100% utilization with a far-future reset.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 1,
+      resetsAt: FIXED_NOW + 3_600_000,
+    });
+    const before = shouldAbortForQuota('cli', store, FIXED_NOW);
+    expect(before.abort).toBe(true);
+    expect(before.window).toBe('five_hour');
+
+    // A seven_day event carries a fresh unified five_hour snapshot at 7%.
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.1,
+      unifiedWindows: {
+        five_hour: { utilization: 0.07, resetsAt: sec(FIXED_NOW) + 3600 },
+      },
+    });
+
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('keeps aborting when the fresh unified snapshot shows active quota pressure', () => {
+    const store = freshStore();
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        seven_day: { status: 'rejected', utilization: 1, resetsAt: FIXED_NOW + 60_000 },
+      },
+    });
+
+    const decision = shouldAbortForQuota('cli', store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day');
+  });
+
+  it('lets the primary bucket win when it also appears in unifiedWindows', () => {
+    const store = freshStore();
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        five_hour: { status: 'allowed', utilization: 0.07 },
+      },
+    });
+
+    // Primary event's richer status fields win over the unified entry.
+    const decision = shouldAbortForQuota('cli', store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('five_hour');
+    expect(store.get('five_hour')?.status).toBe('rejected');
+  });
+
+  it('bases rejection telemetry on the primary bucket, not hydrated siblings', () => {
+    const store = freshStore();
+
+    const isNew = store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: {
+        seven_day: { status: 'rejected', resetsAt: FIXED_NOW + 60_000 },
+      },
+    });
+
+    expect(isNew).toBe(false);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).window).toBe('seven_day');
+  });
+
+  it('ignores unifiedWindows entries for windows it does not track', () => {
+    const store = freshStore();
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: {
+        seven_day: { status: 'allowed' },
+        bogus_window: { status: 'rejected' },
+      } as RateLimitInfo['unifiedWindows'],
+    });
+
+    expect(store.get('seven_day')?.status).toBe('allowed');
+    expect(store.size).toBe(2); // five_hour + seven_day only
+  });
+});
