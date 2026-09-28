@@ -541,7 +541,7 @@ describe('RateLimitStore unifiedWindows hydration (#4076)', () => {
     expect(store.get('five_hour')?.status).toBe('rejected');
   });
 
-  it('bases rejection telemetry on the primary bucket, not hydrated siblings', () => {
+  it('emits rejection telemetry for a hydrated sibling rejection', () => {
     const store = freshStore();
 
     const isNew = store.set({
@@ -552,8 +552,77 @@ describe('RateLimitStore unifiedWindows hydration (#4076)', () => {
       },
     });
 
-    expect(isNew).toBe(false);
+    // The sibling rejection aborts via the quota guard, so it must also
+    // produce the usage_limit_hit signal.
+    expect(isNew).toBe(true);
     expect(shouldAbortForQuota('cli', store, FIXED_NOW).window).toBe('seven_day');
+  });
+
+  it('does not repeat sibling-rejection telemetry for the same exhaustion', () => {
+    const store = freshStore();
+    const event = {
+      rateLimitType: 'five_hour' as const,
+      status: 'allowed' as const,
+      unifiedWindows: {
+        seven_day: { status: 'rejected' as const, resetsAt: FIXED_NOW + 60_000 },
+      },
+    };
+
+    expect(store.set(event)).toBe(true);
+    expect(store.set(event)).toBe(false);
+  });
+
+  it('preserves an explicit isUsingOverage=false across sibling hydration', () => {
+    const store = freshStore();
+
+    // Overage bucket is not being charged, but utilization is high: the
+    // guard must ignore it.
+    store.set({
+      rateLimitType: 'overage',
+      status: 'allowed',
+      utilization: 0.99,
+      isUsingOverage: false,
+      resetsAt: FIXED_NOW + 3_600_000,
+    });
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+
+    // A fresh sibling event bundles an overage snapshot that doesn't carry
+    // the flag. Hydration must not drop it and start aborting on the idle
+    // utilization.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: {
+        overage: { utilization: 0.99, resetsAt: sec(FIXED_NOW) + 3600 },
+      },
+    });
+
+    expect(store.get('overage')?.isUsingOverage).toBe(false);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('dedupes rejection telemetry when the same exhaustion arrives in different reset units', () => {
+    const store = freshStore();
+    const resetSec = sec(FIXED_NOW) + 3600;
+
+    // Sibling snapshot reports the rejection with resetsAt in epoch seconds.
+    const first = store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: {
+        seven_day: { status: 'rejected', resetsAt: resetSec },
+      },
+    });
+    expect(first).toBe(true);
+
+    // The later primary event reports the same exhaustion in epoch ms: one
+    // exhaustion, one usage_limit_hit.
+    const second = store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      resetsAt: resetSec * 1000,
+    });
+    expect(second).toBe(false);
   });
 
   it('ignores unifiedWindows entries for windows it does not track', () => {
