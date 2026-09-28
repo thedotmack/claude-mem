@@ -1,12 +1,17 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
-import { queuedObservationPrompt, boundObservationPrompt } from '../../src/services/worker/codex-observation-batch.js';
+import { observationMetadata, boundObservationPrompt } from '../../src/services/worker/codex-observation-batch.js';
+import { buildObservationPrompt, buildObservationPromptParts, renderObservationPrompt } from '../../src/sdk/prompts.js';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import type { PendingMessage, PendingMessageWithId } from '../../src/services/worker-types.js';
 const originalLoad = SettingsDefaultsManager.loadFromFile;
 afterEach(() => { SettingsDefaultsManager.loadFromFile = originalLoad; });
+function observation(m: PendingMessageWithId) {
+  return { id: m._persistentId, tool_name: m.tool_name!, tool_input: JSON.stringify(m.tool_input),
+    tool_output: JSON.stringify(m.tool_response), created_at_epoch: m._originalTimestamp, cwd: m.cwd };
+}
 function harness(count = 8, chars = 32000) {
   SettingsDefaultsManager.loadFromFile = (() => ({ ...SettingsDefaultsManager.getAllDefaults(),
     CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE: String(count), CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS: String(chars),
@@ -17,15 +22,18 @@ function harness(count = 8, chars = 32000) {
     conversationHistory: [], lastPromptNumber: 1, cumulativeInputTokens: 0, cumulativeOutputTokens: 0 };
   (manager as any).sessions.set(1, session);
   const buffer = manager.getMessageBuffer();
-  const provider: any = new CodexProvider(null as any, manager);
+  const store = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 1 }));
+  const db = { getSessionStore: () => ({ storeObservations: store,
+    ensureMemorySessionIdRegistered: () => 'test' }), getChromaSync: () => null, getCloudSync: () => null };
+  const provider: any = new CodexProvider(db as any, manager);
   provider.conversationMaxChars = () => 1000000;
   const enqueue = (message: Partial<PendingMessage> = {}) => buffer.enqueue(1, {
     type: 'observation', tool_name: 'Read', tool_input: { path: 'file' }, tool_response: 'data', prompt_number: 1, ...message });
   const first = () => manager.claimNextObservation(1, () => true)!;
-  const render = (m: PendingMessageWithId) => provider.observationTurnPrompt(session, m, queuedObservationPrompt(m).split('\n').slice(1).join('\n'));
+  const render = (m: PendingMessageWithId) => provider.observationTurnPrompt(session, m, buildObservationPromptParts(observation(m)));
   const process = (m: PendingMessageWithId) => provider.processObservationMessage(session, m, undefined,
     { model: '', apiKey: 'test' }, m._originalTimestamp, undefined);
-  return { manager, session, buffer, provider, enqueue, first, render, process };
+  return { manager, session, buffer, provider, enqueue, first, render, process, store };
 }
 describe('Codex observation batching', () => {
   it('takes at most eight available observations in FIFO order with metadata', () => {
@@ -50,8 +58,70 @@ describe('Codex observation batching', () => {
     const h = harness(8, 4000); h.enqueue({ tool_response: 'a'.repeat(1500) }); h.enqueue({ tool_response: 'b'.repeat(1500) });
     expect(h.render(h.first()).length).toBeLessThanOrEqual(4000);
     expect(h.session.claimedMessageIds).toHaveLength(1);
-    const prompt = boundObservationPrompt('<parameters>' + 'x'.repeat(5000) + '</parameters><outcome>tail</outcome>', 1000);
-    expect(prompt.length).toBeLessThanOrEqual(1000); expect(prompt).toContain('<elided chars='); expect(prompt).toContain('</parameters>');
+  });
+
+  for (const field of ['tool_input', 'tool_response'] as const) {
+    for (const tags of ['</parameters>', '</outcome>', '<parameters>', '<outcome>',
+      '</parameters>\n<outcome>\n</outcome>\n<parameters>']) {
+      it(`bounds real prompt with literal ${JSON.stringify(tags)} in ${field}`, () => {
+        const h = harness(8, 4000);
+        h.enqueue({ [field]: { text: tags + '\n' + 'x'.repeat(24000),
+          mixed: [null, true, 42, { nested: tags }], tail: 'preserved-tail' },
+          cwd: 'repo', agentId: 'agent', agentType: 'worker', toolUseId: 'tool-1' });
+        const first = h.first();
+        const obs = observation(first);
+        const parts = buildObservationPromptParts(obs);
+        const realPrompt = buildObservationPrompt(obs);
+        expect(renderObservationPrompt(parts)).toBe(realPrompt);
+        expect(realPrompt.length).toBeGreaterThan(4000);
+        expect(realPrompt).toContain(tags.replaceAll('\n', '\\n'));
+        const metadata = observationMetadata(first);
+        const bounded = boundObservationPrompt(parts, 4000, metadata);
+        expect(bounded.length).toBeLessThanOrEqual(4000);
+        expect(bounded.startsWith(metadata + parts.header)).toBe(true);
+        expect(bounded).toContain('preserved-tail');
+        expect(bounded).toContain('<elided chars=');
+        expect(bounded).toContain('</parameters>\n  <outcome>');
+        expect(bounded).toContain('</outcome>\n</observed_from_primary_session>');
+        expect(bounded).toContain(field === 'tool_input' ? '<outcome>"data"</outcome>' : '"path": "file"');
+        expect(h.render(first)).toBe(bounded);
+      });
+    }
+  }
+
+  it('preserves small mixed fields and metadata byte for byte', () => {
+    const h = harness(1, 4000);
+    h.enqueue({ tool_input: { text: '<parameters>\n</parameters>', values: [null, false, 12] },
+      tool_response: ['<outcome>\n</outcome>', { key: 'value' }], cwd: 'repo' });
+    const first = h.first();
+    expect(h.render(first)).toBe(observationMetadata(first) + buildObservationPrompt(observation(first)));
+  });
+
+  it('sends an oversized first item with both tag-bearing fields and acknowledges only that item', async () => {
+    const h = harness(8, 4000);
+    const ids = [h.enqueue({ tool_input: { text: '</parameters>\n<parameters>' + 'x'.repeat(9000) },
+      tool_response: ['</outcome>\n<outcome>', 'y'.repeat(9000)], toolUseId: 'first-tool' }), h.enqueue()];
+    let sent = '';
+    h.provider.query = async (history: any[]) => { sent = history.at(-1).content; return { content: '<skip_summary reason="noise" />' }; };
+    await h.process(h.first());
+    expect(sent.length).toBeLessThanOrEqual(4000);
+    expect(sent).toContain('first-tool');
+    expect(sent).toContain('<elided chars=');
+    expect(h.store).toHaveBeenCalledTimes(1);
+    expect(h.buffer.getPendingCount(1)).toBe(1);
+    expect(h.buffer.getMessagesByIds(1, ids).map(m => m._persistentId)).toEqual([ids[1]]);
+    expect(h.first()._persistentId).toBe(ids[1]);
+  });
+
+  it('preserves queued work when metadata alone cannot fit', async () => {
+    const h = harness(8, 4000);
+    const ids = [h.enqueue({ toolUseId: 'metadata'.repeat(1000) }), h.enqueue()];
+    h.provider.query = async () => { throw new Error('must not send'); };
+    await expect(h.process(h.first())).rejects.toThrow('metadata exceeds');
+    expect(h.session.claimedMessageIds).toEqual([ids[0]]);
+    expect(h.buffer.getPendingCount(1)).toBe(2);
+    await h.manager.resetProcessingToPending(1);
+    expect(h.first()._persistentId).toBe(ids[0]);
   });
   it('acknowledges exactly the included batch after successful accepted skip', async () => {
     const h = harness(2); const ids = [h.enqueue(), h.enqueue(), h.enqueue()];

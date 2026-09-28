@@ -3,7 +3,7 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationPromptParts, renderObservationPrompt, type ObservationPromptParts, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
@@ -267,8 +267,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Providers may extend an observation request with immediately available work. */
   protected readonly rejectAbortedObservation: boolean = false;
 
-  protected observationTurnPrompt(_session: ActiveSession, _message: PendingMessageWithId, prompt: string): string {
-    return prompt;
+  protected observationTurnPrompt(_session: ActiveSession, _message: PendingMessageWithId, prompt: ObservationPromptParts): string {
+    return renderObservationPrompt(prompt);
   }
 
   private async processObservationMessage(
@@ -310,7 +310,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
     );
 
-    const obsPrompt = buildObservationPrompt({
+    const obsPrompt = buildObservationPromptParts({
       id: 0,
       tool_name: message.tool_name!,
       tool_input: JSON.stringify(optimized.toolInput),

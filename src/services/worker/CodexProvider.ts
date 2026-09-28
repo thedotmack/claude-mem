@@ -6,7 +6,7 @@ import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
 import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted } from '../../shared/quota-cooldown.js';
-import { OBS_PROMPT_FIELD_MAX_CHARS } from '../../sdk/prompts.js';
+import { OBS_PROMPT_FIELD_MAX_CHARS, type ObservationPromptParts } from '../../sdk/prompts.js';
 import { observationMetadata, queuedObservationPrompt, boundObservationPrompt, sameObservationContext } from './codex-observation-batch.js';
 import type { WorkerRef } from './agents/index.js';
 import { logger } from '../../utils/logger.js';
@@ -93,12 +93,12 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
 
   protected override readonly rejectAbortedObservation = true;
 
-  protected override observationTurnPrompt(session: ActiveSession, first: PendingMessageWithId, prompt: string): string {
+  protected override observationTurnPrompt(session: ActiveSession, first: PendingMessageWithId, prompt: ObservationPromptParts): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const count = boundedInteger(settings.CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE, 8, 32);
     const configuredChars = boundedInteger(settings.CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS, 32_000, 128_000);
     const maxChars = configuredChars >= 4_000 ? configuredChars : 32_000;
-    let combined = boundObservationPrompt(observationMetadata(first) + prompt, maxChars);
+    let combined = boundObservationPrompt(prompt, maxChars, observationMetadata(first));
     for (let size = 1; size < count; size++) {
       let addition = '';
       const next = this.sessionManager.claimNextObservation(session.sessionDbId, candidate => {

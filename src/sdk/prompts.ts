@@ -288,6 +288,17 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
 }
 
 export function buildObservationPrompt(obs: Observation): string {
+  return renderObservationPrompt(buildObservationPromptParts(obs));
+}
+
+/** Keep payload boundaries separate from literal tag text in tool data. */
+export interface ObservationPromptParts {
+  header: string;
+  parameters: string;
+  outcome: string;
+}
+
+export function buildObservationPromptParts(obs: Observation): ObservationPromptParts {
   let toolInput: any;
   let toolOutput: any;
 
@@ -309,11 +320,19 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;
   }
 
-  return `<observed_from_primary_session>
+  return {
+    header: `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
-  <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
-  <parameters>${truncateObservationField(stripImagePayloadsFromField(toolInput))}</parameters>
-  <outcome>${truncateObservationField(stripImagePayloadsFromField(toolOutput))}</outcome>
+  <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}`,
+    parameters: truncateObservationField(stripImagePayloadsFromField(toolInput)),
+    outcome: truncateObservationField(stripImagePayloadsFromField(toolOutput)),
+  };
+}
+
+export function renderObservationPrompt(parts: ObservationPromptParts): string {
+  return `${parts.header}
+  <parameters>${parts.parameters}</parameters>
+  <outcome>${parts.outcome}</outcome>
 </observed_from_primary_session>
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.

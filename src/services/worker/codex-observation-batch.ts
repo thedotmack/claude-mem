@@ -1,4 +1,4 @@
-import { buildObservationPrompt } from '../../sdk/prompts.js';
+import { buildObservationPrompt, renderObservationPrompt, type ObservationPromptParts } from '../../sdk/prompts.js';
 import type { PendingMessageWithId } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 
@@ -16,14 +16,16 @@ export function queuedObservationPrompt(message: PendingMessageWithId): string {
 }
 
 /** Keep structure and metadata; an exceptional oversized single item uses explicit elision. */
-export function boundObservationPrompt(prompt: string, maxChars: number): string {
+export function boundObservationPrompt(parts: ObservationPromptParts, maxChars: number, metadata = ''): string {
+  const prompt = metadata + renderObservationPrompt(parts);
   if (prompt.length <= maxChars) return prompt;
-  const fields = /<(parameters|outcome)>([\s\S]*?)<\/\1>/g;
-  const shrink = (budget: number) => prompt.replace(fields, (_, tag: string, text: string) => {
-    if (text.length <= budget) return `<${tag}>${text}</${tag}>`;
+  const shrinkField = (text: string, budget: number): string => {
+    if (text.length <= budget) return text;
     const head = Math.floor(budget / 2);
-    return `<${tag}>${text.slice(0, head)}<elided chars="${text.length - budget}" />${budget - head ? text.slice(-(budget - head)) : ''}</${tag}>`;
-  });
+    return `${text.slice(0, head)}<elided chars="${text.length - budget}" />${budget - head ? text.slice(-(budget - head)) : ''}`;
+  };
+  const shrink = (budget: number) => metadata + renderObservationPrompt({ ...parts,
+    parameters: shrinkField(parts.parameters, budget), outcome: shrinkField(parts.outcome, budget) });
   if (shrink(0).length > maxChars) {
     throw new ClassifiedProviderError('Codex observation metadata exceeds batch character limit', { kind: 'transient', cause: null });
   }
