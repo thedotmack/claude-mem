@@ -20,10 +20,28 @@ import {
   installPluginDependencies,
   writeInstallMarker,
   isInstallCurrent,
+  lastBunSetupReport,
 } from '../install/setup-runtime.js';
 import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag } from './server-runtime-setup.js';
 import { ErrorSeverity } from '../install/error-taxonomy.js';
+import { detectAgentContext, StepTracker, type InstallStepId } from '../install/install-steps.js';
+import { isDesktopSession } from '../install/desktop-detect.js';
+import {
+  armOpensBrowser,
+  deferredSourceForArm,
+  signinArmForInstallId,
+  type SigninArm,
+} from '../install/signin-arm.js';
+import {
+  browserAlreadyOpened,
+  markBrowserOpened,
+  savePendingSignin,
+  writeSigninState,
+} from '../install/signin-state.js';
+import { printResultLine, type ResultCommand, type ResultSignin } from '../install/result-line.js';
+import { clearAttempts, recordFailedAttempt } from '../install/attempt-guard.js';
+import { getOrCreateInstallId } from '../../services/telemetry/consent.js';
 import {
   createInstallSummary,
   flushSummary,
@@ -103,13 +121,42 @@ function detectClaudeCodeVersion(): string | undefined {
 interface TaskDescriptor {
   title: string;
   task: (message: (msg: string) => void) => Promise<string>;
+  /** install_step id reported for this task (one event per step). */
+  stepId?: InstallStepId;
+  /** For steps that record failure on the summary instead of throwing. */
+  failed?: () => boolean;
+}
+
+/** Per-run install_step telemetry; set by runInstallCommand / runRepairCommand. */
+let steps: StepTracker | null = null;
+
+/** Run `fn` as an install step when a tracker is active, else plainly. */
+async function trackStep<T>(stepId: InstallStepId, fn: () => Promise<T>, opts?: Parameters<StepTracker['run']>[2]): Promise<T> {
+  return steps ? steps.run(stepId, fn, opts) : fn();
+}
+
+/** bun.ensure telemetry: why the official script failed and what the packaged fix did. */
+function bunStepExtra() {
+  const report = lastBunSetupReport();
+  return {
+    ...(report.failReason ? { bun_fail_reason: report.failReason } : {}),
+    ...(report.fixId ? { fix_id: report.fixId } : {}),
+    ...(report.fixOutcome ? { fix_outcome: report.fixOutcome } : {}),
+  };
+}
+
+function withStepTracking(t: TaskDescriptor): TaskDescriptor {
+  if (!t.stepId) return t;
+  const stepId = t.stepId;
+  return { ...t, task: (message) => trackStep(stepId, () => t.task(message), { failed: t.failed }) };
 }
 
 async function runTasks(tasks: TaskDescriptor[]): Promise<void> {
+  const tracked = tasks.map(withStepTracking);
   if (isInteractive) {
-    await p.tasks(tasks);
+    await p.tasks(tracked);
   } else {
-    for (const t of tasks) {
+    for (const t of tracked) {
       const result = await t.task((msg: string) => console.log(`  ${msg}`));
       console.log(`  ${result}`);
     }
@@ -482,7 +529,13 @@ async function setupIDEs(selectedIDEs: string[], summary: InstallSummary): Promi
   const tasks: TaskDescriptor[] = [];
   for (const ideId of selectedIDEs) {
     const taskDescriptor = makeIDETask(ideId, summary);
-    if (taskDescriptor) tasks.push(taskDescriptor);
+    if (taskDescriptor) {
+      tasks.push({
+        ...taskDescriptor,
+        stepId: `ide.${ideId}`,
+        failed: () => summary.failedIDEs.includes(ideId),
+      });
+    }
   }
 
   if (tasks.length > 0) {
@@ -1051,19 +1104,19 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
  * non-fatal — the caller has already printed the URL, so the worst case is the
  * user clicks it themselves.
  */
-function openBrowser(url: string): void {
+function openBrowser(url: string): boolean {
   try {
-    if (process.platform === 'darwin') {
-      spawnSync('open', [url], { stdio: 'ignore' });
-    } else if (process.platform === 'win32') {
-      spawnSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
-    } else {
-      spawnSync('xdg-open', [url], { stdio: 'ignore' });
-    }
+    const result = process.platform === 'darwin'
+      ? spawnSync('open', [url], { stdio: 'ignore' })
+      : process.platform === 'win32'
+        ? spawnSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' })
+        : spawnSync('xdg-open', [url], { stdio: 'ignore' });
+    return !result.error && result.status === 0;
   } catch {
     // [ANTI-PATTERN IGNORED]: opening a browser is a convenience, not a step of the
     // install; the recovery is the URL already printed above this call, which the
     // user can open by hand. A headless box legitimately has no opener at all.
+    return false;
   }
 }
 
@@ -1981,6 +2034,8 @@ export interface InstallOptions {
   runtime?: 'worker' | 'server' | 'server-beta';
   // Base URL the server runtime (and the injected IDE MCP config) targets.
   serverUrl?: string;
+  /** --no-browser (or CLAUDE_MEM_NO_BROWSER=1): never auto-open a sign-in tab. */
+  noBrowser?: boolean;
 }
 
 async function requireWorkerStopped(
@@ -2202,6 +2257,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
   }
 
+  const detectStartedAt = Date.now();
   let selectedIDEs: string[];
   if (options.ide) {
     selectedIDEs = [options.ide];
@@ -2218,6 +2274,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedIDEs = ['claude-code'];
   }
 
+  steps?.record('detect', 'ok', Date.now() - detectStartedAt);
   const selectedRuntime = await promptRuntime(options);
 
   let workerStartResult: WorkerStartResult = 'dead';
@@ -2236,6 +2293,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const tasks: TaskDescriptor[] = [
       {
         title: 'Caching plugin version',
+        stepId: 'plugin.cache',
         task: async (message) => {
           message(`Caching v${version}...`);
           copyPluginToCache(version);
@@ -2244,6 +2302,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       },
       {
         title: 'Registering marketplace',
+        stepId: 'marketplace.register',
         task: async () => {
           registerMarketplace();
           return `Marketplace registered ${styleText('green', 'OK')}`;
@@ -2251,6 +2310,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       },
       {
         title: 'Registering plugin',
+        stepId: 'plugin.register',
         task: async () => {
           registerPlugin(version);
           return `Plugin registered ${styleText('green', 'OK')}`;
@@ -2258,6 +2318,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       },
       {
         title: 'Enabling plugin in Claude settings',
+        stepId: 'plugin.enable',
         task: async () => {
           enablePluginInClaudeSettings();
           return `Plugin enabled ${styleText('green', 'OK')}`;
@@ -2267,9 +2328,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         title: 'Setting up runtime (first install can take ~30s)',
         task: async (message) => {
           message('Checking Bun…');
-          const { version: bunVersion } = await ensureBun(summary);
+          const { version: bunVersion } = await trackStep('bun.ensure', () => ensureBun(summary), { extra: bunStepExtra });
           message('Checking uv…');
-          const { version: uvVersion } = await ensureUv(summary);
+          const { version: uvVersion } = await trackStep('uv.ensure', () => ensureUv(summary));
           installedBunVersion = bunVersion;
           installedUvVersion = uvVersion;
           const cacheDir = pluginCacheDirectory(version);
@@ -2277,7 +2338,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             const { bunPath } = await ensureBun();
             const stopHeartbeat = startHeartbeat(message, 'Installing plugin dependencies (bun install)…');
             try {
-              await installPluginDependencies(cacheDir, bunPath);
+              await trackStep('plugin.deps', () => installPluginDependencies(cacheDir, bunPath));
             } finally {
               stopHeartbeat();
             }
@@ -2292,6 +2353,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     if (needsMarketplace) {
       tasks.unshift({
         title: 'Copying plugin files to marketplace',
+        stepId: 'marketplace.copy',
         task: async (message) => {
           message('Copying to marketplace directory...');
           copyPluginToMarketplace();
@@ -2300,6 +2362,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       });
       tasks.push({
         title: 'Installing marketplace dependencies',
+        stepId: 'marketplace.deps',
         task: async (message) => {
           // runNpmInstallInMarketplace throws InstallAbortError on a real
           // failure (non-ERESOLVE, or ERESOLVE that --legacy-peer-deps could
@@ -2382,7 +2445,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   if (options.providerSource === 'persisted') {
     log.info(`Skipping claude-mem login: keeping the existing account and ${options.provider} configuration.`);
   } else if (providerNeedsAccount(options.provider)) {
-    oauthPairing = await requireInstallerOAuthLogin(version);
+    let loginSucceeded = false;
+    oauthPairing = await trackStep('signin', async () => {
+      const pairing = await requireInstallerOAuthLogin(version);
+      loginSucceeded = pairing !== null;
+      return pairing;
+    }, { failed: () => !loginSucceeded });
     if (!oauthPairing) {
       if (isInteractive) p.cancel('OAuth login is required to finish installation.');
       else console.error('OAuth login is required to finish installation.');
@@ -2396,7 +2464,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
-  const selectedProvider = await promptProvider(options, oauthPairing, version);
+  const selectedProvider = await trackStep('provider', () => promptProvider(options, oauthPairing, version));
   const cloudSyncConfigured = [
     getSetting('CLAUDE_MEM_CLOUD_SYNC_TOKEN'),
     getSetting('CLAUDE_MEM_CLOUD_SYNC_USER_ID'),
@@ -2415,6 +2483,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   await runTasks([
     {
       title: selectedRuntime === 'server' ? 'Starting server daemon' : 'Starting worker daemon',
+      stepId: 'worker.start',
       task: async (message) => {
         if (selectedRuntime === 'server') {
           return `Server runtime selected — start it with ${styleText('bold', 'npx claude-mem server start')} ${styleText('dim', '(or via Docker compose)')}`;
