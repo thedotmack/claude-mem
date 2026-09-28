@@ -10,6 +10,7 @@ import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { clearSyncHealth, defaultSyncHealthFilePath } from '../../shared/sync-health.js';
 import { purgeUndrainableSyncOutbox } from '../sync/outbox-purge.js';
+import { configureSyncE2EFromSettings } from '../sync/e2e-setup.js';
 import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
@@ -49,7 +50,11 @@ export class DatabaseManager {
 
     // Inactive installs get null so the write-site `getCloudSync()?.notify()`
     // nudges are free no-ops.
-    if (cloudSyncConfigured) {
+    if (cloudSyncConfigured && !configureSyncE2EFromSettings(settings)) {
+      // E2E is required but the key is unusable: never sync in plaintext. The
+      // outbox is kept (not purged) so sync resumes once the key is in place.
+      this.cloudSync = null;
+    } else if (cloudSyncConfigured) {
       this.cloudSync = new CloudSync(this.db, settings, { healthFilePath: defaultSyncHealthFilePath() });
     } else {
       // Sync is off: no banner for a feature not in use, and no queue that

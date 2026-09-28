@@ -129,11 +129,60 @@ session transcript. For CI or a remote box, see
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | machine hostname | Human-readable label for this device. |
 | `CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE` | `'40'` | Ops per content flush page. 200-op pages timed out at 30s under hub `projection_busy`. Max 500. |
 | `CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS` | `'90000'` | Content-push `AbortSignal` timeout. Must exceed the hub's 45s projection fetch; default matches the 90s projection lease. |
+| `CLAUDE_MEM_CLOUD_SYNC_E2E` | `'false'` | `'true'` = end-to-end encryption for a [self-hosted hub](#self-hosted-end-to-end-encrypted-hub). Needs the same key in `~/.claude-mem/sync-e2e.key` on every device; sync stays off rather than fall back to plaintext. |
 
 A Hub accepts at most 64 distinct device ids per account. Existing devices
 continue to sync normally at the limit; a new device receives
 `409 device_limit_exceeded`. Status/metadata reads and renaming an unknown
 device do not create phantom devices.
+
+## Self-hosted, end-to-end encrypted hub
+
+You can run the hub in your own Cloudflare account (Workers Free plan) instead
+of cmem.ai, with **end-to-end encryption**: every device seals observation,
+summary, prompt and mutation contents with a key only your devices hold, and
+the hub stores and relays ciphertext it cannot read. No cmem.ai account is
+involved.
+
+<Note>
+**Why this exists.** This mode was built so your memories can follow you
+into [Claude Code cloud sessions](#claude-code-cloud-sessions)
+under a key only you hold, for people who can't put memory content on a
+third-party service. It is not meant to replace or compete with cmem.ai Pro,
+which remains the managed way to sync: nothing to deploy, secure or maintain.
+The self-hosted mode reuses the same hub code and protocol, and you run, pay
+for and support it yourself.
+</Note>
+
+```bash
+# once, from workers/sync-hub (after `bun install` and `wrangler login`)
+npm run self-host:setup            # deploys, sets secrets, writes ~/.cloudflare/cmem-sync.env
+
+# first device, from the repo root
+bun scripts/sync-e2e.ts init       # creates ~/.claude-mem/sync-e2e.key
+bun scripts/sync-e2e.ts export     # prints the key: store it safely, copy it to other devices
+bun scripts/sync-e2e.ts configure --env-file ~/.cloudflare/cmem-sync.env
+npm run worker:restart
+
+# every other device
+bun scripts/sync-e2e.ts import     # paste the exported key
+bun scripts/sync-e2e.ts configure --env-file <copy of cmem-sync.env>
+npm run worker:restart
+```
+
+Memories written before sync existed on a device are not uploaded
+automatically. `bun scripts/sync-e2e.ts backfill --limit 12000` queues the
+newest 12,000 of them; run it once a day until `status` shows no history left.
+On the Free plan the hub's Durable Object allows about 100,000 rows written
+per day, and each synced item costs about 5–6.
+
+<Warning>
+**Keep the key.** Losing every copy of `sync-e2e.key` makes the hub's data
+unreadable. Still visible to the hub: item counts and sizes, timestamps, item
+kinds (observation/summary/prompt), device ids and deletion markers.
+</Warning>
+
+Details: `workers/sync-hub/SELF-HOST.md`.
 
 ## Status endpoint
 
