@@ -33,6 +33,12 @@ import { getProcessRegistry, waitForSlot, isSessionParkedForSlot } from '../../.
 import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process-registry-singleton-guard.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
 import { clearDependencyStatus } from '../../../../src/shared/dependency-health.js';
+import {
+  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  recordQuotaExhausted,
+  resetQuotaCooldownsForTesting,
+  tryAdmitQuotaProbe,
+} from '../../../../src/shared/quota-cooldown.js';
 import type { ActiveSession, ConversationMessage } from '../../../../src/services/worker-types.js';
 
 /**
@@ -432,5 +438,63 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
       expect(openRouterAgent.startSession).toHaveBeenCalledTimes(1);
       expect(session.currentProvider).toBe('openrouter');
     });
+  });
+});
+
+describe('SessionRoutes — the parked-slot race at a quota window edge (quota fallback)', () => {
+  // Spec §3.3: when the primary's window elapses, several sessions parked on a
+  // Claude fallback slot can each be sent back to the primary; only one wins
+  // its probe. That race is accepted and documented, with no mitigation code.
+  // What must never happen is a loser being finalized: its buffered work has to
+  // wait for its next event, intact. Nested one level in, so this cleanup runs
+  // before the file-level singleton guards check the breaker.
+  beforeEach(() => {
+    providerSelectionBox.current = 'claude';
+    loggerSpies = [
+      spyOn(logger, 'info').mockImplementation(() => {}),
+      spyOn(logger, 'debug').mockImplementation(() => {}),
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(logger, 'error').mockImplementation(() => {}),
+      spyOn(logger, 'failure').mockImplementation(() => {}),
+    ];
+    clearDependencyStatus('claude_cli');
+  });
+
+  afterEach(() => {
+    loggerSpies.forEach(spy => spy.mockRestore());
+    clearDependencyStatus('claude_cli');
+    while (registeredIds.length > 0) {
+      const id = registeredIds.pop();
+      if (id) registry.unregister(id);
+    }
+    resetQuotaCooldownsForTesting();
+  });
+
+  it('a parked session that loses the primary probe starts nothing and keeps its work', async () => {
+    const sessionDbId = 900101;
+    const session = makeFakeSession(sessionDbId);
+    registerFakeOccupant('occupant-for-900101');
+
+    const sdkAgent = { startSession: mock((s: ActiveSession) => waitForSlot(1, s.abortController.signal, s.sessionDbId)) };
+    const geminiAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes, sessionManager, completionHandler } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    // Parked on the Claude fallback while gemini was held.
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    expect(isSessionParkedForSlot(sessionDbId)).toBe(true);
+
+    // Gemini's window has elapsed, and another session claimed its single probe
+    // after this session's dispatch had already said "gemini".
+    recordQuotaExhausted('gemini', 'Daily limit reached', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
+    expect(tryAdmitQuotaProbe('gemini').admitted).toBe(true);
+    providerSelectionBox.current = 'gemini';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+
+    expect(isSessionParkedForSlot(sessionDbId)).toBe(false);
+    expect(geminiAgent.startSession).not.toHaveBeenCalled();
+    expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
+    expect(session.conversationHistory).toHaveLength(1);
   });
 });

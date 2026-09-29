@@ -10,7 +10,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
-import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { getSelectedProvider, quotaFallbackTarget, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -219,7 +219,7 @@ export class SessionRoutes extends BaseRouteHandler {
           }
         }
       }
-      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, selection.fallbackFrom ?? null);
       return;
     }
 
@@ -257,7 +257,7 @@ export class SessionRoutes extends BaseRouteHandler {
         await oldGeneratorPromise;
       }
 
-      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, selection.fallbackFrom ?? null);
       return;
     }
 
@@ -290,6 +290,8 @@ export class SessionRoutes extends BaseRouteHandler {
     selectedProvider: 'claude' | 'gemini' | 'openrouter',
     source: string,
     gatewayProbeClaimId: number | null,
+    /** The provider this run stands in for when dispatch took the quota fallback, else null. */
+    fallbackFrom: 'claude' | 'gemini' | 'openrouter' | null = null,
   ): Promise<void> {
     // Quota breaker (#3634). Without this, an exhausted allowance produced one
     // doomed request per captured tool call for the rest of the billing cycle:
@@ -318,6 +320,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     await this.applyTierRouting(session);
+    this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
     // The claim travels with the run that took it: only that run may release
     // it, or an earlier generator's exit would clear a later session's probe.
     await this.startGeneratorWithProvider(
@@ -532,19 +535,46 @@ export class SessionRoutes extends BaseRouteHandler {
           completionHandler: this.completionHandler,
         });
 
-        // A recycle is the one abort that should resume on its own. The batch
+        // A recycle is the one abort that always resumes on its own. The batch
         // was reset to pending and the conversation dropped; without this the
         // work waits for the next captured tool call, so the final observation
-        // of a session is stranded when none arrives. Quota and auth pauses
-        // deliberately do NOT resume — those wait on the user.
-        if (reason === 'overflow:recycle') {
+        // of a session is stranded when none arrives. Auth pauses deliberately
+        // do NOT resume — those wait on the user.
+        //
+        // A quota pause resumes only when a configured quota fallback can take
+        // the work: the breaker for `provider` was armed above, so dispatch now
+        // routes this session to the fallback. Keyed on the exiting provider, a
+        // fallback run that hits its own quota finds no target (a provider is
+        // never its own fallback) — at most one resume per exit, no loop. With
+        // no fallback configured a quota pause still waits on the user.
+        //
+        // Only when dispatch would actually hand the work to that fallback: the
+        // cmem-gateway trial-expiry branch routes to Claude on its own terms,
+        // and a resume there would go straight back to the breaker just armed.
+        const fallbackTarget = reason !== null && reason.startsWith('quota:')
+          ? quotaFallbackTarget(provider)
+          : null;
+        const quotaFallback = fallbackTarget !== null && getSelectedProvider() === fallbackTarget
+          ? fallbackTarget
+          : null;
+        if (reason === 'overflow:recycle' || quotaFallback !== null) {
+          const resumeSource = reason === 'overflow:recycle' ? 'overflow-recycle' : 'quota-fallback-resume';
+          if (quotaFallback !== null) {
+            logger.info('SESSION', 'Resuming quota-paused work on the fallback provider', {
+              sessionId: session.sessionDbId,
+              from: provider,
+              to: quotaFallback,
+            });
+          }
           // Deferred a tick: `session.generatorPromise` is assigned after this
           // chain is built, so resuming inline could be overwritten by that
           // assignment and leave a settled promise blocking every later start.
           const resume = setTimeout(() => {
-            void this.ensureGeneratorRunning(session.sessionDbId, 'overflow-recycle')
+            void this.ensureGeneratorRunning(session.sessionDbId, resumeSource)
               .catch(error => {
-                logger.error('SESSION', 'Failed to resume the observer after recycling its conversation', {
+                logger.error('SESSION', resumeSource === 'overflow-recycle'
+                  ? 'Failed to resume the observer after recycling its conversation'
+                  : 'Failed to resume quota-paused work on the fallback provider', {
                   sessionId: session.sessionDbId,
                 }, error instanceof Error ? error : new Error(String(error)));
               });
@@ -989,5 +1019,30 @@ export class SessionRoutes extends BaseRouteHandler {
     } else {
       session.modelOverride = undefined;
     }
+  }
+
+  /**
+   * On a quota-fallback run, run Claude on CLAUDE_MEM_QUOTA_FALLBACK_MODEL.
+   * Applied after tier routing so it wins for this run only; a deliberate
+   * Claude-primary run, or an empty setting, keeps whatever tier routing and
+   * CLAUDE_MEM_MODEL chose. Only ClaudeProvider reads modelOverride, which is
+   * why the setting does nothing for a Gemini or OpenRouter fallback.
+   */
+  private applyQuotaFallbackModel(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    provider: 'claude' | 'gemini' | 'openrouter',
+    fallbackFrom: 'claude' | 'gemini' | 'openrouter' | null,
+  ): void {
+    // Loose on purpose: selections built by hand (test doubles, older callers)
+    // omit the field entirely.
+    if (fallbackFrom == null || provider !== 'claude') return;
+    const model = (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_QUOTA_FALLBACK_MODEL ?? '').trim();
+    if (!model) return;
+    session.modelOverride = model;
+    logger.info('SESSION', 'Quota fallback run uses the configured fallback model', {
+      sessionId: session.sessionDbId,
+      model,
+      fallbackFrom,
+    });
   }
 }
