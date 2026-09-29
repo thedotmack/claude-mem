@@ -227,6 +227,23 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
     expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
   });
 
+  it('releases the probe permit when starting a resume rejects', async () => {
+    const harness = makeHarness(1);
+    await harness.startInitial();
+    harness.sessionManager.setGeneratorStarter(async () => {
+      throw new Error('temporary starter failure');
+    });
+
+    await harness.fireResume(0);
+    expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
+    expect(scheduled).toHaveLength(2);
+
+    harness.sessionManager.setGeneratorStarter((id, source) => harness.routes.ensureGeneratorRunning(id, source));
+    await harness.fireResume(1);
+    expect(harness.stats().starts).toBe(2);
+    expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
+  });
+
   for (const reason of ['quota:rate_limit', 'auth:auth_invalid']) {
     it('cancels a prior transport timer when a later ' + reason + ' pause takes over', async () => {
       const harness = makeHarness(1);
