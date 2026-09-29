@@ -58,11 +58,19 @@ export async function handleGeneratorExit(
   // Falling through to finalizeSession would remove the session and undo that
   // preservation — the second half of #3752.
   const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
+  // A later run may finish for a different reason before an earlier transport
+  // timer fires. Its old timer must not bypass the new pause decision.
+  if (reason !== 'transport:transient') {
+    sessionManager.clearTransportResume?.(sessionDbId);
+  }
   if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
+    if (reason === 'transport:transient') {
+      sessionManager.scheduleTransportResume?.(sessionDbId);
+    }
     return;
   }
 

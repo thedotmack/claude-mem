@@ -48,7 +48,8 @@ export interface RetryOptions {
 }
 
 /** Bounds shared with the other CLAUDE_MEM_*_TIMEOUT_MS settings. */
-const LLM_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
+export const MAX_LLM_TIMEOUT_MS = 300_000;
+const LLM_TIMEOUT_BOUNDS = { min: 500, max: MAX_LLM_TIMEOUT_MS } as const;
 const FALLBACK_PER_ATTEMPT_TIMEOUT_MS = 30_000;
 
 /**

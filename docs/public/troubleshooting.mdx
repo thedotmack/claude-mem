@@ -63,6 +63,24 @@ PORT=${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/set
    npm run worker:restart
    ```
 
+### Observer Paused After a Provider Timeout
+
+If an observer request times out, Claude-Mem keeps its queued observations and
+schedules another attempt after a delay. The delay starts near the configured
+`CLAUDE_MEM_LLM_TIMEOUT_MS` and grows when consecutive attempts time out. A
+successful queued observation resets that backoff. No new Claude Code hook is
+needed, even when the original session has ended.
+
+Check the worker logs for `Transport pause: scheduled buffered-work resume` and
+then `Generator auto-starting (transport-resume)`. If the provider remains
+unavailable, the worker keeps probing at a slower rate and admits one
+unattended transport resume at a time. Authentication and quota pauses still
+require their existing recovery paths.
+
+The queued observations in this path are held in worker memory. A worker restart
+before they are processed can still discard them; see the separate persistence
+work tracked in [issue #4068](https://github.com/thedotmack/claude-mem/issues/4068).
+
 ### Theme Toggle Not Persisting
 
 **Symptoms**: Theme preference (light/dark mode) resets after browser refresh.

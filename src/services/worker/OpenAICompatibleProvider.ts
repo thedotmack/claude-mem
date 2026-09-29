@@ -80,6 +80,23 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Issue the actual HTTP request and normalize its response. */
   protected abstract query(history: ConversationMessage[], config: TConfig, signal?: AbortSignal): Promise<ProviderQueryResult>;
 
+  /** Failed sends are replayed from the buffer, so keep only turns that got a response. */
+  private async querySessionTurn(
+    session: ActiveSession,
+    content: string,
+    config: TConfig,
+  ): Promise<ProviderQueryResult> {
+    const turn: ConversationMessage = { role: 'user', content };
+    session.conversationHistory.push(turn);
+    try {
+      return await this.query(session.conversationHistory, config);
+    } catch (error) {
+      const history = session.conversationHistory;
+      if (history[history.length - 1] === turn) history.pop();
+      throw error;
+    }
+  }
+
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
    *
@@ -170,13 +187,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
 
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
-
+    const generationHistory = session.conversationHistory;
+    const generationStart = generationHistory.length;
+    let initTurn: ConversationMessage | undefined;
+    let initAnswer: ConversationMessage | undefined;
     try {
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
+      const initResponse = await this.querySessionTurn(session, initPrompt, config);
       this.handleInitResponse(initResponse, session, model);
+      initTurn = generationHistory[generationStart];
+      initAnswer = generationHistory[generationStart + 1];
     } catch (error: unknown) {
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
       // line; here they're debug-level so one failure isn't five error lines.
@@ -193,6 +214,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       await this.runMessageLoop(session, worker, config, mode);
     } catch (error: unknown) {
+      // A failed first queued request leaves no observed work in this generation.
+      // Retain prior confirmed turns, but do not accumulate its init turn/reply
+      // on every delayed retry. Later turns (including a stored observation)
+      // make this exact-tail check fail, so their context stays intact.
+      if (initTurn && session.conversationHistory === generationHistory
+        && generationHistory[generationStart] === initTurn
+        && generationHistory.length === generationStart + (initAnswer ? 2 : 1)
+        && (!initAnswer || generationHistory[generationStart + 1] === initAnswer)) {
+        generationHistory.pop();
+        if (initAnswer) generationHistory.pop();
+      }
       if (isClassified(error)) {
         logger.debug('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model, kind: error.kind }, error);
       } else if (error instanceof Error) {
@@ -308,10 +340,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     });
     const responseContext = snapshotResponseContext(session);
 
-    session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.querySessionTurn(session, obsPrompt, config);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -360,7 +391,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }, mode);
     const responseContext = snapshotResponseContext(session);
 
-    session.conversationHistory.push({ role: 'user', content: summaryPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -371,7 +401,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    const summaryResponse = await this.querySessionTurn(session, summaryPrompt, summaryConfig);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
