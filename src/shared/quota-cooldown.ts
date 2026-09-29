@@ -237,6 +237,28 @@ export function isQuotaCooldownActive(
 }
 
 /**
+ * True while dispatch should route AROUND `provider` (quota fallback): inside
+ * the cooldown window, or after it while the single post-expiry probe is still
+ * in flight and not yet stale.
+ *
+ * The read-only twin of `tryAdmitQuotaProbe`: the same constants and the same
+ * two conditions, but it never claims. `isQuotaCooldownActive` checks the
+ * window alone, which would send every session back to a provider whose one
+ * permitted probe is still running — the herd this breaker exists to stop.
+ */
+export function isQuotaCooldownHolding(
+  provider: QuotaProvider,
+  nowMs: number = Date.now(),
+): boolean {
+  hydrateFromDisk();
+  const state = cooldowns.get(provider);
+  if (!state) return false;
+  if (nowMs - state.armedAtMs < QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS) return true;
+  const inFlight = state.probeInFlightSinceMs;
+  return inFlight !== null && nowMs - inFlight < QUOTA_PROBE_STALE_MS;
+}
+
+/**
  * Decide whether this caller may send to `provider`, claiming the single
  * post-expiry probe if so.
  *
