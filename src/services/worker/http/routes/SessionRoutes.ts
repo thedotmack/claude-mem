@@ -10,7 +10,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
-import { getSelectedProvider, quotaFallbackTarget, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { getSelectedProvider, quotaServingProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -541,29 +541,24 @@ export class SessionRoutes extends BaseRouteHandler {
         // of a session is stranded when none arrives. Auth pauses deliberately
         // do NOT resume — those wait on the user.
         //
-        // A quota pause resumes only when a configured quota fallback can take
-        // the work: the breaker for `provider` was armed above, so dispatch now
-        // routes this session to the fallback. Keyed on the exiting provider, a
-        // fallback run that hits its own quota finds no target (a provider is
-        // never its own fallback) — at most one resume per exit, no loop. With
-        // no fallback configured a quota pause still waits on the user.
-        //
-        // Only when dispatch would actually hand the work to that fallback: the
-        // cmem-gateway trial-expiry branch routes to Claude on its own terms,
-        // and a resume there would go straight back to the breaker just armed.
-        const fallbackTarget = reason !== null && reason.startsWith('quota:')
-          ? quotaFallbackTarget(provider)
+        // A quota pause resumes only when a quota fallback is configured and
+        // dispatch now sends this session to a different provider that is not
+        // itself held: the breaker for `provider` was armed above, so that is
+        // the fallback — or the primary again, when this was a fallback run and
+        // the primary has since recovered. Each exit schedules at most one
+        // resume, and never onto a held provider, so once both hold nothing
+        // resumes and there is no loop. With no fallback configured a quota
+        // pause still waits on the user.
+        const resumeOn = reason !== null && reason.startsWith('quota:')
+          ? quotaServingProvider(provider)
           : null;
-        const quotaFallback = fallbackTarget !== null && getSelectedProvider() === fallbackTarget
-          ? fallbackTarget
-          : null;
-        if (reason === 'overflow:recycle' || quotaFallback !== null) {
+        if (reason === 'overflow:recycle' || resumeOn !== null) {
           const resumeSource = reason === 'overflow:recycle' ? 'overflow-recycle' : 'quota-fallback-resume';
-          if (quotaFallback !== null) {
-            logger.info('SESSION', 'Resuming quota-paused work on the fallback provider', {
+          if (resumeOn !== null) {
+            logger.info('SESSION', 'Resuming quota-paused work on another provider', {
               sessionId: session.sessionDbId,
               from: provider,
-              to: quotaFallback,
+              to: resumeOn,
             });
           }
           // Deferred a tick: `session.generatorPromise` is assigned after this

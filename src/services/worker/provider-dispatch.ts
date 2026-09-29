@@ -215,14 +215,22 @@ export function getSelectedProvider(): DispatchProvider {
  * Where memory capture runs while `held` is in a quota cooldown: the provider
  * dispatch is using, when that is a different one and not itself holding.
  * Null otherwise, and always null with no quota fallback configured, so a
- * default install's notice is unchanged.
+ * default install is unchanged.
  *
- * Asks dispatch rather than `quotaFallbackTarget(held)` because the mirrored
- * breaker is simply the latest one armed: after the fallback arms its own and
- * the primary then recovers, the held provider IS the fallback and capture is
- * back on the primary.
+ * Two readers: the session-start notice (through the mirrored cooldown) and
+ * the resume after a quota exit (SessionRoutes). Both ask dispatch rather than
+ * `quotaFallbackTarget(held)`, because the held provider can be either one:
+ * after the fallback hits its own quota while the primary has recovered,
+ * capture belongs back on the primary. A provider never serves its own held
+ * work, and a held provider is never returned, so a resume after one quota
+ * exit can only go to a provider that is currently able to run — once both
+ * hold, this is null and nothing is resumed.
+ *
+ * It also follows dispatch through the cmem-gateway branch, which ignores the
+ * quota fallback rule: there the answer is Claude, which is the held provider
+ * after a Claude quota exit, so nothing is resumed into that breaker.
  */
-function quotaServingProvider(held: QuotaProvider, nowMs: number): DispatchProvider | null {
+export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.now()): DispatchProvider | null {
   if (readQuotaFallbackProvider() === null) return null;
   const serving = getSelectedProvider();
   if (serving === held || isQuotaCooldownHolding(serving, nowMs)) return null;

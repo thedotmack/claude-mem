@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { logger } from '../../src/utils/logger.js';
-import { recordQuotaExhausted, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
+import { clearQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 import { resetQuotaFallbackStateForTesting } from '../../src/services/worker/provider-dispatch.js';
 
@@ -109,7 +109,7 @@ describe('quota fallback in SessionRoutes', () => {
    * it, so it starts nothing. The log lines are what give it away.
    */
   function expectNoResume(): void {
-    expect(infoLines).not.toContain('Resuming quota-paused work on the fallback provider');
+    expect(infoLines).not.toContain('Resuming quota-paused work on another provider');
     expect(infoLines.filter(line => line.startsWith('Generator auto-starting (quota-fallback-resume'))).toEqual([]);
     expect(warnLines).not.toContain('Skipping generator start while the provider quota cooldown is active');
   }
@@ -164,7 +164,7 @@ describe('quota fallback in SessionRoutes', () => {
 
     expect(geminiStarts).toBe(1);
     expect(claudeStarts).toBe(1);
-    expect(infoLines).toContain('Resuming quota-paused work on the fallback provider');
+    expect(infoLines).toContain('Resuming quota-paused work on another provider');
     expect(infoLines).toContain('Generator auto-starting (quota-fallback-resume) using Claude SDK');
     expect(stats().finalizeCalls).toBe(0);
   });
@@ -274,6 +274,32 @@ describe('quota fallback in SessionRoutes', () => {
     expect(claudeStarts).toBe(1);
     expect(geminiStarts).toBe(0);
     expectNoResume();
+  });
+
+  it("resumes a fallback run's own quota exit on the primary once the primary has recovered", async () => {
+    // A generator keeps running on the fallback after the primary recovers
+    // elsewhere; when it then hits its own quota, the primary can take the work.
+    pin(GEMINI_WITH_CLAUDE_FALLBACK);
+    recordQuotaExhausted('gemini', 'Daily limit reached');
+    const session = makeSession();
+    let geminiStarts = 0;
+    let claudeStarts = 0;
+    const { routes } = buildRoutes(session, {
+      gemini: async () => { geminiStarts += 1; await hang(); },
+      claude: async (s) => {
+        claudeStarts += 1;
+        clearQuotaCooldown('gemini'); // another session's gemini probe succeeded meanwhile
+        s.abortReason = 'quota:seven_day';
+      },
+    });
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+    await nextTick();
+
+    expect(claudeStarts).toBe(1);
+    expect(geminiStarts).toBe(1);
+    expect(infoLines).toContain('Generator auto-starting (quota-fallback-resume) using Gemini');
   });
 
   it('runs the configured fallback model on a fallback run', async () => {

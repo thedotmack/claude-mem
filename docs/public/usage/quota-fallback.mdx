@@ -35,7 +35,7 @@ The fallback needs its own credentials: a Gemini or OpenRouter API key, or a wor
 - **Switches:** a spent allowance, and rate limits that are still refused after the provider's own retries. Both arm the same 30-minute cooldown, so rate limits that outlast their retries also move work to the fallback for up to 30 minutes.
 - **Does not switch:** authentication errors — an invalid, expired or revoked key (401/403). Those pause capture exactly as before, because a different provider would not fix the key.
 - **A fallback with a bad key is not skipped.** Only a *missing* key is detected ahead of time. If the fallback's own key is invalid or revoked, each fallback run fails on authentication for as long as the primary's cooldown lasts. Fix or clear the fallback key.
-- **Paused work resumes on its own.** A generator that stops on a quota error keeps its queued observations. With a fallback configured, it restarts on the fallback right away instead of waiting for the next tool call in that session.
+- **Paused work resumes on its own.** A generator that stops on a quota error keeps its queued observations. With a fallback configured, it restarts right away on whichever provider can take the work — the fallback, or the original provider again if it has recovered by then — instead of waiting for the next tool call in that session. If neither can, it waits as before.
 - **Both exhausted:** if the fallback is also in a quota cooldown, nothing changes: work waits until one of them clears.
 
 ## Things to know
