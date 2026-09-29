@@ -24,6 +24,11 @@ import {
 } from '../../src/shared/quota-cooldown.js';
 import { paths } from '../../src/shared/paths.js';
 import { logger } from '../../src/utils/logger.js';
+import {
+  OBSERVER_HEALTH_FILENAME,
+  readObserverHealth,
+  renderObserverQuotaCooldownNotice,
+} from '../../src/shared/observer-health.js';
 
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
 
@@ -408,6 +413,36 @@ describe('provider-dispatch', () => {
       recordQuotaExhausted('gemini', 'Daily limit reached');
       selectProviderForGenerator();
       expect(quotaFallbackLines()).toEqual(['Primary in quota cooldown and the quota fallback cannot serve; capture waits until it clears']);
+    });
+
+    it('mirrors the serving fallback for the session-start notice', () => {
+      pinGeminiPrimary('claude');
+      recordQuotaExhausted('gemini', 'Daily limit reached');
+      const mirrored = readObserverHealth(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME))!.quotaCooldown!;
+      expect(mirrored.servingProvider).toBe('claude');
+    });
+
+    it('mirrors no serving provider when no fallback is configured', () => {
+      pinGeminiPrimary('');
+      recordQuotaExhausted('gemini', 'Daily limit reached');
+      const mirrored = readObserverHealth(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME))!.quotaCooldown!;
+      expect(mirrored.servingProvider).toBeUndefined();
+    });
+
+    it('names the recovered primary once the fallback holds and the primary clears', () => {
+      // The mirror shows the latest breaker. Once the fallback has armed its
+      // own and the primary's probe then succeeds, the held provider IS the
+      // fallback and capture is back on the primary: no "paused" notice.
+      const healthFile = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+      pinGeminiPrimary('claude');
+      recordQuotaExhausted('gemini', 'Daily limit reached', undefined, Date.now() - 1000);
+      recordQuotaExhausted('claude', 'Weekly limit reached');
+      expect(readObserverHealth(healthFile)!.quotaCooldown!.servingProvider).toBeUndefined(); // both held
+      clearQuotaCooldown('gemini');
+      const mirrored = readObserverHealth(healthFile)!.quotaCooldown!;
+      expect(mirrored.provider).toBe('claude');
+      expect(mirrored.servingProvider).toBe('gemini');
+      expect(renderObserverQuotaCooldownNotice(readObserverHealth(healthFile)!)).not.toMatch(/paused|restart/i);
     });
 
     it('never offers a provider as its own fallback', () => {

@@ -412,6 +412,17 @@ describe('renderObserverHealthWarning', () => {
 });
 
 describe('renderObserverQuotaCooldownNotice', () => {
+  it('says capture continues on the serving provider, and nothing about pausing or restarting', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 0,
+      quotaCooldown: activeCooldown({ provider: 'gemini', window: undefined, servingProvider: 'claude' }),
+    }), armedAt + 5 * 60_000);
+    expect(notice).toContain("claude-mem's gemini provider is in a quota cooldown");
+    expect(notice).toContain('memory capture continues on claude');
+    expect(notice).not.toMatch(/paused|restart/i);
+  });
+
   it('names the pause, the provider, the until timestamp, and tells the user it is not a failure', () => {
     const armedAt = 1_754_700_000_000;
     const nowMs = armedAt + 5 * 60_000;

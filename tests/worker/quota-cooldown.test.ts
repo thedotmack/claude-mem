@@ -13,6 +13,8 @@ import {
   QUOTA_PROBE_STALE_MS,
   QUOTA_COOLDOWN_FILENAME,
   isQuotaCooldownHolding,
+  setQuotaFallbackResolver,
+  type QuotaFallbackResolver,
 } from '../../src/shared/quota-cooldown.js';
 import {
   isObserverQuotaCooldownActive,
@@ -343,5 +345,50 @@ describe('isQuotaCooldownHolding (quota fallback)', () => {
       JSON.stringify([{ provider: 'gemini', message: 'armed before the restart', armedAtMs: Date.now() - 60_000 }]),
     );
     expect(isQuotaCooldownHolding('gemini')).toBe(true);
+  });
+});
+
+describe('quota fallback annotation on the mirrored cooldown', () => {
+  const healthPath = (): string => join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+  let restore: QuotaFallbackResolver | null = null;
+
+  beforeEach(() => {
+    resetQuotaCooldownsForTesting();
+  });
+
+  afterEach(() => {
+    setQuotaFallbackResolver(restore);
+    resetQuotaCooldownsForTesting();
+  });
+
+  it('records where capture continues while the breaker holds', () => {
+    restore = setQuotaFallbackResolver((provider) => (provider === 'gemini' ? 'claude' : null));
+    recordQuotaExhausted('gemini', 'Daily limit reached');
+    expect(readObserverHealth(healthPath())!.quotaCooldown!.servingProvider).toBe('claude');
+  });
+
+  it('records no serving provider when none can serve, so the notice still says paused', () => {
+    restore = setQuotaFallbackResolver(() => null);
+    recordQuotaExhausted('gemini', 'Daily limit reached');
+    expect(readObserverHealth(healthPath())!.quotaCooldown!.servingProvider).toBeUndefined();
+  });
+
+  it('re-mirrors when the fallback arms its own breaker: the resolver is asked about the latest window', () => {
+    restore = setQuotaFallbackResolver((provider) => (provider === 'gemini' ? 'claude' : null));
+    recordQuotaExhausted('gemini', 'Daily limit reached', undefined, Date.now() - 1000);
+    recordQuotaExhausted('claude', 'Weekly limit reached');
+    const mirrored = readObserverHealth(healthPath())!.quotaCooldown!;
+    expect(mirrored.provider).toBe('claude');
+    expect(mirrored.servingProvider).toBeUndefined();
+  });
+
+  it('still mirrors the cooldown when the resolver throws', () => {
+    restore = setQuotaFallbackResolver(() => {
+      throw new Error('settings unreadable');
+    });
+    recordQuotaExhausted('gemini', 'Daily limit reached');
+    const mirrored = readObserverHealth(healthPath())!.quotaCooldown!;
+    expect(mirrored.provider).toBe('gemini');
+    expect(mirrored.servingProvider).toBeUndefined();
   });
 });

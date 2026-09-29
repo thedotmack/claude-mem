@@ -31,6 +31,7 @@ import {
   getQuotaCooldown,
   isQuotaCooldownHolding,
   releaseQuotaProbe,
+  setQuotaFallbackResolver,
   tryAdmitQuotaProbe,
   type QuotaProvider,
 } from '../../shared/quota-cooldown.js';
@@ -209,6 +210,29 @@ export function getSelectedProvider(): DispatchProvider {
   }
   return applyQuotaFallback((isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude').provider;
 }
+
+/**
+ * Where memory capture runs while `held` is in a quota cooldown: the provider
+ * dispatch is using, when that is a different one and not itself holding.
+ * Null otherwise, and always null with no quota fallback configured, so a
+ * default install's notice is unchanged.
+ *
+ * Asks dispatch rather than `quotaFallbackTarget(held)` because the mirrored
+ * breaker is simply the latest one armed: after the fallback arms its own and
+ * the primary then recovers, the held provider IS the fallback and capture is
+ * back on the primary.
+ */
+function quotaServingProvider(held: QuotaProvider, nowMs: number): DispatchProvider | null {
+  if (readQuotaFallbackProvider() === null) return null;
+  const serving = getSelectedProvider();
+  if (serving === held || isQuotaCooldownHolding(serving, nowMs)) return null;
+  return serving;
+}
+
+// The session-start notice reads the serving provider from the mirrored
+// cooldown in observer-health.json. See setQuotaFallbackResolver for why the
+// answer is injected from here rather than imported there.
+setQuotaFallbackResolver(quotaServingProvider);
 
 /**
  * Dispatch for a caller that is about to start a generator, claiming the single

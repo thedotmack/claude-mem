@@ -77,6 +77,13 @@ export interface ObserverQuotaCooldown {
   window?: string;
   /** Provider-reported reason, already free of any user prompt text. */
   message?: string;
+  /**
+   * Where memory capture runs while this provider is held: the configured
+   * quota fallback, or the recovered primary when the fallback's own breaker
+   * is the latest one. Absent when no fallback is configured or nothing else
+   * can serve; the notice then says capture is paused.
+   */
+  servingProvider?: string;
 }
 
 /**
@@ -302,6 +309,7 @@ export function recordObserverQuotaCooldown(
         until: cooldown.until,
         ...(cooldown.window ? { window: cooldown.window } : {}),
         ...(cooldown.message ? { message: scrubErrorMessage(cooldown.message) } : {}),
+        ...(cooldown.servingProvider ? { servingProvider: cooldown.servingProvider } : {}),
       },
     }, filePath);
   });
@@ -397,6 +405,15 @@ export function renderObserverQuotaCooldownNotice(
     ? `${new Date(until).toISOString()} (${describeDuration(Math.max(0, until - nowMs))} from now)`
     : 'the next probe window';
   const windowText = cooldown?.window ? ` (${cooldown.window})` : '';
+
+  // Another provider is serving: nothing is paused, so none of the pause copy
+  // below applies — least of all "do not restart", advice about a problem
+  // that is not happening. No primary/fallback wording: the held provider
+  // can be either one.
+  if (cooldown?.servingProvider) {
+    return `ℹ️ claude-mem's ${provider} provider is in a quota cooldown${windowText}; memory capture continues on ${cooldown.servingProvider} until it clears at ${untilText}.`;
+  }
+
   const message = cooldown?.message ? scrubErrorMessage(cooldown.message) : null;
 
   return [

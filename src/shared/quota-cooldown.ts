@@ -346,9 +346,36 @@ export function resetQuotaCooldownsForTesting(): void {
 }
 
 /**
+ * Where memory capture runs while `provider` is held — some other provider
+ * that dispatch is actually using and that is not itself held — or null.
+ *
+ * Injected rather than imported: the answer needs dispatch and the provider
+ * credential checks, and provider-dispatch already imports this module, so
+ * importing it back would be a cycle. provider-dispatch registers the real
+ * answer when it loads; in any process that never loads it, this stays null
+ * and the mirror carries no serving provider.
+ */
+export type QuotaFallbackResolver = (provider: QuotaProvider, nowMs: number) => QuotaProvider | null;
+
+let quotaFallbackResolver: QuotaFallbackResolver | null = null;
+
+/** Install the resolver; returns the previous one so a caller can restore it. */
+export function setQuotaFallbackResolver(resolver: QuotaFallbackResolver | null): QuotaFallbackResolver | null {
+  const previous = quotaFallbackResolver;
+  quotaFallbackResolver = resolver;
+  return previous;
+}
+
+/**
  * Mirror the in-memory breaker into observer-health.json so session-start
  * and external monitors can see an intentional pause. Best-effort: a health
  * write failure must not change admission or drain-on-clear.
+ *
+ * When another provider is serving (a quota fallback), the mirror names it, so
+ * the session-start notice says capture continues instead of saying it is
+ * paused. The answer is recomputed on every arm and clear, including the
+ * fallback's own. Between those events it can go stale: a settings edit, a
+ * credential or login change, or the window elapsing into a probe.
  */
 function syncObserverHealthQuotaCooldown(): void {
   try {
@@ -360,6 +387,14 @@ function syncObserverHealthQuotaCooldown(): void {
       clearObserverQuotaCooldown();
       return;
     }
+    let servingProvider: QuotaProvider | null = null;
+    try {
+      servingProvider = quotaFallbackResolver?.(latest.provider, Date.now()) ?? null;
+    } catch {
+      // A resolver fault must never cost the mirror itself; with no serving
+      // provider the notice says paused, which is the safe reading.
+      servingProvider = null;
+    }
     recordObserverQuotaCooldown({
       active: true,
       provider: latest.provider,
@@ -367,6 +402,7 @@ function syncObserverHealthQuotaCooldown(): void {
       until: latest.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
       ...(latest.window ? { window: latest.window } : {}),
       message: latest.message,
+      ...(servingProvider ? { servingProvider } : {}),
     });
   } catch (err) {
     logger.warn('SESSION', 'Failed to mirror quota cooldown into observer-health', {}, err as Error);
