@@ -226,6 +226,42 @@ describe('E2E round trip: device A → hub → device B', () => {
     return apply;
   }
 
+  it('rebuilds snapshots frozen in plaintext before E2E was turned on, instead of quarantining them', async () => {
+    // E2E off, hub down: each failed flush freezes (in plaintext) what it was
+    // about to send. Mutations drain first, so park the frozen mutation to
+    // let a second flush freeze a content snapshot too.
+    configureSyncE2E(null);
+    const down = (async () => new Response('unavailable', { status: 503 })) as unknown as typeof fetch;
+    const failedFlush = async () => {
+      const cloud = makeCloudSync(down);
+      await cloud.flush();
+      cloud.stop();
+    };
+    await failedFlush();
+    dbA.exec('CREATE TEMP TABLE parked AS SELECT * FROM sync_outbox; DELETE FROM sync_outbox;');
+    await failedFlush();
+    dbA.exec('INSERT INTO sync_outbox SELECT * FROM parked;');
+    const content = dbA.prepare('SELECT body FROM sync_content_outbox').all() as Array<{ body: string }>;
+    const mutations = dbA.prepare('SELECT canonical_body AS body FROM sync_outbox WHERE canonical_body IS NOT NULL').all() as Array<{ body: string }>;
+    expect(content.length).toBeGreaterThan(0);
+    expect(mutations.length).toBeGreaterThan(0);
+    for (const row of [...content, ...mutations]) expect(row.body).toContain(MARKER);
+
+    // E2E on, opaque hub: everything goes out sealed, nothing is dead-lettered.
+    configureSyncE2E(new E2ECodec(generateE2EKey()));
+    const hub = hubFetch();
+    const second = makeCloudSync(hub.impl);
+    await second.flush();
+    second.stop();
+    expect(hubLog.length).toBeGreaterThanOrEqual(3);
+    for (const op of hubLog) expect(op.body).not.toContain(MARKER);
+    const count = (sql: string) => (dbA.prepare(sql).get() as { n: number }).n;
+    expect(count('SELECT COUNT(*) AS n FROM sync_dead_letter')).toBe(0);
+    expect(count('SELECT COUNT(*) AS n FROM sync_content_outbox')).toBe(0);
+    expect(count('SELECT COUNT(*) AS n FROM sync_outbox')).toBe(0);
+    expect(count('SELECT COUNT(*) AS n FROM observations WHERE synced_at IS NULL OR synced_at < 0')).toBe(0);
+  });
+
   it('syncs sealed ops the hub cannot read, stamps them once, and device B reads them', async () => {
     const key = generateE2EKey();
     configureSyncE2E(new E2ECodec(key));
