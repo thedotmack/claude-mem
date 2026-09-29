@@ -35,10 +35,17 @@ export class DatabaseManager {
       settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID !== '' &&
       settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL.trim() !== '';
 
+    // Resolve E2E readiness before choosing the mutation-producer policy: with
+    // E2E required but the key unusable there is no CloudSync to drain
+    // sync_outbox, so new mutation ops are not produced. Rows already queued
+    // stay for when the key is back (content rows need no queue: they stay
+    // unsynced and are snapshotted then).
+    const e2eReady = cloudSyncConfigured && configureSyncE2EFromSettings(settings);
+
     // The launch schema is SyncHub-native. SessionStore marks any pre-launch
     // local corpus as a nonqueued baseline once; only subsequent writes enter
     // the canonical v2 outbox.
-    this.sessionStore = new SessionStore(this.db, { syncOpsEnabled: cloudSyncConfigured });
+    this.sessionStore = new SessionStore(this.db, { syncOpsEnabled: e2eReady });
     this.sessionSearch = new SessionSearch(this.db);
 
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
@@ -50,7 +57,7 @@ export class DatabaseManager {
 
     // Inactive installs get null so the write-site `getCloudSync()?.notify()`
     // nudges are free no-ops.
-    if (cloudSyncConfigured && !configureSyncE2EFromSettings(settings)) {
+    if (cloudSyncConfigured && !e2eReady) {
       // E2E is required but the key is unusable: never sync in plaintext. The
       // outbox is kept (not purged) so sync resumes once the key is in place.
       this.cloudSync = null;
