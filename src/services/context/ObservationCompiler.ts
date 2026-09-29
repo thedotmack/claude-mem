@@ -45,6 +45,7 @@ export function queryObservationsMulti(
     limit: config.totalObservationCount,
     platformSource,
     projects,
+    excludeSubagents: config.mainAgentOnly,
   });
 }
 
@@ -69,6 +70,7 @@ export function queryObservationsNewest(
     platformSource?: string;
     projects?: string[];
     includeManualSaves?: boolean;
+    excludeSubagents?: boolean;
   }
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
@@ -85,11 +87,9 @@ export function queryObservationsNewest(
     ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
     : '';
 
-  // #3274: only the project-scoped injection window filters subagent rows.
-  // House-wide newest feeds omit `projects` and stay unfiltered.
-  const agentFilter = config.mainAgentOnly && projects.length > 0
-    ? 'AND o.agent_id IS NULL'
-    : '';
+  // #3274: SessionStart injection opts in. The seat INDEX passes `projects`
+  // too, and must keep agent-tagged rows.
+  const agentFilter = options.excludeSubagents ? 'AND o.agent_id IS NULL' : '';
 
   return db.db.prepare(`
     SELECT

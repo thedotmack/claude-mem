@@ -485,6 +485,22 @@ describe('context compiler main-agent-only injection filtering', () => {
     }
   });
 
+  it('keeps subagent observations on a project-scoped newest query', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsNewest(store, baseConfig, {
+        limit: 20,
+        projects: ['agent-scope-project'],
+        includeManualSaves: true,
+      });
+      expect(observations.map(obs => obs.title).sort()).toEqual(['MAIN_OBS', 'SUB_OBS']);
+    } finally {
+      store.close();
+    }
+  });
+
   it('includes subagent observations when mainAgentOnly is false (backward compat) and leaves the count query unfiltered', () => {
     const store = new SessionStore(':memory:');
     try {
