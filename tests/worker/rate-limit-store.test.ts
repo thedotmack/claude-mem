@@ -415,6 +415,50 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
   });
 
+  it('preserves an active rejection when a sibling snapshot only repeats its reset time', () => {
+    const store = freshStore();
+    const now = Date.now();
+    const resetsAt = now + 60_000;
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt });
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: { seven_day: { resetsAt } },
+    });
+
+    expect(store.get('seven_day')?.status).toBe('rejected');
+    expect(shouldAbortForQuota(cliAuth, store, now)).toEqual({
+      abort: true,
+      window: 'seven_day',
+      reason: 'quota:seven_day rejected by provider',
+    });
+  });
+
+  it('preserves the cached reset when a sibling snapshot only refreshes utilization', () => {
+    const store = freshStore();
+    const resetsAt = FIXED_NOW + 10 * 60_000;
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.96,
+      resetsAt,
+    });
+
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.9 } },
+    });
+
+    const fiveHour = store.get('five_hour');
+    expect(fiveHour?.utilization).toBe(0.9);
+    expect(fiveHour?.resetsAt).toBe(resetsAt);
+    expect(fiveHour?.status).toBeUndefined();
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
+    expect(shouldAbortForQuota(cliAuth, store, resetsAt + 1).abort).toBe(false);
+  });
+
   it('still aborts when the fresh unified figure is over threshold', () => {
     const store = freshStore();
     store.set({
@@ -485,6 +529,25 @@ describe('RateLimitStore.set → unifiedWindows', () => {
   it('does not report a rejection for windows refreshed from unifiedWindows', () => {
     const store = freshStore();
     expect(store.set(fiveHourEvent)).toBe(false);
+  });
+
+  it('dedupes a rejection after its display snapshot is refreshed by another window', () => {
+    const store = freshStore();
+    const rejected: RateLimitInfo = {
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+    };
+    expect(store.set(rejected)).toBe(true);
+
+    expect(store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.4 } },
+    })).toBe(false);
+    expect(store.get('five_hour')?.status).toBeUndefined();
+
+    expect(store.set(rejected)).toBe(false);
   });
 });
 

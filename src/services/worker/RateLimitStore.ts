@@ -78,6 +78,8 @@ export type RateLimitBucketKey = RateLimitWindow | 'default';
 
 export class RateLimitStore {
   private entries = new Map<RateLimitBucketKey, RateLimitEntry>();
+  // Telemetry deduplication survives display-only unified-window refreshes.
+  private rejections = new Map<RateLimitBucketKey, RateLimitInfo>();
 
   /**
    * Record a rate-limit info snapshot. Last-write-wins per bucket key.
@@ -87,15 +89,37 @@ export class RateLimitStore {
   set(info: RateLimitInfo | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
-    const previous = this.entries.get(key);
+    const previousRejection = this.rejections.get(key);
     const observedAt = Date.now();
     const unified = readUnifiedWindows(info.unifiedWindows);
 
-    // Other windows: the unified figure is fresher than whatever is cached,
-    // including a stale `rejected` or `allowed_warning` status, which it drops.
+    // Other windows: refresh fields the unified snapshot actually reports.
+    // Utilization establishes a new display state and drops stale status;
+    // reset-only snapshots preserve an unchanged active rejection.
     for (const [window, snapshot] of unified) {
       if (window === key) continue;
-      this.entries.set(window, { rateLimitType: window, ...snapshot, observedAt });
+      const previousWindow = this.entries.get(window);
+      const resetsAt = snapshot.resetsAt ?? previousWindow?.resetsAt;
+      const repeatsRejectedReset =
+        snapshot.utilization === undefined &&
+        previousWindow?.status === 'rejected' &&
+        sameResetTime(resetsAt, previousWindow.resetsAt) &&
+        isResetPending(resetsAt, observedAt);
+      this.entries.set(window, {
+        rateLimitType: window,
+        ...snapshot,
+        resetsAt,
+        ...(repeatsRejectedReset ? { status: 'rejected' as const } : {}),
+        observedAt,
+      });
+      const rejectedWindow = this.rejections.get(window);
+      if (
+        rejectedWindow &&
+        snapshot.resetsAt !== undefined &&
+        !sameResetTime(snapshot.resetsAt, rejectedWindow.resetsAt)
+      ) {
+        this.rejections.delete(window);
+      }
     }
 
     const own = info.rateLimitType ? unified.get(info.rateLimitType) : undefined;
@@ -108,7 +132,18 @@ export class RateLimitStore {
     this.entries.set(key, merged);
     // Compare the merged entry, so a resetsAt that only arrives via
     // unifiedWindows still dedupes repeated rejections.
-    return isNewRejection(previous, merged);
+    const newRejection = isNewRejection(previousRejection, merged);
+    if (merged.status === 'rejected') {
+      this.rejections.set(key, merged);
+    } else if (
+      info.status !== undefined ||
+      (previousRejection &&
+        merged.resetsAt !== undefined &&
+        !sameResetTime(merged.resetsAt, previousRejection.resetsAt))
+    ) {
+      this.rejections.delete(key);
+    }
+    return newRejection;
   }
 
   /** Snapshot a single bucket, or undefined if not yet seen. */
@@ -137,6 +172,15 @@ export class RateLimitStore {
   get size(): number {
     return this.entries.size;
   }
+}
+
+function sameResetTime(left: number | undefined, right: number | undefined): boolean {
+  return normalizeResetTimeMs(left) === normalizeResetTimeMs(right);
+}
+
+function isResetPending(resetsAt: number | undefined, now: number): boolean {
+  const resetsAtMs = normalizeResetTimeMs(resetsAt);
+  return resetsAtMs !== undefined && resetsAtMs > now;
 }
 
 /** Windows in UNIFIED_WINDOWS with a well-formed snapshot; anything else is skipped. */
