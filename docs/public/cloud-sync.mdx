@@ -235,7 +235,9 @@ settings:
 
    The setup profile is SQLite-only search (no Chroma download) with no
    welcome hint, and the worker is pinned to this checkout even when the
-   session's own repository is claude-mem. The setup result is cached as a
+   session's own repository is claude-mem. Hooks keep the plugin's events,
+   timeouts and async flags. If the checkout's worker bundle predates E2E
+   sync (unreleased source), the script builds it from source first. The setup result is cached as a
    filesystem snapshot and rebuilt when the setup script or allowed network
    hosts change, or after about seven days; edit the script (a trailing
    `# v2` comment is enough) to pick up a newer checkout sooner.

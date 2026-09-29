@@ -41,6 +41,17 @@ console.log('claude-mem cloud setup: installing plugin runtime …');
 // Native tree-sitter builds are only for smart-explore and need a toolchain.
 run('bun', ['install', '--production', '--ignore-scripts'], { cwd: PLUGIN });
 
+// plugin/scripts is rebuilt at release time, so a checkout of unreleased
+// source can carry a worker bundle without end-to-end encryption. Build it
+// from source in that case rather than start a worker that can't open (or
+// seal) anything on a self-hosted hub.
+const WORKER_BUNDLE = join(PLUGIN, 'scripts', 'worker-service.cjs');
+if (!readFileSync(WORKER_BUNDLE, 'utf8').includes('CLAUDE_MEM_CLOUD_SYNC_E2E_KEY')) {
+	console.log('claude-mem cloud setup: worker bundle predates E2E sync, building from source …');
+	run('bun', ['install', '--ignore-scripts'], { cwd: ROOT });
+	run('node', ['scripts/build-hooks.js'], { cwd: ROOT });
+}
+
 mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 const settingsPath = join(DATA_DIR, 'settings.json');
 const settings = {
@@ -61,19 +72,23 @@ writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o
 // worker first (usually the MCP server) resolves worker-service.cjs from its
 // cwd, and a cloud session working in a claude-mem repo would run that
 // checkout's worker (e.g. one without E2E) instead of this one.
-const WORKER_SCRIPT = join(PLUGIN, 'scripts', 'worker-service.cjs');
+const runner = (args) => `CLAUDE_PLUGIN_ROOT="${PLUGIN}" CLAUDE_MEM_WORKER_SCRIPT_PATH="${WORKER_BUNDLE}" node "${PLUGIN}/scripts/bun-runner.js" "${WORKER_BUNDLE}" ${args}`;
 
-// Same events/matchers/timeouts as plugin/hooks/hooks.json, pointed at this checkout.
-const runner = (args) => `CLAUDE_PLUGIN_ROOT="${PLUGIN}" CLAUDE_MEM_WORKER_SCRIPT_PATH="${WORKER_SCRIPT}" node "${PLUGIN}/scripts/bun-runner.js" "${WORKER_SCRIPT}" ${args}`;
-const hook = (command, timeout) => ({ type: 'command', command, ...(timeout ? { timeout } : {}) });
-const hooks = {
-	SessionStart: [{ matcher: 'startup|resume|clear|compact', hooks: [hook(runner('start'), 60), hook(runner('hook claude-code context'), 60)] }],
-	UserPromptSubmit: [{ hooks: [hook(runner('hook claude-code session-init'), 60)] }],
-	PostToolUse: [{ matcher: '*', hooks: [hook(runner('hook claude-code observation'), 120)] }],
-	PreToolUse: [{ matcher: 'Read', hooks: [hook(runner('hook claude-code file-context'), 60)] }],
-	Stop: [{ hooks: [hook(runner('hook claude-code summarize'), 120)] }],
-	SessionEnd: [{ hooks: [hook(runner('hook claude-code session-end'))] }],
-};
+// The plugin's own hooks (events, matchers, timeouts and async flags) with
+// each worker-service.cjs command pointed at this checkout. Hooks that don't
+// run the worker (Setup's version check) are left out.
+const hooks = {};
+for (const [event, groups] of Object.entries(readJson(join(PLUGIN, 'hooks', 'hooks.json')).hooks)) {
+	for (const group of groups) {
+		const cloudHooks = group.hooks.flatMap((h) => {
+			const args = /worker-service\.cjs" ([^"]+)$/.exec(h.command ?? '')?.[1];
+			if (!args) return [];
+			return [{ type: 'command', command: runner(args), ...(h.timeout ? { timeout: h.timeout } : {}), ...(h.async ? { async: true } : {}) }];
+		});
+		if (cloudHooks.length === 0) continue;
+		(hooks[event] ??= []).push({ ...(group.matcher ? { matcher: group.matcher } : {}), hooks: cloudHooks });
+	}
+}
 mkdirSync(dirname(CLAUDE_SETTINGS), { recursive: true });
 const claudeSettings = readJson(CLAUDE_SETTINGS);
 // Replace any previous claude-mem cloud hooks, keep everything else.
@@ -88,6 +103,6 @@ console.log(`claude-mem cloud setup: hooks written to ${CLAUDE_SETTINGS}`);
 
 // Re-registering replaces an entry left by an earlier (cached) setup run.
 spawnSync('claude', ['mcp', 'remove', '--scope', 'user', 'claude-mem'], { stdio: 'ignore' });
-const mcp = spawnSync('claude', ['mcp', 'add', '--scope', 'user', 'claude-mem', '-e', `CLAUDE_MEM_WORKER_SCRIPT_PATH=${WORKER_SCRIPT}`, '--', 'node', `${PLUGIN}/scripts/mcp-server.cjs`], { stdio: 'inherit' });
+const mcp = spawnSync('claude', ['mcp', 'add', '--scope', 'user', 'claude-mem', '-e', `CLAUDE_MEM_WORKER_SCRIPT_PATH=${WORKER_BUNDLE}`, '--', 'node', `${PLUGIN}/scripts/mcp-server.cjs`], { stdio: 'inherit' });
 console.log(mcp.status === 0 ? 'claude-mem cloud setup: MCP search server registered.' : 'claude-mem cloud setup: MCP registration skipped (claude mcp add failed).');
 console.log('claude-mem cloud setup: done.');
