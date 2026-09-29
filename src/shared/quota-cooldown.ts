@@ -40,6 +40,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
+import { resolveConfigDirProfileLabel } from './EnvManager.js';
 import {
   clearObserverQuotaCooldown,
   recordObserverQuotaCooldown,
@@ -56,7 +57,20 @@ interface PersistedQuotaCooldown {
   provider: QuotaProvider;
   message: string;
   window?: string;
+  profile?: string;
   armedAtMs: number;
+}
+
+/**
+ * The Claude account (config-dir profile) that 'claude' requests bill right
+ * now. Quota is per account and CLAUDE_MEM_CLAUDE_CONFIG_DIR is re-read on
+ * every spawn, so a 'claude' breaker belongs to the profile that armed it and
+ * must not withhold requests from a different one.
+ */
+let resolveClaudeProfile: () => string = resolveConfigDirProfileLabel;
+
+export function setClaudeProfileResolverForTesting(resolver: (() => string) | null): void {
+  resolveClaudeProfile = resolver ?? resolveConfigDirProfileLabel;
 }
 
 function defaultCooldownFilePath(): string {
@@ -79,6 +93,7 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         provider: entry.provider,
         message: entry.message ?? 'Provider reported the inference allowance exhausted',
         ...(entry.window ? { window: entry.window } : {}),
+        ...(entry.profile ? { profile: entry.profile } : {}),
         armedAtMs: entry.armedAtMs,
         // Never restored: the process that could have held this is gone.
         probeInFlightSinceMs: null,
@@ -103,6 +118,7 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
       provider: state.provider,
       message: state.message,
       ...(state.window ? { window: state.window } : {}),
+      ...(state.profile ? { profile: state.profile } : {}),
       armedAtMs: state.armedAtMs,
     }));
     const tmp = `${filePath}.${process.pid}.tmp`;
@@ -135,6 +151,8 @@ export interface QuotaCooldownState {
   message: string;
   /** Window the provider named, when it named one (e.g. 'weekly'). */
   window?: string;
+  /** 'claude' only: the config-dir profile whose quota was exhausted. */
+  profile?: string;
   armedAtMs: number;
   /**
    * When the single post-expiry probe was claimed, or null when none is in
@@ -193,6 +211,7 @@ export function recordQuotaExhausted(
     provider,
     message,
     ...(window ? { window } : {}),
+    ...(provider === 'claude' ? { profile: resolveClaudeProfile() } : {}),
     armedAtMs,
     // Re-arming ends whatever probe was in flight: this IS that probe failing.
     probeInFlightSinceMs: null,
@@ -259,7 +278,14 @@ export function tryAdmitQuotaProbe(
   // call in a fresh process finds an empty Map, admits, and takes no claim —
   // the herd returns at exactly the moment the breaker should be strongest.
   hydrateFromDisk();
-  const state = cooldowns.get(provider);
+  let state = cooldowns.get(provider);
+  // A 'claude' breaker armed under another account (or before breakers carried
+  // one) says nothing about the account now selected: drop it and let this
+  // request through, instead of pausing capture until that account resets.
+  if (state && provider === 'claude' && state.profile !== resolveClaudeProfile()) {
+    clearQuotaCooldown(provider);
+    state = undefined;
+  }
   if (!state) return { admitted: true, claimId: null };
 
   if (nowMs - state.armedAtMs < cooldownMs) {
@@ -307,6 +333,7 @@ export function releaseQuotaProbe(provider: QuotaProvider, claimId: number | nul
 
 export function resetQuotaCooldownsForTesting(): void {
   cooldowns.clear();
+  resolveClaudeProfile = resolveConfigDirProfileLabel;
   // The latch must drop too, or a test that wrote a ledger would leak its
   // armed windows into the next test through a stale "already hydrated".
   hydrated = false;

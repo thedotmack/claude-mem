@@ -49,6 +49,13 @@ export interface RateLimitInfo {
 
 export interface RateLimitEntry extends RateLimitInfo {
   observedAt: number;
+  /**
+   * Not part of the SDK payload: the Claude config-dir profile whose
+   * credentials produced the snapshot (resolveConfigDirProfileLabel). Quota is
+   * per account, so a snapshot from one profile must not gate spawns billed to
+   * another after CLAUDE_MEM_CLAUDE_CONFIG_DIR changes. Absent = unscoped.
+   */
+  profile?: string;
 }
 
 export type RateLimitBucketKey = RateLimitWindow | 'default';
@@ -59,9 +66,9 @@ export class RateLimitStore {
   /**
    * Record a rate-limit info snapshot. Last-write-wins per bucket key.
    * Accepts both the literal `rate_limit_info` payload and a wrapping object;
-   * callers should pass the inner info.
+   * callers should pass the inner info, tagged with `profile` when known.
    */
-  set(info: RateLimitInfo | undefined | null): boolean {
+  set(info: Omit<RateLimitEntry, 'observedAt'> | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
     const previous = this.entries.get(key);
@@ -193,6 +200,10 @@ const RESET_GRACE_UTILIZATION_FLOOR = 0.85;
  * Decide whether to abort SDK consumption based on the latest rate-limit
  * snapshot and the active auth method.
  *
+ * `profile` is the account the caller is billing. Snapshots tagged with a
+ * different profile are ignored: they describe another account's quota. When
+ * either side is untagged the snapshot applies, as before.
+ *
  * - `api_key` (or any string starting with "API key"): never abort —
  *   per-call billing means the user already authorized the spend.
  * - `cli` / OAuth / subscription: per-window utilization thresholds plus a
@@ -203,6 +214,7 @@ export function shouldAbortForQuota(
   authMethod: string,
   store: RateLimitStore,
   now: number = Date.now(),
+  profile?: string,
 ): { abort: boolean; reason?: string; window?: RateLimitWindow } {
   // API-key users authorized per-call spend; the wall-clock guard is for
   // subscription quota only.
@@ -221,6 +233,7 @@ export function shouldAbortForQuota(
   for (const window of windows) {
     const entry = store.get(window);
     if (!entry) continue;
+    if (isOtherProfile(entry, profile)) continue;
 
     // Ignore expired snapshots without removing them from the store so a
     // repeated stale rejection does not look new to set() telemetry.
@@ -279,6 +292,10 @@ export function shouldAbortForQuota(
   }
 
   return { abort: false };
+}
+
+function isOtherProfile(entry: RateLimitEntry, profile: string | undefined): boolean {
+  return profile !== undefined && entry.profile !== undefined && entry.profile !== profile;
 }
 
 /**

@@ -13,8 +13,13 @@ import {
   type OAuthTokenResult,
 } from './oauth-token.js';
 
-/** #2753 — the effective config dir's profile label for logging (never the token itself): 'default' for ~/.claude, else its basename. */
-function resolveConfigDirProfileLabel(): string {
+/**
+ * #2753 — the effective config dir's profile label (never the token itself):
+ * 'default' for ~/.claude, else its basename. Logged as `profile=` in the auth
+ * method, and used to tell apart quota state recorded under different
+ * accounts (RateLimitStore entries, the 'claude' quota-cooldown breaker).
+ */
+export function resolveConfigDirProfileLabel(): string {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const effectiveConfigDir = resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
   return effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR ? 'default' : basename(effectiveConfigDir);

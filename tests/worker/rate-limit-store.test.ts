@@ -321,6 +321,58 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
   });
 });
 
+// Quota is per Claude account. CLAUDE_MEM_CLAUDE_CONFIG_DIR can move the
+// observer to another account between spawns, so a snapshot recorded while
+// billing one profile must not abort a generator billing another.
+describe('shouldAbortForQuota — per-account profile scoping', () => {
+  const cliAuth = 'Claude Code OAuth token (read from system keychain at spawn) profile=personal';
+
+  it('stores the profile a snapshot was recorded under', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.97, profile: 'work' });
+    expect(store.get('seven_day')?.profile).toBe('work');
+  });
+
+  it('does not abort on a snapshot recorded under another profile', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.97, resetsAt: FIXED_NOW + 86_400_000, profile: 'work' });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal').abort).toBe(false);
+  });
+
+  it('does not abort on another profile\'s provider rejection', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000, profile: 'work' });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal').abort).toBe(false);
+  });
+
+  it('still aborts on a snapshot recorded under the same profile', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.97, resetsAt: FIXED_NOW + 86_400_000, profile: 'work' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'work');
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day');
+  });
+
+  it('still checks the current profile\'s windows when another profile\'s are skipped', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', utilization: 0.99, profile: 'work' });
+    store.set({ rateLimitType: 'seven_day', utilization: 0.95, profile: 'personal' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal');
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day');
+  });
+
+  it('applies an untagged snapshot to every profile, and every snapshot when no profile is given', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.97 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal').abort).toBe(true);
+
+    const tagged = freshStore();
+    tagged.set({ rateLimitType: 'seven_day', utilization: 0.97, profile: 'work' });
+    expect(shouldAbortForQuota(cliAuth, tagged, FIXED_NOW).abort).toBe(true);
+  });
+});
+
 // usage_limit_hit telemetry: one event per exhausted window, never one per
 // observer request against the wall.
 describe('RateLimitStore.set → new-rejection signal', () => {
