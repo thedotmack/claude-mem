@@ -237,3 +237,27 @@ export function observationFieldMaxChars(contextWindowTokens: number | undefined
   if (!contextWindowTokens) return OBS_PROMPT_FIELD_MAX_CHARS;
   return Math.min(OBS_PROMPT_FIELD_MAX_CHARS, Math.floor(contextWindowTokens * FIELD_WINDOW_SHARE * CHARS_PER_TOKEN));
 }
+
+/** Output-token cap per observer reply when CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS is unset or invalid. */
+export const DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS = 4096;
+
+/** Fewer cannot hold an observation or a summary; more is a typo. */
+export const OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS = { min: 256, max: 1_000_000 } as const;
+
+/**
+ * The output-token cap every HTTP observer request sends (#3868): OpenRouter's
+ * max_tokens, max_completion_tokens on the #4003 retry, and Gemini's
+ * maxOutputTokens. A reasoning model can spend the fixed 4096 before it
+ * answers, cutting replies off mid-tag; this makes the cap configurable.
+ * Complete integers only; anything else keeps the default. Read per request,
+ * so a settings change applies without a restart.
+ */
+export function resolveObserverMaxOutputTokens(settingsPath: string = USER_SETTINGS_PATH): number {
+  const raw: unknown = SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS;
+  const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
+  if (!/^\d+$/.test(trimmed)) return DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS;
+  const parsed = Number(trimmed);
+  return parsed >= OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS.min && parsed <= OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS.max
+    ? parsed
+    : DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS;
+}
