@@ -225,7 +225,7 @@ export class SearchRoutes extends BaseRouteHandler {
     ];
 
     combined.sort((a, b) => b.epoch - a.epoch);
-    const resultsByDate = groupByDate(combined, item => item.created_at);
+    const resultsByDate = groupByDate(combined, item => item.created_at, { order: 'desc' });
 
     const lines: string[] = [];
     lines.push(`Found ${totalResults} result(s) for file "${filePath}"`);

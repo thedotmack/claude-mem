@@ -197,10 +197,79 @@ export interface ChromaCollectionDrop {
   error: string;
 }
 
+/**
+ * Chroma brute-forces the metadata-matched candidate set instead of walking the
+ * HNSW graph, so a `where` clause costs ~30-50us per MATCHED document while an
+ * unfiltered query is flat regardless of n_results. Measured on a 347k-doc
+ * collection: unfiltered 0.15-0.29s for n_results 100..2000, versus 6.10s for
+ * `where {project: <60% of corpus>}`.
+ *
+ * So over-fetch unfiltered and filter here. Over-fetching is close to free;
+ * pushing a non-selective filter into chroma is not.
+ */
+const CHROMA_OVERFETCH_FACTOR = 20;
+const CHROMA_OVERFETCH_CAP = 2000;
+
+type MetadataPredicate = (metadata: Record<string, unknown>) => boolean;
+
+/**
+ * Build a client-side equivalent of a chroma `where` clause, or null if the
+ * clause uses anything we do not evaluate identically to chroma.
+ *
+ * Deliberately narrow: equality (a literal or `$eq`) on a string, number or
+ * boolean, combined with `$and` / `$or`. That covers every clause the search
+ * paths build, including the dual-project scoping
+ * `{ $or: [{ project }, { merged_into_project: project }] }` that scopes nearly
+ * every project search. Everything else returns null so the query goes to
+ * chroma unchanged: other operators ($in, $ne, ranges), and the shapes chroma
+ * itself rejects (a clause with more than one key, an `$and` / `$or` with fewer
+ * than two clauses), so an invalid filter still fails the way it did. A wrong
+ * client-side filter would silently drop results, which is far worse than a
+ * slow query.
+ */
+function buildClientSidePredicate(where: unknown): MetadataPredicate | null {
+  if (!where || typeof where !== 'object' || Array.isArray(where)) return null;
+
+  const entries = Object.entries(where);
+  if (entries.length !== 1) return null;
+  const [key, value] = entries[0];
+
+  if (key === '$and' || key === '$or') {
+    if (!Array.isArray(value) || value.length < 2) return null;
+    const clauses = value.map(clause => buildClientSidePredicate(clause));
+    if (clauses.some(clause => clause === null)) return null;
+    const predicates = clauses as MetadataPredicate[];
+    return key === '$and'
+      ? metadata => predicates.every(predicate => predicate(metadata))
+      : metadata => predicates.some(predicate => predicate(metadata));
+  }
+  if (key.startsWith('$')) return null;
+
+  const isOperatorObject = value !== null && typeof value === 'object' && !Array.isArray(value);
+  const expected = isOperatorObject && Object.keys(value).length === 1 && '$eq' in value
+    ? (value as { $eq: unknown }).$eq
+    : value;
+  if (typeof expected !== 'string' && typeof expected !== 'number' && typeof expected !== 'boolean') {
+    return null;
+  }
+  // A document without the key never matches, exactly as in chroma.
+  return metadata => metadata[key] === expected;
+}
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
   private collectionEnsuredGeneration = -1;
+  /**
+   * Where-clauses observed to be selective, keyed by clause signature.
+   *
+   * The over-fetch fast path is a net loss for a selective filter: it pays the
+   * unfiltered fetch AND the filtered query it was trying to avoid. One miss is
+   * enough to learn that, after which we go straight to chroma -- which is cheap
+   * for exactly these filters. Bounded so it cannot grow without limit.
+   */
+  private selectiveFilters = new Map<string, number>();
+  private static readonly SELECTIVE_FILTER_MEMO_CAP = 256;
   private collectionCreation: Promise<void> | null = null;
   private readonly BATCH_SIZE = 100;
   // How many rows in a row may fail to write before a backfill run gives up
@@ -577,6 +646,28 @@ export class ChromaSync {
       return 0;
     }
 
+    // SQLite FTS5's trigram tokenizer accepts NUL-containing TEXT but builds
+    // an index that subsequently fails PRAGMA quick_check / integrity_check as
+    // "malformed inverted index". Codex transcripts can legitimately contain
+    // NUL bytes copied from terminal or binary output, so sanitize at the last
+    // common boundary before every Chroma add/update path. U+FFFD preserves a
+    // visible boundary without making unrelated text run together.
+    let nulSanitizedDocuments = 0;
+    const safeDocuments = documents.map(document => {
+      if (!document.document.includes('\0')) return document;
+      nulSanitizedDocuments += 1;
+      return {
+        ...document,
+        document: document.document.replaceAll('\0', '�'),
+      };
+    });
+    if (nulSanitizedDocuments > 0) {
+      logger.warn('CHROMA_SYNC', 'Sanitized NUL bytes before Chroma FTS indexing', {
+        collection: this.collectionName,
+        documents: nulSanitizedDocuments,
+      });
+    }
+
     try {
       await this.ensureCollectionExists();
     } catch (error) {
@@ -599,8 +690,8 @@ export class ChromaSync {
     const chromaMcp = ChromaMcpManager.getInstance();
 
     let written = 0;
-    for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
-      const batch = documents.slice(i, i + this.BATCH_SIZE);
+    for (let i = 0; i < safeDocuments.length; i += this.BATCH_SIZE) {
+      const batch = safeDocuments.slice(i, i + this.BATCH_SIZE);
 
       const cleanMetadatas = batch.map(d =>
         Object.fromEntries(
@@ -1464,15 +1555,69 @@ export class ChromaSync {
     await this.ensureCollectionExists();
 
     let results: any;
-    try {
+    const runQuery = async (nResults: number, where: Record<string, any> | undefined, include: string[]) => {
       const chromaMcp = ChromaMcpManager.getInstance();
-      results = await chromaMcp.callTool('chroma_query_documents', {
+      return await chromaMcp.callTool('chroma_query_documents', {
         collection_name: this.collectionName,
         query_texts: [query],
-        n_results: limit,
-        ...(whereFilter && { where: whereFilter }),
-        include: ['documents', 'metadatas', 'distances']
+        n_results: nResults,
+        ...(where && { where }),
+        include
       });
+    };
+
+    try {
+      // Fast path: keep a non-selective filter out of chroma by over-fetching
+      // unfiltered and applying the clause here (see CHROMA_OVERFETCH_FACTOR).
+      const predicate = whereFilter && limit > 0 ? buildClientSidePredicate(whereFilter) : null;
+      const filterKey = whereFilter ? JSON.stringify(whereFilter) : '';
+      const knownSurvivors = this.selectiveFilters.get(filterKey);
+      if (predicate && (knownSurvivors === undefined || knownSurvivors >= limit)) {
+        const overfetch = Math.min(
+          Math.max(limit * CHROMA_OVERFETCH_FACTOR, limit),
+          CHROMA_OVERFETCH_CAP
+        );
+        // Only ids, metadatas and distances are read below, so the (up to
+        // CHROMA_OVERFETCH_CAP) document texts are not worth shipping over MCP.
+        const raw: any = await runQuery(overfetch, undefined, ['metadatas', 'distances']);
+        const rawIds = raw?.ids?.[0] || [];
+        const rawMetadatas = raw?.metadatas?.[0] || [];
+        const rawDistances = raw?.distances?.[0] || [];
+
+        const keptIds: string[] = [];
+        const keptMetadatas: any[] = [];
+        const keptDistances: number[] = [];
+        for (let i = 0; i < rawIds.length; i++) {
+          if (!predicate(rawMetadatas[i] ?? {})) continue;
+          keptIds.push(rawIds[i]);
+          keptMetadatas.push(rawMetadatas[i]);
+          keptDistances.push(rawDistances[i]);
+        }
+
+        const filtered = this.deduplicateQueryResults({
+          ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
+        });
+
+        // Enough survivors means the filter was not selective and the fast path
+        // is sound. Too few means it WAS selective -- the case SearchManager
+        // pushes into chroma so small projects are not crowded out of the top-N
+        // -- and chroma handles a selective filter cheaply. So fall through.
+        if (filtered.ids.length >= limit) {
+          this.selectiveFilters.delete(filterKey);
+          return {
+            ids: filtered.ids.slice(0, limit),
+            distances: filtered.distances.slice(0, limit),
+            metadatas: filtered.metadatas.slice(0, limit)
+          };
+        }
+
+        if (this.selectiveFilters.size >= ChromaSync.SELECTIVE_FILTER_MEMO_CAP) {
+          this.selectiveFilters.clear();
+        }
+        this.selectiveFilters.set(filterKey, filtered.ids.length);
+      }
+
+      results = await runQuery(limit, whereFilter, ['documents', 'metadatas', 'distances']);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
