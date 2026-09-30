@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSyn
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { loadFromFileOnce } from './hook-settings.js';
+import { viewerBaseUrl } from './viewer-url.js';
 import { logger } from '../utils/logger.js';
 
 export interface ObserverHealthState {
@@ -334,13 +335,16 @@ export function describeDuration(ms: number): string {
 }
 
 /**
- * Where the one-click restart lives. Read through hook-settings rather than
- * worker-utils' getWorkerPort: this module is imported by hooks as well as the
- * worker, and must not drag in the supervisor, telemetry and process-management
- * tree just to format a URL.
+ * Where the one-click restart lives: the same base the viewer is printed at, so
+ * it stays reachable when the worker runs behind a port-forward
+ * (`CLAUDE_MEM_PUBLIC_URL`). Read through hook-settings rather than
+ * worker-utils: this module is imported by hooks as well as the worker, and
+ * must not drag in the supervisor, telemetry and process-management tree just
+ * to format a URL.
  */
 export function workerRestartUrl(): string {
-  return `http://localhost:${loadFromFileOnce().CLAUDE_MEM_WORKER_PORT}/restart`;
+  const settings = loadFromFileOnce();
+  return `${viewerBaseUrl(settings.CLAUDE_MEM_WORKER_PORT, settings.CLAUDE_MEM_PUBLIC_URL)}/restart`;
 }
 
 /**

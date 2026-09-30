@@ -4,6 +4,158 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.28.0] - 2026-09-26
+
+## Non-interactive installs now finish, and capture the signup
+
+`npx claude-mem install` run without a TTY (an AI agent, CI, a script) used to stop on "provider must be explicit". It now completes on its own and still gives the user a way to sign in afterwards.
+
+### Installer
+
+- **Provider resolves instead of aborting.** A fresh non-interactive install with no `--provider` defaults to your Anthropic plan (local memory). An existing config keeps its saved provider, so `npx claude-mem update` never flips a CMEM Pro install to something else.
+- **Saved personal providers are validated, not assumed.** A kept `gemini` / `openrouter` provider needs a usable key: saved in `~/.claude-mem/settings.json`, or exported in the environment. A saved CMEM gateway config still requires its saved key, because the worker locks that tuple to the key on disk (an exported replacement base URL and key together are accepted).
+- **Deferred sign-in link.** Every non-interactive install that skipped sign-in prints an optional sign-in link as its last line, after the success line, so an agent relaying the output can show it to the user. It is best-effort, never changes the exit status, and is skipped when `CI` is set.
+- **30-minute browser sign-in wait.** Interactive OAuth polling now honours the pairing's `expires_in` (capped at 30 minutes; 4 minutes when the server reports none) instead of a fixed short budget.
+- **Persisted providers skip the blocking OAuth gate.** A non-interactive run that reuses a saved account-backed provider no longer opens a browser and polls until the pairing expires.
+- **Accurate install summary.** The `Account:` line reflects whether a login actually ran: `OAuth login complete`, `Kept existing account (no login this run)`, or `Not required (local provider / host observer)`.
+- **Provider error labels.** OAuth start failures are classified as `http_error` / `network` / `timeout` / `bad_body`; an abort that fires while the 2xx body is still streaming is a `timeout`, not `bad_body`.
+
+### Telemetry
+
+- New events: `installer_oauth_start_failed` (`outcome`, `interactive`, `phase`: login / deferred) and `installer_oauth_deferred` (`interactive`, always `false`).
+- `install_completed` gains `provider_source`: `flag` / `default` / `persisted` / `prompt`.
+- `installer_oauth_timeout` gains `phase` (login / enrollment).
+- The installer scrubber drops persisted key values before any event leaves the machine.
+
+### Privacy note
+
+Local installs contact cmem.ai once, at signup, to create the sign-in link. Nothing else is sent to cmem.ai. Product telemetry is a separate, opt-out channel (`npx claude-mem telemetry`). The public docs, the `/how-it-works` skill, and the installer summary line now all say this plainly.
+
+### Docs
+
+- Installation, CMEM Pro headless, Cursor, and Telemetry pages updated for the non-interactive flow, the deferred link, and the new events.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.27.1...v13.28.0
+
+## [13.27.1] - 2026-09-26
+
+## Fixes
+- **Grok Bot live INDEX lists the seat's own rows first** (#4240). Each seat's 80-row `zz-claude-mem-inject.md` now lists that seat's project rows before any house-wide rows; house rows only fill the remaining slots, and the house query is skipped when the seat fills the window.
+- **Seat self-saves show up in the INDEX.** Rows saved through `POST /api/memory/save` (for example Grok Bot `grok-seat-save`) were excluded by the concept filter; the seat query now includes them, and a successful manual save triggers an INDEX refresh.
+
+## Also in this range
+- Agent cost report: read-only GitHub merged-PR wins source (#4241).
+
+## [13.27.0] - 2026-09-26
+
+## Agent Cost Report — weekly rebuild
+
+The `agent-cost-report` skill is rebuilt around measured data (#4238):
+
+- **Dollars from transcripts.** Claude Code and Codex transcript tokens priced at OpenRouter list prices, labeled ESTIMATED; note-taker (observer) cost priced separately and never added to the headline; measured provider spend only from a sanctioned source (OpenRouter per-key snapshot, shown with its UTC bucket label); "unavailable" is never shown as $0.
+- **Default window** is the last 7 full days in PT, today excluded; single-session and project scopes supported.
+- **Timing-style report.** Self-contained `report.html` (no script, no external resources) plus PDF, `report.json`, `line-items.csv`, `evidence.json`: hero, Wins vs mistakes with two timelines on one day axis, cost ribbon, donut, day chart, useful ring, folded Details.
+- **Behavior metrics.** A human/bot tagger on every user turn, frustration episodes, the Frustration Arc patterns P1–P12 plus tool errors and hedging, a low same-session mistakes line (upper bound in Details only), rule effectiveness, and a 70% spot-check gate for summary tiles. Optional classifier, off by default, capped at $2.00.
+- **Gaps stay honest.** Mac transcripts extrapolated (low confidence) until a device export is merged; Grok Bot usage shown as unavailable; win cost unmeasured until sessions are linked to PRs.
+- **Pipeline CLI** (`scripts/acr.py`, stdlib Python): `prices`, `collect`, `rollup`, `review`, `render`, `pdf`, `measure-openrouter`, `collect --export-device`, `rollup --device-usage`, `behavior-sample`, `sync-check`. 117 unit tests; `VERIFICATION.md` records the checks.
+- The four mirror plugins carry byte copies of the skill, and `agent-cost-report` is pinned as a first-party skill id.
+
+## [13.26.1] - 2026-09-26
+
+## Cloud sync fixes (CMEM Pro)
+
+- **Lapsed trial or revoked token no longer retries forever.** When the sync server answers 401/403, claude-mem pauses cloud sync, re-checks once an hour, and resumes on its own after a renewal. Status explains the cause: renew at cmem.ai/pro (subscription inactive) or reconnect at cmem.ai → Connect (token no longer valid).
+- **Sync failures are no longer silent.** A paused or long-failing sync now shows one plain-language line in the SessionStart context, and `/api/sync/status` gains `authError` and `health`. HTML error pages are summarized instead of dumped.
+- **#4228:** installs with cloud sync off clear the leftover `sync_outbox` backlog on worker start.
+- **#4086:** one op the sync server keeps rejecting (e.g. `revision_hash_conflict`) is quarantined after 3 attempts so the rest of the queue keeps uploading.
+
+PR: #4236
+
+## [13.26.0] - 2026-09-26
+
+## CMEM Pro cloud sync moves off Cloudflare
+
+The old Cloudflare Worker hub (`sync-hub.black-pond-afbb.workers.dev`) was failing every request because it hit Cloudflare Free plan caps. Cloud sync now runs on a new protocol-v2 hub at **https://sync.cmem.ai** (Fly + Neon Postgres).
+
+### Plugin changes
+- **Automatic hub URL migration:** on startup, a `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` that still points at the legacy workers.dev host is rewritten to `https://sync.cmem.ai`. You don't need to reconnect.
+- **Retry-After backoff:** cloud sync now honors `Retry-After` on 429/503 responses and stops hammering the hub.
+- **Looser checkpoint check:** the push checkpoint validation is more tolerant, so a hub that moved no longer wedges sync.
+
+### Infrastructure (#4232, #4233)
+- New `services/sync-api`: a protocol-v2 port of `workers/sync-hub` on Postgres.
+- The Worker gets `FORWARD_ORIGIN` pass-through mode, which proxies every request to the new hub and touches no Durable Objects or KV.
+
+## [13.24.23] - 2026-09-11
+
+- fix(supervisor): jail SDK subprocess cwd (#4054)
+- fix(hooks): anchor project names to Claude project dir (#4055)
+
+npm publish is handled separately.
+
+## [13.24.22] - 2026-09-11
+
+- fix(sqlite): skip empty-title observations at capture (#3176)
+
+npm publish is handled separately.
+
+## [13.24.21] - 2026-09-11
+
+- fix(session): use latest user_prompts text on rehydration (#4049 / #4047)
+
+npm publish is handled separately.
+
+## [13.24.20] - 2026-09-11
+
+- fix(build): stop regex bundle rewrite that can delete a declaration (#4044)
+- fix(sync-hub): bound scheduled projection repair work (#4046 / #3555)
+
+npm publish is handled separately.
+
+## [13.24.20] - 2026-09-11
+
+- fix(build): stop regex bundle rewrite that can delete a declaration (#4044)
+- fix(sync-hub): bound scheduled projection repair work (#4046 / #3555)
+
+npm publish is handled separately.
+
+## [13.24.19] - 2026-09-11
+
+- fix(cli-resolve): stop cold-start false "too old" and name spawn failures (#4036)
+- fix(install): find bun/uv where installers place them (#4038)
+- fix(worker): stop ENOENT when Bun runtime path is bad (#4039)
+- fix(hooks): skip plugin cache sessions (#4042)
+- fix(chroma): stop JSON parse crashes aborting sync (#4040)
+- fix(settings): normalize localhost worker host to 127.0.0.1 (#4041)
+- fix(oauth): sanitize macOS keychain account to match Claude Code (#4045 / #4037)
+
+npm publish is handled separately.
+
+## [13.24.18] - 2026-09-11
+
+Ships from main since v13.24.17:
+
+- #4029 — stop discarding session-summary responses (server-beta; rehost #3587 / recurrence of #1345)
+- #4030 — bound session-summary input by payload size not event count (rehost #3584)
+- #4032 — reuse OpenAI-compatible synthetic session IDs (rehost #3597)
+- #4033 — trip worker-unavailable fail-loud latch once, then fail-open (rehost #3489)
+- #4034 — test pin observation type handling against mode enum (rehost #3593)
+- #4031 — bound sync_outbox growth when cloud sync unconfigured (rehost #3616; complementary to #4027)
+
+Does not npm publish from this release authoring step. Prioritizer publishes from tag.
+
+## [13.24.17] - 2026-09-11
+
+- #4026 / #3575 — health probes honor the caller's remaining deadline
+- #3445 — detect macOS Codex desktop-bundled CLI
+- #4027 — register memory_session_id once (NULL-only); keep first id so sync outbox stops amplifying
+
+## [13.24.16] - 2026-09-11
+
+- #3629 — fix(observer): stop writing NULL memory_session_id at generator start
+- #3640 — fix(install): write a runtime-only package.json / stop shipping dev tree-sitter grammars into the marketplace
+- #3631 — fix(chroma): classify a dead-transport handshake as ChromaUnavailableError
+
 ## [13.25.3] - 2026-09-21
 
 - #4166 — security: harden unauthenticated settings writes and telemetry error scrubbing (reported privately by Theon Alleyne)
