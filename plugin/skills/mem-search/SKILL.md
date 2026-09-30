@@ -5,7 +5,7 @@ description: Search claude-mem's persistent cross-session memory database. Use w
 
 # Memory Search
 
-Search past work across all sessions. Simple workflow: search -> filter -> fetch.
+Search past work across all sessions. Simple workflow: search -> filter -> fetch -> (rarely) disclose raw tool I/O.
 
 ## When to Use
 
@@ -15,7 +15,7 @@ Use when users ask about PREVIOUS sessions (not current conversation):
 - "How did we solve X last time?"
 - "What happened last week?"
 
-## 3-Layer Workflow (ALWAYS Follow)
+## Layered Workflow (ALWAYS Follow)
 
 **NEVER fetch full details without filtering first. 10x token savings.**
 
@@ -93,6 +93,32 @@ get_observations(ids=[11131, 10942])
 
 **Returns:** Complete observation objects with title, subtitle, narrative, facts, concepts, files (~500-1000 tokens each)
 
+### Step 4: Disclose Raw Tool I/O - Only When Step 3 Was Not Enough
+
+Observations are *summaries*. When the answer needs the literal bytes a tool
+returned — the exact diff, the exact command output, the exact API response —
+use the `get_tool_uses` MCP tool:
+
+```
+get_tool_uses(ids=["toolu_01ABC..."], project="my-project")
+```
+
+**Do not start here.** Raw tool bodies are unsummarized and can run to thousands
+of tokens each; that is the whole reason claude-mem compresses them into
+observations in the first place. Reach for this layer only after search /
+timeline / get_observations pointed you at specific tool calls.
+
+**Parameters:**
+
+- `ids` (array, required) - Numeric `tool_uses` ids OR opaque `tool_use_id` strings
+- `limit` (number, optional) - Max rows to return
+- `project` (string, optional) - Project name filter
+- `contentSessionId` (string, optional) - Restrict to one session
+
+**Returns:** The stored `tool_input` / `tool_response` for those calls, plus the
+tool name, session ids, and the observation each was folded into. Payloads over
+64 KB were truncated on write and carry a `…[truncated: N bytes]` marker.
+
 ## Examples
 
 **Find recent bug fixes:**
@@ -119,10 +145,19 @@ timeline(anchor=11131, depth_before=5, depth_after=5, project="my-project")
 get_observations(ids=[11131, 10942, 10855], orderBy="date_desc")
 ```
 
+**Recover the exact output of a command we ran last week:**
+
+```
+search(query="migration failed", limit=20, project="my-project")
+get_observations(ids=[11131])            # read the summary first
+get_tool_uses(ids=["toolu_01ABC..."])    # only if the summary omitted the detail
+```
+
 ## Why This Workflow?
 
 - **Search index:** ~50-100 tokens per result
 - **Full observation:** ~500-1000 tokens each
+- **Raw tool body:** up to 64 KB each — the layer you skip 95% of the time
 - **Batch fetch:** 1 HTTP request vs N individual requests
 - **10x token savings** by filtering before fetching
 

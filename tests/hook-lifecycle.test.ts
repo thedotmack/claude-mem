@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { fileURLToPath } from 'node:url';
 
 describe('Hook Lifecycle - Event Handlers', () => {
   describe('worker fallback failure counter', () => {
@@ -494,7 +495,7 @@ describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
     expect(typeof hookCommand).toBe('function');
 
     const hookCommandSource = await Bun.file(
-      new URL('../src/cli/hook-command.ts', import.meta.url).pathname
+      fileURLToPath(new URL('../src/cli/hook-command.ts', import.meta.url))
     ).text();
 
     // Diagnostics still go through the structured logger.
