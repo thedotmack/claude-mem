@@ -3,6 +3,7 @@
 import { ModeManager } from '../../../../services/domain/ModeManager.js';
 import type { ModeConfig, ObservationType } from '../../../../services/domain/types.js';
 import { stripTags } from '../../../../utils/tag-stripping.js';
+import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../../../../utils/redaction.js';
 import { logger } from '../../../../utils/logger.js';
 import type { PostgresAgentEvent } from '../../../../storage/postgres/agent-events.js';
 import type { ServerGenerationContext } from './types.js';
@@ -36,6 +37,8 @@ export interface BuildServerPromptResult {
   readonly prompt: string;
   readonly hadPrivateContent: boolean;
   readonly skippedAll: boolean;
+  /** No events were loaded at all — distinct from "loaded, then scrubbed away". */
+  readonly noEvents: boolean;
 }
 
 const MAX_PAYLOAD_CHARS = 16 * 1024;
@@ -62,6 +65,11 @@ export function buildServerGenerationPrompt(
   }
 
   const skippedAll = context.events.length > 0 && allEventsScrubbedToEmpty;
+  // An EMPTY input is not a privacy strip, and saying so in the prompt handed
+  // the model the exact pretext the instruction below names — it answered
+  // <skip_summary /> and the job completed with nothing. Kept separate so the
+  // caller can refuse the call instead of buying that answer.
+  const noEvents = context.events.length === 0;
 
   const sessionTag = context.project.serverSessionId
     ? `\n  <server_session_id>${escapeXml(context.project.serverSessionId)}</server_session_id>`
@@ -114,14 +122,19 @@ export function buildServerGenerationPrompt(
     `  <team_id>${escapeXml(context.project.teamId)}</team_id>` + sessionTag + projectTag,
     `  <generation_job_id>${escapeXml(context.job.id)}</generation_job_id>`,
     '  <agent_events>',
-    eventBlocks.length > 0 ? eventBlocks.join('\n') : '    <!-- empty after privacy stripping -->',
+    eventBlocks.length > 0
+      ? eventBlocks.join('\n')
+      : noEvents
+        ? '    <!-- no agent events were loaded for this session -->'
+        : '    <!-- empty after privacy stripping -->',
     '  </agent_events>',
     '</server_beta_observation_request>',
     '',
     ...(isSessionSummary ? summaryInstruction : observationInstruction),
+    ...(eventBlocks.some(hasRedactionMarker) ? ['', REDACTION_MARKER_HINT] : []),
   ].join('\n');
 
-  return { prompt, hadPrivateContent, skippedAll };
+  return { prompt, hadPrivateContent, skippedAll, noEvents };
 }
 
 interface EventBlockResult {

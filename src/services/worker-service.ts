@@ -21,6 +21,7 @@ import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
+import { setRegistryDegradedReporter } from '../supervisor/process-registry.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
@@ -37,6 +38,19 @@ import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
+// Exit code for "started but could not serve": the worker booted but never
+// bound the port (#3557). Kept distinct from the deliberate exit 0 used for
+// duplicate suppression and Windows Terminal tab management, so a genuine dead
+// boot is never laundered as success.
+export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
+
+// The bind must happen within this window. server.listen() is the first ref'd
+// handle in the boot path, so a stall before it lets the event loop empty and
+// the process exit 0 with no trace. A ref'd watchdog holds the loop open and
+// exits loudly if the bind never lands. 60s clears the slowest healthy Windows
+// cold boot with margin (the spawner's own readiness wait is 30s).
+const BOOT_BIND_DEADLINE_MS = 60_000;
+
 import {
   writePidFile,
   readPidFile,
@@ -46,9 +60,11 @@ import {
   cleanStalePidFile,
   verifyPidFileOwnership,
   spawnDaemon,
-  touchPidFile
+  touchPidFile,
+  pinDaemonWorkingDirectory
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
+import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
@@ -77,7 +93,7 @@ import {
 import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
-import { notifyGrokBotIndex } from './integrations/GrokBotIndexWriter.js';
+import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
 
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
@@ -212,7 +228,9 @@ export class WorkerService implements WorkerRef {
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
+  private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
   private deferredSessionEndReplayTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
   private readonly deferredSessionEndQueue = new DeferredSessionEndQueue();
 
   private dbManager: DatabaseManager;
@@ -365,6 +383,22 @@ export class WorkerService implements WorkerRef {
     this.deferredSessionEndReplayTimer.unref?.();
   }
 
+  private startPendingSessionResume(sessionRoutes: SessionRoutes): void {
+    if (this.pendingSessionResumeTimer !== null || this.isShuttingDown) return;
+    this.pendingSessionResumeTimer = setInterval(() => {
+      if (!this.initializationCompleteFlag || this.isShuttingDown) return;
+      sessionRoutes.resumePendingSessions('periodic-resume');
+    }, 60_000);
+    this.pendingSessionResumeTimer.unref?.();
+  }
+
+  private stopPendingSessionResume(): void {
+    if (this.pendingSessionResumeTimer !== null) {
+      clearInterval(this.pendingSessionResumeTimer);
+      this.pendingSessionResumeTimer = null;
+    }
+  }
+
   private registerRoutes(): void {
 
     this.server.registerRoutes(new ChromaRoutes());
@@ -407,6 +441,7 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
     this.server.registerRoutes(sessionRoutes);
+    this.startPendingSessionResume(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
@@ -464,6 +499,26 @@ export class WorkerService implements WorkerRef {
     // construction — so it is set here at the very top of worker start.
     enableExceptionAutocaptureForWorker();
     logger.setErrorSink((err) => captureException(err));
+    // Bridge a degraded (unwritable) supervisor registry into a low-volume
+    // operational event WITHOUT the supervisor layer importing telemetry. Fires
+    // once per degraded episode, so it measures the recovery, not each failure.
+    setRegistryDegradedReporter(({ errorCategory }) =>
+      captureEvent('supervisor_registry_degraded', { error_category: errorCategory })
+    );
+
+    // Boot watchdog (#3557): nothing in the boot path below holds a ref'd
+    // handle until server.listen(), so a stall before the bind lets the event
+    // loop empty and the process exit 0 — a silent capture-dead install. This
+    // ref'd timer keeps the loop open through boot; if the bind never lands it
+    // exits non-zero with a log instead of vanishing mid-boot.
+    this.bootWatchdog = setTimeout(() => {
+      logger.failure('SYSTEM', 'Worker boot timed out before binding port — exiting', {
+        host,
+        port,
+        deadlineMs: BOOT_BIND_DEADLINE_MS,
+      });
+      process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
+    }, BOOT_BIND_DEADLINE_MS);
 
     // Must run before startSupervisor(): its validateWorkerPidFile() removes
     // the dead previous run's stale PID file, which crash detection needs.
@@ -471,7 +526,14 @@ export class WorkerService implements WorkerRef {
 
     await startSupervisor();
 
+    // Log the decision to bind before the call, so the log names the last boot
+    // step reached instead of stopping mid-sentence when a bind stalls (#3557).
+    logger.info('SYSTEM', 'Binding worker HTTP server', { host, port });
     await this.server.listen(port, host);
+
+    // Bound successfully — the watchdog has done its job.
+    clearTimeout(this.bootWatchdog);
+    this.bootWatchdog = null;
 
     if (this.tvToken) {
       // Operators need to see, in the log, that a remote surface is open.
@@ -565,6 +627,11 @@ export class WorkerService implements WorkerRef {
       this.startDeferredSessionEndReplay();
 
       runOneTimeV12_4_3Cleanup();
+
+      // One-time, deferred and bounded: reclaim the FTS5 bloat an install already
+      // accumulated (#2793). Schema v54 stops new bloat at the source; the reclaim runs
+      // on an unref'd timer so startup and health checks never wait for it.
+      scheduleOneTimeFtsBloatReclaim(this.dbManager.getConnection());
 
       // Worktree adoption stays fire-and-forget (#2122) — init never awaits
       // it — but it is kicked only after dbManager.initialize() and the
@@ -724,10 +791,17 @@ export class WorkerService implements WorkerRef {
       // Seed Grok Bot Memory INDEX files from current observations so seats
       // do not wait for the next store before the mid-attach file exists.
       notifyGrokBotIndex();
+      // Standing line / project-map edits must reach idle seats too.
+      watchGrokBotIndexSettings();
 
       if (this.chromaMcpManager) {
-        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
-          logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+        ChromaSync.registerBackfillStore(this.dbManager.getSessionStore());
+        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(completed => {
+          if (completed) {
+            logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+          } else {
+            logger.info('CHROMA_SYNC', 'Backfill check ended before every project finished; the next start resumes from the saved watermarks');
+          }
         }).catch(error => {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
         });
@@ -872,6 +946,7 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        this.stopPendingSessionResume();
         if (this.deferredSessionEndReplayTimer !== null) {
           clearInterval(this.deferredSessionEndReplayTimer);
           this.deferredSessionEndReplayTimer = null;
@@ -945,6 +1020,20 @@ export class WorkerService implements WorkerRef {
         queueDepth
       });
     })();
+  }
+
+  /**
+   * Record the outcome of the latest observer response for /api/health's
+   * ai.lastInteraction. `provider` is the one that produced the response (the
+   * session's), passed by the caller; it is only a label, never a routing input.
+   */
+  recordAiInteraction(result: { success: boolean; error?: string; provider: string }): void {
+    this.lastAiInteraction = {
+      timestamp: Date.now(),
+      success: result.success,
+      provider: result.provider,
+      ...(result.error ? { error: result.error } : {}),
+    };
   }
 }
 
@@ -1152,6 +1241,15 @@ async function main() {
 
   const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
   if ((command === undefined || hookInitiatedCommands.includes(command)) && isPluginDisabledInClaudeSettings()) {
+    // Log the reason instead of exiting silently. Without this line, a disabled
+    // plugin makes the worker refuse every start/hook/--daemon with a bare
+    // exit(0) and no trace — indistinguishable from a crash, and only
+    // discoverable by reverse-engineering the bundle. One INFO line turns
+    // "memory mysteriously stopped" into an obvious cause.
+    logger.info('SYSTEM', 'Worker not starting: claude-mem is disabled in Claude settings (enabledPlugins["claude-mem@thedotmack"] === false). Re-enable the plugin to resume memory capture.', {
+      command: command ?? '(none)',
+      configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude',
+    });
     process.exit(0);
   }
 
@@ -1478,6 +1576,7 @@ async function main() {
       console.log(`  Repo:                 ${result.repoPath}`);
       console.log(`  Worktrees scanned:    ${result.scannedWorktrees}`);
       console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
+      console.log(`  Orphaned worktrees:   ${result.orphanedWorktrees.join(', ') || '(none)'}`);
       console.log(`  Observations adopted: ${result.adoptedObservations}`);
       console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
       console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
@@ -1509,6 +1608,12 @@ async function main() {
 
     case '--daemon':
     default: {
+      // Before anything below spawns a child (the reclaim probes, the
+      // supervisor, chroma-mcp), stand in claude-mem's data dir rather than
+      // whatever cwd this daemon was launched with (#3706; EPERM on
+      // cross-spawn's chdir-back from an ACL-locked cwd).
+      pinDaemonWorkingDirectory();
+
       // Duplicate gate, ground truth FIRST (Phase 5): a live worker owns the
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:
       // duplicate suppression is a success, not a failure.
@@ -1518,13 +1623,13 @@ async function main() {
           logger.info('SYSTEM', 'Worker already running (health verified), refusing to start duplicate', { port });
           process.exit(0);
         }
-        // Bound but silent: likely a ghost listener — a dead worker whose
-        // surviving chroma sidecar chain holds the inherited socket
-        // (plan-15 #3603). Reclaim when the owner is provably dead; a live
-        // owner (wedged worker, foreign process) keeps the duplicate refusal.
+        // Bound but silent: a wedged worker we own that stopped answering
+        // /health (#4127), or a ghost listener — a dead worker whose chroma
+        // sidecar chain holds the inherited socket (plan-15 #3603). Reclaim
+        // both; a live FOREIGN owner keeps the duplicate refusal.
         const reclaim = await reclaimGhostListeningPort(port);
         if (reclaim.reclaimed) {
-          logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — starting anyway', {
+          logger.info('SYSTEM', 'Reclaimed the worker port (wedged or dead-owner ghost listener) — starting anyway', {
             port,
             killedPids: reclaim.killedPids,
           });
@@ -1580,10 +1685,10 @@ async function main() {
         // competitor's — e.g. a port-conflict loser whose error didn't match
         // the EADDRINUSE detection above must not clobber the winner's file.
         removePidFileIfOwner(process.pid);
-        // Genuine start failure (not duplicate suppression): exit non-zero so
-        // the restart verifier and any supervising caller see a dead boot
-        // instead of a silent "success".
-        process.exit(1);
+        // Genuine start failure (not duplicate suppression): exit with the
+        // distinct "could not serve" code so the restart verifier and any
+        // supervising caller see a dead boot instead of a silent "success".
+        process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
       });
     }
   }
@@ -1678,6 +1783,11 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
 if (isMainModule) {
   main().catch((error) => {
     logger.error('SYSTEM', 'Fatal error in main', {}, error instanceof Error ? error : undefined);
-    process.exit(0);  
+    // A fatal error on the daemon boot path is a dead boot, not a success:
+    // exit non-zero so it is not laundered (#3557). Every other command keeps
+    // the deliberate exit 0 (Windows Terminal tab management per CLAUDE.md).
+    const { command } = parseWorkerServiceCommand(process.argv.slice(2));
+    const isDaemonBoot = command === undefined || command === '--daemon';
+    process.exit(isDaemonBoot ? WORKER_BOOT_FAILED_EXIT_CODE : 0);
   });
 }

@@ -43,10 +43,21 @@ export type ProcessGeneratedResponseOutcome =
       observations: PostgresObservation[];
       privateContentDetected: boolean;
     }
-  | { kind: 'parse_error'; jobId: string; reason: string };
+  | { kind: 'parse_error'; jobId: string; reason: string }
+  // Distinct from parse_error: the provider returned no content at all
+  // (safety block, MAX_TOKENS truncation, gateway hiccup). Detected before
+  // parsing so the failure is attributed to the provider, not the parser,
+  // and the caller can fail fast instead of burning queue retries.
+  | { kind: 'empty_response'; jobId: string; reason: string };
 
 export interface ProcessGeneratedResponseInput {
   pool: PostgresPool;
+  /**
+   * How many events the provider was actually handed. Recorded on the
+   * completion so an `observationCount: 0` always says WHY: nothing was
+   * loaded, or plenty was loaded and the model still declined.
+   */
+  inputEventCount?: number;
   job: PostgresObservationGenerationJob;
   rawText: string;
   modelId?: string;
@@ -67,6 +78,10 @@ export async function processGeneratedResponse(
   input: ProcessGeneratedResponseInput,
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job, rawText } = input;
+
+  if (!rawText.trim()) {
+    return { kind: 'empty_response', jobId: job.id, reason: 'provider returned empty content' };
+  }
 
   const parsed = parseAgentXml(rawText, job.id);
   if (!parsed.valid) {
@@ -190,6 +205,10 @@ export async function processSessionSummaryResponse(
     return { kind: 'parse_error', jobId: job.id, reason: 'session summary processor invoked on non-summary job' };
   }
 
+  if (!rawText.trim()) {
+    return { kind: 'empty_response', jobId: job.id, reason: 'provider returned empty content' };
+  }
+
   const parsed = parseAgentXml(rawText, job.id);
   if (!parsed.valid) {
     return { kind: 'parse_error', jobId: job.id, reason: 'parser rejected summary response' };
@@ -209,6 +228,14 @@ export async function processSessionSummaryResponse(
     : fallbackObservations.map(o => renderObservationContent(o)).join('\n\n');
 
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
+  // `privateContentDetected` cannot tell "the model declined" from "we rendered
+  // nothing", and the parser's own skip_reason was being thrown away, so every
+  // zero-observation completion looked identical. Keep the reason.
+  const skipReason = skipped
+    ? (summary?.skip_reason ?? 'model_skipped')
+    : summaryContent.trim().length === 0
+      ? 'rendered_empty'
+      : null;
 
   const rendered: RenderedObservation[] = privateContentDetected
     ? []
@@ -225,7 +252,7 @@ export async function processSessionSummaryResponse(
         },
       }];
 
-  return persistGeneratedObservations(input, rendered, privateContentDetected);
+  return persistGeneratedObservations(input, rendered, privateContentDetected, skipReason);
 }
 
 interface RenderedObservation {
@@ -244,6 +271,7 @@ async function persistGeneratedObservations(
   input: ProcessGeneratedResponseInput,
   rendered: RenderedObservation[],
   privateContentDetected: boolean,
+  skipReason: string | null = null,
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job } = input;
 
@@ -393,6 +421,8 @@ async function persistGeneratedObservations(
         model: input.modelId ?? null,
         observationCount: persisted.length,
         privateContentDetected,
+        inputEventCount: input.inputEventCount ?? null,
+        skipReason,
         workerId: input.workerId ?? null,
         sourceType: fresh.sourceType,
       },
