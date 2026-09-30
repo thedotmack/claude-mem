@@ -56,6 +56,14 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, watch } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import {
+  fencedLine,
+  sanitizeUntrustedText,
+  stripUnsafeChars,
+  truncateCodePoints,
+} from '../src/services/integrations/grok-bot-untrusted-text.mjs';
+
+export { stripUnsafeChars };
 
 const AGENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -459,48 +467,32 @@ async function fetchInject(cfg, projects) {
 
 // ------------------------------------------------------------ formatting ----
 
-/**
- * Invisible or direction-hijacking characters: C0/C1 controls, bidi marks,
- * overrides and isolates, and zero-width joiners. A row carrying these can
- * reorder or hide text once the host renders it, so strip them before the body
- * enters a fact line. Newlines are folded to a space by whitespace collapse so
- * a row cannot forge a second fact. Mirror of stripUnsafeChars in
- * src/services/integrations/grok-bot-index-format.ts.
- */
-const UNSAFE_INJECT_CHARS =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
-
-export function stripUnsafeChars(value) {
-  return String(value).replace(UNSAFE_INJECT_CHARS, '');
-}
-
 function collapse(value) {
   return stripUnsafeChars(value).replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Fence recalled (untrusted) row content in guillemets so the host reads each
- * observation as quoted reference data, not a directive. The row ID stays
- * outside the fence as the trusted lookup key; fence marks are stripped from
- * the inner text so a title cannot forge a close. Mirror of fenceRecalled in
- * src/services/integrations/grok-bot-index-format.ts.
- */
-function fenceRecalled(text) {
-  return `«${String(text).replace(/[«»]/g, '')}»`;
-}
-
-function fenceRow(raw) {
-  const match = /^(\S+)\s+([\s\S]*)$/.exec(raw);
-  return match ? `${match[1]} ${fenceRecalled(match[2])}` : fenceRecalled(raw);
 }
 
 function todayStamp(now) {
   return now.toISOString().slice(0, 10);
 }
 
+function factLead(date, tier) {
+  return `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} `;
+}
+
+/** A fact line whose whole body is sanitized; truncation is code-point safe. */
 function factLine(date, body, maxChars, tier) {
-  const line = `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} ${collapse(body)}`;
-  return line.length <= maxChars ? line : `${line.slice(0, maxChars - 1)}…`;
+  return truncateCodePoints(`${factLead(date, tier)}${sanitizeUntrustedText(body)}`, maxChars);
+}
+
+/**
+ * Rows keyed by an observation/summary ID are recalled untrusted content: the
+ * ID stays outside the «…» fence as the lookup key and a long row is cut inside
+ * the fence. ID-less rows (e.g. "No previous sessions found.") are ours.
+ */
+function rowFactLine(date, row, maxChars, tier) {
+  if (!row.id) return factLine(date, row.raw, maxChars, tier);
+  const recalled = row.raw.slice(row.id.length);
+  return fencedLine(`${factLead(date, tier)}${row.id} `, recalled, maxChars);
 }
 
 function isBoilerplate(line) {
@@ -569,7 +561,6 @@ export function injectTextToFactLines(text, {
   // are not sliced off.
   const headerMax = Math.min(HOST_MAX_FACT_CHARS - 20, Math.max(maxLineChars ?? DEFAULT_INDEX_LINE_CHARS, 460));
   const emitHeader = body => factLine(date, body, headerMax, tier);
-  const emit = body => factLine(date, body, maxLineChars, tier);
   const windowSize = resolveIndexWindow(window, maxLines);
   const lines = String(text)
     .split('\n')
@@ -611,9 +602,7 @@ export function injectTextToFactLines(text, {
 
   const out = [emitHeader(head)];
   for (const row of kept) {
-    // Rows keyed by an observation/summary ID are recalled untrusted content;
-    // fence them. ID-less rows (e.g. "No previous sessions found.") are ours.
-    out.push(emit(row.id ? fenceRow(row.raw) : row.raw));
+    out.push(rowFactLine(date, row, maxLineChars, tier));
   }
   return out;
 }

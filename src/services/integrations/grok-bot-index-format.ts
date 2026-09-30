@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import path from 'path';
 import { formatTime } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { fencedLine, sanitizeUntrustedText, stripUnsafeChars, truncateCodePoints } from './grok-bot-untrusted-text.mjs';
+
+export { stripUnsafeChars };
 
 export const INJECT_LOG_BASENAME = 'zz-claude-mem-inject.md';
 export const INJECT_TAG = '[claude-mem]';
@@ -39,7 +42,7 @@ export const FILE_HEADER = [
   '',
   '<!-- Written by the claude-mem worker (Grok Bot live INDEX).',
   '     Growing observation timeline. The host Memory mid-attach reads this file.',
-  '     Dated facts: "- (YYYY-MM-DD) [episode] [claude-mem] ID TIME ICON TITLE".',
+  '     Dated facts: "- (YYYY-MM-DD) [episode] [claude-mem] ID «TIME ICON TITLE»" (recalled text fenced).',
   '     Each row keeps its observation ID for get_observations.',
   '     This file is overwritten as new observations land. Do not edit profile.md. -->',
   '',
@@ -59,32 +62,8 @@ export function resolveTier(raw: unknown): GrokBotIndexTier {
   return tier in TIER_PREFIXES ? (tier as GrokBotIndexTier) : 'episode';
 }
 
-/**
- * Invisible or direction-hijacking characters: C0/C1 controls, bidi marks,
- * overrides and isolates, and zero-width joiners. A title carrying these can
- * reorder or hide text once the host renders the row, so strip them before the
- * body enters a fact line. Newlines are handled separately by whitespace
- * collapse, which folds them to a space so a title cannot forge a second row.
- */
-const UNSAFE_INJECT_CHARS =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
-
-export function stripUnsafeChars(value: string): string {
-  return String(value).replace(UNSAFE_INJECT_CHARS, '');
-}
-
 export function collapseWhitespace(value: string): string {
   return stripUnsafeChars(value).replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Fence recalled (untrusted) row content in guillemets so the host reads each
- * observation as quoted reference data, not a directive it should obey. The
- * observation ID stays outside the fence as the trusted lookup key; the fence
- * marks are stripped from the inner text so a title cannot forge a close.
- */
-export function fenceRecalled(text: string): string {
-  return `«${String(text).replace(/[«»]/g, '')}»`;
 }
 
 function compactTime(time: string): string {
@@ -110,15 +89,28 @@ export function typeIcon(type: string): string {
   }
 }
 
-export function formatIndexRow(obs: GrokBotIndexObservation): string {
-  const title = collapseWhitespace(obs.title || 'Untitled');
-  const time = compactTime(formatTime(obs.created_at_epoch));
-  return `${obs.id} ${fenceRecalled(`${time} ${typeIcon(obs.type)} ${title}`)}`;
+function factLead(date: string, tier: GrokBotIndexTier): string {
+  return `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} `;
 }
 
+/** A fact line whose whole body is sanitized; truncation is code-point safe. */
 export function factLine(date: string, body: string, maxChars: number, tier: GrokBotIndexTier): string {
-  const line = `- (${date}) ${TIER_PREFIXES[tier] ?? ''}${INJECT_TAG} ${collapseWhitespace(body)}`;
-  return line.length <= maxChars ? line : `${line.slice(0, maxChars - 1)}…`;
+  return truncateCodePoints(`${factLead(date, tier)}${sanitizeUntrustedText(body)}`, maxChars);
+}
+
+/**
+ * An INDEX row: the observation ID stays outside the fence as the trusted
+ * lookup key; time, icon and the LLM-written title are recalled content inside
+ * «…», and a long title is cut inside the fence so the close always survives.
+ */
+export function indexFactLine(
+  date: string,
+  obs: GrokBotIndexObservation,
+  maxChars: number,
+  tier: GrokBotIndexTier,
+): string {
+  const time = compactTime(formatTime(obs.created_at_epoch));
+  return fencedLine(`${factLead(date, tier)}${obs.id} `, `${time} ${typeIcon(obs.type)} ${obs.title || 'Untitled'}`, maxChars);
 }
 
 /**
@@ -181,7 +173,7 @@ export function formatIndexFactLines(
   if (standingLine) lines.push(factLine(date, standingLine, headerMax, tier));
   lines.push(factLine(date, head, headerMax, tier));
   for (const obs of observations) {
-    lines.push(factLine(date, formatIndexRow(obs), maxLineChars, tier));
+    lines.push(indexFactLine(date, obs, maxLineChars, tier));
   }
   return lines;
 }
