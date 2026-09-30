@@ -19,6 +19,21 @@ describe('installer worker shutdown', () => {
     });
   });
 
+  it("treats Bun's ConnectionRefused shape as no running worker", async () => {
+    // Bun's fetch rejects a refused connect with code 'ConnectionRefused' and an
+    // "Unable to connect" message: no ECONNREFUSED anywhere on the error.
+    globalThis.fetch = (async () => {
+      throw Object.assign(new Error('Unable to connect. Is the computer able to access the url?'), {
+        code: 'ConnectionRefused',
+      });
+    }) as typeof fetch;
+
+    await expect(shutdownWorkerAndWait(37777, 0)).resolves.toEqual({
+      workerWasRunning: false,
+      stopped: true,
+    });
+  });
+
   it('does not mistake a generic fetch failure for a stopped worker', async () => {
     globalThis.fetch = (async () => {
       throw new TypeError('fetch failed');

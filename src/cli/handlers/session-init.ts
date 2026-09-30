@@ -6,6 +6,7 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import {
   executeWithWorkerFallback as defaultExecuteWithWorkerFallback,
   isWorkerFallback as defaultIsWorkerFallback,
+  consumeWorkerOutageNotice as defaultConsumeWorkerOutageNotice,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
@@ -37,6 +38,7 @@ interface SemanticContextResponse {
 const defaultDependencies = {
   executeWithWorkerFallback: defaultExecuteWithWorkerFallback,
   isWorkerFallback: defaultIsWorkerFallback,
+  consumeWorkerOutageNotice: defaultConsumeWorkerOutageNotice,
   loadFromFileOnce: defaultLoadFromFileOnce,
   resolveRuntimeContext: defaultResolveRuntimeContext,
   logServerFallback: defaultLogServerFallback,
@@ -125,7 +127,16 @@ export const sessionInitHandler: EventHandler = {
     );
 
     if (dependencies.isWorkerFallback(initResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      // The prompt always goes through. Once an outage has tripped the
+      // fail-loud latch, tell the user once per session: UserPromptSubmit is
+      // synchronous, so its systemMessage is shown to them.
+      const outageNotice = await dependencies.consumeWorkerOutageNotice(sessionId);
+      return {
+        continue: true,
+        suppressOutput: true,
+        exitCode: HOOK_EXIT_CODES.SUCCESS,
+        ...(outageNotice ? { systemMessage: outageNotice } : {}),
+      };
     }
 
     if (typeof initResult?.sessionDbId !== 'number') {

@@ -3,7 +3,7 @@ import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
 import type { HookResult } from './types.js';
-import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, isToolHookDisabledByEnv } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
   emitModelContext,
@@ -113,6 +113,16 @@ export async function hookCommand(platform: string, event: string, options: Hook
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
 
+  // #3106: env opt-out for the high-frequency tool hooks. Checked before stdin
+  // and handler work, and still emits the no-op envelope so the host gets
+  // valid JSON.
+  if (isToolHookDisabledByEnv(event)) {
+    const adapter = getPlatformAdapter(platform);
+    emitModelContext(adapter, buildNoOpResult(event));
+    exitGraceful(options);
+    return HOOK_EXIT_CODES.SUCCESS;
+  }
+
   // Hook IO Discipline (issue #2292):
   // We BUFFER stderr during handler execution so that unsolicited writes from
   // third-party libraries don't leak into model context. The buffer is FLUSHED
@@ -147,10 +157,9 @@ export async function hookCommand(platform: string, event: string, options: Hook
       logger.warn('HOOK', `Worker unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
       // EXIT_SIGNAL per CLAUDE.md: transient worker errors exit 0 to avoid
       // Windows Terminal tab accumulation. The fail-loud counter (worker-utils
-      // recordWorkerUnreachable) handles the surface-after-N-failures path and
-      // emits the threshold-gated hook_failed telemetry internally. Awaited:
-      // when the count JUST reaches the threshold it sends the event and then
-      // exits 2; exitGraceful below would kill a pending POST mid-flight.
+      // recordWorkerUnreachable) never exits; when the count JUST reaches the
+      // threshold it sends the hook_failed telemetry and writes a diagnostic.
+      // Awaited: exitGraceful below would kill a pending POST mid-flight.
       await recordWorkerUnreachable();
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;

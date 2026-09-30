@@ -21,7 +21,7 @@
  *    rather than lost.
  */
 
-import { OBS_PROMPT_FIELD_MAX_CHARS } from '../../sdk/prompts.js';
+import { OBS_PROMPT_FIELD_MAX_CHARS, stripImagePayloadsFromField } from '../../sdk/prompts.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -192,9 +192,21 @@ export async function optimizeObservationFields(
   maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
   timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
 ): Promise<{ toolInput: unknown; toolOutput: unknown }> {
+  // Inlined image payloads come out before anything measures or compresses the
+  // field. `buildObservationPrompt` strips too, but it runs after this: a
+  // screenshot still in place here is a screenshot sent to the compressor
+  // model, and that is the most expensive call the observer can make — #3606
+  // measured 225k-501k input tokens per condense of a video frame read off
+  // disk. Stripping first also makes the oversize check honest, since it then
+  // measures what the prompt will actually carry.
+  const stripped = {
+    toolInput: stripImagePayloadsFromField(fields.toolInput),
+    toolOutput: stripImagePayloadsFromField(fields.toolOutput),
+  };
+
   const [toolInput, toolOutput] = await Promise.all([
-    optimizeField(fields.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs),
-    optimizeField(context.toolName === 'Edit' ? compactEditOutput(fields, maxChars) : fields.toolOutput,
+    optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs),
+    optimizeField(context.toolName === 'Edit' ? compactEditOutput(stripped, maxChars) : stripped.toolOutput,
       compress, { ...context, field: 'outcome' }, maxChars, timeoutMs),
   ]);
   return { toolInput, toolOutput };

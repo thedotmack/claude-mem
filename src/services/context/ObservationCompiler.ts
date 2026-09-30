@@ -5,6 +5,7 @@ import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import type {
   ContextConfig,
   Observation,
@@ -45,6 +46,7 @@ export function queryObservationsMulti(
     limit: config.totalObservationCount,
     platformSource,
     projects,
+    excludeSubagents: config.mainAgentOnly,
   });
 }
 
@@ -55,6 +57,11 @@ export function queryObservationsMulti(
  * (strict project scope). Omit `projects` for a house-wide newest feed — used
  * only by the Grok Bot INDEX writer when a seat diary is thin. Do not add a
  * house-fallback query param to `/api/context/inject`.
+ *
+ * `includeManualSaves` also admits rows from `/api/memory/save` (session
+ * `manual-<project>`), which are stored with no concepts and so never pass the
+ * mode concept filter. The Grok Bot seat query sets it so seat self-saves land
+ * in the live INDEX.
  */
 export function queryObservationsNewest(
   db: DatabaseOwner,
@@ -63,6 +70,8 @@ export function queryObservationsNewest(
     limit: number;
     platformSource?: string;
     projects?: string[];
+    includeManualSaves?: boolean;
+    excludeSubagents?: boolean;
   }
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
@@ -75,6 +84,16 @@ export function queryObservationsNewest(
            OR o.merged_into_project IN (${projects.map(() => '?').join(',')}))`
     : '';
 
+  const manualClause = options.includeManualSaves
+    ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
+    : '';
+
+  // #3274: SessionStart injection opts in. The seat INDEX passes `projects`
+  // too, and must keep agent-tagged rows. A subagent row carries BOTH agent_id
+  // and agent_type: transcript-watch rows (Grok Bot seats) carry agent_id alone
+  // and must stay injected, or `session_start_context` returns nothing for them.
+  const agentFilter = options.excludeSubagents ? `AND ${mainAgentRowSql('o')}` : '';
+
   return db.db.prepare(`
     SELECT
       ${OBSERVATION_SELECT}
@@ -82,11 +101,14 @@ export function queryObservationsNewest(
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (? IS NULL OR s.platform_source = ?)
       ${projectClause}
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
+      ${agentFilter}
+      AND (${manualClause} (
+        type IN (${typePlaceholders})
+        AND EXISTS (
+          SELECT 1 FROM json_each(o.concepts)
+          WHERE value IN (${conceptPlaceholders})
+        )
+      ))
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
