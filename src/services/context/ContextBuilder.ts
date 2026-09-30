@@ -1,14 +1,18 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { unlinkSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import { existsSync, unlinkSync } from 'fs';
+import { Database } from 'bun:sqlite';
+import { DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
+import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
+import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
@@ -24,6 +28,14 @@ import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRender
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
+import {
+  readObserverHealth,
+  isObserverUnhealthy,
+  isObserverQuotaCooldownActive,
+  renderObserverHealthWarning,
+  renderObserverQuotaCooldownNotice,
+} from '../../shared/observer-health.js';
+import { readSyncHealth, renderSyncHealthWarning } from '../../shared/sync-health.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -35,9 +47,17 @@ const VERSION_MARKER_PATH = path.join(
   '.install-version'
 );
 
-function initializeDatabase(): SessionStore | null {
+function initializeDatabase(): Database | null {
   try {
-    return new SessionStore();
+    if (!existsSync(DB_PATH)) return null;
+    const db = new Database(DB_PATH, { readonly: true, create: false });
+    try {
+      db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+      return db;
+    } catch (error) {
+      db.close();
+      throw error;
+    }
   } catch (error: unknown) {
     if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ERR_DLOPEN_FAILED') {
       try {
@@ -158,6 +178,153 @@ function buildInjectStats(
   };
 }
 
+/**
+ * Paint every non-blank line, rather than wrapping the block once: session
+ * context is long enough to scroll, and a single leading escape leaves the
+ * warning uncolored wherever the terminal reflows or the reader scrolls back.
+ */
+function paintRed(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line.trim() ? `${colors.red}${line}${colors.reset}` : line))
+    .join('\n');
+}
+
+/**
+ * Append the observer-health outage warning when the observer is failing,
+ * or the quota-cooldown pause notice when the breaker is withholding the
+ * generator without a failure streak. Applied to EVERY context path
+ * (including empty-state, missing-DB, and the no-memories-yet welcome hint
+ * in SearchRoutes) so a multi-hour intentional pause is not silent.
+ *
+ * BELOW the context, not above it: the timeline runs long, so a warning at the
+ * top has already scrolled off by the time the context finishes printing. The
+ * last thing rendered is the thing still on screen — and for the model, the
+ * closest thing to its first reply.
+ */
+export function withObserverHealthWarning(text: string, forHuman: boolean = false): string {
+  return appendObserverHealthWarning(observerHealthWarning(forHuman), text);
+}
+
+/**
+ * The warning on its own, or `''` when the observer is healthy.
+ *
+ * Split out so the fitted path can read the health ONCE and then measure the
+ * warning as part of the block it is fitting. `fitContextToBudget` calls its
+ * render repeatedly, and `readObserverHealth` touches state: re-reading it per
+ * reduction would let the measured length change under the loop.
+ */
+export function observerHealthWarning(forHuman: boolean = false): string {
+  const health = readObserverHealth();
+  // Failure banner wins when both are set: the quota-exhausted copy already
+  // says capture is paused, and a cooldown is not a second outage. Cooldown
+  // alone (consecutiveFailures still below the unhealthy threshold) is the
+  // gap this notice exists to close — the breaker withholds the generator
+  // without ever incrementing the failure streak.
+  let notice: string | null = null;
+  if (isObserverUnhealthy(health)) {
+    notice = renderObserverHealthWarning(health);
+  } else if (isObserverQuotaCooldownActive(health)) {
+    notice = renderObserverQuotaCooldownNotice(health);
+  }
+  // Cloud sync health rides the same slot: a paused (401/403) or long-failing
+  // sync is the other outage users otherwise discover only by missing memories.
+  const syncNotice = renderSyncHealthWarning(readSyncHealth());
+  if (syncNotice) {
+    notice = notice ? `${notice}\n\n${syncNotice}` : syncNotice;
+  }
+  if (!notice) {
+    return '';
+  }
+  // Colors only on the human render: the agent copy is fetched separately
+  // (colors=false) and ANSI escapes there are noise in the model's context.
+  return forHuman ? paintRed(notice) : notice;
+}
+
+/**
+ * The health warning for one build, or `''` when the caller opted out.
+ *
+ * The outage banner ends with an instruction meant for the primary assistant
+ * ("tell the user about this outage at the very start of your first reply").
+ * The observer's own session-start briefing is read by a model that has no user
+ * to tell, so the banner is obeyed there instead of reported: the observer
+ * answers in prose, the parser logs "non-XML prose response" and confirms the
+ * claimed batch anyway, and the batch is dropped. Nothing parses, so
+ * `lastSuccessAt` never advances, so the banner stays up - the failure sustains
+ * itself long after the original cause cleared (#4221).
+ *
+ * Opting out is explicit rather than inferred from `source`, so a build's
+ * audience is stated at the call site instead of being guessed.
+ */
+export function healthWarningForContext(
+  input: ContextInput | undefined,
+  forHuman: boolean = false
+): string {
+  if (input?.includeHealthWarning === false) return '';
+  return observerHealthWarning(forHuman);
+}
+
+function appendObserverHealthWarning(warning: string, text: string): string {
+  if (!warning) return text;
+  return text ? `${text}\n\n${warning}` : warning;
+}
+
+/**
+ * Fit the block to `limit` and report on exactly what survived.
+ *
+ * Split out of `generateContextWithStats` so both halves can be tested without
+ * a database: the caller's only remaining job is to fetch rows. Two things have
+ * to happen together here, and neither is safe on its own.
+ *
+ * The health warning is rendered INSIDE the measured block. Appending it to the
+ * fitted result spends characters the fitter never counted, so an unhealthy
+ * observer could push a block just fitted to 9,998 back over the limit — and
+ * over the limit the whole block is replaced by the preview stub #3802 exists
+ * to avoid, which is exactly when an outage warning most needs to arrive.
+ *
+ * The stats describe what was DELIVERED, not what was queried.
+ * `ContextInjectStats` already promises this ("computed from the same
+ * observation set that was rendered"); before this, a run trimmed from seven
+ * observations to three still reported seven, so telemetry read as healthy
+ * precisely when context was being dropped. `sessionCount` is the same slice
+ * `buildContextOutput` takes for `displaySummaries`.
+ */
+export function fitContextForDelivery(
+  observations: Observation[],
+  summaries: SessionSummary[],
+  config: ContextConfig,
+  healthWarning: string,
+  renderBlock: (items: Observation[], cfg: ContextConfig) => string,
+  limit: number,
+  full: boolean
+): { text: string; stats: ContextInjectStats } {
+  const budget = fitContextToBudget(
+    observations,
+    config,
+    (items, cfg) => appendObserverHealthWarning(healthWarning, renderBlock(items, cfg)),
+    limit
+  );
+
+  if (budget.reductions > 0) {
+    logger.debug('HOOK', 'Trimmed context to fit the hook output limit', {
+      reductions: budget.reductions,
+      observations: budget.observationCount,
+      sessions: budget.config.sessionCount,
+      chars: budget.text.length,
+      overBudget: budget.overBudget,
+    });
+  }
+
+  return {
+    text: budget.text,
+    stats: buildInjectStats(
+      observations.slice(0, budget.observationCount),
+      summaries.slice(0, budget.config.sessionCount),
+      full
+    ),
+  };
+}
+
 export async function generateContextWithStats(
   input?: ContextInput,
   forHuman: boolean = false
@@ -174,12 +341,13 @@ export async function generateContextWithStats(
     config.sessionCount = 999999;
   }
 
-  const db = initializeDatabase();
-  if (!db) {
-    return { text: '', stats: null };
+  const rawDb = initializeDatabase();
+  if (!rawDb) {
+    return { text: healthWarningForContext(input, forHuman), stats: null };
   }
 
   try {
+    const db = { db: rawDb };
     const platformSource = input?.platformSource
       ? normalizePlatformSource(input.platformSource)
       : undefined;
@@ -188,22 +356,23 @@ export async function generateContextWithStats(
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
-      return { text: renderEmptyState(project, forHuman), stats: null };
+      return { text: appendObserverHealthWarning(healthWarningForContext(input, forHuman), renderEmptyState(project, forHuman)), stats: null };
     }
 
-    const output = buildContextOutput(
-      project,
+    // `--full` is an explicit human request for everything; only the block that
+    // has to survive a hook's 10,000-character delivery limit is fitted (#3802).
+    return fitContextForDelivery(
       observations,
       summaries,
       config,
-      cwd,
-      input?.session_id,
-      forHuman
+      healthWarningForContext(input, forHuman),
+      (items, cfg) =>
+        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, forHuman),
+      input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,
+      Boolean(input?.full)
     );
-
-    return { text: output, stats: buildInjectStats(observations, summaries, Boolean(input?.full)) };
   } finally {
-    db.close();
+    rawDb.close();
   }
 }
 

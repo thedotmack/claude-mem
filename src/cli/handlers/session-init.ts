@@ -9,7 +9,7 @@ import {
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -119,6 +119,9 @@ export const sessionInitHandler: EventHandler = {
         prompt,
         platformSource,
       },
+      platformSource === 'codex'
+        ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
+        : undefined,
     );
 
     if (dependencies.isWorkerFallback(initResult)) {
@@ -152,6 +155,9 @@ export const sessionInitHandler: EventHandler = {
         '/api/context/semantic',
         'POST',
         { q: prompt, project, limit, platformSource },
+        platformSource === 'codex'
+          ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
+          : undefined,
       );
       if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
         logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });

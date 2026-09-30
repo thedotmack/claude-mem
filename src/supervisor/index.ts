@@ -9,6 +9,7 @@ import {
 } from './process-registry.js';
 import { runShutdownCascade } from './shutdown.js';
 import { startHealthChecker, stopHealthChecker } from './health-checker.js';
+import { sweepOrphanedChromaTrees } from './orphan-chroma-sweep.js';
 import { paths } from '../shared/paths.js';
 
 const PID_FILE = paths.workerPid();
@@ -42,6 +43,16 @@ class Supervisor {
     }
 
     this.started = true;
+
+    // Reap chroma-mcp trees that no worker owns (#3905). Detached and best-effort: the sweep reads
+    // the process table, so it must never gate boot, and a failure leaves the pre-sweep state.
+    // It runs here, after initialize() and before anything of ours is spawned, so every signature
+    // tree in the table with a dead or PID-1 parent is by construction someone else's leftover.
+    void sweepOrphanedChromaTrees({ registry: this.registry }).catch((error: unknown) => {
+      logger.warn('PROCESS', 'Orphaned chroma-mcp sweep failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
     startHealthChecker();
   }
@@ -150,6 +161,23 @@ export function getSupervisor(): Supervisor {
 
 export function configureSupervisorSignalHandlers(shutdownHandler: () => Promise<void>): void {
   supervisorSingleton.configureSignalHandlers(shutdownHandler);
+}
+
+/**
+ * The verified-owner PID info from the worker PID file, or null when the file
+ * is missing, unparseable, or names a process that is not a live claude-mem
+ * worker. Read-only sibling of validateWorkerPidFile for callers that need
+ * the pid itself (the hook's stale-worker kill in shared/worker-utils.ts).
+ */
+export function readOwnedWorkerPidInfo(): PidInfo | null {
+  if (!existsSync(PID_FILE)) return null;
+  let pidInfo: PidInfo | null;
+  try {
+    pidInfo = JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo | null;
+  } catch {
+    return null;
+  }
+  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
 }
 
 export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): ValidateWorkerPidStatus {

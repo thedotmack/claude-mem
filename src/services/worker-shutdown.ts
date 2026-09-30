@@ -124,10 +124,13 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
   // Successor handoff — ONLY for restart; 'stop' and signal shutdowns stay
   // kill-only. The old worker spawns its replacement as its final act, after
   // its port is confirmed free, so the successor never races the corpse for
-  // the port. The hook recycle path (ensureWorkerRunning in
-  // src/shared/worker-utils.ts) waits for this successor instead of spawning
-  // its own. This runs inside flushResponseThen's flushed action, so it
-  // completes before that helper's process.exit(0).
+  // the port. CLI `claude-mem restart` is the caller. Hook version-mismatch
+  // recycles (ensureWorkerRunning in src/shared/worker-utils.ts) never reach
+  // this: they SIGKILL the stale worker and lazy-spawn the resolved version
+  // themselves, because this handoff runs the DYING install's resolver — a
+  // stale install would respawn its own version forever (#3378). This runs
+  // inside flushResponseThen's flushed action, so it completes before that
+  // helper's process.exit(0).
   if (options.reason !== 'restart') return;
 
   const handoff = options.restartHandoff;
