@@ -599,16 +599,22 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
-    // Every settings.json seeded since #4125 carries the then-default 30000ms
-    // observer deadline, and a persisted value wins over DEFAULTS — so a raised
-    // default would never reach those installs. The cmem.ai gateway's normal
-    // tail runs past 30s, and an abandoned request can still be billed upstream.
-    describe('legacy LLM deadline default migration', () => {
+    // Two per-request deadlines were raised from the same seeded 30000: the
+    // observer request (#4278) and the oversized-field condensation pass, both
+    // sent to the same backend. Every settings.json seeded while 30000 was the
+    // default holds it on disk, and a persisted value wins over DEFAULTS, so a
+    // raised default would never reach those installs. The cmem.ai gateway's
+    // normal tail runs past 30s, and an abandoned request can still be billed
+    // upstream.
+    describe.each([
+      ['CLAUDE_MEM_LLM_TIMEOUT_MS'],
+      ['CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS'],
+    ] as const)('raised deadline default migration: %s', (KEY) => {
       const LEGACY = '30000';
-      const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_LLM_TIMEOUT_MS;
+      const CURRENT = SettingsDefaultsManager.getAllDefaults()[KEY];
 
-      function deadlineMigrationWarnings(warnings: string[]): string[] {
-        return warnings.filter((line) => line.includes('CLAUDE_MEM_LLM_TIMEOUT_MS'));
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes(KEY));
       }
 
       it('ships the raised 180s default', () => {
@@ -618,28 +624,24 @@ describe('SettingsDefaultsManager', () => {
       it('moves the seeded 30000 to the current default once, with one log line', () => {
         writeFileSync(settingsPath, JSON.stringify({
           CLAUDE_MEM_PROVIDER: 'openrouter',
-          CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY,
-          // Seeded beside it with the same string, and still its own default.
-          CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '30000',
+          [KEY]: LEGACY,
         }));
 
         const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
 
-        expect(first.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
-        expect(first.value.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('30000');
+        expect(first.value[KEY]).toBe(CURRENT);
         const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-        expect(parsed.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
-        // The rest of the file survives the rewrite, the field budget included.
+        expect(parsed[KEY]).toBe(CURRENT);
+        // The rest of the file survives the rewrite.
         expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
-        expect(parsed.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('30000');
-        const [logLine, ...extra] = deadlineMigrationWarnings(first.warnings);
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
         expect(extra).toEqual([]);
         expect(logLine).toContain(`30000ms default to ${CURRENT}ms`);
         expect(logLine).toContain(settingsPath);
 
         const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
-        expect(second.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
-        expect(deadlineMigrationWarnings(second.warnings)).toEqual([]);
+        expect(second.value[KEY]).toBe(CURRENT);
+        expect(migrationWarnings(second.warnings)).toEqual([]);
       });
 
       it.each([
@@ -649,16 +651,16 @@ describe('SettingsDefaultsManager', () => {
         // Every writer persists the string; a bare number is a hand edit.
         ['the legacy value hand-written as a JSON number', 30000],
       ])('leaves %s chosen by the user untouched', (_label, value) => {
-        const raw = JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: value });
+        const raw = JSON.stringify({ [KEY]: value });
         writeFileSync(settingsPath, raw);
 
         const { value: result, warnings } = captureWarnings(
           () => SettingsDefaultsManager.loadFromFile(settingsPath, false),
         );
 
-        expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toEqual(value as string);
+        expect(result[KEY]).toEqual(value as string);
         expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
-        expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+        expect(migrationWarnings(warnings)).toEqual([]);
       });
 
       // Like every other settings.json writer since #3498: the file holds API
@@ -666,26 +668,26 @@ describe('SettingsDefaultsManager', () => {
       // older build had left it readable.
       it('rewrites the file owner-only', () => {
         if (process.platform === 'win32') return;
-        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY }));
+        writeFileSync(settingsPath, JSON.stringify({ [KEY]: LEGACY }));
         chmodSync(settingsPath, 0o644);
 
         SettingsDefaultsManager.loadFromFile(settingsPath, false);
 
-        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))[KEY]).toBe(CURRENT);
         expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
 
       it('keeps the peer root keys of a nested settings file', () => {
         writeFileSync(settingsPath, JSON.stringify({
-          env: { CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY },
+          env: { [KEY]: LEGACY },
           hooks: { SessionStart: [] },
         }));
 
         const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
 
-        expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(result[KEY]).toBe(CURRENT);
         const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-        expect(parsed.env.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(parsed.env[KEY]).toBe(CURRENT);
         expect(parsed.hooks).toEqual({ SessionStart: [] });
       });
 
@@ -693,19 +695,19 @@ describe('SettingsDefaultsManager', () => {
       // load, so a 30000 the user chose later was silently moved back to the
       // new default.
       it.each([
-        ['after the seeded value was moved', JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY })],
-        ['on an install that never held the old default', JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' })],
+        ['after the seeded value was moved', JSON.stringify({ [KEY]: LEGACY })],
+        ['on an install that never held the old default', JSON.stringify({ [KEY]: '120000' })],
         ['on a settings file created fresh', null],
       ])('keeps a 30000 the user sets %s', (_label, initial) => {
         if (initial !== null) writeFileSync(settingsPath, initial);
         SettingsDefaultsManager.loadFromFile(settingsPath, false);
 
-        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY }));
+        writeFileSync(settingsPath, JSON.stringify({ [KEY]: LEGACY }));
         const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
 
-        expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(LEGACY);
-        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(LEGACY);
-        expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+        expect(value[KEY]).toBe(LEGACY);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))[KEY]).toBe(LEGACY);
+        expect(migrationWarnings(warnings)).toEqual([]);
       });
 
       // settings.json can be a symlink into a read-only store (Nix home-manager).
@@ -716,15 +718,15 @@ describe('SettingsDefaultsManager', () => {
         const storeDir = join(tempDir, 'read-only-store');
         mkdirSync(storeDir);
         const storedSettings = join(storeDir, 'settings.json');
-        const raw = JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY });
+        const raw = JSON.stringify({ [KEY]: LEGACY });
         writeFileSync(storedSettings, raw);
         symlinkSync(storedSettings, settingsPath);
         chmodSync(storeDir, 0o555);
         try {
           const loads = [1, 2, 3].map(() => captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false)));
 
-          for (const { value } of loads) expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
-          const failures = loads.flatMap(({ warnings }) => deadlineMigrationWarnings(warnings));
+          for (const { value } of loads) expect(value[KEY]).toBe(CURRENT);
+          const failures = loads.flatMap(({ warnings }) => migrationWarnings(warnings));
           expect(failures).toHaveLength(1);
           expect(failures[0]).toContain('Failed to migrate');
           expect(readFileSync(storedSettings, 'utf-8')).toBe(raw);
@@ -732,6 +734,28 @@ describe('SettingsDefaultsManager', () => {
           chmodSync(storeDir, 0o755);
         }
       });
+    });
+
+    // The seeders wrote both deadlines side by side, so one load moves both,
+    // each with its own log line, and leaves the rest of the file alone.
+    it('moves both seeded deadlines in one load', () => {
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'openrouter',
+        CLAUDE_MEM_LLM_TIMEOUT_MS: '30000',
+        CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '30000',
+      }));
+
+      const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+      expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe('180000');
+      expect(value.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('180000');
+      const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed).toEqual({
+        CLAUDE_MEM_PROVIDER: 'openrouter',
+        CLAUDE_MEM_LLM_TIMEOUT_MS: '180000',
+        CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '180000',
+      });
+      expect(warnings.filter((line) => line.includes('Migrated CLAUDE_MEM_'))).toHaveLength(2);
     });
 
     // loadFromFile only carries keys declared in DEFAULTS, so before the Pro
