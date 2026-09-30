@@ -6,6 +6,7 @@ import {
   planCachePrune,
   planPluginCachePrune,
   prunePluginCache,
+  readRegisteredCacheVersions,
   DEFAULT_CACHE_RETENTION,
 } from '../../src/npx-cli/utils/prune-cache.js';
 
@@ -130,5 +131,62 @@ describe('planPluginCachePrune', () => {
     expect(keep).toEqual(['13.25.0', '13.24.0']);
     // Preview only — nothing deleted.
     expect(existsSync(join(root, '13.26.0'))).toBe(true);
+  });
+});
+
+describe('readRegisteredCacheVersions', () => {
+  let root: string;
+
+  afterEach(() => {
+    if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeRegistry(contents: string): string {
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-registry-'));
+    const registryPath = join(root, 'installed_plugins.json');
+    writeFileSync(registryPath, contents);
+    return registryPath;
+  }
+
+  it('returns the cache directory names claude-mem is registered at', () => {
+    const registryPath = writeRegistry(JSON.stringify({
+      version: 2,
+      plugins: {
+        'claude-mem@thedotmack': [{ scope: 'user', installPath: '/home/u/.claude/plugins/cache/thedotmack/claude-mem/13.20.0', version: '13.20.0' }],
+        'other@someone': [{ installPath: '/home/u/.claude/plugins/cache/someone/other/9.9.9' }],
+      },
+    }));
+    expect(readRegisteredCacheVersions(registryPath)).toEqual(['13.20.0']);
+  });
+
+  it('returns nothing when the registry is missing or has no claude-mem entry', () => {
+    expect(readRegisteredCacheVersions(join(tmpdir(), 'claude-mem-no-such-registry.json'))).toEqual([]);
+    expect(readRegisteredCacheVersions(writeRegistry(JSON.stringify({ version: 2, plugins: {} })))).toEqual([]);
+  });
+
+  it('throws on a corrupt registry so nothing is pruned blind', () => {
+    const registryPath = writeRegistry('{ not json');
+    expect(() => readRegisteredCacheVersions(registryPath)).toThrow(/Corrupt JSON/);
+  });
+
+  it('keeps a downgraded registered install that is older than the newest two', () => {
+    // Downgrade with the worker stopped: Claude Code loads 13.20.0, which is
+    // outside the newest-2 budget. Deleting it would break the registered install.
+    const registryPath = writeRegistry(JSON.stringify({
+      plugins: { 'claude-mem@thedotmack': [{ installPath: join(root, 'cache', '13.20.0') }] },
+    }));
+    const cacheRoot = join(root, 'cache');
+    for (const version of ['13.20.0', '13.24.0', '13.25.0', '13.25.1']) {
+      mkdirSync(join(cacheRoot, version), { recursive: true });
+    }
+
+    const result = prunePluginCache({
+      cacheRoot,
+      keepCount: 2,
+      protectedVersions: readRegisteredCacheVersions(registryPath),
+    });
+
+    expect(result.removed).toEqual(['13.24.0']);
+    expect(existsSync(join(cacheRoot, '13.20.0'))).toBe(true);
   });
 });

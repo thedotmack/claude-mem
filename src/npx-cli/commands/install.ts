@@ -762,14 +762,20 @@ async function copyPluginToCache(version: string): Promise<void> {
   // the just-written version plus N-1 and protects any live worker's version —
   // the repair path reaches here without stopping the worker, so a running
   // older worker must never lose its source directory.
-  const pruned = await prunePluginCacheSafely({ additionalProtectedVersions: [version] });
-  if (pruned.retainedForLiveWorker) {
-    log.info('Skipped cache prune: a worker is running but its version could not be read; retaining all versions.');
-  } else if (pruned.removed.length > 0) {
-    log.info(`Pruned ${pruned.removed.length} stale plugin cache version(s): ${pruned.removed.join(', ')}`);
-  }
-  for (const failure of pruned.failed) {
-    log.warn(`Could not prune cache version ${failure.version}: ${failure.reason}`);
+  // Pruning is housekeeping: it runs inside runTasks, before the sign-in/trial
+  // step, so any failure (a corrupt installed_plugins.json, say) only warns.
+  try {
+    const pruned = await prunePluginCacheSafely({ additionalProtectedVersions: [version] });
+    if (pruned.retainedForLiveWorker) {
+      log.info('Skipped cache prune: a worker is running but its version could not be read; retaining all versions.');
+    } else if (pruned.removed.length > 0) {
+      log.info(`Pruned ${pruned.removed.length} stale plugin cache version(s): ${pruned.removed.join(', ')}`);
+    }
+    for (const failure of pruned.failed) {
+      log.warn(`Could not prune cache version ${failure.version}: ${failure.reason}`);
+    }
+  } catch (error: unknown) {
+    log.warn(`Skipped cache prune: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

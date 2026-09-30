@@ -5,10 +5,11 @@
  * worker act on the shared database (#4105). The installer prunes on every
  * install; this command exposes the same routine on demand, beside `doctor`.
  *
- * Keeps the newest two usable versions and whatever version a live worker
- * reports, so it never removes the directory a running worker was launched
- * from. When a worker is present but its version cannot be read, every version
- * is retained. `--dry-run` reports the plan without deleting. `--keep <n>`
+ * Keeps the newest two usable versions, whatever version a live worker
+ * reports, and the version installed_plugins.json registers, so it never
+ * removes the directory a running worker was launched from or the one Claude
+ * Code loads. When a worker is present but its version cannot be read, every
+ * version is retained. `--dry-run` reports the plan without deleting. `--keep <n>`
  * overrides how many newest usable versions to retain.
  */
 
@@ -18,7 +19,7 @@ import {
   DEFAULT_CACHE_RETENTION,
   planPluginCachePrune,
   prunePluginCacheSafely,
-  resolveWorkerProtection,
+  resolvePruneProtection,
 } from '../utils/prune-cache.js';
 
 const USAGE = 'Usage: npx claude-mem prune [--dry-run] [--keep <n>]';
@@ -69,7 +70,7 @@ export async function runPruneCommand(argv: string[] = []): Promise<void> {
   console.log(`  ${styleText('dim', 'Keeping:')}   newest ${keepCount} usable version(s)`);
 
   if (dryRun) {
-    const { protectedVersions, retainAll } = await resolveWorkerProtection();
+    const { protectedVersions, retainAll } = await resolvePruneProtection();
     if (retainAll) {
       console.log(`  ${styleText('yellow', 'Would remove:')} (none — a worker is running but its version could not be read)`);
       console.log(styleText('dim', '\nDry run — nothing was deleted.'));
@@ -77,7 +78,7 @@ export async function runPruneCommand(argv: string[] = []): Promise<void> {
     }
     const { keep, prune } = planPluginCachePrune(root, keepCount, protectedVersions);
     if (protectedVersions.length > 0) {
-      console.log(`  ${styleText('dim', 'Live worker:')} protecting v${protectedVersions.join(', ')}`);
+      console.log(`  ${styleText('dim', 'Protected:')} ${protectedVersions.join(', ')} (live worker / registered install)`);
     }
     console.log(`  ${styleText('dim', 'Keep:')}      ${keep.length > 0 ? keep.join(', ') : '(none)'}`);
     console.log(`  ${styleText('yellow', 'Would remove:')} ${prune.length > 0 ? prune.join(', ') : '(none)'}`);

@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, rmSync, statSync } from 'fs';
-import { join } from 'path';
-import { pluginCacheRootDirectory } from './paths.js';
+import { basename, join } from 'path';
+import { installedPluginsPath, pluginCacheRootDirectory } from './paths.js';
 import { compareVersionsDescending, workerHttpRequest } from '../../shared/worker-utils.js';
-import { readOwnedWorkerPidInfo } from '../../supervisor/index.js';
-import { verifyPidFileOwnership } from '../../supervisor/process-registry.js';
+import { readOwnedWorkerPidInfo } from '../../supervisor/process-registry.js';
+import { readJsonSafe } from '../../utils/json-utils.js';
 
 /**
  * Versions of the plugin cache to keep: the newly installed one (N) and the
@@ -162,7 +162,7 @@ export type LiveWorkerProbe =
  * Probe the worker's health endpoint and classify the result. A usable version
  * lets a prune protect exactly that directory; a present-but-unreadable worker
  * forces a full retention; an unreachable port leaves protection to the PID
- * check in `resolveWorkerProtection`.
+ * check in `resolvePruneProtection`.
  */
 export async function probeLiveWorker(): Promise<LiveWorkerProbe> {
   let response: Response;
@@ -189,7 +189,26 @@ export async function probeLiveWorker(): Promise<LiveWorkerProbe> {
   return { status: 'reachable-unknown' };
 }
 
-export interface WorkerProtection {
+/**
+ * Cache version directories that Claude Code's installed_plugins.json registers
+ * for claude-mem (the basename of each `installPath`). The registered install is
+ * what Claude Code loads, so a prune must never delete it — after a downgrade
+ * with the worker stopped it can be older than the newest `keepCount`. A name
+ * that is not in the cache (a marketplace installPath) protects nothing.
+ * Throws on a corrupt registry, before anything is deleted.
+ */
+export function readRegisteredCacheVersions(registryPath: string = installedPluginsPath()): string[] {
+  const registry = readJsonSafe<{ plugins?: Record<string, unknown> } | null>(registryPath, {});
+  const entries = registry?.plugins?.['claude-mem@thedotmack'];
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .map(entry => (entry as { installPath?: unknown } | null)?.installPath)
+    .filter((installPath): installPath is string => typeof installPath === 'string' && installPath.length > 0)
+    .map(installPath => basename(installPath));
+}
+
+export interface PruneProtection {
+  /** Versions no prune may delete: the live worker's and the registered install's. */
   protectedVersions: string[];
   /** When true, no prune may delete anything: a worker is running but its
    * version is unknown, so we cannot tell which directory to keep. */
@@ -197,22 +216,23 @@ export interface WorkerProtection {
 }
 
 /**
- * Decide how a prune must protect a running worker. A readable version protects
- * exactly that directory. A present-but-unreadable worker (hung health, or a
- * live PID with a silent port) forces a full retention. Only when nothing is
- * running is a prune free to delete superseded versions.
+ * Decide what a prune must protect. The registered install is always protected.
+ * A live worker's readable version protects exactly that directory. A
+ * present-but-unreadable worker (hung health, or a live PID with a silent port)
+ * forces a full retention. Only when nothing is running is a prune free to
+ * delete superseded versions.
  */
-export async function resolveWorkerProtection(): Promise<WorkerProtection> {
+export async function resolvePruneProtection(): Promise<PruneProtection> {
+  const registeredVersions = readRegisteredCacheVersions();
   const probe = await probeLiveWorker();
   if (probe.status === 'version') {
-    return { protectedVersions: [probe.version], retainAll: false };
+    return { protectedVersions: [probe.version, ...registeredVersions], retainAll: false };
   }
   if (probe.status === 'reachable-unknown') {
-    return { protectedVersions: [], retainAll: true };
+    return { protectedVersions: registeredVersions, retainAll: true };
   }
   // Port silent — confirm no worker process is alive before deleting anything.
-  const workerAlive = verifyPidFileOwnership(readOwnedWorkerPidInfo());
-  return { protectedVersions: [], retainAll: workerAlive };
+  return { protectedVersions: registeredVersions, retainAll: readOwnedWorkerPidInfo() !== null };
 }
 
 export interface PrunePluginCacheSafelyOptions {
@@ -224,16 +244,17 @@ export interface PrunePluginCacheSafelyOptions {
 }
 
 /**
- * Prune the cache while protecting a running worker. When the worker's version
- * cannot be determined but a worker is present, every version is retained so a
- * prune can never pull the source directory out from under a live process. Used
- * by both the installer and the `npx claude-mem prune` command.
+ * Prune the cache while protecting a running worker and the registered install.
+ * When the worker's version cannot be determined but a worker is present, every
+ * version is retained so a prune can never pull the source directory out from
+ * under a live process. Used by both the installer and the `npx claude-mem
+ * prune` command.
  */
 export async function prunePluginCacheSafely(
   options: PrunePluginCacheSafelyOptions = {},
 ): Promise<CachePruneResult> {
   const root = options.cacheRoot ?? pluginCacheRootDirectory();
-  const { protectedVersions, retainAll } = await resolveWorkerProtection();
+  const { protectedVersions, retainAll } = await resolvePruneProtection();
 
   if (retainAll) {
     const kept = readCacheVersionDirectories(root).filter(isVersionDirectoryName);
