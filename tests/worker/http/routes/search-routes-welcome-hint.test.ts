@@ -165,6 +165,44 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 
+  it('appends the quota-cooldown pause notice to the welcome hint when the breaker is armed', async () => {
+    mkdirSync(realPaths.paths.dataDir(), { recursive: true });
+    writeFileSync(observerHealthPath, JSON.stringify({
+      consecutiveFailures: 0,
+      failingSinceAt: null,
+      lastErrorAt: null,
+      lastErrorMessage: null,
+      lastErrorProvider: null,
+      lastSuccessAt: Date.now(),
+      quotaCooldown: {
+        active: true,
+        provider: 'claude',
+        armedAt: Date.now() - 60_000,
+        until: Date.now() + 20 * 60_000,
+        window: 'five_hour',
+        message: 'Weekly limit reached',
+      },
+    }));
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('paused while a provider quota cooldown is active');
+    expect(body).toContain('This is not a failure');
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain("can't save memories");
+    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('quota cooldown'));
+    expect(generateContextStub).not.toHaveBeenCalled();
+  });
+
   it('skips the welcome hint when at least one observation exists', async () => {
     countQueryStub = mock(() => ({ count: 7 }));
     prepareStub = mock(() => ({ get: countQueryStub }));

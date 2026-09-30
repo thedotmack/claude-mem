@@ -62,6 +62,8 @@ export interface WatchTarget {
   project?: string;
   context?: WatchContextConfig;
   startAtEnd?: boolean;
+  /** Grok Bot (and similar) host agent id, carried from the watch path into ingest. */
+  agentId?: string;
 }
 
 export interface TranscriptWatchConfig {

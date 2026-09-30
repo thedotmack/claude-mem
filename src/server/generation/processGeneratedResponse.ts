@@ -18,6 +18,7 @@ import { PostgresUsageRepository } from '../../storage/postgres/usage.js';
 import {
   withPostgresTransaction,
   type PostgresPool,
+  type PostgresPoolClient,
 } from '../../storage/postgres/pool.js';
 import { stripTags } from '../../utils/tag-stripping.js';
 
@@ -42,7 +43,12 @@ export type ProcessGeneratedResponseOutcome =
       observations: PostgresObservation[];
       privateContentDetected: boolean;
     }
-  | { kind: 'parse_error'; jobId: string; reason: string };
+  | { kind: 'parse_error'; jobId: string; reason: string }
+  // Distinct from parse_error: the provider returned no content at all
+  // (safety block, MAX_TOKENS truncation, gateway hiccup). Detected before
+  // parsing so the failure is attributed to the provider, not the parser,
+  // and the caller can fail fast instead of burning queue retries.
+  | { kind: 'empty_response'; jobId: string; reason: string };
 
 export interface ProcessGeneratedResponseInput {
   pool: PostgresPool;
@@ -66,6 +72,10 @@ export async function processGeneratedResponse(
   input: ProcessGeneratedResponseInput,
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job, rawText } = input;
+
+  if (!rawText.trim()) {
+    return { kind: 'empty_response', jobId: job.id, reason: 'provider returned empty content' };
+  }
 
   const parsed = parseAgentXml(rawText, job.id);
   if (!parsed.valid) {
@@ -189,6 +199,10 @@ export async function processSessionSummaryResponse(
     return { kind: 'parse_error', jobId: job.id, reason: 'session summary processor invoked on non-summary job' };
   }
 
+  if (!rawText.trim()) {
+    return { kind: 'empty_response', jobId: job.id, reason: 'provider returned empty content' };
+  }
+
   const parsed = parseAgentXml(rawText, job.id);
   if (!parsed.valid) {
     return { kind: 'parse_error', jobId: job.id, reason: 'parser rejected summary response' };
@@ -196,7 +210,17 @@ export async function processSessionSummaryResponse(
 
   const summary = parsed.summary ?? null;
   const skipped = summary?.skipped === true;
-  const summaryContent = summary ? renderSummaryContent(summary) : '';
+
+  // Defence in depth: a provider that answers with <observation> blocks instead of
+  // a <summary> block used to be dropped here silently — parsed.summary was null,
+  // the content was judged empty, the job completed and parsed.observations was
+  // never looked at. Fold those blocks into the summary body rather than
+  // discarding a response the model was billed for.
+  const fallbackObservations = !summary && !skipped ? parsed.observations : [];
+  const summaryContent = summary
+    ? renderSummaryContent(summary)
+    : fallbackObservations.map(o => renderObservationContent(o)).join('\n\n');
+
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
 
   const rendered: RenderedObservation[] = privateContentDetected
@@ -266,6 +290,12 @@ async function persistGeneratedObservations(
       };
     }
 
+    // Folder label travels on the server_session: the worker derives it from
+    // the cwd basename and sends it on session-init. The store stays a single
+    // global project; copying the folder onto each observation's metadata lets
+    // context injection and search facet by folder without isolating memory.
+    const sessionProject = await fetchSessionProject(client, fresh.serverSessionId, fresh.id);
+
     const persisted: PostgresObservation[] = [];
     for (let index = 0; index < rendered.length; index++) {
       const { kind, content, metadata } = rendered[index]!;
@@ -295,6 +325,7 @@ async function persistGeneratedObservations(
         generationKey,
         metadata: {
           ...metadata,
+          project: sessionProject,
           provider: input.providerLabel,
           model: input.modelId ?? null,
         },
@@ -448,6 +479,32 @@ async function recordUsageMetering(
   }
 }
 
+/**
+ * Read the folder/project label for a server session. Returns null when no
+ * serverSessionId is provided (legacy jobs) or when the session row no longer
+ * exists (e.g. deleted between enqueue and processing). Missing rows are
+ * best-effort: the observation is still written with project: null.
+ */
+async function fetchSessionProject(
+  client: PostgresPoolClient,
+  serverSessionId: string | null | undefined,
+  jobId: string,
+): Promise<string | null> {
+  if (!serverSessionId) return null;
+  const result = await client.query<{ project: string | null }>(
+    `SELECT metadata->>'project' AS project FROM server_sessions WHERE id = $1`,
+    [serverSessionId],
+  );
+  if (result.rows.length === 0) {
+    logger.debug('SYSTEM', 'session row not found during project lookup; observation will have project: null', {
+      jobId,
+      serverSessionId,
+    });
+    return null;
+  }
+  return result.rows[0]?.project ?? null;
+}
+
 function renderSummaryContent(summary: ParsedSummary): string {
   const parts: string[] = [];
   if (summary.request) parts.push(`Request: ${summary.request}`);
@@ -466,6 +523,15 @@ function renderObservationContent(observation: ParsedObservation): string {
   if (observation.narrative) parts.push(observation.narrative);
   if (observation.facts && observation.facts.length > 0) {
     parts.push(observation.facts.map(f => `- ${f}`).join('\n'));
+  }
+  // The parser treats concepts as content: an observation whose only populated
+  // field is <concepts> survives its empty-observation guard. This renderer did
+  // not, so that observation rendered to '' and was dropped by the empty-content
+  // skip in persistGeneratedObservations - accepted, discarded, job completed.
+  // Rendered last-resort only, so responses that carry prose keep the body they
+  // already have and no existing content changes shape.
+  if (parts.length === 0 && observation.concepts && observation.concepts.length > 0) {
+    parts.push(`Concepts: ${observation.concepts.join(', ')}`);
   }
   return parts.join('\n\n').trim();
 }

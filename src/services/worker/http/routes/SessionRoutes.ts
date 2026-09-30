@@ -19,7 +19,14 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import {
+  MAX_CONSECUTIVE_STALL_RESUMES,
+  RESPONSE_STALL_RESUME_DELAY_MS,
+  planResponseStallResume,
+} from '../../session/response-pacer.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
+import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
@@ -40,6 +47,8 @@ import {
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
+import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
+import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -50,18 +59,34 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'provider_switch' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
+    case 'provider_switch': return 'provider_switch';
     default: return 'none';
   }
 }
 
 export class SessionRoutes extends BaseRouteHandler {
+  // #2756 round 3: ensureGeneratorRunning is called from independent HTTP
+  // request handlers (observation ingest, /summarize, /init — see
+  // shared.ts:138 and this file's own callers below), so two calls for the
+  // SAME sessionDbId can genuinely run concurrently. Both branches of the
+  // method below have an async gap — an `await` between reading
+  // `session.generatorPromise`/`session.currentProvider` and the eventual
+  // `startGeneratorWithProvider` call that reassigns them — during which a
+  // second concurrent call sees stale state and starts its own generator,
+  // producing two live generators for one session. This map serializes
+  // ensureGeneratorRunning calls per sessionDbId (a promise-chained mutex) so
+  // only one call's body runs at a time; calls for different sessionDbIds
+  // remain fully concurrent. See ensureGeneratorRunningLocked for the actual
+  // logic this now gates.
+  private ensureGeneratorLocks = new Map<number, Promise<void>>();
+
   constructor(
     private sessionManager: SessionManager,
     private dbManager: DatabaseManager,
@@ -73,9 +98,59 @@ export class SessionRoutes extends BaseRouteHandler {
     private completionHandler: SessionCompletionHandler,
   ) {
     super();
+    this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
   }
 
-  public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
+  private formatTelegramWrapup = async (input: TelegramWrapupFormatterInput): Promise<string> => {
+    const activeSession = this.sessionManager.getSession(input.sessionDbId);
+    const selection = activeSession?.currentProvider
+      ? { provider: activeSession.currentProvider, gatewayProbeClaimId: null }
+      : selectProviderForGenerator();
+    const activeModelId = activeSession?.currentProvider ? activeSession.lastModelId : undefined;
+
+    try {
+      switch (selection.provider) {
+        case 'gemini':
+          return await this.geminiAgent.formatTelegramWrapup(input, activeModelId);
+        case 'openrouter':
+          return await this.openRouterAgent.formatTelegramWrapup(input, activeModelId);
+        default:
+          return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
+      }
+    } finally {
+      releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+    }
+  };
+
+  public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
+    const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
+    // .catch(() => {}) on the PRIOR tail only: one call's rejection must
+    // never jam the queue for the next call on this session. `tail` itself
+    // is left un-caught here so its own rejection still propagates to ITS
+    // caller (the caller of ensureGeneratorRunning gets back `tail`).
+    const tail: Promise<void> = priorTail
+      .catch(() => {})
+      .then(() => this.ensureGeneratorRunningLocked(sessionDbId, source));
+
+    this.ensureGeneratorLocks.set(sessionDbId, tail);
+
+    // Drop the map entry once this call is the last one queued, so the map
+    // doesn't grow forever for sessions that stop calling in. Identity
+    // check against `tail` itself: if a later call has already replaced
+    // this entry with its own tail, leave that one in place. The `.catch`
+    // here is only to stop bun/node from reporting an unhandled rejection
+    // on this cleanup-only branch — it does not affect the `tail` promise
+    // returned below, which callers still see reject normally.
+    tail.catch(() => {}).finally(() => {
+      if (this.ensureGeneratorLocks.get(sessionDbId) === tail) {
+        this.ensureGeneratorLocks.delete(sessionDbId);
+      }
+    });
+
+    return tail;
+  }
+
+  private async ensureGeneratorRunningLocked(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
@@ -144,38 +219,45 @@ export class SessionRoutes extends BaseRouteHandler {
           }
         }
       }
-      // Quota breaker (#3634). Without this, an exhausted allowance produced one
-      // doomed request per captured tool call for the rest of the billing cycle:
-      // the generator exits on the refusal, and the next observation starts a
-      // fresh one that earns the same refusal. Withhold requests for a cooldown,
-      // then let exactly one through to re-probe.
-      // Claim the probe rather than merely reading the clock: every live session
-      // sees the window elapse at the same instant, so a bare check would let
-      // them all through together.
-      const admission = tryAdmitQuotaProbe(selectedProvider);
-      if (!admission.admitted) {
-        // This run is not starting, so it must not hold the gateway re-probe.
-        releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
-        const cooldown = getQuotaCooldown(selectedProvider);
-        logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
-          sessionId: sessionDbId,
-          source,
-          provider: selectedProvider,
-          ...(cooldown?.window ? { window: cooldown.window } : {}),
-          probeInFlight: cooldown?.probeInFlightSinceMs !== null,
-          retryInMs: cooldown
-            ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
-            : 0,
-        });
-        return;
+      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      return;
+    }
+
+    // #2756: a generator that never acquired its concurrency slot (still
+    // parked in waitForSlot) can wait indefinitely — it never idles-out,
+    // because the idle monitor only runs once the generator loop is
+    // consuming messages. Abort the parked wait and restart with the new
+    // provider immediately instead of leaving it stuck. A generator that HAS
+    // acquired its slot (mid-response) is left alone — falls through to the
+    // log-only "switch after it finishes" path below, unchanged.
+    if (session.currentProvider && session.currentProvider !== selectedProvider && isSessionParkedForSlot(sessionDbId)) {
+      // Defensive re-guard: `session` is already narrowed non-null by the
+      // early return above, but this branch spans a 3-operand `&&` plus a
+      // trailing function call before any property access — re-asserting
+      // the guard here costs nothing and removes any dependency on TS
+      // control-flow narrowing surviving that shape across the awaits below.
+      if (!session) return;
+      logger.info('SESSION', 'Provider changed while generator parked waiting for a slot; aborting the wait to switch now', {
+        sessionId: sessionDbId,
+        currentProvider: session.currentProvider,
+        selectedProvider,
+        historyLength: session.conversationHistory.length
+      });
+
+      const oldGeneratorPromise = session.generatorPromise;
+      session.abortReason = 'provider_switch';
+      session.abortController.abort();
+
+      // Must fully await the OLD generator's .catch().finally() chain (which
+      // runs handleGeneratorExit) before starting a new one: handleGeneratorExit
+      // nulls session.generatorPromise/currentProvider unconditionally with no
+      // identity check, so racing this would let the old generator's async
+      // cleanup stomp the freshly-started generator's state.
+      if (oldGeneratorPromise) {
+        await oldGeneratorPromise;
       }
 
-      await this.applyTierRouting(session);
-      // The claim travels with the run that took it: only that run may release
-      // it, or an earlier generator's exit would clear a later session's probe.
-      await this.startGeneratorWithProvider(
-        session, selectedProvider, source, admission.claimId, selection.gatewayProbeClaimId,
-      );
+      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
       return;
     }
 
@@ -195,6 +277,54 @@ export class SessionRoutes extends BaseRouteHandler {
     }
   }
 
+  /**
+   * Claim the quota probe (if the breaker permits it) and start a generator
+   * for `selectedProvider`. Shared by the fresh-start path above and the
+   * #2756 parked-generator provider-switch path (which is itself a fresh
+   * start for the newly-selected provider, just triggered from the
+   * "already running" branch instead of "no generator yet").
+   */
+  private async admitAndStartGenerator(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    sessionDbId: number,
+    selectedProvider: 'claude' | 'gemini' | 'openrouter',
+    source: string,
+    gatewayProbeClaimId: number | null,
+  ): Promise<void> {
+    // Quota breaker (#3634). Without this, an exhausted allowance produced one
+    // doomed request per captured tool call for the rest of the billing cycle:
+    // the generator exits on the refusal, and the next observation starts a
+    // fresh one that earns the same refusal. Withhold requests for a cooldown,
+    // then let exactly one through to re-probe.
+    // Claim the probe rather than merely reading the clock: every live session
+    // sees the window elapse at the same instant, so a bare check would let
+    // them all through together.
+    const admission = tryAdmitQuotaProbe(selectedProvider);
+    if (!admission.admitted) {
+      // This run is not starting, so it must not hold the gateway re-probe.
+      releaseCmemGatewayProbe(gatewayProbeClaimId);
+      const cooldown = getQuotaCooldown(selectedProvider);
+      logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
+        sessionId: sessionDbId,
+        source,
+        provider: selectedProvider,
+        ...(cooldown?.window ? { window: cooldown.window } : {}),
+        probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+        retryInMs: cooldown
+          ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+          : 0,
+      });
+      return;
+    }
+
+    await this.applyTierRouting(session);
+    // The claim travels with the run that took it: only that run may release
+    // it, or an earlier generator's exit would clear a later session's probe.
+    await this.startGeneratorWithProvider(
+      session, selectedProvider, source, admission.claimId, gatewayProbeClaimId,
+    );
+  }
+
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
     provider: 'claude' | 'gemini' | 'openrouter',
@@ -205,6 +335,12 @@ export class SessionRoutes extends BaseRouteHandler {
     gatewayProbeClaimId: number | null = null,
   ): Promise<void> {
     if (!session) return;
+
+    // A generator is starting, so a pending stall resume has nothing left to do.
+    if (session.stallResumeTimer !== undefined) {
+      clearTimeout(session.stallResumeTimer);
+      session.stallResumeTimer = undefined;
+    }
 
     if (session.abortController.signal.aborted) {
       logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
@@ -415,6 +551,33 @@ export class SessionRoutes extends BaseRouteHandler {
           }, 0);
           resume.unref?.();
         }
+
+        // A response stall preserved its claimed batch but, like a recycle, has
+        // no later ingest guaranteed to pick it up. Resume after a delay, a
+        // bounded number of times in a row; an answered queued-work turn resets
+        // the count (#4066).
+        if (reason === 'transport:response_stall') {
+          const { resume, attempts } = planResponseStallResume(session);
+          if (!resume) {
+            logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {
+              sessionId: session.sessionDbId,
+              consecutiveStalls: attempts,
+              maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
+            });
+          } else {
+            const resume = setTimeout(() => {
+              session.stallResumeTimer = undefined;
+              void this.ensureGeneratorRunning(session.sessionDbId, 'response-stall')
+                .catch(error => {
+                  logger.error('SESSION', 'Failed to resume the observer after a response stall', {
+                    sessionId: session.sessionDbId,
+                  }, error instanceof Error ? error : new Error(String(error)));
+                });
+            }, RESPONSE_STALL_RESUME_DELAY_MS);
+            resume.unref?.();
+            session.stallResumeTimer = resume;
+          }
+        }
       });
     session.generatorPromise = generatorPromise;
   }
@@ -434,6 +597,11 @@ export class SessionRoutes extends BaseRouteHandler {
       '/api/sessions/summarize',
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
+    );
+    app.post(
+      '/api/sessions/session-end',
+      validateBody(SessionRoutes.sessionEndSchema),
+      this.handleSessionEnd.bind(this)
     );
   }
 
@@ -456,6 +624,12 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     tool_use_id: z.string().optional(),
     toolUseId: z.string().optional(),
+    // Receipt join keys (frozen 2026-09-06). Pure pass-through onto tool_uses;
+    // Claude-Mem never derives them and stores no cost field of its own.
+    or_generation_id: z.string().optional(),
+    orGenerationId: z.string().optional(),
+    or_session_id: z.string().optional(),
+    orSessionId: z.string().optional(),
   }).passthrough();
 
   private static readonly summarizeByClaudeIdSchema = z.object({
@@ -465,6 +639,13 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     observedModel: z.string().min(1).max(200).optional(),
     observedBilling: z.string().min(1).max(40).optional(),
+  }).passthrough();
+
+  private static readonly sessionEndSchema = z.object({
+    contentSessionId: z.string().min(1),
+    platformSource: z.string().optional(),
+    reason: z.string().optional(),
+    cwd: z.string().optional(),
   }).passthrough();
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -478,6 +659,10 @@ export class SessionRoutes extends BaseRouteHandler {
       agentType,
       tool_use_id,
       toolUseId,
+      or_generation_id,
+      orGenerationId,
+      or_session_id,
+      orSessionId,
     } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
@@ -491,6 +676,8 @@ export class SessionRoutes extends BaseRouteHandler {
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
+      orGenerationId: typeof or_generation_id === 'string' ? or_generation_id : (typeof orGenerationId === 'string' ? orGenerationId : undefined),
+      orSessionId: typeof or_session_id === 'string' ? or_session_id : (typeof orSessionId === 'string' ? orSessionId : undefined),
     });
 
     if (!result.ok) {
@@ -554,6 +741,21 @@ export class SessionRoutes extends BaseRouteHandler {
     res.json({ status: 'queued' });
   });
 
+  private handleSessionEnd = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId } = req.body;
+    const platformSource = this.getPlatformSourceFromRequest(req);
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+
+    if (sessionDbId === null) {
+      res.json({ status: 'unknown_session' });
+      return;
+    }
+
+    await this.sessionManager.requestSessionWrapup(sessionDbId);
+    res.json({ status: 'accepted' });
+  });
+
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
 
@@ -566,6 +768,16 @@ export class SessionRoutes extends BaseRouteHandler {
       logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_protocol' });
       return;
+    }
+
+    const slashSkillId = firstPartySkillFromSlashPrompt(rawPrompt);
+    if (slashSkillId) {
+      captureEvent('skill_invoked', {
+        skill_id: slashSkillId,
+        skill_source: 'first_party',
+        skill_trigger: 'prompt',
+        ide: platformSource,
+      });
     }
 
     let prompt = rawPrompt || '[media prompt]';
@@ -656,6 +868,20 @@ export class SessionRoutes extends BaseRouteHandler {
       });
       return;
     }
+
+    // A prompt this route ACCEPTS on a row a previous end already completed
+    // means the session carried on, so put it back to active and let the next
+    // end stamp the real completion time (#4080).
+    //
+    // After the privacy and duplicate gates, not before them. Both of those
+    // return early without saving a prompt or starting a generator, so a
+    // reopen above them would clear the completion of a session nothing is
+    // going to finalize again — a retry of an already-saved prompt would leave
+    // the row 'active' for good, which is the bug in the other direction
+    // (#2373). Only this route reopens at all: the observation and summarize
+    // routes can carry trailing traffic from the turn that just ended, where
+    // 'completed' is the truth.
+    store.reopenCompletedSession(sessionDbId);
 
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
 
