@@ -9,6 +9,24 @@ export const HOOK_TIMEOUTS = {
   WINDOWS_MULTIPLIER: 1.5
 } as const;
 
+/**
+ * Seconds a worker must have been up before a silent or never-ready worker may
+ * be treated as WEDGED (recycled by the hook, or reclaimed by a launcher)
+ * instead of still booting. Override with CLAUDE_MEM_WEDGED_WORKER_UPTIME_S.
+ */
+export const WEDGED_WORKER_UPTIME_DEFAULT_S = 300;
+export const WEDGED_WORKER_UPTIME_BOUNDS_S = { min: 60, max: 86400 } as const;
+
+/** CLAUDE_MEM_WEDGED_WORKER_UPTIME_S when valid, else the default. Never throws. */
+export function readWedgedWorkerUptimeSeconds(env: NodeJS.ProcessEnv = process.env): number {
+  const parsed = Number.parseInt(env.CLAUDE_MEM_WEDGED_WORKER_UPTIME_S ?? '', 10);
+  return Number.isFinite(parsed)
+    && parsed >= WEDGED_WORKER_UPTIME_BOUNDS_S.min
+    && parsed <= WEDGED_WORKER_UPTIME_BOUNDS_S.max
+    ? parsed
+    : WEDGED_WORKER_UPTIME_DEFAULT_S;
+}
+
 export const HOOK_EXIT_CODES = {
   SUCCESS: 0,
   BLOCKING_ERROR: 2,

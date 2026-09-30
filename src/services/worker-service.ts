@@ -243,12 +243,6 @@ export class WorkerService implements WorkerRef {
     error?: string;
   } | null = null;
 
-  // Last processing status actually broadcast, for deduping unchanged repeats
-  // (#4127). broadcastProcessingStatus fires per pending mutation, so a
-  // worker-unreachable retry storm otherwise turns every retry into an SSE
-  // broadcast and an info log line.
-  private lastBroadcastState: { isProcessing: boolean; queueDepth: number } | null = null;
-
   constructor() {
     this.initializationComplete = new Promise((resolve) => {
       this.resolveInitialization = resolve;
@@ -950,20 +944,6 @@ export class WorkerService implements WorkerRef {
     void (async () => {
       const queueDepth = await this.sessionManager.getTotalActiveWork();
       const isProcessing = queueDepth > 0;
-
-      // Dedupe on unchanged state: skip the broadcast and the log line when
-      // neither field moved since the last one. New SSE clients still get the
-      // current status on connect (ViewerRoutes) and via GET
-      // /api/processing-status, so a suppressed repeat costs them nothing.
-      if (
-        this.lastBroadcastState !== null
-        && this.lastBroadcastState.isProcessing === isProcessing
-        && this.lastBroadcastState.queueDepth === queueDepth
-      ) {
-        return;
-      }
-      this.lastBroadcastState = { isProcessing, queueDepth };
-
       const activeSessions = this.sessionManager.getActiveSessionCount();
 
       logger.info('WORKER', 'Broadcasting processing status', {

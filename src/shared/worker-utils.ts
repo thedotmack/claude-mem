@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, getTimeout, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
@@ -69,8 +69,8 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
  */
 const WEDGED_WORKER_UPTIME_S = readTimeoutEnv(
   'CLAUDE_MEM_WEDGED_WORKER_UPTIME_S',
-  300,
-  { min: 60, max: 86400 }
+  WEDGED_WORKER_UPTIME_DEFAULT_S,
+  WEDGED_WORKER_UPTIME_BOUNDS_S
 );
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
@@ -1137,58 +1137,17 @@ export async function recordWorkerUnreachable(): Promise<number> {
       consecutive_failures: next.consecutiveFailures,
       threshold_tripped: true,
     });
-
-    const message = orphanedPortDiagnosis !== null
-      ? `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks: port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims, so the worker cannot bind it. ${ORPHANED_PORT_REMEDIATION}.`
-      : `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`;
-
-    // The prompt-facing hooks FAIL OPEN (#4127). Claude Code renders a hook
-    // exit 2 on UserPromptSubmit as a blocked prompt, so a wedged or
-    // unreachable worker would otherwise block every prompt on the machine
-    // until a human intervenes. SessionStart must also stay non-blocking so it
-    // can deliver the trouble notice through injected context
-    // (readWorkerTroubleNotice), the channel that replaces the exit-2 block.
-    if (activeHookType !== null && FAIL_OPEN_HOOK_TYPES.has(activeHookType)) {
-      logger.warn('HOOK', message);
-      return next.consecutiveFailures;
-    }
-
     // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
     // stderr buffer (so preceding logger.warn lines also surface) and writes
     // via the bypass channel + exits 2. Previously this raw process.stderr.write
     // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(message);
+    emitBlockingError(
+      orphanedPortDiagnosis !== null
+        ? `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks: port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims, so the worker cannot bind it. ${ORPHANED_PORT_REMEDIATION}.`
+        : `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
+    );
   }
   return next.consecutiveFailures;
-}
-
-/**
- * Hook events that must never exit 2 on a worker-unreachable escalation.
- * UserPromptSubmit (session-init) is where exit 2 blocks the user's prompt;
- * SessionStart (context) must stay non-blocking so it can carry the trouble
- * notice into injected context instead. Other hooks keep the blocking contract.
- */
-const FAIL_OPEN_HOOK_TYPES: ReadonlySet<TelemetryHookType> = new Set([
-  'session-init',
-  'context',
-]);
-
-/**
- * A user-facing notice for the SessionStart context, or null when the worker
- * is healthy. When the fail-loud threshold has tripped the worker has been
- * unreachable across many hooks (e.g. a wedged worker holding the port,
- * #4127). Because the prompt hooks now fail open instead of exiting 2, this is
- * the channel that tells the user memory capture is paused and how to recover.
- * The notice self-clears: the first reachable worker response resets the
- * counter (resetWorkerFailureCounter).
- */
-export function readWorkerTroubleNotice(): string | null {
-  const state = readHookFailureState();
-  if (!state.thresholdTripped) return null;
-  const detail = orphanedPortDiagnosis !== null
-    ? ` Port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims. ${ORPHANED_PORT_REMEDIATION}.`
-    : '';
-  return `claude-mem: the memory worker is unreachable, so new memories are not being recorded right now.${detail}`;
 }
 
 async function resetWorkerFailureCounter(): Promise<void> {
