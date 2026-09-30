@@ -1,5 +1,6 @@
 
 import { logger } from '../utils/logger.js';
+import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../utils/redaction.js';
 import type { ModeConfig } from '../services/domain/types.js';
 
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
@@ -309,15 +310,19 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;
   }
 
+  const parameters = truncateObservationField(stripImagePayloadsFromField(toolInput));
+  const outcome = truncateObservationField(stripImagePayloadsFromField(toolOutput));
+  const redactionHint = hasRedactionMarker(parameters + outcome) ? `\n${REDACTION_MARKER_HINT}\n` : '';
+
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
-  <parameters>${truncateObservationField(stripImagePayloadsFromField(toolInput))}</parameters>
-  <outcome>${truncateObservationField(stripImagePayloadsFromField(toolOutput))}</outcome>
+  <parameters>${parameters}</parameters>
+  <outcome>${outcome}</outcome>
 </observed_from_primary_session>
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
-
+${redactionHint}
 Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" /> if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
@@ -342,7 +347,7 @@ ${mode.prompts.summary_instruction}
 
 ${mode.prompts.summary_context_label}
 ${lastAssistantMessage}
-
+${hasRedactionMarker(lastAssistantMessage) ? `\n${REDACTION_MARKER_HINT}\n` : ''}
 ${mode.prompts.summary_format_instruction}
 <summary>
   <request>${mode.prompts.xml_summary_request_placeholder}</request>
