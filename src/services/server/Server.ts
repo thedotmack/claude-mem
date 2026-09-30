@@ -23,6 +23,7 @@ import { getUptimeSeconds } from '../../shared/uptime.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
+import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
 import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
@@ -115,6 +116,7 @@ export interface ServerOptions {
   runtime?: string;
   getAiStatus: () => AiStatus;
   getDependencyHealth?: () => DependencyHealthSnapshot;
+  getChromaCrashState?: () => ChromaCrashState | undefined;
   preBodyParserRoutes?: RouteHandler[];
   getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
   // #2572 — when true, install a minimal set of hardening response headers
@@ -407,6 +409,7 @@ export class Server {
       const hours = Math.floor(uptimeSeconds / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
       const formattedUptime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+      const chromaCrashState = this.options.getChromaCrashState?.();
 
       res.json({
         supervisor: {
@@ -421,6 +424,9 @@ export class Server {
           dependencies: this.options.getDependencyHealth
             ? this.options.getDependencyHealth()
             : snapshotDependencyHealth(),
+          ...(chromaCrashState
+            ? { chroma: chromaCrashState }
+            : {}),
         },
       });
     });
