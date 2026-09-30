@@ -10,6 +10,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { resolveContextWindowTokens } from './context-window.js';
 
 // v1beta is required: the current Gemini 3.x models and the Google-maintained
 // `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
@@ -69,9 +70,11 @@ export function classifyGeminiError(input: {
 
   if (status === 400) {
     const category = categorizeGeminiBadRequest(body);
+    // A request too large for the window is fixed by retiring the
+    // conversation, not by the user (#3625).
     return new ClassifiedProviderError(
       `Gemini bad request: ${category}`,
-      { kind: 'unrecoverable', cause },
+      { kind: category === 'context_limit' ? 'context_overflow' : 'unrecoverable', cause },
     );
   }
 
@@ -235,6 +238,10 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
   protected missingApiKeyError(): Error {
     return new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
+  }
+
+  protected resolveContextWindow(config: GeminiConfig): Promise<number> {
+    return resolveContextWindowTokens('gemini', config.model);
   }
 
   protected estimateTokens(text: string): number {

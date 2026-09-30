@@ -267,7 +267,8 @@ describe('Telegram wrap-up notifier', () => {
     const { sessionDbId, memorySessionId } = createSession('project-a', `content-provider-${shape}`);
     storeSummary(memorySessionId, 'project-a');
     const config = settings({
-      CLAUDE_MEM_OPENROUTER_API_KEY: 'mock-key',
+      // The gateway only takes a cmem.ai memory key (a personal key is withheld).
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567',
       CLAUDE_MEM_OPENROUTER_MODEL: 'cmem-observer',
       CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
       CLAUDE_MEM_TIER_SUMMARY_MODEL: '',

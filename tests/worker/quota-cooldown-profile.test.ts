@@ -5,8 +5,10 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import * as providerDispatch from '../../src/services/worker/provider-dispatch.js';
 import { credentialProfileKey } from '../../src/shared/EnvManager.js';
 import { deriveMacKeychainServiceName } from '../../src/shared/oauth-token.js';
+import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import {
   tryAdmitQuotaProbe,
+  recordAuthCooldown,
   recordQuotaExhausted,
   getQuotaCooldown,
   resetQuotaCooldownsForTesting,
@@ -108,7 +110,11 @@ describe('quota cooldown breaker — per-account claude profile', () => {
     expect(tryAdmitQuotaProbe('claude')).toEqual({ admitted: true, claimId: null });
   });
 
-  it('carries the spawn-time account from the session to the breaker', async () => {
+  /**
+   * Run one Claude generator through the real SessionRoutes: it is spawned on
+   * 'work', the user switches to 'personal', then `finish` ends the run.
+   */
+  async function runClaudeGeneratorSpawnedOnWork(finish: (session: ActiveSession) => Promise<void>): Promise<void> {
     const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
     const session = {
       sessionDbId: 91, contentSessionId: 'content-91', memorySessionId: 'memory-91', project: 'project',
@@ -128,7 +134,7 @@ describe('quota cooldown breaker — per-account claude profile', () => {
         // What ClaudeProvider records at spawn, before the account switch.
         session.observerProfile = 'work';
         currentProfile = 'personal';
-        session.abortReason = 'quota:seven_day';
+        await finish(session);
       },
     };
     const idle = { startSession: async () => {} };
@@ -143,9 +149,36 @@ describe('quota cooldown breaker — per-account claude profile', () => {
     } finally {
       mock.restore();
     }
+  }
+
+  it('carries the spawn-time account from the session to the breaker', async () => {
+    await runClaudeGeneratorSpawnedOnWork(async session => {
+      session.abortReason = 'quota:seven_day';
+    });
 
     expect(getQuotaCooldown('claude')?.profile).toBe('work');
     expect(tryAdmitQuotaProbe('claude').admitted).toBe(true);
+  });
+
+  it.each([
+    ['quota_exhausted', undefined],
+    ['rate_limit', undefined],
+    ['auth_invalid', 'auth'],
+  ] as const)('arms a thrown %s refusal under the spawn-time account too', async (kind, cause) => {
+    await runClaudeGeneratorSpawnedOnWork(async () => {
+      throw new ClassifiedProviderError('Refused by the provider', { kind, cause: null });
+    });
+
+    expect(getQuotaCooldown('claude')?.profile).toBe('work');
+    expect(getQuotaCooldown('claude')?.cause).toBe(cause);
+  });
+
+  it('records the spawn-time account on an auth cooldown', () => {
+    currentProfile = 'personal';
+    recordAuthCooldown('claude', 'Invalid API key', 'work');
+
+    expect(getQuotaCooldown('claude')?.profile).toBe('work');
+    expect(getQuotaCooldown('claude')?.cause).toBe('auth');
   });
 });
 
