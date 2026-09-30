@@ -391,6 +391,24 @@ export class ClaudeProvider {
       let turnDispatchedText = false;
       // One re-queue per generator pass for a batch a failed turn never read.
       let retriedAfterErrorResult = false;
+      // The MEMORY_ID_CAPTURED/CHANGED line is a spawn-health signal for log
+      // monitors, but the id arrives on the SDK's first system frame — before
+      // any output is classified — so a spawn that only ever returns auth or
+      // quota prose logged "captured" and looked healthy (#4150). Hold the line
+      // here and emit it once the parser has accepted real output. Signed-out,
+      // quota and transport prose return normally from the parser but pause
+      // the generator (session.abortReason), so they keep it held.
+      let pendingMemoryIdLog: { message: string; memorySessionId: string; previousId: string | null } | null = null;
+      const flushPendingMemoryIdLog = (): void => {
+        if (!pendingMemoryIdLog || session.abortReason) return;
+        const { message, memorySessionId, previousId } = pendingMemoryIdLog;
+        pendingMemoryIdLog = null;
+        logger.info('SESSION', message, {
+          sessionId: session.sessionDbId,
+          memorySessionId,
+          previousId,
+        });
+      };
 
       for await (const message of queryResult) {
         // A stall already handed the claimed batch back to pending; a frame
@@ -457,11 +475,14 @@ export class ClaudeProvider {
           const logMessage = previousId
             ? `MEMORY_ID_CHANGED | sessionDbId=${session.sessionDbId} | from=${previousId} | to=${message.session_id} | dbVerified=${dbVerified}`
             : `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`;
-          logger.info('SESSION', logMessage, {
-            sessionId: session.sessionDbId,
+          // Defer the info line until output is classified (see
+          // flushPendingMemoryIdLog); the id state is registered now so resume
+          // still works even if the spawn produces no valid output.
+          pendingMemoryIdLog = {
+            message: logMessage,
             memorySessionId: message.session_id,
-            previousId
-          });
+            previousId,
+          };
           if (!dbVerified) {
             // Expected on later turns: ensure keeps the first registered id.
             logger.debug('SESSION', `Keeping the registered memory_session_id | sessionDbId=${session.sessionDbId} | registered=${registeredId} | offered=${message.session_id}`, {
@@ -564,6 +585,7 @@ export class ClaudeProvider {
 
           discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
           turnDispatchedText = true;
+          flushPendingMemoryIdLog();
         }
 
         if (message.type === 'result') {
@@ -654,6 +676,7 @@ export class ClaudeProvider {
                 pacer.processingFinished();
               }
               discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+              flushPendingMemoryIdLog();
             }
           }
           if (!resultIsError) {

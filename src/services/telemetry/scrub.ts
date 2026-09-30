@@ -181,6 +181,10 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_aborted_deadline_exceeded',
   'outcomes_invalid_output',
   'top_model',
+  // top_abort_reason: the dominant normalized abort_reason among the session's
+  // aborted turns (same closed enum as abort_reason above). Present only when a
+  // turn aborted; never a raw abort string.
+  'top_abort_reason',
   // Observed-session identity (NOT the observer): the model id the user's IDE
   // session ran (from its transcript) and a closed-enum billing posture
   // (max | pro | team | enterprise | subscription | api_key | bedrock | vertex | foundry | unknown).
