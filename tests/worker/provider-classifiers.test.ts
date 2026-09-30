@@ -201,6 +201,67 @@ describe('classifyOpenRouterError', () => {
     expect(err.kind).toBe('transient');
   });
 
+  // --- Model unavailable (#3659): the configured model id itself is gone ---
+
+  it.each([
+    [404, 'This model has been deprecated. It is recommended to migrate to xiaomi/mimo-v2.5'],
+    [400, 'xiaomi/mimo-v2-flash:free is not a valid model ID'],
+    [404, 'No endpoints found for xiaomi/mimo-v2-flash:free.'],
+  ])('classifies a %i "%s" as model_unavailable with a change-the-model remedy', (status, message) => {
+    const err = classifyOpenRouterError({
+      status,
+      bodyText: JSON.stringify({ error: { message, code: status } }),
+      cause: new Error(String(status)),
+      requestId: 'req-1',
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe('model_unavailable');
+    expect(err.message).toBe(`OpenRouter model unavailable (status ${status}): ${message}`);
+    expect(err.action).toContain('CLAUDE_MEM_OPENROUTER_MODEL');
+    expect(err.url).toBe('https://openrouter.ai/models');
+    expect(err.requestId).toBe('req-1');
+  });
+
+  it('classifies a model deprecation inside a 200 error envelope as model_unavailable', () => {
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: JSON.stringify({ error: { message: 'This model has been deprecated', code: 404 } }),
+      cause: new Error('200 error envelope'),
+    });
+    expect(err.code).toBe('model_unavailable');
+  });
+
+  it('keeps an unrelated 400/404 a plain bad request', () => {
+    const unrelated = classifyOpenRouterError({
+      status: 400,
+      bodyText: JSON.stringify({ error: { message: 'Input required: specify "prompt" or "messages"', code: 400 } }),
+      cause: new Error('400'),
+    });
+    expect(unrelated.kind).toBe('unrecoverable');
+    expect(unrelated.code).toBeUndefined();
+    expect(unrelated.message).toContain('bad request');
+
+    // Free-model privacy settings, not a missing model: the upstream message
+    // already carries its own remedy link.
+    const dataPolicy = classifyOpenRouterError({
+      status: 404,
+      bodyText: JSON.stringify({ error: { message: 'No endpoints found matching your data policy (Free model publication). Configure: https://openrouter.ai/settings/privacy', code: 404 } }),
+      cause: new Error('404'),
+    });
+    expect(dataPolicy.code).toBeUndefined();
+    expect(dataPolicy.message).toContain('bad request');
+  });
+
+  it('only reads model-unavailable phrasing on a 400/404 or a 200 envelope', () => {
+    const upstream = classifyOpenRouterError({
+      status: 503,
+      bodyText: 'No endpoints found for vendor/model.',
+      cause: new Error('503'),
+    });
+    expect(upstream.kind).toBe('transient');
+    expect(upstream.code).toBeUndefined();
+  });
+
   // --- Gateway taxonomy envelope: { error: { code, message, action, url, request_id } } ---
 
   it('carries an allowance_exhausted envelope verbatim as quota_exhausted', () => {

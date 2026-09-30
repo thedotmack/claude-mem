@@ -5,13 +5,16 @@ import { tmpdir } from 'os';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
-import * as realSpawn from '../../src/shared/spawn.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realPortReclaim from '../../src/shared/port-reclaim.js';
 import * as realSpawnGate from '../../src/shared/worker-spawn-gate.js';
+import { logger } from '../../src/utils/logger.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realHealthMonitorSnapshot = { ...realHealthMonitor };
 const realSupervisorSnapshot = { ...realSupervisor };
-const realSpawnSnapshot = { ...realSpawn };
+const realProcessManagerSnapshot = { ...realProcessManager };
+const realPortReclaimSnapshot = { ...realPortReclaim };
 const realSpawnGateSnapshot = { ...realSpawnGate };
 const spawnCalls: string[] = [];
 const classifierTimeouts: number[] = [];
@@ -21,6 +24,12 @@ let versionMatch = { matches: true, pluginVersion: '13.15.2', workerVersion: '13
 let versionCheckCalls = 0;
 let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null;
 let spawnLockResult = true;
+const reclaimCalls: number[] = [];
+let reclaimResult: { reclaimed: boolean; reason?: string; killedPids: number[] } = {
+  reclaimed: false,
+  reason: 'not-supported',
+  killedPids: [],
+};
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () => {
@@ -43,10 +52,21 @@ mock.module('../../src/supervisor/index.js', () => ({
   validateWorkerPidFile: () => 'missing',
   readOwnedWorkerPidInfo: () => ownedPidInfo,
 }));
-mock.module('../../src/shared/spawn.js', () => ({
-  spawnHidden: (command: string) => {
-    spawnCalls.push(command);
-    return { unref: () => {} };
+// Every lazy spawn goes through the one hidden-daemon helper (#3529).
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
+  ...realProcessManagerSnapshot,
+  spawnDetachedWorkerDaemon: (runtimePath: string) => {
+    spawnCalls.push(runtimePath);
+    return 4343;
+  },
+}));
+// The gate's one reclaim attempt on an occupied port; the real one shells out
+// to netstat/lsof, so it is stubbed and asserted here.
+mock.module('../../src/shared/port-reclaim.js', () => ({
+  ...realPortReclaimSnapshot,
+  reclaimGhostListeningPort: (port: number) => {
+    reclaimCalls.push(port);
+    return Promise.resolve(reclaimResult);
   },
 }));
 mock.module('../../src/shared/worker-spawn-gate.js', () => ({
@@ -79,6 +99,8 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     versionCheckCalls = 0;
     ownedPidInfo = null;
     spawnLockResult = true;
+    reclaimCalls.length = 0;
+    reclaimResult = { reclaimed: false, reason: 'not-supported', killedPids: [] };
     global.fetch = mock(() => Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve('') } as unknown as Response));
   });
 
@@ -96,7 +118,8 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
     mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
-    mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
+    mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+    mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
     mock.module('../../src/shared/worker-spawn-gate.js', () => realSpawnGateSnapshot);
   });
 
@@ -209,11 +232,59 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     killSpy.mockRestore();
   });
 
-  it('indeterminate bind does not spawn', async () => {
+  it('indeterminate bind does not spawn, and does not try to reclaim either', async () => {
     occupancy = 'indeterminate';
     const workerUtils = await importWorkerUtilsFresh();
     expect(await workerUtils.ensureWorkerRunning()).toBe(false);
     expect(spawnCalls).toHaveLength(0);
+    expect(reclaimCalls).toHaveLength(0);
+  });
+
+  it('occupied port: reclaims exactly once and spawns when the reclaim freed it', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: true, killedPids: [3001] };
+    let healthCalls = 0;
+    global.fetch = mock(() => {
+      healthCalls += 1;
+      return Promise.resolve({ ok: healthCalls > 1, status: healthCalls > 1 ? 200 : 503, text: () => Promise.resolve('') } as unknown as Response);
+    });
+    const workerUtils = await importWorkerUtilsFresh();
+    expect(await workerUtils.ensureWorkerRunning()).toBe(true);
+    expect(reclaimCalls).toEqual([workerUtils.getWorkerPort()]);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('occupied port the reclaim cannot free: no spawn, one reclaim, and the orphaned port is diagnosed', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'owner-alive', killedPids: [] };
+    ownedPidInfo = null;
+    const workerUtils = await importWorkerUtilsFresh();
+    const warnSpy = spyOn(logger, 'warn');
+    try {
+      expect(await workerUtils.ensureWorkerRunning()).toBe(false);
+      expect(reclaimCalls).toHaveLength(1);
+      expect(spawnCalls).toHaveLength(0);
+      const gateWarning = warnSpy.mock.calls.find(([, message]) => String(message).includes('skipping lazy-spawn'));
+      expect(gateWarning?.[2]).toMatchObject({ reclaimReason: 'owner-alive', fix: expect.any(String) });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not call the port orphaned when our own PID file claims the listener', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'owner-booting', killedPids: [] };
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+    const warnSpy = spyOn(logger, 'warn');
+    try {
+      expect(await workerUtils.ensureWorkerRunning()).toBe(false);
+      const gateWarning = warnSpy.mock.calls.find(([, message]) => String(message).includes('skipping lazy-spawn'));
+      expect(gateWarning?.[2]).toMatchObject({ reclaimReason: 'owner-booting' });
+      expect((gateWarning?.[2] as Record<string, unknown>).fix).toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('caches the failed fallback for later calls in the same hook process', async () => {
