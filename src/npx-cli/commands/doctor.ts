@@ -42,6 +42,13 @@ interface ChromaCrashState {
     consecutiveFailures: number;
     state: 'ok' | 'paused' | 'stopped';
   };
+  /** A collection dropped as corrupt and rebuilt from SQLite (#3202); absent from older workers. */
+  collectionDrop?: {
+    collection: string;
+    droppedAt: string;
+    documentCount: number | null;
+    error: string;
+  } | null;
 }
 
 function probeVersion(bin: 'bun' | 'uv'): string | null {
@@ -80,7 +87,12 @@ function isChromaCrashState(value: unknown): value is ChromaCrashState {
       && (typeof state.lastExit.signal === 'string' || state.lastExit.signal === null)))
     && (state.prewarm === undefined || (typeof state.prewarm === 'object' && state.prewarm !== null
       && typeof state.prewarm.consecutiveFailures === 'number'
-      && ['ok', 'paused', 'stopped'].includes(state.prewarm.state)));
+      && ['ok', 'paused', 'stopped'].includes(state.prewarm.state)))
+    && (state.collectionDrop === undefined || state.collectionDrop === null
+      || (typeof state.collectionDrop === 'object'
+        && typeof state.collectionDrop.collection === 'string'
+        && typeof state.collectionDrop.droppedAt === 'string'
+        && (typeof state.collectionDrop.documentCount === 'number' || state.collectionDrop.documentCount === null)));
 }
 
 /**
@@ -132,6 +144,15 @@ function chromaDiagnosticChecks(chroma: ChromaCrashState): CheckResult[] {
       detail: chroma.prewarm.state === 'stopped'
         ? `stopped after ${chroma.prewarm.consecutiveFailures} consecutive uvx failures — fix uv or free disk space, then run \`npx claude-mem restart\``
         : `paused after ${chroma.prewarm.consecutiveFailures} consecutive uvx failures; retrying with a growing cooldown`,
+      required: false,
+    });
+  }
+  if (chroma.collectionDrop) {
+    const drop = chroma.collectionDrop;
+    checks.push({
+      name: 'Chroma collection',
+      status: 'warn',
+      detail: `${drop.collection} had a corrupt HNSW segment and was dropped at ${drop.droppedAt} (${drop.documentCount ?? 'unknown'} documents); it is being rebuilt from SQLite, so semantic search results are incomplete until that finishes`,
       required: false,
     });
   }

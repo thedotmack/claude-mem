@@ -18,6 +18,7 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import type { ChromaCollectionDrop } from './ChromaSync.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -126,6 +127,8 @@ export interface ChromaCrashState {
     consecutiveFailures: number;
     state: 'ok' | 'paused' | 'stopped';
   };
+  /** The last collection dropped as corrupt and rebuilt from SQLite (#3202), if any. */
+  collectionDrop?: ChromaCollectionDrop | null;
 }
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on

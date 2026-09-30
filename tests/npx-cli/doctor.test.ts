@@ -80,6 +80,26 @@ describe('npx doctor Chroma diagnostics', () => {
     expect(paused[0].detail).toContain('paused after 6 consecutive uvx failures');
   });
 
+  it('warns when a corrupt collection was dropped and is being rebuilt (#3202)', async () => {
+    workerReportingChroma(chromaState({
+      count: 0,
+      lastExit: null,
+      collectionDrop: {
+        collection: 'cm__claude-mem',
+        droppedAt: '2026-09-30T10:00:00.000Z',
+        documentCount: 48213,
+        error: 'Failed to apply logs to the hnsw segment writer',
+      },
+    }));
+
+    const rows = await probeChromaDiagnostics(WORKER_URL);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ name: 'Chroma collection', status: 'warn', required: false });
+    expect(rows[0].detail).toContain('cm__claude-mem had a corrupt HNSW segment and was dropped at 2026-09-30T10:00:00.000Z (48213 documents)');
+    expect(rows[0].detail).toContain('rebuilt from SQLite');
+  });
+
   it('shows no rows for a healthy child, including from an older worker without prewarm state', async () => {
     workerReportingChroma({ ...chromaState({ count: 0, lastExit: null }), prewarm: undefined });
 
