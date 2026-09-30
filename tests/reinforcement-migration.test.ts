@@ -13,7 +13,7 @@ function observationColumns(db: Database): Set<string> {
   return new Set(cols.map(c => c.name));
 }
 
-const REINFORCEMENT_SCHEMA_VERSION = 54;
+const REINFORCEMENT_SCHEMA_VERSION = 55;
 
 describe('reinforcement columns migration', () => {
   let store: SessionStore;

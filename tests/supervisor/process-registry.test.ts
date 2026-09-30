@@ -462,17 +462,26 @@ describe('supervisor ProcessRegistry', () => {
       ]);
     });
 
-    it('strips empty placeholder flags before appending extra args', () => {
+    it('folds an empty SDK value into a single --flag= token instead of dropping the flag', () => {
+      // `tools: []` arrives as `--tools ''`. Dropping the pair would give the
+      // CLI its default tool set; `--tools=` keeps the empty value and survives
+      // cmd.exe, which drops empty arguments.
       expect(normalizeSpawnSdkArgs([
-        '--append-system-prompt',
+        '--tools',
         '',
         '--resume',
         'session-123',
       ], ['--no-session-persistence'])).toEqual([
+        '--tools=',
         '--resume',
         'session-123',
         '--no-session-persistence',
       ]);
+    });
+
+    it('drops an empty positional argument and never re-folds a --flag=value token', () => {
+      expect(normalizeSpawnSdkArgs(['--print', 'json', ''])).toEqual(['--print', 'json']);
+      expect(normalizeSpawnSdkArgs(['--setting-sources=', ''])).toEqual(['--setting-sources=']);
     });
   });
 

@@ -123,6 +123,36 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     store = freshStore();
   });
 
+  it('hydrates the overage-included weekly window', () => {
+    // Claude Code fans out five_hour, seven_day, and seven_day_overage_included
+    // — the premium-model weekly counted with overage included.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.1,
+      resetsAt: FIXED_NOW + 2 * 60 * 60 * 1000,
+      unifiedWindows: {
+        seven_day_overage_included: { utilization: 0.94, resetsAt: FIXED_NOW + 5 * 24 * 60 * 60 * 1000 },
+      },
+    });
+    expect(store.get('seven_day_overage_included')?.utilization).toBe(0.94);
+    expect(store.getMostRecentByWindow().seven_day_overage_included?.utilization).toBe(0.94);
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day_overage_included');
+  });
+
+  it('aborts on a rejected overage-included weekly window', () => {
+    store.set({
+      rateLimitType: 'seven_day_overage_included',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 24 * 60 * 60 * 1000,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day_overage_included');
+  });
+
   it('does not abort on inactive overage at 100% utilization', () => {
     store.set({
       rateLimitType: 'overage',
@@ -289,6 +319,21 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(false);
+  });
+
+  it('aborts on five_hour at 0.90 with resetsAt reported in epoch seconds, 10 min away (grace buffer)', () => {
+    // Claude Code has been observed writing resetsAt in epoch seconds
+    // (see the doc comment on minutesUntilReset). The grace-buffer check
+    // must normalize units the same way minutesUntilReset does.
+    store.set({
+      rateLimitType: 'five_hour',
+      utilization: 0.90,
+      resetsAt: Math.floor((FIXED_NOW + 10 * 60 * 1000) / 1000), // 10 min away, epoch seconds
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('five_hour');
+    expect(decision.reason).toContain('resets');
   });
 
   it('does not abort when all windows are below threshold', () => {

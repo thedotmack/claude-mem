@@ -77,6 +77,16 @@ function streamRows(statement: {
   return statement.all();
 }
 
+/**
+ * Coerce a value to something bun:sqlite can bind. The cloud/export shape
+ * (CloudSync `toCloud`) carries columns like facts/concepts/files_read as real
+ * arrays, but locally they are stored as JSON strings. bun's driver rejects
+ * arrays/objects with "Binding expected string, TypedArray, boolean, number,
+ * bigint or null", so re-stringify any non-primitive right before binding.
+ */
+const coerceBindValue = <T>(value: T): T | string | null =>
+  typeof value === 'object' && value !== null ? JSON.stringify(value) : value ?? null;
+
 interface IndexColumnInfo {
   seqno: number;
   cid: number;
@@ -164,10 +174,10 @@ interface SdkSessionDetailRow {
 }
 
 /**
- * ACT-R reinforcement columns. Main records up to v52 and #3063's dedup tables
- * take v53; recheck the next free version before landing.
+ * ACT-R reinforcement columns. v53 is sdk_sessions.cwd (#3525) and v54 is
+ * #3063's dedup tables; recheck the next free version before landing.
  */
-const REINFORCEMENT_SCHEMA_VERSION = 54;
+const REINFORCEMENT_SCHEMA_VERSION = 55;
 
 export class SessionStore {
   public db: Database;
@@ -224,6 +234,7 @@ export class SessionStore {
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
     this.ensureReinforcementColumns();
+    this.ensureSessionCwdColumn();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1992,6 +2003,28 @@ export class SessionStore {
     );
   }
 
+  // v53 — sdk_sessions.cwd. Worktree adoption discovers repos from this;
+  // sdk_sessions is local-only, so no sync-lane plumbing (#2864).
+  //
+  // Runs LAST in the constructor, after every migration that rebuilds
+  // sdk_sessions from a fixed column list (v33's composite-identity rebuild):
+  // added any earlier, a pre-v33 database would lose the column in that
+  // rebuild and every ingest would then fail on setSessionCwd.
+  private ensureSessionCwdColumn(): void {
+    const cols = this.db
+      .query('PRAGMA table_info(sdk_sessions)')
+      .all() as TableColumnInfo[];
+    if (!cols.some(c => c.name === 'cwd')) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN cwd TEXT');
+      logger.debug('DB', 'Added cwd column to sdk_sessions table (#2864)');
+    }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_sdk_sessions_cwd ON sdk_sessions(cwd)'
+    );
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
+  }
+
   private addObservationSubagentColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
 
@@ -3000,6 +3033,15 @@ export class SessionStore {
     return Number(result.lastInsertRowid);
   }
 
+  // First write wins: cwd drifts when the agent `cd`s into a subdirectory, and
+  // the launch directory is the one that identifies the repo.
+  setSessionCwd(sessionDbId: number, cwd: string): void {
+    if (!cwd.trim()) return;
+    this.db.prepare(
+      'UPDATE sdk_sessions SET cwd = ? WHERE id = ? AND cwd IS NULL'
+    ).run(cwd, sessionDbId);
+  }
+
   /**
    * Custom-title mutation op (plan Phase 3 task 2). sdk_sessions rows do not
    * sync, so there is no sync_rev to bump and no synced_at to null — the
@@ -3679,6 +3721,17 @@ export class SessionStore {
     created_at: string;
     created_at_epoch: number;
   }): { imported: boolean; id: number } {
+    // Same exposure as importObservation below: an import row can arrive
+    // without a usable session id, and session_summaries.memory_session_id is
+    // NOT NULL. /api/import validates rows first; this guard covers any other
+    // caller. Skip the row instead of letting the constraint abort the batch.
+    if (typeof summary?.memory_session_id !== 'string' || summary.memory_session_id.trim() === '') {
+      logger.warn('DB', 'Skipping imported session summary without memory_session_id', {
+        project: typeof summary?.project === 'string' ? summary.project : null,
+      });
+      return { imported: false, id: 0 };
+    }
+
     const existing = this.db.prepare(
       'SELECT id FROM session_summaries WHERE memory_session_id = ?'
     ).get(summary.memory_session_id) as { id: number } | undefined;
@@ -3698,14 +3751,14 @@ export class SessionStore {
     const result = stmt.run(
       summary.memory_session_id,
       summary.project,
-      summary.request,
-      summary.investigated,
-      summary.learned,
-      summary.completed,
-      summary.next_steps,
-      summary.files_read,
-      summary.files_edited,
-      summary.notes,
+      coerceBindValue(summary.request),
+      coerceBindValue(summary.investigated),
+      coerceBindValue(summary.learned),
+      coerceBindValue(summary.completed),
+      coerceBindValue(summary.next_steps),
+      coerceBindValue(summary.files_read),
+      coerceBindValue(summary.files_edited),
+      coerceBindValue(summary.notes),
       summary.prompt_number,
       summary.discovery_tokens || 0,
       summary.created_at,
@@ -3734,10 +3787,24 @@ export class SessionStore {
     agent_type?: string | null;
     agent_id?: string | null;
   }): { imported: boolean; id: number } {
+    // A row from a legacy or hand-edited export can arrive without a session
+    // id, and observations.memory_session_id is NOT NULL. /api/import validates
+    // rows first; this guard covers any other caller. Skip the malformed row
+    // with a warning instead of letting the SQLite constraint ("NOT NULL
+    // constraint failed: observations.memory_session_id") abort the batch.
+    // Only a non-empty string is a session id: {}, true or 123 are not.
+    if (typeof obs?.memory_session_id !== 'string' || obs.memory_session_id.trim() === '') {
+      logger.warn('DB', 'Skipping imported observation without memory_session_id', {
+        title: typeof obs?.title === 'string' ? obs.title : null,
+        type: typeof obs?.type === 'string' ? obs.type : null,
+      });
+      return { imported: false, id: 0 };
+    }
+
     const existing = this.db.prepare(`
       SELECT id FROM observations
       WHERE memory_session_id = ? AND title = ? AND created_at_epoch = ?
-    `).get(obs.memory_session_id, obs.title, obs.created_at_epoch) as { id: number } | undefined;
+    `).get(obs.memory_session_id, coerceBindValue(obs.title), obs.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
@@ -3755,15 +3822,15 @@ export class SessionStore {
     const result = stmt.run(
       obs.memory_session_id,
       obs.project,
-      obs.text,
+      coerceBindValue(obs.text),
       obs.type,
-      obs.title,
-      obs.subtitle,
-      obs.facts,
-      obs.narrative,
-      obs.concepts,
-      obs.files_read,
-      obs.files_modified,
+      coerceBindValue(obs.title),
+      coerceBindValue(obs.subtitle),
+      coerceBindValue(obs.facts),
+      coerceBindValue(obs.narrative),
+      coerceBindValue(obs.concepts),
+      coerceBindValue(obs.files_read),
+      coerceBindValue(obs.files_modified),
       obs.prompt_number,
       obs.discovery_tokens || 0,
       obs.agent_type ?? null,
@@ -3846,7 +3913,7 @@ export class SessionStore {
       sessionDbId,
       prompt.content_session_id,
       prompt.prompt_number,
-      prompt.prompt_text,
+      coerceBindValue(prompt.prompt_text),
       prompt.created_at,
       prompt.created_at_epoch
     );
