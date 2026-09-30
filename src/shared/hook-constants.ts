@@ -30,9 +30,10 @@ export function readWedgedWorkerUptimeSeconds(env: NodeJS.ProcessEnv = process.e
     : WEDGED_WORKER_UPTIME_DEFAULT_S;
 }
 
+// Hooks only ever exit 0: Claude Code reads exit 2 as "block", and a
+// claude-mem failure must never block the user (plan-17 step 2).
 export const HOOK_EXIT_CODES = {
   SUCCESS: 0,
-  BLOCKING_ERROR: 2,
 } as const;
 
 /** High-frequency tool hooks that fire on nearly every Claude Code action. */
