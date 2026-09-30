@@ -26,6 +26,36 @@ import {
   markProFallbackNoticeShown,
   trialDaysRemaining,
 } from '../../shared/cmem-gateway.js';
+import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import type { ContextInput } from '../../services/context/types.js';
+
+// Plan-24 step 4 (#2991): in server runtime every write goes to the shared
+// server, so SessionStart reads from it too, straight from this hook process.
+// The rows go through the same renderer and 10,000-character budget as the
+// worker's /api/context/inject (#4112). No local worker is started or asked,
+// and a server that cannot answer yields an empty block (logged as
+// [server-fallback]), never stale local rows. The colored terminal render is
+// fetched concurrently, so a slow server costs one request timeout, not two.
+async function renderSessionStartFromServer(
+  runtime: ServerRuntimeContext,
+  contextInput: ContextInput,
+  withColoredTerminalRender: boolean,
+  modeId: string,
+): Promise<{ model: string; terminal: string }> {
+  const [{ generateServerContextWithStats }, { ModeManager }] = await Promise.all([
+    import('../../services/context/ContextBuilder.js'),
+    import('../../services/domain/ModeManager.js'),
+  ]);
+  // The worker loads the active mode at boot. This hook process has no worker,
+  // so it loads the same mode itself: the renderer reads its observation types,
+  // emojis and legend.
+  ModeManager.getInstance().loadMode(modeId);
+  const [model, colored] = await Promise.all([
+    generateServerContextWithStats(runtime, contextInput, false),
+    withColoredTerminalRender ? generateServerContextWithStats(runtime, contextInput, true) : null,
+  ]);
+  return { model: model.text, terminal: colored ? colored.text : model.text };
+}
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -70,12 +100,33 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
+    // Server runtime reads the shared server (plan-24 step 4). When the server
+    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
+    // exactly as the write hooks do, so reads and writes stay on one corpus.
+    const runtime = resolveRuntimeContext();
+    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
+    const serverRender = serverRuntime
+      ? await renderSessionStartFromServer(
+          serverRuntime,
+          {
+            session_id: input.sessionId,
+            cwd,
+            projects: context.allProjects,
+            ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
+          },
+          showTerminalOutput && input.platform === 'claude-code',
+          settings.CLAUDE_MEM_MODE,
+        )
+      : null;
+
     // ponytail: Codex's MCP normally starts the worker; this one bounded
     // fallback covers cold sessions without the old startup process chain.
     const workerOptions = input.platform === 'codex'
       ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
       : undefined;
-    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    const contextResult = serverRender
+      ? serverRender.model
+      : await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     if (isWorkerFallback(contextResult)) {
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
@@ -123,7 +174,9 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+      const colorResult = serverRender
+        ? serverRender.terminal
+        : await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
       if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
         coloredTimeline = colorResult.trim();
       }
@@ -147,8 +200,11 @@ export const contextHandler: EventHandler = {
       ? `claude-mem free trial: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
       : null;
 
+    // In server runtime the viewer is served by the server (#2552), not by a
+    // local worker, so the link points there.
+    const viewerUrl = serverRuntime ? serverRuntime.serverBaseUrl : getViewerBaseUrl(port);
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ ${getViewerBaseUrl(port)}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
+      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
 
     return {

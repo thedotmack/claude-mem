@@ -33,7 +33,7 @@ import {
   InstallAbortError,
   type InstallSummary,
 } from '../install/error-reporter.js';
-import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
+import { extractEresolveBlock, isEresolve, npmErrorCode, runNpmStrict } from '../install/npm-install-helper.js';
 import {
   buildProviderLabels,
   CMEM_INSTALLER_OAUTH_POLL_URL,
@@ -182,7 +182,7 @@ import {
 import { prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
-import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
+import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
@@ -696,6 +696,7 @@ function copyPluginToMarketplace(): void {
 
   const allowedTopLevelEntries = [
     '.agents',
+    '.claude-plugin',
     '.codex-plugin',
     '.cursor-plugin',
     'claude-mem-cursor',
@@ -724,6 +725,32 @@ function copyPluginToMarketplace(): void {
   }
 
   writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
+  writeTrimmedMarketplaceManifest(marketplaceDir);
+}
+
+/**
+ * Keep only the marketplace entries whose local `source` shipped.
+ *
+ * The repo's root .claude-plugin/marketplace.json also lists claude-mem-cowork
+ * (`./cowork`), which the npm package does not ship. Copied verbatim, the
+ * manifest would advertise a plugin whose source is missing from the
+ * marketplace directory, so drop every entry whose relative source path does
+ * not exist there. Non-path sources (a GitHub repo object) are kept as-is.
+ */
+export function writeTrimmedMarketplaceManifest(marketplaceDir: string): void {
+  const manifestPath = join(marketplaceDir, '.claude-plugin', 'marketplace.json');
+  if (!existsSync(manifestPath)) return;
+
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { plugins?: unknown };
+  if (!Array.isArray(manifest.plugins)) return;
+
+  const shipped = manifest.plugins.filter((entry) => {
+    const source = (entry as { source?: unknown } | null)?.source;
+    return typeof source !== 'string' || !source.startsWith('.') || existsSync(join(marketplaceDir, source));
+  });
+  if (shipped.length === manifest.plugins.length) return;
+
+  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, plugins: shipped }, null, 2)}\n`);
 }
 
 /**
@@ -822,10 +849,12 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 
   if (!isEresolve(strictResult.stderr)) {
     // A strict failure with no ERESOLVE is a real bug — never retry, ABORT.
+    // npm's own error code goes in the cause so the taxonomy can name the fix.
+    const npmCode = npmErrorCode(strictResult.stderr);
     installerError(ErrorSeverity.ABORT, {
       component: 'marketplace-npm-install',
       phase: 'marketplace-deps',
-      cause: new Error(`npm install failed (exit ${strictResult.code})`),
+      cause: new Error(`npm install failed (exit ${strictResult.code})${npmCode ? `: ${npmCode}` : ''}`),
       details: strictResult.stderr.slice(0, 4000),
     }, summary);
   }
@@ -2029,6 +2058,40 @@ export interface InstallOptions {
   serverUrl?: string;
 }
 
+/**
+ * How the installer reacts when the worker port is not free. A claude-mem
+ * worker that will not stop fails closed: its in-memory configuration would
+ * outlive the overwrite. A port held by some other process only warns: there
+ * is no claude-mem worker to protect, and this runs before the sign-in/trial
+ * step, which the install must still reach. Exported for tests.
+ */
+export function workerShutdownFailure(
+  blocker: ShutdownBlocker | undefined,
+  port: number | string,
+): { severity: ErrorSeverity; cause: string; remediation: string } {
+  if (blocker?.kind === 'port-held-by-other-process') {
+    return {
+      severity: ErrorSeverity.WARN_CONTINUE,
+      cause: `Port ${port} is held by a process that is not a claude-mem worker (no live claude-mem worker owns it), so the worker cannot listen there.`,
+      remediation: `Stop the process using port ${port}, or set CLAUDE_MEM_WORKER_PORT to a free port in ${USER_SETTINGS_PATH}, then run \`npx claude-mem start\`.`,
+    };
+  }
+  const pid = blocker?.kind === 'worker-still-running' ? blocker.pid : null;
+  if (pid === null) {
+    return {
+      severity: ErrorSeverity.ABORT,
+      cause: 'The existing worker did not stop within 10 seconds.',
+      remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+    };
+  }
+  const killCommand = process.platform === 'win32' ? `taskkill /PID ${pid} /F` : `kill ${pid}`;
+  return {
+    severity: ErrorSeverity.ABORT,
+    cause: `The claude-mem worker (PID ${pid}) did not stop within 10 seconds.`,
+    remediation: `Run \`npx claude-mem stop\`, or end PID ${pid} (\`${killCommand}\`), then run \`npx claude-mem install\` again.`,
+  };
+}
+
 async function requireWorkerStopped(
   port: number | string,
   phase: 'pre-overwrite' | 'provider-cutover',
@@ -2043,18 +2106,24 @@ async function requireWorkerStopped(
   try {
     const result = await shutdownWorkerAndWait(port, 10000);
     if (!result.stopped) {
-      spinner?.error('Running worker did not stop; refusing to overwrite its live configuration.');
-      installerError(ErrorSeverity.ABORT, {
+      const failure = workerShutdownFailure(result.blocker, port);
+      if (failure.severity === ErrorSeverity.ABORT) {
+        spinner?.error('Running worker did not stop; refusing to overwrite its live configuration.');
+      }
+      // ABORT throws; WARN_CONTINUE records the warning for the end-of-install summary.
+      installerError(failure.severity, {
         component: 'worker-shutdown',
         phase,
-        cause: new Error('The existing worker did not stop within 10 seconds.'),
-        remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+        cause: new Error(failure.cause),
+        remediation: failure.remediation,
       }, summary);
     }
 
     const stopMessage = result.workerWasRunning
       ? 'Stopped running worker before configuration cutover.'
-      : 'No worker running — proceeding.';
+      : result.stopped
+        ? 'No worker running — proceeding.'
+        : `Port ${port} is held by another process, not a claude-mem worker — proceeding.`;
     if (spinner) spinner.stop(stopMessage);
     else if (result.workerWasRunning) log.info(stopMessage);
   } catch (error: unknown) {

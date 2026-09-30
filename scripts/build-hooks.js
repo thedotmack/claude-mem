@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'url';
+import { allowScriptsMap } from './postinstall-allowlist.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -331,6 +332,11 @@ async function buildHooks() {
       trustedDependencies: [
         'tree-sitter-cli'
       ],
+      // npm 11.16+ runs dependency install scripts only for packages listed in
+      // `allowScripts` — npm's counterpart to bun's `trustedDependencies` above.
+      // Sourced from scripts/postinstall-allowlist.js so it can never drift from
+      // the CI guard.
+      allowScripts: allowScriptsMap(),
       engines: {
         node: '>=20.12.0',
         bun: '>=1.1.31'
