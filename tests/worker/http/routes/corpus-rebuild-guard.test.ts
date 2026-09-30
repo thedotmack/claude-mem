@@ -70,7 +70,7 @@ describe('rebuild_corpus shrink guard', () => {
     return captureRebuildHandler(routes);
   }
 
-  it('restores the previous corpus and returns 409 on a destructive shrink', async () => {
+  it('builds without writing, then keeps the previous corpus untouched and returns 409 on a destructive shrink', async () => {
     const existing = createCorpus('big', 74, { date_start: '2024-01-01' });
     const handler = setup(existing, createCorpus('big', 11));
     const { req, res, statusSpy, jsonSpy } = createMockReqRes('big', {});
@@ -78,74 +78,56 @@ describe('rebuild_corpus shrink guard', () => {
     handler(req, res);
     await flushPromises();
 
+    expect(build).toHaveBeenCalledWith('big', existing.description, existing.filter, { writeFile: false });
     expect(statusSpy).toHaveBeenCalledWith(409);
-    expect(write).toHaveBeenCalledWith(existing);
+    expect(write).not.toHaveBeenCalled();
     expect(jsonSpy.mock.calls[0][0]).toMatchObject({ previous_count: 74, rebuilt_count: 11 });
   });
 
-  it('accepts the shrink and does not restore when force is set', async () => {
-    const existing = createCorpus('big', 74);
-    const handler = setup(existing, createCorpus('big', 11));
+  it('treats a rebuild that keeps exactly half as destructive', async () => {
+    const handler = setup(createCorpus('big', 74), createCorpus('big', 37));
+    const { req, res, statusSpy } = createMockReqRes('big', {});
+
+    handler(req, res);
+    await flushPromises();
+
+    expect(statusSpy).toHaveBeenCalledWith(409);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('writes the smaller corpus when force is set', async () => {
+    const rebuilt = createCorpus('big', 11);
+    const handler = setup(createCorpus('big', 74), rebuilt);
     const { req, res, statusSpy } = createMockReqRes('big', { force: true });
 
     handler(req, res);
     await flushPromises();
 
     expect(statusSpy).not.toHaveBeenCalled();
-    expect(write).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith(rebuilt);
   });
 
-  it('allows a routine refresh that keeps most observations', async () => {
-    const existing = createCorpus('big', 74);
-    const handler = setup(existing, createCorpus('big', 70));
+  it('writes a routine refresh that keeps most observations', async () => {
+    const rebuilt = createCorpus('big', 70);
+    const handler = setup(createCorpus('big', 74), rebuilt);
     const { req, res, statusSpy } = createMockReqRes('big', {});
 
     handler(req, res);
     await flushPromises();
 
     expect(statusSpy).not.toHaveBeenCalled();
-    expect(write).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith(rebuilt);
   });
 
   it('does not trip the guard on a tiny corpus below the floor', async () => {
-    const existing = createCorpus('tiny', 3);
-    const handler = setup(existing, createCorpus('tiny', 0));
+    const rebuilt = createCorpus('tiny', 0);
+    const handler = setup(createCorpus('tiny', 3), rebuilt);
     const { req, res, statusSpy } = createMockReqRes('tiny', {});
 
     handler(req, res);
     await flushPromises();
 
     expect(statusSpy).not.toHaveBeenCalled();
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it('never runs two rebuilds of the same corpus at once', async () => {
-    const existing = createCorpus('big', 74);
-    read = mock(() => existing);
-    write = mock(() => undefined);
-    let active = 0;
-    let maxActive = 0;
-    build = mock(async () => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      active -= 1;
-      return createCorpus('big', 74);
-    });
-    const routes = new CorpusRoutes(
-      { read, write, list: mock(() => []), delete: mock(() => false) } as any,
-      { build } as any,
-      {} as any,
-    );
-    const handler = captureRebuildHandler(routes);
-
-    const a = createMockReqRes('big', {});
-    const b = createMockReqRes('big', {});
-    handler(a.req, a.res);
-    handler(b.req, b.res);
-    await new Promise((resolve) => setTimeout(resolve, 40));
-
-    expect(maxActive).toBe(1);
-    expect(build).toHaveBeenCalledTimes(2);
+    expect(write).toHaveBeenCalledWith(rebuilt);
   });
 });

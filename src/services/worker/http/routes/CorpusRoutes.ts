@@ -7,7 +7,6 @@ import { CorpusStore, CORPUS_NAME_PATTERN, CORPUS_NAME_ERROR } from '../../knowl
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
-import { KeyedMutex } from '../../../../shared/keyed-mutex.js';
 import { logger } from '../../../../utils/logger.js';
 
 const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note', 'sensitive'] as const;
@@ -68,11 +67,6 @@ const queryCorpusSchema = z.object({
 }).passthrough();
 
 export class CorpusRoutes extends BaseRouteHandler {
-  // Serializes writes to a given corpus file so a build and a rebuild of the
-  // same name cannot interleave. Without this, a destructive rebuild could
-  // restore its stale snapshot over a newer concurrent write.
-  private readonly corpusMutex = new KeyedMutex();
-
   constructor(
     private corpusStore: CorpusStore,
     private corpusBuilder: CorpusBuilder,
@@ -117,9 +111,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     if (limit !== undefined) filter.limit = limit;
 
     logger.info('SEARCH', 'Building corpus', { name, project, filterKeys: Object.keys(filter) });
-    const corpus = await this.corpusMutex.runExclusive(name, () =>
-      this.corpusBuilder.build(name, description || '', filter)
-    );
+    const corpus = await this.corpusBuilder.build(name, description || '', filter);
 
     const { observations, ...metadata } = corpus;
     res.json(metadata);
@@ -159,57 +151,44 @@ export class CorpusRoutes extends BaseRouteHandler {
 
   private handleRebuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const name = this.toStringParam(req.params.name);
+    const previousCorpus = this.corpusStore.read(name);
 
-    if (!this.corpusStore.read(name)) {
+    if (!previousCorpus) {
       this.corpusNotFound(res, name);
       return;
     }
 
     const force = req.body?.force === true;
+    const previousCount = previousCorpus.stats.observation_count;
 
-    // Hold the per-corpus lock across the whole read-build-restore sequence so a
-    // concurrent rebuild cannot write between `build` and a possible restore.
-    await this.corpusMutex.runExclusive(name, async () => {
-      // Re-read under the lock: another rebuild may have finished between the
-      // not-found check above and acquiring the lock, so the restore target and
-      // the source filter must come from the latest persisted state.
-      const previousCorpus = this.corpusStore.read(name);
-      if (!previousCorpus) {
-        this.corpusNotFound(res, name);
-        return;
-      }
-      const previousCount = previousCorpus.stats.observation_count;
+    // Build without writing, decide, then write: a rebuild that would shrink the corpus
+    // never touches the stored file unless the caller confirms it with force, so a stale
+    // or wrong filter cannot silently destroy user-created state.
+    const corpus = await this.corpusBuilder.build(name, previousCorpus.description, previousCorpus.filter, { writeFile: false });
+    const newCount = corpus.stats.observation_count;
 
-      const corpus = await this.corpusBuilder.build(name, previousCorpus.description, previousCorpus.filter);
-      const newCount = corpus.stats.observation_count;
+    if (!force && this.isDestructiveShrink(previousCount, newCount)) {
+      res.status(409).json({
+        error: `Rebuild would shrink corpus "${name}" from ${previousCount} to ${newCount} observations`,
+        fix: 'The previous corpus was kept. Re-run with force=true to accept the smaller result, or check the stored date filter.',
+        filter: previousCorpus.filter,
+        previous_count: previousCount,
+        rebuilt_count: newCount,
+      });
+      return;
+    }
 
-      // `build` has already overwritten the corpus file. If the rebuild dropped
-      // a large share of the observations, restore the previous corpus so a
-      // stale or wrong filter cannot silently destroy user-created state.
-      // `force` opts in to the shrink.
-      if (!force && this.isDestructiveShrink(previousCount, newCount)) {
-        this.corpusStore.write(previousCorpus);
-        res.status(409).json({
-          error: `Rebuild would shrink corpus "${name}" from ${previousCount} to ${newCount} observations`,
-          fix: 'The previous corpus was kept. Re-run with force=true to accept the smaller result, or check the stored date filter.',
-          filter: previousCorpus.filter,
-          previous_count: previousCount,
-          rebuilt_count: newCount,
-        });
-        return;
-      }
-
-      const { observations, ...metadata } = corpus;
-      res.json(metadata);
-    });
+    this.corpusStore.write(corpus);
+    const { observations, ...metadata } = corpus;
+    res.json(metadata);
   });
 
-  // A rebuild that keeps at least half of a non-trivial corpus is treated as a
-  // routine refresh; anything below that is a destructive shrink that must be
+  // A rebuild that keeps more than half of a non-trivial corpus is treated as a
+  // routine refresh; keeping half or less is a destructive shrink that must be
   // confirmed. The floor keeps tiny corpora from tripping the guard on normal
   // churn.
   private isDestructiveShrink(previousCount: number, newCount: number): boolean {
-    return previousCount >= 4 && newCount < previousCount / 2;
+    return previousCount >= 4 && newCount <= previousCount / 2;
   }
 
   private handlePrimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
