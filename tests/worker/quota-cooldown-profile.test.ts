@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import * as providerDispatch from '../../src/services/worker/provider-dispatch.js';
-import { configDirProfileKey } from '../../src/shared/EnvManager.js';
+import { credentialProfileKey } from '../../src/shared/EnvManager.js';
+import { deriveMacKeychainServiceName } from '../../src/shared/oauth-token.js';
 import {
   tryAdmitQuotaProbe,
   recordQuotaExhausted,
@@ -150,20 +151,24 @@ describe('quota cooldown breaker — per-account claude profile', () => {
 
 // Two config dirs with the same basename are two accounts; the key must not
 // merge them, and must not write the path (and the username) anywhere.
-describe('configDirProfileKey', () => {
+describe('credentialProfileKey', () => {
+  const explicit = (configDir: string) => ({ configDir, explicitConfigDir: true });
+
   it('keeps config dirs that share a basename apart', () => {
-    const first = configDirProfileKey('/home/alice/accounts/work');
-    const second = configDirProfileKey('/home/alice/clients/work');
+    const first = credentialProfileKey(explicit('/home/alice/accounts/work'));
+    const second = credentialProfileKey(explicit('/home/alice/clients/work'));
     expect(first).not.toBe(second);
     expect(first.startsWith('work#')).toBe(true);
     expect(first).not.toContain('alice');
   });
 
-  it('is stable for one directory', () => {
-    expect(configDirProfileKey('/home/alice/work')).toBe(configDirProfileKey('/home/alice/work'));
+  it('keys the same credential the keychain read uses', () => {
+    const profile = explicit('/home/alice/accounts/work');
+    const keychainSuffix = deriveMacKeychainServiceName(profile).split('-').pop();
+    expect(credentialProfileKey(profile)).toBe(`work#${keychainSuffix}`);
   });
 
-  it('names the default config dir "default"', () => {
-    expect(configDirProfileKey(DEFAULT_CLAUDE_CONFIG_DIR)).toBe('default');
+  it('names the bare keychain profile "default"', () => {
+    expect(credentialProfileKey({ configDir: DEFAULT_CLAUDE_CONFIG_DIR, explicitConfigDir: false })).toBe('default');
   });
 });

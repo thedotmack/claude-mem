@@ -11,6 +11,7 @@ import {
   writeStaleMarker,
   clearStaleMarker,
   resolveClaudeCredentialProfile,
+  type ClaudeCredentialProfile,
   type OAuthTokenResult,
 } from './oauth-token.js';
 
@@ -23,21 +24,23 @@ function resolveConfigDirProfileLabel(): string {
 
 /**
  * The account identity that quota state is keyed by (RateLimitStore entries,
- * the 'claude' quota-cooldown breaker): 'default' for ~/.claude, else the
- * basename plus a short hash of the full config dir. The hash keeps two dirs
- * that share a basename (~/a/work, ~/b/work) apart without writing the path,
- * and with it the username, into /api/health or quota-cooldown.json.
+ * the 'claude' quota-cooldown breaker). It follows the credential the SDK
+ * child uses: 'default' for the bare keychain entry, else the config dir's
+ * basename plus the 8-hex sha256 suffix Claude Code gives that profile's
+ * keychain entry (see deriveMacKeychainServiceName). Two dirs that share a
+ * basename stay apart, and no path (or username) reaches /api/health or
+ * quota-cooldown.json.
  */
-export function configDirProfileKey(effectiveConfigDir: string): string {
-  if (effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR) return 'default';
-  const digest = createHash('sha256').update(effectiveConfigDir).digest('hex').slice(0, 8);
-  return `${basename(effectiveConfigDir)}#${digest}`;
+export function credentialProfileKey(profile: ClaudeCredentialProfile): string {
+  if (!profile.explicitConfigDir) return 'default';
+  const suffix = createHash('sha256').update(profile.configDir.normalize('NFC')).digest('hex').slice(0, 8);
+  return `${basename(profile.configDir)}#${suffix}`;
 }
 
-/** The profile key for the config dir the next Claude spawn will use. */
+/** The quota key for the credential the next Claude spawn will use. */
 export function resolveConfigDirProfileKey(): string {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-  return configDirProfileKey(resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR));
+  return credentialProfileKey(resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR));
 }
 
 // Resolved lazily so tests (and any rare runtime path-overrides) can target a
