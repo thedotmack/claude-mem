@@ -275,7 +275,6 @@ export interface ProjectContext {
 }
 
 /**
-/**
  * Build the worktree compound project key from its parent and worktree names.
  *
  * #3641 — Codex CLI puts worktrees at `~/.codex/worktrees/<id>/<repo>`, so the

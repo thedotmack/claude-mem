@@ -588,6 +588,8 @@ describe('#2827 — git-remote project names', () => {
   let worktree: string;
   let noRemoteRepo: string;
   let noRemoteWorktree: string;
+  let sameNameRepo: string;
+  let sameNameCodexWorktree: string;
 
   beforeAll(async () => {
     const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = await import('fs');
@@ -617,6 +619,14 @@ describe('#2827 — git-remote project names', () => {
 
     initRepo(noRemoteRepo);
     run(noRemoteRepo, 'worktree', 'add', '-q', '-b', 'wt', noRemoteWorktree);
+
+    // org == repo (prettier/prettier), plus a Codex-style worktree named after it.
+    sameNameRepo = join(tmp, 'prettier');
+    sameNameCodexWorktree = join(tmp, 'codex', 'c1', 'prettier');
+    initRepo(sameNameRepo);
+    run(sameNameRepo, 'remote', 'add', 'origin', 'https://github.com/prettier/prettier.git');
+    mkdirSync(join(tmp, 'codex', 'c1'), { recursive: true });
+    run(sameNameRepo, 'worktree', 'add', '-q', '-b', 'codex-task', sameNameCodexWorktree);
 
     process.env[SOURCE_ENV] = 'git-remote';
   }, 30_000);
@@ -649,5 +659,15 @@ describe('#2827 — git-remote project names', () => {
     const ctx = getProjectContext(noRemoteWorktree);
     expect(ctx.primary).toBe('scratchpad/scratchpad-wt');
     expect(ctx.allProjects).toEqual(['scratchpad', 'scratchpad/scratchpad-wt']);
+  });
+
+  // #3641's collapse (`<repo>/<repo>` → `<repo>`) is a path-mode rule: a slug
+  // whose org and repository share a name is a real identity and stays whole.
+  it('never collapses a slug whose org and repository share a name', () => {
+    expect(getProjectName(sameNameRepo)).toBe('prettier/prettier');
+    expect(getProjectContext(sameNameRepo).primary).toBe('prettier/prettier');
+    const ctx = getProjectContext(sameNameCodexWorktree);
+    expect(ctx.primary).toBe('prettier/prettier');
+    expect(ctx.allProjects).toEqual(['prettier', 'prettier/prettier']);
   });
 });
