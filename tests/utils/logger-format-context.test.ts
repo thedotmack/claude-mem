@@ -56,13 +56,13 @@ describe('logger context formatting', () => {
     expect(line).toContain('{items=[]}');
   });
 
-  it('should not throw on an array containing a circular-reference element, and print the fallback', () => {
+  it('should not throw on an array containing a circular-reference element, and mark the cycle', () => {
     const circular: Record<string, unknown> = { a: 1 };
     circular.self = circular;
     const marker = 'ctx-test-array-circular-1';
     expect(() => logger.info('SYSTEM', marker, { items: [circular] })).not.toThrow();
     const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{items=[unserializable]}');
+    expect(line).toContain('{items=[{"a":1,"self":"[Circular]"}]}');
   });
 
   it('should leave string context values unchanged', () => {
@@ -116,19 +116,19 @@ describe('logger context formatting', () => {
     expect(line).toContain(`{when=${when}}`);
   });
 
-  it('should not throw on a circular-reference context value, and print the fallback', () => {
+  it('should not throw on a circular-reference context value, and mark the cycle', () => {
     const circular: Record<string, unknown> = { a: 1 };
     circular.self = circular;
     const marker = 'ctx-test-circular-1';
     expect(() => logger.info('SYSTEM', marker, { circular })).not.toThrow();
     const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{circular=[unserializable]}');
+    expect(line).toContain('{circular={"a":1,"self":"[Circular]"}}');
   });
 
-  it('should not throw on a BigInt-containing context value, and print the fallback', () => {
+  it('should not throw on a BigInt-containing context value, and print the BigInt', () => {
     const marker = 'ctx-test-bigint-1';
     expect(() => logger.info('SYSTEM', marker, { withBigInt: { n: BigInt(5) } })).not.toThrow();
     const line = lastLoggedLineFor(marker);
-    expect(line).toContain('{withBigInt=[unserializable]}');
+    expect(line).toContain('{withBigInt={"n":"5n"}}');
   });
 });
