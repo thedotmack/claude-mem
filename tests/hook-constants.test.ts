@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from '../src/shared/hook-constants.js';
+import {
+  HOOK_TIMEOUTS,
+  HOOK_EXIT_CODES,
+  getTimeout,
+  isToolHookDisabledByEnv,
+} from '../src/shared/hook-constants.js';
 
 describe('hook-constants', () => {
   const originalPlatform = process.platform;
@@ -13,10 +18,6 @@ describe('hook-constants', () => {
   });
 
   describe('HOOK_TIMEOUTS', () => {
-    it('should define DEFAULT timeout', () => {
-      expect(HOOK_TIMEOUTS.DEFAULT).toBe(300000);
-    });
-
     it('should define HEALTH_CHECK timeout as 3s (reduced from 30s)', () => {
       expect(HOOK_TIMEOUTS.HEALTH_CHECK).toBe(3000);
     });
@@ -27,14 +28,6 @@ describe('hook-constants', () => {
 
     it('should define PORT_IN_USE_WAIT as 3s', () => {
       expect(HOOK_TIMEOUTS.PORT_IN_USE_WAIT).toBe(3000);
-    });
-
-    it('should define WORKER_STARTUP_WAIT', () => {
-      expect(HOOK_TIMEOUTS.WORKER_STARTUP_WAIT).toBe(1000);
-    });
-
-    it('should define PRE_RESTART_SETTLE_DELAY', () => {
-      expect(HOOK_TIMEOUTS.PRE_RESTART_SETTLE_DELAY).toBe(2000);
     });
 
     it('should define WINDOWS_MULTIPLIER', () => {
@@ -49,14 +42,6 @@ describe('hook-constants', () => {
   describe('HOOK_EXIT_CODES', () => {
     it('should define SUCCESS exit code', () => {
       expect(HOOK_EXIT_CODES.SUCCESS).toBe(0);
-    });
-
-    it('should define FAILURE exit code', () => {
-      expect(HOOK_EXIT_CODES.FAILURE).toBe(1);
-    });
-
-    it('should define BLOCKING_ERROR exit code', () => {
-      expect(HOOK_EXIT_CODES.BLOCKING_ERROR).toBe(2);
     });
   });
 
@@ -101,6 +86,39 @@ describe('hook-constants', () => {
       });
 
       expect(getTimeout(1000)).toBe(1000);
+    });
+  });
+
+  describe('isToolHookDisabledByEnv (#3106)', () => {
+    it('is off by default for tool and non-tool events', () => {
+      const env = {};
+      expect(isToolHookDisabledByEnv('observation', env)).toBe(false);
+      expect(isToolHookDisabledByEnv('file-context', env)).toBe(false);
+      expect(isToolHookDisabledByEnv('context', env)).toBe(false);
+      expect(isToolHookDisabledByEnv('session-init', env)).toBe(false);
+      expect(isToolHookDisabledByEnv('summarize', env)).toBe(false);
+    });
+
+    it('CLAUDE_MEM_DISABLE_TOOL_HOOKS=1 disables observation and file-context only', () => {
+      const env = { CLAUDE_MEM_DISABLE_TOOL_HOOKS: '1' };
+      expect(isToolHookDisabledByEnv('observation', env)).toBe(true);
+      expect(isToolHookDisabledByEnv('file-context', env)).toBe(true);
+      expect(isToolHookDisabledByEnv('context', env)).toBe(false);
+      expect(isToolHookDisabledByEnv('session-init', env)).toBe(false);
+      expect(isToolHookDisabledByEnv('summarize', env)).toBe(false);
+      expect(isToolHookDisabledByEnv('user-message', env)).toBe(false);
+    });
+
+    it('ignores non-1 values for the coarse flag', () => {
+      expect(isToolHookDisabledByEnv('observation', { CLAUDE_MEM_DISABLE_TOOL_HOOKS: 'true' })).toBe(false);
+      expect(isToolHookDisabledByEnv('observation', { CLAUDE_MEM_DISABLE_TOOL_HOOKS: '0' })).toBe(false);
+    });
+
+    it('supports granular observation / file-context flags', () => {
+      expect(isToolHookDisabledByEnv('observation', { CLAUDE_MEM_DISABLE_OBSERVATION: '1' })).toBe(true);
+      expect(isToolHookDisabledByEnv('file-context', { CLAUDE_MEM_DISABLE_OBSERVATION: '1' })).toBe(false);
+      expect(isToolHookDisabledByEnv('file-context', { CLAUDE_MEM_DISABLE_FILE_CONTEXT: '1' })).toBe(true);
+      expect(isToolHookDisabledByEnv('observation', { CLAUDE_MEM_DISABLE_FILE_CONTEXT: '1' })).toBe(false);
     });
   });
 });

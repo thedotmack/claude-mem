@@ -11,6 +11,7 @@ import {
   toEpoch,
   toJsonObject
 } from './utils.js';
+import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 
 export type ObservationSourceType = 'agent_event' | 'session_summary' | 'observation_reindex' | 'manual';
 
@@ -150,22 +151,65 @@ export class PostgresObservationRepository {
     return result.rows.map(mapObservationRow);
   }
 
+  // `query` is optional. Without one the FTS predicate and ranking drop out and
+  // rows come back newest first by creation time: the "what happened recently"
+  // read a session-start block needs (/v1/context). Ordered by `created_at`,
+  // not `updated_at`, so touching an old row does not move it to the top. With a
+  // query the ordering is unchanged (rank, then `updated_at`).
+  //
+  // The platform filter and the optional folder filter apply in both modes.
+  // `folderProjects` matches `metadata.project`, the folder label generation
+  // copies from the server session; rows without a label are excluded when it
+  // is set.
   async search(input: {
     projectId: string;
     teamId: string;
-    query: string;
+    query?: string | null;
     limit?: number;
+    platformSource?: string | null;
+    folderProjects?: string[] | null;
   }): Promise<PostgresObservation[]> {
+    const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+    const query = input.query && input.query.trim().length > 0 ? input.query : null;
+    const folderProjects = input.folderProjects && input.folderProjects.length > 0
+      ? input.folderProjects
+      : null;
     const result = await this.client.query<ObservationRow>(
       `
-        SELECT * FROM observations
-        WHERE project_id = $1
-          AND team_id = $2
-          AND content_search @@ websearch_to_tsquery('english', $3)
-        ORDER BY ts_rank(content_search, websearch_to_tsquery('english', $3)) DESC, updated_at DESC
+        SELECT observations.* FROM observations
+        LEFT JOIN server_sessions
+          ON server_sessions.id = observations.server_session_id
+          AND server_sessions.project_id = observations.project_id
+          AND server_sessions.team_id = observations.team_id
+        WHERE observations.project_id = $1
+          AND observations.team_id = $2
+          AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))
+          AND ($6::text[] IS NULL OR observations.metadata->>'project' = ANY($6::text[]))
+          AND (
+            $5::text IS NULL
+            OR server_sessions.platform_source = $5
+            OR (
+              observations.server_session_id IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM observation_sources
+                INNER JOIN agent_events
+                  ON agent_events.id = observation_sources.agent_event_id
+                  AND agent_events.project_id = observations.project_id
+                  AND agent_events.team_id = observations.team_id
+                WHERE observation_sources.observation_id = observations.id
+                  AND observation_sources.source_type = 'agent_event'
+                  AND agent_events.platform_source = $5
+              )
+            )
+          )
+        ORDER BY
+          CASE WHEN $3::text IS NULL THEN observations.created_at END DESC,
+          ts_rank(observations.content_search, websearch_to_tsquery('english', $3)) DESC,
+          observations.updated_at DESC
         LIMIT $4
       `,
-      [input.projectId, input.teamId, input.query, input.limit ?? 20]
+      [input.projectId, input.teamId, query, input.limit ?? 20, platformSource, folderProjects]
     );
     return result.rows.map(mapObservationRow);
   }

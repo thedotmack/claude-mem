@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { logger } from '../../utils/logger.js';
 import type { PostgresQueryable } from './utils.js';
 
-export const SERVER_BETA_POSTGRES_SCHEMA_VERSION = 1;
+export const SERVER_POSTGRES_SCHEMA_VERSION = 1;
 
-export const SERVER_BETA_POSTGRES_TABLES = [
+// Phase 1b (cmem-sdk rename): the TS constant is renamed but the table-name
+// strings remain on `server_beta_*` since they are persisted DDL identifiers.
+// Plan §1d will migrate the table names in a coordinated DDL change.
+export const SERVER_POSTGRES_TABLES = [
   'server_beta_schema_migrations',
   'teams',
   'projects',
@@ -16,14 +20,16 @@ export const SERVER_BETA_POSTGRES_TABLES = [
   'observation_generation_jobs',
   'observations',
   'observation_sources',
-  'observation_generation_job_events'
+  'observation_generation_job_events',
+  'usage_events',
+  'rate_limit_counters'
 ] as const;
 
-export async function bootstrapServerBetaPostgresSchema(client: PostgresQueryable): Promise<void> {
+export async function bootstrapServerPostgresSchema(client: PostgresQueryable): Promise<void> {
   if (isPostgresPool(client)) {
     const poolClient = await client.connect();
     try {
-      await bootstrapServerBetaPostgresSchema(poolClient);
+      await bootstrapServerPostgresSchema(poolClient);
     } finally {
       poolClient.release();
     }
@@ -32,20 +38,26 @@ export async function bootstrapServerBetaPostgresSchema(client: PostgresQueryabl
 
   await client.query('BEGIN');
   try {
-    await client.query(PHASE_1_SCHEMA_SQL);
-    await client.query(
-      `
-        INSERT INTO server_beta_schema_migrations (version, description)
-        VALUES ($1, $2)
-        ON CONFLICT (version) DO NOTHING
-      `,
-      [SERVER_BETA_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
-    );
+    await applyPhase1Migration(client);
     await client.query('COMMIT');
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.error('SYSTEM', 'postgres schema bootstrap failed, rolling back', {}, err);
     await client.query('ROLLBACK');
     throw error;
   }
+}
+
+async function applyPhase1Migration(client: PostgresQueryable): Promise<void> {
+  await client.query(PHASE_1_SCHEMA_SQL);
+  await client.query(
+    `
+      INSERT INTO server_beta_schema_migrations (version, description)
+      VALUES ($1, $2)
+      ON CONFLICT (version) DO NOTHING
+    `,
+    [SERVER_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
+  );
 }
 
 interface PostgresPoolLike extends PostgresQueryable {
@@ -151,7 +163,6 @@ CREATE TABLE IF NOT EXISTS server_sessions (
   last_generated_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (project_id, external_session_id),
   FOREIGN KEY (project_id, team_id) REFERENCES projects(id, team_id) ON DELETE CASCADE
 );
 
@@ -256,6 +267,7 @@ CREATE TABLE IF NOT EXISTS observation_generation_job_events (
 
 CREATE INDEX IF NOT EXISTS idx_agent_events_project_session ON agent_events(project_id, server_session_id, occurred_at);
 ALTER TABLE server_sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+ALTER TABLE server_sessions DROP CONSTRAINT IF EXISTS server_sessions_project_id_external_session_id_key;
 -- #2560 — platform_source on agent_events (consistent with server_sessions and
 -- the plan-09 scoping): which platform produced the event (claude-code,
 -- opencode, cursor, ...). Idempotent so an existing DB upgrades in place.
@@ -272,10 +284,16 @@ ALTER TABLE observation_generation_jobs DROP CONSTRAINT IF EXISTS observation_ge
 CREATE UNIQUE INDEX IF NOT EXISTS idx_server_sessions_project_idempotency
   ON server_sessions(project_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL;
--- Supports the session linkage lookup on the /v1/events ingest path
--- (WHERE content_session_id = $1 AND project_id = $2 ...).
-CREATE INDEX IF NOT EXISTS idx_server_sessions_content_session
-  ON server_sessions(project_id, content_session_id)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_server_sessions_external_session_legacy
+  ON server_sessions(project_id, external_session_id)
+  WHERE external_session_id IS NOT NULL AND platform_source IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_server_sessions_external_session_platform
+  ON server_sessions(project_id, platform_source, external_session_id)
+  WHERE external_session_id IS NOT NULL AND platform_source IS NOT NULL;
+DROP INDEX IF EXISTS idx_server_sessions_content_session;
+-- Supports platform-aware session linkage lookup on the /v1/events ingest path.
+CREATE INDEX IF NOT EXISTS idx_server_sessions_content_session_platform
+  ON server_sessions(team_id, project_id, platform_source, content_session_id, started_at DESC)
   WHERE content_session_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_generation_key_scope
   ON observations(team_id, project_id, generation_key)
@@ -295,4 +313,27 @@ CREATE INDEX IF NOT EXISTS idx_observation_jobs_event ON observation_generation_
 CREATE INDEX IF NOT EXISTS idx_observation_jobs_source ON observation_generation_jobs(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_observation_job_events_job_created ON observation_generation_job_events(generation_job_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_log_scope_created ON audit_log(project_id, team_id, created_at);
+
+-- Usage metering: append-only per-team usage, aggregated for quotas + billing.
+-- kind is open-ended ('request', 'tokens_in', 'tokens_out', 'observation', ...).
+CREATE TABLE IF NOT EXISTS usage_events (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL,
+  quantity BIGINT NOT NULL DEFAULT 1,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_team_created ON usage_events(team_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_team_kind_created ON usage_events(team_id, kind, created_at);
+
+-- Fixed-window rate-limit counters. subject_id is the api key id (per-key limit).
+CREATE TABLE IF NOT EXISTS rate_limit_counters (
+  subject_id TEXT NOT NULL,
+  window_start TIMESTAMPTZ NOT NULL,
+  count BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (subject_id, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limit_counters_window ON rate_limit_counters(window_start);
 `;

@@ -1,28 +1,299 @@
 
 import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
-import { classifyObserverOutput, previewOutput } from '../../../sdk/output-classifier.js';
-import { verifyCommitHashesInText } from '../../../sdk/commit-verification.js';
-import { ingestSummary } from '../http/shared.js';
+import {
+  classifyObserverOutput,
+  isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
+  isQuotaLimitedObserverOutput,
+  isTransportFailureObserverOutput,
+  previewOutput,
+} from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
+import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
+import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
+import { recordObserverSuccess } from '../../../shared/observer-health.js';
+import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
+import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
-import type { ActiveSession } from '../../worker-types.js';
+import type { ActiveSession, PendingMessage } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
-import { captureEvent } from '../../telemetry/telemetry.js';
+import { telemetryBuffer } from '../../telemetry/buffer.js';
+
+type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
+
+export interface ObservationFileEvidence {
+  files_read: string[];
+  files_modified: string[];
+}
+
+const READ_TOOL_NAMES = new Set(['Read']);
+const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
+const PATCH_TOOL_NAMES = new Set(['apply_patch']);
+
+export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
+  const filesRead: string[] = [];
+  const filesModified: string[] = [];
+  const seenRead = new Set<string>();
+  const seenModified = new Set<string>();
+
+  for (const message of messages) {
+    if (message.type !== 'observation') {
+      continue;
+    }
+
+    const toolName = typeof message.tool_name === 'string' ? message.tool_name : '';
+    if (!toolName) {
+      continue;
+    }
+
+    if (READ_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPathsFromToolInput(message.tool_input, 'read')) {
+        pushUnique(seenRead, filesRead, filePath);
+      }
+    }
+
+    if (WRITE_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPathsFromToolInput(message.tool_input, 'write', toolName)) {
+        pushUnique(seenModified, filesModified, filePath);
+      }
+    }
+
+    if (PATCH_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPatchPaths(message.tool_input)) {
+        pushUnique(seenModified, filesModified, filePath);
+      }
+    }
+  }
+
+  return {
+    files_read: filesRead,
+    files_modified: filesModified,
+  };
+}
+
+function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
+  if (!seen.has(filePath)) {
+    seen.add(filePath);
+    output.push(filePath);
+  }
+}
+
+function normalizePathValue(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function maybeParseObject(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || !(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractPathsFromToolInput(
+  toolInput: unknown,
+  mode: 'read' | 'write',
+  toolName?: string
+): string[] {
+  const input = maybeParseObject(toolInput);
+  if (!input) {
+    return [];
+  }
+
+  const paths: string[] = [];
+  const directFields = mode === 'read'
+    ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'filePaths']
+    : ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path', 'filePaths'];
+
+  for (const field of directFields) {
+    const value = input[field];
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const path = normalizePathValue(entry);
+        if (path) {
+          paths.push(path);
+        }
+      }
+      continue;
+    }
+
+    const path = normalizePathValue(value);
+    if (path) {
+      paths.push(path);
+    }
+  }
+
+  if (mode === 'write') {
+    const edits = input.edits;
+    if (Array.isArray(edits)) {
+      for (const edit of edits) {
+        if (!edit || typeof edit !== 'object') {
+          continue;
+        }
+        const record = edit as Record<string, unknown>;
+        for (const field of ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path']) {
+          const path = normalizePathValue(record[field]);
+          if (path) {
+            paths.push(path);
+          }
+        }
+        const patch = normalizePathValue(record.patch);
+        if (patch && toolName === 'apply_patch') {
+          paths.push(...extractPatchPaths(patch));
+        }
+      }
+    }
+  }
+
+  return dedupeStable(paths);
+}
+
+function extractPatchPaths(toolInput: unknown): string[] {
+  const input = maybeParseObject(toolInput);
+  if (!input) {
+    return typeof toolInput === 'string' ? parsePatchFiles(toolInput) : [];
+  }
+
+  const patches: string[] = [];
+  const patch = normalizePathValue(input.patch);
+  if (patch) {
+    patches.push(patch);
+  }
+
+  const edits = input.edits;
+  if (Array.isArray(edits)) {
+    for (const edit of edits) {
+      if (typeof edit === 'string') {
+        patches.push(edit);
+        continue;
+      }
+      if (!edit || typeof edit !== 'object') {
+        continue;
+      }
+      const record = edit as Record<string, unknown>;
+      const nestedPatch = normalizePathValue(record.patch);
+      if (nestedPatch) {
+        patches.push(nestedPatch);
+      }
+    }
+  }
+
+  return dedupeStable(patches.flatMap(parsePatchFiles));
+}
+
+function parsePatchFiles(patch: string): string[] {
+  const files: string[] = [];
+  for (const line of patch.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('*** Update File: ')) {
+      files.push(trimmed.replace('*** Update File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Add File: ')) {
+      files.push(trimmed.replace('*** Add File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Delete File: ')) {
+      files.push(trimmed.replace('*** Delete File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Move to: ')) {
+      files.push(trimmed.replace('*** Move to: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('+++ ')) {
+      const filePath = trimmed.replace('+++ ', '').replace(/^b\//, '').trim();
+      if (filePath && filePath !== '/dev/null') {
+        files.push(filePath);
+      }
+    }
+  }
+  return dedupeStable(files);
+}
+
+function dedupeStable(values: string[]): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    deduped.push(value);
+  }
+  return deduped;
+}
+
+function sanitizeObservationFiles(
+  observations: ParsedObservation[],
+  fileEvidence: ObservationFileEvidence
+): ParsedObservation[] {
+  return observations.map(obs => ({
+    ...obs,
+    files_read: mergeFileLists(fileEvidence.files_read, obs.files_read),
+    files_modified: fileEvidence.files_modified,
+  }));
+}
+
+function mergeFileLists(primary: string[], secondary: string[]): string[] {
+  return dedupeStable([...primary, ...secondary]);
+}
+
+export interface ResponseContext {
+  project: string;
+  promptNumber: number;
+  pendingAgentId: string | null;
+  pendingAgentType: string | null;
+}
+
+export function snapshotResponseContext(session: ActiveSession): ResponseContext {
+  return {
+    project: session.project,
+    promptNumber: session.lastPromptNumber,
+    pendingAgentId: session.pendingAgentId ?? null,
+    pendingAgentType: session.pendingAgentType ?? null,
+  };
+}
 
 /**
- * Consecutive non-XML observer outputs tolerated before we kill and respawn the
- * SDK session (plan-11, #2485). Idle and prose both count; poisoned triggers an
- * immediate respawn regardless of the count.
+ * An accepted reply proves the conversation fits and the provider is alive, so
+ * the overflow and stall debts reset — but only when the reply answered queued
+ * work. The init prompt is answered on every fresh generation, so letting it
+ * reset the debt meant an oversized message or a too-small budget went
+ * init -> reset -> recycle -> restart forever and never reached the exhausted
+ * pause (#4066). With the Claude feed paced to one unanswered prompt,
+ * lastGeneratorSource names the prompt this reply answers.
  */
-export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
+function clearDebtForAnsweredWork(session: ActiveSession): void {
+  if (session.lastGeneratorSource === 'init') return;
+  session.consecutiveContextOverflows = 0;
+  session.consecutiveResponseStalls = 0;
+}
 
 export async function processAgentResponse(
   text: string,
@@ -34,12 +305,25 @@ export async function processAgentResponse(
   originalTimestamp: number | null,
   agentName: string,
   projectRoot?: string,
-  modelId?: string
+  modelId?: string,
+  responseContext?: ResponseContext
 ): Promise<void> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
+  const context = responseContext ?? snapshotResponseContext(session);
 
-  if (text) {
+  // Classify rejections BEFORE growing the window. "Prompt is too long", quota
+  // prose and auth prose are refusals, not conversational turns; appending them
+  // makes the next request strictly larger than the one that just failed, which
+  // is how an overflowed session could never recover on its own (#3800).
+  const isRejectionProse =
+    !!text &&
+    (isContextOverflowObserverOutput(text) ||
+      isQuotaLimitedObserverOutput(text) ||
+      isAuthFailureObserverOutput(text) ||
+      isTransportFailureObserverOutput(text));
+
+  if (text && !isRejectionProse) {
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
@@ -53,62 +337,125 @@ export async function processAgentResponse(
     'claude';
 
   if (!parsed.valid) {
-    // Classify the non-XML output so a dropped batch is VISIBLE, not silent
-    // (plan-11, #2485). Attach a preview for diagnostics.
+    // The conversation filled up. Retire it and start a fresh generation
+    // seeded with this session's own observations, rather than re-queueing into
+    // a conversation that can only keep growing.
+    if (isContextOverflowObserverOutput(text)) {
+      await recycleObserverConversation(
+        session,
+        sessionManager,
+        worker,
+        'refused',
+        `${agentName} refused the prompt as too long: ${previewOutput(text)}`,
+      );
+      return;
+    }
+
+    if (isQuotaLimitedObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'quota:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
+
+    if (isAuthFailureObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'auth:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      // /api/health's ai.lastInteraction: the observer is signed out and will
+      // keep producing nothing until re-auth, so say so instead of "ok".
+      worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
+      logger.error('PARSER', `${agentName} authentication failed; run /login to preserve queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        remediation: '/login',
+        preview: previewOutput(text),
+      });
+      return;
+    }
+
+    // A response that is the child's OWN transport/API failure is not the
+    // observer declining to say anything — it is the observer never having
+    // run. Preserve the batch like the quota and auth cases above; confirming
+    // it here would turn a transient network fault into permanent data loss
+    // (#3752).
+    if (isTransportFailureObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'transport:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      logger.error('PARSER', `${agentName} could not reach the provider; queued batch preserved for retry`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'transport',
+        preview: previewOutput(text),
+      });
+      return;
+    }
+
+    // Classify the non-XML output so a dropped batch is visible, not silent.
+    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
+    // any respawn debt from repeated skip acknowledgements.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
+    session.consecutiveInvalidOutputs = 0;
+    // The overflow/quota/auth rejections returned above, so reaching here means
+    // the provider accepted this prompt and answered it. That is proof the
+    // conversation fits, whether or not the answer parsed — so the recycle
+    // counter resets here too. Resetting only on a valid parse let a generation
+    // that answered "idle" twice in a row trip the exhausted branch and wedge.
+    // An init reply does not count (#4066).
+    clearDebtForAnsweredWork(session);
 
-    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
-
+    // consecutiveInvalidOutputs is deliberately always 0 here (see worker-types),
+    // so logging it read as "the breaker is fine" on every rejection and hid
+    // #3800 for a full day of failures. Report the counter that can actually be
+    // non-zero instead.
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      consecutiveContextOverflows: session.consecutiveContextOverflows,
     });
 
-    // Recover from poison (plan-11, #2485): a poisoned closure string means the
-    // SDK session is wedged and will keep emitting garbage — respawn immediately.
-    // For idle/prose, only respawn after N consecutive invalid outputs so we
-    // don't churn the session on benign single-batch misses.
-    const mustRespawn =
-      outputClass === 'poisoned' ||
-      session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;
-
-    if (mustRespawn) {
-      logger.error('SESSION', `${agentName} session poisoned — killing and respawning, pending messages preserved`, {
-        sessionId: session.sessionDbId,
-        outputClass,
-        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-        threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
-      });
-      // Respawn-gated telemetry ONLY (never per invalid output — volume).
-      // Closed enums and counts; the raw model output never leaves the box.
-      captureEvent('session_compressed', {
-        outcome: 'invalid_output',
-        invalid_output_class: outputClass,
-        consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
-        respawn_triggered: true,
-        provider: providerName,
-        model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
-        ide: session.platformSource,
-        hook: session.lastGeneratorSource,
-      });
-      await sessionManager.respawnPoisonedSession(session.sessionDbId);
-      return;
-    }
-
     // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried
-    // until the restart guard fires or the provider quota is exhausted.
+    // creates an observer loop where the same low-signal batch is retried.
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
-  // accumulate toward a respawn across a healthy session.
+  // accumulate toward a respawn across a healthy session, and clear the overflow
+  // counter so recycles only ever trip on *consecutive* failures (not on an
+  // init reply, #4066).
   session.consecutiveInvalidOutputs = 0;
+  clearDebtForAnsweredWork(session);
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
@@ -122,63 +469,49 @@ export async function processAgentResponse(
   }
 
   const { observations, summary } = parsed;
-  const summaryForStore = normalizeSummaryForStorage(summary);
-
-  // Verify before persist (plan-11, #2574): the summarizer can fabricate a
-  // nonexistent commit hash while keeping files_modified accurate, poisoning
-  // future context injection. Cross-check any emitted commit hash against
-  // ground truth via `git cat-file -e` in the session's repo and strip
-  // fabricated hashes from the persisted text. projectRoot carries the cwd of
-  // the most recently observed tool-use.
-  let fabricatedCount = 0;
-  if (summaryForStore) {
-    const { fabricated } = verifyCommitHashesInText(
-      [
-        summaryForStore.request,
-        summaryForStore.investigated,
-        summaryForStore.learned,
-        summaryForStore.completed,
-        summaryForStore.next_steps,
-        summaryForStore.notes,
-      ],
-      projectRoot,
-      session.contentSessionId
-    );
-
-    fabricatedCount = fabricated.length;
-
-    if (fabricated.length > 0) {
-      logger.warn('PARSER', `${agentName} summary referenced fabricated commit hash(es); flagging before persist`, {
-        sessionId: session.sessionDbId,
-        fabricated,
-        cwd: projectRoot ?? '(none)',
-      });
-      stripFabricatedHashesFromSummary(summaryForStore, fabricated);
-    }
-  }
+  const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
+  const fileEvidence = extractObservationFileEvidence(claimedMessages);
+  const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
+  // Include claimed-message file evidence even for summary-only responses
+  // (no parsed observations), otherwise files_read/files_edited persist as [].
+  const summaryForStore = attachObservationFilesToSummary(
+    normalizeSummaryForStorage(summary),
+    [
+      {
+        files_read: fileEvidence.files_read,
+        files_modified: fileEvidence.files_modified,
+      },
+      ...sanitizedObservations,
+    ]
+  );
 
   const sessionStore = dbManager.getSessionStore();
-  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort());
+  // ensure registers only when the stored id is NULL. Persist against the
+  // registered identity so a later turn's fresh SDK session_id cannot FK-miss
+  // observations/summaries that already hang off the first id.
+  const registeredMemorySessionId =
+    sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort())
+    || session.memorySessionId;
 
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${registeredMemorySessionId} | obsCount=${sanitizedObservations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: registeredMemorySessionId
   });
 
-  const labeledObservations = observations.map(obs => ({
+  const labeledObservations = sanitizedObservations.map(obs => ({
     ...obs,
-    agent_type: session.pendingAgentType ?? null,
-    agent_id: session.pendingAgentId ?? null
+    agent_type: context.pendingAgentType,
+    agent_id: context.pendingAgentId
   }));
 
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
     result = sessionStore.storeObservations(
-      session.memorySessionId,
-      session.project,
+      registeredMemorySessionId,
+      context.project,
       labeledObservations,
       summaryForStore,
-      session.lastPromptNumber,
+      context.promptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
       modelId
@@ -188,12 +521,58 @@ export async function processAgentResponse(
     session.pendingAgentType = null;
   }
 
-  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${registeredMemorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: registeredMemorySessionId
   });
 
+  // The provider that produced THIS response (the session's), not whichever
+  // provider the settings name right now.
+  worker?.recordAiInteraction?.({ success: true, provider: providerName });
+
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Late link: point the durable tool_uses rows this batch was generated from
+  // at the observation that now summarizes them. It has to happen here and not
+  // at ingest — the observation did not exist yet, and neither did
+  // memorySessionId. The batch's FIRST observation id owns the link (see
+  // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
+  // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
+  // per-call join stays (content_session_id, tool_use_id).
+  //
+  // Never fatal: a failed link costs a back-reference, not an observation.
+  const claimedToolUseIds = Array.from(new Set(
+    claimedMessages
+      .map(message => message.toolUseId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  ));
+  if (claimedToolUseIds.length > 0 && result.observationIds.length > 0) {
+    try {
+      const linked = sessionStore.linkToolUsesToObservation({
+        contentSessionId: session.contentSessionId,
+        toolUseIds: claimedToolUseIds,
+        observationId: result.observationIds[0],
+        memorySessionId: session.memorySessionId,
+      });
+      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${result.observationIds[0]}`, {
+        sessionId: session.sessionDbId
+      });
+    } catch (error) {
+      logger.warn('DB', 'tool_uses observation link failed', {
+        sessionId: session.sessionDbId,
+        observationId: result.observationIds[0],
+      }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  // A completed store proves the observer pipeline works end-to-end — clear
+  // the failure streak in the observer-health ledger, and release any quota
+  // breaker so a re-probe that succeeds restores full speed at once rather
+  // than waiting out the remaining cooldown (#3634).
+  recordObserverSuccess();
+  if (session.currentProvider) {
+    clearQuotaCooldown(session.currentProvider);
+  }
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
   // estimate — providers leave it null when the API gave no usage split).
@@ -220,13 +599,14 @@ export async function processAgentResponse(
     // as "no model" in PostHog — stamp 'unknown' instead.
     model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
     ide: session.platformSource,
+    // Observed-session identity (NOT the observer): the model the user's IDE
+    // session ran and its billing posture, stamped by the Stop hook. Omitted
+    // when unknown — the rollup fills 'unknown' at flush time.
+    observed_model: session.observedModel,
+    observed_billing: session.observedBilling,
     hook: session.lastGeneratorSource,
     endpoint_class: session.endpointClass,
     compression_ms: compressionMs,
-    // Fabrication signals live HERE (not at the ClaudeProvider merge) so they
-    // flow through all three emit paths: immediate, deferred, and no-result.
-    fabrication_detected: fabricatedCount > 0,
-    fabricated_count: fabricatedCount,
     observation_type: labeledObservations.length > 0 ? dominantType : undefined,
     obs_type_bugfix: typeCounts.bugfix,
     obs_type_discovery: typeCounts.discovery,
@@ -243,11 +623,11 @@ export async function processAgentResponse(
     // still-stashed event here means the prior turn never produced a result
     // (abort/kill): ship it without token fields rather than lose it.
     if (session.pendingCompressionEvent) {
-      captureEvent('session_compressed', session.pendingCompressionEvent);
+      telemetryBuffer.record('session_compressed', session.sessionDbId, session.pendingCompressionEvent);
     }
     session.pendingCompressionEvent = compressionProps;
   } else {
-    captureEvent('session_compressed', {
+    telemetryBuffer.record('session_compressed', session.sessionDbId, {
       ...compressionProps,
       tokens_input: usage?.input,
       tokens_output: usage?.output,
@@ -261,16 +641,6 @@ export async function processAgentResponse(
     });
   }
 
-  if (summary && (summary.skipped || session.lastSummaryStored)) {
-    await ingestSummary({
-      kind: 'parsed',
-      sessionDbId: session.sessionDbId,
-      messageId: -1,
-      contentSessionId: session.contentSessionId,
-      parsed: summary,
-    });
-  }
-
   await sessionManager.confirmClaimedMessages(session.sessionDbId);
   session.earliestPendingTimestamp = null;
   worker?.broadcastProcessingStatus?.();
@@ -278,17 +648,29 @@ export async function processAgentResponse(
   void notifyTelegram({
     observations: labeledObservations,
     observationIds: result.observationIds,
-    project: session.project,
+    project: context.project,
     memorySessionId: session.memorySessionId,
   });
 
+  void notifyGrokBotAwareness({
+    observations: labeledObservations,
+    observationIds: result.observationIds,
+    project: context.project,
+    memorySessionId: session.memorySessionId,
+    agentId: context.pendingAgentId,
+  });
+
+  // Growing Grok Bot INDEX: any new observation (any project) can fill a
+  // thin seat diary via the house fallback, so refresh all mapped seats.
+  notifyGrokBotIndex();
+
   await syncAndBroadcastObservations(
-    observations,
+    labeledObservations,
     result,
     session,
+    context,
     dbManager,
     worker,
-    discoveryTokens,
     agentName,
     projectRoot
   );
@@ -298,11 +680,15 @@ export async function processAgentResponse(
     summaryForStore,
     result,
     session,
+    context,
     dbManager,
     worker,
-    discoveryTokens,
     agentName
   );
+
+  if (result.summaryId) {
+    sessionManager.deliverRequestedSessionWrapup?.(session.sessionDbId);
+  }
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {
@@ -312,6 +698,8 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
   completed: string;
   next_steps: string;
   notes: string | null;
+  files_read: string[];
+  files_edited: string[];
 } | null {
   if (!summary) return null;
   if (summary.skipped) return null;
@@ -322,53 +710,65 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
     learned: summary.learned || '',
     completed: summary.completed || '',
     next_steps: summary.next_steps || '',
-    notes: summary.notes
+    notes: summary.notes,
+    files_read: [],
+    files_edited: [],
   };
 }
 
-type StorableSummary = {
+export function attachObservationFilesToSummary(
+  summary: {
+    request: string;
+    investigated: string;
+    learned: string;
+    completed: string;
+    next_steps: string;
+    notes: string | null;
+    files_read?: string[];
+    files_edited?: string[];
+  } | null,
+  observations: Array<{ files_read?: string[] | null; files_modified?: string[] | null }>
+): {
   request: string;
   investigated: string;
   learned: string;
   completed: string;
   next_steps: string;
   notes: string | null;
-};
-
-/**
- * Replace each fabricated commit hash in the summary's text fields with a
- * `[unverified commit]` marker so the false claim is neither persisted nor
- * silently dropped — it is flagged in place (plan-11, #2574). Mutates in place.
- */
-function stripFabricatedHashesFromSummary(summary: StorableSummary, fabricated: string[]): void {
-  if (fabricated.length === 0) return;
-  const replace = (value: string | null): string | null => {
-    if (!value) return value;
-    let next = value;
-    for (const hash of fabricated) {
-      // Word-boundary replace, case-insensitive: hashes were lowercased on extraction.
-      next = next.replace(new RegExp(`\\b${hash}\\b`, 'gi'), '[unverified commit]');
-    }
-    return next;
+  files_read: string[];
+  files_edited: string[];
+} | null {
+  if (!summary) return null;
+  const filesRead = dedupeStable([
+    ...(summary.files_read ?? []),
+    ...observations.flatMap((obs) => obs.files_read ?? []),
+  ]);
+  const filesEdited = dedupeStable([
+    ...(summary.files_edited ?? []),
+    ...observations.flatMap((obs) => obs.files_modified ?? []),
+  ]);
+  return {
+    ...summary,
+    files_read: filesRead,
+    files_edited: filesEdited,
   };
-  summary.request = replace(summary.request) ?? '';
-  summary.investigated = replace(summary.investigated) ?? '';
-  summary.learned = replace(summary.learned) ?? '';
-  summary.completed = replace(summary.completed) ?? '';
-  summary.next_steps = replace(summary.next_steps) ?? '';
-  summary.notes = replace(summary.notes);
 }
 
 async function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
   session: ActiveSession,
+  context: ResponseContext,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
-  discoveryTokens: number,
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
+  const memorySessionId = session.memorySessionId;
+  if (!memorySessionId) {
+    return;
+  }
+
   // Dedupe observation IDs before sync/broadcast: storeObservations may collapse
   // multiple parsed observations onto the same row via content_hash, producing
   // duplicate IDs. Syncing them 1:1 triggers repeated Chroma "IDs already exist"
@@ -390,12 +790,12 @@ async function syncAndBroadcastObservations(
 
     dbManager.getChromaSync()?.syncObservation(
       obsId,
-      session.contentSessionId,
-      session.project,
+      memorySessionId,
+      context.project,
       obs,
-      session.lastPromptNumber,
+      context.promptNumber,
       result.createdAtEpoch,
-      discoveryTokens
+      session.platformSource
     ).then(() => {
       const chromaDuration = Date.now() - chromaStart;
       logger.debug('CHROMA', 'Observation synced', {
@@ -412,6 +812,8 @@ async function syncAndBroadcastObservations(
       }, error);
     });
 
+    dbManager.getCloudSync()?.notify();
+
     broadcastObservation(worker, {
       id: obsId,
       memory_session_id: session.memorySessionId,
@@ -426,8 +828,8 @@ async function syncAndBroadcastObservations(
       concepts: JSON.stringify(obs.concepts || []),
       files_read: JSON.stringify(obs.files_read || []),
       files_modified: JSON.stringify(obs.files_modified || []),
-      project: session.project,
-      prompt_number: session.lastPromptNumber,
+      project: context.project,
+      prompt_number: context.promptNumber,
       created_at_epoch: result.createdAtEpoch
     });
   }
@@ -446,11 +848,11 @@ async function syncAndBroadcastObservations(
     if (allFilePaths.length > 0) {
       updateFolderClaudeMdFiles(
         allFilePaths,
-        session.project,
+        context.project,
         getWorkerPort(),
         projectRoot
       ).catch(error => {
-        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
+        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: context.project }, error as Error);
       });
     }
   }
@@ -461,12 +863,16 @@ async function syncAndBroadcastSummary(
   summaryForStore: { request: string; investigated: string; learned: string; completed: string; next_steps: string; notes: string | null } | null,
   result: StorageResult,
   session: ActiveSession,
+  context: ResponseContext,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
-  discoveryTokens: number,
   agentName: string
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
+    return;
+  }
+  const memorySessionId = session.memorySessionId;
+  if (!memorySessionId) {
     return;
   }
 
@@ -474,12 +880,12 @@ async function syncAndBroadcastSummary(
 
   dbManager.getChromaSync()?.syncSummary(
     result.summaryId,
-    session.contentSessionId,
-    session.project,
+    memorySessionId,
+    context.project,
     summaryForStore,
-    session.lastPromptNumber,
+    context.promptNumber,
     result.createdAtEpoch,
-    discoveryTokens
+    session.platformSource
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {
@@ -494,6 +900,8 @@ async function syncAndBroadcastSummary(
     }, error);
   });
 
+  dbManager.getCloudSync()?.notify();
+
   broadcastSummary(worker, {
     id: result.summaryId,
     session_id: session.contentSessionId,
@@ -504,12 +912,12 @@ async function syncAndBroadcastSummary(
     completed: summaryForStore!.completed,
     next_steps: summaryForStore!.next_steps,
     notes: summaryForStore!.notes,
-    project: session.project,
-    prompt_number: session.lastPromptNumber,
+    project: context.project,
+    prompt_number: context.promptNumber,
     created_at_epoch: result.createdAtEpoch
   });
 
-  updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+  updateCursorContextForProject(context.project).catch(error => {
+    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: context.project }, error as Error);
   });
 }

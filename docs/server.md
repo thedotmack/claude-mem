@@ -41,7 +41,7 @@ that:
    live in Valkey, persisted by AOF.
 
 The legacy `claude-mem worker` runtime is **not** spawned in Docker. The
-container entrypoint runs `bun server-beta-service.cjs --daemon` (or
+container entrypoint runs `bun server-service.cjs --daemon` (or
 `worker start`) and never `bun worker-service.cjs`.
 
 ## Required environment variables
@@ -58,8 +58,10 @@ the following are missing or invalid in Docker:
 | `CLAUDE_MEM_AUTH_MODE`            | Always   | Must NOT be `local-dev` in Docker.                           |
 | `CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS` | Docker | Must NOT be `1`/`true` in Docker.                            |
 | `CLAUDE_MEM_GENERATION_DISABLED`  | Optional | Set to `true` on the HTTP service when running a separate worker. |
-| `CLAUDE_MEM_SERVER_PROVIDER`      | Worker   | One of `claude`, `gemini`, `openrouter`. Worker only.        |
+| `CLAUDE_MEM_SERVER_PROVIDER`      | Worker   | One of `claude`, `gemini`, `openrouter`, `custom`. Worker only. |
+| `CLAUDE_MEM_CUSTOM_PROVIDER_MODULE` | custom | Absolute path to a module exporting `createProvider(helpers)`. It runs with the worker's credentials; see the hosted-server docs. |
 | `ANTHROPIC_API_KEY` (or alt)      | Worker   | Required by the chosen provider.                             |
+| `CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY` | Optional | Jobs per lane in parallel (default 1, max 64). Applies to both the `event` and `summary` lanes, so N means up to 2N provider calls in flight. |
 
 Local development can still use SQLite + `local-dev` auth bypass **outside
 Docker only**. Deployable mode must use the table above.
@@ -152,7 +154,7 @@ docker compose down -v
 
 ## End-to-end test
 
-`scripts/e2e-server-beta-docker.sh` brings up the full stack and verifies:
+`scripts/e2e-server-docker.sh` brings up the full stack and verifies:
 
 * `POST /v1/events?wait=true` returns a `generationJob` descriptor.
 * Restart of `claude-mem-server` and `claude-mem-worker` mid-stream does

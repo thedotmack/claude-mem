@@ -5,6 +5,7 @@
  */
 
 import os from 'os';
+import { logger } from '../../utils/logger.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion =
@@ -25,6 +26,17 @@ export function getTelemetryApiKey(): string {
 
 export function getTelemetryHost(): string {
   return process.env.CLAUDE_MEM_TELEMETRY_HOST || DEFAULT_TELEMETRY_HOST;
+}
+
+/**
+ * Epoch columns hold mixed units historically: a few hundred legacy rows were
+ * written in seconds, everything since in milliseconds. Normalize to ms in SQL
+ * before any date math (10^12 ms ≈ 2001, 10^12 s ≈ year 33658 — no plausible
+ * value is ambiguous). Must be applied INSIDE aggregate functions like MIN,
+ * never outside.
+ */
+export function asMs(col: string): string {
+  return `CASE WHEN ${col} < 1000000000000 THEN ${col} * 1000 ELSE ${col} END`;
 }
 
 /**
@@ -79,24 +91,13 @@ export function buildPersonSet(
   return set;
 }
 
-/**
- * Kernel release (`os.release()`): "10.0.22631" distinguishes Win10/Win11
- * builds, Darwin major maps to the macOS release, Linux gives the kernel.
- * System metadata only — never user data.
- */
-function detectOsVersion(): string {
-  try {
-    return os.release();
-  } catch {
-    return 'unknown';
-  }
-}
-
 function detectWsl(): boolean {
   if (process.platform !== 'linux') return false;
   try {
     return Boolean(process.env.WSL_DISTRO_NAME) || os.release().toLowerCase().includes('microsoft');
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: WSL detection failed; reporting is_wsl=false', undefined, err);
     return false;
   }
 }
@@ -105,7 +106,10 @@ export function buildBaseProperties(): Record<string, unknown> {
   return {
     version: packageVersion,
     os: process.platform,
-    os_version: detectOsVersion(),
+    // Kernel release: "10.0.22631" distinguishes Win10/Win11 builds, Darwin
+    // major maps to the macOS release, Linux gives the kernel. os.release()
+    // does not throw. System metadata only — never user data.
+    os_version: os.release(),
     is_wsl: detectWsl(),
     arch: process.arch,
     runtime: process.versions.bun ? 'bun' : 'node',

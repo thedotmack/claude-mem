@@ -3,6 +3,7 @@
 import type { JsonObject, PostgresQueryable } from './utils.js';
 import { assertProjectOwnership, deterministicKey, newId, queryOne, toDate, toEpoch, toJsonObject } from './utils.js';
 import type { PostgresAgentEvent } from './agent-events.js';
+import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 
 export interface PostgresServerSession {
   id: string;
@@ -59,7 +60,11 @@ export class PostgresServerSessionsRepository {
   }): Promise<PostgresServerSession> {
     await assertProjectOwnership(this.client, input.projectId, input.teamId);
     const id = input.id ?? newId();
-    const idempotencyKey = buildServerSessionIdempotencyKey(input);
+    const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+    const idempotencyKey = buildServerSessionIdempotencyKey({
+      ...input,
+      platformSource,
+    });
     const row = await queryOne<ServerSessionRow>(
       this.client,
       `
@@ -88,7 +93,7 @@ export class PostgresServerSessionsRepository {
         input.contentSessionId ?? null,
         input.agentId ?? null,
         input.agentType ?? null,
-        input.platformSource ?? null,
+        platformSource,
         input.generationStatus ?? 'idle',
         JSON.stringify(input.metadata ?? {})
       ]
@@ -125,14 +130,26 @@ export class PostgresServerSessionsRepository {
     externalSessionId: string;
     projectId: string;
     teamId: string;
+    platformSource?: string | null;
   }): Promise<PostgresServerSession | null> {
+    const hasPlatformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource');
+    const platformSource = hasPlatformScope
+      ? normalizePlatformSourceOrNull(input.platformSource)
+      : null;
     const row = await queryOne<ServerSessionRow>(
       this.client,
       `
         SELECT * FROM server_sessions
         WHERE external_session_id = $1 AND project_id = $2 AND team_id = $3
+          AND (
+            $4::boolean = false
+            OR ($5::text IS NULL AND platform_source IS NULL)
+            OR platform_source = $5
+          )
+        ORDER BY started_at DESC
+        LIMIT 1
       `,
-      [input.externalSessionId, input.projectId, input.teamId]
+      [input.externalSessionId, input.projectId, input.teamId, hasPlatformScope, platformSource]
     );
     return row ? mapServerSessionRow(row) : null;
   }
@@ -144,16 +161,26 @@ export class PostgresServerSessionsRepository {
     contentSessionId: string;
     projectId: string;
     teamId: string;
+    platformSource?: string | null;
   }): Promise<string | null> {
+    const hasPlatformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource');
+    const platformSource = hasPlatformScope
+      ? normalizePlatformSourceOrNull(input.platformSource)
+      : null;
     const row = await queryOne<{ id: string }>(
       this.client,
       `
         SELECT id FROM server_sessions
         WHERE content_session_id = $1 AND project_id = $2 AND team_id = $3
+          AND (
+            $4::boolean = false
+            OR ($5::text IS NULL AND platform_source IS NULL)
+            OR platform_source = $5
+          )
         ORDER BY started_at DESC
         LIMIT 1
       `,
-      [input.contentSessionId, input.projectId, input.teamId]
+      [input.contentSessionId, input.projectId, input.teamId, hasPlatformScope, platformSource]
     );
     return row ? row.id : null;
   }
@@ -247,9 +274,61 @@ export class PostgresServerSessionsRepository {
   }
 
   /**
-   * List events tied to this server_session that do NOT yet have a completed
-   * observation_generation_jobs row. Tenant-scoped: rows are filtered by
-   * (project_id, team_id) before any join.
+   * Every event of the session, in order — the input a SESSION SUMMARY needs.
+   * Tenant-scoped: rows are filtered by (project_id, team_id).
+   *
+   * `listUnprocessedEvents` below deliberately hides the events the per-event
+   * lane has already collapsed. That is the right set for "what still needs an
+   * observation" and the WRONG set for "describe the arc of this session": the
+   * per-event lane normally finishes first, so the summary arrives at an empty
+   * list and the model is asked to summarise nothing.
+   *
+   * Bounded by count at BOTH ends, never only at the head: a session longer
+   * than 2 x `eventsPerEnd` returns its first and last `eventsPerEnd` events,
+   * so the summary always sees the opening (the goal) and the close (the
+   * outcome and what was left pending). The count bound only caps memory; the
+   * caller's byte budget (`capSummaryInput`) does the real sizing.
+   */
+  async listSessionEvents(input: {
+    serverSessionId: string;
+    projectId: string;
+    teamId: string;
+    eventsPerEnd?: number;
+  }): Promise<PostgresAgentEvent[]> {
+    const eventsPerEnd = input.eventsPerEnd ?? 500;
+    const result = await this.client.query<UnprocessedEventRow>(
+      `
+        SELECT e.*
+        FROM agent_events e
+        WHERE e.project_id = $2
+          AND e.team_id = $3
+          AND e.id IN (
+            (SELECT head.id FROM agent_events head
+              WHERE head.server_session_id = $1 AND head.project_id = $2 AND head.team_id = $3
+              ORDER BY head.occurred_at ASC, head.id ASC
+              LIMIT $4)
+            UNION
+            (SELECT tail.id FROM agent_events tail
+              WHERE tail.server_session_id = $1 AND tail.project_id = $2 AND tail.team_id = $3
+              ORDER BY tail.occurred_at DESC, tail.id DESC
+              LIMIT $4)
+          )
+        ORDER BY e.occurred_at ASC, e.id ASC
+      `,
+      [input.serverSessionId, input.projectId, input.teamId, eventsPerEnd]
+    );
+    return result.rows.map(mapUnprocessedEventRow);
+  }
+
+  /**
+   * The events that still need a per-event observation: those tied to this
+   * server_session that do NOT yet have a completed observation_generation_jobs
+   * row. Tenant-scoped: rows are filtered by (project_id, team_id) before any
+   * join.
+   *
+   * NOT the input for a session summary — see `listSessionEvents` above. Using
+   * this one there is what fed the summary an empty list once the per-event lane
+   * had caught up, which is normally before the session even ends.
    */
   async listUnprocessedEvents(input: {
     serverSessionId: string;
@@ -327,13 +406,19 @@ export function buildServerSessionIdempotencyKey(input: {
   agentType?: string | null;
   platformSource?: string | null;
 }): string | null {
+  const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+
   if (input.externalSessionId) {
-    return `server_session:v1:${deterministicKey([
+    const parts = [
       input.teamId,
       input.projectId,
       'external',
-      input.externalSessionId
-    ])}`;
+    ];
+    if (platformSource) {
+      parts.push(platformSource);
+    }
+    parts.push(input.externalSessionId);
+    return `server_session:v1:${deterministicKey(parts)}`;
   }
 
   if (input.contentSessionId) {
@@ -341,18 +426,18 @@ export function buildServerSessionIdempotencyKey(input: {
       input.teamId,
       input.projectId,
       'content',
-      input.platformSource ?? null,
+      platformSource,
       input.agentId ?? null,
       input.contentSessionId
     ])}`;
   }
 
-  if (input.agentId && input.platformSource) {
+  if (input.agentId && platformSource) {
     return `server_session:v1:${deterministicKey([
       input.teamId,
       input.projectId,
       'agent',
-      input.platformSource,
+      platformSource,
       input.agentId,
       input.agentType ?? null
     ])}`;

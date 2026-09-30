@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
+import { parseJsonWithBom } from '../shared/atomic-json.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -14,11 +15,13 @@ export enum LogLevel {
 
 export type Component =
   | 'AGENTS_MD'
+  | 'AWARENESS'
   | 'BRANCH'
   | 'CHROMA'
   | 'CHROMA_MCP'
   | 'CHROMA_SYNC'
   | 'CLAUDE_MD'
+  | 'CLOUD_SYNC'
   | 'CONFIG'
   | 'CONSOLE'
   | 'CURSOR'
@@ -27,6 +30,7 @@ export type Component =
   | 'ENV'
   | 'FOLDER_INDEX'
   | 'GIT'
+  | 'GROK_INDEX'
   | 'HOOK'
   | 'HTTP'
   | 'IMPORT'
@@ -38,6 +42,7 @@ export type Component =
   | 'PROCESS'
   | 'PROJECT_NAME'
   | 'QUEUE'
+  | 'REDACT'
   | 'SDK'
   | 'SDK_SPAWN'
   | 'SEARCH'
@@ -45,6 +50,8 @@ export type Component =
   | 'SESSION'
   | 'SETTINGS'
   | 'SHUTDOWN'
+  | 'SYNC_APPLY'
+  | 'SYNC_CLIENT'
   | 'SYSTEM'
   | 'TELEGRAM'
   | 'TRANSCRIPT'
@@ -58,12 +65,25 @@ interface LogContext {
   [key: string]: any;
 }
 
+/**
+ * Optional error sink. The logger must NEVER import the telemetry client (that
+ * would create an import cycle: telemetry → logger via instrument.ts → ...).
+ * Instead worker/telemetry init injects a sink via logger.setErrorSink(); when
+ * present, logger.error()/logger.failure() route their Error payload through it
+ * (consent + rate-limit + kill-switch all enforced INSIDE the sink, i.e.
+ * captureException). The sink is optional and swallow-all so logging keeps
+ * working with telemetry disabled or uninstalled.
+ */
+export type ErrorSink = (err: unknown, ctx?: Record<string, unknown>) => void;
+let errorSink: ErrorSink | null = null;
+
 
 class Logger {
   private level: LogLevel | null = null;
   private useColor: boolean;
   private logFilePath: string | null = null;
   private logFileInitialized: boolean = false;
+  private logFileDate: string | null = null;
 
   constructor() {
     this.useColor = process.stdout.isTTY ?? false;
@@ -71,8 +91,14 @@ class Logger {
   }
 
   private ensureLogFileInitialized(): void {
-    if (this.logFileInitialized) return;
+    // The date is computed BEFORE the latch is consulted, so a long-lived process rolls onto a new
+    // log file at UTC midnight. Latching on the boolean alone freezes logFilePath at the day the
+    // process started, and the daemon then writes entries stamped with today's date into a file
+    // named for a previous day.
+    const date = new Date().toISOString().split('T')[0];
+    if (this.logFileInitialized && this.logFileDate === date) return;
     this.logFileInitialized = true;
+    this.logFileDate = date;
 
     try {
       const logsDir = paths.logsDir();
@@ -81,7 +107,6 @@ class Logger {
         mkdirSync(logsDir, { recursive: true });
       }
 
-      const date = new Date().toISOString().split('T')[0];
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
     } catch (error: unknown) {
       console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
@@ -95,7 +120,7 @@ class Logger {
         const settingsPath = paths.settings();
         if (existsSync(settingsPath)) {
           const settingsData = readFileSync(settingsPath, 'utf-8');
-          const settings = JSON.parse(settingsData);
+          const settings = parseJsonWithBom<Record<string, any>>(settingsData);
           const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {
@@ -109,12 +134,53 @@ class Logger {
     return this.level;
   }
 
-  correlationId(sessionId: number, observationNum: number): string {
-    return `obs-${sessionId}-${observationNum}`;
-  }
-
-  sessionId(sessionId: number): string {
-    return `session-${sessionId}`;
+  /**
+   * Serialize a value to JSON without ever overflowing the stack.
+   *
+   * `JSON.stringify` recurses through the whole object graph, so a deeply
+   * nested or self-referential payload throws `RangeError: Maximum call stack
+   * size exceeded` — and logging must never crash its caller. This walks the
+   * value to a fixed depth (cheap, bounded stack), replacing anything deeper,
+   * any cycle, or any BigInt with a marker, then stringifies the pruned,
+   * guaranteed-finite result.
+   */
+  private safeStringify(data: unknown, indent?: number, maxDepth = 6): string {
+    const seen = new WeakSet<object>();
+    const prune = (rawValue: unknown, depth: number): unknown => {
+      if (typeof rawValue === 'bigint') return `${rawValue}n`;
+      if (rawValue === null || typeof rawValue !== 'object') return rawValue;
+      // Date, URL, Buffer … define toJSON. Call it once, as JSON.stringify does,
+      // so they log as their JSON form rather than as an empty `{}`.
+      const toJSON = (rawValue as { toJSON?: unknown }).toJSON;
+      const value: unknown = typeof toJSON === 'function' ? toJSON.call(rawValue) : rawValue;
+      if (typeof value === 'bigint') return `${value}n`;
+      if (value === null || typeof value !== 'object') return value;
+      if (seen.has(value)) return '[Circular]';
+      if (depth >= maxDepth) return Array.isArray(value) ? '[Array]' : '[Object]';
+      seen.add(value);
+      try {
+        if (Array.isArray(value)) {
+          return value.map(item => prune(item, depth + 1));
+        }
+        const out: Record<string, unknown> = {};
+        for (const key of Object.keys(value as Record<string, unknown>)) {
+          try {
+            out[key] = prune((value as Record<string, unknown>)[key], depth + 1);
+          } catch {
+            // A throwing getter must not sink the whole log line.
+            out[key] = '[unreadable]';
+          }
+        }
+        return out;
+      } finally {
+        seen.delete(value);
+      }
+    };
+    try {
+      return JSON.stringify(prune(data, 0), null, indent) ?? String(data);
+    } catch {
+      return Array.isArray(data) ? `[${(data as unknown[]).length} items]` : '[unserializable]';
+    }
   }
 
   private formatData(data: any): string {
@@ -137,7 +203,7 @@ class Logger {
       const keys = Object.keys(data);
       if (keys.length === 0) return '{}';
       if (keys.length <= 3) {
-        return JSON.stringify(data);
+        return this.safeStringify(data);
       }
       return `{${keys.length} keys: ${keys.slice(0, 3).join(', ')}...}`;
     }
@@ -152,7 +218,8 @@ class Logger {
     if (typeof toolInput === 'string') {
       try {
         input = JSON.parse(toolInput);
-      } catch (_parseError: unknown) {
+      } catch {
+        // [ANTI-PATTERN IGNORED]: tool_input is often a plain non-JSON string, so parse failure is the expected signal here; recovery is falling back to the raw string, and logging would spam every formatted log line.
         input = toolInput;
       }
     }
@@ -245,11 +312,11 @@ class Logger {
           ? `\n${data.message}\n${data.stack}`
           : ` ${data.message}`;
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
-        try {
-          dataStr = '\n' + JSON.stringify(data, null, 2);
-        } catch {
-          dataStr = ' ' + this.formatData(data);
-        }
+        // Depth-guarded: a deeply nested or self-referential payload would make
+        // a plain JSON.stringify overflow the stack (RangeError), crashing the
+        // caller through the logger. safeStringify prunes to a finite depth and
+        // handles cycles/BigInt, so debug logging can never blow up here.
+        dataStr = '\n' + this.safeStringify(data, 2);
       } else {
         dataStr = ' ' + this.formatData(data);
       }
@@ -259,7 +326,11 @@ class Logger {
     if (context) {
       const { sessionId, memorySessionId, correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
-        const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
+        const pairs = Object.entries(rest).map(([k, v]) => {
+          if (typeof v !== 'object' || v === null || v instanceof Error || v instanceof Date) return `${k}=${v}`;
+          // safeStringify never throws: cycles, BigInt and deep nesting render as markers.
+          return `${k}=${Array.isArray(v) ? this.safeStringify(v) : this.formatData(v)}`;
+        });
         contextStr = ` {${pairs.join(', ')}}`;
       }
     }
@@ -270,10 +341,12 @@ class Logger {
       try {
         appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
       } catch (error: unknown) {
+        // [ANTI-PATTERN IGNORED]: this is the logger's own file-write failure path — calling the logger here would recurse into the same failing appendFileSync, so the error is surfaced via emitDiagnostic to real stderr instead.
         // DIAGNOSTIC: route through hook-io so the message bypasses the Phase 2
         // hook stderr buffer (#2292). Outside the hook context emitDiagnostic
         // writes straight to real stderr, so non-hook callers are unaffected.
-        emitDiagnostic(`[LOGGER] Failed to write to log file: ${error instanceof Error ? error.message : String(error)}\n`);
+        const err = error instanceof Error ? error : new Error(String(error));
+        emitDiagnostic(`[LOGGER] Failed to write to log file: ${err.message}\n${err.stack ?? ''}\n`);
       }
     } else {
       // DIAGNOSTIC: see note above.
@@ -293,8 +366,40 @@ class Logger {
     this.log(LogLevel.WARN, component, message, context, data);
   }
 
+  /**
+   * Installs (or clears, with null) the optional error sink. Called once by
+   * worker/telemetry init to bridge logged errors into captureException without
+   * the logger importing telemetry (no import cycle). Never throws.
+   */
+  setErrorSink(sink: ErrorSink | null): void {
+    errorSink = sink;
+  }
+
   error(component: Component, message: string, context?: LogContext, data?: any): void {
     this.log(LogLevel.ERROR, component, message, context, data);
+    this.routeErrorToSink(message, context, data);
+  }
+
+  /**
+   * Routes a logged Error through the optional error sink (captureException).
+   * Only fires when `data` is an actual Error so we never ship arbitrary log
+   * payloads as exceptions. Swallow-all: the sink failing (or being absent)
+   * must never break logging. `failure()` delegates to `error()`, so it is
+   * covered too — but it passes the same `data` object, so we de-dupe by only
+   * routing from the single `error()` entry point.
+   */
+  private routeErrorToSink(message: string, context?: LogContext, data?: any): void {
+    try {
+      if (!errorSink || !(data instanceof Error)) return;
+      // Pass the message as context so the sink can fingerprint on it too; the
+      // sink (captureException) scrubs everything through error-scrub /
+      // scrubProperties, so an unsafe message here cannot leak — but `message`
+      // is not whitelisted, so it is dropped by scrubProperties anyway. We pass
+      // only the Error itself; context is intentionally minimal.
+      errorSink(data);
+    } catch {
+      // Telemetry/error-sink must never break logging.
+    }
   }
 
   dataIn(component: Component, message: string, context?: LogContext, data?: any): void {
@@ -311,35 +416,6 @@ class Logger {
 
   failure(component: Component, message: string, context?: LogContext, data?: any): void {
     this.error(component, `✗ ${message}`, context, data);
-  }
-
-  timing(component: Component, message: string, durationMs: number, context?: LogContext): void {
-    this.info(component, `⏱ ${message}`, context, { duration: `${durationMs}ms` });
-  }
-
-  happyPathError<T = string>(
-    component: Component,
-    message: string,
-    context?: LogContext,
-    data?: any,
-    fallback: T = '' as T
-  ): T {
-    const stack = new Error().stack || '';
-    const stackLines = stack.split('\n');
-    const callerLine = stackLines[2] || '';
-    const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
-    const location = callerMatch
-      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
-      : 'unknown';
-
-    const enhancedContext = {
-      ...context,
-      location
-    };
-
-    this.warn(component, `[HAPPY-PATH] ${message}`, enhancedContext, data);
-
-    return fallback;
   }
 }
 

@@ -248,10 +248,14 @@ describe('day window (whole UTC days only)', () => {
 });
 
 describe('deterministicEventUuid', () => {
-  it('(c) is stable across calls and shaped like a UUID', () => {
+  it('(c) is stable, UUID-shaped, and matches historical UUIDv5 values', () => {
     const a = deterministicEventUuid('install-1', 'historical_activity', '2025-10-19');
     const b = deterministicEventUuid('install-1', 'historical_activity', '2025-10-19');
     expect(a).toBe(b);
+    expect(a).toBe('dc5d6be8-f506-5694-b4df-10ad16afec4a');
+    expect(deterministicEventUuid('install-1', 'install_inferred', 'install')).toBe(
+      'a81f9f9c-d3ab-5754-ace4-49ea8e890669'
+    );
     expect(a).toMatch(UUID_RE);
     // Distinct inputs produce distinct ids.
     expect(deterministicEventUuid('install-1', 'historical_activity', '2025-10-20')).not.toBe(a);

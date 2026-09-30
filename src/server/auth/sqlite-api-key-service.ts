@@ -9,6 +9,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { AuthRepository, ensureServerStorageSchema } from '../../storage/sqlite/index.js';
 import type { ApiKey } from '../../core/schemas/auth.js';
+import { logger } from '../../utils/logger.js';
 
 export interface CreatedServerApiKey {
   rawKey: string;
@@ -87,7 +88,9 @@ function safeEqualHex(a: string, b: string): boolean {
   }
   try {
     return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('HTTP', 'timing-safe hash comparison failed (malformed hex input)', {}, err);
     return false;
   }
 }
@@ -110,7 +113,9 @@ export function verifyRawKeyAgainstStoredHash(rawKey: string, storedHash: string
     try {
       const salt = Buffer.from(saltHex, 'hex');
       derivedHex = scryptSync(rawKey, salt, SCRYPT_KEYLEN, { N: cost }).toString('hex');
-    } catch {
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('HTTP', 'scrypt derivation failed for stored API key hash (malformed salt or cost)', { cost }, err);
       return false;
     }
     return safeEqualHex(derivedHex, expectedHex);

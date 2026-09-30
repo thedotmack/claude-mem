@@ -11,6 +11,7 @@ export function renderHeader(
   forHuman: boolean
 ): string[] {
   const output: string[] = [];
+  const fetchByIdSupported = config.fetchByIdSupported !== false;
 
   if (forHuman) {
     output.push(...Human.renderHumanHeader(project));
@@ -21,19 +22,14 @@ export function renderHeader(
   if (forHuman) {
     output.push(...Human.renderHumanLegend());
   } else {
-    output.push(...Agent.renderAgentLegend());
+    output.push(...Agent.renderAgentLegend(fetchByIdSupported));
   }
 
+  // Agent variants render nothing; only the Human column-key / context-index
+  // arms produce output.
   if (forHuman) {
     output.push(...Human.renderHumanColumnKey());
-  } else {
-    output.push(...Agent.renderAgentColumnKey());
-  }
-
-  if (forHuman) {
-    output.push(...Human.renderHumanContextIndex());
-  } else {
-    output.push(...Agent.renderAgentContextIndex());
+    output.push(...Human.renderHumanContextIndex(fetchByIdSupported));
   }
 
   if (shouldShowContextEconomics(config)) {
