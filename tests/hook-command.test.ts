@@ -1,14 +1,122 @@
-/**
- * Tests for hook-command error classifier
- *
- * Validates that isWorkerUnavailableError correctly distinguishes between:
- * - Transport failures (ECONNREFUSED, etc.) → true (graceful degradation)
- * - Server errors (5xx) → true (graceful degradation)
- * - Client errors (4xx) → false (handler bug, blocking)
- * - Programming errors (TypeError, etc.) → false (code bug, blocking)
- */
-import { describe, it, expect } from 'bun:test';
-import { isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { describe, it, expect, afterEach } from 'bun:test';
+import {
+  buildNoOpResult,
+  hookCommand,
+  isNonBlockingHookInputError,
+  isWorkerUnavailableError,
+} from '../src/cli/hook-command.js';
+import { getActiveHookType, setActiveHookType } from '../src/shared/worker-utils.js';
+import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
+import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
+
+const realConsoleLog = console.log;
+
+afterEach(() => {
+  restoreStdin();
+  console.log = realConsoleLog;
+  setActiveHookType('');
+});
+
+describe('hook_failed telemetry type', () => {
+  it('classifies SessionEnd as a closed hook_type value', () => {
+    setActiveHookType('session-end');
+
+    expect(getActiveHookType()).toBe('session-end');
+  });
+});
+
+describe('buildNoOpResult', () => {
+  it('attaches a valid SessionStart hookSpecificOutput for the context event (#2972)', () => {
+    const result = buildNoOpResult('context');
+
+    expect(result).toEqual({
+      continue: true,
+      suppressOutput: true,
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+    });
+  });
+
+  it('omits hookSpecificOutput for every other event', () => {
+    for (const event of ['session-init', 'observation', 'summarize', 'user-message', 'file-edit', 'file-context']) {
+      expect(buildNoOpResult(event)).toEqual({ continue: true, suppressOutput: true });
+    }
+  });
+});
+
+describe('isNonBlockingHookInputError', () => {
+  it('classifies missing transcript paths as non-blocking hook input errors', () => {
+    const error = new Error(
+      'Transcript path missing or file does not exist: /tmp/missing-session.jsonl'
+    );
+
+    expect(isNonBlockingHookInputError(error)).toBe(true);
+  });
+
+  it('classifies missing transcript-path errors without file-existence text', () => {
+    expect(
+      isNonBlockingHookInputError(new Error('Transcript path missing: /tmp/missing-session.jsonl'))
+    ).toBe(true);
+  });
+
+  it('classifies nonexistent transcript-path errors without missing text', () => {
+    expect(
+      isNonBlockingHookInputError(new Error('Transcript path does not exist: /tmp/missing-session.jsonl'))
+    ).toBe(true);
+  });
+
+  it('does not classify unrelated hook errors as non-blocking input errors', () => {
+    expect(isNonBlockingHookInputError(new Error('Cannot read properties of undefined'))).toBe(false);
+    expect(isNonBlockingHookInputError(new Error('Request failed: 400'))).toBe(false);
+  });
+
+  it('fails open through hookCommand for truncated stdin and emits one no-op envelope', async () => {
+    installFakeStdin('{"session_id":');
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+    const exitCode = await hookCommand('claude-code', 'context', { skipExit: true });
+
+    expect(exitCode).toBe(0);
+    expect(output).toEqual([
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      }),
+    ]);
+  });
+
+  it('fails open through hookCommand for the UserPromptSubmit session-init hook and emits one empty envelope', async () => {
+    installFakeStdin('{"session_id":');
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+    const exitCode = await hookCommand('claude-code', 'session-init', { skipExit: true });
+
+    expect(exitCode).toBe(0);
+    expect(output).toEqual(['{}']);
+  });
+
+  it('fails open through hookCommand when stdin reaches the incomplete timeout path', async () => {
+    installOpenFakeStdin('{"session_id":');
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+    const exitCode = await hookCommand('claude-code', 'session-init', {
+      skipExit: true,
+      stdinSafetyTimeoutMs: 1,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(output).toEqual(['{}']);
+  });
+
+  it('classifies incomplete stdin timeout diagnostics as non-blocking', () => {
+    expect(isNonBlockingHookInputError(new Error(`Incomplete JSON after ${SAFETY_TIMEOUT_MS}ms: {"session_id":...`))).toBe(true);
+  });
+
+  it('keeps unrelated errors with a reader phrase blocking', () => {
+    expect(isNonBlockingHookInputError(new Error('Handler failed: Malformed JSON at stdin EOF: {"session_id":...'))).toBe(false);
+  });
+});
 
 describe('isWorkerUnavailableError', () => {
   describe('transport failures → true (graceful)', () => {
@@ -49,6 +157,16 @@ describe('isWorkerUnavailableError', () => {
 
     it('should classify "socket hang up" as worker unavailable', () => {
       const error = new Error('socket hang up');
+      expect(isWorkerUnavailableError(error)).toBe(true);
+    });
+
+    it('should classify Bun "socket connection was closed unexpectedly" as worker unavailable (#3871)', () => {
+      const error = new Error('The socket connection was closed unexpectedly');
+      expect(isWorkerUnavailableError(error)).toBe(true);
+    });
+
+    it('should classify "connection closed" as worker unavailable (#3871)', () => {
+      const error = new Error('connection closed');
       expect(isWorkerUnavailableError(error)).toBe(true);
     });
 
@@ -129,8 +247,6 @@ describe('isWorkerUnavailableError', () => {
   describe('programming errors → false (blocking)', () => {
     it('should NOT classify TypeError as worker unavailable', () => {
       const error = new TypeError('Cannot read properties of undefined');
-      // Note: TypeError with "fetch failed" IS classified as unavailable (transport layer)
-      // But generic TypeErrors are NOT
       expect(isWorkerUnavailableError(new TypeError('Cannot read properties of undefined'))).toBe(false);
     });
 

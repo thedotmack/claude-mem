@@ -241,7 +241,6 @@ describe("Observation I/O event handlers", () => {
             body: parsedBody,
           });
 
-          // Handle different endpoints
           if (req.url === "/api/health") {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ status: "ok" }));
@@ -263,12 +262,6 @@ describe("Observation I/O event handlers", () => {
           if (req.url === "/api/sessions/summarize") {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ status: "queued" }));
-            return;
-          }
-
-          if (req.url === "/api/sessions/complete") {
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ status: "completed" }));
             return;
           }
 
@@ -317,7 +310,6 @@ describe("Observation I/O event handlers", () => {
       sessionId: "test-session-1",
     }, { sessionKey: "agent-1" });
 
-    // Wait for HTTP request
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const initRequest = receivedRequests.find((r) => r.url === "/api/sessions/init");
@@ -364,11 +356,9 @@ describe("Observation I/O event handlers", () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    // Establish contentSessionId via session_start
     await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "test-agent" });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Fire tool result event
     await fireEvent("tool_result_persist", {
       toolName: "Read",
       params: { file_path: "/src/index.ts" },
@@ -426,11 +416,9 @@ describe("Observation I/O event handlers", () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    // Establish session
     await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "summarize-test" });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Fire agent end
     await fireEvent("agent_end", {
       messages: [
         { role: "user", content: "help me" },
@@ -446,8 +434,7 @@ describe("Observation I/O event handlers", () => {
     assert.ok(summarizeRequest!.body.contentSessionId.startsWith("openclaw-summarize-test-"));
 
     const completeRequest = receivedRequests.find((r) => r.url === "/api/sessions/complete");
-    assert.ok(completeRequest, "should send complete to worker");
-    assert.ok(completeRequest!.body.contentSessionId.startsWith("openclaw-summarize-test-"));
+    assert.ok(!completeRequest, "should not send complete (worker self-completes)");
   });
 
   it("agent_end extracts text from array content", async () => {
@@ -824,12 +811,10 @@ describe("SSE stream integration", () => {
 
     await getService().start({});
 
-    // Wait for connection
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     assert.ok(logs.some((l) => l.includes("Connecting to SSE stream")));
 
-    // Send an SSE event
     const observation = {
       type: "new_observation",
       observation: {
@@ -839,6 +824,9 @@ describe("SSE stream integration", () => {
         type: "discovery",
         project: "test",
         prompt_number: 1,
+        narrative: "Discovery observations should keep routine feed messages compact.",
+        facts: JSON.stringify(["Routine detail should not be shown"]),
+        concepts: JSON.stringify(["compact-feed"]),
         created_at_epoch: Date.now(),
       },
       timestamp: Date.now(),
@@ -848,7 +836,6 @@ describe("SSE stream integration", () => {
       res.write(`data: ${JSON.stringify(observation)}\n\n`);
     }
 
-    // Wait for processing
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     assert.equal(sentMessages.length, 1);
@@ -856,6 +843,57 @@ describe("SSE stream integration", () => {
     assert.equal(sentMessages[0].to, "12345");
     assert.ok(sentMessages[0].text.includes("Test Observation"));
     assert.ok(sentMessages[0].text.includes("Found something interesting"));
+    assert.ok(!sentMessages[0].text.includes("Narrative"));
+    assert.ok(!sentMessages[0].text.includes("Routine detail should not be shown"));
+    assert.ok(!sentMessages[0].text.includes("compact-feed"));
+    assert.ok(sentMessages[0].text.length <= 900);
+
+    await getService().stop({});
+  });
+
+  it("keeps important feed messages more complete", async () => {
+    const { api, sentMessages, getService } = createMockApi({
+      workerPort: serverPort,
+      observationFeed: { enabled: true, channel: "telegram", to: "12345" },
+    });
+    claudeMemPlugin(api);
+
+    await getService().start({});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    for (const res of serverResponses) {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "new_observation",
+          observation: {
+            id: 2,
+            title: "Important Bugfix",
+            subtitle: "Fixed a regression",
+            type: "bugfix",
+            project: "test",
+            prompt_number: 1,
+            narrative: "This fuller context should stay visible for important feed messages.",
+            facts: JSON.stringify([
+              "Important fact one is preserved",
+              "Important fact two is preserved",
+              "Important fact three is preserved",
+            ]),
+            concepts: JSON.stringify(["important-feed"]),
+            created_at_epoch: Date.now(),
+          },
+          timestamp: Date.now(),
+        })}\n\n`
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(sentMessages.length, 1);
+    assert.ok(sentMessages[0].text.includes("Narrative"));
+    assert.ok(sentMessages[0].text.includes("This fuller context should stay visible"));
+    assert.ok(sentMessages[0].text.includes("Important fact three is preserved"));
+    assert.ok(sentMessages[0].text.includes("Concepts: important-feed"));
+    assert.ok(sentMessages[0].text.length <= 2200);
 
     await getService().stop({});
   });
@@ -870,7 +908,6 @@ describe("SSE stream integration", () => {
     await getService().start({});
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    // Send non-observation events
     for (const res of serverResponses) {
       res.write(`data: ${JSON.stringify({ type: "processing_status", isProcessing: true })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: "session_started", sessionId: "abc" })}\n\n`);
@@ -977,5 +1014,165 @@ describe("SSE stream integration", () => {
     assert.ok(logs.some((l) => l.includes("Unsupported channel type: matrix")));
 
     await getService().stop({});
+  });
+});
+
+describe("circuit breaker", () => {
+  beforeEach(async () => {
+    const { api, fireEvent } = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(api);
+    await fireEvent("gateway_start", {}, {});
+  });
+
+  it("opens after threshold failures and stops further requests", async () => {
+    const { api, logs, fireEvent } = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(api);
+    await fireEvent("gateway_start", {}, {});
+
+    for (let i = 0; i < 4; i++) {
+      await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: `cb-open-${i}` });
+    }
+
+    const logCountBeforeDrop = logs.length;
+    await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: "cb-drop" });
+    const noisyDropLogs = logs.slice(logCountBeforeDrop).filter(
+      (l) => l.includes("failed") || l.includes("disabling")
+    );
+    assert.equal(noisyDropLogs.length, 0, "calls when circuit is open should be silently dropped");
+  });
+
+  it("logs individual failures while circuit is closed, then disabling when it opens", async () => {
+    const { api, logs, fireEvent } = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(api);
+    await fireEvent("gateway_start", {}, {});
+    const logsAfterReset = logs.length;
+
+    for (let i = 0; i < 3; i++) {
+      await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: `cb-log-${i}` });
+    }
+
+    const newLogs = logs.slice(logsAfterReset);
+    assert.ok(newLogs.length > 0, "threshold calls should produce log output");
+    const disablingLogs = newLogs.filter((l) => l.includes("disabling requests"));
+    assert.equal(disablingLogs.length, 1, "should emit exactly one disabling warning when circuit opens");
+    const failureLogs = newLogs.filter((l) => l.includes("failed:"));
+    assert.ok(failureLogs.length < 3, "threshold-crossing call should not log an individual failure");
+  });
+
+  it("resets on gateway_start, allowing connections again", async () => {
+    const { api, logs, fireEvent } = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(api);
+    await fireEvent("gateway_start", {}, {});
+
+    for (let i = 0; i < 4; i++) {
+      await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: `cb-reset-${i}` });
+    }
+
+    const logCountWhileOpen = logs.length;
+    await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: "cb-while-open" });
+    assert.equal(
+      logs.slice(logCountWhileOpen).filter((l) => l.includes("failed") || l.includes("disabling")).length,
+      0,
+      "call while circuit is open should be silently dropped"
+    );
+
+    await fireEvent("gateway_start", {}, {});
+
+    const logCountAfterReset = logs.length;
+    await fireEvent("before_agent_start", { prompt: "hello" }, { sessionKey: "cb-after-reset" });
+    const newLogs = logs.slice(logCountAfterReset);
+    assert.ok(
+      newLogs.some((l) => l.includes("failed:") || l.includes("disabling")),
+      "should attempt worker connection after gateway_start reset"
+    );
+  });
+
+  it("HALF_OPEN allows only a single probe — non-2xx keeps circuit open, 2xx closes it", async () => {
+    const resetMock = createMockApi({ workerPort: 59999 });
+    claudeMemPlugin(resetMock.api);
+    await resetMock.fireEvent("gateway_start", {}, {});
+
+    for (let i = 0; i < 4; i++) {
+      await resetMock.fireEvent("before_agent_start", { prompt: "probe-test" }, { sessionKey: `probe-phase1-${i}` });
+    }
+
+    const realDateNow = Date.now.bind(Date);
+    Date.now = () => realDateNow() + 31_000;
+
+    try {
+      let serverA: Server | null = null;
+      const portA: number = await new Promise((resolve) => {
+        serverA = createServer((_req: IncomingMessage, res: ServerResponse) => {
+          res.writeHead(500);
+          res.end();
+        });
+        serverA!.listen(0, () => {
+          const addr = serverA!.address();
+          resolve((addr as any).port);
+        });
+      });
+
+      const mockA = createMockApi({ workerPort: portA });
+      claudeMemPlugin(mockA.api);
+
+      const logCountAtProbe = mockA.logs.length;
+      await mockA.fireEvent("before_agent_start", { prompt: "probe" }, { sessionKey: "probe-call-non2xx" });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const probeALogs = mockA.logs.slice(logCountAtProbe);
+      assert.ok(
+        probeALogs.some((l) => l.includes("disabling") || l.includes("returned 500") || l.includes("Worker POST")),
+        "non-2xx probe should keep circuit open (expected disabling or 500 status log)"
+      );
+
+      const logCountAfterFailedProbe = mockA.logs.length;
+      await mockA.fireEvent("before_agent_start", { prompt: "probe" }, { sessionKey: "probe-concurrent" });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const droppedLogs = mockA.logs.slice(logCountAfterFailedProbe).filter(
+        (l) => l.includes("failed") || l.includes("disabling")
+      );
+      assert.equal(droppedLogs.length, 0, "call should be silently dropped while circuit is OPEN again after failed probe");
+
+      serverA!.close();
+
+      const resetMock2 = createMockApi({ workerPort: 59999 });
+      claudeMemPlugin(resetMock2.api);
+      await resetMock2.fireEvent("gateway_start", {}, {});
+
+      Date.now = realDateNow;
+      for (let i = 0; i < 4; i++) {
+        await resetMock2.fireEvent("before_agent_start", { prompt: "probe-test" }, { sessionKey: `probe-phase4-${i}` });
+      }
+      Date.now = () => realDateNow() + 31_000;
+
+      let serverB: Server | null = null;
+      const portB: number = await new Promise((resolve) => {
+        serverB = createServer((_req: IncomingMessage, res: ServerResponse) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ sessionDbId: 1, promptNumber: 1, skipped: false }));
+        });
+        serverB!.listen(0, () => {
+          const addr = serverB!.address();
+          resolve((addr as any).port);
+        });
+      });
+
+      const mockB = createMockApi({ workerPort: portB });
+      claudeMemPlugin(mockB.api);
+
+      const logCountBeforeSuccessProbe = mockB.logs.length;
+      await mockB.fireEvent("before_agent_start", { prompt: "probe" }, { sessionKey: "probe-call-2xx" });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const successProbeLogs = mockB.logs.slice(logCountBeforeSuccessProbe);
+      assert.ok(
+        successProbeLogs.some((l) => l.includes("restored") || l.includes("circuit closed")),
+        "2xx probe should close the circuit — expected 'restored' or 'circuit closed' log"
+      );
+
+      serverB!.close();
+    } finally {
+      Date.now = realDateNow;
+    }
   });
 });

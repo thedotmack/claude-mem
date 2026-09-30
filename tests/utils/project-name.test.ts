@@ -1,0 +1,345 @@
+
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { homedir } from 'os';
+import { getProjectName, getProjectContext, resolveHookProjectPath } from '../../src/utils/project-name.js';
+
+const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
+const ANCHORED_PROJECT_DIR_NAME = 'anchored-project';
+const OTHER_PROJECT_DIR_NAME = 'other-project';
+const SDK_TEMP_DIR_NAME = 'T';
+const CLAUDE_PROJECT_TEMP_PREFIX = 'cm-claude-project-dir-';
+const REPO_NESTED_DIR = ['packages', 'sdk-session'];
+const GIT_INIT_ARGS = ['init', '-q'];
+const savedClaudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV];
+
+beforeAll(() => {
+  delete process.env[CLAUDE_PROJECT_DIR_ENV];
+});
+
+afterAll(() => {
+  if (savedClaudeProjectDir !== undefined) {
+    process.env[CLAUDE_PROJECT_DIR_ENV] = savedClaudeProjectDir;
+  } else {
+    delete process.env[CLAUDE_PROJECT_DIR_ENV];
+  }
+});
+
+describe('getProjectName', () => {
+  describe('tilde expansion', () => {
+    it('resolves bare ~ to home directory basename', () => {
+      const home = homedir();
+      const expected = home.split('/').pop() || home.split('\\').pop() || '';
+      expect(getProjectName('~')).toBe(expected);
+    });
+
+    it('resolves ~/subpath to subpath', () => {
+      expect(getProjectName('~/projects/my-app')).toBe('my-app');
+    });
+
+    it('resolves ~/ to home directory basename', () => {
+      const home = homedir();
+      const expected = home.split('/').pop() || home.split('\\').pop() || '';
+      expect(getProjectName('~/')).toBe(expected);
+    });
+
+    it('resolves a leading ~\\ on Windows', () => {
+      expect(getProjectName('~\\windows-project', 'win32')).toBe('windows-project');
+    });
+  });
+
+  describe('normal paths', () => {
+    it('extracts basename from absolute path', () => {
+      expect(getProjectName('/home/user/my-project')).toBe('my-project');
+    });
+
+    it('extracts basename from nested path', () => {
+      expect(getProjectName('/Users/test/work/deep/nested/project')).toBe('project');
+    });
+
+    it('handles trailing slash', () => {
+      expect(getProjectName('/home/user/my-project/')).toBe('my-project');
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns unknown-project for null', () => {
+      expect(getProjectName(null)).toBe('unknown-project');
+    });
+
+    it('returns unknown-project for undefined', () => {
+      expect(getProjectName(undefined)).toBe('unknown-project');
+    });
+
+    it('returns unknown-project for empty string', () => {
+      expect(getProjectName('')).toBe('unknown-project');
+    });
+
+    it('returns unknown-project for whitespace', () => {
+      expect(getProjectName('   ')).toBe('unknown-project');
+    });
+
+    it('returns unknown-project for the filesystem root', () => {
+      expect(getProjectName('/')).toBe('unknown-project');
+    });
+
+    it('keeps the hook cwd when CLAUDE_PROJECT_DIR is unavailable', () => {
+      expect(resolveHookProjectPath(SDK_TEMP_DIR_NAME)).toBe(SDK_TEMP_DIR_NAME);
+    });
+
+    it('returns null when hook cwd and CLAUDE_PROJECT_DIR are unavailable', () => {
+      expect(resolveHookProjectPath(null)).toBeNull();
+    });
+  });
+
+  describe('#2663 — name derived from git repo root', () => {
+    let tmp: string;
+    let repoRoot: string;
+    let nestedDir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, realpathSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      // macOS /tmp symlinks to /private/tmp; realpath so `git --show-toplevel`
+      // (which returns the canonical path) matches our expectations.
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-reporoot-')));
+      repoRoot = join(tmp, 'my-real-repo');
+      nestedDir = join(repoRoot, 'packages', 'deeply', 'nested');
+      mkdirSync(nestedDir, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('deep subdirectory inside a repo yields the repo-root name', () => {
+      expect(getProjectName(nestedDir)).toBe('my-real-repo');
+    });
+
+    it('repo root itself yields the repo-root name', () => {
+      expect(getProjectName(repoRoot)).toBe('my-real-repo');
+    });
+
+    it('non-repo path falls back to basename(cwd)', () => {
+      // A path that does not exist (and therefore cannot be in a repo) must
+      // fall back to basename(cwd) rather than throwing or returning a root.
+      expect(getProjectName('/no/such/dir/standalone-folder')).toBe('standalone-folder');
+    });
+  });
+
+  describe('#3437 — Claude project dir anchors SDK/subagent sessions', () => {
+    let tmp: string;
+    let repoRoot: string;
+    let nestedRepoDir: string;
+    let otherProjectDir: string;
+    let sdkTempDir: string;
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, realpathSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), CLAUDE_PROJECT_TEMP_PREFIX)));
+      repoRoot = join(tmp, ANCHORED_PROJECT_DIR_NAME);
+      nestedRepoDir = join(repoRoot, ...REPO_NESTED_DIR);
+      otherProjectDir = join(tmp, OTHER_PROJECT_DIR_NAME);
+      sdkTempDir = join(tmp, SDK_TEMP_DIR_NAME);
+      mkdirSync(nestedRepoDir, { recursive: true });
+      mkdirSync(otherProjectDir, { recursive: true });
+      mkdirSync(sdkTempDir, { recursive: true });
+      execFileSync('git', GIT_INIT_ARGS, { cwd: repoRoot });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+
+      delete process.env[CLAUDE_PROJECT_DIR_ENV];
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses CLAUDE_PROJECT_DIR instead of an SDK temp cwd', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = repoRoot;
+
+      const hookProjectPath = resolveHookProjectPath(sdkTempDir);
+      expect(getProjectName(hookProjectPath)).toBe(ANCHORED_PROJECT_DIR_NAME);
+      expect(getProjectName(hookProjectPath)).not.toBe(SDK_TEMP_DIR_NAME);
+    });
+
+    it('resolves CLAUDE_PROJECT_DIR through its git root when it points at a subdirectory', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = nestedRepoDir;
+
+      expect(getProjectName(resolveHookProjectPath(sdkTempDir))).toBe(ANCHORED_PROJECT_DIR_NAME);
+    });
+
+    it('anchors getProjectContext to CLAUDE_PROJECT_DIR for write-path callers', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = repoRoot;
+
+      const ctx = getProjectContext(resolveHookProjectPath(sdkTempDir));
+      expect(ctx.primary).toBe(ANCHORED_PROJECT_DIR_NAME);
+      expect(ctx.allProjects).toEqual([ANCHORED_PROJECT_DIR_NAME]);
+    });
+
+    it('keeps an explicit project cwd authoritative outside hook normalization', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = repoRoot;
+
+      expect(getProjectName(otherProjectDir)).toBe(OTHER_PROJECT_DIR_NAME);
+      expect(getProjectContext(otherProjectDir).primary).toBe(OTHER_PROJECT_DIR_NAME);
+    });
+  });
+
+  describe('realistic scenarios from #1478', () => {
+    it('handles ~ the same as full home path', () => {
+      const home = homedir();
+      expect(getProjectName('~')).toBe(getProjectName(home));
+    });
+
+    it('handles ~/projects/app the same as /full/path/projects/app', () => {
+      const home = homedir();
+      expect(getProjectName('~/projects/app')).toBe(
+        getProjectName(`${home}/projects/app`)
+      );
+    });
+  });
+});
+
+describe('getProjectContext', () => {
+  it('returns primary project name for normal path', () => {
+    const ctx = getProjectContext('/home/user/my-project');
+    expect(ctx.primary).toBe('my-project');
+    expect(ctx.parent).toBeNull();
+    expect(ctx.isWorktree).toBe(false);
+    expect(ctx.allProjects).toEqual(['my-project']);
+  });
+
+  it('resolves ~ path correctly', () => {
+    const home = homedir();
+    const ctx = getProjectContext('~');
+    const ctxHome = getProjectContext(home);
+    expect(ctx.primary).toBe(ctxHome.primary);
+  });
+
+  it('returns unknown-project context for null', () => {
+    const ctx = getProjectContext(null);
+    expect(ctx.primary).toBe('unknown-project');
+    expect(ctx.parent).toBeNull();
+  });
+
+  describe('worktree isolation', () => {
+    let tmp: string;
+    let mainRepo: string;
+    let worktreeCheckout: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-wt-'));
+      mainRepo = join(tmp, 'main-repo');
+      const worktreeGitDir = join(mainRepo, '.git', 'worktrees', 'my-worktree');
+      worktreeCheckout = join(tmp, 'my-worktree');
+
+      mkdirSync(worktreeGitDir, { recursive: true });
+      mkdirSync(worktreeCheckout, { recursive: true });
+      writeFileSync(
+        join(worktreeCheckout, '.git'),
+        `gitdir: ${worktreeGitDir}\n`
+      );
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses parent/worktree composite as primary when in a worktree', () => {
+      const ctx = getProjectContext(worktreeCheckout);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/my-worktree');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/my-worktree']);
+    });
+
+    it('write-path call sites resolve to composite name in worktrees', () => {
+      const project = getProjectContext(worktreeCheckout).primary;
+      expect(project).toBe('main-repo/my-worktree');
+      expect(project).not.toBe('main-repo');
+      expect(project).not.toBe('my-worktree');
+    });
+  });
+
+  // #3262 — detectWorktree must run at the git worktree root, not raw cwd.
+  // A session started in a subdirectory of a worktree must keep the same
+  // parent/worktree compound key as a session at the worktree root.
+  describe('#3262 — worktree compound key from subdirectory', () => {
+    let tmp: string;
+    let worktreeCheckout: string;
+    let worktreeSubdir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, realpathSync, writeFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-wt-subdir-')));
+      const mainRepo = join(tmp, 'main-repo');
+      worktreeCheckout = join(tmp, 'feature-x');
+      worktreeSubdir = join(worktreeCheckout, 'packages', 'nested');
+
+      mkdirSync(mainRepo, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: mainRepo });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: mainRepo });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: mainRepo });
+      writeFileSync(join(mainRepo, 'README'), 'init\n');
+      execFileSync('git', ['add', '.'], { cwd: mainRepo });
+      execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: mainRepo });
+      execFileSync('git', ['worktree', 'add', '-q', worktreeCheckout, '-b', 'feature-x'], {
+        cwd: mainRepo,
+      });
+      mkdirSync(worktreeSubdir, { recursive: true });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      try {
+        execFileSync('git', ['worktree', 'remove', '--force', worktreeCheckout], {
+          cwd: join(tmp, 'main-repo'),
+        });
+      } catch {
+        // Best-effort cleanup; rmSync below still removes the temp tree.
+      }
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('worktree root yields parent/worktree composite', () => {
+      const ctx = getProjectContext(worktreeCheckout);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/feature-x');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/feature-x']);
+    });
+
+    it('subdirectory of a worktree yields the same composite key', () => {
+      const ctx = getProjectContext(worktreeSubdir);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/feature-x');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/feature-x']);
+    });
+
+    it('subdirectory and worktree root share the same primary key', () => {
+      const atRoot = getProjectContext(worktreeCheckout).primary;
+      const inSubdir = getProjectContext(worktreeSubdir).primary;
+      expect(inSubdir).toBe(atRoot);
+      expect(inSubdir).not.toBe('feature-x');
+      expect(inSubdir).not.toBe('nested');
+    });
+  });
+});

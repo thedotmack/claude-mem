@@ -3,9 +3,9 @@ import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
+import { WelcomeCard, getStoredWelcomeDismissed, setStoredWelcomeDismissed } from './components/WelcomeCard';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
-import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
 import { Observation, Summary, UserPrompt, FeedItemType } from './types';
@@ -21,49 +21,52 @@ export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
+  const [welcomeDismissed, setWelcomeDismissed] = useState<boolean>(getStoredWelcomeDismissed);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
-  const { stats, refreshStats } = useStats();
-  const { preference, resolvedTheme, setThemePreference } = useTheme();
+  const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
-  // Merge SSE live data with paginated data, filtering by project when active
+  const matchesSelection = useCallback((item: { project: string }) => {
+    return !currentFilter || item.project === currentFilter;
+  }, [currentFilter]);
+
+  useEffect(() => {
+    if (currentFilter && !projects.includes(currentFilter)) {
+      setCurrentFilter('');
+    }
+  }, [projects, currentFilter]);
+
   const allObservations = useMemo(() => {
-    const live = currentFilter
-      ? observations.filter(o => o.project === currentFilter)
-      : observations;
-    return mergeAndDeduplicateByProject(live, paginatedObservations);
-  }, [observations, paginatedObservations, currentFilter]);
+    const live = observations.filter(matchesSelection);
+    const paginated = paginatedObservations.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [observations, paginatedObservations, matchesSelection]);
 
   const allSummaries = useMemo(() => {
-    const live = currentFilter
-      ? summaries.filter(s => s.project === currentFilter)
-      : summaries;
-    return mergeAndDeduplicateByProject(live, paginatedSummaries);
-  }, [summaries, paginatedSummaries, currentFilter]);
+    const live = summaries.filter(matchesSelection);
+    const paginated = paginatedSummaries.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [summaries, paginatedSummaries, matchesSelection]);
 
   const allPrompts = useMemo(() => {
-    const live = currentFilter
-      ? prompts.filter(p => p.project === currentFilter)
-      : prompts;
-    return mergeAndDeduplicateByProject(live, paginatedPrompts);
-  }, [prompts, paginatedPrompts, currentFilter]);
+    const live = prompts.filter(matchesSelection);
+    const paginated = paginatedPrompts.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [prompts, paginatedPrompts, matchesSelection]);
 
-  // Toggle context preview modal
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
   }, []);
 
-  // Toggle logs modal
   const toggleLogsModal = useCallback(() => {
     setLogsModalOpen(prev => !prev);
   }, []);
 
-  // Handle loading more data
   const handleLoadMore = useCallback(async () => {
     try {
       const [newObservations, newSummaries, newPrompts] = await Promise.all([
@@ -84,7 +87,7 @@ export function App() {
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [currentFilter, pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [pagination.observations, pagination.summaries, pagination.prompts]);
 
   // Delete a feed item: call the worker, then drop it from local paginated
   // state. The worker also broadcasts an `item_deleted` SSE event, which clears
@@ -104,13 +107,11 @@ export function App() {
         setPaginatedPrompts(prev => prev.filter(p => p.id !== id));
       }
 
-      refreshStats();
     } catch (error) {
       console.error('Failed to delete item:', error);
     }
-  }, [refreshStats]);
+  }, []);
 
-  // Reset paginated data and load first page when filter changes
   useEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
@@ -122,7 +123,6 @@ export function App() {
   return (
     <>
       <Header
-        isConnected={isConnected}
         projects={projects}
         currentFilter={currentFilter}
         onFilterChange={setCurrentFilter}
@@ -131,6 +131,10 @@ export function App() {
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
+        onShowHelp={() => {
+          setStoredWelcomeDismissed(false);
+          setWelcomeDismissed(false);
+        }}
       />
 
       <Feed
@@ -142,6 +146,10 @@ export function App() {
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
       />
+
+      {!welcomeDismissed && (
+        <WelcomeCard onDismiss={() => setWelcomeDismissed(true)} />
+      )}
 
       <ContextSettingsModal
         isOpen={contextPreviewOpen}

@@ -2,13 +2,20 @@
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="docs/public/claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="docs/public/claude-mem-logo-for-light-mode.webp">
+      <img src="docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
     </picture>
   </a>
-  <br>
 </h1>
+
+<p align="center">
+  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="Greptile" src="docs/public/greptile-wordmark-green.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="SerpApi" src="docs/public/serpapi-logo-with-wordmark-gradient.svg" height="24" />
+</p>
 
 <p align="center">
   <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
@@ -49,13 +56,13 @@
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.28.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -127,9 +134,41 @@
 
 ## Quick Start
 
-Start a new Claude Code session in the terminal and enter the following commands:
+Install claude-mem for Grok Bot:
 
+```bash
+npx claude-mem install --ide grok-bot
 ```
+
+Grok Bot has no host hooks, so we watch the chat log files. Default is CMEM Pro, the hosted memory. Local observer is opt-in: `--provider host`. Installing this plugin does not install Cursor.
+
+**Awareness push pilot (LFG + Orifice):** needle observations (`decision`, `bugfix`, `security_alert`, `sensitive`) are appended as dated `- YYYY-MM-DD [awareness] …` lines into that bot's `memory/log/YYYY-MM.md`. Grok Bot already re-reads the log from disk. This does not write `profile.md`, user-memory, or project memory. Disable with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=false`.
+
+Install with a single command:
+
+```bash
+npx claude-mem install
+```
+
+The installer sets everything up first, then asks you to sign in to claude-mem in your browser (email magic link — no card required). Signing in provisions a memory key for your account and unlocks the **claude-mem observer**: memory that runs off-plan, free for up to 14 days, so you get up to 100% more usage from your plan. When the free trial ends, memory automatically falls back to your Anthropic plan unless you subscribe. After sign-in you pick your memory provider — the claude-mem observer, your own OpenRouter or Gemini key, or your Anthropic plan.
+
+Prefer to skip the sign-in? Pass an explicit `--provider` flag, set `CLAUDE_MEM_ONLINE_OPTIN=false`, or run in CI/non-interactive shells — the installer completes without any account interaction.
+
+Or install for OpenCode:
+
+```bash
+npx claude-mem install --ide opencode
+```
+
+Or install for Antigravity CLI ([setup guide](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+Or install from the plugin marketplace inside Claude Code:
+
+```bash
 /plugin marketplace add thedotmack/claude-mem
 
 /plugin install claude-mem
@@ -137,7 +176,7 @@ Start a new Claude Code session in the terminal and enter the following commands
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
 
-> **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. To use Claude-Mem as a plugin, always install via the `/plugin` commands above.
+> **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
 
 ### 🦞 OpenClaw Gateway
 
@@ -154,13 +193,12 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
 - 🔍 **Skill-Based Search** - Query your project history with mem-search skill
-- 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
+- 🖥️ **Web Viewer UI** - Real-time memory stream at the worker URL printed on startup
 - 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
-- 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
-- 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
+- 🔗 **Citations** - Reference past observations with IDs through the worker API or view all in the web viewer
 
 ---
 
@@ -173,7 +211,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - **[Installation Guide](https://docs.claude-mem.ai/installation)** - Quick start & advanced installation
 - **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
-- **[Beta Features](https://docs.claude-mem.ai/beta-features)** - Try experimental features like Endless Mode
+- **[Cloud Sync](https://docs.claude-mem.ai/cloud-sync)** - Back up your memories to cmem.ai — no daemon, the worker syncs on write
 
 ### Best Practices
 
@@ -194,6 +232,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 
 - **[Configuration](https://docs.claude-mem.ai/configuration)** - Environment variables & settings
 - **[Development](https://docs.claude-mem.ai/development)** - Building, testing, contributing
+- **[Release Branches](https://docs.claude-mem.ai/branches)** - Stable, core-dev, and community-edge branch flow
 - **[Troubleshooting](https://docs.claude-mem.ai/troubleshooting)** - Common issues & solutions
 
 ---
@@ -204,7 +243,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - Cached dependency checker (pre-hook script, not a lifecycle hook)
-3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by Bun
+3. **Worker Service** - Local HTTP API with web viewer UI and search endpoints, managed by Bun
 4. **SQLite Database** - Stores sessions, observations, summaries
 5. **mem-search Skill** - Natural language queries with progressive disclosure
 6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
@@ -252,17 +291,18 @@ See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for deta
 
 ---
 
-## Beta Features
+## Release Branches
 
-Claude-Mem offers a **beta channel** with experimental features like **Endless Mode** (biomimetic memory architecture for extended sessions). Switch between stable and beta versions from the web viewer UI at http://localhost:37777 → Settings.
-
-See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** for details on Endless Mode and how to try it.
+Stable releases ship from `main` and are published to npm. `core-dev` and
+`community-edge` are source-run branches for early reliability fixes and
+community integrations. See **[Release Branches](https://docs.claude-mem.ai/branches)**
+for the branch flow and non-stable run instructions.
 
 ---
 
 ## System Requirements
 
-- **Node.js**: 18.0.0 or higher
+- **Node.js**: 20.0.0 or higher
 - **Claude Code**: Latest version with plugin support
 - **Bun**: JavaScript runtime and process manager (auto-installed if missing)
 - **uv**: Python package manager for vector search (auto-installed if missing)
@@ -285,8 +325,49 @@ Make sure Node.js and npm are installed and added to your PATH. Download the lat
 
 Settings are managed in `~/.claude-mem/settings.json` (auto-created with defaults on first run). Configure AI model, worker port, data directory, log level, and context injection settings.
 
+To include observations from every harness in Claude Code and Codex SessionStart context, set `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"` in that file, or enable **Include all sources at session start** in the viewer settings. The default is `"false"`, which limits startup context to the current harness. The observation count limit still applies across the selected sources.
+
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
+### Mode & Language Configuration
+
+Claude-Mem supports multiple workflow modes and languages via the `CLAUDE_MEM_MODE` setting.
+
+This option controls both:
+- The workflow behavior (e.g. code, chill, investigation)
+- The language used in generated observations
+
+#### How to Configure
+
+Edit your settings file at `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+```
+
+Modes are defined in `plugin/modes/`. To see all available modes locally:
+
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### Available Modes
+
+| Mode | Description |
+|------------|-------------------------|
+| `code` | Default English mode |
+| `code--zh` | Simplified Chinese mode |
+| `code--ja` | Japanese mode |
+
+Language-specific modes follow the pattern `code--[lang]` where `[lang]` is the ISO 639-1 language code (e.g., `zh` for Chinese, `ja` for Japanese, `es` for Spanish).
+
+> Note: `code--zh` (Simplified Chinese) is already built-in — no additional installation or plugin update is required.
+
+#### After Changing Mode
+
+Restart Claude Code to apply the new mode configuration.
 ---
 
 ## Development
@@ -322,26 +403,28 @@ Contributions are welcome! Please:
 4. Update documentation
 5. Submit a Pull Request
 
+Claude-Mem ships from three branches: `main` (stable), `core-dev`, and
+`community-edge`. Only `main` is published to npm; the others are run from
+source. See [Release Branches](https://docs.claude-mem.ai/branches) for the
+strategy and local run instructions.
+
 See [Development Guide](https://docs.claude-mem.ai/development) for contribution workflow.
 
 ---
 
 ## License
 
-This project is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0).
+Claude-Mem is licensed under the Apache License 2.0.
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+We chose Apache-2.0 because durable agentic memory should be easy to embed in
+developer tools, local agents, MCP servers, enterprise systems, robotics stacks,
+and production agent harnesses.
 
-See the [LICENSE](LICENSE) file for full details.
+See the [LICENSE](LICENSE) file for full details. See [docs/license.md](docs/license.md)
+and [docs/ip-boundary.md](docs/ip-boundary.md) for licensing scope and the
+open/commercial boundary.
 
-**What This Means:**
-
-- You can use, modify, and distribute this software freely
-- If you modify and deploy on a network server, you must make your source code available
-- Derivative works must also be licensed under AGPL-3.0
-- There is NO WARRANTY for this software
-
-**Note on Ragtime**: The `ragtime/` directory is licensed separately under the **PolyForm Noncommercial License 1.0.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+**Note on Ragtime**: The `ragtime/` directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
 
@@ -356,10 +439,12 @@ See the [LICENSE](LICENSE) file for full details.
 
 ---
 
-**Built with Claude Agent SDK** | **Powered by Claude Code** | **Made with TypeScript**
+**Built with Claude Agent SDK** | **Works with Claude Code** | **Made with TypeScript**
 
 ---
 
-### What About $CMEM?
+### What About CMEM?
 
-$CMEM is a solana token created by a 3rd party without Claude-Mem's prior consent, but officially embraced by the creator of Claude-Mem (Alex Newman, @thedotmack). The token acts as a community catalyst for growth and a vehicle for bringing real-time agent data to the developers and knowledge workers that need it most. $CMEM: 2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS
+CMEM is a token created by a 3rd party but officially embraced by the creator of Claude-Mem (Alex Newman, @thedotmack). The token acts as a community catalyst for growth and a vehicle for bringing CMEM to the developers and knowledge workers that need it most.
+
+Official BASE CA: 0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

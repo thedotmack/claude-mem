@@ -1,16 +1,7 @@
-/**
- * GracefulShutdown - Cleanup utilities for graceful exit
- *
- * Extracted from worker-service.ts to provide centralized shutdown coordination.
- * Handles:
- * - HTTP server closure (with Windows-specific delays)
- * - Session manager shutdown coordination
- * - Child process cleanup (Windows zombie port fix)
- */
 
 import http from 'http';
 import { logger } from '../../utils/logger.js';
-import { stopSupervisor } from '../../supervisor/index.js';
+import { getSupervisor } from '../../supervisor/index.js';
 
 export interface ShutdownableService {
   shutdownAll(): Promise<void>;
@@ -24,16 +15,10 @@ export interface CloseableDatabase {
   close(): Promise<void>;
 }
 
-/**
- * Stoppable service interface for ChromaMcpManager
- */
 export interface StoppableService {
   stop(): Promise<void>;
 }
 
-/**
- * Configuration for graceful shutdown
- */
 export interface GracefulShutdownConfig {
   server: http.Server | null;
   sessionManager: ShutdownableService;
@@ -42,68 +27,65 @@ export interface GracefulShutdownConfig {
   chromaMcpManager?: StoppableService;
 }
 
-/**
- * Perform graceful shutdown of all services
- *
- * IMPORTANT: On Windows, we must kill all child processes before exiting
- * to prevent zombie ports. The socket handle can be inherited by children,
- * and if not properly closed, the port stays bound after process death.
- */
 export async function performGracefulShutdown(config: GracefulShutdownConfig): Promise<void> {
   logger.info('SYSTEM', 'Shutdown initiated');
 
-  // STEP 1: Close HTTP server first
   if (config.server) {
     await closeHttpServer(config.server);
     logger.info('SYSTEM', 'HTTP server closed');
   }
 
-  // STEP 2: Shutdown active sessions
   await config.sessionManager.shutdownAll();
 
-  // STEP 3: Close MCP client connection (signals child to exit gracefully)
   if (config.mcpClient) {
     await config.mcpClient.close();
     logger.info('SYSTEM', 'MCP client closed');
   }
 
-  // STEP 4: Stop Chroma MCP connection
   if (config.chromaMcpManager) {
     logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
     await config.chromaMcpManager.stop();
     logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
   }
 
-  // STEP 5: Close database connection (includes ChromaSync cleanup)
   if (config.dbManager) {
     await config.dbManager.close();
   }
 
-  // STEP 6: Supervisor handles tracked child termination, PID cleanup, and stale sockets.
-  await stopSupervisor();
+  await getSupervisor().stop();
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }
 
-/**
- * Close HTTP server with Windows-specific delays
- * Windows needs extra time to release sockets properly
- */
 async function closeHttpServer(server: http.Server): Promise<void> {
-  // Close all active connections
   server.closeAllConnections();
 
-  // Give Windows time to close connections before closing server (prevents zombie ports)
   if (process.platform === 'win32') {
     await new Promise(r => setTimeout(r, 500));
   }
 
-  // Close the server
   await new Promise<void>((resolve, reject) => {
-    server.close(err => err ? reject(err) : resolve());
+    server.close(err => {
+      if (!err) {
+        resolve();
+        return;
+      }
+      // #3380 — Node's http.Server.close(cb) reports ERR_SERVER_NOT_RUNNING
+      // when the handle is not listening (e.g. the bind failed or the server
+      // already closed). Closing an already-closed server is the desired end
+      // state, not a failure: rejecting here aborted ALL remaining teardown
+      // (session drain, MCP close, chroma stop, db close, supervisor stop).
+      // Same tolerance as ServerService.stop() in
+      // src/server/runtime/ServerService.ts.
+      if ((err as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') {
+        logger.warn('SYSTEM', 'Server was already stopped when close was requested', {}, err);
+        resolve();
+        return;
+      }
+      reject(err);
+    });
   });
 
-  // Extra delay on Windows to ensure port is fully released
   if (process.platform === 'win32') {
     await new Promise(r => setTimeout(r, 500));
     logger.info('SYSTEM', 'Waited for Windows port cleanup');

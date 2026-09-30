@@ -1,13 +1,3 @@
-/**
- * Tests for hook timeout and exit code constants
- *
- * Mock Justification (~12% mock code):
- * - process.platform: Only mocked to test cross-platform timeout multiplier
- *   logic - ensures Windows users get appropriate longer timeouts
- *
- * Value: Prevents regressions in timeout values that could cause
- * hook failures on slow systems or Windows
- */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from '../src/shared/hook-constants.js';
 
@@ -15,7 +5,6 @@ describe('hook-constants', () => {
   const originalPlatform = process.platform;
 
   afterEach(() => {
-    // Restore original platform after each test
     Object.defineProperty(process, 'platform', {
       value: originalPlatform,
       writable: true,
@@ -24,28 +13,16 @@ describe('hook-constants', () => {
   });
 
   describe('HOOK_TIMEOUTS', () => {
-    it('should define DEFAULT timeout', () => {
-      expect(HOOK_TIMEOUTS.DEFAULT).toBe(300000);
-    });
-
     it('should define HEALTH_CHECK timeout as 3s (reduced from 30s)', () => {
       expect(HOOK_TIMEOUTS.HEALTH_CHECK).toBe(3000);
     });
 
-    it('should define POST_SPAWN_WAIT as 5s', () => {
-      expect(HOOK_TIMEOUTS.POST_SPAWN_WAIT).toBe(5000);
+    it('should define POST_SPAWN_WAIT as 15s', () => {
+      expect(HOOK_TIMEOUTS.POST_SPAWN_WAIT).toBe(15000);
     });
 
     it('should define PORT_IN_USE_WAIT as 3s', () => {
       expect(HOOK_TIMEOUTS.PORT_IN_USE_WAIT).toBe(3000);
-    });
-
-    it('should define WORKER_STARTUP_WAIT', () => {
-      expect(HOOK_TIMEOUTS.WORKER_STARTUP_WAIT).toBe(1000);
-    });
-
-    it('should define PRE_RESTART_SETTLE_DELAY', () => {
-      expect(HOOK_TIMEOUTS.PRE_RESTART_SETTLE_DELAY).toBe(2000);
     });
 
     it('should define WINDOWS_MULTIPLIER', () => {
@@ -60,10 +37,6 @@ describe('hook-constants', () => {
   describe('HOOK_EXIT_CODES', () => {
     it('should define SUCCESS exit code', () => {
       expect(HOOK_EXIT_CODES.SUCCESS).toBe(0);
-    });
-
-    it('should define FAILURE exit code', () => {
-      expect(HOOK_EXIT_CODES.FAILURE).toBe(1);
     });
 
     it('should define BLOCKING_ERROR exit code', () => {
@@ -101,7 +74,6 @@ describe('hook-constants', () => {
         configurable: true
       });
 
-      // 333 * 1.5 = 499.5, should round to 500
       expect(getTimeout(333)).toBe(500);
     });
 

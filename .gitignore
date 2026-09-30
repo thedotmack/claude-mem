@@ -1,7 +1,6 @@
 datasets/
-node_modules/
+node_modules
 dist/
-!installer/dist/
 **/_tree-sitter/
 *.log
 .DS_Store
@@ -19,20 +18,37 @@ plugin/data/
 plugin/data.backup/
 package-lock.json
 bun.lock
+!plugin/bun.lock
+!workers/sync-hub/bun.lock
+!services/sync-api/bun.lock
 private/
 Auto Run Docs/
 
-# Generated UI files (built from viewer-template.html)
 src/ui/viewer.html
 
-# Local MCP server config (for development only)
 .mcp.json
 .cursor/
 
-# Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
 
 .claude-octopus/
 .claude/session-intent.md
 .claude/session-plan.md
+.claude/scheduled_tasks.lock
 .octo/
+
+plugin/.cli-installed
+
+plugin/scripts/claude-mem
+
+CONTRIB_NOTES.md
+CLAUDE.local.md
+
+.docker-claude-mem-data/
+
+.docker-blowout-data/
+.scratch/
+docker/install-test/
+
+# Local session report artifacts (not part of distribution)
+reports/

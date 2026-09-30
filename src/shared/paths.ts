@@ -1,183 +1,118 @@
 import { join, dirname, basename, sep } from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync } from 'fs';
-import { execSync } from 'child_process';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { logger } from '../utils/logger.js';
+import { parseJsonWithBom } from './atomic-json.js';
+import { expandHome } from './expand-home.js';
 
-// Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
+export { expandHome } from './expand-home.js';
+
 function getDirname(): string {
-  // CJS context - __dirname exists
   if (typeof __dirname !== 'undefined') {
     return __dirname;
   }
-  // ESM context - use import.meta.url
   return dirname(fileURLToPath(import.meta.url));
 }
 
 const _dirname = getDirname();
 
-/**
- * Simple path configuration for claude-mem
- * Standard paths based on Claude Code conventions
- */
-
-// Base directories
-// Resolve DATA_DIR with full priority: env var > settings.json > default.
-// SettingsDefaultsManager.get() handles env > default. For settings file
-// support, we do a one-time synchronous read of the default settings path
-// to check if the user configured a custom DATA_DIR there.
-function resolveDataDir(): string {
-  // 1. Environment variable (highest priority) — already handled by get()
+export function resolveDataDir(): string {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
-    return process.env.CLAUDE_MEM_DATA_DIR;
+    return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
   }
 
-  // 2. Settings file at the default location
   const defaultDataDir = join(homedir(), '.claude-mem');
   const settingsPath = join(defaultDataDir, 'settings.json');
   try {
     if (existsSync(settingsPath)) {
-      const { readFileSync } = require('fs');
-      const raw = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      const settings = raw.env ?? raw; // handle legacy nested schema
+      const raw = parseJsonWithBom<Record<string, any>>(readFileSync(settingsPath, 'utf-8'));
+      const settings = raw.env ?? raw;
       if (settings.CLAUDE_MEM_DATA_DIR) {
-        return settings.CLAUDE_MEM_DATA_DIR;
+        return expandHome(settings.CLAUDE_MEM_DATA_DIR);
       }
     }
   } catch {
     // settings file missing or corrupt — fall through to default
   }
 
-  // 3. Hardcoded default
   return defaultDataDir;
 }
 
 export const DATA_DIR = resolveDataDir();
-// Note: CLAUDE_CONFIG_DIR is a Claude Code setting, not claude-mem, so leave as env var
-export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+// #2753 — the literal default config dir, independent of process.env state.
+// Lets callers (oauth-token.ts) compare an *effective* config dir against the
+// TRUE default rather than against CLAUDE_CONFIG_DIR (which already folds in
+// process.env). Purely additive: does not change CLAUDE_CONFIG_DIR's own
+// derivation or MARKETPLACE_ROOT below.
+export const DEFAULT_CLAUDE_CONFIG_DIR = join(homedir(), '.claude');
+export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
 
-// Plugin installation directory - respects CLAUDE_CONFIG_DIR for users with custom Claude locations
 export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
 
-// Data subdirectories
-export const ARCHIVES_DIR = join(DATA_DIR, 'archives');
 export const LOGS_DIR = join(DATA_DIR, 'logs');
-export const TRASH_DIR = join(DATA_DIR, 'trash');
-export const BACKUPS_DIR = join(DATA_DIR, 'backups');
-export const MODES_DIR = join(DATA_DIR, 'modes');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
-export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
-export const VECTOR_DB_DIR = join(DATA_DIR, 'vector-db');
+export const DB_FILENAME = 'claude-mem.db';
 
-// Observer sessions directory - used as cwd for SDK queries
-// Sessions here won't appear in user's `claude --resume` for their actual projects
+/**
+ * Database path resolved at CALL time. `DB_PATH` freezes `DATA_DIR` at import,
+ * which is right for long-lived processes but wrong for anything that must
+ * honor a `CLAUDE_MEM_DATA_DIR` set after this module was loaded.
+ */
+export function resolveDbPath(): string {
+  return join(resolveDataDir(), DB_FILENAME);
+}
+
+export const DB_PATH = join(DATA_DIR, DB_FILENAME);
+
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
-// Claude integration paths
-export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');
-export const CLAUDE_COMMANDS_DIR = join(CLAUDE_CONFIG_DIR, 'commands');
-export const CLAUDE_MD_PATH = join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
+export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
-/**
- * Get project-specific archive directory
- */
-export function getProjectArchiveDir(projectName: string): string {
-  return join(ARCHIVES_DIR, projectName);
-}
-
-/**
- * Get worker socket path for a session
- */
-export function getWorkerSocketPath(sessionId: number): string {
-  return join(DATA_DIR, `worker-${sessionId}.sock`);
-}
-
-/**
- * Ensure a directory exists
- */
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
 
-/**
- * Ensure all data directories exist
- */
-export function ensureAllDataDirs(): void {
-  ensureDir(DATA_DIR);
-  ensureDir(ARCHIVES_DIR);
-  ensureDir(LOGS_DIR);
-  ensureDir(TRASH_DIR);
-  ensureDir(BACKUPS_DIR);
-  ensureDir(MODES_DIR);
-}
-
-/**
- * Ensure modes directory exists
- */
-export function ensureModesDir(): void {
-  ensureDir(MODES_DIR);
-}
-
-/**
- * Ensure all Claude integration directories exist
- */
-export function ensureAllClaudeDirs(): void {
-  ensureDir(CLAUDE_CONFIG_DIR);
-  ensureDir(CLAUDE_COMMANDS_DIR);
-}
-
-/**
- * Get current project name from git root or cwd.
- * Includes parent directory to avoid collisions when repos share a folder name
- * (e.g., ~/work/monorepo → "work/monorepo" vs ~/personal/monorepo → "personal/monorepo").
- */
-export function getCurrentProjectName(): string {
-  try {
-    const gitRoot = execSync('git rev-parse --show-toplevel', {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-      windowsHide: true
-    }).trim();
-    return basename(dirname(gitRoot)) + '/' + basename(gitRoot);
-  } catch (error) {
-    logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
-      cwd: process.cwd()
-    }, error as Error);
-    const cwd = process.cwd();
-    return basename(dirname(cwd)) + '/' + basename(cwd);
-  }
-}
-
-/**
- * Find package root directory
- *
- * Works because bundled hooks are in plugin/scripts/,
- * so package root is always one level up (the plugin directory)
- */
 export function getPackageRoot(): string {
   return join(_dirname, '..');
 }
 
 /**
- * Find commands directory in the installed package
+ * Expand a leading `~` / `~/` (or `~\` on Windows) to the user's home dir.
+ *
+ * User-typed config paths like `~/.local/bin/claude` are never expanded by the
+ * shell when passed programmatically to existsSync/posix_spawn, so a literal
+ * `~` reaches the syscall and fails with ENOENT. Every other home-relative path
+ * in the codebase is built with join(homedir(), ...); this brings user-supplied
+ * ones onto the same footing. Non-tilde paths are returned unchanged.
+ *
+ * `home` is injectable so callers behind a homedir() test seam stay testable.
  */
-export function getPackageCommandsDir(): string {
-  const packageRoot = getPackageRoot();
-  return join(packageRoot, 'commands');
+export function expandTilde(
+  filePath: string,
+  home: string = homedir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return expandHome(filePath, platform, home);
 }
 
-/**
- * Create a timestamped backup filename
- */
-export function createBackupFilename(originalPath: string): string {
-  const timestamp = new Date()
-    .toISOString()
-    .replace(/[:.]/g, '-')
-    .replace('T', '_')
-    .slice(0, 19);
-
-  return `${originalPath}.backup.${timestamp}`;
-}
+export const paths = {
+  dataDir: () => DATA_DIR,
+  workerPid: () => join(DATA_DIR, 'worker.pid'),
+  // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
+  // remain `.server-beta.*` so existing installations keep finding their
+  // pid/port/runtime state. Plan §1d will migrate the basenames.
+  serverPid: () => join(DATA_DIR, '.server-beta.pid'),
+  serverPort: () => join(DATA_DIR, '.server-beta.port'),
+  serverRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
+  settings: () => join(DATA_DIR, 'settings.json'),
+  database: () => join(DATA_DIR, DB_FILENAME),
+  chroma: () => join(DATA_DIR, 'chroma'),
+  combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),
+  transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),
+  transcriptsState: () => join(DATA_DIR, 'transcript-watch-state.json'),
+  corpora: () => join(DATA_DIR, 'corpora'),
+  supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
+  envFile: () => join(DATA_DIR, '.env'),
+  logsDir: () => LOGS_DIR,
+} as const;

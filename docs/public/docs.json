@@ -39,13 +39,12 @@
           "usage/openrouter-provider",
           "usage/gemini-provider",
           "usage/search-tools",
+          "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
           "usage/export-import",
           "usage/manual-recovery",
-          "usage/folder-context",
-          "beta-features",
-          "endless-mode"
+          "usage/folder-context"
         ]
       },
       {
@@ -58,11 +57,26 @@
         ]
       },
       {
+        "group": "Grok Bot Integration",
+        "icon": "robot",
+        "pages": [
+          "grok-bot/index"
+        ]
+      },
+      {
+        "group": "Antigravity CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "antigravity-cli/setup"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [
           "context-engineering",
           "progressive-disclosure",
+          "file-read-gate",
           "smart-explore-benchmark"
         ]
       },
@@ -71,11 +85,24 @@
         "icon": "gear",
         "pages": [
           "configuration",
+          "configuration/litellm-gateway",
+          "configuration/custom-anthropic-backends",
           "modes",
+          "telemetry",
           "development",
+          "branches",
           "troubleshooting",
           "platform-integration",
           "openclaw-integration"
+        ]
+      },
+      {
+        "group": "Hosted Server",
+        "icon": "cloud",
+        "pages": [
+          "hosted-server",
+          "cloud-sync",
+          "cmem-pro-headless"
         ]
       },
       {
@@ -116,7 +143,7 @@
         "header": "Legal",
         "items": [
           {
-            "label": "License (AGPL-3.0)",
+            "label": "License (Apache-2.0)",
             "href": "https://github.com/thedotmack/claude-mem/blob/main/LICENSE"
           }
         ]

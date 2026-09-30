@@ -10,8 +10,11 @@ export type FieldSpec =
 export interface MatchRule {
   path?: string;
   equals?: unknown;
+  not_equals?: unknown;
   in?: unknown[];
+  not_in?: unknown[];
   contains?: string;
+  not_contains?: string;
   exists?: boolean;
   regex?: string;
 }
@@ -58,8 +61,9 @@ export interface WatchTarget {
   workspace?: string;
   project?: string;
   context?: WatchContextConfig;
-  rescanIntervalMs?: number;
   startAtEnd?: boolean;
+  /** Grok Bot (and similar) host agent id, carried from the watch path into ingest. */
+  agentId?: string;
 }
 
 export interface TranscriptWatchConfig {

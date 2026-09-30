@@ -1,18 +1,8 @@
-/**
- * Search module — finds code files and symbols matching a query.
- *
- * Two search modes:
- * 1. Grep-style: find files/lines containing the query string
- * 2. Structural: parse files and match against symbol names/signatures
- *
- * Both return folded views, not raw content.
- *
- * Uses batch parsing (one CLI call per language) for fast multi-file search.
- */
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { parseFilesBatch, formatFoldedView, type FoldedFile } from "./parser.js";
+import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
   ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
@@ -22,11 +12,21 @@ const CODE_EXTENSIONS = new Set([
   ".rb",
   ".java",
   ".cs",
-  ".cpp", ".c", ".h", ".hpp",
+  ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh",
   ".swift",
-  ".kt",
+  ".kt", ".kts",
   ".php",
   ".vue", ".svelte",
+  ".lua",
+  ".scala", ".sc",
+  ".sh", ".bash", ".zsh",
+  ".hs",
+  ".zig",
+  ".css", ".scss",
+  ".toml",
+  ".yml", ".yaml",
+  ".sql",
+  ".md", ".mdx",
 ]);
 
 const IGNORE_DIRS = new Set([
@@ -36,7 +36,7 @@ const IGNORE_DIRS = new Set([
   ".claude", ".smart-file-read",
 ]);
 
-const MAX_FILE_SIZE = 512 * 1024; // 512KB — skip huge files
+const MAX_FILE_SIZE = 512 * 1024; 
 
 export interface SearchResult {
   foldedFiles: FoldedFile[];
@@ -54,20 +54,18 @@ export interface SymbolMatch {
   jsdoc?: string;
   lineStart: number;
   lineEnd: number;
-  matchReason: string; // why this matched
+  matchReason: string; 
 }
 
-/**
- * Walk a directory recursively, yielding file paths.
- */
 async function* walkDir(dir: string, rootDir: string, maxDepth: number = 20): AsyncGenerator<string> {
   if (maxDepth <= 0) return;
 
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return; // permission denied, etc.
+  } catch (error) {
+    logger.debug('WORKER', `walkDir: failed to read directory ${dir}`, undefined, error instanceof Error ? error : undefined);
+    return;
   }
 
   for (const entry of entries) {
@@ -87,9 +85,6 @@ async function* walkDir(dir: string, rootDir: string, maxDepth: number = 20): As
   }
 }
 
-/**
- * Read a file safely, skipping if too large or binary.
- */
 async function safeReadFile(filePath: string): Promise<string | null> {
   try {
     const stats = await stat(filePath);
@@ -98,22 +93,15 @@ async function safeReadFile(filePath: string): Promise<string | null> {
 
     const content = await readFile(filePath, "utf-8");
 
-    // Quick binary check — if first 1000 chars have null bytes, skip
     if (content.slice(0, 1000).includes("\0")) return null;
 
     return content;
-  } catch {
+  } catch (error) {
+    logger.debug('WORKER', `safeReadFile: failed to read ${filePath}`, undefined, error instanceof Error ? error : undefined);
     return null;
   }
 }
 
-/**
- * Search a codebase for symbols matching a query.
- *
- * Phase 1: Collect files and read content
- * Phase 2: Batch parse all files (one CLI call per language)
- * Phase 3: Match query against parsed symbols
- */
 export async function searchCodebase(
   rootDir: string,
   query: string,
@@ -127,10 +115,9 @@ export async function searchCodebase(
   const queryLower = query.toLowerCase();
   const queryParts = queryLower.split(/[\s_\-./]+/).filter(p => p.length > 0);
 
-  // Phase 1: Collect files
   const filesToParse: Array<{ absolutePath: string; relativePath: string; content: string }> = [];
 
-  for await (const filePath of walkDir(rootDir, rootDir)) {
+  for await (const filePath of walkDir(rootDir, rootDir, 20)) {
     if (options.filePattern) {
       const relPath = relative(rootDir, filePath);
       if (!relPath.toLowerCase().includes(options.filePattern.toLowerCase())) continue;
@@ -146,10 +133,8 @@ export async function searchCodebase(
     });
   }
 
-  // Phase 2: Batch parse (one CLI call per language)
   const parsedFiles = parseFilesBatch(filesToParse);
 
-  // Phase 3: Match query against symbols
   const foldedFiles: FoldedFile[] = [];
   const matchingSymbols: SymbolMatch[] = [];
   let totalSymbolsFound = 0;
@@ -210,7 +195,6 @@ export async function searchCodebase(
     }
   }
 
-  // Sort by relevance and trim
   matchingSymbols.sort((a, b) => {
     const aScore = matchScore(a.symbolName.toLowerCase(), queryParts);
     const bScore = matchScore(b.symbolName.toLowerCase(), queryParts);
@@ -232,19 +216,14 @@ export async function searchCodebase(
   };
 }
 
-/**
- * Score how well query parts match a string.
- * Returns 0 for no match, higher for better matches.
- */
 function matchScore(text: string, queryParts: string[]): number {
   let score = 0;
   for (const part of queryParts) {
     if (text === part) {
-      score += 10; // exact match
+      score += 10; 
     } else if (text.includes(part)) {
-      score += 5; // substring match
+      score += 5; 
     } else {
-      // Fuzzy: check if all chars appear in order
       let ti = 0;
       let matched = 0;
       for (const ch of part) {
@@ -255,7 +234,7 @@ function matchScore(text: string, queryParts: string[]): number {
         }
       }
       if (matched === part.length) {
-        score += 1; // loose fuzzy match
+        score += 1; 
       }
     }
   }
@@ -270,9 +249,6 @@ function countSymbols(file: FoldedFile): number {
   return count;
 }
 
-/**
- * Format search results for LLM consumption.
- */
 export function formatSearchResults(result: SearchResult, query: string): string {
   const parts: string[] = [];
 
@@ -286,7 +262,6 @@ export function formatSearchResults(result: SearchResult, query: string): string
     return parts.join("\n");
   }
 
-  // Show matching symbols first (compact)
   parts.push("── Matching Symbols ──");
   parts.push("");
   for (const match of result.matchingSymbols) {
@@ -301,7 +276,6 @@ export function formatSearchResults(result: SearchResult, query: string): string
     parts.push("");
   }
 
-  // Show folded file views
   parts.push("── Folded File Views ──");
   parts.push("");
   for (const file of result.foldedFiles) {

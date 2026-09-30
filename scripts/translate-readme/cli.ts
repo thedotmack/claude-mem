@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { parseArgs } from "node:util";
 import { translateReadme, SUPPORTED_LANGUAGES } from "./index.ts";
 
 interface CliArgs {
@@ -67,7 +68,6 @@ SUPPORTED LANGUAGES:
 
 function printLanguages(): void {
   const LANGUAGE_NAMES: Record<string, string> = {
-    // Tier 1 - No-brainers
     zh: "Chinese (Simplified)",
     ja: "Japanese",
     "pt-br": "Brazilian Portuguese",
@@ -75,7 +75,6 @@ function printLanguages(): void {
     es: "Spanish",
     de: "German",
     fr: "French",
-    // Tier 2 - Strong tech scenes
     he: "Hebrew",
     ar: "Arabic",
     ru: "Russian",
@@ -84,23 +83,21 @@ function printLanguages(): void {
     nl: "Dutch",
     tr: "Turkish",
     uk: "Ukrainian",
-    // Tier 3 - Emerging/Growing fast
+    ur: "Urdu",
     vi: "Vietnamese",
     id: "Indonesian",
     th: "Thai",
+    tl: "Tagalog",
     hi: "Hindi",
     bn: "Bengali",
-    ur: "Urdu",
     ro: "Romanian",
     sv: "Swedish",
-    // Tier 4 - Why not
     it: "Italian",
     el: "Greek",
     hu: "Hungarian",
     fi: "Finnish",
     da: "Danish",
     no: "Norwegian",
-    // Other supported
     bg: "Bulgarian",
     et: "Estonian",
     lt: "Lithuanian",
@@ -121,81 +118,50 @@ function printLanguages(): void {
   console.log("");
 }
 
-function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = {
-    source: "",
-    languages: [],
-    preserveCode: true,
-    verbose: false,
-    force: false,
-    useExisting: false,
-    help: false,
-    listLanguages: false,
-  };
+function parseCliArgs(argv: string[]): CliArgs {
+  try {
+    const { values, positionals } = parseArgs({
+      args: argv.slice(2),
+      allowPositionals: true,
+      options: {
+        help: { type: "boolean", short: "h", default: false },
+        "list-languages": { type: "boolean", default: false },
+        verbose: { type: "boolean", short: "v", default: false },
+        force: { type: "boolean", short: "f", default: false },
+        "use-existing": { type: "boolean", default: false },
+        "no-preserve-code": { type: "boolean", default: false },
+        output: { type: "string", short: "o" },
+        pattern: { type: "string", short: "p" },
+        model: { type: "string", short: "m" },
+        "max-budget": { type: "string" },
+      },
+    });
 
-  const positional: string[] = [];
-  let i = 2; // Skip node and script path
-
-  while (i < argv.length) {
-    const arg = argv[i];
-
-    switch (arg) {
-      case "-h":
-      case "--help":
-        args.help = true;
-        break;
-      case "--list-languages":
-        args.listLanguages = true;
-        break;
-      case "-v":
-      case "--verbose":
-        args.verbose = true;
-        break;
-      case "-f":
-      case "--force":
-        args.force = true;
-        break;
-      case "--use-existing":
-        args.useExisting = true;
-        break;
-      case "--no-preserve-code":
-        args.preserveCode = false;
-        break;
-      case "-o":
-      case "--output":
-        args.outputDir = argv[++i];
-        break;
-      case "-p":
-      case "--pattern":
-        args.pattern = argv[++i];
-        break;
-      case "-m":
-      case "--model":
-        args.model = argv[++i];
-        break;
-      case "--max-budget":
-        args.maxBudget = parseFloat(argv[++i]);
-        break;
-      default:
-        if (arg.startsWith("-")) {
-          console.error(`Unknown option: ${arg}`);
-          process.exit(1);
-        }
-        positional.push(arg);
-    }
-    i++;
+    return {
+      source: positionals[0] ?? "",
+      languages: positionals.slice(1),
+      outputDir: values.output,
+      pattern: values.pattern,
+      preserveCode: !values["no-preserve-code"],
+      model: values.model,
+      maxBudget:
+        values["max-budget"] !== undefined
+          ? parseFloat(values["max-budget"])
+          : undefined,
+      verbose: values.verbose,
+      force: values.force,
+      useExisting: values["use-existing"],
+      help: values.help,
+      listLanguages: values["list-languages"],
+    };
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
   }
-
-  if (positional.length > 0) {
-    args.source = positional[0];
-    args.languages = positional.slice(1);
-  }
-
-  return args;
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv);
+  const args = parseCliArgs(process.argv);
 
   if (args.help) {
     printHelp();
@@ -219,7 +185,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Validate language codes
   const invalidLangs = args.languages.filter(
     (lang) => !SUPPORTED_LANGUAGES.includes(lang.toLowerCase())
   );
@@ -243,7 +208,6 @@ async function main(): Promise<void> {
       useExisting: args.useExisting,
     });
 
-    // Exit with error code if any translations failed
     if (result.failed > 0) {
       process.exit(1);
     }

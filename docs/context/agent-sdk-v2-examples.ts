@@ -1,9 +1,3 @@
-/**
- * Claude Agent SDK V2 Examples
- *
- * The V2 API provides a session-based interface with separate send()/receive(),
- * ideal for multi-turn conversations. Run with: npx tsx v2-examples.ts
- */
 
 import {
   unstable_v2_createSession,
@@ -32,7 +26,6 @@ async function main() {
   }
 }
 
-// Basic session with send/receive pattern
 async function basicSession() {
   console.log('=== Basic Session ===\n');
 
@@ -47,13 +40,11 @@ async function basicSession() {
   }
 }
 
-// Multi-turn conversation - V2's key advantage
 async function multiTurn() {
   console.log('=== Multi-Turn Conversation ===\n');
 
   await using session = unstable_v2_createSession({ model: 'sonnet' });
 
-  // Turn 1
   await session.send('What is 5 + 3? Just the number.');
   for await (const msg of session.receive()) {
     if (msg.type === 'assistant') {
@@ -62,7 +53,6 @@ async function multiTurn() {
     }
   }
 
-  // Turn 2 - Claude remembers context
   await session.send('Multiply that by 2. Just the number.');
   for await (const msg of session.receive()) {
     if (msg.type === 'assistant') {
@@ -72,7 +62,6 @@ async function multiTurn() {
   }
 }
 
-// One-shot convenience function
 async function oneShot() {
   console.log('=== One-Shot Prompt ===\n');
 
@@ -84,13 +73,11 @@ async function oneShot() {
   }
 }
 
-// Session resume - persist context across sessions
 async function sessionResume() {
   console.log('=== Session Resume ===\n');
 
   let sessionId: string | undefined;
 
-  // First session - establish a memory
   {
     await using session = unstable_v2_createSession({ model: 'sonnet' });
     console.log('[Session 1] Telling Claude my favorite color...');
@@ -110,7 +97,6 @@ async function sessionResume() {
 
   console.log('--- Session closed. Time passes... ---\n');
 
-  // Resume and verify Claude remembers
   {
     await using session = unstable_v2_resumeSession(sessionId!, { model: 'sonnet' });
     console.log('[Session 2] Resuming and asking Claude...');

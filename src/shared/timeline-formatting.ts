@@ -1,73 +1,108 @@
-/**
- * Shared timeline formatting utilities
- *
- * Pure formatting and grouping functions extracted from context-generator.ts
- * to be reused by SearchManager and other services.
- */
 
 import path from 'path';
 import { logger } from '../utils/logger.js';
 
-/**
- * Parse JSON array string, returning empty array on failure
- */
 export function parseJsonArray(json: string | null): string[] {
   if (!json) return [];
   try {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
+  } catch (err: unknown) {
     logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
       preview: json?.substring(0, 50)
-    }, err as Error);
+    }, err instanceof Error ? err : new Error(String(err)));
     return [];
   }
 }
 
-/**
- * Format date with time (e.g., "Dec 14, 7:30 PM")
- * Accepts either ISO date string or epoch milliseconds
- */
+// Some runtimes (Bun/JavaScriptCore on Windows with an unresolvable system time
+// zone) throw `failed to initialize DateTimeFormat` from toLocale* calls. These
+// helpers run inside the session-start context build, so a throw there loses the
+// whole memory injection. Fall back to a fixed date/time instead of failing.
+function guardInvalid(date: Date, build: (date: Date) => string): string {
+  if (Number.isNaN(date.getTime())) return 'Invalid Date';
+  return build(date);
+}
+
+// The 12-hour clock the folder-timeline parser (claude-md-utils) reads back: it
+// matches only `H:MM AM/PM`, so a 24-hour fallback would drop the row's time and
+// leave it at the day header's midnight. Uses UTC because the local zone is the
+// thing that failed.
+function isoClock(date: Date): string {
+  const hours = date.getUTCHours();
+  const period = hours < 12 ? 'AM' : 'PM';
+  const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+  return `${hours % 12 || 12}:${minutes} ${period}`;
+}
+
+function isoDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function safeFormat(format: () => string, fallback: () => string): string {
+  try {
+    return format();
+  } catch (err: unknown) {
+    logger.debug('PARSER', 'Locale date formatter unavailable, using ISO fallback', {},
+      err instanceof Error ? err : new Error(String(err)));
+    return fallback();
+  }
+}
+
 export function formatDateTime(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }),
+    () => guardInvalid(date, d => `${isoDay(d)} ${isoClock(d)}`)
+  );
 }
 
-/**
- * Format just time, no date (e.g., "7:30 PM")
- * Accepts either ISO date string or epoch milliseconds
- */
 export function formatTime(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }),
+    () => guardInvalid(date, isoClock)
+  );
 }
 
-/**
- * Format just date (e.g., "Dec 14, 2025")
- * Accepts either ISO date string or epoch milliseconds
- */
 export function formatDate(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    }),
+    () => guardInvalid(date, isoDay)
+  );
 }
 
-/**
- * Convert absolute paths to relative paths
- */
+export function formatHeaderDateTime(now: Date = new Date()): string {
+  return safeFormat(
+    () => {
+      const date = now.toLocaleDateString('en-CA');
+      const time = now.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      }).toLowerCase().replace(' ', '');
+      const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+      return `${date} ${time} ${tz}`;
+    },
+    () => guardInvalid(now, d => `${isoDay(d)} ${isoClock(d)} UTC`)
+  );
+}
+
 export function toRelativePath(filePath: string, cwd: string): string {
   if (path.isAbsolute(filePath)) {
     return path.relative(cwd, filePath);
@@ -75,23 +110,16 @@ export function toRelativePath(filePath: string, cwd: string): string {
   return filePath;
 }
 
-/**
- * Extract first relevant file from files_modified OR files_read JSON arrays.
- * Prefers files_modified, falls back to files_read.
- * Returns 'General' only if both are empty.
- */
 export function extractFirstFile(
   filesModified: string | null,
   cwd: string,
   filesRead?: string | null
 ): string {
-  // Try files_modified first
   const modified = parseJsonArray(filesModified);
   if (modified.length > 0) {
     return toRelativePath(modified[0], cwd);
   }
 
-  // Fall back to files_read
   if (filesRead) {
     const read = parseJsonArray(filesRead);
     if (read.length > 0) {
@@ -102,29 +130,27 @@ export function extractFirstFile(
   return 'General';
 }
 
-/**
- * Estimate token count for text (rough approximation: ~4 chars per token)
- */
 export function estimateTokens(text: string | null): number {
   if (!text) return 0;
   return Math.ceil(text.length / 4);
 }
 
-/**
- * Group items by date
- *
- * Generic function that works with any item type that has a date field.
- * Returns a Map of date string -> items array, sorted chronologically.
- *
- * @param items - Array of items to group
- * @param getDate - Function to extract date string from each item
- * @returns Map of formatted date strings to item arrays, sorted chronologically
- */
+export interface GroupByDateOptions {
+  /**
+   * When true (default), day groups are reordered chronologically
+   * (oldest first). When false, day groups keep the order in which
+   * their first item appeared in `items`, so a relevance-ordered
+   * input stays relevance-ordered across day headers.
+   */
+  sort?: boolean;
+}
+
 export function groupByDate<T>(
   items: T[],
-  getDate: (item: T) => string
+  getDate: (item: T) => string,
+  options: GroupByDateOptions = {}
 ): Map<string, T[]> {
-  // Group by day
+  const { sort = true } = options;
   const itemsByDay = new Map<string, T[]>();
   for (const item of items) {
     const itemDate = getDate(item);
@@ -135,7 +161,10 @@ export function groupByDate<T>(
     itemsByDay.get(day)!.push(item);
   }
 
-  // Sort days chronologically
+  if (!sort) {
+    return itemsByDay;
+  }
+
   const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {
     const aDate = new Date(a[0]).getTime();
     const bDate = new Date(b[0]).getTime();

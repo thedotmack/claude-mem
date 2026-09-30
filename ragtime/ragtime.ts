@@ -1,55 +1,30 @@
 #!/usr/bin/env bun
-/**
- * RAGTIME - Email Investigation Batch Processor
- *
- * Processes email corpus files through Claude using email-investigation mode.
- * Each file gets a NEW session - context is managed by Claude-mem's context
- * injection hook, not by conversation continuation.
- *
- * Features:
- * - Email-investigation mode for entity/relationship/timeline extraction
- * - Self-iterating loop (each file = new session)
- * - Transcript cleanup to prevent buildup
- * - Configurable paths via environment or defaults
- */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "fs";
 import * as path from "path";
 import { homedir } from "os";
 
-// Configuration - can be overridden via environment variables
 const CONFIG = {
-  // Path to corpus folder containing .md files
   corpusPath: process.env.RAGTIME_CORPUS_PATH ||
     path.join(process.cwd(), "datasets", "epstein-mode"),
 
-  // Path to claude-mem plugin
   pluginPath: process.env.RAGTIME_PLUGIN_PATH ||
     path.join(process.cwd(), "plugin"),
 
-  // Worker port
   workerPort: parseInt(process.env.CLAUDE_MEM_WORKER_PORT || "37777", 10),
 
-  // Max age of transcripts to keep (in hours)
   transcriptMaxAgeHours: parseInt(process.env.RAGTIME_TRANSCRIPT_MAX_AGE || "24", 10),
 
-  // Project name for grouping transcripts
   projectName: process.env.RAGTIME_PROJECT_NAME || "ragtime-investigation",
 
-  // Limit files to process (0 = all)
   fileLimit: parseInt(process.env.RAGTIME_FILE_LIMIT || "0", 10),
 
-  // Delay between sessions (ms) - gives worker time to process
   sessionDelayMs: parseInt(process.env.RAGTIME_SESSION_DELAY || "2000", 10),
 };
 
-// Set email-investigation mode for Claude-mem
 process.env.CLAUDE_MEM_MODE = "email-investigation";
 
-/**
- * Get list of markdown files to process, sorted numerically
- */
 function getFilesToProcess(): string[] {
   if (!fs.existsSync(CONFIG.corpusPath)) {
     console.error(`Corpus path does not exist: ${CONFIG.corpusPath}`);
@@ -61,7 +36,6 @@ function getFilesToProcess(): string[] {
     .readdirSync(CONFIG.corpusPath)
     .filter((f) => f.endsWith(".md"))
     .sort((a, b) => {
-      // Extract numeric part from filename (e.g., "0001.md" -> 1)
       const numA = parseInt(a.match(/\d+/)?.[0] || "0", 10);
       const numB = parseInt(b.match(/\d+/)?.[0] || "0", 10);
       return numA - numB;
@@ -73,7 +47,6 @@ function getFilesToProcess(): string[] {
     process.exit(1);
   }
 
-  // Apply limit if set
   if (CONFIG.fileLimit > 0) {
     return files.slice(0, CONFIG.fileLimit);
   }
@@ -81,10 +54,6 @@ function getFilesToProcess(): string[] {
   return files;
 }
 
-/**
- * Clean up old transcripts to prevent buildup
- * Removes transcripts older than configured max age
- */
 async function cleanupOldTranscripts(): Promise<void> {
   const transcriptsBase = path.join(homedir(), ".claude", "projects");
 
@@ -98,7 +67,6 @@ async function cleanupOldTranscripts(): Promise<void> {
   let cleaned = 0;
 
   try {
-    // Walk through project directories
     const projectDirs = fs.readdirSync(transcriptsBase);
 
     for (const projectDir of projectDirs) {
@@ -107,7 +75,6 @@ async function cleanupOldTranscripts(): Promise<void> {
 
       if (!stat.isDirectory()) continue;
 
-      // Check for .jsonl transcript files
       const files = fs.readdirSync(projectPath);
 
       for (const file of files) {
@@ -127,7 +94,6 @@ async function cleanupOldTranscripts(): Promise<void> {
         }
       }
 
-      // Remove empty project directories
       const remaining = fs.readdirSync(projectPath);
       if (remaining.length === 0) {
         try {
@@ -146,11 +112,8 @@ async function cleanupOldTranscripts(): Promise<void> {
   }
 }
 
-/**
- * Poll the worker's processing status endpoint until the queue is empty
- */
 async function waitForQueueToEmpty(): Promise<void> {
-  const maxWaitTimeMs = 5 * 60 * 1000; // 5 minutes maximum
+  const maxWaitTimeMs = 5 * 60 * 1000; 
   const pollIntervalMs = 500;
   const startTime = Date.now();
 
@@ -167,12 +130,10 @@ async function waitForQueueToEmpty(): Promise<void> {
 
       const status = await response.json();
 
-      // Exit when queue is empty
       if (status.queueDepth === 0 && !status.isProcessing) {
         break;
       }
 
-      // Check timeout
       if (Date.now() - startTime > maxWaitTimeMs) {
         console.warn("Queue did not empty within timeout, continuing anyway");
         break;
@@ -187,10 +148,6 @@ async function waitForQueueToEmpty(): Promise<void> {
   }
 }
 
-/**
- * Process a single file in a NEW session
- * Context is injected by Claude-mem hooks, not conversation continuation
- */
 async function processFile(file: string, index: number, total: number): Promise<void> {
   const filename = path.basename(file);
   console.log(`\n[${ index + 1}/${total}] Processing: ${filename}`);
@@ -203,13 +160,11 @@ async function processFile(file: string, index: number, total: number): Promise<
         plugins: [{ type: "local", path: CONFIG.pluginPath }],
       },
     })) {
-      // Log assistant responses
       if (message.type === "assistant") {
         const content = message.message.content;
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === "text" && block.text) {
-              // Truncate long responses for console
               const text = block.text.length > 500
                 ? block.text.substring(0, 500) + "..."
                 : block.text;
@@ -221,7 +176,6 @@ async function processFile(file: string, index: number, total: number): Promise<
         }
       }
 
-      // Log completion
       if (message.type === "result" && message.subtype === "success") {
         console.log(`Completed: ${filename}`);
       }
@@ -231,9 +185,6 @@ async function processFile(file: string, index: number, total: number): Promise<
   }
 }
 
-/**
- * Main execution loop
- */
 async function main(): Promise<void> {
   console.log("=".repeat(60));
   console.log("RAGTIME Email Investigation Processor");
@@ -245,35 +196,28 @@ async function main(): Promise<void> {
   console.log(`Transcript cleanup: ${CONFIG.transcriptMaxAgeHours}h`);
   console.log("=".repeat(60));
 
-  // Initial cleanup
   await cleanupOldTranscripts();
 
-  // Get files to process
   const files = getFilesToProcess();
   console.log(`\nFound ${files.length} file(s) to process\n`);
 
-  // Process each file in a NEW session
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
 
     await processFile(file, i, files.length);
 
-    // Wait for worker to finish processing observations
     console.log("Waiting for worker queue...");
     await waitForQueueToEmpty();
 
-    // Delay before next session
     if (i < files.length - 1 && CONFIG.sessionDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, CONFIG.sessionDelayMs));
     }
 
-    // Periodic transcript cleanup (every 10 files)
     if ((i + 1) % 10 === 0) {
       await cleanupOldTranscripts();
     }
   }
 
-  // Final cleanup
   await cleanupOldTranscripts();
 
   console.log("\n" + "=".repeat(60));
@@ -281,7 +225,6 @@ async function main(): Promise<void> {
   console.log("=".repeat(60));
 }
 
-// Run
 main().catch((err) => {
   console.error("Fatal error:", err);
   process.exit(1);

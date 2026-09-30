@@ -1,9 +1,3 @@
-/**
- * Project Filter Tests
- *
- * Tests glob-based path matching for project exclusion.
- * Source: src/utils/project-filter.ts
- */
 
 import { describe, it, expect } from 'bun:test';
 import { isProjectExcluded } from '../../src/utils/project-filter.js';
@@ -55,6 +49,25 @@ describe('Project Filter', () => {
         const home = homedir();
         expect(isProjectExcluded(`${home}/secret`, '~/secret')).toBe(true);
         expect(isProjectExcluded(`${home}/projects/secret`, '~/projects/*')).toBe(true);
+      });
+
+      it('expands a Windows-form ~\\ pattern', () => {
+        const home = homedir();
+        // `expandHome` recognises `~` and `~/`, not `~\` on POSIX. Expanding before
+        // normalising separators left a Windows-written exclusion as a literal `~/...`,
+        // which matches no absolute path — so the entry silently stopped excluding.
+        expect(isProjectExcluded(`${home}/projects/secret`, '~\\projects\\secret')).toBe(true);
+        expect(isProjectExcluded(`${home}/projects/secret`, '~\\projects\\*')).toBe(true);
+        expect(isProjectExcluded(home, '~\\')).toBe(true);
+      });
+
+      it('does not glue the home directory onto a ~name pattern', () => {
+        const home = homedir();
+        // `~backup/*` used to expand by concatenation to `<home>backup/*`, a path with no
+        // separator between the home directory and the pattern. That excluded a sibling of
+        // the home directory nobody named, and left a real `~backup` directory unexcluded.
+        expect(isProjectExcluded(`${home}backup/thing`, '~backup/*')).toBe(false);
+        expect(isProjectExcluded('/opt/~backup/thing', '~backup/*')).toBe(false);
       });
     });
 

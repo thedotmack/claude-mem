@@ -1,83 +1,145 @@
-/**
- * Session Init Handler - UserPromptSubmit
- *
- * Extracted from new-hook.ts - initializes session and starts SDK agent.
- */
-
+// IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
+// HookResult and MUST NOT call process.stderr.write / process.stdout.write /
+// console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
+// caught by hookCommand and routed through emitBlockingError.
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
-import { getProjectName } from '../../utils/project-name.js';
+import {
+  executeWithWorkerFallback as defaultExecuteWithWorkerFallback,
+  isWorkerFallback as defaultIsWorkerFallback,
+} from '../../shared/worker-utils.js';
+import { getProjectContext } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
-import { isProjectExcluded } from '../../utils/project-filter.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
+import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
+import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import {
+  resolveRuntimeContext as defaultResolveRuntimeContext,
+  logServerFallback as defaultLogServerFallback,
+  type ServerRuntimeContext,
+} from '../../services/hooks/runtime-selector.js';
+import { isServerClientError } from '../../services/hooks/server-client.js';
+
+interface SessionInitResponse {
+  sessionDbId: number;
+  promptNumber: number;
+  skipped?: boolean;
+  reason?: string;
+  contextInjected?: boolean;
+}
+
+interface SemanticContextResponse {
+  context: string;
+  count: number;
+}
+
+const defaultDependencies = {
+  executeWithWorkerFallback: defaultExecuteWithWorkerFallback,
+  isWorkerFallback: defaultIsWorkerFallback,
+  loadFromFileOnce: defaultLoadFromFileOnce,
+  resolveRuntimeContext: defaultResolveRuntimeContext,
+  logServerFallback: defaultLogServerFallback,
+  shouldTrackProject: defaultShouldTrackProject,
+};
+
+let dependencies = defaultDependencies;
+
+export function setSessionInitDependenciesForTesting(
+  overrides: Partial<typeof defaultDependencies> = {},
+): void {
+  dependencies = { ...defaultDependencies, ...overrides };
+}
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    // Ensure worker is running before any other logic
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) {
-      // Worker not available - skip session init gracefully
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
+    const { sessionId, prompt: rawPrompt } = input;
+    const cwd = input.cwd ?? process.cwd();  
 
-    const { sessionId, cwd, prompt: rawPrompt } = input;
-
-    // Guard: Codex CLI and other platforms may not provide a session_id (#744)
     if (!sessionId) {
       logger.warn('HOOK', 'session-init: No sessionId provided, skipping (Codex CLI or unknown platform)');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    // Check if project is excluded from tracking
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    if (!dependencies.shouldTrackProject(cwd)) {
       logger.info('HOOK', 'Project excluded from tracking', { cwd });
       return { continue: true, suppressOutput: true };
     }
 
-    // Handle image-only prompts (where text prompt is empty/undefined)
-    // Use placeholder so sessions still get created and tracked for memory
+    if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
+      logger.debug('HOOK', 'session-init: skipping internal protocol payload', {
+        preview: rawPrompt.slice(0, 80),
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
     const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
 
-    const project = getProjectName(cwd);
+    const project = getProjectContext(cwd).primary;
+    const platformSource = normalizePlatformSource(input.platform);
+    const settings = dependencies.loadFromFileOnce();
+    const semanticInject =
+      String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
+
+    const runtime = dependencies.resolveRuntimeContext();
+    // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
+    // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
+    if (runtime.runtime === 'server') {
+      try {
+        await startServerSession(runtime, input, sessionId, platformSource, project, prompt);
+        // Server does not currently support the same context-injection
+        // protocol as the worker. Skip semantic injection in server mode
+        // until the server context endpoint exists.
+        return { continue: true, suppressOutput: true };
+      } catch (error: unknown) {
+        if (isServerClientError(error) && error.isFallbackEligible()) {
+          dependencies.logServerFallback(error.kind, {
+            status: error.status,
+            message: error.message,
+            route: '/v1/sessions/start',
+          });
+          // fall through to worker fallback
+        } else {
+          logger.error('HOOK', 'Server session-start failed (non-recoverable)', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+        }
+      }
+    }
 
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
 
-    // Initialize session via HTTP - handles DB operations and privacy checks
-    const initResponse = await workerHttpRequest('/api/sessions/init', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const initResult = await dependencies.executeWithWorkerFallback<SessionInitResponse>(
+      '/api/sessions/init',
+      'POST',
+      {
         contentSessionId: sessionId,
         project,
-        prompt
-      })
-    });
+        prompt,
+        platformSource,
+      },
+      platformSource === 'codex'
+        ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
+        : undefined,
+    );
 
-    if (!initResponse.ok) {
-      // Log but don't throw - a worker 500 should not block the user's prompt
-      logger.failure('HOOK', `Session initialization failed: ${initResponse.status}`, { contentSessionId: sessionId, project });
+    if (dependencies.isWorkerFallback(initResult)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const initResult = await initResponse.json() as {
-      sessionDbId: number;
-      promptNumber: number;
-      skipped?: boolean;
-      reason?: string;
-      contextInjected?: boolean;
-    };
+    if (typeof initResult?.sessionDbId !== 'number') {
+      logger.failure('HOOK', 'Session initialization returned malformed response', { contentSessionId: sessionId, project });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     const sessionDbId = initResult.sessionDbId;
     const promptNumber = initResult.promptNumber;
 
     logger.debug('HOOK', 'session-init: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped, contextInjected: initResult.contextInjected });
 
-    // Debug-level alignment log for detailed tracing
     logger.debug('HOOK', `[ALIGNMENT] Hook Entry | contentSessionId=${sessionId} | prompt#=${promptNumber} | sessionDbId=${sessionDbId}`);
 
-    // Check if prompt was entirely private (worker performs privacy check)
     if (initResult.skipped && initResult.reason === 'private') {
       logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | skipped=true | reason=private`, {
         sessionId: sessionDbId
@@ -85,44 +147,68 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    // Skip SDK agent re-initialization if context was already injected for this session (#1079)
-    // The prompt was already saved to the database by /api/sessions/init above —
-    // no need to re-start the SDK agent on every turn
-    if (initResult.contextInjected) {
-      logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | skipped_agent_init=true | reason=context_already_injected`, {
-        sessionId: sessionDbId
-      });
-      return { continue: true, suppressOutput: true };
-    }
+    let additionalContext = '';
 
-    // Only initialize SDK agent for Claude Code (not Cursor)
-    // Cursor doesn't use the SDK agent - it only needs session/observation storage
-    if (input.platform !== 'cursor' && sessionDbId) {
-      // Strip leading slash from commands for memory agent
-      // /review 101 -> review 101 (more semantic for observations)
-      const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
-
-      logger.debug('HOOK', 'session-init: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber });
-
-      // Initialize SDK agent session via HTTP (starts the agent!)
-      const response = await workerHttpRequest(`/sessions/${sessionDbId}/init`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
-      });
-
-      if (!response.ok) {
-        // Log but don't throw - SDK agent failure should not block the user's prompt
-        logger.failure('HOOK', `SDK agent start failed: ${response.status}`, { sessionDbId, promptNumber });
+    if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
+      const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
+      const semanticResult = await dependencies.executeWithWorkerFallback<SemanticContextResponse>(
+        '/api/context/semantic',
+        'POST',
+        { q: prompt, project, limit, platformSource },
+        platformSource === 'codex'
+          ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
+          : undefined,
+      );
+      if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
+        logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
+        additionalContext = semanticResult.context;
       }
-    } else if (input.platform === 'cursor') {
-      logger.debug('HOOK', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }
 
     logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | project=${project}`, {
       sessionId: sessionDbId
     });
 
+    if (additionalContext) {
+      return {
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext
+        }
+      };
+    }
+
     return { continue: true, suppressOutput: true };
   }
 };
+
+async function startServerSession(
+  runtime: ServerRuntimeContext,
+  input: NormalizedHookInput,
+  sessionId: string,
+  platformSource: string,
+  project: string,
+  prompt: string,
+): Promise<void> {
+  await runtime.client.startSession({
+    projectId: runtime.projectId,
+    externalSessionId: sessionId,
+    contentSessionId: sessionId,
+    agentId: input.agentId ?? null,
+    agentType: input.agentType ?? null,
+    platformSource,
+    metadata: { project, prompt },
+  });
+  logger.info('HOOK', 'session-init: server session started', {
+    contentSessionId: sessionId,
+    project,
+  });
+}
+
+function parseSemanticInjectLimit(value: string | number): number {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 5;
+  return parsed;
+}

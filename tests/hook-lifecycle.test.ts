@@ -1,24 +1,29 @@
-/**
- * Tests for Hook Lifecycle Fixes (TRIAGE-04)
- *
- * Validates:
- * - Stop hook returns suppressOutput: true (prevents infinite loop #987)
- * - All handlers return suppressOutput: true (prevents conversation pollution #598, #784)
- * - Unknown event types handled gracefully (fixes #984)
- * - stderr suppressed in hook context (fixes #1181)
- * - Claude Code adapter defaults suppressOutput to true
- */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-
-// --- Event Handler Tests ---
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { fileURLToPath } from 'node:url';
 
 describe('Hook Lifecycle - Event Handlers', () => {
+  describe('worker fallback failure counter', () => {
+    it('resets stale unreachable state before 429/5xx API fallbacks', () => {
+      const source = readFileSync('src/shared/worker-utils.ts', 'utf-8');
+      const nonOkRegion = source.slice(
+        source.indexOf('if (!response.ok)'),
+        source.indexOf('const text = await response.text();'),
+      );
+
+      expect(nonOkRegion.indexOf('resetWorkerFailureCounter()'))
+        .toBeLessThan(nonOkRegion.indexOf('response.status === 429 || response.status >= 500'));
+    });
+  });
+
   describe('getEventHandler', () => {
     it('should return handler for all recognized event types', async () => {
       const { getEventHandler } = await import('../src/cli/handlers/index.js');
       const recognizedTypes = [
         'context', 'session-init', 'observation',
-        'summarize', 'session-complete', 'user-message', 'file-edit'
+        'summarize', 'user-message', 'file-edit', 'file-context'
       ];
       for (const type of recognizedTypes) {
         const handler = getEventHandler(type);
@@ -42,27 +47,15 @@ describe('Hook Lifecycle - Event Handlers', () => {
       expect(result.exitCode).toBe(0);
     });
 
-    it('should include session-complete as a recognized event type (#984)', async () => {
-      const { getEventHandler } = await import('../src/cli/handlers/index.js');
-      const handler = getEventHandler('session-complete');
-      // session-complete should NOT be the no-op handler
-      // We can verify this by checking it's not the same as an unknown type handler
-      expect(handler).toBeDefined();
-      // The real handler has different behavior than the no-op
-      // (it tries to call the worker, while no-op just returns immediately)
-    });
   });
 });
 
-// --- Codex CLI Compatibility Tests (#744) ---
-
 describe('Codex CLI Compatibility (#744)', () => {
   describe('getPlatformAdapter', () => {
-    it('should return rawAdapter for unknown platforms like codex', async () => {
-      const { getPlatformAdapter, rawAdapter } = await import('../src/cli/adapters/index.js');
-      // Should not throw for unknown platforms — falls back to rawAdapter
+    it('should return codexAdapter for codex', async () => {
+      const { getPlatformAdapter, codexAdapter } = await import('../src/cli/adapters/index.js');
       const adapter = getPlatformAdapter('codex');
-      expect(adapter).toBe(rawAdapter);
+      expect(adapter).toBe(codexAdapter);
     });
 
     it('should return rawAdapter for any unrecognized platform string', async () => {
@@ -105,9 +98,147 @@ describe('Codex CLI Compatibility (#744)', () => {
     });
   });
 
+  describe('codexAdapter', () => {
+    it('normalizes snake_case Stop payloads with last assistant message', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const input = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        turn_id: 'turn-1',
+        cwd: '/tmp',
+        stop_hook_active: false,
+        last_assistant_message: 'done',
+      });
+
+      expect(input.sessionId).toBe('codex-session');
+      expect(input.turnId).toBe('turn-1');
+      expect(input.lastAssistantMessage).toBe('done');
+      expect(input.stopHookActive).toBe(false);
+    });
+
+    it('normalizes string stop_hook_active payloads', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const active = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        stop_hook_active: 'true',
+      });
+      const inactive = codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        stop_hook_active: 'false',
+      });
+
+      expect(active.stopHookActive).toBe(true);
+      expect(inactive.stopHookActive).toBe(false);
+    });
+
+    it('rejects payloads without a session_id', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const { AdapterRejectedInput } = await import('../src/cli/adapters/errors.js');
+
+      expect(() => codexAdapter.normalizeInput({
+        hook_event_name: 'Stop',
+        cwd: '/tmp',
+      })).toThrow(AdapterRejectedInput);
+    });
+
+    it('adds filePaths without dropping the original object tool input', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const tmpDir = mkdtempSync(join(tmpdir(), 'codex-adapter-'));
+      try {
+        writeFileSync(join(tmpDir, 'README.md'), 'readme');
+
+        const input = codexAdapter.normalizeInput({
+          hook_event_name: 'PreToolUse',
+          session_id: 'codex-session',
+          cwd: tmpDir,
+          tool_name: 'Bash',
+          tool_input: { command: 'cat README.md' },
+        });
+
+        expect(input.toolInput).toEqual({
+          command: 'cat README.md',
+          filePaths: ['README.md'],
+        });
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('preserves non-object tool input payloads', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const input = codexAdapter.normalizeInput({
+        hook_event_name: 'PreToolUse',
+        session_id: 'codex-session',
+        cwd: '/tmp',
+        tool_name: 'Bash',
+        tool_input: 'cat README.md',
+      });
+
+      expect(input.toolInput).toBe('cat README.md');
+    });
+
+    it('drops PreToolUse allow decisions because Codex only accepts deny', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: 'file history',
+          permissionDecision: 'allow',
+        },
+      }) as any;
+
+      expect(output.hookSpecificOutput).toEqual({
+        hookEventName: 'PreToolUse',
+        additionalContext: 'file history',
+      });
+    });
+
+    it('omits suppressOutput from base Codex output', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+      }) as any;
+
+      expect(output).toEqual({ continue: true });
+      expect(output).not.toHaveProperty('suppressOutput');
+    });
+
+    it('does not emit hookSpecificOutput for Stop outputs', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'Stop',
+          additionalContext: 'ignored',
+        },
+      }) as any;
+
+      expect(output).toEqual({ continue: true });
+    });
+
+    it('preserves an explicit empty-string additionalContext instead of dropping the key (#3127)', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      }) as any;
+
+      expect(output).toEqual({
+        continue: true,
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      });
+    });
+  });
+
   describe('session-init handler undefined prompt', () => {
     it('should not throw when prompt is undefined', () => {
-      // Verify the short-circuit logic works for undefined
       const rawPrompt: string | undefined = undefined;
       const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
       expect(prompt).toBe('[media prompt]');
@@ -132,8 +263,6 @@ describe('Codex CLI Compatibility (#744)', () => {
     });
   });
 });
-
-// --- Cursor IDE Compatibility Tests (#838, #1049) ---
 
 describe('Cursor IDE Compatibility (#838, #1049)', () => {
   describe('cursorAdapter session ID fallbacks', () => {
@@ -253,15 +382,11 @@ describe('Cursor IDE Compatibility (#838, #1049)', () => {
   });
 });
 
-// --- Platform Adapter Tests ---
-
 describe('Hook Lifecycle - Claude Code Adapter', () => {
   const fmt = async (input: any) => {
     const { claudeCodeAdapter } = await import('../src/cli/adapters/claude-code.js');
     return claudeCodeAdapter.formatOutput(input);
   };
-
-  // --- Happy paths ---
 
   it('should return empty object for empty result', async () => {
     expect(await fmt({})).toEqual({});
@@ -287,8 +412,6 @@ describe('Hook Lifecycle - Claude Code Adapter', () => {
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ctx' },
     });
   });
-
-  // --- Edge cases / unhappy paths (addresses PR #1291 review) ---
 
   it('should return empty object for malformed input (undefined/null)', async () => {
     expect(await fmt(undefined)).toEqual({});
@@ -327,8 +450,6 @@ describe('Hook Lifecycle - Claude Code Adapter', () => {
   });
 });
 
-// --- stderr Suppression Tests ---
-
 describe('Hook Lifecycle - stderr Suppression (#1181)', () => {
   let originalStderrWrite: typeof process.stderr.write;
   let stderrOutput: string[];
@@ -336,7 +457,6 @@ describe('Hook Lifecycle - stderr Suppression (#1181)', () => {
   beforeEach(() => {
     originalStderrWrite = process.stderr.write.bind(process.stderr);
     stderrOutput = [];
-    // Capture stderr writes
     process.stderr.write = ((chunk: any) => {
       stderrOutput.push(String(chunk));
       return true;
@@ -348,25 +468,17 @@ describe('Hook Lifecycle - stderr Suppression (#1181)', () => {
   });
 
   it('should not use console.error in handlers/index.ts for unknown events', async () => {
-    // Re-import to get fresh module
     const { getEventHandler } = await import('../src/cli/handlers/index.js');
 
-    // Clear any stderr from import
     stderrOutput.length = 0;
 
-    // Call with unknown event — should use logger (writes to file), not console.error (writes to stderr)
     const handler = getEventHandler('unknown-event-type');
     await handler.execute({ sessionId: 'test', cwd: '/tmp' });
 
-    // No stderr output should have leaked from the handler dispatcher itself
-    // (logger may write to stderr as fallback if log file unavailable, but that's
-    // the logger's responsibility, not the dispatcher's)
     const dispatcherStderr = stderrOutput.filter(s => s.includes('[claude-mem] Unknown event'));
     expect(dispatcherStderr).toHaveLength(0);
   });
 });
-
-// --- Hook Response Constants ---
 
 describe('Hook Lifecycle - Standard Response', () => {
   it('should define standard hook response with suppressOutput: true', async () => {
@@ -377,31 +489,29 @@ describe('Hook Lifecycle - Standard Response', () => {
   });
 });
 
-// --- hookCommand stderr suppression ---
-
-describe('hookCommand - stderr suppression', () => {
-  it('should not use console.error for worker unavailable errors', async () => {
-    // The hookCommand function should use logger.warn instead of console.error
-    // for worker unavailable errors, so stderr stays clean (#1181)
+describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
+  it('routes all IO through hook-io.ts and no longer blanket-swallows stderr', async () => {
     const { hookCommand } = await import('../src/cli/hook-command.js');
+    expect(typeof hookCommand).toBe('function');
 
-    // Verify the import includes logger
     const hookCommandSource = await Bun.file(
-      new URL('../src/cli/hook-command.ts', import.meta.url).pathname
+      fileURLToPath(new URL('../src/cli/hook-command.ts', import.meta.url))
     ).text();
 
-    // Should import logger
+    // Diagnostics still go through the structured logger.
     expect(hookCommandSource).toContain("import { logger }");
-    // Should use logger.warn for worker unavailable
     expect(hookCommandSource).toContain("logger.warn('HOOK'");
-    // Should use logger.error for hook errors
     expect(hookCommandSource).toContain("logger.error('HOOK'");
-    // Should suppress stderr
-    expect(hookCommandSource).toContain("process.stderr.write = (() => true)");
-    // Should restore stderr in finally block
-    expect(hookCommandSource).toContain("process.stderr.write = originalStderrWrite");
-    // Should NOT have console.error for error reporting
+
+    // #2292: the old blanket no-op swallow is GONE — replaced by the typed
+    // buffered writer + bypass channel from src/shared/hook-io.ts.
+    expect(hookCommandSource).not.toContain("process.stderr.write = (() => true)");
+    expect(hookCommandSource).toContain("installHookStderrBuffer");
+
+    // hookCommand orchestrates hook-io; it does not write streams directly.
+    expect(hookCommandSource).toContain("emitModelContext");
+    expect(hookCommandSource).toContain("emitBlockingError");
+    expect(hookCommandSource).toContain("exitGraceful");
     expect(hookCommandSource).not.toContain("console.error(`[claude-mem]");
-    expect(hookCommandSource).not.toContain("console.error(`Hook error:");
   });
 });

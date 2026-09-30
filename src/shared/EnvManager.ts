@@ -1,96 +1,102 @@
-/**
- * EnvManager - Centralized environment variable management for claude-mem
- *
- * Provides isolated credential storage in ~/.claude-mem/.env
- * This ensures claude-mem uses its own configured credentials,
- * not random ANTHROPIC_API_KEY values from project .env files.
- *
- * Issue #733: SDK was auto-discovering API keys from user's shell environment,
- * causing memory operations to bill personal API accounts instead of CLI subscription.
- */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
+import { parseEnv } from 'util';
+import { basename } from 'path';
 import { logger } from '../utils/logger.js';
+import { paths, DEFAULT_CLAUDE_CONFIG_DIR } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+import {
+  readClaudeOAuthToken,
+  writeStaleMarker,
+  clearStaleMarker,
+  resolveEffectiveClaudeConfigDir,
+  type OAuthTokenResult,
+} from './oauth-token.js';
 
-// Path to claude-mem's centralized .env file
-const DATA_DIR = join(homedir(), '.claude-mem');
-export const ENV_FILE_PATH = join(DATA_DIR, '.env');
+/** #2753 — the effective config dir's profile label for logging (never the token itself): 'default' for ~/.claude, else its basename. */
+function resolveConfigDirProfileLabel(): string {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const effectiveConfigDir = resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  return effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR ? 'default' : basename(effectiveConfigDir);
+}
 
-// Environment variables to STRIP from subprocess environment (blocklist approach)
-// Only ANTHROPIC_API_KEY is stripped because it's the specific variable that causes
-// Issue #733: project .env files set ANTHROPIC_API_KEY which the SDK auto-discovers,
-// causing memory operations to bill personal API accounts instead of CLI subscription.
-//
-// All other env vars (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, system vars, etc.)
-// are passed through to avoid breaking CLI authentication, proxies, and platform features.
+// Resolved lazily so tests (and any rare runtime path-overrides) can target a
+// temp file via CLAUDE_MEM_ENV_FILE without depending on module-load order.
+// Production callers see the canonical ~/.claude-mem/.env path through
+// paths.envFile() unchanged.
+export function envFilePath(): string {
+  return process.env.CLAUDE_MEM_ENV_FILE ?? paths.envFile();
+}
+
 const BLOCKED_ENV_VARS = [
-  'ANTHROPIC_API_KEY',  // Issue #733: Prevent auto-discovery from project .env files
-  'CLAUDECODE',         // Prevent "cannot be launched inside another Claude Code session" error
-];
-
-// Credential keys that claude-mem manages
-export const MANAGED_CREDENTIAL_KEYS = [
-  'ANTHROPIC_API_KEY',
-  'GEMINI_API_KEY',
-  'OPENROUTER_API_KEY',
+  'ANTHROPIC_API_KEY',       // Issue #733: Prevent auto-discovery from project .env files
+  'ANTHROPIC_AUTH_TOKEN',    // Same leak risk as ANTHROPIC_API_KEY; a token inherited from the
+                             // shell would otherwise short-circuit OAuth lookup at spawn time.
+                             // The fresh token from ~/.claude-mem/.env is re-injected below
+                             // when explicit gateway credentials are configured.
+  'ANTHROPIC_BASE_URL',      // Issue #2375: same leak class as AUTH_TOKEN. A leaked BASE_URL
+                             // alone (no token) was enough to trigger the OAuth-skip path,
+                             // sending the subprocess to a proxy with no credentials.
+                             // Re-injected from ~/.claude-mem/.env when configured.
+  'CLAUDECODE',              // Prevent "cannot be launched inside another Claude Code session" error
+  'CLAUDE_CODE_OAUTH_TOKEN', // Issue #2215: prevent stale parent-process token from leaking into
+                             // isolated env. The fresh token is read from the keychain at spawn
+                             // time by buildIsolatedEnvWithFreshOAuth().
+  // Issue #2357 (defense-in-depth): host CLI effort config, not part of the
+  // plugin's contract. The SDK subprocess reads CLAUDE_CODE_EFFORT_LEVEL and
+  // forwards it as the `effort` Messages API parameter; models that don't
+  // support effort (Haiku 4.5, Sonnet 4.5, older) reject with a permanent
+  // HTTP 400, which previously retried forever. env-sanitizer's CLAUDE_CODE_*
+  // prefix filter already strips these on spawn paths that chain sanitizeEnv,
+  // but BLOCKED_ENV_VARS is the canonical leak deny-list — naming them here
+  // guarantees buildIsolatedEnv() strips them even on a path that forgets to
+  // chain sanitizeEnv.
+  'CLAUDE_CODE_EFFORT_LEVEL',
+  'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
 ];
 
 export interface ClaudeMemEnv {
-  // Credentials (optional - empty means use CLI billing for Claude)
   ANTHROPIC_API_KEY?: string;
+  ANTHROPIC_BASE_URL?: string;
+  ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
 }
 
 /**
- * Parse a .env file content into key-value pairs
+ * The only env keys ever copied out of ~/.claude-mem/.env. This is the
+ * whitelist that load/save/buildIsolatedEnv enforce — only these five keys
+ * cross the boundary. Do NOT replace the per-key copy loops with
+ * Object.assign(result, parsed): that would let arbitrary keys (a leaked
+ * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through (see #2375).
  */
+const CREDENTIAL_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_AUTH_TOKEN',
+  'GEMINI_API_KEY',
+  'OPENROUTER_API_KEY',
+] as const;
+
+// Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
+// handles `#` comments, blank lines, KEY=VALUE, and quote-stripping. The
+// downstream CREDENTIAL_KEYS whitelist still filters the result — arbitrary
+// keys in the file never reach a ClaudeMemEnv. serializeEnvFile is kept custom
+// (header banner + selective quoting; no stdlib equivalent).
 function parseEnvFile(content: string): Record<string, string> {
-  const result: Record<string, string> = {};
-
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-
-    // Skip empty lines and comments
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    // Parse KEY=value format
-    const eqIndex = trimmed.indexOf('=');
-    if (eqIndex === -1) continue;
-
-    const key = trimmed.slice(0, eqIndex).trim();
-    let value = trimmed.slice(eqIndex + 1).trim();
-
-    // Remove surrounding quotes if present
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-
-    if (key) {
-      result[key] = value;
-    }
-  }
-
-  return result;
+  return parseEnv(content) as Record<string, string>;
 }
 
-/**
- * Serialize key-value pairs to .env file format
- */
 function serializeEnvFile(env: Record<string, string>): string {
   const lines: string[] = [
     '# claude-mem credentials',
-    '# This file stores API keys for claude-mem memory agent',
+    '# This file stores keys and gateway settings for the claude-mem memory agent',
     '# Edit this file or use claude-mem settings to configure',
     '',
   ];
 
   for (const [key, value] of Object.entries(env)) {
     if (value) {
-      // Quote values that contain spaces or special characters
       const needsQuotes = /[\s#=]/.test(value);
       lines.push(`${key}=${needsQuotes ? `"${value}"` : value}`);
     }
@@ -100,97 +106,81 @@ function serializeEnvFile(env: Record<string, string>): string {
 }
 
 /**
- * Load credentials from ~/.claude-mem/.env
- * Returns empty object if file doesn't exist (means use CLI billing)
+ * Single source of truth for non-OAuth Anthropic credentials (#2375).
+ *
+ * Contract: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, and ANTHROPIC_AUTH_TOKEN
+ * are populated ONLY from ~/.claude-mem/.env — never from the parent shell.
+ * All three are in BLOCKED_ENV_VARS so process.env values cannot leak into
+ * the SDK subprocess; they are re-injected here (and in buildIsolatedEnv)
+ * exclusively from the file.
+ *
+ * The whitelist is enforced by the CREDENTIAL_KEYS copy loop below — only the
+ * five named keys are ever copied out (see CREDENTIAL_KEYS for why this must
+ * not become Object.assign(result, parsed)).
  */
 export function loadClaudeMemEnv(): ClaudeMemEnv {
-  if (!existsSync(ENV_FILE_PATH)) {
+  const envFile = envFilePath();
+  if (!existsSync(envFile)) {
     return {};
   }
 
   try {
-    const content = readFileSync(ENV_FILE_PATH, 'utf-8');
+    const content = readFileSync(envFile, 'utf-8');
     const parsed = parseEnvFile(content);
 
-    // Only return managed credential keys
     const result: ClaudeMemEnv = {};
-    if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
-    if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
-    if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    for (const key of CREDENTIAL_KEYS) {
+      if (parsed[key]) result[key] = parsed[key];
+    }
 
     return result;
-  } catch (error) {
-    logger.warn('ENV', 'Failed to load .env file', { path: ENV_FILE_PATH }, error as Error);
+  } catch (error: unknown) {
+    logger.warn('ENV', 'Failed to load .env file', { path: envFile }, error instanceof Error ? error : new Error(String(error)));
     return {};
   }
 }
 
-/**
- * Save credentials to ~/.claude-mem/.env
- */
 export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
+  const envFile = envFilePath();
+  let existing: Record<string, string> = {};
   try {
-    // Ensure directory exists
-    if (!existsSync(DATA_DIR)) {
-      mkdirSync(DATA_DIR, { recursive: true });
+    if (!existsSync(paths.dataDir())) {
+      mkdirSync(paths.dataDir(), { recursive: true, mode: 0o700 });
     }
+    chmodSync(paths.dataDir(), 0o700);
 
-    // Load existing to preserve any extra keys
-    const existing = existsSync(ENV_FILE_PATH)
-      ? parseEnvFile(readFileSync(ENV_FILE_PATH, 'utf-8'))
+    existing = existsSync(envFile)
+      ? parseEnvFile(readFileSync(envFile, 'utf-8'))
       : {};
-
-    // Update with new values
-    const updated: Record<string, string> = { ...existing };
-
-    // Only update managed keys
-    if (env.ANTHROPIC_API_KEY !== undefined) {
-      if (env.ANTHROPIC_API_KEY) {
-        updated.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
-      } else {
-        delete updated.ANTHROPIC_API_KEY;
-      }
-    }
-    if (env.GEMINI_API_KEY !== undefined) {
-      if (env.GEMINI_API_KEY) {
-        updated.GEMINI_API_KEY = env.GEMINI_API_KEY;
-      } else {
-        delete updated.GEMINI_API_KEY;
-      }
-    }
-    if (env.OPENROUTER_API_KEY !== undefined) {
-      if (env.OPENROUTER_API_KEY) {
-        updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
-      } else {
-        delete updated.OPENROUTER_API_KEY;
-      }
-    }
-
-    writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), 'utf-8');
   } catch (error) {
-    logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error as Error);
+    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    logger.error('ENV', 'Failed to set up env directory or read existing env', {}, normalizedError);
+    throw normalizedError;
+  }
+
+  const updated: Record<string, string> = { ...existing };
+
+  // undefined = leave the key untouched; falsy (e.g. '') = delete it.
+  for (const key of CREDENTIAL_KEYS) {
+    const value = env[key];
+    if (value === undefined) continue;
+    if (value) {
+      updated[key] = value;
+    } else {
+      delete updated[key];
+    }
+  }
+
+  try {
+    writeFileSync(envFile, serializeEnvFile(updated), { encoding: 'utf-8', mode: 0o600 });
+    chmodSync(envFile, 0o600);
+  } catch (error: unknown) {
+    logger.error('ENV', 'Failed to save .env file', { path: envFile }, error instanceof Error ? error : new Error(String(error)));
     throw error;
   }
 }
 
-/**
- * Build a clean environment for spawning SDK subprocesses
- *
- * Uses a BLOCKLIST approach: inherits the full process environment but strips
- * only ANTHROPIC_API_KEY to prevent Issue #733 (accidental billing from project .env files).
- *
- * All other variables pass through, including:
- * - ANTHROPIC_AUTH_TOKEN (CLI subscription auth)
- * - ANTHROPIC_BASE_URL (custom proxy endpoints)
- * - Platform-specific vars (USERPROFILE, XDG_*, etc.)
- *
- * If claude-mem has an explicit ANTHROPIC_API_KEY in ~/.claude-mem/.env, it's re-injected
- * after stripping, so the managed credential takes precedence over any ambient value.
- *
- * @param includeCredentials - Whether to include API keys from ~/.claude-mem/.env (default: true)
- */
 export function buildIsolatedEnv(includeCredentials: boolean = true): Record<string, string> {
-  // 1. Start with full process environment
   const isolatedEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && !BLOCKED_ENV_VARS.includes(key)) {
@@ -198,76 +188,163 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     }
   }
 
-  // 2. Override SDK entrypoint marker
   isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
 
-  // 3. Re-inject managed credentials from claude-mem's .env file
+  isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
+
+  // #2753 — override whatever the blanket copy above put in
+  // CLAUDE_CONFIG_DIR (the WORKER's own env) with the effective config dir
+  // for the SDK SUBPROCESS only: the CLAUDE_MEM_CLAUDE_CONFIG_DIR setting
+  // when set, else process.env.CLAUDE_CONFIG_DIR/default (unchanged from
+  // today). This never touches the worker's own paths.CLAUDE_CONFIG_DIR /
+  // MARKETPLACE_ROOT, which stay derived solely from
+  // process.env.CLAUDE_CONFIG_DIR at module load.
+  const configDirSettings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  isolatedEnv.CLAUDE_CONFIG_DIR = resolveEffectiveClaudeConfigDir(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();
 
-    // Only add ANTHROPIC_API_KEY if explicitly configured in claude-mem
-    // If not configured, CLI billing will be used (via ANTHROPIC_AUTH_TOKEN passthrough)
-    if (credentials.ANTHROPIC_API_KEY) {
-      isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
-    }
-    // Note: GEMINI_API_KEY and OPENROUTER_API_KEY pass through from process.env,
-    // but claude-mem's .env takes precedence if configured
-    if (credentials.GEMINI_API_KEY) {
-      isolatedEnv.GEMINI_API_KEY = credentials.GEMINI_API_KEY;
-    }
-    if (credentials.OPENROUTER_API_KEY) {
-      isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
+    for (const key of CREDENTIAL_KEYS) {
+      const value = credentials[key];
+      if (value) isolatedEnv[key] = value;
     }
 
-    // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
-    // When no ANTHROPIC_API_KEY is configured, the spawned CLI uses subscription billing
-    // which requires either ~/.claude/.credentials.json or CLAUDE_CODE_OAUTH_TOKEN.
-    // The worker inherits this token from the Claude Code session that started it.
-    if (!isolatedEnv.ANTHROPIC_API_KEY && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    }
+    // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from
+    // process.env here. OAuth tokens have refresh semantics that this
+    // sync path cannot model — copying a parent-process token captured
+    // at startup means injecting a stale token days later (issue #2215).
+    // Use buildIsolatedEnvWithFreshOAuth() for spawn-time injection.
   }
 
   return isolatedEnv;
 }
 
 /**
- * Get a specific credential from claude-mem's .env
- * Returns undefined if not set (which means use default/CLI billing)
+ * Async variant of buildIsolatedEnv() that reads the OAuth token from the
+ * platform-native credential store at the moment of spawn. Use this at SDK
+ * spawn-time so the worker subprocess always gets a fresh token.
+ *
+ * Behavior per OAuthTokenResult:
+ *   - present: inject as CLAUDE_CODE_OAUTH_TOKEN env var, clear stale marker.
+ *   - expired: do NOT inject. Log re-login message. Write stale marker so
+ *     the session-start hook can surface the message to the user.
+ *   - absent: proceed without the token. Worker may fall back to
+ *     ANTHROPIC_API_KEY or other auth.
+ *
+ * Issue #2215: this replaces the old "copy CLAUDE_CODE_OAUTH_TOKEN from
+ * process.env" path which silently injected stale tokens.
  */
+export async function buildIsolatedEnvWithFreshOAuth(
+  includeCredentials: boolean = true,
+): Promise<Record<string, string>> {
+  const isolatedEnv = buildIsolatedEnv(includeCredentials);
+
+  // Defensive: ensure no parent-process OAuth token survives this path even
+  // if BLOCKED_ENV_VARS is bypassed. Issue #2215.
+  delete isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN;
+
+  if (!includeCredentials) return isolatedEnv;
+
+  // Custom gateway: never inject OAuth (would leak the user's Anthropic OAuth
+  // token to a third-party gateway). The user must explicitly configure a
+  // gateway-appropriate token in ~/.claude-mem/.env if their gateway requires
+  // one. A bare BASE_URL with no token = tokenless gateway (e.g. mTLS at the
+  // network boundary).
+  //
+  // Post-#2375: ANTHROPIC_BASE_URL is in BLOCKED_ENV_VARS, so it can ONLY be
+  // present in isolatedEnv when the user intentionally configured it in
+  // ~/.claude-mem/.env (see loadClaudeMemEnv re-injection above). A BASE_URL
+  // leaked from the parent shell no longer reaches this predicate — that was
+  // the root cause of #2375 (leaked BASE_URL → OAuth-skip → no credential at
+  // all). Keeping the BASE_URL branch here is therefore the *security*-correct
+  // behavior: it prevents the OAuth token from being sent to a user-configured
+  // third-party gateway. It is NOT the leak path it was before the deny-list.
+  if (isolatedEnv.ANTHROPIC_BASE_URL) {
+    clearStaleMarker();
+    return isolatedEnv;
+  }
+  // Direct API with explicit credentials: skip OAuth lookup.
+  if (isolatedEnv.ANTHROPIC_API_KEY || isolatedEnv.ANTHROPIC_AUTH_TOKEN) {
+    clearStaleMarker();
+    return isolatedEnv;
+  }
+
+  let result: OAuthTokenResult;
+  try {
+    result = await readClaudeOAuthToken();
+  } catch (error) {
+    logger.warn(
+      'OAUTH',
+      'OAuth token read failed unexpectedly; proceeding without token',
+      {},
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    return isolatedEnv;
+  }
+
+  switch (result.kind) {
+    case 'present':
+      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = result.token;
+      logger.info('OAUTH', 'Injected fresh CLAUDE_CODE_OAUTH_TOKEN at spawn-time', {
+        source: result.source,
+        expiresAt: result.expiresAt,
+      });
+      clearStaleMarker();
+      break;
+    case 'expired':
+      logger.warn(
+        'OAUTH',
+        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Re-login via Claude Desktop to refresh.`,
+        { expiresAt: result.expiresAt },
+      );
+      writeStaleMarker(result.reason);
+      break;
+    case 'absent':
+      logger.debug('OAUTH', `No OAuth token available: ${result.reason}`);
+      // Token is absent — any prior stale-marker would have been written
+      // when the token was expired, but is no longer accurate now that the
+      // token is gone. Clear it so the session-start hook stops surfacing
+      // a stale "expired token, re-login" warning (CodeRabbit review on PR
+      // #2282).
+      clearStaleMarker();
+      break;
+  }
+
+  return isolatedEnv;
+}
+
 export function getCredential(key: keyof ClaudeMemEnv): string | undefined {
   const env = loadClaudeMemEnv();
   return env[key];
 }
 
-/**
- * Set a specific credential in claude-mem's .env
- * Pass empty string to remove the credential
- */
-export function setCredential(key: keyof ClaudeMemEnv, value: string): void {
-  const env = loadClaudeMemEnv();
-  env[key] = value || undefined;
-  saveClaudeMemEnv(env);
-}
-
-/**
- * Check if claude-mem has an Anthropic API key configured
- * If false, it means CLI billing should be used
- */
 export function hasAnthropicApiKey(): boolean {
   const env = loadClaudeMemEnv();
   return !!env.ANTHROPIC_API_KEY;
 }
 
-/**
- * Get auth method description for logging
- */
+export function hasAnthropicAuthToken(): boolean {
+  const env = loadClaudeMemEnv();
+  return !!env.ANTHROPIC_AUTH_TOKEN;
+}
+
 export function getAuthMethodDescription(): string {
   if (hasAnthropicApiKey()) {
     return 'API key (from ~/.claude-mem/.env)';
   }
-  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return 'Claude Code OAuth token (from parent process)';
+  if (hasAnthropicAuthToken()) {
+    return 'Gateway auth token (from ~/.claude-mem/.env)';
   }
-  return 'Claude Code CLI (subscription billing)';
+  // Note: this is a quick sync hint for logging — the authoritative OAuth
+  // path is buildIsolatedEnvWithFreshOAuth() which reads the keychain at
+  // spawn time. process.env may or may not carry a token here.
+  // #2753: names the resolved profile (suffix/dir basename or 'default'),
+  // never the token itself — the profile is the whole point (which
+  // config-dir identity's keychain entry this worker will inject).
+  const profile = resolveConfigDirProfileLabel();
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+    return `Claude Code OAuth token (env, refreshed via keychain at spawn) profile=${profile}`;
+  }
+  return `Claude Code OAuth token (read from system keychain at spawn) profile=${profile}`;
 }

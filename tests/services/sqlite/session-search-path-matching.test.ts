@@ -1,15 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { isDirectChild, normalizePath } from '../../../src/shared/path-utils.js';
 
-/**
- * Tests for path matching logic, specifically the isDirectChild() algorithm
- * Covers fix for issue #794: Path format mismatch causes folder CLAUDE.md files to show "No recent activity"
- *
- * These tests validate the shared path-utils module which is used by:
- * - SessionSearch.ts (runtime folder CLAUDE.md generation)
- * - regenerate-claude-md.ts (CLI regeneration tool)
- */
-
 describe('isDirectChild path matching', () => {
   describe('same path format', () => {
     test('returns true for direct child with relative paths', () => {
@@ -35,7 +26,6 @@ describe('isDirectChild path matching', () => {
 
   describe('mixed path formats (absolute folder, relative file) - fixes #794', () => {
     test('returns true when absolute folder ends with relative file directory', () => {
-      // This is the exact bug case from #794
       expect(isDirectChild('app/api/router.py', '/Users/dev/project/app/api')).toBe(true);
     });
 
@@ -89,12 +79,10 @@ describe('isDirectChild path matching', () => {
     });
 
     test('prevents false positive from partial segment match', () => {
-      // "api" folder should not match "api-v2" folder
       expect(isDirectChild('app/api-v2/router.py', '/Users/dev/project/app/api')).toBe(false);
     });
 
     test('handles similar folder names correctly', () => {
-      // "components" should not match "components-old"
       expect(isDirectChild('src/components-old/Button.tsx', '/project/src/components')).toBe(false);
     });
   });

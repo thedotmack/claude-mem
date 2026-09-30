@@ -22,7 +22,6 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
   const [wordWrap, setWordWrap] = useState(true);
 
   const html = useMemo(() => {
-    // Save scroll position before content changes
     if (preRef.current) {
       scrollTopRef.current = preRef.current.scrollTop;
     }
@@ -35,7 +34,6 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
     });
   }, [content]);
 
-  // Restore scroll position after render
   useLayoutEffect(() => {
     if (preRef.current && scrollTopRef.current > 0) {
       preRef.current.scrollTop = scrollTopRef.current;

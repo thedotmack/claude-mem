@@ -16,8 +16,8 @@ function getStoredPreference(): ThemePreference {
     if (stored === 'system' || stored === 'light' || stored === 'dark') {
       return stored;
     }
-  } catch (e) {
-    console.warn('Failed to read theme preference from localStorage:', e);
+  } catch (e: unknown) {
+    console.warn('Failed to read theme preference from localStorage:', e instanceof Error ? e.message : String(e));
   }
   return 'system';
 }
@@ -31,26 +31,17 @@ function resolveTheme(preference: ThemePreference): ResolvedTheme {
 
 export function useTheme() {
   const [preference, setPreference] = useState<ThemePreference>(getStoredPreference);
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
-    resolveTheme(getStoredPreference())
-  );
 
-  // Update resolved theme when preference changes
   useEffect(() => {
-    const newResolvedTheme = resolveTheme(preference);
-    setResolvedTheme(newResolvedTheme);
-    document.documentElement.setAttribute('data-theme', newResolvedTheme);
+    document.documentElement.setAttribute('data-theme', resolveTheme(preference));
   }, [preference]);
 
-  // Listen for system theme changes when preference is 'system'
   useEffect(() => {
     if (preference !== 'system') return;
 
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = (e: MediaQueryListEvent) => {
-      const newTheme = e.matches ? 'dark' : 'light';
-      setResolvedTheme(newTheme);
-      document.documentElement.setAttribute('data-theme', newTheme);
+      document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
     };
 
     mediaQuery.addEventListener('change', handleChange);
@@ -61,16 +52,14 @@ export function useTheme() {
     try {
       localStorage.setItem(STORAGE_KEY, newPreference);
       setPreference(newPreference);
-    } catch (e) {
-      console.warn('Failed to save theme preference to localStorage:', e);
-      // Still update the theme even if localStorage fails
+    } catch (e: unknown) {
+      console.warn('Failed to save theme preference to localStorage:', e instanceof Error ? e.message : String(e));
       setPreference(newPreference);
     }
   };
 
   return {
     preference,
-    resolvedTheme,
     setThemePreference
   };
 }

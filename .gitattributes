@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+plugin/scripts/*.cjs eol=lf
+plugin/scripts/*.js  eol=lf
+
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.gif  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.otf   binary

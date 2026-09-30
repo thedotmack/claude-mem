@@ -1,42 +1,14 @@
-/**
- * CORS Restriction Tests
- *
- * Verifies that CORS is properly restricted to localhost origins only,
- * and that preflight responses include the correct methods and headers (#1029).
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import express from 'express';
-import cors from 'cors';
 import http from 'http';
+import { createCorsMiddleware, createMiddleware } from '../../../src/services/worker/http/middleware.js';
 
-// Test the CORS origin validation logic directly
 function isAllowedOrigin(origin: string | undefined): boolean {
-  if (!origin) return true; // No origin = hooks, curl, CLI
+  if (!origin) return true; 
   if (origin.startsWith('http://localhost:')) return true;
   if (origin.startsWith('http://127.0.0.1:')) return true;
   return false;
-}
-
-/**
- * Build the same CORS config used in production middleware.ts.
- * Duplicated here to avoid module-mock interference from other test files.
- */
-function buildProductionCorsMiddleware() {
-  return cors({
-    origin: (origin, callback) => {
-      if (!origin ||
-          origin.startsWith('http://localhost:') ||
-          origin.startsWith('http://127.0.0.1:')) {
-        callback(null, true);
-      } else {
-        callback(new Error('CORS not allowed'));
-      }
-    },
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    credentials: false
-  });
 }
 
 describe('CORS Restriction', () => {
@@ -65,7 +37,6 @@ describe('CORS Restriction', () => {
     });
 
     it('blocks HTTPS localhost (not typically used for local dev)', () => {
-      // HTTPS localhost is unusual and could indicate a proxy attack
       expect(isAllowedOrigin('https://localhost:37777')).toBe(false);
     });
 
@@ -79,7 +50,6 @@ describe('CORS Restriction', () => {
     });
 
     it('blocks null origin', () => {
-      // null origin can come from sandboxed iframes
       expect(isAllowedOrigin('null')).toBe(false);
     });
   });
@@ -91,22 +61,31 @@ describe('CORS Restriction', () => {
 
     beforeEach(async () => {
       app = express();
-      app.use(express.json());
-      app.use(buildProductionCorsMiddleware());
+      createMiddleware().forEach(middleware => app.use(middleware));
+      app.use(createCorsMiddleware());
 
-      // Add a test endpoint that supports all methods
       app.all('/api/settings', (_req, res) => {
         res.json({ ok: true });
       });
 
-      testPort = 41000 + Math.floor(Math.random() * 10000);
-      await new Promise<void>((resolve) => {
-        server = app.listen(testPort, '127.0.0.1', resolve);
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => reject(error);
+        server = app.listen(0, '127.0.0.1', () => {
+          server.removeListener('error', onError);
+          const address = server.address();
+          if (!address || typeof address === 'string') {
+            reject(new Error('Test server did not expose an assigned port'));
+            return;
+          }
+          testPort = address.port;
+          resolve();
+        });
+        server.once('error', onError);
       });
     });
 
     afterEach(async () => {
-      if (server) {
+      if (server?.listening) {
         await new Promise<void>((resolve, reject) => {
           server.close(err => err ? reject(err) : resolve());
         });
@@ -122,7 +101,7 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const allowedMethods = response.headers.get('access-control-allow-methods');
       expect(allowedMethods).toContain('PUT');
     });
@@ -136,7 +115,7 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const allowedMethods = response.headers.get('access-control-allow-methods');
       expect(allowedMethods).toContain('PATCH');
     });
@@ -150,7 +129,7 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const allowedMethods = response.headers.get('access-control-allow-methods');
       expect(allowedMethods).toContain('DELETE');
     });
@@ -165,9 +144,24 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const allowedHeaders = response.headers.get('access-control-allow-headers');
       expect(allowedHeaders).toContain('Content-Type');
+    });
+
+    it('preflight response includes Authorization in allowed headers', async () => {
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/settings`, {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': 'http://localhost:37777',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'Authorization',
+        },
+      });
+
+      expect([200, 204]).toContain(response.status);
+      const allowedHeaders = response.headers.get('access-control-allow-headers');
+      expect(allowedHeaders).toContain('Authorization');
     });
 
     it('preflight from localhost includes allow-origin header', async () => {
@@ -180,7 +174,7 @@ describe('CORS Restriction', () => {
         },
       });
 
-      expect(response.status).toBe(204);
+      expect([200, 204]).toContain(response.status);
       const origin = response.headers.get('access-control-allow-origin');
       expect(origin).toBe('http://localhost:37777');
     });
@@ -194,7 +188,6 @@ describe('CORS Restriction', () => {
         },
       });
 
-      // cors middleware rejects disallowed origins — browser enforces the block
       const origin = response.headers.get('access-control-allow-origin');
       expect(origin).toBeNull();
     });

@@ -1,0 +1,473 @@
+import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
+
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+
+import { parseAgentXml } from '../../src/sdk/parser.js';
+
+// Load the real bundled `code` mode rather than mocking ModeManager. The
+// previous `mock.module(...)` replaced ModeManager process-globally and was
+// never restored, so its partial stub (no `loadMode`) leaked into other test
+// files in the same `bun test` run — notably the SDK integration tests, whose
+// createCmemClient() calls `ModeManager.getInstance().loadMode('code')`. The
+// real `code` mode is a superset of the types these tests exercise
+// (bugfix / discovery / refactor), so the assertions below are unchanged.
+ModeManager.getInstance().loadMode('code');
+
+function expectObservation(raw: string) {
+  const result = parseAgentXml(raw);
+  if (!result.valid) throw new Error('expected valid observation, got invalid result');
+  if (result.summary !== null) throw new Error('expected observation result, got a summary');
+  return result.observations;
+}
+
+beforeEach(() => {
+  const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+  modeManager.activeMode = {
+    observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
+    observation_concepts: [],
+  };
+});
+
+afterEach(() => {
+  const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+  modeManager.activeMode = null;
+});
+
+describe('parseAgentXml — observations', () => {
+  it('returns a populated observation when title is present', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Found a bug in auth module</title>
+      <narrative>The token refresh logic skips expired tokens.</narrative>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('Found a bug in auth module');
+    expect(result[0].type).toBe('discovery');
+    expect(result[0].narrative).toBe('The token refresh logic skips expired tokens.');
+  });
+
+  it('unwraps a label-wrapped title echoed by a local observer (#3907)', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>[**title**: Example observation]</title>
+      <narrative>Some narrative.</narrative>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].title).toBe('Example observation');
+  });
+
+  it('leaves bracketed and partially wrapped titles untouched (#3907)', () => {
+    for (const title of ['[Example observation]', '**title**: Example', '[**title**: ]', '[**subtitle**: x]']) {
+      const xml = `<observation>
+        <type>discovery</type>
+        <title>${title}</title>
+        <narrative>Some narrative.</narrative>
+      </observation>`;
+
+      expect(expectObservation(xml)[0].title).toBe(title);
+    }
+  });
+
+  it('returns a populated observation when only narrative is present (no title)', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+      <narrative>Patched the null pointer dereference in session handler.</narrative>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBeNull();
+    expect(result[0].type).toBe('bugfix');
+    expect(result[0].narrative).toBe('Patched the null pointer dereference in session handler.');
+  });
+
+  it('returns a populated observation when only facts are present', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <facts><fact>File limit is hardcoded to 5</fact></facts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].facts).toEqual(['File limit is hardcoded to 5']);
+  });
+
+  it('returns a populated observation when only concepts are present', () => {
+    const xml = `<observation>
+      <type>refactor</type>
+      <concepts><concept>dependency-injection</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['dependency-injection']);
+  });
+
+  it('filters out ghost observations where all content fields are null (#1625)', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
+  });
+
+  it('filters out ghost observation with empty tags but no text content (#1625)', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title></title>
+      <narrative>   </narrative>
+      <facts></facts>
+      <concepts></concepts>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
+  });
+
+  it('salvages freeform prose inside a closed observation block', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      Refactored transformer_markdown.py helpers and narrowed the shared formatting path.
+      The follow-up kept the line-range handling aligned with the new helpers.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('discovery');
+    expect(result[0].title).toBe('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
+    expect(result[0].narrative).toContain('line-range handling aligned with the new helpers');
+    expect(result[0].narrative).not.toContain('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
+  });
+
+  it('keeps self-closing empty fields out of the prose salvage path', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+      <title/>
+      <narrative/>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
+  });
+
+  it('preserves overflow from a long first prose line in the narrative', () => {
+    const longFirstLine = 'A'.repeat(140);
+    const xml = `<observation>
+      <type>discovery</type>
+      ${longFirstLine}
+      Follow-up detail stays in the narrative.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe(`${'A'.repeat(117)}...`);
+    expect(result[0].narrative).toContain('A'.repeat(23));
+    expect(result[0].narrative).toContain('Follow-up detail stays in the narrative.');
+  });
+
+  it('keeps surrogate-pair characters intact when a long first prose line overflows', () => {
+    const longFirstLine = `${'A'.repeat(116)}🧠${'B'.repeat(10)}`;
+    const xml = `<observation>
+      <type>discovery</type>
+      ${longFirstLine}
+      Follow-up detail stays in the narrative.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe(`${'A'.repeat(116)}🧠...`);
+    expect(result[0].title).not.toContain('�');
+    expect(result[0].narrative).toContain('B'.repeat(10));
+    expect(result[0].narrative).toContain('Follow-up detail stays in the narrative.');
+    expect(result[0].narrative).not.toContain('�');
+  });
+
+  it('keeps grapheme clusters intact when a long first prose line overflows', () => {
+    const cases = [
+      { label: 'combining mark', cluster: 'e\u0301' },
+      { label: 'zwj emoji', cluster: '👩‍💻' },
+    ];
+
+    for (const { label, cluster } of cases) {
+      const longFirstLine = `${'A'.repeat(116)}${cluster}${'B'.repeat(10)}`;
+      const xml = `<observation>
+        <type>discovery</type>
+        ${longFirstLine}
+        Follow-up detail stays in the narrative.
+      </observation>`;
+
+      const result = expectObservation(xml);
+
+      expect(result, label).toHaveLength(1);
+      expect(result[0].title, label).toBe(`${'A'.repeat(116)}${cluster}...`);
+      expect(result[0].narrative, label).toBe(`${'B'.repeat(10)}\nFollow-up detail stays in the narrative.`);
+    }
+  });
+
+  it('filters out multiple ghost observations while keeping valid ones (#1625)', () => {
+    const xml = `
+      <observation><type>bugfix</type></observation>
+      <observation>
+        <type>discovery</type>
+        <title>Real observation</title>
+      </observation>
+      <observation><type>refactor</type><title></title><narrative>  </narrative></observation>
+    `;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('Real observation');
+  });
+
+  it('filters out observation with only a subtitle (excluded from survival criteria) (#1625)', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <subtitle>Only a subtitle, no real content</subtitle>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
+  });
+
+  it('uses first mode type as fallback when type is missing', () => {
+    const xml = `<observation>
+      <title>Missing type field</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('bugfix');
+  });
+
+  it('preserves a reporter-shaped unsupported observation type', () => {
+    const xml = `<observation>
+      <type>code</type>
+      <title>Reporter-shaped unsupported type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('code');
+  });
+
+  it('returns a fail-fast result when no observation/summary blocks are present', () => {
+    const result = parseAgentXml('Some text without any observations.');
+    expect(result.valid).toBe(false);
+  });
+
+  it('parses files_read and files_modified arrays correctly', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+      <title>File read tracking</title>
+      <files_read><file>src/utils.ts</file><file>src/parser.ts</file></files_read>
+      <files_modified><file>src/utils.ts</file></files_modified>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].files_read).toEqual(['src/utils.ts', 'src/parser.ts']);
+    expect(result[0].files_modified).toEqual(['src/utils.ts']);
+  });
+});
+
+describe('parseAgentXml — fence tolerance (#2233 Part A)', () => {
+  it('parses plain XML input correctly (no fence)', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Plain XML input</title>
+      <narrative>No fence wrapper present.</narrative>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Plain XML input');
+  });
+
+  it('parses fenced XML with language tag (```xml ... ```)', () => {
+    const xml = '```xml\n<observation>\n  <type>discovery</type>\n  <title>Fenced with lang</title>\n  <narrative>Wrapped in xml-tagged code fence.</narrative>\n</observation>\n```';
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Fenced with lang');
+    expect(result.observations[0].narrative).toBe('Wrapped in xml-tagged code fence.');
+  });
+
+  it('parses fenced XML without language tag (``` ... ```)', () => {
+    const xml = '```\n<observation>\n  <type>bugfix</type>\n  <title>Bare fence</title>\n  <narrative>Wrapped in language-less fence.</narrative>\n</observation>\n```';
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Bare fence');
+    expect(result.observations[0].narrative).toBe('Wrapped in language-less fence.');
+  });
+
+  it('does not falsely strip when XML appears mid-text without fences', () => {
+    const xml = `Some intro prose.
+<observation>
+  <type>refactor</type>
+  <title>Mid-text observation</title>
+  <narrative>No fences anywhere in the input.</narrative>
+</observation>
+Trailing prose.`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Mid-text observation');
+    expect(result.observations[0].narrative).toBe('No fences anywhere in the input.');
+  });
+
+  it('does not strip inner triple-backtick lines when payload is not a full fenced wrapper', () => {
+    // Regression for CodeRabbit review on PR #2282: stripCodeFences() used to
+    // greedily remove the first ``` and last ``` anywhere in the input, which
+    // could mangle content that contains internal fenced examples or surrounds
+    // the XML with prose. The fence-stripper must only fire when the entire
+    // payload is a single fenced block.
+    const xml = 'Lead-in text with ```inline``` markers.\n' +
+      '<observation>\n' +
+      '  <type>discovery</type>\n' +
+      '  <title>Body with ``` inside narrative</title>\n' +
+      '  <narrative>Snippet: ```\nfoo\n``` end of snippet.</narrative>\n' +
+      '</observation>\n' +
+      'Trailing ``` prose with another ``` mark.';
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].title).toBe('Body with ``` inside narrative');
+    // Narrative should still contain the inner ``` markers — i.e. the
+    // stripper did not eat them.
+    expect(result.observations[0].narrative).toContain('```');
+  });
+});
+
+describe('parseAgentXml — concept normalization (#3379)', () => {
+  it('truncates a prefixed concept at the first colon', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Prefixed concept tag</title>
+      <concepts><concept>gotcha: some long description</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['gotcha']);
+  });
+
+  it('leaves a bare concept unchanged', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Bare concept tag</title>
+      <concepts><concept>gotcha</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['gotcha']);
+  });
+
+  it('still drops a concept equal to the observation type, bare or prefixed', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Type echoed as concept</title>
+      <concepts>
+        <concept>discovery</concept>
+        <concept>discovery: echoed with a description</concept>
+        <concept>pattern</concept>
+      </concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['pattern']);
+  });
+
+  it('drops concepts that become empty after truncation', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Leading-colon concept</title>
+      <concepts><concept>: only a description</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual([]);
+  });
+});
+
+// #3592: the active mode's `observation_types` enum is advisory — it is rendered
+// into the observer's prompt but never enforced at the parse site. These pin the
+// two branches as they behave today, so that whichever way the enum is eventually
+// enforced, the change is visible in the diff rather than silent.
+describe('parseAgentXml — observation type against the mode enum', () => {
+  it('preserves a type that is outside the enum', () => {
+    const xml = `<observation>
+      <type>sample-gate</type>
+      <title>Type the mode never declared</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('sample-gate');
+  });
+
+  it('falls back to the first declared type when <type> is absent', () => {
+    const xml = `<observation>
+      <title>No type element at all</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    // Positional, not neutral: the fallback is observation_types[0], which in the
+    // bundled `code` mode is `bugfix`. An untyped observation is therefore filed
+    // as a bug fix rather than as unclassified.
+    expect(result[0].type).toBe('bugfix');
+  });
+
+  it('follows the enum order rather than any fixed default', () => {
+    const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+    modeManager.activeMode = {
+      observation_types: [{ id: 'refactor' }, { id: 'bugfix' }, { id: 'discovery' }],
+      observation_concepts: [],
+    };
+
+    const xml = `<observation>
+      <title>No type, reordered enum</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('refactor');
+  });
+});

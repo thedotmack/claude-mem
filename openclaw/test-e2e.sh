@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# test-e2e.sh — Run E2E test of claude-mem plugin on real OpenClaw
-#
-# Usage:
-#   ./test-e2e.sh              # Automated E2E test (build + run + verify)
-#   ./test-e2e.sh --interactive # Drop into shell for manual testing
-#   ./test-e2e.sh --build-only  # Just build the image, don't run
 set -euo pipefail
 
 cd "$(dirname "$0")"

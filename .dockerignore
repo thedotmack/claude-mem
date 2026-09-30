@@ -1,0 +1,6 @@
+node_modules/
+.git/
+logs/
+.docker-claude-mem-data/
+.venv
+.venv-*

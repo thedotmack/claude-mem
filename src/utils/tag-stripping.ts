@@ -1,79 +1,64 @@
-/**
- * Tag Stripping Utilities
- *
- * Implements the tag system for meta-observation control:
- * 1. <claude-mem-context> - System-level tag for auto-injected observations
- *    (prevents recursive storage when context injection is active)
- * 2. <private> - User-level tag for manual privacy control
- *    (allows users to mark content they don't want persisted)
- * 3. <system_instruction> / <system-instruction> - Conductor-injected system instructions
- *    (should not be persisted to memory)
- *
- * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker/storage.
- * This keeps the worker service simple and follows one-way data stream.
- */
 
 import { logger } from './logger.js';
 
-/**
- * Maximum number of tags allowed in a single content block
- * This protects against ReDoS (Regular Expression Denial of Service) attacks
- * where malicious input with many nested/unclosed tags could cause catastrophic backtracking
- */
+const TAG_NAMES = [
+  'private',
+  'claude-mem-context',
+  'system_instruction',
+  'system-instruction',
+  'persisted-output',
+  'system-reminder',
+] as const;
+type TagName = (typeof TAG_NAMES)[number];
+
+const STRIP_REGEX = new RegExp(
+  `<(${TAG_NAMES.join('|')})\\b[^>]*>[\\s\\S]*?</\\1>`,
+  'g'
+);
+
+export const SYSTEM_REMINDER_REGEX = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
 const MAX_TAG_COUNT = 100;
 
-/**
- * Count total number of opening tags in content
- * Used for ReDoS protection before regex processing
- */
-function countTags(content: string): number {
-  const privateCount = (content.match(/<private>/g) || []).length;
-  const contextCount = (content.match(/<claude-mem-context>/g) || []).length;
-  const systemInstructionCount = (content.match(/<system_instruction>/g) || []).length;
-  const systemInstructionHyphenCount = (content.match(/<system-instruction>/g) || []).length;
-  return privateCount + contextCount + systemInstructionCount + systemInstructionHyphenCount;
-}
+export function stripTags(input: string): { stripped: string; counts: Record<TagName, number> } {
+  const counts: Record<TagName, number> = Object.fromEntries(
+    TAG_NAMES.map(name => [name, 0])
+  ) as Record<TagName, number>;
 
-/**
- * Internal function to strip memory tags from content
- * Shared logic extracted from both JSON and prompt stripping functions
- */
-function stripTagsInternal(content: string): string {
-  // ReDoS protection: limit tag count before regex processing
-  const tagCount = countTags(content);
-  if (tagCount > MAX_TAG_COUNT) {
+  STRIP_REGEX.lastIndex = 0; 
+
+  let total = 0;
+  const stripped = input.replace(STRIP_REGEX, (_, name: TagName) => {
+    counts[name] = (counts[name] ?? 0) + 1;
+    total += 1;
+    return '';
+  });
+
+  if (total > MAX_TAG_COUNT) {
     logger.warn('SYSTEM', 'tag count exceeds limit', undefined, {
-      tagCount,
+      tagCount: total,
       maxAllowed: MAX_TAG_COUNT,
-      contentLength: content.length
+      contentLength: input.length,
     });
-    // Still process but log the anomaly
   }
 
-  return content
-    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
-    .replace(/<private>[\s\S]*?<\/private>/g, '')
-    .replace(/<system_instruction>[\s\S]*?<\/system_instruction>/g, '')
-    .replace(/<system-instruction>[\s\S]*?<\/system-instruction>/g, '')
-    .trim();
+  return { stripped: stripped.trim(), counts };
 }
 
-/**
- * Strip memory tags from JSON-serialized content (tool inputs/responses)
- *
- * @param content - Stringified JSON content from tool_input or tool_response
- * @returns Cleaned content with tags removed, or '{}' if invalid
- */
-export function stripMemoryTagsFromJson(content: string): string {
-  return stripTagsInternal(content);
+export function stripMemoryTags(content: string): string {
+  return stripTags(content).stripped;
 }
 
-/**
- * Strip memory tags from user prompt content
- *
- * @param content - Raw user prompt text
- * @returns Cleaned content with tags removed
- */
-export function stripMemoryTagsFromPrompt(content: string): string {
-  return stripTagsInternal(content);
+const PROTOCOL_ONLY_TAGS = ['task-notification'] as const;
+
+const PROTOCOL_ONLY_REGEX = new RegExp(
+  `^\\s*<(${PROTOCOL_ONLY_TAGS.join('|')})\\b[^>]*>(?:(?!<\\1\\b|</\\1\\b)[\\s\\S])*</\\1>\\s*$`,
+);
+
+const MAX_PROTOCOL_PAYLOAD_BYTES = 256 * 1024;
+
+export function isInternalProtocolPayload(text: string): boolean {
+  if (!text) return false;
+  if (text.length > MAX_PROTOCOL_PAYLOAD_BYTES) return false;
+  return PROTOCOL_ONLY_REGEX.test(text);
 }

@@ -1,20 +1,29 @@
-import { ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
+import { ChildProcess, spawnSync } from 'child_process';
+import { spawnHidden } from '../shared/spawn.js';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
+import { writeJsonFileAtomic } from '../shared/atomic-json.js';
+import { sanitizeEnv } from './env-sanitizer.js';
+import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
+// Moved to shared/ so kill-process-tree.ts can use it without closing an
+// import cycle (process-registry already imports kill-process-tree). Re-exported
+// here so every existing caller keeps its import path.
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName } from '../shared/process-identity.js';
+export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName };
+import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const DEFAULT_REGISTRY_PATH = path.join(DATA_DIR, 'supervisor.json');
+const DEFAULT_REGISTRY_PATH = paths.supervisorRegistry();
 
 export interface ManagedProcessInfo {
   pid: number;
   type: string;
   sessionId?: string | number;
   startedAt: string;
+  pgid?: number;
 }
 
 export interface ManagedProcessRecord extends ManagedProcessInfo {
@@ -25,6 +34,21 @@ interface PersistedRegistry {
   processes: Record<string, ManagedProcessInfo>;
 }
 
+/**
+ * Optional reporter for a supervisor-registry persist failure. process-registry
+ * lives under src/supervisor/, which must not import src/services/ (telemetry) —
+ * so, exactly like logger.setErrorSink, the worker injects a reporter at startup
+ * that forwards to captureEvent. Absent (tests, CLI, telemetry off) it is a
+ * no-op, so a persist failure still degrades cleanly without telemetry.
+ */
+export type RegistryDegradedReporter = (info: { errorCategory: string }) => void;
+let degradedReporter: RegistryDegradedReporter | null = null;
+
+/** Installs (or clears, with null) the persist-failure reporter. Never throws. */
+export function setRegistryDegradedReporter(reporter: RegistryDegradedReporter | null): void {
+  degradedReporter = reporter;
+}
+
 export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid < 0) return false;
   if (pid === 0) return false;
@@ -33,9 +57,54 @@ export function isPidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return code === 'EPERM';
+    if (error instanceof Error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPERM') return true;
+      logger.debug('SYSTEM', 'PID check failed', { pid, code });
+      return false;
+    }
+    logger.warn('SYSTEM', 'PID check threw non-Error', { pid, error: String(error) });
+    return false;
   }
+}
+
+// Poll until every record's pid is gone or the timeout elapses. Shared by the
+// reapSession wait phase and shutdown.ts's SIGTERM grace period.
+export async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (records.every(record => !isPidAlive(record.pid))) {
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
+export interface PidInfo {
+  pid: number;
+  port: number;
+  startedAt: string;
+  startToken?: string;
+}
+
+export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
+  if (!info) return false;
+  if (!isPidAlive(info.pid)) return false;
+
+  if (!info.startToken) return true;
+
+  const currentToken = captureProcessStartToken(info.pid);
+  if (currentToken === null) return true;
+
+  const match = currentToken === info.startToken;
+  if (!match) {
+    logger.debug('SYSTEM', 'verifyPidFileOwnership: start-token mismatch (PID reused)', {
+      pid: info.pid,
+      stored: info.startToken,
+      current: currentToken
+    });
+  }
+  return match;
 }
 
 export class ProcessRegistry {
@@ -43,6 +112,7 @@ export class ProcessRegistry {
   private readonly entries = new Map<string, ManagedProcessInfo>();
   private readonly runtimeProcesses = new Map<string, ChildProcess>();
   private initialized = false;
+  private persistDegraded = false;
 
   constructor(registryPath: string = DEFAULT_REGISTRY_PATH) {
     this.registryPath = registryPath;
@@ -52,7 +122,9 @@ export class ProcessRegistry {
     if (this.initialized) return;
     this.initialized = true;
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
+    // No mkdir here: persist() writes through writeJsonFileAtomic, which
+    // creates the parent directory itself and — unlike a bare mkdirSync — never
+    // propagates an EACCES/EROFS out of initialize() into worker/session start.
 
     if (!existsSync(this.registryPath)) {
       this.persist();
@@ -65,10 +137,17 @@ export class ProcessRegistry {
       for (const [id, info] of Object.entries(processes)) {
         this.entries.set(id, info);
       }
-    } catch (error) {
-      logger.warn('SYSTEM', 'Failed to parse supervisor registry, rebuilding', {
-        path: this.registryPath
-      }, error as Error);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.warn('SYSTEM', 'Failed to parse supervisor registry, rebuilding', {
+          path: this.registryPath
+        }, error);
+      } else {
+        logger.warn('SYSTEM', 'Failed to parse supervisor registry, rebuilding', {
+          path: this.registryPath,
+          error: String(error)
+        });
+      }
       this.entries.clear();
     }
 
@@ -79,8 +158,50 @@ export class ProcessRegistry {
     this.persist();
   }
 
+  /**
+   * Keep a still-running process that is about to lose its registry id.
+   *
+   * Ids are caller-supplied and some are fixed for the life of the product —
+   * chroma always registers under `chroma-mcp` — so a new generation's
+   * `register()` replaced the previous generation's record while that
+   * process was still running. Nothing signals a pid that is not in the map:
+   * `runShutdownCascade` walks `getAll()` and `pruneDeadEntries` only visits
+   * entries, so the process went unreachable by every reaper at once. That is
+   * the cross-generation orphan of #3301.
+   *
+   * It is re-keyed rather than killed here. `register()` is synchronous and
+   * `killProcessTree()` is not, and a setter is the wrong place to start a
+   * kill nobody awaits. Under an id of its own the process stays visible to
+   * the reapers that already exist: shutdown verifies identity with
+   * `isSameProcess` before it signals anything, and `pruneDeadEntries` drops
+   * the record as soon as it exits.
+   */
+  private retainSupersededEntry(id: string, incomingPid: number): void {
+    const superseded = this.entries.get(id);
+    if (!superseded || superseded.pid === incomingPid || !isPidAlive(superseded.pid)) return;
+
+    // Keyed by pid, so re-registering over the same survivor twice records it
+    // once rather than growing the registry.
+    const supersededId = `${id}#superseded:${superseded.pid}`;
+    this.entries.set(supersededId, superseded);
+
+    const runtimeRef = this.runtimeProcesses.get(id);
+    if (runtimeRef) {
+      this.runtimeProcesses.set(supersededId, runtimeRef);
+      this.runtimeProcesses.delete(id);
+    }
+
+    logger.warn('SYSTEM', 'Registry id reused while the previous process was still alive; kept it for reaping', {
+      id,
+      supersededId,
+      supersededPid: superseded.pid,
+      incomingPid,
+    });
+  }
+
   register(id: string, processInfo: ManagedProcessInfo, processRef?: ChildProcess): void {
     this.initialize();
+    this.retainSupersededEntry(id, processInfo.pid);
     this.entries.set(id, processInfo);
     if (processRef) {
       this.runtimeProcesses.set(id, processRef);
@@ -90,9 +211,11 @@ export class ProcessRegistry {
 
   unregister(id: string): void {
     this.initialize();
+    const existing = this.entries.get(id);
     this.entries.delete(id);
     this.runtimeProcesses.delete(id);
     this.persist();
+    if (existing?.type === 'sdk') notifySlotAvailable();
   }
 
   clear(): void {
@@ -121,33 +244,27 @@ export class ProcessRegistry {
     return this.runtimeProcesses.get(id);
   }
 
-  getByPid(pid: number): ManagedProcessRecord[] {
-    return this.getAll().filter(record => record.pid === pid);
-  }
-
   pruneDeadEntries(): number {
     this.initialize();
 
     let removed = 0;
+    let removedSdk = 0;
     for (const [id, info] of this.entries) {
       if (isPidAlive(info.pid)) continue;
       this.entries.delete(id);
       this.runtimeProcesses.delete(id);
       removed += 1;
+      if (info.type === 'sdk') removedSdk += 1;
     }
 
     if (removed > 0) {
       this.persist();
     }
+    for (let i = 0; i < removedSdk; i += 1) notifySlotAvailable();
 
     return removed;
   }
 
-  /**
-   * Kill and unregister all processes tagged with the given sessionId.
-   * Sends SIGTERM first, waits up to 5s, then SIGKILL for survivors.
-   * Called when a session is deleted to prevent leaked child processes (#1351).
-   */
   async reapSession(sessionId: string | number): Promise<number> {
     this.initialize();
 
@@ -162,49 +279,96 @@ export class ProcessRegistry {
       pids: sessionRecords.map(r => r.pid)
     });
 
-    // Phase 1: SIGTERM all alive processes
     const aliveRecords = sessionRecords.filter(r => isPidAlive(r.pid));
+    // Identities captured up front. The SIGKILL phase below runs after a 5s
+    // waitForExit, and a record whose process exits during that window can
+    // have its PID reissued — force-killing it would hit a stranger, and the
+    // tree-kill form would take that stranger's children too.
+    const startTokens = new Map<number, string | null>(
+      aliveRecords.map(r => [r.pid, captureProcessStartToken(r.pid)])
+    );
     for (const record of aliveRecords) {
       try {
-        process.kill(record.pid, 'SIGTERM');
+        if (process.platform === 'win32') {
+          // Windows has no process groups, and process.kill() force-terminates
+          // exactly one PID — a `.cmd` shim dies while the real child it wraps
+          // survives. taskkill /T is the only teardown that reaches descendants.
+          //
+          // The token is passed rather than left to killProcessTree's own
+          // self-capture because this loop captured it EARLIER (before the
+          // preceding iterations' awaits), which is the stronger guarantee.
+          await killProcessTree(record.pid, {
+            expectedStartToken: startTokens.get(record.pid) ?? null,
+          });
+        } else if (typeof record.pgid === 'number') {
+          process.kill(-record.pgid, 'SIGTERM');
+        } else {
+          process.kill(record.pid, 'SIGTERM');
+        }
       } catch (error: unknown) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ESRCH') {
-          logger.debug('SYSTEM', `Failed to SIGTERM session process PID ${record.pid}`, {
-            pid: record.pid
-          }, error as Error);
+        if (error instanceof Error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ESRCH') {
+            logger.debug('SYSTEM', `Failed to SIGTERM session process PID ${record.pid}`, {
+              pid: record.pid,
+              pgid: record.pgid
+            }, error);
+          }
+        } else {
+          logger.warn('SYSTEM', `Failed to SIGTERM session process PID ${record.pid} (non-Error)`, {
+            pid: record.pid,
+            pgid: record.pgid,
+            error: String(error)
+          });
         }
       }
     }
 
-    // Phase 2: Wait for processes to exit
-    const deadline = Date.now() + REAP_SESSION_SIGTERM_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
-      if (survivors.length === 0) break;
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await waitForExit(aliveRecords, REAP_SESSION_SIGTERM_TIMEOUT_MS);
 
-    // Phase 3: SIGKILL any survivors
     const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
     for (const record of survivors) {
       logger.warn('SYSTEM', `Session process PID ${record.pid} did not exit after SIGTERM, sending SIGKILL`, {
         pid: record.pid,
+        pgid: record.pgid,
         sessionId: sessionIdNum
       });
+      const expectedStartToken = startTokens.get(record.pid) ?? null;
+      if (!isSameProcess(record.pid, expectedStartToken)) {
+        logger.warn('SYSTEM', 'Skipping SIGKILL: session process PID was reused during the grace window', {
+          pid: record.pid,
+          sessionId: sessionIdNum,
+        });
+        continue;
+      }
+
       try {
-        process.kill(record.pid, 'SIGKILL');
+        if (process.platform === 'win32') {
+          await killProcessTree(record.pid, { expectedStartToken });
+        } else if (typeof record.pgid === 'number') {
+          process.kill(-record.pgid, 'SIGKILL');
+        } else {
+          process.kill(record.pid, 'SIGKILL');
+        }
       } catch (error: unknown) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ESRCH') {
-          logger.debug('SYSTEM', `Failed to SIGKILL session process PID ${record.pid}`, {
-            pid: record.pid
-          }, error as Error);
+        if (error instanceof Error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ESRCH') {
+            logger.debug('SYSTEM', `Failed to SIGKILL session process PID ${record.pid}`, {
+              pid: record.pid,
+              pgid: record.pgid
+            }, error);
+          }
+        } else {
+          logger.warn('SYSTEM', `Failed to SIGKILL session process PID ${record.pid} (non-Error)`, {
+            pid: record.pid,
+            pgid: record.pgid,
+            error: String(error)
+          });
         }
       }
     }
 
-    // Brief wait for SIGKILL to take effect
     if (survivors.length > 0) {
       const sigkillDeadline = Date.now() + REAP_SESSION_SIGKILL_TIMEOUT_MS;
       while (Date.now() < sigkillDeadline) {
@@ -214,12 +378,14 @@ export class ProcessRegistry {
       }
     }
 
-    // Phase 4: Unregister all session records
     for (const record of sessionRecords) {
       this.entries.delete(record.id);
       this.runtimeProcesses.delete(record.id);
     }
     this.persist();
+    for (const record of sessionRecords) {
+      if (record.type === 'sdk') notifySlotAvailable();
+    }
 
     logger.info('SYSTEM', `Reaped ${sessionRecords.length} process(es) for session ${sessionId}`, {
       sessionId: sessionIdNum,
@@ -234,8 +400,38 @@ export class ProcessRegistry {
       processes: Object.fromEntries(this.entries.entries())
     };
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
-    writeFileSync(this.registryPath, JSON.stringify(payload, null, 2));
+    try {
+      writeJsonFileAtomic(this.registryPath, payload);
+      this.persistDegraded = false;
+    } catch (error: unknown) {
+      // An unwritable data directory (EACCES/EROFS/ENOSPC) must degrade, not
+      // crash. this.entries stays the source of truth in memory, so the worker
+      // still starts and the 30s health-check timer keeps pruning. Before this
+      // guard the throw propagated out of persist() into worker/session start
+      // and, every 30s, out of the health-check timer callback.
+      this.reportPersistFailure(error);
+    }
+  }
+
+  private reportPersistFailure(error: unknown): void {
+    // Log and report only on the transition INTO a degraded episode. A
+    // persistent permission failure is hit by every register/unregister/reap
+    // and by the 30s health-check timer, so logging (and rebuilding an Error
+    // for the stack) on each one would storm the warn log while only the first
+    // occurrence is worth surfacing. Reset again on the next successful persist.
+    if (this.persistDegraded) return;
+    this.persistDegraded = true;
+
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to persist supervisor registry; keeping it in memory', {
+      path: this.registryPath,
+    }, err);
+    try {
+      degradedReporter?.({ errorCategory: (err as NodeJS.ErrnoException).code ?? 'unknown' });
+    } catch {
+      // Reporting is best-effort: never let it turn a degraded-but-running
+      // supervisor back into a crash.
+    }
   }
 }
 
@@ -250,4 +446,541 @@ export function getProcessRegistry(): ProcessRegistry {
 
 export function createProcessRegistry(registryPath: string): ProcessRegistry {
   return new ProcessRegistry(registryPath);
+}
+
+export interface TrackedSdkProcess {
+  pid: number;
+  pgid: number | undefined;
+  sessionDbId: number;
+  process: ChildProcess;
+}
+
+export function getSdkProcessForSession(sessionDbId: number): TrackedSdkProcess | undefined {
+  const registry = getProcessRegistry();
+  const matches = registry.getBySession(sessionDbId).filter(r => r.type === 'sdk');
+
+  if (matches.length > 1) {
+    logger.warn('PROCESS', `Multiple SDK processes found for session ${sessionDbId}`, {
+      count: matches.length,
+      pids: matches.map(m => m.pid),
+    });
+  }
+
+  const record = matches[0];
+  if (!record) return undefined;
+
+  const processRef = registry.getRuntimeProcess(record.id);
+  if (!processRef) return undefined;
+
+  return {
+    pid: record.pid,
+    pgid: record.pgid,
+    sessionDbId,
+    process: processRef,
+  };
+}
+
+export async function ensureSdkProcessExit(
+  tracked: TrackedSdkProcess,
+  timeoutMs: number = 5000
+): Promise<void> {
+  const { pid, pgid, process: proc } = tracked;
+
+  if (proc.exitCode !== null) return;
+
+  // Captured BEFORE the exit race below. That race waits up to timeoutMs, and
+  // a PID that exits inside it can be reissued before the force-kill runs.
+  const expectedStartToken = captureProcessStartToken(pid);
+
+  const exitPromise = new Promise<void>((resolve) => {
+    proc.once('exit', () => resolve());
+  });
+
+  const timeoutPromise = new Promise<void>((resolve) => {
+    setTimeout(resolve, timeoutMs);
+  });
+
+  await Promise.race([exitPromise, timeoutPromise]);
+
+  if (proc.exitCode !== null) return;
+
+  logger.warn('PROCESS', `PID ${pid} did not exit after ${timeoutMs}ms, sending SIGKILL to process group`, {
+    pid, pgid, timeoutMs,
+  });
+  if (!isSameProcess(pid, expectedStartToken)) {
+    logger.warn('PROCESS', 'Skipping force-kill: SDK process PID was reused while awaiting exit', {
+      pid,
+      pgid,
+    });
+    return;
+  }
+
+  try {
+    if (process.platform === 'win32') {
+      // proc.kill() only reaches the direct child — on Windows that is often a
+      // `.cmd`/`.exe` shim whose real payload keeps running (and keeps the
+      // inherited socket open). Tree-kill the whole chain instead.
+      await killProcessTree(pid, { expectedStartToken });
+    } else if (typeof pgid === 'number') {
+      process.kill(-pgid, 'SIGKILL');
+    } else {
+      proc.kill('SIGKILL');
+    }
+  } catch (error: unknown) {
+    // A bare swallow here used to be accurate — process.kill()/proc.kill()
+    // only ever raised ESRCH ("already dead — fine"). killProcessTree() also
+    // raises ProcessTreeKillError for a genuine failure (Windows taskkill
+    // access-denied), and silently discarding that would hide a live SDK tree
+    // behind a clean-looking teardown. ESRCH stays tolerated; anything else is
+    // surfaced.
+    const errno = (error as NodeJS.ErrnoException).code;
+    if (errno !== 'ESRCH') {
+      logger.warn('PROCESS', `Force-kill of SDK process PID ${pid} failed`, {
+        pid,
+        pgid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const sigkillExit = new Promise<void>((resolve) => {
+    proc.once('exit', () => resolve());
+  });
+  const sigkillTimeout = new Promise<void>((resolve) => {
+    setTimeout(resolve, 1000);
+  });
+  await Promise.race([sigkillExit, sigkillTimeout]);
+}
+
+const TOTAL_PROCESS_HARD_CAP = 10;
+const SLOT_RECHECK_INTERVAL_MS = 5_000;
+
+// #2756: a session parked here for longer than this gets one WARN log line
+// via the recheck timer below. Deliberately duplicated from
+// SessionMessageBuffer's IDLE_TIMEOUT_MS (180_000ms) rather than imported —
+// no file under src/supervisor/ imports from src/services/, and importing it
+// here would create that layering violation. If IDLE_TIMEOUT_MS ever
+// changes, update this twin constant too.
+const PARKED_WARN_THRESHOLD_MS = 3 * 60 * 1000;
+
+interface SlotWaiterRecord {
+  sessionId?: number | string;
+  parkedSince: number;
+  warnedParked: boolean;
+  notify: () => void;
+}
+
+const slotWaiters: SlotWaiterRecord[] = [];
+
+/**
+ * Slots granted by waitForSlot() that are not yet visible as registry
+ * records. Registration only happens after spawn() returns a PID, and the
+ * caller has a wide await gap (OAuth refresh) between the grant and the
+ * spawn. Without a reservation, every concurrent caller observes the same
+ * stale count and all of them spawn (#3287: 9 agents against a max of 2).
+ */
+let reservedSlots = 0;
+
+export interface SlotReservation {
+  /** Frees the reserved slot. Idempotent: calls after the first are no-ops. */
+  release(): void;
+}
+
+function takeSlotReservation(): SlotReservation {
+  reservedSlots += 1;
+  let released = false;
+  return {
+    release(): void {
+      if (released) return;
+      released = true;
+      reservedSlots -= 1;
+      notifySlotAvailable();
+    },
+  };
+}
+
+function getActiveSdkCount(): number {
+  return getProcessRegistry().getAll().filter(record => record.type === 'sdk').length + reservedSlots;
+}
+
+function notifySlotAvailable(): void {
+  const waiter = slotWaiters.shift();
+  if (waiter) waiter.notify();
+}
+
+/** Number of sessions currently parked waiting for a concurrency slot — exposed on GET /api/processing-status (#2756). */
+export function getParkedSlotWaiterCount(): number {
+  return slotWaiters.length;
+}
+
+/**
+ * Slots granted by waitForSlot() but not yet visible as a registry 'sdk'
+ * record (or already released). Exported so tests that share this
+ * module-level singleton across files in the same `bun test` process (see
+ * tests/supervisor/process-registry-singleton-guard.ts) can assert this
+ * back to zero between tests too — a leaked reservation is invisible to
+ * getParkedSlotWaiterCount() and to a registry.getAll() scan, but still
+ * inflates getActiveSdkCount() for every later test in the same process.
+ */
+export function getReservedSlotCount(): number {
+  return reservedSlots;
+}
+
+/** Whether `sessionId` currently has a generator parked in waitForSlot (never acquired a slot / never spawned) (#2756). */
+export function isSessionParkedForSlot(sessionId: number | string): boolean {
+  const normalized = String(sessionId);
+  return slotWaiters.some(w => w.sessionId !== undefined && String(w.sessionId) === normalized);
+}
+
+/**
+ * Waits until an SDK agent slot is free, then reserves it. The count check
+ * and the reservation happen in the same synchronous block, so no concurrent
+ * caller can be granted the same slot. The caller must release the returned
+ * reservation once the spawned process is registered (the registry record
+ * takes over the accounting) or when the spawn fails or never happens:
+ * a leaked reservation would occupy the slot until the worker restarts.
+ *
+ * `maxConcurrent` may be a plain number (frozen for this call) or a thunk
+ * that is re-read on every recheck — pass a thunk so a mid-wait settings
+ * change (raising CLAUDE_MEM_MAX_CONCURRENT_AGENTS) can release an
+ * already-parked waiter without a worker restart (#2756). `sessionId`, when
+ * provided, lets callers (SessionRoutes) detect via isSessionParkedForSlot()
+ * whether this specific session is currently parked here, to distinguish a
+ * provider-switch onto a parked generator from one that is already
+ * mid-response.
+ */
+export async function waitForSlot(
+  maxConcurrent: number | (() => number),
+  signal?: AbortSignal,
+  sessionId?: number | string
+): Promise<SlotReservation> {
+  const getMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+
+  getProcessRegistry().pruneDeadEntries();
+  const activeCount = getActiveSdkCount();
+  if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
+    throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
+  }
+
+  if (activeCount < getMax()) return takeSlotReservation();
+
+  if (signal?.aborted) {
+    throw new Error('waitForSlot aborted before queuing');
+  }
+
+  logger.info('PROCESS', `Pool limit reached (${activeCount}/${getMax()}), waiting for slot...`);
+
+  return new Promise<SlotReservation>((resolve, reject) => {
+    let recheckTimer: ReturnType<typeof setInterval> | null = null;
+    let abortHandler: (() => void) | null = null;
+    const record: SlotWaiterRecord = {
+      sessionId,
+      parkedSince: Date.now(),
+      warnedParked: false,
+      notify: () => {},
+    };
+    const cleanup = () => {
+      if (recheckTimer) clearInterval(recheckTimer);
+      if (abortHandler && signal) signal.removeEventListener('abort', abortHandler);
+      const idx = slotWaiters.indexOf(record);
+      if (idx >= 0) slotWaiters.splice(idx, 1);
+    };
+    const onSlot = () => {
+      // Re-read getMax() here (not a frozen value) so a settings raise
+      // reaches an already-parked waiter the next time it's poked — either
+      // by this recheck timer or by another slot freeing up via unregister().
+      const count = getActiveSdkCount();
+      if (count >= TOTAL_PROCESS_HARD_CAP) {
+        cleanup();
+        reject(new Error(`Hard cap exceeded: ${count} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`));
+        return;
+      }
+
+      if (count < getMax()) {
+        cleanup();
+        resolve(takeSlotReservation());
+      } else {
+        slotWaiters.push(record);
+      }
+    };
+    record.notify = onSlot;
+
+    if (signal) {
+      abortHandler = () => {
+        cleanup();
+        reject(new Error('waitForSlot aborted'));
+      };
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
+
+    slotWaiters.push(record);
+    recheckTimer = setInterval(() => {
+      const removed = getProcessRegistry().pruneDeadEntries();
+      if (removed > 0) {
+        logger.info('PROCESS', 'Pruned stale process registry entries while waiting for agent slot', { removed });
+      } else {
+        notifySlotAvailable();
+      }
+
+      if (!record.warnedParked && Date.now() - record.parkedSince >= PARKED_WARN_THRESHOLD_MS) {
+        record.warnedParked = true;
+        logger.warn('PROCESS', `Session parked waiting for an agent slot for over ${Math.round(PARKED_WARN_THRESHOLD_MS / 1000)}s`, {
+          sessionId: record.sessionId,
+          parkedForMs: Date.now() - record.parkedSince,
+        });
+      }
+    }, SLOT_RECHECK_INTERVAL_MS);
+    recheckTimer.unref?.();
+  });
+}
+
+export interface SpawnedSdkProcess {
+  stdin: NonNullable<ChildProcess['stdin']>;
+  stdout: NonNullable<ChildProcess['stdout']>;
+  stderr: NonNullable<ChildProcess['stderr']>;
+  readonly killed: boolean;
+  readonly exitCode: number | null;
+  kill: ChildProcess['kill'];
+  on: ChildProcess['on'];
+  once: ChildProcess['once'];
+  off: ChildProcess['off'];
+}
+
+export interface SpawnSdkOptions {
+  command: string;
+  args: string[];
+  extraArgs?: string[];
+  // Part of the Claude SDK callback contract. Accepted at this trust boundary
+  // so callers remain compatible, but deliberately ignored for isolation.
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}
+
+export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []): string[] {
+  const filteredArgs: string[] = [];
+  for (const arg of args) {
+    if (arg === '') {
+      // The SDK encodes optional flag/value pairs as `--flag ''` when the
+      // value is absent. Strip the whole pair, but only when the preceding
+      // token is a long option so positional args are left untouched.
+      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
+        filteredArgs.pop();
+      }
+      continue;
+    }
+    filteredArgs.push(arg);
+  }
+
+  for (const extraArg of extraArgs) {
+    if (extraArg !== '') {
+      filteredArgs.push(extraArg);
+    }
+  }
+
+  return filteredArgs;
+}
+
+export function normalizeSpawnSdkCwd(sessionDbId: number): string {
+  return path.join(OBSERVER_SESSIONS_DIR, String(sessionDbId));
+}
+
+export function spawnSdkProcess(
+  sessionDbId: number,
+  options: SpawnSdkOptions
+): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
+  const registry = getProcessRegistry();
+
+  const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
+  const env = sanitizeEnv(options.env ?? process.env);
+  const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
+  const cwd = normalizeSpawnSdkCwd(sessionDbId);
+  try {
+    ensureDir(cwd);
+  } catch (error: unknown) {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    logger.error('SDK_SPAWN', `[session-${sessionDbId}] failed to create observer session directory`, {
+      sessionDbId,
+      cwd,
+    }, cause);
+    return null;
+  }
+
+  const isWin = process.platform === 'win32';
+  const child = useCmdWrapper
+    ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
+        cwd,
+        env,
+        detached: !isWin,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        signal: options.signal,
+        windowsHide: true,
+      })
+    : spawnHidden(options.command, filteredArgs, {
+        cwd,
+        env,
+        detached: !isWin,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        signal: options.signal,
+        windowsHide: true,
+      });
+
+  child.on('error', (err: Error) => {
+    logger.warn('SDK_SPAWN', `[session-${sessionDbId}] child emitted error event`, {
+      sessionDbId,
+      pid: child.pid,
+      errorName: err.name,
+      errorCode: (err as NodeJS.ErrnoException).code,
+    }, err);
+  });
+
+  if (!child.pid) {
+    logger.error('PROCESS', 'Spawn succeeded but produced no PID', { sessionDbId });
+    return null;
+  }
+
+  const pid = child.pid;
+  const pgid = pid; 
+
+  // Keep the tail of stderr so a non-zero exit can say WHY at WARN level.
+  // Without this, a CLI that dies at flag parsing ("error: unknown option…")
+  // logs only an opaque {code=1} and the real cause is invisible unless the
+  // worker happens to run at DEBUG.
+  const STDERR_TAIL_MAX_CHARS = 2048;
+  let stderrTail = '';
+  if (child.stderr) {
+    child.stderr.on('data', (data: Buffer) => {
+      const text = data.toString();
+      stderrTail = (stderrTail + text).slice(-STDERR_TAIL_MAX_CHARS);
+      logger.debug('SDK_SPAWN', `[session-${sessionDbId}] stderr: ${text.trim()}`);
+    });
+  }
+
+  const recordId = `sdk:${sessionDbId}:${pid}`;
+  registry.register(recordId, {
+    pid,
+    type: 'sdk',
+    sessionId: sessionDbId,
+    startedAt: new Date().toISOString(),
+    pgid,
+  }, child);
+
+  child.on('exit', () => {
+    registry.unregister(recordId);
+  });
+
+  // 'close', not 'exit': 'exit' can fire while piped stderr still holds
+  // buffered data, truncating the tail. 'close' waits for all stdio to drain.
+  child.on('close', (code: number | null, signal: string | null) => {
+    if (code !== 0) {
+      const tail = stderrTail.trim();
+      logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, {
+        code,
+        signal,
+        pid,
+        ...(tail ? { stderrTail: tail } : {}),
+      });
+    }
+  });
+
+  if (!child.stdin || !child.stdout || !child.stderr) {
+    logger.error('PROCESS', 'Spawned SDK child missing required stdio streams', {
+      sessionDbId,
+      pid,
+      hasStdin: Boolean(child.stdin),
+      hasStdout: Boolean(child.stdout),
+      hasStderr: Boolean(child.stderr),
+    });
+    try { child.kill('SIGKILL'); } catch { /* already dead */ }
+    return null;
+  }
+
+  const spawned: SpawnedSdkProcess = {
+    stdin: child.stdin,
+    stdout: child.stdout,
+    stderr: child.stderr,
+    get killed() { return child.killed; },
+    get exitCode() { return child.exitCode; },
+    kill: child.kill.bind(child),
+    on: child.on.bind(child),
+    once: child.once.bind(child),
+    off: child.off.bind(child),
+  };
+
+  return { process: spawned, pid, pgid };
+}
+
+function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
+  if (process.platform === 'win32') {
+    // The SDK spawn factory is synchronous (it must return SpawnedSdkProcess
+    // to its caller), so the tree-kill cannot be awaited here. That matches
+    // the pre-existing contract: this function only *starts* the teardown —
+    // process.kill() never waited for the duplicate to exit either. taskkill
+    // /T is what makes the teardown reach the duplicate's descendants instead
+    // of orphaning them.
+    //
+    // killProcessTree now REJECTS on a genuine kill failure, so this
+    // fire-and-forget call must terminate its own promise chain — an
+    // unhandled rejection here would take the worker down on a duplicate that
+    // merely failed to die.
+    killProcessTree(record.pid).catch((error: unknown) => {
+      logger.warn('PROCESS', `Tree-kill of duplicate SDK process PID ${record.pid} failed`, {
+        sessionDbId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  } else if (typeof record.pgid === 'number') {
+    process.kill(-record.pgid, 'SIGTERM');
+  } else {
+    process.kill(record.pid, 'SIGTERM');
+  }
+  logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
+    existingPid: record.pid,
+    sessionDbId,
+  });
+}
+
+export function createSdkSpawnFactory(sessionDbId: number, slotReservation?: SlotReservation, extraArgs: string[] = []) {
+  return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
+    const registry = getProcessRegistry();
+
+    const existing = registry.getBySession(sessionDbId).filter(r => r.type === 'sdk');
+    for (const record of existing) {
+      if (!isPidAlive(record.pid)) continue;
+      try {
+        sigtermDuplicateSdkProcess(record, sessionDbId);
+      } catch (error: unknown) {
+        const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+        if (code !== 'ESRCH') {
+          if (error instanceof Error) {
+            logger.warn('PROCESS', `Failed to SIGTERM duplicate SDK process PID ${record.pid}`, { sessionDbId }, error);
+          } else {
+            logger.warn('PROCESS', `Failed to SIGTERM duplicate SDK process PID ${record.pid} (non-Error)`, {
+              sessionDbId, error: String(error),
+            });
+          }
+        }
+      }
+    }
+
+    let result: ReturnType<typeof spawnSdkProcess>;
+    try {
+      result = spawnSdkProcess(sessionDbId, {
+        ...spawnOptions,
+        extraArgs: [...(spawnOptions.extraArgs ?? []), ...extraArgs],
+      });
+    } finally {
+      // The waitForSlot() reservation is consumed here: on success the
+      // process is now a registry record (registered inside spawnSdkProcess)
+      // and takes over the slot accounting; on failure the slot goes back to
+      // the pool. Both statements above are synchronous, so no other caller
+      // can observe the reservation and the record at the same time.
+      slotReservation?.release();
+    }
+    if (!result) {
+      throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
+    }
+
+    return result.process;
+  };
 }

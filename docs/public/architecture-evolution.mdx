@@ -88,15 +88,7 @@ GET /api/settings        # User settings
 POST /api/settings       # Save settings
 ```
 
-**Database Enhancements**:
-```typescript
-// New SessionStore methods for viewer
-getRecentPrompts(limit, offset, project?)
-getRecentObservations(limit, offset, project?)
-getRecentSummaries(limit, offset, project?)
-getStats()
-getUniqueProjects()
-```
+**Database Enhancements**: SessionStore gained paginated queries for recent prompts, observations, and summaries (filterable by project), plus database stats and project listing to back the viewer endpoints. (These viewer-specific methods were later replaced by the unified search layer.)
 
 **React Architecture**:
 ```
@@ -281,7 +273,7 @@ Problems:
 ```
 4 MCP tools following 3-layer workflow:
 
-1. __IMPORTANT - Workflow documentation (always visible)
+1. important_workflow - Workflow documentation (always visible)
    "3-LAYER WORKFLOW (ALWAYS FOLLOW):
     1. search(query) → Get index with IDs
     2. timeline(anchor=ID) → Get context
@@ -358,7 +350,7 @@ Before: Claude had to remember progressive disclosure pattern
 
 After: Tool structure makes it impossible to skip steps
 - Can't get details without IDs from search
-- Can't search without seeing __IMPORTANT reminder
+- Can't search without seeing important_workflow reminder
 - Timeline provides middle ground (context without full details)
 
 ### Impact

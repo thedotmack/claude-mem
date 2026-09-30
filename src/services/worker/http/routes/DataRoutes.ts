@@ -1,16 +1,10 @@
-/**
- * Data Routes
- *
- * Handles data retrieval operations: observations, summaries, prompts, stats, processing status.
- * All endpoints use direct database access via service layer.
- */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
-import { homedir } from 'os';
-import { getPackageRoot } from '../../../../shared/paths.js';
+import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -18,6 +12,87 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { validateBody } from '../middleware/validateBody.js';
+import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
+import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
+import { getParkedSlotWaiterCount } from '../../../../supervisor/process-registry.js';
+import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
+
+const integerArrayLike = z.preprocess((value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // not JSON, fall through to comma split
+    }
+    return value.split(',').map((part) => Number(part.trim()));
+  }
+  return value;
+}, z.array(z.number().int()));
+
+const stringArrayLike = z.preprocess((value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // not JSON, fall through to comma split
+    }
+    return value.split(',').map((part) => part.trim()).filter(Boolean);
+  }
+  return value;
+}, z.array(z.string()));
+
+const observationsBatchSchema = z.object({
+  ids: integerArrayLike,
+  orderBy: z.enum(['date_desc', 'date_asc']).optional(),
+  limit: z.number().int().positive().optional(),
+  project: z.string().optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
+}).passthrough();
+
+const sdkSessionsBatchSchema = z.object({
+  memorySessionIds: stringArrayLike,
+}).passthrough();
+
+// Layer 4 of progressive disclosure: raw tool bodies, by explicit id only.
+// `ids` accepts numeric tool_uses.id AND opaque tool_use_id strings, because a
+// caller may hold either (search/list hands back the former, a transcript or an
+// observation ref the latter). Required and non-empty on purpose — this route
+// must never be a way to page the whole table of raw payloads.
+const toolUsesBatchSchema = z.object({
+  ids: z.preprocess((value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // not JSON, fall through to comma split
+      }
+      return value.split(',').map((part) => part.trim()).filter(Boolean);
+    }
+    return value;
+  }, z.array(z.union([z.number().int(), z.string()]))),
+  limit: z.number().int().positive().max(200).optional(),
+  project: z.string().optional(),
+  contentSessionId: z.string().optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
+}).passthrough();
+
+const importSchema = z.object({
+  sessions: z.array(z.unknown()).optional(),
+  summaries: z.array(z.unknown()).optional(),
+  observations: z.array(z.unknown()).optional(),
+  prompts: z.array(z.unknown()).optional(),
+}).passthrough();
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -32,78 +107,55 @@ export class DataRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    // Pagination endpoints
     app.get('/api/observations', this.handleGetObservations.bind(this));
     app.get('/api/summaries', this.handleGetSummaries.bind(this));
     app.get('/api/prompts', this.handleGetPrompts.bind(this));
 
-    // Fetch by ID endpoints
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
-    app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
+    app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
+    app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
-    app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
+    app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
+    app.get('/api/tool-uses', this.handleListToolUses.bind(this));
+    app.post('/api/tool-uses/batch', validateBody(toolUsesBatchSchema), this.handleGetToolUsesByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
-
-    // Delete by ID endpoints
     app.delete('/api/observation/:id', this.handleDeleteObservation.bind(this));
     app.delete('/api/summary/:id', this.handleDeleteSummary.bind(this));
     app.delete('/api/prompt/:id', this.handleDeletePrompt.bind(this));
 
-    // Metadata endpoints
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
 
-    // Processing status endpoints
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
-    app.post('/api/processing', this.handleSetProcessing.bind(this));
 
-    // Pending queue management endpoints
-    app.get('/api/pending-queue', this.handleGetPendingQueue.bind(this));
-    app.post('/api/pending-queue/process', this.handleProcessPendingQueue.bind(this));
-    app.delete('/api/pending-queue/failed', this.handleClearFailedQueue.bind(this));
-    app.delete('/api/pending-queue/all', this.handleClearAllQueue.bind(this));
-
-    // Import endpoint
-    app.post('/api/import', this.handleImport.bind(this));
+    app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
 
-  /**
-   * Get paginated observations
-   */
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project);
+    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getObservations(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  /**
-   * Get paginated summaries
-   */
   private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getSummaries(offset, limit, project);
+    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  /**
-   * Get paginated user prompts
-   */
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project);
+    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource);
     res.json(result);
   });
 
-  /**
-   * Get observation by ID
-   * GET /api/observation/:id
-   */
   private handleGetObservationById = this.wrapHandler((req: Request, res: Response): void => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const observation = store.getObservationById(id);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const observation = store.getObservationById(id, platformSource);
 
     if (!observation) {
       this.notFound(res, `Observation #${id} not found`);
@@ -113,51 +165,125 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(observation);
   });
 
-  /**
-   * Get observations by array of IDs
-   * POST /api/observations/batch
-   * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
-   */
-  private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    let { ids, orderBy, limit, project } = req.body;
-
-    // Coerce string-encoded arrays from MCP clients (e.g. "[1,2,3]" or "1,2,3")
-    if (typeof ids === 'string') {
-      try { ids = JSON.parse(ids); } catch { ids = ids.split(',').map(Number); }
-    }
-
-    if (!ids || !Array.isArray(ids)) {
-      this.badRequest(res, 'ids must be an array of numbers');
+  private handleGetObservationsByFile = this.wrapHandler((req: Request, res: Response): void => {
+    // #2691 — `path` may be repeated (?path=abs&path=rel) to carry multiple
+    // candidate forms (absolute, project-root-relative, cwd-relative) so the
+    // query matches however PostToolUse stored the path. Paths can contain
+    // commas, so we rely on repeated query params rather than comma-splitting.
+    const rawPath = req.query.path;
+    const candidatePaths = (Array.isArray(rawPath) ? rawPath : [rawPath])
+      .filter((p): p is string => typeof p === 'string' && p.length > 0);
+    if (candidatePaths.length === 0) {
+      this.badRequest(res, 'path query parameter is required');
       return;
     }
+
+    const projectsParam = req.query.projects as string | undefined;
+    const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
+    const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    const db = this.dbManager.getSessionStore().db;
+    const observations = getObservationsByFilePath(db, candidatePaths, { projects, limit, platformSource });
+
+    res.json({ observations, count: observations.length });
+  });
+
+  private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, orderBy, limit, project } = req.body as z.infer<typeof observationsBatchSchema>;
 
     if (ids.length === 0) {
       res.json([]);
       return;
     }
 
-    // Validate all IDs are numbers
-    if (!ids.every(id => typeof id === 'number' && Number.isInteger(id))) {
-      this.badRequest(res, 'All ids must be integers');
-      return;
-    }
-
     const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
     res.json(observations);
   });
 
   /**
-   * Get session by ID
-   * GET /api/session/:id
+   * Index/tally listing for `tool_uses` — Receipt's read path and the way a
+   * caller finds ids worth disclosing. Deliberately projects a CHEAP shape:
+   * identity + sizes, never `tool_input` / `tool_response`. Full bodies come
+   * only from POST /api/tool-uses/batch with explicit ids.
    */
+  private handleListToolUses = this.wrapHandler((req: Request, res: Response): void => {
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    const asString = (value: unknown): string | undefined =>
+      typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+    const asNumber = (value: unknown): number | undefined => {
+      const parsed = Number(asString(value));
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+
+    const toolName = asString(req.query.tool_name ?? req.query.toolName);
+
+    const rows = store.queryToolUses({
+      project: asString(req.query.project),
+      contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
+      memorySessionId: asString(req.query.memorySessionId),
+      toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
+      agentId: asString(req.query.agentId),
+      platformSource,
+      dateStart: asNumber(req.query.dateStart),
+      dateEnd: asNumber(req.query.dateEnd),
+      limit: asNumber(req.query.limit),
+      offset: asNumber(req.query.offset),
+      orderBy: req.query.orderBy === 'date_asc' ? 'date_asc' : 'date_desc',
+    });
+
+    res.json({
+      count: rows.length,
+      toolUses: rows.map(row => ({
+        id: row.id,
+        tool_use_id: row.tool_use_id,
+        tool_name: row.tool_name,
+        project: row.project,
+        content_session_id: row.content_session_id,
+        memory_session_id: row.memory_session_id,
+        platform_source: row.platform_source,
+        agent_id: row.agent_id,
+        agent_type: row.agent_type,
+        observation_id: row.observation_id,
+        or_generation_id: row.or_generation_id,
+        or_session_id: row.or_session_id,
+        prompt_number: row.prompt_number,
+        created_at: row.created_at,
+        created_at_epoch: row.created_at_epoch,
+        // Size hints so a caller can budget tokens before disclosing a body.
+        tool_input_bytes: row.tool_input ? Buffer.byteLength(row.tool_input, 'utf8') : 0,
+        tool_response_bytes: row.tool_response ? Buffer.byteLength(row.tool_response, 'utf8') : 0,
+      })),
+    });
+  });
+
+  private handleGetToolUsesByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, limit, project, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    res.json(store.getToolUsesByIds(ids, { limit, project, contentSessionId, platformSource }));
+  });
+
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSessionSummariesByIds([id]);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const project = DataRoutes.firstString(req.query.project);
+    const sessions = store.getSessionSummariesByIds([id], { project, platformSource });
 
     if (sessions.length === 0) {
       this.notFound(res, `Session #${id} not found`);
@@ -167,39 +293,22 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(sessions[0]);
   });
 
-  /**
-   * Get SDK sessions by SDK session IDs
-   * POST /api/sdk-sessions/batch
-   * Body: { memorySessionIds: string[] }
-   */
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    let { memorySessionIds } = req.body;
-
-    // Coerce string-encoded arrays from MCP clients (e.g. '["a","b"]' or "a,b")
-    if (typeof memorySessionIds === 'string') {
-      try { memorySessionIds = JSON.parse(memorySessionIds); } catch { memorySessionIds = memorySessionIds.split(',').map((s: string) => s.trim()); }
-    }
-
-    if (!Array.isArray(memorySessionIds)) {
-      this.badRequest(res, 'memorySessionIds must be an array');
-      return;
-    }
+    const { memorySessionIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
 
     const store = this.dbManager.getSessionStore();
     const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
     res.json(sessions);
   });
 
-  /**
-   * Get user prompt by ID
-   * GET /api/prompt/:id
-   */
   private handleGetPromptById = this.wrapHandler((req: Request, res: Response): void => {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const prompts = store.getUserPromptsByIds([id]);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const project = DataRoutes.firstString(req.query.project);
+    const prompts = store.getUserPromptsByIds([id], { project, platformSource });
 
     if (prompts.length === 0) {
       this.notFound(res, `Prompt #${id} not found`);
@@ -209,89 +318,90 @@ export class DataRoutes extends BaseRouteHandler {
     res.json(prompts[0]);
   });
 
-  /**
-   * Delete an observation by ID
-   * DELETE /api/observation/:id
-   */
   private handleDeleteObservation = this.wrapHandler((req: Request, res: Response): void => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const deleted = this.dbManager.getSessionStore().deleteObservation(id);
-    if (!deleted) {
-      this.notFound(res, `Observation #${id} not found`);
-      return;
-    }
-
-    logger.info('HTTP', 'Deleted observation', { id });
-    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'observation', id });
-    res.json({ success: true, deleted: true, id });
+    this.deleteSyncedContent(req, res, 'observation', 'observations');
   });
 
-  /**
-   * Delete a session summary by ID
-   * DELETE /api/summary/:id
-   */
   private handleDeleteSummary = this.wrapHandler((req: Request, res: Response): void => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const deleted = this.dbManager.getSessionStore().deleteSessionSummary(id);
-    if (!deleted) {
-      this.notFound(res, `Summary #${id} not found`);
-      return;
-    }
-
-    logger.info('HTTP', 'Deleted summary', { id });
-    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'summary', id });
-    res.json({ success: true, deleted: true, id });
+    this.deleteSyncedContent(req, res, 'summary', 'session_summaries');
   });
 
-  /**
-   * Delete a user prompt by ID
-   * DELETE /api/prompt/:id
-   */
   private handleDeletePrompt = this.wrapHandler((req: Request, res: Response): void => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
+    this.deleteSyncedContent(req, res, 'prompt', 'user_prompts');
+  });
 
-    const deleted = this.dbManager.getSessionStore().deleteUserPrompt(id);
-    if (!deleted) {
-      this.notFound(res, `Prompt #${id} not found`);
+  /** Production deletion surface: tombstone enqueue and row delete are one transaction. */
+  private deleteSyncedContent(
+    req: Request,
+    res: Response,
+    kind: ContentKind,
+    table: 'observations' | 'session_summaries' | 'user_prompts',
+  ): void {
+    let originLocalId: string;
+    try {
+      originLocalId = assertCanonicalDecimal(req.params.id, { positive: true });
+    } catch {
+      this.badRequest(res, 'id must be a positive canonical decimal string');
       return;
     }
 
-    logger.info('HTTP', 'Deleted prompt', { id });
-    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: 'prompt', id });
-    res.json({ success: true, deleted: true, id });
-  });
+    const store = this.dbManager.getSessionStore();
+    const row = store.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id FROM ${table}
+      WHERE id = ? AND origin_device_id IS NULL
+    `).get(originLocalId) as { id: string } | undefined;
+    if (!row) {
+      this.notFound(res, `${kind} #${originLocalId} not found`);
+      return;
+    }
 
-  /**
-   * Get database statistics (with worker metadata)
-   */
+    const cloudSync = this.dbManager.getCloudSync();
+    let entityRev: string | null = null;
+    if (cloudSync?.isConfigured()) {
+      if (!cloudSync.status().deviceId) {
+        res.status(503).json({ error: 'cloud sync identity unavailable; refusing an unreplicated delete' });
+        return;
+      }
+      entityRev = cloudSync.queueDelete(kind, originLocalId);
+    } else {
+      // A row with an acknowledged entity head must never be silently deleted
+      // while its sync identity is unavailable: that would strand replicas.
+      const acknowledged = store.db.prepare(`
+        SELECT 1 AS found FROM sync_entity_heads
+        WHERE kind = ? AND origin_local_id = ? LIMIT 1
+      `).get(kind, originLocalId) as { found: number } | undefined;
+      if (acknowledged) {
+        res.status(503).json({ error: 'cloud sync unavailable; refusing an unreplicated delete' });
+        return;
+      }
+      store.db.prepare(
+        `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
+      ).run(originLocalId);
+    }
+
+    res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev });
+  }
+
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
 
-    // Read version from package.json
     const packageRoot = getPackageRoot();
     const packageJsonPath = path.join(packageRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     const version = packageJson.version;
 
-    // Get database stats
     const totalObservations = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
     const totalSessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
     const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+    const firstObservationAt = getFirstObservationCreatedAt(db);
 
-    // Get database file size and path
-    const dbPath = path.join(homedir(), '.claude-mem', 'claude-mem.db');
+    const dbPath = paths.database();
     let dbSize = 0;
     if (existsSync(dbPath)) {
       dbSize = statSync(dbPath).size;
     }
 
-    // Worker metadata
-    const uptime = Math.floor((Date.now() - this.startTime) / 1000);
+    const uptime = getUptimeSeconds(this.startTime);
     const activeSessions = this.sessionManager.getActiveSessionCount();
     const sseClients = this.sseBroadcaster.getClientCount();
 
@@ -308,72 +418,47 @@ export class DataRoutes extends BaseRouteHandler {
         size: dbSize,
         observations: totalObservations.count,
         sessions: totalSessions.count,
-        summaries: totalSummaries.count
+        summaries: totalSummaries.count,
+        firstObservationAt
       }
     });
   });
 
-  /**
-   * Get list of distinct projects from observations
-   * GET /api/projects
-   */
   private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
-    const db = this.dbManager.getSessionStore().db;
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
-    const rows = db.prepare(`
-      SELECT DISTINCT project
-      FROM observations
-      WHERE project IS NOT NULL
-      GROUP BY project
-      ORDER BY MAX(created_at_epoch) DESC
-    `).all() as Array<{ project: string }>;
+    if (platformSource) {
+      const projects = store.getAllProjects(platformSource);
+      res.json({
+        projects,
+        sources: [platformSource],
+        projectsBySource: { [platformSource]: projects }
+      });
+      return;
+    }
 
-    const projects = rows.map(row => row.project);
-
-    res.json({ projects });
+    res.json(store.getProjectCatalog());
   });
 
-  /**
-   * Get current processing status
-   * GET /api/processing-status
-   */
-  private handleGetProcessingStatus = this.wrapHandler((req: Request, res: Response): void => {
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
-    res.json({ isProcessing, queueDepth });
+  private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const isProcessing = await this.sessionManager.isAnySessionProcessing();
+    const queueDepth = await this.sessionManager.getTotalActiveWork();
+    // #2756 — additive: sessions currently parked in waitForSlot, never a
+    // breaking change to existing isProcessing/queueDepth consumers.
+    const parkedSessions = getParkedSlotWaiterCount();
+    res.json({ isProcessing, queueDepth, parkedSessions });
   });
 
-  /**
-   * Set processing status (called by hooks)
-   * NOTE: This now broadcasts computed status based on active processing (ignores input)
-   */
-  private handleSetProcessing = this.wrapHandler((req: Request, res: Response): void => {
-    // Broadcast current computed status (ignores manual input)
-    this.workerService.broadcastProcessingStatus();
-
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalQueueDepth();
-    const activeSessions = this.sessionManager.getActiveSessionCount();
-
-    res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
-  });
-
-  /**
-   * Parse pagination parameters from request query
-   */
-  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string } {
+  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
     const offset = parseInt(req.query.offset as string, 10) || 0;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); 
     const project = req.query.project as string | undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
-    return { offset, limit, project };
+    return { offset, limit, project, platformSource };
   }
 
-  /**
-   * Import memories from export file
-   * POST /api/import
-   * Body: { sessions: [], summaries: [], observations: [], prompts: [] }
-   */
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
     const { sessions, summaries, observations, prompts } = req.body;
 
@@ -389,11 +474,26 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const sessionContextByKey = new Map<string, { id: number; platformSource: string }>();
+    const sessionContextsByContentId = new Map<string, Array<{ id: number; platformSource: string }>>();
+    const sessionContextKey = (platformSource: string, contentSessionId: string): string =>
+      `${platformSource}\0${contentSessionId}`;
+    const rememberSessionContext = (session: any, id: number): void => {
+      if (!session || typeof session !== 'object' || typeof session.content_session_id !== 'string') {
+        return;
+      }
+      const platformSource = normalizePlatformSource(session.platform_source);
+      const context = { id, platformSource };
+      sessionContextByKey.set(sessionContextKey(platformSource, session.content_session_id), context);
+      const existing = sessionContextsByContentId.get(session.content_session_id) ?? [];
+      existing.push(context);
+      sessionContextsByContentId.set(session.content_session_id, existing);
+    };
 
-    // Import sessions first (dependency for everything else)
     if (Array.isArray(sessions)) {
       for (const session of sessions) {
         const result = store.importSdkSession(session);
+        rememberSessionContext(session, result.id);
         if (result.imported) {
           stats.sessionsImported++;
         } else {
@@ -402,7 +502,6 @@ export class DataRoutes extends BaseRouteHandler {
       }
     }
 
-    // Import summaries (depends on sessions)
     if (Array.isArray(summaries)) {
       for (const summary of summaries) {
         const result = store.importSessionSummary(summary);
@@ -414,22 +513,112 @@ export class DataRoutes extends BaseRouteHandler {
       }
     }
 
-    // Import observations (depends on sessions)
+    const importedObservations: Array<{ id: number; obs: typeof observations[0] }> = [];
     if (Array.isArray(observations)) {
       for (const obs of observations) {
         const result = store.importObservation(obs);
         if (result.imported) {
           stats.observationsImported++;
+          importedObservations.push({ id: result.id, obs });
         } else {
           stats.observationsSkipped++;
         }
       }
+
+      if (stats.observationsImported > 0) {
+        store.rebuildObservationsFTSIndex();
+      }
+
+      const chromaSync = this.dbManager.getChromaSync();
+      if (chromaSync && importedObservations.length > 0) {
+        const CHROMA_SYNC_CONCURRENCY = 8;
+        const safeParseJson = (val: string | null): string[] => {
+          if (!val) return [];
+          try { return JSON.parse(val); } catch { return []; }
+        };
+
+        const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
+          const sourceRow = store.db.prepare(`
+            SELECT COALESCE(NULLIF(platform_source, ''), 'claude') as platform_source
+            FROM sdk_sessions
+            WHERE memory_session_id = ?
+            LIMIT 1
+          `).get(obs.memory_session_id) as { platform_source?: string } | undefined;
+          const platformSource = typeof obs.platform_source === 'string'
+            ? normalizePlatformSource(obs.platform_source)
+            : normalizePlatformSource(sourceRow?.platform_source);
+          const parsedObs = {
+            type: obs.type || 'discovery',
+            title: obs.title || null,
+            subtitle: obs.subtitle || null,
+            facts: safeParseJson(obs.facts),
+            narrative: obs.narrative || null,
+            concepts: safeParseJson(obs.concepts),
+            files_read: safeParseJson(obs.files_read),
+            files_modified: safeParseJson(obs.files_modified),
+          };
+
+          await chromaSync.syncObservation(
+            id,
+            obs.memory_session_id,
+            obs.project,
+            parsedObs,
+            obs.prompt_number || 0,
+            obs.created_at_epoch,
+            platformSource
+          ).catch(err => {
+            logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
+          });
+        };
+
+        (async () => {
+          for (let i = 0; i < importedObservations.length; i += CHROMA_SYNC_CONCURRENCY) {
+            const batch = importedObservations.slice(i, i + CHROMA_SYNC_CONCURRENCY);
+            await Promise.all(batch.map(syncOne));
+          }
+        })().catch(err => {
+          logger.error('CHROMA', 'Import ChromaDB batch sync failed', {}, err as Error);
+        });
+      }
     }
 
-    // Import prompts (depends on sessions)
     if (Array.isArray(prompts)) {
       for (const prompt of prompts) {
-        const result = store.importUserPrompt(prompt);
+        let promptToImport = prompt;
+        if (prompt && typeof prompt === 'object' && !Array.isArray(prompt)) {
+          const promptRecord = prompt as Record<string, unknown>;
+          const contentSessionId = typeof promptRecord.content_session_id === 'string'
+            ? promptRecord.content_session_id
+            : undefined;
+          const explicitPlatformSource = typeof promptRecord.platform_source === 'string'
+            ? normalizePlatformSource(promptRecord.platform_source)
+            : undefined;
+
+          if (contentSessionId) {
+            let sessionContext: { id: number; platformSource: string } | undefined;
+            if (explicitPlatformSource) {
+              sessionContext = sessionContextByKey.get(sessionContextKey(explicitPlatformSource, contentSessionId));
+            } else {
+              const candidates = sessionContextsByContentId.get(contentSessionId) ?? [];
+              sessionContext = candidates.length === 1 ? candidates[0] : undefined;
+            }
+
+            if (sessionContext) {
+              promptToImport = {
+                ...promptRecord,
+                session_db_id: sessionContext.id,
+                platform_source: explicitPlatformSource ?? sessionContext.platformSource,
+              };
+            } else if (explicitPlatformSource) {
+              promptToImport = {
+                ...promptRecord,
+                platform_source: explicitPlatformSource,
+              };
+            }
+          }
+        }
+
+        const result = store.importUserPrompt(promptToImport as any);
         if (result.imported) {
           stats.promptsImported++;
         } else {
@@ -444,95 +633,4 @@ export class DataRoutes extends BaseRouteHandler {
     });
   });
 
-  /**
-   * Get pending queue contents
-   * GET /api/pending-queue
-   * Returns all pending, processing, and failed messages with optional recently processed
-   */
-  private handleGetPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-
-    // Get queue contents (pending, processing, failed)
-    const queueMessages = pendingStore.getQueueMessages();
-
-    // Get recently processed (last 30 min, up to 20)
-    const recentlyProcessed = pendingStore.getRecentlyProcessed(20, 30);
-
-    // Get stuck message count (processing > 5 min)
-    const stuckCount = pendingStore.getStuckCount(5 * 60 * 1000);
-
-    // Get sessions with pending work
-    const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();
-
-    res.json({
-      queue: {
-        messages: queueMessages,
-        totalPending: queueMessages.filter((m: { status: string }) => m.status === 'pending').length,
-        totalProcessing: queueMessages.filter((m: { status: string }) => m.status === 'processing').length,
-        totalFailed: queueMessages.filter((m: { status: string }) => m.status === 'failed').length,
-        stuckCount
-      },
-      recentlyProcessed,
-      sessionsWithPendingWork: sessionsWithPending
-    });
-  });
-
-  /**
-   * Process pending queue
-   * POST /api/pending-queue/process
-   * Body: { sessionLimit?: number } - defaults to 10
-   * Starts SDK agents for sessions with pending messages
-   */
-  private handleProcessPendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const sessionLimit = Math.min(
-      Math.max(parseInt(req.body.sessionLimit, 10) || 10, 1),
-      100 // Max 100 sessions at once
-    );
-
-    const result = await this.workerService.processPendingQueues(sessionLimit);
-
-    res.json({
-      success: true,
-      ...result
-    });
-  });
-
-  /**
-   * Clear all failed messages from the queue
-   * DELETE /api/pending-queue/failed
-   * Returns the number of messages cleared
-   */
-  private handleClearFailedQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-
-    const clearedCount = pendingStore.clearFailed();
-
-    logger.info('QUEUE', 'Cleared failed queue messages', { clearedCount });
-
-    res.json({
-      success: true,
-      clearedCount
-    });
-  });
-
-  /**
-   * Clear all messages from the queue (pending, processing, and failed)
-   * DELETE /api/pending-queue/all
-   * Returns the number of messages cleared
-   */
-  private handleClearAllQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-
-    const clearedCount = pendingStore.clearAll();
-
-    logger.warn('QUEUE', 'Cleared ALL queue messages (pending, processing, failed)', { clearedCount });
-
-    res.json({
-      success: true,
-      clearedCount
-    });
-  });
 }

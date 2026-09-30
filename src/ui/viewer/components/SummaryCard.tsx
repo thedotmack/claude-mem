@@ -23,6 +23,9 @@ export function SummaryCard({ summary, onDelete }: SummaryCardProps) {
       <header className="summary-card-header">
         <div className="summary-badge-row">
           <span className="card-type summary-badge">Session Summary</span>
+          <span className={`card-source source-${summary.platform_source || 'claude'}`}>
+            {summary.platform_source || 'claude'}
+          </span>
           <span className="summary-project-badge">{summary.project}</span>
           <DeleteButton itemType="summary" id={summary.id} onDelete={onDelete} />
         </div>

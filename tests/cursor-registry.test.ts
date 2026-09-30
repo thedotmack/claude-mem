@@ -9,28 +9,17 @@ import {
   unregisterCursorProject
 } from '../src/utils/cursor-utils';
 
-/**
- * Tests for Cursor Project Registry functionality
- *
- * These tests validate the file-based registry that tracks which projects
- * have Cursor hooks installed for automatic context updates.
- *
- * The registry is stored at ~/.claude-mem/cursor-projects.json
- */
-
 describe('Cursor Project Registry', () => {
   let tempDir: string;
   let registryFile: string;
 
   beforeEach(() => {
-    // Create unique temp directory for each test
     tempDir = join(tmpdir(), `cursor-registry-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     registryFile = join(tempDir, 'cursor-projects.json');
   });
 
   afterEach(() => {
-    // Clean up temp directory
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -80,7 +69,6 @@ describe('Cursor Project Registry', () => {
       expect(registry['test-project']).toBeDefined();
       expect(registry['test-project'].workspacePath).toBe('/workspace/test');
 
-      // Verify installedAt is a valid ISO timestamp within the test window
       const installedAt = new Date(registry['test-project'].installedAt).getTime();
       expect(installedAt).toBeGreaterThanOrEqual(before);
       expect(installedAt).toBeLessThanOrEqual(after);
@@ -130,7 +118,6 @@ describe('Cursor Project Registry', () => {
     it('does nothing when unregistering non-existent project', () => {
       registerCursorProject(registryFile, 'existing', '/path');
 
-      // Should not throw
       unregisterCursorProject(registryFile, 'non-existent');
 
       const registry = readCursorRegistry(registryFile);
@@ -138,10 +125,8 @@ describe('Cursor Project Registry', () => {
     });
 
     it('handles unregister when registry file does not exist', () => {
-      // Should not throw even when file doesn't exist
       unregisterCursorProject(registryFile, 'any-project');
 
-      // File should not be created by unregister
       expect(existsSync(registryFile)).toBe(false);
     });
   });
@@ -151,7 +136,6 @@ describe('Cursor Project Registry', () => {
       registerCursorProject(registryFile, 'test', '/path');
 
       const content = readFileSync(registryFile, 'utf-8');
-      // Should be indented (pretty-printed)
       expect(content).toContain('\n');
       expect(content).toContain('  ');
     });
@@ -160,7 +144,6 @@ describe('Cursor Project Registry', () => {
       registerCursorProject(registryFile, 'project-1', '/path/1');
       registerCursorProject(registryFile, 'project-2', '/path/2');
 
-      // Read raw and parse with JSON.parse (not our helper)
       const content = readFileSync(registryFile, 'utf-8');
       const parsed = JSON.parse(content);
 

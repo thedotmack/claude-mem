@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: Apache-2.0
+
+import type { Database } from 'bun:sqlite';
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import { verifyServerApiKey } from '../auth/sqlite-api-key-service.js';
+import {
+  hasForwardedClientHeaders,
+  hasLoopbackHostHeader,
+  isLocalhost,
+  parseBearerToken,
+} from './request-auth-helpers.js';
+
+export interface AuthContext {
+  userId: string | null;
+  organizationId: string | null;
+  teamId: string | null;
+  projectId: string | null;
+  scopes: string[];
+  apiKeyId: string | null;
+  mode: 'api-key' | 'local-dev';
+}
+
+declare module 'express-serve-static-core' {
+  interface Request {
+    authContext?: AuthContext;
+  }
+}
+
+export interface RequireAuthOptions {
+  requiredScopes?: string[];
+  authMode?: string;
+  allowLocalDevBypass?: boolean;
+}
+
+export function requireServerAuth(
+  getDatabase: () => Database,
+  options: RequireAuthOptions = {},
+): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const authMode = options.authMode ?? process.env.CLAUDE_MEM_AUTH_MODE ?? 'api-key';
+    const authorization = req.header('authorization') ?? '';
+    const xApiKey = req.header('x-api-key')?.trim() ?? '';
+    // Bearer is canonical; raw X-Api-Key is a fallback so clients using
+    // @better-auth/api-key defaults (e.g. the worker bundle shipped from the
+    // Windows-canary line) authenticate without a per-client custom config.
+    const rawKey = parseBearerToken(authorization) || xApiKey || null;
+
+    const allowLocalDevBypass = options.allowLocalDevBypass ?? process.env.CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS === '1';
+    if (
+      !rawKey
+      && authMode === 'local-dev'
+      && allowLocalDevBypass
+      && isLocalhost(req)
+      && hasLoopbackHostHeader(req)
+      && !hasForwardedClientHeaders(req)
+    ) {
+      req.authContext = {
+        userId: null,
+        organizationId: null,
+        teamId: null,
+        projectId: null,
+        scopes: ['local-dev'],
+        apiKeyId: null,
+        mode: 'local-dev',
+      };
+      next();
+      return;
+    }
+
+    if (!rawKey) {
+      res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Missing API key (Authorization: Bearer <key> or X-Api-Key: <key>)',
+      });
+      return;
+    }
+
+    const verified = verifyServerApiKey(getDatabase(), rawKey, options.requiredScopes ?? []);
+    if (!verified) {
+      res.status(403).json({ error: 'Forbidden', message: 'Invalid API key or insufficient scope' });
+      return;
+    }
+
+    req.authContext = {
+      userId: null,
+      organizationId: null,
+      teamId: verified.teamId,
+      projectId: verified.projectId,
+      scopes: verified.scopes,
+      apiKeyId: verified.record.id,
+      mode: 'api-key',
+    };
+    next();
+  };
+}

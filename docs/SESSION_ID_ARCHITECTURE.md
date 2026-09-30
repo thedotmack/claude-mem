@@ -23,14 +23,14 @@ Claude-mem uses **two distinct session IDs** to track conversations and memory:
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. SDKAgent starts, checks hasRealMemorySessionId           │
-│    const hasReal = memorySessionId !== null                 │
+│    const hasReal = !!memorySessionId                        │
 │    → FALSE (it's NULL)                                      │
 │    → Resume NOT used (fresh SDK session)                    │
 └─────────────────────────────────────────────────────────────┘
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 3. First SDK message arrives with session_id                │
-│    updateMemorySessionId(sessionDbId, "sdk-gen-abc123")     │
+│    ensureMemorySessionIdRegistered(sessionDbId, "sdk-gen-abc123") │
 │                                                              │
 │    Database state:                                          │
 │    ├─ content_session_id: "user-session-123"               │
@@ -38,45 +38,43 @@ Claude-mem uses **two distinct session IDs** to track conversations and memory:
 └─────────────────────────────────────────────────────────────┘
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 4. Subsequent prompts use resume                            │
-│    const hasReal = memorySessionId !== null                 │
-│    → TRUE (it's not NULL)                                   │
+│ 4. Subsequent prompts may use resume                        │
+│    const shouldResume =                                      │
+│      !!memorySessionId && lastPromptNumber > 1 && !forceInit│
+│    → TRUE only for continuation prompts in the same runtime │
 │    → Resume parameter: { resume: "sdk-gen-abc123" }         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Observation Storage
 
-**CRITICAL**: Observations are stored with `contentSessionId`, NOT the captured SDK `memorySessionId`.
+**CRITICAL**: Observations are stored with the real `memorySessionId`, NOT `contentSessionId`.
 
 ```typescript
-// SDKAgent.ts line 332-333
-this.dbManager.getSessionStore().storeObservation(
-  session.contentSessionId,  // ← contentSessionId, not memorySessionId!
-  session.project,
-  obs,
-  // ...
-);
+// SessionStore.ts
+storeObservation(memorySessionId, project, observation, ...);
 ```
 
-Even though the parameter is named `memorySessionId`, it receives `contentSessionId`. This means:
+This means:
 
 - Database column: `observations.memory_session_id`
-- Stored value: `contentSessionId` (the user's session ID)
+- Stored value: the captured or synthesized `memorySessionId`
 - Foreign key: References `sdk_sessions.memory_session_id`
 
-The observations are linked to the session via `contentSessionId`, which remains constant throughout the session lifecycle.
+Observation storage is blocked until a real `memorySessionId` is registered in `sdk_sessions`.
+This is why `SDKAgent` persists the SDK-returned `session_id` immediately through
+`ensureMemorySessionIdRegistered(...)` before any observation insert can succeed.
 
 ## Key Invariants
 
 ### 1. NULL-Based Detection
 
 ```typescript
-const hasRealMemorySessionId = session.memorySessionId !== null;
+const hasRealMemorySessionId = !!session.memorySessionId;
 ```
 
-- When `memorySessionId === null` → Not yet captured
-- When `memorySessionId !== null` → Real SDK session captured
+- When `memorySessionId` is falsy → Not yet captured
+- When `memorySessionId` is truthy → Real SDK session captured
 
 ### 2. Resume Safety
 
@@ -86,11 +84,19 @@ const hasRealMemorySessionId = session.memorySessionId !== null;
 // ❌ FORBIDDEN - Would resume user's session instead of memory session!
 query({ resume: contentSessionId })
 
-// ✅ CORRECT - Only resume when we have real memory session ID
+// ✅ CORRECT - Only resume for a continuation prompt in a valid runtime
 query({
-  ...(hasRealMemorySessionId && { resume: memorySessionId })
+  ...(
+    !!memorySessionId &&
+    lastPromptNumber > 1 &&
+    !forceInit &&
+    { resume: memorySessionId }
+  )
 })
 ```
+
+`memorySessionId` is necessary but not sufficient.
+Worker restart and crash-recovery paths may still carry a persisted ID while forcing a fresh INIT run.
 
 ### 3. Session Isolation
 
@@ -103,7 +109,8 @@ query({
 - Observations reference `sdk_sessions.memory_session_id`
 - Initially, `sdk_sessions.memory_session_id` is NULL (no observations can be stored yet)
 - When SDK session ID is captured, `sdk_sessions.memory_session_id` is set to the real value
-- Observations are stored using `contentSessionId` and remain retrievable via `contentSessionId`
+- Observations are stored using that real `memory_session_id`
+- Queries can still find the session from `content_session_id`, but observation rows themselves stay keyed by `memory_session_id`
 
 ## Testing Strategy
 
@@ -116,8 +123,8 @@ The test suite validates all critical invariants:
 ### Test Categories
 
 1. **NULL-Based Detection** - Validates `hasRealMemorySessionId` logic
-2. **Observation Storage** - Confirms observations use `contentSessionId`
-3. **Resume Safety** - Prevents `contentSessionId` from being used for resume
+2. **Observation Storage** - Confirms observations use real `memorySessionId` values after registration
+3. **Resume Safety** - Prevents `contentSessionId` and stale INIT sessions from being used for resume
 4. **Cross-Contamination Prevention** - Ensures session isolation
 5. **Foreign Key Integrity** - Validates cascade behavior
 6. **Session Lifecycle** - Tests create → capture → resume flow
@@ -141,14 +148,14 @@ bun test --verbose
 ### ❌ Using memorySessionId for observations
 
 ```typescript
-// WRONG - Don't use the captured SDK session ID
-storeObservation(session.memorySessionId, ...)
+// WRONG - Don't store observations before memorySessionId is available
+storeObservation(session.contentSessionId, ...)
 ```
 
 ### ❌ Resuming without checking for NULL
 
 ```typescript
-// WRONG - memorySessionId could be NULL!
+// WRONG - memorySessionId alone is not enough
 if (session.memorySessionId) {
   query({ resume: session.memorySessionId })
 }
@@ -166,14 +173,14 @@ const resumeId = session.memorySessionId
 ### ✅ Storing observations
 
 ```typescript
-// Always use contentSessionId
-storeObservation(session.contentSessionId, project, obs, ...)
+// Only store after a real memorySessionId has been captured or synthesized
+storeObservation(session.memorySessionId, project, obs, ...)
 ```
 
 ### ✅ Checking for real memory session ID
 
 ```typescript
-const hasRealMemorySessionId = session.memorySessionId !== null;
+const hasRealMemorySessionId = !!session.memorySessionId;
 ```
 
 ### ✅ Using resume parameter
@@ -182,7 +189,12 @@ const hasRealMemorySessionId = session.memorySessionId !== null;
 query({
   prompt: messageGenerator,
   options: {
-    ...(hasRealMemorySessionId && { resume: session.memorySessionId }),
+    ...(
+      hasRealMemorySessionId &&
+      session.lastPromptNumber > 1 &&
+      !session.forceInit &&
+      { resume: session.memorySessionId }
+    ),
     // ... other options
   }
 })
@@ -234,6 +246,6 @@ WHERE s.content_session_id = 'your-session-id';
 ## References
 
 - **Implementation**: `src/services/worker/SDKAgent.ts` (lines 72-94)
-- **Database Schema**: `src/services/sqlite/SessionStore.ts` (line 95-104)
+- **Session Store**: `src/services/sqlite/SessionStore.ts`
 - **Tests**: `tests/session_id_usage_validation.test.ts`
 - **Related Tests**: `tests/session_id_refactor.test.ts`

@@ -1,4 +1,3 @@
-// Allowed values for /api/instructions security
 export const ALLOWED_OPERATIONS = [
   'search',
   'context',

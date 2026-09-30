@@ -1,22 +1,26 @@
 ---
 title: "OpenRouter Provider"
-description: "Access 100+ AI models through OpenRouter's unified API, including free models for cost-effective observation extraction"
+description: "Access 100+ AI models through OpenRouter's unified API and run observation extraction off-plan"
 ---
 
 # OpenRouter Provider
 
-Claude-mem supports [OpenRouter](https://openrouter.ai) as an alternative provider for observation extraction. OpenRouter provides a unified API to access 100+ models from different providers including Google, Meta, Mistral, DeepSeek, and many others—often with generous free tiers.
+Claude-mem supports [OpenRouter](https://openrouter.ai) as an alternative provider for observation extraction. OpenRouter provides a unified API to access 100+ models from different providers including Google, Meta, Mistral, DeepSeek, and many others.
 
 <Tip>
-**Free Models Available**: OpenRouter offers several completely free models, making it an excellent choice for reducing observation extraction costs to zero while maintaining quality.
+**Memory runs off-plan**: With OpenRouter (or the claude-mem observer, which runs on this provider), observation extraction happens off your Claude plan — so memory work never shares your plan usage.
 </Tip>
+
+<Note>
+**claude-mem observer**: When you sign in during `npx claude-mem install` and choose the claude-mem observer, claude-mem configures this provider for you automatically with a provisioned key — no manual setup needed. The rest of this page covers bringing your own OpenRouter key.
+</Note>
 
 ## Why Use OpenRouter?
 
+- **Runs off-plan**: Observation extraction never shares your Claude plan usage
 - **Access to 100+ models**: Choose from models across multiple providers through one API
-- **Free tier options**: Several high-quality models are completely free to use
-- **Cost flexibility**: Pay-as-you-go pricing on premium models with no commitments
-- **Seamless fallback**: Automatically falls back to Claude if OpenRouter is unavailable
+- **Free model options**: Several high-quality models are available at no charge
+- **Errors throw clearly**: 429s, 5xx, and network failures throw — leaving messages pending so they can be retried
 - **Hot-swappable**: Switch providers without restarting the worker
 - **Multi-turn conversations**: Full conversation history maintained across API calls
 
@@ -73,15 +77,13 @@ All free models support:
 |---------|--------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_OPENROUTER_API_KEY` | string | — | Your OpenRouter API key |
-| `CLAUDE_MEM_OPENROUTER_MODEL` | string | `xiaomi/mimo-v2-flash:free` | Model identifier (see list above) |
-| `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES` | number | `20` | Max messages in conversation history |
-| `CLAUDE_MEM_OPENROUTER_MAX_TOKENS` | number | `100000` | Token budget safety limit |
+| `CLAUDE_MEM_OPENROUTER_MODEL` | string or array | `xiaomi/mimo-v2-flash:free` | Model identifier, or a list to fall back through (see [Model fallbacks](#model-fallbacks)) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
 
 ### Using the Settings UI
 
-1. Open the viewer at http://localhost:37777
+1. Open the worker URL printed on startup
 2. Click the **gear icon** to open Settings
 3. Under **AI Provider**, select **OpenRouter**
 4. Enter your OpenRouter API key
@@ -101,6 +103,31 @@ Edit `~/.claude-mem/settings.json`:
 }
 ```
 
+### Model fallbacks
+
+`CLAUDE_MEM_OPENROUTER_MODEL` also accepts a **list** of model ids. The first is
+the one normally used; the rest are handed to OpenRouter's native `models`
+fallback array, which tries them in order when the one before it errors.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-v1-your-key-here",
+  "CLAUDE_MEM_OPENROUTER_MODEL": [
+    "vendor/fast-model:free",
+    "vendor/backup-model:free",
+    "vendor/paid-model"
+  ]
+}
+```
+
+A comma- or space-separated string works too, so
+`"vendor/a, vendor/b"` means the same thing as the two-entry array.
+
+Fallbacks are sent only to `openrouter.ai`. A custom
+`CLAUDE_MEM_OPENROUTER_BASE_URL` gateway speaks plain OpenAI, which has no
+`models` field, so it receives the **first** id and ignores the rest.
+
 Alternatively, set the API key via environment variable:
 
 ```bash
@@ -111,7 +138,7 @@ The settings file takes precedence over the environment variable.
 
 ## Model Selection Guide
 
-### For Free Usage (No Cost)
+### Free Models
 
 **Recommended**: `xiaomi/mimo-v2-flash:free`
 - Best-in-class performance on coding benchmarks
@@ -124,33 +151,24 @@ The settings file takes precedence over the environment variable.
 - `deepseek/deepseek-r1:free` - Excellent reasoning capabilities
 - `meta-llama/llama-3.1-70b-instruct:free` - Strong general purpose
 
-### For Paid Usage (Higher Quality/Speed)
+### Premium Models (Higher Quality/Speed)
 
-| Model | Price (per 1M tokens) | Best For |
-|-------|----------------------|----------|
-| `anthropic/claude-3.5-sonnet` | $3 in / $15 out | Highest quality observations |
-| `google/gemini-2.0-flash` | $0.075 in / $0.30 out | Fast, cost-effective |
-| `openai/gpt-4o` | $2.50 in / $10 out | GPT-4 quality |
+| Model | Best For |
+|-------|----------|
+| `anthropic/claude-3.5-sonnet` | Highest quality observations |
+| `google/gemini-2.0-flash` | Fast responses |
+| `openai/gpt-4o` | GPT-4 quality |
+
+Premium models draw on your OpenRouter credit — still off-plan, so they never touch your Claude plan usage.
 
 ## Context Window Management
 
-OpenRouter agent implements intelligent context management to prevent runaway costs:
+The full conversation history is sent to the model on each request. claude-mem does
+**not** apply any client-side truncation or message-count cap — the provider and model
+own their own context window. If you need to bound context for a specific model, choose a
+model with an appropriate context length or manage limits at the OpenRouter/provider level.
 
-### Automatic Truncation
-
-The agent uses a sliding window strategy:
-1. Checks if message count exceeds `MAX_CONTEXT_MESSAGES` (default: 20)
-2. Checks if estimated tokens exceed `MAX_TOKENS` (default: 100,000)
-3. If limits exceeded, keeps most recent messages only
-4. Logs warnings with dropped message counts
-
-### Token Estimation
-
-- Conservative estimate: 1 token ≈ 4 characters
-- Used for proactive context management
-- Actual usage logged from API response
-
-### Cost Tracking
+### Usage Tracking
 
 Logs include detailed usage information:
 
@@ -187,28 +205,16 @@ You can switch between providers at any time:
 }
 ```
 
-## Fallback Behavior
+## Error Behavior
 
-If OpenRouter encounters errors, claude-mem automatically falls back to the Claude Agent SDK:
+If OpenRouter errors, claude-mem logs the failure and re-throws so the message stays pending for later retry. There is no Claude SDK fallback — earlier docs claimed automatic Claude fallback, but the wiring was never actually engaged in production (#2087). To switch providers, change `CLAUDE_MEM_PROVIDER` in settings.
 
-**Triggers fallback:**
+**Throwing conditions:**
 - Rate limiting (HTTP 429)
 - Server errors (HTTP 500, 502, 503)
 - Network issues (connection refused, timeout)
-- Generic fetch failures
-
-**Does not trigger fallback:**
-- Missing API key (logs warning, uses Claude from start)
-- Invalid API key (fails with error)
-
-When fallback occurs:
-1. A warning is logged
-2. Any in-progress messages are reset to pending
-3. Claude SDK takes over with the full conversation context
-
-<Note>
-**Fallback is transparent**: Your observations continue processing without interruption. The fallback preserves all conversation context.
-</Note>
+- 4xx errors other than 429
+- Missing API key
 
 ## Multi-Turn Conversation Support
 
@@ -245,7 +251,7 @@ Either:
 ### Rate Limiting
 
 Free models may have rate limits during peak usage. If you hit rate limits:
-- Claude-mem automatically falls back to Claude SDK
+- The agent throws and leaves the message pending — it will be retried later
 - Consider switching to a different free model
 - Add credits for premium model access
 
@@ -256,19 +262,19 @@ Verify the model ID is correct:
 - Use the `:free` suffix for free model variants
 - Model IDs are case-sensitive
 
-### High Token Usage Warning
+### High Token Usage
 
-If you see warnings about high token usage (>50,000 per request):
-- Reduce `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES`
-- Reduce `CLAUDE_MEM_OPENROUTER_MAX_TOKENS`
-- Consider a model with larger context window
+If a session accumulates a large conversation history, requests can grow. To keep
+per-request size down:
+- Choose a model suited to your usage volume
+- Consider a model with a larger context window if you hit provider-side limits
 
 ### Connection Errors
 
 If you see connection errors:
 - Check your internet connection
 - Verify OpenRouter service status at [status.openrouter.ai](https://status.openrouter.ai)
-- The agent will automatically fall back to Claude
+- The agent throws and leaves the message pending for later retry
 
 ## API Details
 
@@ -301,15 +307,15 @@ Content-Type: application/json
 
 | Feature | Claude (SDK) | Gemini | OpenRouter |
 |---------|-------------|--------|------------|
-| **Cost** | Pay per token | Free tier + paid | Free models + paid |
+| **Plan usage** | Shares your Claude plan | Off-plan (your Gemini key) | Off-plan (your OpenRouter credit or the claude-mem observer) |
 | **Models** | Claude only | Gemini only | 100+ models |
 | **Quality** | Highest | High | Varies by model |
 | **Rate limits** | Based on tier | 5-4000 RPM | Varies by model |
-| **Fallback** | N/A (primary) | → Claude | → Claude |
+| **On error** | Throws | Throws | Throws |
 | **Setup** | Automatic | API key required | API key required |
 
 <Tip>
-**Recommendation**: Start with OpenRouter's free `xiaomi/mimo-v2-flash:free` model for zero-cost observation extraction. If you need higher quality or encounter rate limits, switch to Claude or add OpenRouter credits for premium models.
+**Recommendation**: The claude-mem observer (chosen at install) is the easiest way to run memory off-plan. Bringing your own key? Start with the free `xiaomi/mimo-v2-flash:free` model. If you need higher quality or encounter rate limits, switch to a premium model or the Claude provider.
 </Tip>
 
 ## Next Steps

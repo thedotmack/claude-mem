@@ -1,0 +1,182 @@
+# Phase 10 — server-beta deployable runtime.
+#
+# Stack: Postgres (canonical storage) + Valkey (BullMQ queue) +
+#        claude-mem-server (HTTP, no generation) +
+#        claude-mem-worker (BullMQ generation consumer).
+#
+# SECURITY: This file MUST NOT be deployed unmodified to any environment
+# that is reachable from the public internet, including staging behind a
+# VPN where lateral movement is possible. The Postgres credentials are
+# required env vars (no defaults) — start the stack with a `.env` file or
+# inline `POSTGRES_USER=... POSTGRES_PASSWORD=... docker compose up`. The
+# stack will refuse to start if any required secret is missing.
+#
+# The legacy `worker-service.cjs` runtime is NEVER spawned in this stack.
+# `claude-mem-server` runs `server-beta-service.cjs --daemon`; the
+# `claude-mem-worker` service runs `server-beta-service.cjs worker start`
+# from the same image. Scale generation via:
+#   docker compose up -d --scale claude-mem-worker=N
+#
+# Required env vars (validated at startup by validateServerBetaEnv()):
+#   CLAUDE_MEM_RUNTIME=server-beta
+#   CLAUDE_MEM_QUEUE_ENGINE=bullmq
+#   CLAUDE_MEM_SERVER_DATABASE_URL=postgres://...
+#   CLAUDE_MEM_REDIS_URL=redis://valkey:6379
+#   CLAUDE_MEM_AUTH_MODE=api-key   (local-dev is REJECTED inside Docker)
+#
+# Required secrets (no defaults — must be supplied in env or .env):
+#   POSTGRES_USER
+#   POSTGRES_PASSWORD
+#   POSTGRES_DB
+#
+# #2558 — every long-running service declares `restart: unless-stopped` so a
+# crashed container (OOM, panic, transient dependency failure) is brought back
+# automatically; a killed container recovers without operator intervention.
+#
+# #2558 — Redis/Valkey URL has a fallback so the stack is not brittle: the
+# worker/server read CLAUDE_MEM_REDIS_URL with a default of
+# redis://valkey:6379 instead of hard-failing when the var is unset.
+#
+# #2558 — secrets can be supplied via a credentials file mounted into the
+# server/worker containers (see the commented `secrets:` blocks below) instead
+# of being passed inline through the environment.
+#
+# Auth modes (#2554):
+#   - API-KEY auth (default here, CLAUDE_MEM_AUTH_MODE=api-key): every request
+#     carries a bearer key created with `server api-key create`. Generation
+#     uses a configured provider API key (ANTHROPIC_API_KEY/...). This path
+#     bills per token and can be EXPENSIVE at high observation volume.
+#   - SUBSCRIPTION auth: point the generation provider at a Claude subscription
+#     / Pro session instead of a metered API key to avoid per-token API cost.
+#     Set the provider credentials accordingly on the worker service; the HTTP
+#     auth contract (bearer API keys) is unchanged.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    # BullMQ requires noeviction; AOF gives durability across restarts.
+    command:
+      - valkey-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  claude-mem-server:
+    build:
+      context: .
+      dockerfile: docker/claude-mem/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      CLAUDE_MEM_CONTAINER_MODE: server
+      CLAUDE_MEM_DOCKER: "1"
+      CLAUDE_MEM_RUNTIME: server-beta
+      CLAUDE_MEM_HOST: 0.0.0.0
+      CLAUDE_MEM_SERVER_HOST: 0.0.0.0
+      CLAUDE_MEM_SERVER_PORT: "37877"
+      # Legacy var some libraries still read; keep aligned with server port
+      # so the existing E2E driver and viewer continue to work.
+      CLAUDE_MEM_WORKER_HOST: 0.0.0.0
+      CLAUDE_MEM_WORKER_PORT: "37877"
+      CLAUDE_MEM_DATA_DIR: /data/claude-mem
+      CLAUDE_MEM_QUEUE_ENGINE: bullmq
+      # #2558 — REDIS_URL fallback: default to the in-stack valkey service so the
+      # var is not a brittle hard requirement; override CLAUDE_MEM_REDIS_URL to
+      # point at an external Redis.
+      CLAUDE_MEM_REDIS_URL: ${CLAUDE_MEM_REDIS_URL:-redis://valkey:6379}
+      CLAUDE_MEM_REDIS_MODE: docker
+      CLAUDE_MEM_SERVER_DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      CLAUDE_MEM_AUTH_MODE: api-key
+      CLAUDE_MEM_CHROMA_ENABLED: "false"
+      # The HTTP service does not consume BullMQ jobs; the worker container
+      # does. This split keeps HTTP latency unaffected by provider calls.
+      CLAUDE_MEM_GENERATION_DISABLED: "true"
+    ports:
+      - "37877:37877"
+    volumes:
+      - claude-mem-data:/data/claude-mem
+      # #2558 — credentials-file mount. Place provider/API secrets in a file
+      # (git-ignored) and mount it read-only instead of inlining secrets in the
+      # environment. The entrypoint / operator can `source` it. Uncomment and
+      # point CREDENTIALS_FILE at the host path:
+      # - ${CREDENTIALS_FILE:-./.docker-credentials}:/run/secrets/claude-mem-credentials:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:37877/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  claude-mem-worker:
+    build:
+      context: .
+      dockerfile: docker/claude-mem/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      claude-mem-server:
+        condition: service_healthy
+    environment:
+      CLAUDE_MEM_CONTAINER_MODE: worker
+      CLAUDE_MEM_DOCKER: "1"
+      CLAUDE_MEM_RUNTIME: server-beta
+      CLAUDE_MEM_DATA_DIR: /data/claude-mem
+      CLAUDE_MEM_QUEUE_ENGINE: bullmq
+      # #2558 — REDIS_URL fallback (see server service above).
+      CLAUDE_MEM_REDIS_URL: ${CLAUDE_MEM_REDIS_URL:-redis://valkey:6379}
+      CLAUDE_MEM_REDIS_MODE: docker
+      CLAUDE_MEM_SERVER_DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      CLAUDE_MEM_AUTH_MODE: api-key
+      CLAUDE_MEM_CHROMA_ENABLED: "false"
+      # Provider configuration. ANTHROPIC_API_KEY (or
+      # CLAUDE_MEM_ANTHROPIC_API_KEY) is required for real generation; the
+      # worker stays running but never produces observations without one.
+      CLAUDE_MEM_SERVER_PROVIDER: ${CLAUDE_MEM_SERVER_PROVIDER:-claude}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_MEM_ANTHROPIC_API_KEY: ${CLAUDE_MEM_ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - claude-mem-data:/data/claude-mem
+      # #2558 — credentials-file mount (see server service above). Keeps
+      # provider/API secrets out of the inline environment.
+      # - ${CREDENTIALS_FILE:-./.docker-credentials}:/run/secrets/claude-mem-credentials:ro
+
+volumes:
+  claude-mem-data:
+  postgres-data:
+  valkey-data:

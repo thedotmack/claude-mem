@@ -1,31 +1,19 @@
-/**
- * Code structure parser — shells out to tree-sitter CLI for AST-based extraction.
- *
- * No native bindings. No WASM. Just the CLI binary + query patterns.
- *
- * Supported: JS, TS, Python, Go, Rust, Ruby, Java, C, C++
- *
- * by Copter Labs
- */
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
+import { logger } from "../../utils/logger.js";
+import { resolveDataDir } from "../../shared/paths.js";
 
-// CJS-safe require for resolving external packages at runtime.
-// In ESM: import.meta.url works. In CJS bundle (esbuild): __filename works.
-// typeof check avoids ReferenceError in ESM where __filename doesn't exist.
 const _require = typeof __filename !== 'undefined'
   ? createRequire(__filename)
   : createRequire(import.meta.url);
 
-// --- Types ---
-
 export interface CodeSymbol {
   name: string;
-  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter";
+  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "section" | "code" | "metadata" | "reference";
   signature: string;
   jsdoc?: string;
   lineStart: number;
@@ -43,8 +31,6 @@ export interface FoldedFile {
   totalLines: number;
   foldedTokenEstimate: number;
 }
-
-// --- Language detection ---
 
 const LANG_MAP: Record<string, string> = {
   ".js": "javascript",
@@ -66,14 +52,32 @@ const LANG_MAP: Record<string, string> = {
   ".cxx": "cpp",
   ".hpp": "cpp",
   ".hh": "cpp",
+  ".kt": "kotlin",
+  ".kts": "kotlin",
+  ".swift": "swift",
+  ".php": "php",
+  ".lua": "lua",
+  ".scala": "scala",
+  ".sc": "scala",
+  ".sh": "bash",
+  ".bash": "bash",
+  ".zsh": "bash",
+  ".hs": "haskell",
+  ".zig": "zig",
+  ".css": "css",
+  ".scss": "scss",
+  ".toml": "toml",
+  ".yml": "yaml",
+  ".yaml": "yaml",
+  ".sql": "sql",
+  ".md": "markdown",
+  ".mdx": "markdown",
 };
 
-export function detectLanguage(filePath: string): string {
+function detectLanguage(filePath: string): string {
   const ext = filePath.slice(filePath.lastIndexOf("."));
-  return LANG_MAP[ext] || "unknown";
+  return LANG_MAP[ext] ?? "unknown";
 }
-
-// --- Grammar path resolution ---
 
 const GRAMMAR_PACKAGES: Record<string, string> = {
   javascript: "tree-sitter-javascript",
@@ -86,20 +90,50 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   java: "tree-sitter-java",
   c: "tree-sitter-c",
   cpp: "tree-sitter-cpp",
+  kotlin: "tree-sitter-kotlin",
+  swift: "tree-sitter-swift",
+  php: "tree-sitter-php/php",
+  lua: "@tree-sitter-grammars/tree-sitter-lua",
+  scala: "tree-sitter-scala",
+  bash: "tree-sitter-bash",
+  haskell: "tree-sitter-haskell",
+  zig: "@tree-sitter-grammars/tree-sitter-zig",
+  css: "tree-sitter-css",
+  scss: "tree-sitter-scss",
+  toml: "@tree-sitter-grammars/tree-sitter-toml",
+  yaml: "@tree-sitter-grammars/tree-sitter-yaml",
+  sql: "@derekstride/tree-sitter-sql",
+  markdown: "@tree-sitter-grammars/tree-sitter-markdown",
+};
+
+const GRAMMAR_SUBDIR: Record<string, string> = {
+  markdown: "tree-sitter-markdown",
 };
 
 function resolveGrammarPath(language: string): string | null {
   const pkg = GRAMMAR_PACKAGES[language];
   if (!pkg) return null;
+
+  const subdir = GRAMMAR_SUBDIR[language];
+  if (subdir) {
+    try {
+      const rootPkgPath = _require.resolve(pkg + "/package.json");
+      const resolved = join(dirname(rootPkgPath), subdir);
+      if (existsSync(join(resolved, "src"))) return resolved;
+    } catch {
+      // [ANTI-PATTERN IGNORED]: grammar package not installed is expected for unsupported languages
+    }
+    return null;
+  }
+
   try {
     const packageJsonPath = _require.resolve(pkg + "/package.json");
     return dirname(packageJsonPath);
   } catch {
+    // [ANTI-PATTERN IGNORED]: grammar package not installed is expected for unsupported languages; caller falls back to user grammars or a symbol-less folded view
     return null;
   }
 }
-
-// --- Query patterns (declarative symbol extraction) ---
 
 const QUERIES: Record<string, string> = {
   jsts: `
@@ -110,6 +144,19 @@ const QUERIES: Record<string, string> = {
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
+(import_statement) @imp
+(export_statement) @exp
+`,
+
+  // Plain JavaScript: the tree-sitter-javascript grammar has no type_identifier,
+  // interface_declaration, type_alias_declaration or enum_declaration nodes, so it
+  // cannot share the jsts query — tree-sitter aborts query compilation on the first
+  // unknown node type. Class names are (identifier) here, not (type_identifier).
+  js: `
+(function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(class_declaration name: (identifier) @name) @cls
+(method_definition name: (property_identifier) @name) @method
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -152,6 +199,104 @@ const QUERIES: Record<string, string> = {
 (import_declaration) @imp
 `,
 
+  kotlin: `
+(function_declaration (simple_identifier) @name) @func
+(class_declaration (type_identifier) @name) @cls
+(object_declaration (type_identifier) @name) @cls
+(import_header) @imp
+`,
+
+  swift: `
+(function_declaration name: (simple_identifier) @name) @func
+(class_declaration name: (type_identifier) @name) @cls
+(protocol_declaration name: (type_identifier) @name) @iface
+(import_declaration) @imp
+`,
+
+  php: `
+(function_definition name: (name) @name) @func
+(class_declaration name: (name) @name) @cls
+(interface_declaration name: (name) @name) @iface
+(trait_declaration name: (name) @name) @trait_def
+(method_declaration name: (name) @name) @method
+(namespace_use_declaration) @imp
+`,
+
+  lua: `
+(function_declaration name: (identifier) @name) @func
+(function_declaration name: (dot_index_expression) @name) @func
+(function_declaration name: (method_index_expression) @name) @func
+`,
+
+  scala: `
+(function_definition name: (identifier) @name) @func
+(class_definition name: (identifier) @name) @cls
+(object_definition name: (identifier) @name) @cls
+(trait_definition name: (identifier) @name) @trait_def
+(import_declaration) @imp
+`,
+
+  bash: `
+(function_definition name: (word) @name) @func
+`,
+
+  haskell: `
+(function name: (variable) @name) @func
+(type_synomym name: (name) @name) @tdef
+(newtype name: (name) @name) @tdef
+(data_type name: (name) @name) @tdef
+(class name: (name) @name) @cls
+(import) @imp
+`,
+
+  zig: `
+(function_declaration name: (identifier) @name) @func
+(test_declaration) @func
+`,
+
+  css: `
+(rule_set (selectors) @name) @func
+(media_statement) @cls
+(keyframes_statement (keyframes_name) @name) @cls
+(import_statement) @imp
+`,
+
+  scss: `
+(rule_set (selectors) @name) @func
+(media_statement) @cls
+(keyframes_statement (keyframes_name) @name) @cls
+(import_statement) @imp
+(mixin_statement name: (identifier) @name) @mixin_def
+(function_statement name: (identifier) @name) @func
+(include_statement) @imp
+`,
+
+  toml: `
+(table (bare_key) @name) @cls
+(table (dotted_key) @name) @cls
+(table_array_element (bare_key) @name) @cls
+(table_array_element (dotted_key) @name) @cls
+`,
+
+  yaml: `
+(block_mapping_pair key: (flow_node) @name) @func
+`,
+
+  sql: `
+(create_table (object_reference) @name) @cls
+(create_function (object_reference) @name) @func
+(create_view (object_reference) @name) @cls
+`,
+
+  markdown: `
+(atx_heading heading_content: (inline) @name) @heading
+(setext_heading heading_content: (paragraph) @name) @heading
+(fenced_code_block (info_string (language) @name)) @code_block
+(fenced_code_block) @code_block
+(minus_metadata) @frontmatter
+(link_reference_definition (link_label) @name) @ref
+`,
+
   generic: `
 (function_declaration name: (identifier) @name) @func
 (function_definition name: (identifier) @name) @func
@@ -165,6 +310,7 @@ const QUERIES: Record<string, string> = {
 function getQueryKey(language: string): string {
   switch (language) {
     case "javascript":
+      return "js";
     case "typescript":
     case "tsx":
       return "jsts";
@@ -173,11 +319,23 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "kotlin": return "kotlin";
+    case "swift": return "swift";
+    case "php": return "php";
+    case "lua": return "lua";
+    case "scala": return "scala";
+    case "bash": return "bash";
+    case "haskell": return "haskell";
+    case "zig": return "zig";
+    case "css": return "css";
+    case "scss": return "scss";
+    case "toml": return "toml";
+    case "yaml": return "yaml";
+    case "sql": return "sql";
+    case "markdown": return "markdown";
     default: return "generic";
   }
 }
-
-// --- Temp file management ---
 
 let queryTmpDir: string | null = null;
 const queryFileCache = new Map<string, string>();
@@ -195,26 +353,116 @@ function getQueryFile(queryKey: string): string {
   return filePath;
 }
 
-// --- CLI execution ---
+// tree-sitter-cli installs `tree-sitter.exe` on Windows, not a bare `tree-sitter`
+// (see ChromaMcpManager.resolveUvxCommand for the same platform-suffix idiom).
+// Without the `.exe` suffix the existsSync check below always misses on Windows,
+// silently falling through to a bare `tree-sitter` that may not be on PATH —
+// smart file parsing then returns empty results with no error.
+export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
+  const binName = platform === "win32" ? "tree-sitter.exe" : "tree-sitter";
+
+  try {
+    const pkgPath = _require.resolve("tree-sitter-cli/package.json");
+    const binPath = join(dirname(pkgPath), binName);
+    if (existsSync(binPath)) {
+      return binPath;
+    }
+  } catch {
+    // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
+  }
+
+  return binName;
+}
 
 let cachedBinPath: string | null = null;
 
 function getTreeSitterBin(): string {
   if (cachedBinPath) return cachedBinPath;
-
-  // Try direct binary from tree-sitter-cli package
-  try {
-    const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), "tree-sitter");
-    if (existsSync(binPath)) {
-      cachedBinPath = binPath;
-      return binPath;
-    }
-  } catch { /* fall through */ }
-
-  // Fallback: assume it's on PATH
-  cachedBinPath = "tree-sitter";
+  cachedBinPath = resolveTreeSitterBinPath();
   return cachedBinPath;
+}
+
+// `tree-sitter query -p <grammar-dir>` implies --rebuild (#3926): the CLI
+// recompiles the grammar from source on EVERY invocation, so each smart_outline
+// / smart_search / smart_unfold call paid a full C compile before it could match
+// a single node. Building the grammar once and passing the artifact with
+// `-l <lib> --lang-name <language>` turns the same call into a library load.
+// Grammar libraries live in the data dir, not in node_modules: a plugin update
+// replaces node_modules wholesale, and writing into a package directory that the
+// installer owns is not ours to do.
+const GRAMMAR_LIB_DIR = join(resolveDataDir(), "tree-sitter-libs");
+
+// dlopen does not care about the suffix, but the platform-native one keeps the
+// directory readable and matches what `tree-sitter build` emits elsewhere.
+const GRAMMAR_LIB_EXTENSION = process.platform === "win32"
+  ? ".dll"
+  : process.platform === "darwin" ? ".dylib" : ".so";
+
+// A grammar is `src/parser.c` plus an optional external scanner. Both are
+// generated artifacts shipped in the npm package, so their mtimes are the
+// cheapest available proxy for "this grammar changed".
+const GRAMMAR_SOURCE_FILES = ["parser.c", "scanner.c", "scanner.cc"];
+
+// Languages whose artifact could not be built or would not bind. Falling back to
+// `-p` per call is correct but slow, so the decision is remembered rather than
+// re-derived for every file batch.
+const grammarLibOptOut = new Set<string>();
+
+/** @internal — test-only: clear the build opt-out set so a prior failure does
+ *  not permanently poison subsequent test cases running in the same process. */
+export function _resetGrammarLibOptOut(): void {
+  grammarLibOptOut.clear();
+}
+
+function newestGrammarSourceMtime(grammarPath: string): number {
+  let newest = 0;
+  for (const file of GRAMMAR_SOURCE_FILES) {
+    try {
+      const stats = statSync(join(grammarPath, "src", file));
+      if (stats.mtimeMs > newest) newest = stats.mtimeMs;
+    } catch {
+      // [ANTI-PATTERN IGNORED]: an absent scanner is the normal case for most
+      // grammars; only parser.c is guaranteed to exist.
+    }
+  }
+  return newest;
+}
+
+/**
+ * Compile `grammarPath` into a reusable dynamic library, or return null when the
+ * caller should stay on the `--grammar-path` path.
+ *
+ * A library older than the grammar sources is rebuilt: a plugin update ships new
+ * grammar packages, and silently querying with the previous grammar would return
+ * wrong symbols instead of an error.
+ */
+function ensureGrammarLib(language: string, grammarPath: string): string | null {
+  if (grammarLibOptOut.has(language)) return null;
+
+  const libPath = join(GRAMMAR_LIB_DIR, `${language}${GRAMMAR_LIB_EXTENSION}`);
+
+  try {
+    // Deliberately re-stated per call instead of memoized: four stats cost
+    // nothing next to the process spawn they guard, and a memo would pin a
+    // long-lived MCP server to the grammar that was current at boot.
+    const needsBuild = !existsSync(libPath)
+      || statSync(libPath).mtimeMs < newestGrammarSourceMtime(grammarPath);
+
+    if (needsBuild) {
+      mkdirSync(GRAMMAR_LIB_DIR, { recursive: true });
+      execFileSync(getTreeSitterBin(), ["build", "-o", libPath, grammarPath], {
+        encoding: "utf-8",
+        timeout: 120000,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    }
+
+    return libPath;
+  } catch (error) {
+    logger.debug('WORKER', `tree-sitter build failed for ${language}; falling back to --grammar-path`, undefined, error instanceof Error ? error : undefined);
+    grammarLibOptOut.add(language);
+    return null;
+  }
 }
 
 interface RawCapture {
@@ -231,25 +479,36 @@ interface RawMatch {
   captures: RawCapture[];
 }
 
-function runQuery(queryFile: string, sourceFile: string, grammarPath: string): RawMatch[] {
-  const result = runBatchQuery(queryFile, [sourceFile], grammarPath);
+function runQuery(queryFile: string, sourceFile: string, grammarPath: string, language: string): RawMatch[] {
+  const result = runBatchQuery(queryFile, [sourceFile], grammarPath, language);
   return result.get(sourceFile) || [];
 }
 
-function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: string): Map<string, RawMatch[]> {
+function execQuery(execArgs: string[], sourceFileCount: number): string | null {
+  try {
+    return execFileSync(getTreeSitterBin(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+  } catch (error) {
+    logger.debug('WORKER', `tree-sitter query failed for ${sourceFileCount} file(s)`, undefined, error instanceof Error ? error : undefined);
+    return null;
+  }
+}
+
+function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: string, language: string): Map<string, RawMatch[]> {
   if (sourceFiles.length === 0) return new Map();
 
-  const bin = getTreeSitterBin();
-  const execArgs = ["query", "-p", grammarPath, queryFile, ...sourceFiles];
+  const libPath = ensureGrammarLib(language, grammarPath);
+  if (libPath) {
+    const output = execQuery(["query", "-l", libPath, "--lang-name", language, queryFile, ...sourceFiles], sourceFiles.length);
+    if (output !== null) return parseMultiFileQueryOutput(output);
 
-  let output: string;
-  try {
-    output = execFileSync(bin, execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
-  } catch {
-    return new Map();
+    // The artifact exists but will not bind — a grammar whose language function
+    // is not named after our language key would fail here on every call. Drop
+    // back to --grammar-path permanently rather than paying two spawns per batch.
+    grammarLibOptOut.add(language);
   }
 
-  return parseMultiFileQueryOutput(output);
+  const output = execQuery(["query", "-p", grammarPath, queryFile, ...sourceFiles], sourceFiles.length);
+  return output === null ? new Map() : parseMultiFileQueryOutput(output);
 }
 
 function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
@@ -258,7 +517,6 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
   let currentMatch: RawMatch | null = null;
 
   for (const line of output.split("\n")) {
-    // File header: a line that doesn't start with whitespace and isn't empty
     if (line.length > 0 && !line.startsWith(" ") && !line.startsWith("\t")) {
       currentFile = line.trim();
       if (!fileMatches.has(currentFile)) {
@@ -295,8 +553,6 @@ function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
   return fileMatches;
 }
 
-// --- Symbol building ---
-
 const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   func: "function",
   const_func: "function",
@@ -308,6 +564,11 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   struct_def: "struct",
   trait_def: "trait",
   impl_def: "impl",
+  mixin_def: "mixin",
+  heading: "section",
+  code_block: "code",
+  frontmatter: "metadata",
+  ref: "reference",
 };
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
@@ -389,7 +650,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const containers: Array<{ sym: CodeSymbol; startRow: number; endRow: number }> = [];
 
-  // Collect exports and imports
   for (const match of matches) {
     for (const cap of match.captures) {
       if (cap.tag === "exp") {
@@ -401,24 +661,40 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  // Build symbols
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
     const nameCapture = match.captures.find(c => c.tag === "name");
     if (!kindCapture) continue;
 
-    const name = nameCapture?.text || "anonymous";
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
+    const name = nameCapture?.text || "anonymous";
 
-    const comment = findCommentAbove(lines, startRow);
+    let signature: string;
+    if (language === "markdown" && kind === "section") {
+      const headingLine = lines[startRow] || "";
+      const hashMatch = headingLine.match(/^(#{1,6})\s/);
+      const level = hashMatch ? hashMatch[1].length : 1;
+      signature = `${"#".repeat(level)} ${name}`;
+    } else if (language === "markdown" && kind === "code") {
+      const langTag = name !== "anonymous" ? name : "";
+      signature = langTag ? "```" + langTag : "```";
+    } else if (language === "markdown" && kind === "metadata") {
+      signature = "---frontmatter---";
+    } else if (language === "markdown" && kind === "reference") {
+      signature = lines[startRow]?.trim() || name;
+    } else {
+      signature = extractSignatureFromLines(lines, startRow, endRow);
+    }
+
+    const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
     const docstring = language === "python" ? findPythonDocstringFromLines(lines, startRow, endRow) : undefined;
 
     const sym: CodeSymbol = {
       name,
       kind,
-      signature: extractSignatureFromLines(lines, startRow, endRow),
+      signature,
       jsdoc: comment || docstring,
       lineStart: startRow,
       lineEnd: endRow,
@@ -433,7 +709,31 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     symbols.push(sym);
   }
 
-  // Nest methods inside containers
+  if (language === "markdown") {
+    const codeBlocksByRange = new Map<string, CodeSymbol>();
+    const duplicateCodeBlocks = new Set<CodeSymbol>();
+    for (const sym of symbols) {
+      if (sym.kind !== "code") continue;
+      const rangeKey = `${sym.lineStart}:${sym.lineEnd}`;
+      const existing = codeBlocksByRange.get(rangeKey);
+      if (existing) {
+        if (sym.name !== "anonymous") {
+          duplicateCodeBlocks.add(existing);
+          codeBlocksByRange.set(rangeKey, sym);
+        } else {
+          duplicateCodeBlocks.add(sym);
+        }
+      } else {
+        codeBlocksByRange.set(rangeKey, sym);
+      }
+    }
+    if (duplicateCodeBlocks.size > 0) {
+      const filtered = symbols.filter(s => !duplicateCodeBlocks.has(s));
+      symbols.length = 0;
+      symbols.push(...filtered);
+    }
+  }
+
   const nested = new Set<CodeSymbol>();
   for (const container of containers) {
     for (const sym of symbols) {
@@ -449,8 +749,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   return { symbols: symbols.filter(s => !nested.has(s)), imports };
 }
 
-// --- Main parse functions ---
-
 export function parseFile(content: string, filePath: string): FoldedFile {
   const language = detectLanguage(filePath);
   const lines = content.split("\n");
@@ -463,17 +761,15 @@ export function parseFile(content: string, filePath: string): FoldedFile {
     };
   }
 
-  const queryKey = getQueryKey(language);
-  const queryFile = getQueryFile(queryKey);
+  const queryFile = getQueryFile(getQueryKey(language));
 
-  // Write content to temp file with correct extension for language detection
   const ext = filePath.slice(filePath.lastIndexOf(".")) || ".txt";
   const tmpDir = mkdtempSync(join(tmpdir(), "smart-src-"));
   const tmpFile = join(tmpDir, `source${ext}`);
   writeFileSync(tmpFile, content);
 
   try {
-    const matches = runQuery(queryFile, tmpFile, grammarPath);
+    const matches = runQuery(queryFile, tmpFile, grammarPath, language);
     const result = buildSymbols(matches, lines, language);
 
     const folded = formatFoldedView({
@@ -493,16 +789,11 @@ export function parseFile(content: string, filePath: string): FoldedFile {
   }
 }
 
-/**
- * Batch parse multiple on-disk files. Groups by language for one CLI call per language.
- * Much faster than calling parseFile() per file (one process spawn per language vs per file).
- */
 export function parseFilesBatch(
   files: Array<{ absolutePath: string; relativePath: string; content: string }>
 ): Map<string, FoldedFile> {
   const results = new Map<string, FoldedFile>();
 
-  // Group files by language (and thus by query + grammar)
   const languageGroups = new Map<string, typeof files>();
   for (const file of files) {
     const language = detectLanguage(file.relativePath);
@@ -513,7 +804,6 @@ export function parseFilesBatch(
   for (const [language, groupFiles] of languageGroups) {
     const grammarPath = resolveGrammarPath(language);
     if (!grammarPath) {
-      // No grammar — return empty results for these files
       for (const file of groupFiles) {
         const lines = file.content.split("\n");
         results.set(file.relativePath, {
@@ -524,14 +814,11 @@ export function parseFilesBatch(
       continue;
     }
 
-    const queryKey = getQueryKey(language);
-    const queryFile = getQueryFile(queryKey);
+    const queryFile = getQueryFile(getQueryKey(language));
 
-    // Run one batch query for all files of this language
     const absolutePaths = groupFiles.map(f => f.absolutePath);
-    const batchResults = runBatchQuery(queryFile, absolutePaths, grammarPath);
+    const batchResults = runBatchQuery(queryFile, absolutePaths, grammarPath, language);
 
-    // Build FoldedFile for each file using the batch results
     for (const file of groupFiles) {
       const lines = file.content.split("\n");
       const matches = batchResults.get(file.absolutePath) || [];
@@ -555,9 +842,11 @@ export function parseFilesBatch(
   return results;
 }
 
-// --- Formatting ---
-
 export function formatFoldedView(file: FoldedFile): string {
+  if (file.language === "markdown") {
+    return formatMarkdownFoldedView(file);
+  }
+
   const parts: string[] = [];
 
   parts.push(`📁 ${file.filePath} (${file.language}, ${file.totalLines} lines)`);
@@ -579,6 +868,57 @@ export function formatFoldedView(file: FoldedFile): string {
   }
 
   return parts.join("\n");
+}
+
+function formatMarkdownFoldedView(file: FoldedFile): string {
+  const parts: string[] = [];
+  const COL_WIDTH = 56;
+
+  parts.push(`📄 ${file.filePath} (${file.language}, ${file.totalLines} lines)`);
+
+  for (const sym of file.symbols) {
+    if (sym.kind === "section") {
+      const hashMatch = sym.signature.match(/^(#{1,6})\s/);
+      const level = hashMatch ? hashMatch[1].length : 1;
+      const indent = "  ".repeat(level);
+      const lineRange = `L${sym.lineStart + 1}`;
+      const content = `${indent}${sym.signature}`;
+      parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
+    } else if (sym.kind === "code") {
+      const containingLevel = findContainingHeadingLevel(file.symbols, sym.lineStart);
+      const indent = "  ".repeat(containingLevel + 1);
+      const lineRange = sym.lineStart === sym.lineEnd
+        ? `L${sym.lineStart + 1}`
+        : `L${sym.lineStart + 1}-${sym.lineEnd + 1}`;
+      const content = `${indent}${sym.signature}`;
+      parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
+    } else if (sym.kind === "metadata") {
+      const lineRange = sym.lineStart === sym.lineEnd
+        ? `L${sym.lineStart + 1}`
+        : `L${sym.lineStart + 1}-${sym.lineEnd + 1}`;
+      const content = `  ${sym.signature}`;
+      parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
+    } else if (sym.kind === "reference") {
+      const containingLevel = findContainingHeadingLevel(file.symbols, sym.lineStart);
+      const indent = "  ".repeat(containingLevel + 1);
+      const lineRange = `L${sym.lineStart + 1}`;
+      const content = `${indent}↗ ${sym.name}`;
+      parts.push(`${content.padEnd(COL_WIDTH)}${lineRange}`);
+    }
+  }
+
+  return parts.join("\n");
+}
+
+function findContainingHeadingLevel(symbols: CodeSymbol[], lineStart: number): number {
+  let bestLevel = 0;
+  for (const sym of symbols) {
+    if (sym.kind === "section" && sym.lineStart < lineStart) {
+      const hashMatch = sym.signature.match(/^(#{1,6})\s/);
+      bestLevel = hashMatch ? hashMatch[1].length : 1;
+    }
+  }
+  return bestLevel;
 }
 
 function formatSymbol(sym: CodeSymbol, indent: string): string {
@@ -621,12 +961,11 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
     function: "ƒ", method: "ƒ", class: "◆", interface: "◇",
     type: "◇", const: "●", variable: "○", export: "→",
     struct: "◆", enum: "▣", trait: "◇", impl: "◈",
-    property: "○", getter: "⇢", setter: "⇠",
+    property: "○", getter: "⇢", setter: "⇠", mixin: "◈",
+    section: "§", code: "⌘", metadata: "◊", reference: "↗",
   };
   return icons[kind] || "·";
 }
-
-// --- Unfold ---
 
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
@@ -647,7 +986,28 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
 
   const lines = content.split("\n");
 
-  // Include preceding comments/decorators
+  if (file.language === "markdown" && symbol.kind === "section") {
+    const hashMatch = symbol.signature.match(/^(#{1,6})\s/);
+    const level = hashMatch ? hashMatch[1].length : 1;
+    const start = symbol.lineStart;
+
+    let end = lines.length - 1;
+    for (const sym of file.symbols) {
+      if (sym.kind === "section" && sym.lineStart > start) {
+        const otherHashMatch = sym.signature.match(/^(#{1,6})\s/);
+        const otherLevel = otherHashMatch ? otherHashMatch[1].length : 1;
+        if (otherLevel <= level) {
+          end = sym.lineStart - 1;
+          while (end > start && lines[end].trim() === "") end--;
+          break;
+        }
+      }
+    }
+
+    const extracted = lines.slice(start, end + 1).join("\n");
+    return `<!-- 📍 ${filePath} L${start + 1}-${end + 1} -->\n${extracted}`;
+  }
+
   let start = symbol.lineStart;
   for (let i = symbol.lineStart - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();

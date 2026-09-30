@@ -21,12 +21,10 @@ export function Feed({ observations, summaries, prompts, onLoadMore, onDelete, i
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
 
-  // Keep the callback ref up to date
   useEffect(() => {
     onLoadMoreRef.current = onLoadMore;
   }, [onLoadMore]);
 
-  // Set up intersection observer for infinite scroll
   useEffect(() => {
     const element = loadMoreRef.current;
     if (!element) return;

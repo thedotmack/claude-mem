@@ -1,16 +1,15 @@
 #!/usr/bin/env node
-/**
- * Import memories from a JSON export file with duplicate prevention
- * Usage: npx tsx scripts/import-memories.ts <input-file>
- * Example: npx tsx scripts/import-memories.ts windows-memories.json
- *
- * This script uses the worker API instead of direct database access.
- */
 
 import { existsSync, readFileSync } from 'fs';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
 
-const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
-const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
+const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+// loadFromFile already applies env overrides and normalizes 'localhost' to
+// 127.0.0.1 (#2992); a raw process.env read here would bypass both.
+const WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
+const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || workerSettings.CLAUDE_MEM_WORKER_PORT;
+const WORKER_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
 
 async function importMemories(inputFile: string) {
   if (!existsSync(inputFile)) {
@@ -18,7 +17,6 @@ async function importMemories(inputFile: string) {
     process.exit(1);
   }
 
-  // Read and parse export file
   const exportData = JSON.parse(readFileSync(inputFile, 'utf-8'));
 
   console.log(`📦 Import file: ${inputFile}`);
@@ -31,7 +29,6 @@ async function importMemories(inputFile: string) {
   console.log(`   • ${exportData.totalPrompts} prompts`);
   console.log('');
 
-  // Check if worker is running
   try {
     const healthCheck = await fetch(`${WORKER_URL}/api/stats`);
     if (!healthCheck.ok) {
@@ -45,7 +42,6 @@ async function importMemories(inputFile: string) {
 
   console.log('🔄 Importing via worker API...');
 
-  // Send import request to worker
   const response = await fetch(`${WORKER_URL}/api/import`, {
     method: 'POST',
     headers: {
@@ -77,7 +73,6 @@ async function importMemories(inputFile: string) {
   console.log(`   Prompts:      ${stats.promptsImported} imported, ${stats.promptsSkipped} skipped`);
 }
 
-// CLI interface
 const args = process.argv.slice(2);
 if (args.length < 1) {
   console.error('Usage: npx tsx scripts/import-memories.ts <input-file>');

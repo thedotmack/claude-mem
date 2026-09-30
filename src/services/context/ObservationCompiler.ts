@@ -1,14 +1,11 @@
-/**
- * ObservationCompiler - Query building and data retrieval for context
- *
- * Handles database queries for observations and summaries, plus transcript extraction.
- */
 
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
+import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import type {
   ContextConfig,
   Observation,
@@ -19,173 +16,222 @@ import type {
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
-/**
- * Query observations from database with type and concept filtering
- */
-export function queryObservations(
-  db: SessionStore,
-  project: string,
-  config: ContextConfig
-): Observation[] {
-  const typeArray = Array.from(config.observationTypes);
-  const typePlaceholders = typeArray.map(() => '?').join(',');
-  const conceptArray = Array.from(config.observationConcepts);
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+type DatabaseOwner = { db: Database };
 
-  return db.db.prepare(`
-    SELECT
-      id, memory_session_id, type, title, subtitle, narrative,
-      facts, concepts, files_read, files_modified, discovery_tokens,
-      created_at, created_at_epoch
-    FROM observations
-    WHERE project = ?
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
-    ORDER BY created_at_epoch DESC
-    LIMIT ?
-  `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
-}
+const OBSERVATION_SELECT = `
+      o.id,
+      o.memory_session_id,
+      COALESCE(s.platform_source, 'claude') as platform_source,
+      o.type,
+      o.title,
+      o.subtitle,
+      o.narrative,
+      o.facts,
+      o.concepts,
+      o.files_read,
+      o.files_modified,
+      o.discovery_tokens,
+      o.created_at,
+      o.created_at_epoch,
+      o.project
+`;
 
-/**
- * Query recent session summaries from database
- */
-export function querySummaries(
-  db: SessionStore,
-  project: string,
-  config: ContextConfig
-): SessionSummary[] {
-  return db.db.prepare(`
-    SELECT id, memory_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
-    FROM session_summaries
-    WHERE project = ?
-    ORDER BY created_at_epoch DESC
-    LIMIT ?
-  `).all(project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
-}
-
-/**
- * Query observations from multiple projects (for worktree support)
- *
- * Returns observations from all specified projects, interleaved chronologically.
- * Used when running in a worktree to show both parent repo and worktree observations.
- */
 export function queryObservationsMulti(
-  db: SessionStore,
+  db: DatabaseOwner,
   projects: string[],
-  config: ContextConfig
+  config: ContextConfig,
+  platformSource?: string
+): Observation[] {
+  return queryObservationsNewest(db, config, {
+    limit: config.totalObservationCount,
+    platformSource,
+    projects,
+    excludeSubagents: config.mainAgentOnly,
+  });
+}
+
+/**
+ * Newest observations matching the active mode filters.
+ *
+ * Pass `projects` to stay on the SessionStart / `/api/context/inject` path
+ * (strict project scope). Omit `projects` for a house-wide newest feed — used
+ * only by the Grok Bot INDEX writer when a seat diary is thin. Do not add a
+ * house-fallback query param to `/api/context/inject`.
+ *
+ * `includeManualSaves` also admits rows from `/api/memory/save` (session
+ * `manual-<project>`), which are stored with no concepts and so never pass the
+ * mode concept filter. The Grok Bot seat query sets it so seat self-saves land
+ * in the live INDEX.
+ */
+export function queryObservationsNewest(
+  db: DatabaseOwner,
+  config: ContextConfig,
+  options: {
+    limit: number;
+    platformSource?: string;
+    projects?: string[];
+    includeManualSaves?: boolean;
+    excludeSubagents?: boolean;
+  }
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+  const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
+  const projectClause = projects.length > 0
+    ? `AND (o.project IN (${projects.map(() => '?').join(',')})
+           OR o.merged_into_project IN (${projects.map(() => '?').join(',')}))`
+    : '';
 
-  // Build IN clause for projects
+  const manualClause = options.includeManualSaves
+    ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
+    : '';
+
+  // #3274: SessionStart injection opts in. The seat INDEX passes `projects`
+  // too, and must keep agent-tagged rows. A subagent row carries BOTH agent_id
+  // and agent_type: transcript-watch rows (Grok Bot seats) carry agent_id alone
+  // and must stay injected, or `session_start_context` returns nothing for them.
+  const agentFilter = options.excludeSubagents ? `AND ${mainAgentRowSql('o')}` : '';
+
+  return db.db.prepare(`
+    SELECT
+      ${OBSERVATION_SELECT}
+    FROM observations o
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    WHERE (? IS NULL OR s.platform_source = ?)
+      ${projectClause}
+      ${agentFilter}
+      AND (${manualClause} (
+        type IN (${typePlaceholders})
+        AND EXISTS (
+          SELECT 1 FROM json_each(o.concepts)
+          WHERE value IN (${conceptPlaceholders})
+        )
+      ))
+    ORDER BY o.created_at_epoch DESC
+    LIMIT ?
+  `).all(
+    options.platformSource ?? null,
+    options.platformSource ?? null,
+    ...(projects.length > 0 ? [...projects, ...projects] : []),
+    ...typeArray,
+    ...conceptArray,
+    options.limit
+  ) as Observation[];
+}
+
+export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
+  if (projects.length === 0) return 0;
+  const projectPlaceholders = projects.map(() => '?').join(',');
+  const row = db.db.prepare(`
+    SELECT COUNT(*) as count
+    FROM observations o
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    WHERE (o.project IN (${projectPlaceholders})
+       OR o.merged_into_project IN (${projectPlaceholders}))
+      AND (? IS NULL OR s.platform_source = ?)
+  `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+export function querySummariesMulti(
+  db: DatabaseOwner,
+  projects: string[],
+  config: ContextConfig,
+  platformSource?: string
+): SessionSummary[] {
   const projectPlaceholders = projects.map(() => '?').join(',');
 
   return db.db.prepare(`
     SELECT
-      id, memory_session_id, type, title, subtitle, narrative,
-      facts, concepts, files_read, files_modified, discovery_tokens,
-      created_at, created_at_epoch, project
-    FROM observations
-    WHERE project IN (${projectPlaceholders})
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
-    ORDER BY created_at_epoch DESC
+      ss.id,
+      ss.memory_session_id,
+      COALESCE(s.platform_source, 'claude') as platform_source,
+      ss.request,
+      ss.investigated,
+      ss.learned,
+      ss.completed,
+      ss.next_steps,
+      ss.created_at,
+      ss.created_at_epoch,
+      ss.project
+    FROM session_summaries ss
+    LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+    WHERE (ss.project IN (${projectPlaceholders})
+           OR ss.merged_into_project IN (${projectPlaceholders}))
+      AND (? IS NULL OR s.platform_source = ?)
+    ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+  `).all(
+    ...projects,
+    ...projects,
+    platformSource ?? null,
+    platformSource ?? null,
+    config.sessionCount + SUMMARY_LOOKAHEAD
+  ) as SessionSummary[];
 }
 
-/**
- * Query session summaries from multiple projects (for worktree support)
- *
- * Returns summaries from all specified projects, interleaved chronologically.
- * Used when running in a worktree to show both parent repo and worktree summaries.
- */
-export function querySummariesMulti(
-  db: SessionStore,
-  projects: string[],
-  config: ContextConfig
-): SessionSummary[] {
-  // Build IN clause for projects
-  const projectPlaceholders = projects.map(() => '?').join(',');
-
-  return db.db.prepare(`
-    SELECT id, memory_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch, project
-    FROM session_summaries
-    WHERE project IN (${projectPlaceholders})
-    ORDER BY created_at_epoch DESC
-    LIMIT ?
-  `).all(...projects, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+export function cwdToDashed(cwd: string): string {
+  // Claude Code encodes a project's transcript directory by replacing BOTH path
+  // separators AND dots with dashes (e.g. `/Users/john.doe/proj` ->
+  // `-Users-john-doe-proj`). Replacing only `/` left a literal `.` in the dir
+  // name, so "Include last message" silently no-opped for any cwd component
+  // containing a dot — Unix usernames like `john.doe`, dotted dirs, etc. (#2401).
+  return cwd.replace(/[/.]/g, '-');
 }
 
-/**
- * Convert cwd path to dashed format for transcript lookup
- */
-function cwdToDashed(cwd: string): string {
-  return cwd.replace(/\//g, '-');
+function parseAssistantTextFromLine(line: string): string | null {
+  if (!line.includes('"type":"assistant"')) return null;
+
+  const entry = JSON.parse(line);
+  if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
+    let text = '';
+    for (const block of entry.message.content) {
+      if (block.type === 'text') text += block.text;
+    }
+    text = text.replace(SYSTEM_REMINDER_REGEX, '').trim();
+    if (text) return text;
+  }
+  return null;
 }
 
-/**
- * Extract prior messages from transcript file
- */
+function findLastAssistantMessage(lines: string[]): string {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const result = parseAssistantTextFromLine(lines[i]);
+      if (result) return result;
+    } catch (parseError) {
+      if (parseError instanceof Error) {
+        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i }, parseError);
+      } else {
+        logger.debug('WORKER', 'Skipping malformed transcript line', { lineIndex: i, error: String(parseError) });
+      }
+      continue;
+    }
+  }
+  return '';
+}
+
 export function extractPriorMessages(transcriptPath: string): PriorMessages {
   try {
-    if (!existsSync(transcriptPath)) {
-      return { userMessage: '', assistantMessage: '' };
-    }
-
+    if (!existsSync(transcriptPath)) return { assistantMessage: '' };
     const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) {
-      return { userMessage: '', assistantMessage: '' };
-    }
+    if (!content) return { assistantMessage: '' };
 
     const lines = content.split('\n').filter(line => line.trim());
-    let lastAssistantMessage = '';
-
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const line = lines[i];
-        if (!line.includes('"type":"assistant"')) {
-          continue;
-        }
-
-        const entry = JSON.parse(line);
-        if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
-          let text = '';
-          for (const block of entry.message.content) {
-            if (block.type === 'text') {
-              text += block.text;
-            }
-          }
-          text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
-          if (text) {
-            lastAssistantMessage = text;
-            break;
-          }
-        }
-      } catch (parseError) {
-        logger.debug('PARSER', 'Skipping malformed transcript line', { lineIndex: i }, parseError as Error);
-        continue;
-      }
-    }
-
-    return { userMessage: '', assistantMessage: lastAssistantMessage };
+    const lastAssistantMessage = findLastAssistantMessage(lines);
+    return { assistantMessage: lastAssistantMessage };
   } catch (error) {
-    logger.failure('WORKER', `Failed to extract prior messages from transcript`, { transcriptPath }, error as Error);
-    return { userMessage: '', assistantMessage: '' };
+    if (error instanceof Error) {
+      logger.failure('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath }, error);
+    } else {
+      logger.warn('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath, error: String(error) });
+    }
+    return { assistantMessage: '' };
   }
 }
 
-/**
- * Get prior session messages if enabled
- */
 export function getPriorSessionMessages(
   observations: Observation[],
   config: ContextConfig,
@@ -193,24 +239,20 @@ export function getPriorSessionMessages(
   cwd: string
 ): PriorMessages {
   if (!config.showLastMessage || observations.length === 0) {
-    return { userMessage: '', assistantMessage: '' };
+    return { assistantMessage: '' };
   }
 
   const priorSessionObs = observations.find(obs => obs.memory_session_id !== currentSessionId);
   if (!priorSessionObs) {
-    return { userMessage: '', assistantMessage: '' };
+    return { assistantMessage: '' };
   }
 
   const priorSessionId = priorSessionObs.memory_session_id;
   const dashedCwd = cwdToDashed(cwd);
-  // Use CLAUDE_CONFIG_DIR to support custom Claude config directories
   const transcriptPath = path.join(CLAUDE_CONFIG_DIR, 'projects', dashedCwd, `${priorSessionId}.jsonl`);
   return extractPriorMessages(transcriptPath);
 }
 
-/**
- * Prepare summaries for timeline display
- */
 export function prepareSummariesForTimeline(
   displaySummaries: SessionSummary[],
   allSummaries: SessionSummary[]
@@ -228,9 +270,6 @@ export function prepareSummariesForTimeline(
   });
 }
 
-/**
- * Build unified timeline from observations and summaries
- */
 export function buildTimeline(
   observations: Observation[],
   summaries: SummaryTimelineItem[]
@@ -240,7 +279,6 @@ export function buildTimeline(
     ...summaries.map(summary => ({ type: 'summary' as const, data: summary }))
   ];
 
-  // Sort chronologically
   timeline.sort((a, b) => {
     const aEpoch = a.type === 'observation' ? a.data.created_at_epoch : a.data.displayEpoch;
     const bEpoch = b.type === 'observation' ? b.data.created_at_epoch : b.data.displayEpoch;
@@ -250,9 +288,6 @@ export function buildTimeline(
   return timeline;
 }
 
-/**
- * Get set of observation IDs that should show full details
- */
 export function getFullObservationIds(observations: Observation[], count: number): Set<number> {
   return new Set(
     observations

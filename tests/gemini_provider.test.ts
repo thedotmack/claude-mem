@@ -1,0 +1,576 @@
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { GeminiProvider } from '../src/services/worker/GeminiProvider';
+import { DatabaseManager } from '../src/services/worker/DatabaseManager';
+import { SessionManager } from '../src/services/worker/SessionManager';
+import { ModeManager } from '../src/services/domain/ModeManager';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
+
+let rateLimitingEnabled = 'false';
+let queuedMessages: Array<Record<string, unknown>> = [];
+
+const toolObservationMessage = {
+  type: 'observation',
+  tool_name: 'Read',
+  tool_input: { file_path: 'src/main.ts' },
+  tool_response: 'file contents',
+  prompt_number: 1,
+};
+
+const mockMode = {
+  name: 'code',
+  prompts: {
+    init: 'init prompt',
+    observation: 'obs prompt',
+    summary: 'summary prompt'
+  },
+  observation_types: [{ id: 'discovery' }, { id: 'bugfix' }],
+  observation_concepts: []
+};
+
+function makeSession(overrides: Record<string, unknown> = {}) {
+  return {
+    sessionDbId: 1,
+    contentSessionId: 'test-session',
+    memorySessionId: 'mem-session-123',
+    project: 'test-project',
+    userPrompt: 'test prompt',
+    conversationHistory: [],
+    lastPromptNumber: 1,
+    cumulativeInputTokens: 0,
+    cumulativeOutputTokens: 0,
+    abortController: new AbortController(),
+    generatorPromise: null,
+    currentProvider: null,
+    startTime: Date.now(),
+    ...overrides,
+  } as any;
+}
+
+function mockGeminiConfig() {
+  loadFromFileSpy.mockImplementation(() => ({
+    ...SettingsDefaultsManager.getAllDefaults(),
+    CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
+    CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
+    CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
+    CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
+  }));
+}
+
+function mockSuccessfulGeminiFetch() {
+  global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+    candidates: [{ content: { parts: [{ text: 'response' }] } }]
+  }))));
+}
+
+function sentGeminiContents() {
+  return JSON.parse((global.fetch as any).mock.calls[0][1].body).contents;
+}
+
+function expectAlternatingGeminiRoles(contents: Array<{ role: string }>) {
+  expect(contents.length).toBeGreaterThan(0);
+  expect(contents[0].role).toBe('user');
+
+  for (let i = 1; i < contents.length; i++) {
+    expect(contents[i].role).not.toBe(contents[i - 1].role);
+  }
+}
+
+let loadFromFileSpy: ReturnType<typeof spyOn>;
+let getSpy: ReturnType<typeof spyOn>;
+let modeManagerSpy: ReturnType<typeof spyOn>;
+
+describe('GeminiProvider', () => {
+  let agent: GeminiProvider;
+  let originalFetch: typeof global.fetch;
+
+  let mockStoreObservation: any;
+  let mockStoreObservations: any; 
+  let mockStoreSummary: any;
+  let mockMarkSessionCompleted: any;
+  let mockSyncObservation: any;
+  let mockSyncSummary: any;
+  let mockMarkProcessed: any;
+  let mockCleanupProcessed: any;
+  let mockResetStuckMessages: any;
+  let mockDbManager: DatabaseManager;
+  let mockSessionManager: SessionManager;
+
+  beforeEach(() => {
+    rateLimitingEnabled = 'false';
+    queuedMessages = [];
+
+    modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
+      getActiveMode: () => mockMode,
+      loadMode: () => {},
+    } as any));
+
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
+      CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
+      CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: rateLimitingEnabled,
+      CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
+    }));
+
+    getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
+      if (key === 'CLAUDE_MEM_GEMINI_API_KEY') return 'test-api-key';
+      if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-flash-latest';
+      if (key === 'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED') return rateLimitingEnabled;
+      if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/claude-mem-test';
+      return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>] ?? '';
+    });
+
+    mockStoreObservation = mock(() => ({ id: 1, createdAtEpoch: Date.now() }));
+    mockStoreSummary = mock(() => ({ id: 1, createdAtEpoch: Date.now() }));
+    mockMarkSessionCompleted = mock(() => {});
+    mockSyncObservation = mock(() => Promise.resolve());
+    mockSyncSummary = mock(() => Promise.resolve());
+    mockMarkProcessed = mock(() => {});
+    mockCleanupProcessed = mock(() => 0);
+    mockResetStuckMessages = mock(() => 0);
+
+    mockStoreObservations = mock(() => ({
+      observationIds: [1],
+      summaryId: 1,
+      createdAtEpoch: Date.now()
+    }));
+
+    const mockSessionStore = {
+      storeObservation: mockStoreObservation,
+      storeObservations: mockStoreObservations, // Required by ResponseProcessor.ts
+      storeSummary: mockStoreSummary,
+      markSessionCompleted: mockMarkSessionCompleted,
+      getSessionById: mock(() => ({ memory_session_id: 'mem-session-123' })), // Required by ResponseProcessor.ts for FK fix
+      ensureMemorySessionIdRegistered: mock(() => {}) 
+    };
+
+    const mockChromaSync = {
+      syncObservation: mockSyncObservation,
+      syncSummary: mockSyncSummary
+    };
+
+    mockDbManager = {
+      getSessionStore: () => mockSessionStore,
+      getChromaSync: () => mockChromaSync,
+      getCloudSync: () => null
+    } as unknown as DatabaseManager;
+
+    const mockPendingMessageStore = {
+      markProcessed: mockMarkProcessed,
+      confirmProcessed: mock(() => {}),  // CLAIM-CONFIRM pattern: confirm after successful storage
+      cleanupProcessed: mockCleanupProcessed,
+      resetStuckMessages: mockResetStuckMessages
+    };
+
+    mockSessionManager = {
+      getMessageIterator: async function* () { yield* queuedMessages; },
+      getClaimedMessages: mock(() => []),
+      confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      resetProcessingToPending: mock(() => Promise.resolve(0)),
+      getMessageBuffer: () => mockPendingMessageStore,
+    } as unknown as SessionManager;
+
+    agent = new GeminiProvider(mockDbManager, mockSessionManager);
+    originalFetch = global.fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (modeManagerSpy) modeManagerSpy.mockRestore();
+    if (loadFromFileSpy) loadFromFileSpy.mockRestore();
+    if (getSpy) getSpy.mockRestore();
+    mock.restore();
+  });
+
+  it('should initialize with correct config', async () => {
+    const session = {
+      sessionDbId: 1,
+      contentSessionId: 'test-session',
+      memorySessionId: 'mem-session-123',
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      abortController: new AbortController(),
+      generatorPromise: null,
+      currentProvider: null,
+      startTime: Date.now(),
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [{ text: '<observation><type>discovery</type><title>Test</title></observation>' }]
+        }
+      }],
+      usageMetadata: { totalTokenCount: 100 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const url = (global.fetch as any).mock.calls[0][0];
+    expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent');
+    expect(url).toContain('key=test-api-key');
+  });
+
+  it('should handle multi-turn conversation', async () => {
+    const session = {
+      sessionDbId: 1,
+      contentSessionId: 'test-session',
+      memorySessionId: 'mem-session-123',
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [{ role: 'user', content: 'prev context' }, { role: 'assistant', content: 'prev response' }],
+      lastPromptNumber: 2,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      abortController: new AbortController(),
+      generatorPromise: null,
+      currentProvider: null,
+      startTime: Date.now(),
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: 'response' }] } }]
+    }))));
+
+    await agent.startSession(session);
+
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    expect(body.contents).toHaveLength(3);
+    expect(body.contents[0].role).toBe('user');
+    expect(body.contents[1].role).toBe('model');
+    expect(body.contents[2].role).toBe('user');
+  });
+
+  it('keeps Gemini roles alternating for full conversation history', async () => {
+    const history = [
+      { role: 'user', content: 'u0' },
+      { role: 'assistant', content: 'm1' },
+      { role: 'user', content: 'u2' },
+      { role: 'assistant', content: 'm3' },
+      { role: 'user', content: 'u4' },
+      { role: 'assistant', content: 'm5' },
+    ];
+
+    for (const label of ['a', 'b']) {
+      mockGeminiConfig();
+      mockSuccessfulGeminiFetch();
+
+      await agent.startSession(makeSession({
+        userPrompt: `current prompt ${label}`,
+        lastPromptNumber: 2,
+        conversationHistory: history.map(message => ({ ...message })),
+      }));
+
+      const contents = sentGeminiContents();
+      expectAlternatingGeminiRoles(contents);
+      expect(contents[contents.length - 1].role).toBe('user');
+      expect(contents[contents.length - 1].parts[0].text).toContain(`current prompt ${label}`);
+    }
+  });
+
+  it('merges adjacent same-role messages instead of sending repeated Gemini roles', async () => {
+    const session = makeSession({
+      conversationHistory: [
+        { role: 'user', content: 'first user turn' },
+        { role: 'user', content: 'second user turn' },
+        { role: 'assistant', content: 'model turn' },
+      ],
+    });
+
+    mockSuccessfulGeminiFetch();
+
+    await agent.startSession(session);
+
+    const contents = sentGeminiContents();
+    expectAlternatingGeminiRoles(contents);
+    expect(contents).toHaveLength(3);
+    expect(contents[0].role).toBe('user');
+    expect(contents[0].parts[0].text).toBe('first user turn\n\nsecond user turn');
+    expect(contents[1].role).toBe('model');
+    expect(contents[2].role).toBe('user');
+  });
+
+  it('should process observations and store them', async () => {
+    const session = {
+      sessionDbId: 1,
+      contentSessionId: 'test-session',
+      memorySessionId: 'mem-session-123',
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      abortController: new AbortController(),
+      generatorPromise: null,
+      currentProvider: null,
+      startTime: Date.now(),
+    } as any;
+
+    const observationXml = `
+      <observation>
+        <type>discovery</type>
+        <title>Found bug</title>
+        <subtitle>Null pointer</subtitle>
+        <narrative>Found a null pointer in the code</narrative>
+        <facts><fact>Null check missing</fact></facts>
+        <concepts><concept>bug</concept></concepts>
+        <files_read><file>src/main.ts</file></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    queuedMessages = [toolObservationMessage];
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: observationXml }] } }],
+      usageMetadata: { totalTokenCount: 50 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+    expect(mockSyncObservation).toHaveBeenCalled();
+    expect(session.cumulativeInputTokens).toBeGreaterThan(0);
+  });
+
+  it('stores a deferred observation response under the original prompt project after the live session advances', async () => {
+    const session = makeSession({
+      project: 'repo-a',
+      userPrompt: 'prompt 1',
+      lastPromptNumber: 1,
+    });
+    const observationXml = `
+      <observation>
+        <type>discovery</type>
+        <title>Late observation response</title>
+        <narrative>Should stay on the original prompt project.</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    queuedMessages = [toolObservationMessage];
+    let resolveFetch!: (response: Response) => void;
+    let sends = 0;
+    global.fetch = mock(() => {
+      sends++;
+      // Only the observation query is held open; the init query has to complete
+      // for the message loop to reach it.
+      if (sends === 1) {
+        return Promise.resolve(new Response(JSON.stringify({
+          candidates: [{ content: { parts: [{ text: 'Ready.' }] } }],
+          usageMetadata: { totalTokenCount: 10 }
+        })));
+      }
+      return new Promise<Response>(resolve => {
+        resolveFetch = resolve;
+      });
+    });
+
+    const pending = agent.startSession(session);
+    // Wait for the request to actually be in flight rather than assuming it
+    // happens within a fixed number of microtasks — the provider awaits the
+    // session-start context before its first send.
+    while (!resolveFetch) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    session.project = 'repo-b/worktree';
+    session.userPrompt = 'prompt 2';
+    session.lastPromptNumber = 2;
+
+    resolveFetch(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: observationXml }] } }],
+      usageMetadata: { totalTokenCount: 50 }
+    })));
+
+    await pending;
+
+    const [, project, , , promptNumber] = mockStoreObservations.mock.calls[0];
+    expect(project).toBe('repo-a');
+    expect(promptNumber).toBe(1);
+  });
+
+  it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
+    const session = {
+      sessionDbId: 1,
+      contentSessionId: 'test-session',
+      memorySessionId: 'mem-session-123',
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      abortController: new AbortController(),
+      generatorPromise: null,
+      currentProvider: null,
+      startTime: Date.now(),
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
+
+    await expect(agent.startSession(session)).rejects.toThrow(/429/);
+  });
+
+  it('should throw on other errors', async () => {
+    const session = {
+      sessionDbId: 1,
+      contentSessionId: 'test-session',
+      memorySessionId: 'mem-session-123',
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      abortController: new AbortController(),
+      generatorPromise: null,
+      currentProvider: null,
+      startTime: Date.now(),
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response('Invalid argument RAW_PROVIDER_BODY', { status: 400 })));
+
+    // F4 classifyGeminiError surfaces 400 as a classified `unrecoverable` error
+    // with a stable category rather than forwarding the raw upstream body.
+    try {
+      await agent.startSession(session);
+      throw new Error('expected Gemini bad request to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('Gemini bad request: unknown_bad_request');
+      expect((error as Error).message).not.toContain('RAW_PROVIDER_BODY');
+    }
+  });
+
+  it('redacts non-400 Gemini response body from thrown message and cause', async () => {
+    const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
+    const session = {
+      sessionDbId: 1,
+      contentSessionId: 'test-session',
+      memorySessionId: 'mem-session-123',
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      abortController: new AbortController(),
+      generatorPromise: null,
+      currentProvider: null,
+      startTime: Date.now(),
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response(rawBody, {
+      status: 418,
+      headers: { 'x-goog-request-id': 'gemini-request-1' },
+    })));
+
+    try {
+      await agent.startSession(session);
+      throw new Error('expected Gemini fallback error to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('Gemini API error (status 418)');
+      expect((error as Error).message).not.toContain(rawBody);
+      const cause = (error as Error & { cause?: unknown }).cause;
+      expect(cause).toBeInstanceOf(Error);
+      expect((cause as Error).message).toContain('status 418');
+      expect((cause as Error).message).toContain('gemini-request-1');
+      expect((cause as Error).message).not.toContain(rawBody);
+    }
+  });
+
+  it('should respect rate limits when rate limiting enabled', async () => {
+    rateLimitingEnabled = 'true';
+
+    const originalSetTimeout = global.setTimeout;
+    const mockSetTimeout = mock((cb: any) => cb());
+    global.setTimeout = mockSetTimeout as any;
+
+    try {
+      const session = {
+        sessionDbId: 1,
+        contentSessionId: 'test-session',
+        memorySessionId: 'mem-session-123',
+        project: 'test-project',
+        userPrompt: 'test prompt',
+        conversationHistory: [],
+        lastPromptNumber: 1,
+        cumulativeInputTokens: 0,
+        cumulativeOutputTokens: 0,
+        abortController: new AbortController(),
+        generatorPromise: null,
+        currentProvider: null,
+        startTime: Date.now(),
+      } as any;
+
+      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] } }]
+      }))));
+
+      await agent.startSession(session);
+      await agent.startSession(session);
+
+      expect(mockSetTimeout).toHaveBeenCalled();
+    } finally {
+      global.setTimeout = originalSetTimeout;
+    }
+  });
+
+  describe('gemini-3-flash-preview model support', () => {
+    it('should accept only currently-available models (no retired 2.x IDs)', async () => {
+      const validModels = [
+        'gemini-flash-latest',
+        'gemini-flash-lite-latest',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-3-flash-preview'
+      ];
+
+      expect(validModels.every(m => typeof m === 'string')).toBe(true);
+      expect(validModels).toContain('gemini-3-flash-preview');
+      // Retired IDs that 404 for new API keys must not be selectable.
+      expect(validModels).not.toContain('gemini-2.5-flash-lite');
+      expect(validModels).not.toContain('gemini-2.5-flash');
+      expect(validModels).not.toContain('gemini-2.0-flash');
+    });
+
+    it('should have rate limit defined for gemini-3-flash-preview', async () => {
+      const session = {
+        sessionDbId: 1,
+        contentSessionId: 'test-session',
+        memorySessionId: 'mem-session-123',
+        project: 'test-project',
+        userPrompt: 'test prompt',
+        conversationHistory: [],
+        lastPromptNumber: 1,
+        cumulativeInputTokens: 0,
+        cumulativeOutputTokens: 0,
+        abortController: new AbortController(),
+        generatorPromise: null,
+        currentProvider: null,
+        startTime: Date.now(),
+      } as any;
+
+      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] } }],
+        usageMetadata: { totalTokenCount: 10 }
+      }))));
+
+      await agent.startSession(session);
+      expect(global.fetch).toHaveBeenCalled();
+    });
+  });
+});

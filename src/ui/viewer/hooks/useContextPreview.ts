@@ -1,39 +1,92 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Settings } from '../types';
+import type { ProjectCatalog, Settings } from '../types';
 
 interface UseContextPreviewResult {
   preview: string;
   isLoading: boolean;
   error: string | null;
-  refresh: () => Promise<void>;
   projects: string[];
+  sources: string[];
+  selectedSource: string | null;
+  setSelectedSource: (source: string) => void;
   selectedProject: string | null;
   setSelectedProject: (project: string) => void;
+}
+
+function getPreferredSource(sources: string[]): string | null {
+  if (sources.includes('claude')) return 'claude';
+  if (sources.includes('codex')) return 'codex';
+  return sources[0] || null;
+}
+
+function withDefaultSources(sources: string[]): string[] {
+  const merged = ['claude', 'codex', ...sources];
+  return Array.from(new Set(merged));
 }
 
 export function useContextPreview(settings: Settings): UseContextPreviewResult {
   const [preview, setPreview] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<ProjectCatalog>({ projects: [], sources: [], projectsBySource: {} });
   const [projects, setProjects] = useState<string[]>([]);
+  const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
 
-  // Fetch projects on mount
   useEffect(() => {
     async function fetchProjects() {
+      let data: ProjectCatalog;
       try {
         const response = await fetch('/api/projects');
-        const data = await response.json();
-        if (data.projects && data.projects.length > 0) {
-          setProjects(data.projects);
-          setSelectedProject(data.projects[0]); // Default to first project
-        }
-      } catch (err) {
-        console.error('Failed to fetch projects:', err);
+        data = await response.json() as ProjectCatalog;
+      } catch (err: unknown) {
+        console.error('Failed to fetch projects:', err instanceof Error ? err.message : String(err));
+        return;
       }
+
+      const nextCatalog: ProjectCatalog = {
+        projects: data.projects || [],
+        sources: withDefaultSources(data.sources || []),
+        projectsBySource: data.projectsBySource || {}
+      };
+
+      setCatalog(nextCatalog);
+
+      const preferredSource = settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'
+        ? null
+        : getPreferredSource(nextCatalog.sources);
+      setSelectedSource(preferredSource);
+
+      if (preferredSource) {
+        const sourceProjects = nextCatalog.projectsBySource[preferredSource] || [];
+        setProjects(sourceProjects);
+        setSelectedProject(sourceProjects[0] || null);
+        return;
+      }
+
+      setProjects(nextCatalog.projects);
+      setSelectedProject(nextCatalog.projects[0] || null);
     }
     fetchProjects();
   }, []);
+
+  useEffect(() => {
+    setSelectedSource(settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'
+      ? null
+      : getPreferredSource(catalog.sources));
+  }, [settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES, catalog.sources]);
+
+  useEffect(() => {
+    if (!selectedSource) {
+      setProjects(catalog.projects);
+      setSelectedProject(prev => (prev && catalog.projects.includes(prev) ? prev : catalog.projects[0] || null));
+      return;
+    }
+
+    const sourceProjects = catalog.projectsBySource[selectedSource] || [];
+    setProjects(sourceProjects);
+    setSelectedProject(prev => (prev && sourceProjects.includes(prev) ? prev : sourceProjects[0] || null));
+  }, [catalog, selectedSource]);
 
   const refresh = useCallback(async () => {
     if (!selectedProject) {
@@ -48,19 +101,27 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
       project: selectedProject
     });
 
-    const response = await fetch(`/api/context/preview?${params}`);
-    const text = await response.text();
+    if (selectedSource) {
+      params.append('platformSource', selectedSource);
+    }
 
-    if (response.ok) {
-      setPreview(text);
-    } else {
+    try {
+      const response = await fetch(`/api/context/preview?${params}`);
+      const text = await response.text();
+
+      if (response.ok) {
+        setPreview(text);
+      } else {
+        setError('Failed to load preview');
+      }
+    } catch (error: unknown) {
+      console.error('Failed to load context preview:', error instanceof Error ? error.message : String(error));
       setError('Failed to load preview');
     }
 
     setIsLoading(false);
-  }, [selectedProject]);
+  }, [selectedProject, selectedSource]);
 
-  // Debounced refresh when settings or selectedProject change
   useEffect(() => {
     const timeout = setTimeout(() => {
       refresh();
@@ -68,5 +129,15 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     return () => clearTimeout(timeout);
   }, [settings, refresh]);
 
-  return { preview, isLoading, error, refresh, projects, selectedProject, setSelectedProject };
+  return {
+    preview,
+    isLoading,
+    error,
+    projects,
+    sources: catalog.sources,
+    selectedSource,
+    setSelectedSource,
+    selectedProject,
+    setSelectedProject
+  };
 }

@@ -1,29 +1,36 @@
+import path from 'path';
 import { sessionInitHandler } from '../../cli/handlers/session-init.js';
-import { observationHandler } from '../../cli/handlers/observation.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
-import { sessionCompleteHandler } from '../../cli/handlers/session-complete.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { getProjectContext, getProjectName } from '../../utils/project-name.js';
+import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
 import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
-import { expandHomePath } from './config.js';
+import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { ingestObservation } from '../worker/http/shared.js';
+
+const AGENT_ID_IN_PATH =
+  /agent-transcripts[/\\]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/\\]|$)/i;
+
+/** Prefer the explicit watch field; fall back to `agent-transcripts/<uuid>/` in the path. */
+export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
+  const explicit = typeof watch.agentId === 'string' ? watch.agentId.trim() : '';
+  if (explicit && explicit !== '*') return explicit;
+  const match = watch.path.match(AGENT_ID_IN_PATH);
+  return match?.[1];
+}
 
 interface SessionState {
   sessionId: string;
+  platformSource: string;
   cwd?: string;
   project?: string;
   lastUserMessage?: string;
   lastAssistantMessage?: string;
-  pendingTools: Map<string, { name?: string; input?: unknown }>;
-}
-
-interface PendingTool {
-  id?: string;
-  name?: string;
-  input?: unknown;
-  response?: unknown;
+  pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
 }
 
 export class TranscriptEventProcessor {
@@ -51,7 +58,7 @@ export class TranscriptEventProcessor {
     if (!session) {
       session = {
         sessionId,
-        pendingTools: new Map()
+        platformSource: normalizePlatformSource(watch.name),
       };
       this.sessions.set(key, session);
     }
@@ -101,7 +108,7 @@ export class TranscriptEventProcessor {
     const resolved = resolveFieldSpec(fieldSpec, entry, ctx);
     if (typeof resolved === 'string' && resolved.trim()) return resolved;
     if (watch.project) return watch.project;
-    if (session.cwd) return getProjectName(session.cwd);
+    if (session.cwd) return getProjectContext(session.cwd).primary;
     return session.project;
   }
 
@@ -124,7 +131,7 @@ export class TranscriptEventProcessor {
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
 
-    const fields = resolveFields(event.fields, entry, { watch, schema, session });
+    const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
 
     switch (event.action) {
       case 'session_context':
@@ -144,13 +151,13 @@ export class TranscriptEventProcessor {
         if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
         break;
       case 'tool_use':
-        await this.handleToolUse(session, fields);
+        await this.handleToolUse(session, watch, fields);
         break;
       case 'tool_result':
-        await this.handleToolResult(session, fields);
+        await this.handleToolResult(session, watch, fields);
         break;
       case 'observation':
-        await this.sendObservation(session, fields);
+        await this.sendObservation(session, watch, fields);
         break;
       case 'file_edit':
         await this.sendFileEdit(session, fields);
@@ -181,21 +188,15 @@ export class TranscriptEventProcessor {
       sessionId: session.sessionId,
       cwd,
       prompt,
-      platform: 'transcript'
+      platform: session.platformSource
     });
   }
 
-  private async handleToolUse(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
     const toolResponse = this.maybeParseJson(fields.toolResponse);
-
-    const pending: PendingTool = { id: toolId, name: toolName, input: toolInput, response: toolResponse };
-
-    if (toolId) {
-      session.pendingTools.set(toolId, { name: pending.name, input: pending.input });
-    }
 
     if (toolName === 'apply_patch' && typeof toolInput === 'string') {
       const files = this.parseApplyPatchFiles(toolInput);
@@ -207,51 +208,67 @@ export class TranscriptEventProcessor {
       }
     }
 
-    if (toolResponse !== undefined && toolName) {
-      await this.sendObservation(session, {
+    if (toolName && toolResponse !== undefined) {
+      await this.sendObservation(session, watch, {
         toolName,
         toolInput,
-        toolResponse
+        toolResponse,
+        toolUseId: toolId,
       });
+    } else if (toolName && toolId) {
+      if (!session.pendingTools) session.pendingTools = new Map();
+      session.pendingTools.set(toolId, { toolName, toolInput });
     }
   }
 
-  private async handleToolResult(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
-    const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
+    let toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
+    let toolInput = this.maybeParseJson(fields.toolInput);
 
-    let toolInput: unknown = this.maybeParseJson(fields.toolInput);
-    let name = toolName;
-
-    if (toolId && session.pendingTools.has(toolId)) {
-      const pending = session.pendingTools.get(toolId)!;
-      toolInput = pending.input ?? toolInput;
-      name = name ?? pending.name;
-      session.pendingTools.delete(toolId);
+    if (toolId && session.pendingTools) {
+      const pending = session.pendingTools.get(toolId);
+      if (pending) {
+        if (!toolName) toolName = pending.toolName;
+        if (toolInput === undefined) toolInput = pending.toolInput;
+        session.pendingTools.delete(toolId);
+      }
     }
 
-    if (name) {
-      await this.sendObservation(session, {
-        toolName: name,
+    if (toolName) {
+      await this.sendObservation(session, watch, {
+        toolName,
         toolInput,
-        toolResponse
+        toolResponse,
+        toolUseId: toolId,
+      });
+    } else {
+      logger.debug('TRANSCRIPT', 'Dropping tool_result with no resolvable toolName', {
+        sessionId: session.sessionId,
+        toolId,
       });
     }
   }
 
-  private async sendObservation(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async sendObservation(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
-    await observationHandler.execute({
-      sessionId: session.sessionId,
+    const result = await ingestObservation({
+      contentSessionId: session.sessionId,
       cwd: session.cwd ?? process.cwd(),
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
       toolResponse: this.maybeParseJson(fields.toolResponse),
-      platform: 'transcript'
+      platformSource: session.platformSource,
+      toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
+      agentId: resolveWatchAgentId(watch),
     });
+
+    if (!result.ok) {
+      throw new Error(`ingestObservation failed: ${result.reason}`);
+    }
   }
 
   private async sendFileEdit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
@@ -263,7 +280,7 @@ export class TranscriptEventProcessor {
       cwd: session.cwd ?? process.cwd(),
       filePath,
       edits: Array.isArray(fields.edits) ? fields.edits : undefined,
-      platform: 'transcript'
+      platform: session.platformSource
     });
   }
 
@@ -274,7 +291,10 @@ export class TranscriptEventProcessor {
     if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
     try {
       return JSON.parse(trimmed);
-    } catch {
+    } catch (error) {
+      logger.debug('TRANSCRIPT', 'Field looked like JSON but did not parse; using raw string', {
+        preview: trimmed.slice(0, 120),
+      }, error instanceof Error ? error : undefined);
       return value;
     }
   }
@@ -302,13 +322,8 @@ export class TranscriptEventProcessor {
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
     await this.queueSummary(session);
-    await sessionCompleteHandler.execute({
-      sessionId: session.sessionId,
-      cwd: session.cwd ?? process.cwd(),
-      platform: 'transcript'
-    });
     await this.updateContext(session, watch);
-    session.pendingTools.clear();
+    session.pendingTools?.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);
   }
@@ -318,17 +333,19 @@ export class TranscriptEventProcessor {
     if (!workerReady) return;
 
     const lastAssistantMessage = session.lastAssistantMessage ?? '';
+    const requestBody = JSON.stringify({
+      contentSessionId: session.sessionId,
+      last_assistant_message: lastAssistantMessage,
+      platformSource: session.platformSource
+    });
 
     try {
       await workerHttpRequest('/api/sessions/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contentSessionId: session.sessionId,
-          last_assistant_message: lastAssistantMessage
-        })
+        body: requestBody
       });
-    } catch (error) {
+    } catch (error: unknown) {
       logger.warn('TRANSCRIPT', 'Summary request failed', {
         error: error instanceof Error ? error.message : String(error)
       });
@@ -338,6 +355,7 @@ export class TranscriptEventProcessor {
   private async updateContext(session: SessionState, watch: WatchTarget): Promise<void> {
     if (!watch.context) return;
     if (watch.context.mode !== 'agents') return;
+    if (shouldSuppressNativeCodexAgentsContext(watch)) return;
 
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) return;
@@ -348,22 +366,37 @@ export class TranscriptEventProcessor {
     const context = getProjectContext(cwd);
     const projectsParam = context.allProjects.join(',');
 
+    const contextUrl = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}&platformSource=${encodeURIComponent(session.platformSource)}`;
+    const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
+
+    const resolvedAgentsPath = path.resolve(agentsPath);
+    const allowedRoots = [path.resolve(cwd), path.resolve(DATA_DIR)];
+    const isPathSafe = allowedRoots.some(root => resolvedAgentsPath.startsWith(root + path.sep) || resolvedAgentsPath === root);
+    if (!isPathSafe) {
+      logger.warn('SECURITY', 'Rejected path traversal attempt in watch.context.path', {
+        original: watch.context.path,
+        resolved: resolvedAgentsPath,
+        allowedRoots
+      });
+      return;
+    }
+
+    let response: Awaited<ReturnType<typeof workerHttpRequest>>;
     try {
-      const response = await workerHttpRequest(
-        `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`
-      );
-      if (!response.ok) return;
-
-      const content = (await response.text()).trim();
-      if (!content) return;
-
-      const agentsPath = expandHomePath(watch.context.path ?? `${cwd}/AGENTS.md`);
-      writeAgentsMd(agentsPath, content);
-      logger.debug('TRANSCRIPT', 'Updated AGENTS.md context', { agentsPath, watch: watch.name });
-    } catch (error) {
-      logger.warn('TRANSCRIPT', 'Failed to update AGENTS.md context', {
+      response = await workerHttpRequest(contextUrl);
+    } catch (error: unknown) {
+      logger.warn('TRANSCRIPT', 'Failed to fetch AGENTS.md context', {
         error: error instanceof Error ? error.message : String(error)
       });
+      return;
     }
+
+    if (!response.ok) return;
+
+    const content = (await response.text()).trim();
+    if (!content) return;
+
+    writeAgentsMd(agentsPath, content);
+    logger.debug('TRANSCRIPT', 'Updated AGENTS.md context', { agentsPath, watch: watch.name });
   }
 }

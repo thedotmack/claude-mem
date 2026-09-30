@@ -16,6 +16,9 @@ export function PromptCard({ prompt, onDelete }: PromptCardProps) {
       <div className="card-header">
         <div className="card-header-left">
           <span className="card-type">Prompt</span>
+          <span className={`card-source source-${prompt.platform_source || 'claude'}`}>
+            {prompt.platform_source || 'claude'}
+          </span>
           <span className="card-project">{prompt.project}</span>
         </div>
         <div className="view-mode-toggles">

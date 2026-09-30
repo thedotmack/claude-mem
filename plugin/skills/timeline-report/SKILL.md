@@ -20,7 +20,15 @@ Use when users ask for:
 
 ## Prerequisites
 
-The claude-mem worker must be running on localhost:37777. The project must have claude-mem observations recorded.
+The claude-mem worker must be running. The project must have claude-mem observations recorded.
+
+**Resolve the worker port** (do this once at the start and reuse `$WORKER_PORT` in every curl call below):
+
+```bash
+WORKER_PORT="${CLAUDE_MEM_WORKER_PORT:-$(node -e "const fs=require('fs'),p=require('path'),os=require('os');const uid=(typeof process.getuid==='function'?process.getuid():77);const fallback=String(37700+(uid%100));try{const s=JSON.parse(fs.readFileSync(p.join(os.homedir(),'.claude-mem','settings.json'),'utf-8'));process.stdout.write(String(s.CLAUDE_MEM_WORKER_PORT||fallback));}catch{process.stdout.write(fallback);}" 2>/dev/null)}"
+```
+
+This honors `CLAUDE_MEM_WORKER_PORT` env, then `~/.claude-mem/settings.json`, then falls back to the per-UID default `37700 + (uid % 100)` — matching how the worker itself picks its port. Required for multi-account setups (#2101) and any user who has overridden the default port (#2103).
 
 ## Workflow
 
@@ -50,7 +58,7 @@ If a worktree is detected, use `$parent_project` (the basename of the parent rep
 Use Bash to fetch the complete timeline from the claude-mem worker API:
 
 ```bash
-curl -s "http://localhost:37777/api/context/inject?project=PROJECT_NAME&full=true"
+curl -s "http://localhost:${WORKER_PORT}/api/context/inject?project=PROJECT_NAME&full=true"
 ```
 
 This returns the entire compressed timeline -- every observation, session boundary, and summary across the project's full history. The response is pre-formatted markdown optimized for LLM consumption.
@@ -60,7 +68,7 @@ This returns the entire compressed timeline -- every observation, session bounda
 - Medium project (1,000-10,000 observations): ~50-300K tokens
 - Large project (10,000-35,000 observations): ~300-750K tokens
 
-If the response is empty or returns an error, the worker may not be running or the project name may be wrong. Try `curl -s "http://localhost:37777/api/search?query=*&limit=1"` to verify the worker is healthy.
+If the response is empty or returns an error, the worker may not be running or the project name may be wrong. Try `curl -s "http://localhost:${WORKER_PORT}/api/search?query=*&limit=1"` to verify the worker is healthy.
 
 ### Step 3: Estimate Token Count
 
@@ -83,7 +91,7 @@ Deploy an Agent (using the Task tool) with the full timeline and the following a
 ```
 You are a technical historian analyzing a software project's complete development timeline from claude-mem's persistent memory system. The timeline below contains every observation, session boundary, and summary recorded across the project's entire history.
 
-You also have access to the claude-mem SQLite database at ~/.claude-mem/claude-mem.db. Use it to run queries for the Token Economics & Memory ROI section. The database has an "observations" table with columns: id, memory_session_id, project, text, type, title, subtitle, facts, narrative, concepts, files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch, source_tool, source_input_summary.
+You also have access to the claude-mem SQLite database at ~/.claude-mem/claude-mem.db. Use it to run queries for the Token Economics & Memory ROI section. The database has an "observations" table with columns: id, memory_session_id, project, text, type, title, subtitle, facts, narrative, concepts, files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch, content_hash, generated_by_model, relevance_count, merged_into_project, agent_type, agent_id, metadata.
 
 Write a comprehensive narrative report titled "Journey Into [PROJECT_NAME]" that covers:
 
@@ -109,7 +117,7 @@ Write a comprehensive narrative report titled "Journey Into [PROJECT_NAME]" that
    - Count sessions that had context injection available (sessions after the first)
    - Calculate the compression ratio: average discovery_tokens vs average read_tokens per observation
    - Identify the highest-value observations (highest discovery_tokens -- these are the most expensive decisions, bugs, and discoveries that memory prevents re-doing)
-   - Identify explicit recall events (observations where source_tool contains "search", "smart_search", "get_observations", "timeline", or where narrative mentions "recalled", "from memory", "previous session")
+   - Identify explicit recall events (observations where narrative mentions "recalled", "from memory", "previous session")
    - Estimate passive recall savings: each session with context injection receives ~50 observations. Use a 30% relevance factor (conservative estimate that 30% of injected context prevents re-work). Savings = sessions_with_context × avg_discovery_value_of_50_obs_window × 0.30
    - Estimate explicit recall savings: ~10K tokens per explicit recall query
    - Calculate net ROI: total_savings / total_read_tokens_invested
@@ -134,7 +142,7 @@ Write a comprehensive narrative report titled "Journey Into [PROJECT_NAME]" that
    SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as obs, SUM(discovery_tokens) as total_discovery, COUNT(DISTINCT memory_session_id) as sessions FROM observations WHERE project = 'PROJECT_NAME' GROUP BY month ORDER BY month;
 
    -- Explicit recall events
-   SELECT COUNT(*) FROM observations WHERE project = 'PROJECT_NAME' AND (source_tool LIKE '%search%' OR source_tool LIKE '%timeline%' OR source_tool LIKE '%get_observations%' OR narrative LIKE '%recalled%' OR narrative LIKE '%from memory%' OR narrative LIKE '%previous session%');
+   SELECT COUNT(*) FROM observations WHERE project = 'PROJECT_NAME' AND (narrative LIKE '%recalled%' OR narrative LIKE '%from memory%' OR narrative LIKE '%previous session%');
    ```
 
 9. **Timeline Statistics** -- Quantitative summary:
@@ -187,15 +195,15 @@ Tell the user:
 
 ## Error Handling
 
-- **Empty timeline:** "No observations found for project 'X'. Check the project name with: `curl -s 'http://localhost:37777/api/search?query=*&limit=1'`"
-- **Worker not running:** "The claude-mem worker is not responding on port 37777. Start it with your usual method or check `ps aux | grep worker-service`."
-- **Timeline too large:** For projects with 50,000+ observations, the timeline may exceed context limits. Suggest using date range filtering: `curl -s "http://localhost:37777/api/context/inject?project=X&full=true"` -- the current endpoint returns all observations; for extremely large projects, the user may want to analyze in time-windowed segments.
+- **Empty timeline:** "No observations found for project 'X'. Check the project name with: `curl -s \"http://localhost:${WORKER_PORT}/api/search?query=*&limit=1\"`"
+- **Worker not running:** "The claude-mem worker is not responding on port ${WORKER_PORT}. Start it with your usual method or check `ps aux | grep worker-service`."
+- **Timeline too large:** For projects with 50,000+ observations, the timeline may exceed context limits. Suggest using date range filtering: `curl -s "http://localhost:${WORKER_PORT}/api/context/inject?project=X&full=true"` -- the current endpoint returns all observations; for extremely large projects, the user may want to analyze in time-windowed segments.
 
 ## Example
 
 User: "Write a journey report for the tokyo project"
 
-1. Fetch: `curl -s "http://localhost:37777/api/context/inject?project=tokyo&full=true"`
+1. Fetch: `curl -s "http://localhost:${WORKER_PORT}/api/context/inject?project=tokyo&full=true"`
 2. Estimate: "Timeline fetched: ~34,722 observations, estimated ~718K tokens. Proceed?"
 3. User confirms
 4. Deploy analysis agent with full timeline

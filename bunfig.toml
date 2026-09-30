@@ -1,0 +1,7 @@
+[test]
+smol = true
+# Mocks posthog-node for ALL tests before any module loads — required because
+# telemetry.ts is a process-wide singleton imported transitively by many test
+# files, and because real captures from tests would pollute production
+# analytics. See tests/preload.ts.
+preload = ["./tests/preload.ts"]

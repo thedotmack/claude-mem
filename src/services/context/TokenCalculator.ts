@@ -1,16 +1,8 @@
-/**
- * TokenCalculator - Token budget calculations for context economics
- *
- * Handles estimation of token counts for observations and context economics.
- */
 
 import type { Observation, TokenEconomics, ContextConfig } from './types.js';
 import { CHARS_PER_TOKEN_ESTIMATE } from './types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
-/**
- * Calculate token count for a single observation
- */
 export function calculateObservationTokens(obs: Observation): number {
   const obsSize = (obs.title?.length || 0) +
                   (obs.subtitle?.length || 0) +
@@ -19,9 +11,6 @@ export function calculateObservationTokens(obs: Observation): number {
   return Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
 }
 
-/**
- * Calculate context economics for a set of observations
- */
 export function calculateTokenEconomics(observations: Observation[]): TokenEconomics {
   const totalObservations = observations.length;
 
@@ -47,16 +36,10 @@ export function calculateTokenEconomics(observations: Observation[]): TokenEcono
   };
 }
 
-/**
- * Get work emoji for an observation type
- */
 export function getWorkEmoji(obsType: string): string {
   return ModeManager.getInstance().getWorkEmoji(obsType);
 }
 
-/**
- * Format token display for an observation
- */
 export function formatObservationTokenDisplay(
   obs: Observation,
   config: ContextConfig
@@ -69,9 +52,6 @@ export function formatObservationTokenDisplay(
   return { readTokens, discoveryTokens, discoveryDisplay, workEmoji };
 }
 
-/**
- * Check if context economics should be shown
- */
 export function shouldShowContextEconomics(config: ContextConfig): boolean {
   return config.showReadTokens || config.showWorkTokens ||
          config.showSavingsAmount || config.showSavingsPercent;

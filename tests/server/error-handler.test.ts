@@ -1,13 +1,3 @@
-/**
- * Tests for Express error handling middleware
- *
- * Mock Justification (~11% mock code):
- * - Logger spies: Suppress console output during tests (standard practice)
- * - Express req/res mocks: Required because Express middleware expects these
- *   objects - testing the actual formatting and status code logic
- *
- * What's NOT mocked: AppError class, createErrorResponse function (tested directly)
- */
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../../src/utils/logger.js';
@@ -19,8 +9,6 @@ import {
   notFoundHandler,
 } from '../../src/services/server/ErrorHandler.js';
 
-// Spy on logger methods to suppress output during tests
-// Using spyOn instead of mock.module to avoid polluting global module cache
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
 describe('ErrorHandler', () => {
@@ -126,7 +114,6 @@ describe('ErrorHandler', () => {
     it('should handle empty string code as falsy and exclude it', () => {
       const response = createErrorResponse('Error', 'Test', '');
 
-      // Empty string is falsy, so code should not be set
       expect(response.code).toBeUndefined();
     });
   });

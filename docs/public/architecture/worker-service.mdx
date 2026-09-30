@@ -12,10 +12,10 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 - **Technology**: Express.js HTTP server
 - **Runtime**: Bun (auto-installed if missing)
 - **Process Manager**: Native Bun process management via ProcessManager
-- **Port**: Fixed port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
+- **Port**: Per-user default `37700 + (uid % 100)` (override with `CLAUDE_MEM_WORKER_PORT`). The active port is stored in `~/.claude-mem/settings.json` and reported by `GET /api/health`.
 - **Location**: `src/services/worker-service.ts`
 - **Built Output**: `plugin/scripts/worker-service.cjs`
-- **Model**: Configurable via `CLAUDE_MEM_MODEL` environment variable (default: sonnet)
+- **Model**: Configurable via `CLAUDE_MEM_MODEL` (default: `claude-haiku-4-5-20251001`)
 
 ## REST API Endpoints
 
@@ -51,9 +51,11 @@ GET /health
 {
   "status": "ok",
   "uptime": 12345,
-  "port": 37777
+  "port": 37742
 }
 ```
+
+The `port` value is the actual worker port for the current user — per-user default `37700 + (uid % 100)`, or whatever `CLAUDE_MEM_WORKER_PORT` is set to. The example above is illustrative; your value will differ.
 
 #### 3. Server-Sent Events Stream
 ```
@@ -612,7 +614,7 @@ The worker service auto-starts when the SessionStart hook fires. Manual start is
 
 ### Bun Requirement
 
-Bun is required to run the worker service. If Bun is not installed, the smart-install script will automatically install it on first run:
+Bun is required to run the worker service. If Bun is not installed, `npx claude-mem install` (and `npx claude-mem repair`) installs it globally during setup, with a visible clack spinner:
 
 - **Windows**: `powershell -c "irm bun.sh/install.ps1 | iex"`
 - **macOS/Linux**: `curl -fsSL https://bun.sh/install | bash`
@@ -640,26 +642,26 @@ The worker service routes observations to the Claude Agent SDK for AI-powered pr
 
 ### Model Configuration
 
-Set the AI model used for processing via environment variable:
+Set the Claude model used for compression via environment variable or `~/.claude-mem/settings.json`:
 
 ```bash
-export CLAUDE_MEM_MODEL=sonnet
+export CLAUDE_MEM_MODEL=claude-haiku-4-5-20251001
 ```
 
-Available shorthand models (forward to latest version):
-- `haiku` - Fast, cost-efficient
-- `sonnet` - Balanced (default)
-- `opus` - Most capable
+Allowed values:
+- `claude-haiku-4-5-20251001` - default, fastest (best for compression)
+- `claude-sonnet-5` - balanced quality and speed
+- `claude-opus-4-8` - highest quality (slowest)
 
 ## Port Allocation
 
-The worker uses a fixed port (37777 by default) for consistent communication:
+The worker uses a per-user default port so different OS users on the same machine never collide:
 
-- **Default**: Port 37777
-- **Override**: Set `CLAUDE_MEM_WORKER_PORT` environment variable
-- **Port File**: `${CLAUDE_PLUGIN_ROOT}/data/worker.port` tracks current port
+- **Default**: `37700 + (uid % 100)` (set in `src/shared/SettingsDefaultsManager.ts`)
+- **Override**: Set `CLAUDE_MEM_WORKER_PORT` (env or `~/.claude-mem/settings.json`)
+- **Discovery**: `GET /api/health` returns the active port; `~/.claude-mem/settings.json` stores the configured value
 
-If port 37777 is in use, the worker will fail to start. Set a custom port via environment variable.
+If the chosen port is occupied, the worker fails to start — pin a different port via `CLAUDE_MEM_WORKER_PORT` and restart.
 
 ## Data Storage
 

@@ -1,44 +1,15 @@
-/**
- * Recent observation retrieval functions
- * Extracted from SessionStore.ts for modular organization
- */
 
 import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
-import type { RecentObservationRow, AllRecentObservationRow } from './types.js';
 
-/**
- * Get recent observations for a project
- */
-export function getRecentObservations(
-  db: Database,
-  project: string,
-  limit: number = 20
-): RecentObservationRow[] {
+export function getFirstObservationCreatedAt(db: Database): string | null {
   const stmt = db.prepare(`
-    SELECT type, text, prompt_number, created_at
+    SELECT created_at
     FROM observations
-    WHERE project = ?
-    ORDER BY created_at_epoch DESC
-    LIMIT ?
+    ORDER BY created_at_epoch ASC
+    LIMIT 1
   `);
 
-  return stmt.all(project, limit) as RecentObservationRow[];
-}
-
-/**
- * Get recent observations across all projects (for web UI)
- */
-export function getAllRecentObservations(
-  db: Database,
-  limit: number = 100
-): AllRecentObservationRow[] {
-  const stmt = db.prepare(`
-    SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
-    FROM observations
-    ORDER BY created_at_epoch DESC
-    LIMIT ?
-  `);
-
-  return stmt.all(limit) as AllRecentObservationRow[];
+  const row = stmt.get() as { created_at: string } | undefined;
+  return row ? row.created_at : null;
 }

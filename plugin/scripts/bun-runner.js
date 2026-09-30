@@ -1,38 +1,15 @@
 #!/usr/bin/env node
-/**
- * Bun Runner - Finds and executes Bun even when not in PATH
- *
- * This script solves the fresh install problem where:
- * 1. smart-install.js installs Bun to ~/.bun/bin/bun
- * 2. But Bun isn't in PATH until terminal restart
- * 3. Subsequent hooks fail because they can't find `bun`
- *
- * Usage: node bun-runner.js <script> [args...]
- *
- * Fixes #818: Worker fails to start on fresh install
- */
 import { spawnSync, spawn } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
 
-// Self-resolve plugin root when CLAUDE_PLUGIN_ROOT is not set by Claude Code.
-// Upstream bug: anthropics/claude-code#24529 — Stop hooks (and on Linux, all hooks)
-// don't receive CLAUDE_PLUGIN_ROOT, causing script paths to resolve to /scripts/...
-// which doesn't exist. This fallback derives the plugin root from bun-runner.js's
-// own filesystem location (this file lives in <plugin-root>/scripts/).
 const __bun_runner_dirname = dirname(fileURLToPath(import.meta.url));
 const RESOLVED_PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || resolve(__bun_runner_dirname, '..');
 
-/**
- * Fix script path arguments that were broken by empty CLAUDE_PLUGIN_ROOT.
- * When CLAUDE_PLUGIN_ROOT is empty, "${CLAUDE_PLUGIN_ROOT}/scripts/foo.cjs"
- * expands to "/scripts/foo.cjs" which doesn't exist. Detect this and rewrite
- * the path using our self-resolved plugin root.
- */
 function fixBrokenScriptPath(argPath) {
   if (argPath.startsWith('/scripts/') && !existsSync(argPath)) {
     const fixedPath = join(RESOLVED_PLUGIN_ROOT, argPath);
@@ -43,24 +20,49 @@ function fixBrokenScriptPath(argPath) {
   return argPath;
 }
 
-/**
- * Find Bun executable - checks PATH first, then common install locations
- */
 function findBun() {
-  // Try PATH first
-  const pathCheck = spawnSync(IS_WINDOWS ? 'where' : 'which', ['bun'], {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    shell: IS_WINDOWS
-  });
+  const pathCheck = IS_WINDOWS
+    ? spawnSync('where', ['bun'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true
+      })
+    : spawnSync('which', ['bun'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
-    return 'bun'; // Found in PATH
+    if (IS_WINDOWS) {
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const firstBunPath = bunPaths.find(line => {
+        const lowerPath = line.toLowerCase();
+        return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
+      });
+      const firstBunDir = firstBunPath ? dirname(firstBunPath).toLowerCase() : null;
+      const firstInstallPaths = firstBunDir
+        ? bunPaths.filter(line => dirname(line).toLowerCase() === firstBunDir)
+        : [];
+      const bunExePath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.exe'));
+      if (bunExePath) {
+        return bunExePath;
+      }
+      const bunCmdPath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.cmd'));
+      if (bunCmdPath) {
+        return bunCmdPath;
+      }
+      // The official installer ships bun.exe only (no bun.cmd shim). Return
+      // the resolved absolute path instead of falling through to the bare
+      // name: resolving a bare `bun` later relies on the child's PATH, which
+      // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
+      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      if (firstWherePath) {
+        return firstWherePath;
+      }
+    }
+    return 'bun';
   }
 
-  // Check common installation paths (handles fresh installs before PATH reload)
-  // Windows: Bun installs to ~/.bun/bin/bun.exe (same as smart-install.js)
-  // Unix: Check default location plus common package manager paths
   const bunPaths = IS_WINDOWS
     ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
     : [
@@ -79,15 +81,21 @@ function findBun() {
   return null;
 }
 
-// Early exit if plugin is disabled in Claude Code settings (#781).
-// Sync read + JSON parse — fastest possible check before spawning Bun.
 function isPluginDisabledInClaudeSettings() {
   try {
     const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
     const settingsPath = join(configDir, 'settings.json');
     if (!existsSync(settingsPath)) return false;
     const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    return settings?.enabledPlugins?.['claude-mem@thedotmack'] === false;
+    // No optional chaining (?.) here: this launcher must parse on the oldest
+    // Node that any host might invoke it with. Some Claude Code installs run
+    // hooks under a bundled pre-ES2020 Node whose ESM loader throws
+    // "SyntaxError: Unexpected token '.'" on `?.` (issue #2791).
+    return Boolean(
+      settings &&
+      settings.enabledPlugins &&
+      settings.enabledPlugins['claude-mem@thedotmack'] === false
+    );
   } catch {
     return false;
   }
@@ -97,7 +105,6 @@ if (isPluginDisabledInClaudeSettings()) {
   process.exit(0);
 }
 
-// Get args: node bun-runner.js <script> [args...]
 const args = process.argv.slice(2);
 
 if (args.length === 0) {
@@ -105,7 +112,6 @@ if (args.length === 0) {
   process.exit(1);
 }
 
-// Fix broken script paths caused by empty CLAUDE_PLUGIN_ROOT (#1215)
 args[0] = fixBrokenScriptPath(args[0]);
 
 const bunPath = findBun();
@@ -116,14 +122,8 @@ if (!bunPath) {
   process.exit(1);
 }
 
-// Fix #646: Buffer stdin in Node.js before passing to Bun.
-// On Linux, Bun's libuv calls fstat() on inherited pipe fds and crashes with
-// EINVAL when the pipe comes from Claude Code's hook system. By reading stdin
-// in Node.js first and writing it to a fresh pipe, Bun receives a normal pipe
-// that it can fstat() without errors.
 function collectStdin() {
   return new Promise((resolve) => {
-    // If stdin is a TTY (interactive), there's no piped data to collect
     if (process.stdin.isTTY) {
       resolve(null);
       return;
@@ -135,11 +135,9 @@ function collectStdin() {
       resolve(chunks.length > 0 ? Buffer.concat(chunks) : null);
     });
     process.stdin.on('error', () => {
-      // stdin may not be readable (e.g. already closed), treat as no data
       resolve(null);
     });
 
-    // Safety: if no data arrives within 5s, proceed without stdin
     setTimeout(() => {
       process.stdin.removeAllListeners();
       process.stdin.pause();
@@ -150,27 +148,121 @@ function collectStdin() {
 
 const stdinData = await collectStdin();
 
-// Spawn Bun with the provided script and args
-// Use spawn (not spawnSync) to properly handle stdio
-// Note: Don't use shell mode on Windows - it breaks paths with spaces in usernames
-// Use windowsHide to prevent a visible console window from spawning on Windows
-const child = spawn(bunPath, args, {
-  stdio: [stdinData ? 'pipe' : 'ignore', 'inherit', 'inherit'],
+const spawnOptions = {
+  stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
   env: process.env
-});
+};
 
-// Write buffered stdin to child's pipe, then close it so the child sees EOF
-if (stdinData && child.stdin) {
-  child.stdin.write(stdinData);
-  child.stdin.end();
+let spawnCmd = bunPath;
+let spawnArgs = args;
+
+// Only .cmd/.bat shims need cmd.exe; a resolved bun.exe must be spawned
+// directly. Routing it through `shell: true` breaks when the environment
+// grows past cmd.exe's ~8191-char per-variable limit (e.g. a long PATH,
+// which these hooks double via the login-shell prepend): cmd silently
+// sees an empty PATH and fails with `"bun" is not recognized` even though
+// `where bun` succeeded moments earlier (issue #3196).
+const needsCmdShell = IS_WINDOWS && /\.(cmd|bat)$/i.test(bunPath);
+
+if (needsCmdShell) {
+  const quote = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
+  spawnOptions.shell = true;
+  spawnCmd = [bunPath, ...args].map(quote).join(' ');
+  spawnArgs = [];
+}
+
+const child = spawn(spawnCmd, spawnArgs, spawnOptions);
+
+if (child.stdin) {
+  child.stdin.on('error', () => {});
+  if (stdinData && stdinData.length > 0) {
+    child.stdin.write(stdinData);
+    child.stdin.end();
+  } else {
+    // Lifecycle subcommands (start, stop, restart, status) never consume stdin —
+    // they manage the worker daemon, not hook payloads.  Killing the child here
+    // prevents the daemon from starting/stopping on platforms where Claude Code
+    // doesn't pipe a payload for SessionStart (e.g. Windows CC ≤ 2.1.145).
+    const lifecycleCommands = ['start', 'stop', 'restart', 'status'];
+    const isLifecycle = lifecycleCommands.some(cmd => args.includes(cmd));
+
+    if (isLifecycle) {
+      // Lifecycle commands don't need stdin — close pipe and let child run.
+      try { child.stdin.end(); } catch {}
+    } else {
+      // Issue #2188: empty/missing stdin previously masked by `|| '{}'` fallback,
+      // which silently hid WSL bash failures (e.g. hooks invoked under a broken
+      // shell that never piped a payload). Surface the failure mode instead.
+      const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+      const payloadType = stdinData === null
+        ? 'null (no data event or stream error)'
+        : stdinData === undefined
+          ? 'undefined'
+          : Buffer.isBuffer(stdinData) && stdinData.length === 0
+            ? 'empty Buffer (zero bytes received)'
+            : `unexpected (${typeof stdinData})`;
+      const payloadByteLength = (stdinData && typeof stdinData.length === 'number')
+        ? stdinData.length
+        : 0;
+      const diagnostic = [
+        `[bun-runner] empty stdin payload received — issue #2188`,
+        `  script: ${args[0]}`,
+        `  payload byte length: ${payloadByteLength}`,
+        `  payload type: ${payloadType}`,
+        `  platform: ${process.platform}`,
+        `  shell: ${process.env.SHELL || 'n/a'}`,
+        `  stdin TTY: ${process.stdin.isTTY === true ? 'true' : process.stdin.isTTY === false ? 'false' : 'undefined'}`,
+        `  timestamp: ${new Date().toISOString()}`,
+        `  CLAUDE_PLUGIN_ROOT: ${RESOLVED_PLUGIN_ROOT}`,
+      ].join('\n');
+
+      // IO discipline (see src/shared/hook-io.ts intent vocabulary):
+      // - this stderr write is a USER_HINT (Claude Code surfaces it inline).
+      // - the CAPTURE_BROKEN marker file below is a DIAGNOSTIC durable signal for
+      //   the next session-start hint.
+      // - exit 0 below is the EXIT_SIGNAL per CLAUDE.md (Windows Terminal tab
+      //   management); the marker file, not the exit code, is the durable failure
+      //   signal. bun-runner runs in its own node process BEFORE hookCommand's
+      //   stderr buffer is installed, so this write is never swallowed.
+
+      // Write to stderr so Claude Code surfaces the diagnostic.
+      console.error(diagnostic);
+
+      // Persist diagnostic to the runner-errors log and drop a CAPTURE_BROKEN marker
+      // file so the next session-start hint can surface the failure. We exit 0 to
+      // honor the project's exit-code strategy (worker/hook errors exit 0 to
+      // prevent Windows Terminal tab pileup) — the marker file is the durable
+      // signal that something is wrong, not the exit code.
+      try {
+        const logsDir = join(dataDir, 'logs');
+        mkdirSync(logsDir, { recursive: true });
+        appendFileSync(join(logsDir, 'runner-errors.log'), diagnostic + '\n\n');
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(join(dataDir, 'CAPTURE_BROKEN'), diagnostic + '\n');
+      } catch (writeErr) {
+        console.error(`[bun-runner] failed to persist diagnostic: ${writeErr && writeErr.message ? writeErr.message : writeErr}`);
+      }
+
+      try { child.stdin.end(); } catch {}
+      try { child.kill(); } catch {}
+      process.exit(0);
+    }
+  }
 }
 
 child.on('error', (err) => {
+  // EXCEPTION to CLAUDE.md exit-0-on-error: Bun-not-found is a user environment
+  // problem, not a hook execution failure. Surfacing exit 1 here forces Claude
+  // Code to display the stderr message rather than silently retrying. This runs
+  // before any hook handler, so the exit-0 tab-management rationale doesn't apply.
   console.error(`Failed to start Bun: ${err.message}`);
   process.exit(1);
 });
 
-child.on('close', (code) => {
+child.on('close', (code, signal) => {
+  if ((signal || code > 128) && args.includes('start')) {
+    process.exit(0);
+  }
   process.exit(code || 0);
 });

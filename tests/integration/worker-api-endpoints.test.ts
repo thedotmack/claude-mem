@@ -1,31 +1,30 @@
-/**
- * Worker API Endpoints Integration Tests
- *
- * Tests all REST API endpoints with real HTTP and database.
- * Uses real Server instance with in-memory database.
- *
- * Sources:
- * - Server patterns from tests/server/server.test.ts
- * - Session routes from src/services/worker/http/routes/SessionRoutes.ts
- * - Search routes from src/services/worker/http/routes/SearchRoutes.ts
- */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 
-// Mock middleware to avoid complex dependencies
+// Capture the real middleware module before mock.module mutates the live
+// namespace, then re-register the snapshot in afterAll. bun's mock.module is
+// process-global and mock.restore() does NOT undo it, so without this the stub
+// createMiddleware leaks into later files (e.g. CORS + v1-routes server tests).
+import * as realMiddleware from '../../src/services/worker/http/middleware.js';
+const realMiddlewareSnapshot = { ...realMiddleware };
+
 mock.module('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
   requireLocalhost: (_req: any, _res: any, next: any) => next(),
   summarizeRequestBody: () => 'test body',
 }));
 
-// Import after mocks
 import { Server } from '../../src/services/server/Server.js';
 import type { ServerOptions } from '../../src/services/server/Server.js';
+import { WorkerService } from '../../src/services/worker-service.js';
+import {
+  recordDependencyStatus,
+  resetDependencyStatusesForTesting,
+} from '../../src/shared/dependency-health.js';
 
-// Suppress logger output during tests
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+const serialIt = it.serial;
 
 describe('Worker API Endpoints Integration', () => {
   let server: Server;
@@ -33,6 +32,7 @@ describe('Worker API Endpoints Integration', () => {
   let mockOptions: ServerOptions;
 
   beforeEach(() => {
+    resetDependencyStatusesForTesting();
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -57,6 +57,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   afterEach(async () => {
+    resetDependencyStatusesForTesting();
     loggerSpies.forEach(spy => spy.mockRestore());
 
     if (server && server.getHttpServer()) {
@@ -69,9 +70,13 @@ describe('Worker API Endpoints Integration', () => {
     mock.restore();
   });
 
+  afterAll(() => {
+    mock.module('../../src/services/worker/http/middleware.js', () => realMiddlewareSnapshot);
+  });
+
   describe('Health/Readiness/Version Endpoints', () => {
     describe('GET /api/health', () => {
-      it('should return status, initialized, mcpReady, platform, pid', async () => {
+      serialIt('should return status, initialized, mcpReady, platform, pid', async () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
@@ -88,7 +93,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(typeof body.pid).toBe('number');
       });
 
-      it('should reflect uninitialized state', async () => {
+      serialIt('should reflect uninitialized state', async () => {
         const uninitOptions: ServerOptions = {
           getInitializationComplete: () => false,
           getMcpReady: () => false,
@@ -104,14 +109,43 @@ describe('Worker API Endpoints Integration', () => {
         const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
         const body = await response.json();
 
-        expect(body.status).toBe('ok'); // Health always returns ok
+        expect(body.status).toBe('ok'); 
         expect(body.initialized).toBe(false);
         expect(body.mcpReady).toBe(false);
+      });
+
+      serialIt('includes dependency health and stays HTTP 200 for dependency-only degradation', async () => {
+        recordDependencyStatus(
+          'uvx',
+          'vector_search_unavailable',
+          'uvx executable not found on effective PATH for vector search',
+          'Install uv and restart claude-mem',
+        );
+
+        server = new Server(mockOptions);
+        await server.listen(testPort, '127.0.0.1');
+
+        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+        expect(response.status).toBe(200);
+
+        const body = await response.json();
+        expect(body.status).toBe('ok');
+        expect(body.dependencies).toMatchObject({
+          degraded: true,
+          statuses: [
+            {
+              dependency: 'uvx',
+              kind: 'vector_search_unavailable',
+              message: 'uvx executable not found on effective PATH for vector search',
+              remediation: 'Install uv and restart claude-mem',
+            },
+          ],
+        });
       });
     });
 
     describe('GET /api/readiness', () => {
-      it('should return 200 with status ready when initialized', async () => {
+      serialIt('should return 200 with status ready when initialized', async () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
@@ -123,7 +157,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(body.mcpReady).toBe(true);
       });
 
-      it('should return 503 with status initializing when not ready', async () => {
+      serialIt('should return 503 with status initializing when not ready', async () => {
         const uninitOptions: ServerOptions = {
           getInitializationComplete: () => false,
           getMcpReady: () => false,
@@ -146,7 +180,7 @@ describe('Worker API Endpoints Integration', () => {
     });
 
     describe('GET /api/version', () => {
-      it('should return version string', async () => {
+      serialIt('should return version string', async () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
@@ -158,11 +192,74 @@ describe('Worker API Endpoints Integration', () => {
         expect(typeof body.version).toBe('string');
       });
     });
+
+    describe('GET /api/settings/dependency-health', () => {
+      serialIt('passes through WorkerService initialization guard while initialization is incomplete', async () => {
+        recordDependencyStatus(
+          'claude_cli',
+          'setup_required',
+          'Claude executable not found',
+          'Install Claude Code CLI',
+        );
+
+        const worker = new WorkerService();
+        expect((worker as any).initializationCompleteFlag).toBe(false);
+        server = (worker as unknown as { server: Server }).server;
+        await server.listen(testPort, '127.0.0.1');
+
+        const guardedResponse = await fetch(`http://127.0.0.1:${testPort}/api/settings`);
+        expect(guardedResponse.status).toBe(503);
+
+        const response = await fetch(`http://127.0.0.1:${testPort}/api/settings/dependency-health`);
+        expect(response.status).toBe(200);
+
+        const body = await response.json();
+        expect(body).toMatchObject({
+          degraded: true,
+          statuses: [
+            {
+              dependency: 'claude_cli',
+              kind: 'setup_required',
+              message: 'Claude executable not found',
+              remediation: 'Install Claude Code CLI',
+            },
+          ],
+        });
+      });
+    });
   });
 
   describe('Error Handling', () => {
+    serialIt('includes dependency health in admin doctor output', async () => {
+      recordDependencyStatus(
+        'claude_cli',
+        'setup_required',
+        'Claude executable not found',
+        'Install Claude Code CLI',
+      );
+
+      server = new Server(mockOptions);
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/admin/doctor`);
+      expect(response.status).toBe(200);
+
+      const body = await response.json();
+      expect(body.health.dependencies).toMatchObject({
+        degraded: true,
+        statuses: [
+          {
+            dependency: 'claude_cli',
+            kind: 'setup_required',
+            message: 'Claude executable not found',
+            remediation: 'Install Claude Code CLI',
+          },
+        ],
+      });
+    });
+
     describe('404 Not Found', () => {
-      it('should return 404 for unknown GET routes', async () => {
+      serialIt('should return 404 for unknown GET routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
@@ -174,7 +271,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(body.error).toBe('NotFound');
       });
 
-      it('should return 404 for unknown POST routes', async () => {
+      serialIt('should return 404 for unknown POST routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
@@ -187,7 +284,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(response.status).toBe(404);
       });
 
-      it('should return 404 for nested unknown routes', async () => {
+      serialIt('should return 404 for nested unknown routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
@@ -198,21 +295,20 @@ describe('Worker API Endpoints Integration', () => {
     });
 
     describe('Method handling', () => {
-      it('should handle OPTIONS requests', async () => {
+      serialIt('should handle OPTIONS requests', async () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/health`, {
           method: 'OPTIONS'
         });
-        // OPTIONS should either return 200 or 204 (CORS preflight)
         expect([200, 204]).toContain(response.status);
       });
     });
   });
 
   describe('Content-Type Handling', () => {
-    it('should accept application/json content type', async () => {
+    serialIt('should accept application/json content type', async () => {
       server = new Server(mockOptions);
       server.finalizeRoutes();
       await server.listen(testPort, '127.0.0.1');
@@ -223,11 +319,10 @@ describe('Worker API Endpoints Integration', () => {
         body: JSON.stringify({ key: 'value' })
       });
 
-      // Should get 404 (route not found), not a content-type error
       expect(response.status).toBe(404);
     });
 
-    it('should return JSON responses with correct content type', async () => {
+    serialIt('should return JSON responses with correct content type', async () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
@@ -239,7 +334,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   describe('Server State Management', () => {
-    it('should track initialization state dynamically', async () => {
+    serialIt('should track initialization state dynamically', async () => {
       let initialized = false;
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => initialized,
@@ -253,19 +348,16 @@ describe('Worker API Endpoints Integration', () => {
       server = new Server(dynamicOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      // Check uninitialized
       let response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
       expect(response.status).toBe(503);
 
-      // Initialize
       initialized = true;
 
-      // Check initialized
       response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
       expect(response.status).toBe(200);
     });
 
-    it('should track MCP ready state dynamically', async () => {
+    serialIt('should track MCP ready state dynamically', async () => {
       let mcpReady = false;
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => true,
@@ -279,15 +371,12 @@ describe('Worker API Endpoints Integration', () => {
       server = new Server(dynamicOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      // Check MCP not ready
       let response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
       let body = await response.json();
       expect(body.mcpReady).toBe(false);
 
-      // Set MCP ready
       mcpReady = true;
 
-      // Check MCP ready
       response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
       body = await response.json();
       expect(body.mcpReady).toBe(true);
@@ -295,7 +384,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   describe('Server Lifecycle', () => {
-    it('should start listening on specified port', async () => {
+    serialIt('should start listening on specified port', async () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
@@ -304,65 +393,56 @@ describe('Worker API Endpoints Integration', () => {
       expect(httpServer!.listening).toBe(true);
     });
 
-    it('should close gracefully', async () => {
+    serialIt('should close gracefully', async () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      // Verify it's running
       const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
       expect(response.status).toBe(200);
 
-      // Close
       try {
         await server.close();
       } catch (e: any) {
         if (e.code !== 'ERR_SERVER_NOT_RUNNING') throw e;
       }
 
-      // Verify closed
       const httpServer = server.getHttpServer();
       if (httpServer) {
         expect(httpServer.listening).toBe(false);
       }
     });
 
-    it('should handle port conflicts', async () => {
+    serialIt('should handle port conflicts', async () => {
       server = new Server(mockOptions);
       const server2 = new Server(mockOptions);
 
       await server.listen(testPort, '127.0.0.1');
 
-      // Second server should fail on same port
       await expect(server2.listen(testPort, '127.0.0.1')).rejects.toThrow();
 
-      // Clean up second server if it has a reference
       const httpServer2 = server2.getHttpServer();
       if (httpServer2) {
         expect(httpServer2.listening).toBe(false);
       }
     });
 
-    it('should allow restart on same port after close', async () => {
+    serialIt('should allow restart on same port after close', async () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      // Close first server
       try {
         await server.close();
       } catch (e: any) {
         if (e.code !== 'ERR_SERVER_NOT_RUNNING') throw e;
       }
 
-      // Wait for port to be released
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Start second server on same port
       const server2 = new Server(mockOptions);
       await server2.listen(testPort, '127.0.0.1');
 
       expect(server2.getHttpServer()!.listening).toBe(true);
 
-      // Clean up
       try {
         await server2.close();
       } catch {
@@ -372,7 +452,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   describe('Route Registration', () => {
-    it('should register route handlers', () => {
+    serialIt('should register route handlers', () => {
       server = new Server(mockOptions);
 
       const setupRoutesMock = mock(() => {});
@@ -386,7 +466,7 @@ describe('Worker API Endpoints Integration', () => {
       expect(setupRoutesMock).toHaveBeenCalledWith(server.app);
     });
 
-    it('should register multiple route handlers', () => {
+    serialIt('should register multiple route handlers', () => {
       server = new Server(mockOptions);
 
       const handler1Mock = mock(() => {});

@@ -4,15 +4,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { isPluginDisabledInClaudeSettings } from '../../src/shared/plugin-state.js';
 
-/**
- * Tests for isPluginDisabledInClaudeSettings() (#781).
- *
- * The function reads CLAUDE_CONFIG_DIR/settings.json and checks if
- * enabledPlugins["claude-mem@thedotmack"] === false.
- *
- * We test by setting CLAUDE_CONFIG_DIR to a temp directory with mock settings.
- */
-
 let tempDir: string;
 let originalClaudeConfigDir: string | undefined;
 

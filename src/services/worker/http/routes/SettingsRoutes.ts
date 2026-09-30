@@ -1,22 +1,116 @@
-/**
- * Settings Routes
- *
- * Handles settings management, MCP toggle, and branch switching.
- * Settings are stored in ~/.claude-mem/settings.json
- */
 
 import express, { Request, Response } from 'express';
+import { z } from 'zod';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { getPackageRoot } from '../../../../shared/paths.js';
+import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
-import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
-import { ModeManager } from '../../domain/ModeManager.js';
+import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
+import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
+import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+
+const toggleMcpSchema = z.object({
+  enabled: z.boolean(),
+}).passthrough();
+
+const updateSettingsSchema = z.object({}).passthrough();
+
+// GET /api/settings has no auth. Mask known secrets before they leave the
+// process. Explicit allowlist — a /API_KEY|_TOKEN|SECRET/i regex also matches
+// CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS / SHOW_WORK_TOKENS (boolean display
+// prefs) and corrupts them on every GET (#3680 / #3861).
+const SECRET_SETTING_KEYS = new Set([
+  'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_CHROMA_API_KEY',
+  'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
+  'CLAUDE_MEM_TELEGRAM_BOT_TOKEN',
+  'CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES',
+  'CLAUDE_MEM_SERVER_API_KEY',
+  'CLAUDE_MEM_SERVER_BETA_API_KEY',
+  'CLAUDE_MEM_TV_TOKEN',
+  'CLAUDE_MEM_PRO_MEMORY_KEY',
+  'CLAUDE_MEM_REDIS_URL',
+]);
+
+function maskSecretValue(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  if (value.length <= 4) return '*'.repeat(value.length);
+  return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`;
+}
+
+// Viewer save posts the GET body back unchanged. Treat a secret as untouched
+// only when the submitted value equals the mask of the currently stored
+// secret — not "any string starting with *", which would silently drop a
+// legitimate replacement key that happens to begin with '*'.
+function isUnchangedMaskedSecret(incoming: unknown, stored: unknown): boolean {
+  return typeof incoming === 'string' && incoming === maskSecretValue(stored);
+}
+
+function redactSecretSettings<T extends object>(settings: T): T {
+  const redacted: Record<string, unknown> = { ...(settings as Record<string, unknown>) };
+  for (const key of SECRET_SETTING_KEYS) {
+    if (key in redacted) {
+      redacted[key] = maskSecretValue(redacted[key]);
+    }
+  }
+  return redacted as T;
+}
+
+// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
+// the HTTP write list below, this set keeps it from being persisted via POST.
+const FILE_ONLY_SETTING_KEYS = new Set([
+  'CLAUDE_CODE_PATH',
+]);
+
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function splitHostHeader(hostHeader: string): { hostname: string; port: string } {
+  if (hostHeader.startsWith('[')) {
+    const match = hostHeader.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    return { hostname: match?.[1] ?? hostHeader, port: match?.[2] ?? '80' };
+  }
+  const colon = hostHeader.lastIndexOf(':');
+  if (colon === -1) return { hostname: hostHeader, port: '80' };
+  return { hostname: hostHeader.slice(0, colon), port: hostHeader.slice(colon + 1) };
+}
+
+/**
+ * True when a browser Origin is present and is not the same loopback host:port
+ * as this request. Used to reject settings writes from other localhost pages
+ * without adding a new auth scheme. Exported for unit tests.
+ */
+export function isForeignLoopbackBrowserWrite(req: Pick<Request, 'headers'>): boolean {
+  const rawOrigin = req.headers?.origin;
+  if (Array.isArray(rawOrigin)) return true;
+  const origin = rawOrigin;
+  if (typeof origin !== 'string' || origin.length === 0) return false;
+
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return true;
+  }
+  if (originUrl.protocol !== 'http:') return true;
+  if (!LOOPBACK_HOSTNAMES.has(originUrl.hostname)) return true;
+
+  const rawHost = req.headers?.host;
+  if (Array.isArray(rawHost)) return true;
+  const hostHeader = rawHost;
+  if (typeof hostHeader !== 'string' || hostHeader.length === 0) return true;
+
+  const { hostname, port } = splitHostHeader(hostHeader);
+  if (!LOOPBACK_HOSTNAMES.has(hostname)) return true;
+
+  const originPort = originUrl.port || '80';
+  return originPort !== port;
+}
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
@@ -26,35 +120,37 @@ export class SettingsRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    // Settings endpoints
     app.get('/api/settings', this.handleGetSettings.bind(this));
-    app.post('/api/settings', this.handleUpdateSettings.bind(this));
+    app.post('/api/settings', validateBody(updateSettingsSchema), this.handleUpdateSettings.bind(this));
+    app.get('/api/settings/dependency-health', this.handleGetDependencyHealth.bind(this));
 
-    // MCP toggle endpoints
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
-    app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
-
-    // Branch switching endpoints
-    app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
-    app.post('/api/branch/switch', this.handleSwitchBranch.bind(this));
-    app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
+    app.post('/api/mcp/toggle', validateBody(toggleMcpSchema), this.handleToggleMcp.bind(this));
   }
 
-  /**
-   * Get environment settings (from ~/.claude-mem/settings.json)
-   */
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = paths.settings();
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    res.json(settings);
+    res.json(redactSecretSettings(settings));
   });
 
-  /**
-   * Update environment settings (in ~/.claude-mem/settings.json) with validation
-   */
+  private handleGetDependencyHealth = this.wrapHandler((_req: Request, res: Response): void => {
+    res.json(snapshotDependencyHealth());
+  });
+
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
-    // Validate all settings
+    // Browser POSTs always send Origin. Reject cross-port loopback origins so
+    // another http://localhost:* page cannot write settings. Origin-less
+    // clients (hooks, CLI, curl) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const validation = this.validateSettings(req.body);
     if (!validation.valid) {
       res.status(400).json({
@@ -64,175 +160,107 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Read existing settings
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = paths.settings();
     this.ensureSettingsFile(settingsPath);
     let settings: any = {};
 
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
-        settings = JSON.parse(settingsData);
+        settings = parseJsonWithBom(settingsData);
       } catch (parseError) {
-        logger.error('SETTINGS', 'Failed to parse settings file', { settingsPath }, parseError as Error);
+        const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
+        logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
         res.status(500).json({
           success: false,
-          error: 'Settings file is corrupted. Delete ~/.claude-mem/settings.json to reset.'
+          error: `Settings file is corrupted. Delete ${settingsPath} to reset.`
         });
         return;
       }
     }
 
-    // Update all settings from request body
+    // Write whitelist. POST /api/settings has no authentication — the worker
+    // trusts loopback — so any page that can reach this origin could set one
+    // of these. Secrets stay off this list except the two provider keys the
+    // viewer Settings UI must save (Gemini / OpenRouter); those are masked on
+    // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
+    // Telegram / CloudSync / Redis tokens remain file/env only.
+    //
+    // Executable spawn paths (CLAUDE_CODE_PATH) are also file/env only: that
+    // value is the binary passed to posix_spawn, so it must not be HTTP-writable.
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
-      // AI Provider Configuration
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
-      // OpenRouter Configuration
       'CLAUDE_MEM_OPENROUTER_API_KEY',
+      'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
-      'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
-      'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
-      // System Configuration
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
-      'CLAUDE_CODE_PATH',
-      // Token Economics
+      'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
-      // Observation Filtering
       'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
-      // Display Configuration
       'CLAUDE_MEM_CONTEXT_FULL_COUNT',
       'CLAUDE_MEM_CONTEXT_FULL_FIELD',
       'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
-      // Feature Toggles
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
     ];
 
     for (const key of settingKeys) {
+      if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
       if (req.body[key] !== undefined) {
+        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], settings[key])) {
+          continue;
+        }
         settings[key] = req.body[key];
       }
     }
 
-    // Write back
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
+    // HTTP cannot set this key; the expand is only so a tilde written by the
+    // user in settings.json is resolved before posix_spawn sees it.
+    if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
+      settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
+    }
 
-    // Clear port cache to force re-reading from updated settings
+    writeJsonFileAtomic(settingsPath, settings);
+
     clearPortCache();
 
     logger.info('WORKER', 'Settings updated');
     res.json({ success: true, message: 'Settings updated successfully' });
   });
 
-  /**
-   * GET /api/mcp/status - Check if MCP search server is enabled
-   */
   private handleGetMcpStatus = this.wrapHandler((req: Request, res: Response): void => {
     const enabled = this.isMcpEnabled();
     res.json({ enabled });
   });
 
-  /**
-   * POST /api/mcp/toggle - Toggle MCP search server on/off
-   * Body: { enabled: boolean }
-   */
   private handleToggleMcp = this.wrapHandler((req: Request, res: Response): void => {
-    const { enabled } = req.body;
-
-    if (typeof enabled !== 'boolean') {
-      this.badRequest(res, 'enabled must be a boolean');
-      return;
-    }
+    const { enabled } = req.body as z.infer<typeof toggleMcpSchema>;
 
     this.toggleMcp(enabled);
     res.json({ success: true, enabled: this.isMcpEnabled() });
   });
 
-  /**
-   * GET /api/branch/status - Get current branch information
-   */
-  private handleGetBranchStatus = this.wrapHandler((req: Request, res: Response): void => {
-    const info = getBranchInfo();
-    res.json(info);
-  });
-
-  /**
-   * POST /api/branch/switch - Switch to a different branch
-   * Body: { branch: "main" | "beta/7.0" }
-   */
-  private handleSwitchBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { branch } = req.body;
-
-    if (!branch) {
-      res.status(400).json({ success: false, error: 'Missing branch parameter' });
-      return;
-    }
-
-    // Validate branch name
-    const allowedBranches = ['main', 'beta/7.0', 'feature/bun-executable'];
-    if (!allowedBranches.includes(branch)) {
-      res.status(400).json({
-        success: false,
-        error: `Invalid branch. Allowed: ${allowedBranches.join(', ')}`
-      });
-      return;
-    }
-
-    logger.info('WORKER', 'Branch switch requested', { branch });
-
-    const result = await switchBranch(branch);
-
-    if (result.success) {
-      // Schedule worker restart after response is sent
-      setTimeout(() => {
-        logger.info('WORKER', 'Restarting worker after branch switch');
-        process.exit(0); // PM2 will restart the worker
-      }, 1000);
-    }
-
-    res.json(result);
-  });
-
-  /**
-   * POST /api/branch/update - Pull latest updates for current branch
-   */
-  private handleUpdateBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    logger.info('WORKER', 'Branch update requested');
-
-    const result = await pullUpdates();
-
-    if (result.success) {
-      // Schedule worker restart after response is sent
-      setTimeout(() => {
-        logger.info('WORKER', 'Restarting worker after branch update');
-        process.exit(0); // PM2 will restart the worker
-      }, 1000);
-    }
-
-    res.json(result);
-  });
-
-  /**
-   * Validate all settings from request body (single source of truth)
-   */
   private validateSettings(settings: any): { valid: boolean; error?: string } {
-    // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
     const validProviders = ['claude', 'gemini', 'openrouter'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
@@ -240,15 +268,20 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate CLAUDE_MEM_GEMINI_MODEL
-    if (settings.CLAUDE_MEM_GEMINI_MODEL) {
-      const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'];
-      if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
-        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash-preview' };
+    if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {
+      const validClaudeAuthMethods = ['subscription', 'api-key', 'gateway', 'cli'];
+      if (!validClaudeAuthMethods.includes(settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD)) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_AUTH_METHOD must be "subscription", "api-key", "gateway", or "cli"' };
       }
     }
 
-    // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
+    if (settings.CLAUDE_MEM_GEMINI_MODEL) {
+      const validGeminiModels = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview'];
+      if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
+        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-flash-latest, gemini-flash-lite-latest, gemini-3.5-flash, gemini-3.1-flash-lite, gemini-3-flash-preview' };
+      }
+    }
+
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
@@ -256,7 +289,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate CLAUDE_MEM_WORKER_PORT
+    if (settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== undefined
+      && !['true', 'false'].includes(settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES)) {
+      return { valid: false, error: 'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES must be "true" or "false"' };
+    }
+
     if (settings.CLAUDE_MEM_WORKER_PORT) {
       const port = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
       if (isNaN(port) || port < 1024 || port > 65535) {
@@ -264,17 +301,17 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate CLAUDE_MEM_WORKER_HOST (IP address or 0.0.0.0)
     if (settings.CLAUDE_MEM_WORKER_HOST) {
       const host = settings.CLAUDE_MEM_WORKER_HOST;
-      // Allow localhost variants and valid IP patterns
-      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+      // Loopback, plus the documented bind-all addresses used by Observation TV
+      // and Docker (docs/public/configuration.mdx). Arbitrary IPv4 used to be
+      // accepted and would expose the unauthenticated worker API on that NIC.
+      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|::1|::|localhost)$/;
       if (!validHostPattern.test(host)) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)' };
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, localhost) or a bind-all address (0.0.0.0, ::) for Observation TV / Docker' };
       }
     }
 
-    // Validate CLAUDE_MEM_LOG_LEVEL
     if (settings.CLAUDE_MEM_LOG_LEVEL) {
       const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
       if (!validLevels.includes(settings.CLAUDE_MEM_LOG_LEVEL.toUpperCase())) {
@@ -282,7 +319,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
     if (settings.CLAUDE_MEM_PYTHON_VERSION) {
       const pythonVersionRegex = /^3\.\d{1,2}$/;
       if (!pythonVersionRegex.test(settings.CLAUDE_MEM_PYTHON_VERSION)) {
@@ -290,7 +326,21 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate boolean string values
+    // #2753 — CLAUDE_MEM_CLAUDE_CONFIG_DIR controls which keychain identity's
+    // OAuth token gets read (oauth-token.ts's deriveMacKeychainServiceName)
+    // and which CLAUDE_CONFIG_DIR gets stamped onto every spawned SDK
+    // subprocess (EnvManager.ts's buildIsolatedEnv), so — unlike most of this
+    // whitelist — a malformed value here has spawn/auth-identity consequences,
+    // not just a rejected form field. Empty string is valid (the documented
+    // "fall through to default" sentinel); a present value must be a
+    // non-empty-after-trim string so a type-confused payload (number, array,
+    // object) can't reach path.join/createHash downstream.
+    if (settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== undefined && settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== '') {
+      if (typeof settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR.trim()) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to use the default' };
+      }
+    }
+
     const booleanSettings = [
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
@@ -298,6 +348,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
     ];
 
     for (const key of booleanSettings) {
@@ -306,7 +357,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate FULL_COUNT (0-20)
     if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
       const count = parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10);
       if (isNaN(count) || count < 0 || count > 20) {
@@ -314,7 +364,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate SESSION_COUNT (1-50)
     if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
       const count = parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10);
       if (isNaN(count) || count < 1 || count > 50) {
@@ -322,72 +371,53 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate FULL_FIELD
     if (settings.CLAUDE_MEM_CONTEXT_FULL_FIELD) {
       if (!['narrative', 'facts'].includes(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD)) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
       }
     }
 
-    // Validate CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES
-    if (settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) {
-      const count = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES, 10);
-      if (isNaN(count) || count < 1 || count > 100) {
-        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
-      }
-    }
-
-    // Validate CLAUDE_MEM_OPENROUTER_MAX_TOKENS
-    if (settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) {
-      const tokens = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS, 10);
-      if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
-        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_MAX_TOKENS must be between 1000 and 1000000' };
-      }
-    }
-
-    // Validate CLAUDE_MEM_OPENROUTER_SITE_URL if provided
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
       try {
         new URL(settings.CLAUDE_MEM_OPENROUTER_SITE_URL);
       } catch (error) {
-        // Invalid URL format
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
       }
     }
 
-    // Skip observation types validation - any type string is valid since modes define their own types
-    // The database accepts any TEXT value, and mode-specific validation happens at parse time
+    if (settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE) {
+      const batch = parseInt(settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE, 10);
+      if (isNaN(batch) || batch < 1 || batch > 500) {
+        return { valid: false, error: 'CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE must be between 1 and 500' };
+      }
+    }
 
-    // Skip observation concepts validation - any concept string is valid since modes define their own concepts
-    // The database accepts any TEXT value, and mode-specific validation happens at parse time
+    if (settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS) {
+      const timeoutMs = parseInt(settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS, 10);
+      if (isNaN(timeoutMs) || timeoutMs < 5000 || timeoutMs > 180000) {
+        return { valid: false, error: 'CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS must be between 5000 and 180000' };
+      }
+    }
 
     return { valid: true };
   }
 
-  /**
-   * Check if MCP search server is enabled
-   */
   private isMcpEnabled(): boolean {
     const packageRoot = getPackageRoot();
     const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
     return existsSync(mcpPath);
   }
 
-  /**
-   * Toggle MCP search server (rename .mcp.json <-> .mcp.json.disabled)
-   */
   private toggleMcp(enabled: boolean): void {
     const packageRoot = getPackageRoot();
     const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
     const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
 
     if (enabled && existsSync(mcpDisabledPath)) {
-      // Enable: rename .mcp.json.disabled -> .mcp.json
       renameSync(mcpDisabledPath, mcpPath);
       logger.info('WORKER', 'MCP search server enabled');
     } else if (!enabled && existsSync(mcpPath)) {
-      // Disable: rename .mcp.json -> .mcp.json.disabled
       renameSync(mcpPath, mcpDisabledPath);
       logger.info('WORKER', 'MCP search server disabled');
     } else {
@@ -395,20 +425,16 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
   }
 
-  /**
-   * Ensure settings file exists, creating with defaults if missing
-   */
   private ensureSettingsFile(settingsPath: string): void {
     if (!existsSync(settingsPath)) {
       const defaults = SettingsDefaultsManager.getAllDefaults();
 
-      // Ensure directory exists
       const dir = path.dirname(settingsPath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
 
-      writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+      writeJsonFileAtomic(settingsPath, defaults);
       logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }

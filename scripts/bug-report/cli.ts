@@ -7,7 +7,7 @@ import * as path from "path";
 import * as os from "os";
 import * as readline from "readline";
 import { exec } from "child_process";
-import { promisify } from "util";
+import { promisify, parseArgs } from "util";
 
 const execAsync = promisify(exec);
 
@@ -18,36 +18,28 @@ interface CliArgs {
   help: boolean;
 }
 
-function parseArgs(): CliArgs {
-  const args = process.argv.slice(2);
-  const parsed: CliArgs = {
-    verbose: false,
-    noLogs: false,
-    help: false,
-  };
+function parseCliArgs(): CliArgs {
+  try {
+    const { values } = parseArgs({
+      args: process.argv.slice(2),
+      options: {
+        help: { type: "boolean", short: "h", default: false },
+        verbose: { type: "boolean", short: "v", default: false },
+        "no-logs": { type: "boolean", default: false },
+        output: { type: "string", short: "o" },
+      },
+    });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case "-h":
-      case "--help":
-        parsed.help = true;
-        break;
-      case "-v":
-      case "--verbose":
-        parsed.verbose = true;
-        break;
-      case "--no-logs":
-        parsed.noLogs = true;
-        break;
-      case "-o":
-      case "--output":
-        parsed.output = args[++i];
-        break;
-    }
+    return {
+      output: values.output,
+      verbose: values.verbose,
+      noLogs: values["no-logs"],
+      help: values.help,
+    };
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
   }
-
-  return parsed;
 }
 
 function printHelp(): void {
@@ -112,12 +104,10 @@ async function promptMultiline(prompt: string): Promise<string> {
 
   return new Promise((resolve) => {
     rl.on("line", (line) => {
-      // Empty line means we're done
       if (line.trim() === "" && lines.length > 0) {
         rl.close();
         resolve(lines.join("\n"));
       } else if (line.trim() !== "") {
-        // Only add non-empty lines (or preserve empty lines in the middle)
         lines.push(line);
       }
     });
@@ -129,7 +119,7 @@ async function promptMultiline(prompt: string): Promise<string> {
 }
 
 async function main() {
-  const args = parseArgs();
+  const args = parseCliArgs();
 
   if (args.help) {
     printHelp();
@@ -139,7 +129,6 @@ async function main() {
   console.log("🌎 Leave report in ANY language, and it will auto translate to English\n");
   console.log("🔍 Collecting system diagnostics...");
 
-  // Collect diagnostics
   const diagnostics = await collectDiagnostics({
     includeLogs: !args.noLogs,
   });
@@ -154,7 +143,6 @@ async function main() {
   }
   console.log("✓ Configuration loaded\n");
 
-  // Show summary
   console.log("📋 System Summary:");
   console.log(`   Claude-mem: v${diagnostics.versions.claudeMem}`);
   console.log(`   Claude Code: ${diagnostics.versions.claudeCode}`);
@@ -171,7 +159,6 @@ async function main() {
     console.log();
   }
 
-  // Prompt for issue details
   const issueDescription = await promptMultiline(
     "Please describe the issue you're experiencing:"
   );
@@ -203,7 +190,6 @@ async function main() {
 
   console.log("\n🤖 Generating bug report with Claude...");
 
-  // Generate the bug report
   const result = await generateBugReport({
     issueDescription,
     expectedBehavior: expectedBehavior.trim() || undefined,
@@ -218,7 +204,6 @@ async function main() {
 
   console.log("✓ Issue formatted successfully\n");
 
-  // Generate output file path
   const timestamp = new Date()
     .toISOString()
     .replace(/:/g, "")
@@ -230,15 +215,12 @@ async function main() {
   );
   const outputPath = args.output || defaultOutputPath;
 
-  // Save to file
   await fs.writeFile(outputPath, result.body, "utf-8");
 
-  // Build GitHub URL with pre-filled title and body
   const encodedTitle = encodeURIComponent(result.title);
   const encodedBody = encodeURIComponent(result.body);
   const githubUrl = `https://github.com/thedotmack/claude-mem/issues/new?title=${encodedTitle}&body=${encodedBody}`;
 
-  // Display the report
   console.log("─".repeat(60));
   console.log("📋 BUG REPORT GENERATED");
   console.log("─".repeat(60));
@@ -251,7 +233,6 @@ async function main() {
   console.log("─".repeat(60));
   console.log();
 
-  // Open GitHub issue in browser
   console.log("🌐 Opening GitHub issue form in your browser...");
   try {
     const openCommand =
