@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, afterAll, mock } from 'bun:test';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realSpawn from '../../src/shared/spawn.js';
 
 // I-4 (bwrap --unshare-pid): a caller inside a PID namespace gets ESRCH from
 // process.kill(hostPid, 0) even though the host worker is healthy, so
@@ -12,8 +13,16 @@ import * as realProcessManager from '../../src/services/infrastructure/ProcessMa
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
+// Snapshot taken before any mock.module call: restoring with
+// `require('../../src/shared/spawn.js')` would hand back the mocked module
+// (pid 9999) and leak it into every later test file in the same bun process.
+const realSpawnSnapshot = { ...realSpawn };
 
 let validateWorkerPidFileResult: 'missing' | 'alive' | 'stale' | 'invalid' = 'stale';
+// Records the options every validateWorkerPidFile call received, so the test
+// fails if isWorkerPortAlive() stops passing removeStale:false (the flag is
+// what keeps the real validator from rmSync'ing the host worker's pid file).
+const validateWorkerPidFileOptions: Array<{ removeStale?: boolean } | undefined> = [];
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () => Promise.resolve({ matches: true, pluginVersion: '13.4.0', workerVersion: '13.4.0' }),
@@ -21,7 +30,10 @@ mock.module('../../src/services/infrastructure/index.js', () => ({
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
-  validateWorkerPidFile: () => validateWorkerPidFileResult,
+  validateWorkerPidFile: (options?: { removeStale?: boolean }) => {
+    validateWorkerPidFileOptions.push(options);
+    return validateWorkerPidFileResult;
+  },
   readOwnedWorkerPidInfo: () => null,
 }));
 
@@ -38,6 +50,7 @@ afterAll(() => {
   mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
   mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
   mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManager);
+  mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
 });
 
 async function importWorkerUtilsFresh() {
@@ -63,12 +76,14 @@ describe('isWorkerPortAlive (via ensureWorkerRunning) — stale pid file but hea
 
   afterEach(() => {
     global.fetch = originalFetch;
-    mock.module('../../src/shared/spawn.js', () => require('../../src/shared/spawn.js'));
+    mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
     validateWorkerPidFileResult = 'stale';
+    validateWorkerPidFileOptions.length = 0;
   });
 
   it('treats a stale pid file as alive when the health endpoint already answered ok', async () => {
     validateWorkerPidFileResult = 'stale';
+    validateWorkerPidFileOptions.length = 0;
     global.fetch = mock((url: string | URL | Request) => {
       const u = typeof url === 'string' ? url : url.toString();
       if (u.includes('/api/health')) return Promise.resolve(okResponse({ version: '13.4.0' }));
@@ -89,6 +104,10 @@ describe('isWorkerPortAlive (via ensureWorkerRunning) — stale pid file but hea
 
     expect(result).toBe(true);
     expect(spawnCalled).toBe(false);
+    expect(validateWorkerPidFileOptions.length).toBeGreaterThan(0);
+    for (const options of validateWorkerPidFileOptions) {
+      expect(options?.removeStale).toBe(false);
+    }
   });
 
 });
