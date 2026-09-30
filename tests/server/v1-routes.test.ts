@@ -127,7 +127,7 @@ describe('server REST API v1 routes', () => {
     expect((await endResponse.json()).session.status).toBe('completed');
   });
 
-  it('returns recent observations when /v1/context is given no query', async () => {
+  it('returns recent memories when /v1/context is given no query', async () => {
     // A session-start block asks "what happened recently". Until this, /v1/context
     // ran the same relevance search as /v1/search and REQUIRED a query, so it could
     // not answer that at all -- it returned whatever matched, from any date.
