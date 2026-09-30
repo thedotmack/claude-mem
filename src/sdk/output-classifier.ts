@@ -193,6 +193,17 @@ const NETWORK_CONDITION =
   /\b(?:connect|connection|network|socket|dns|proxy|tls|ssl|certificate|unreachable|econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b|\bfetch failed\b|\bsocket hang up\b/;
 
 /**
+ * A response stream cut off part-way. The CLI reports these behind an
+ * envelope — "API Error: Connection closed mid-response. The response above
+ * may be incomplete.", "API Error: premature close", "Error: stream ended
+ * unexpectedly" — and each phrase names the failure outright. So it counts as
+ * a network condition (the api/http/request and bare-error envelopes need one)
+ * AND as a concrete failure, which keeps the CLI's own "may be incomplete"
+ * clause from getting the whole report rejected as prose (#3460).
+ */
+const STREAM_CUT = /\bclosed mid-response\b|\bpremature close\b|\bended unexpectedly\b/;
+
+/**
  * An `<envelope> error` prefix only counts when the response is *reporting* the
  * error rather than talking about one. A report either stops at the envelope or
  * introduces its detail with punctuation; prose runs straight on into a
@@ -270,7 +281,7 @@ function envelopeReportsAFailure(
 
   const detail = text.slice(match[0].length).trim();
 
-  if (requireCondition && !NETWORK_CONDITION.test(detail)) {
+  if (requireCondition && !NETWORK_CONDITION.test(detail) && !STREAM_CUT.test(detail)) {
     return false;
   }
 
@@ -278,7 +289,7 @@ function envelopeReportsAFailure(
     return true;
   }
 
-  return CONCRETE_FAILURE.test(detail);
+  return CONCRETE_FAILURE.test(detail) || STREAM_CUT.test(detail);
 }
 
 export function isTransportFailureObserverOutput(raw: unknown): boolean {
@@ -336,6 +347,15 @@ export function isTransportFailureObserverOutput(raw: unknown): boolean {
     // The bare code, or the bare phrase, as the entire message.
     /^(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b/.test(text) ||
     /^(?:fetch failed|socket hang up|connectionrefused)\b/.test(text) ||
+    // The CLI's stream-cut message as the ENTIRE response, with or without its
+    // "API Error:" envelope (#3460). Anchored at both ends: prose that merely
+    // opens with the phrase ("Connection closed mid-response handling was
+    // reviewed") is a completed observation.
+    /^(?:api error:\s*)?connection closed mid-response\.?(?:\s*the response above may be incomplete\.?)?$/.test(text) ||
+    // A deadline reported as the entire response. Anchored at both ends too:
+    // "timed out" alone is common in prose about retries, and the envelope
+    // check above needs a network condition that this wording never names.
+    /^(?:api|request) error:\s*request timed out\.?$/.test(text) ||
     // A 5xx reported as the response itself.
     /^(?:api|http|request)\s*(?:error\s*)?:?\s*5\d{2}\b/.test(text) ||
     /^request failed with\s+5\d{2}\b/.test(text) ||

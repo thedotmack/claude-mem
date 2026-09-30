@@ -262,6 +262,40 @@ describe('ResponseProcessor', () => {
       expect(observations[0].title).toBe('Found important pattern');
     });
 
+    it('skips Chroma sync and the SSE broadcast for a Tier-0 dedup merge (#3038)', async () => {
+      // Item 1 reused an existing row: syncing its new content under id 3 would
+      // overwrite that row's vector and show text the row does not hold.
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [7, 3],
+        mergedIntoExisting: [false, true],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Fresh finding</title>
+          <narrative>New row</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+        <observation>
+          <type>discovery</type>
+          <title>Recurring finding</title>
+          <narrative>Merged into an older row</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(responseText, createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(mockChromaSyncObservation.mock.calls.map(call => call[0])).toEqual([7]);
+      const broadcastIds = mockBroadcast.mock.calls
+        .map(call => call[0] as { type: string; observation?: { id: number } })
+        .filter(event => event.type === 'new_observation')
+        .map(event => event.observation?.id);
+      expect(broadcastIds).toEqual([7]);
+    });
+
     it('should parse multiple observations from response', async () => {
       const session = createMockSession();
       const responseText = `
@@ -637,6 +671,37 @@ describe('ResponseProcessor', () => {
       // The whole point: the batch must NOT be confirmed away.
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    // #3460: the CLI's own stream-cut message used to be classified prose, so
+    // the batch was confirmed and lost. It must take the preserve path.
+    it('requeues the claimed batch when the CLI reports a connection closed mid-response', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'API Error: Connection closed mid-response. The response above may be incomplete.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('transport:observer_text');
     });
 
     it('pauses the generator with a preserving abort reason on transport failure', async () => {

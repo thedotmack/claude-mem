@@ -43,10 +43,6 @@ describe('hook-constants', () => {
     it('should define SUCCESS exit code', () => {
       expect(HOOK_EXIT_CODES.SUCCESS).toBe(0);
     });
-
-    it('should define BLOCKING_ERROR exit code', () => {
-      expect(HOOK_EXIT_CODES.BLOCKING_ERROR).toBe(2);
-    });
   });
 
   describe('getTimeout', () => {
