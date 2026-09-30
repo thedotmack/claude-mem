@@ -255,6 +255,25 @@ async function buildServerGenerationProviderFromEnv(): Promise<ServerGenerationP
   }
 }
 
+/**
+ * Optional cap on generated tokens for the server generation providers (#3829).
+ * All three providers already accept `maxOutputTokens`; nothing populated it, so
+ * every request went out with the constructor default of 4096. On a model that
+ * answers at length the reply is truncated mid-structure, the observation parser
+ * rejects it, and the job settles as a non-retryable parse_error — the work is
+ * lost silently. Unset keeps the 4096 default, so behavior is unchanged.
+ */
+export function resolveServerMaxOutputTokens(): number | undefined {
+  const raw = process.env.CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS;
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    logger.warn('SYSTEM', 'server: ignoring invalid CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS', { value: raw });
+    return undefined;
+  }
+  return parsed;
+}
+
 // Helpers handed to a CLAUDE_MEM_CUSTOM_PROVIDER_MODULE factory (see
 // loadCustomServerGenerationProvider below) so a custom provider can reuse
 // this server's own Anthropic HTTP client, prompt construction, and error
@@ -316,25 +335,31 @@ async function instantiateServerGenerationProvider(provider: string): Promise<Se
   if (provider === 'claude' || provider === 'anthropic') {
     const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string } = { apiKey };
+    const opts: { apiKey: string; model?: string; maxOutputTokens?: number } = { apiKey };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    const maxOutputTokens = resolveServerMaxOutputTokens();
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
     return new ClaudeObservationProvider(opts);
   }
   if (provider === 'gemini') {
     const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string } = { apiKey };
+    const opts: { apiKey: string; model?: string; maxOutputTokens?: number } = { apiKey };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    const maxOutputTokens = resolveServerMaxOutputTokens();
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
     return new GeminiObservationProvider(opts);
   }
   if (provider === 'openrouter') {
     const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
+    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number } = { apiKey };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
     // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
     const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
     if (baseUrl) opts.baseUrl = baseUrl;
+    const maxOutputTokens = resolveServerMaxOutputTokens();
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
     return new OpenRouterObservationProvider(opts);
   }
   if (provider === 'custom') {

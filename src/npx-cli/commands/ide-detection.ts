@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -13,8 +13,14 @@ export interface IDEInfo {
 
 function isCommandInPath(command: string): boolean {
   try {
-    const whichCommand = IS_WINDOWS ? 'where' : 'which';
-    execSync(`${whichCommand} ${command}`, { stdio: 'pipe' });
+    if (IS_WINDOWS) {
+      execFileSync('where.exe', [command], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } else {
+      execFileSync('which', [command], { stdio: 'ignore' });
+    }
     return true;
   } catch (error: unknown) {
     if (process.env.DEBUG) {
@@ -75,6 +81,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
       hint: 'hooks + MCP integration',
+    },
+    {
+      id: 'grok-bot',
+      label: 'Grok Bot',
+      detected: existsSync(join(home, '.cursor')),
+      hint: 'transcript watch + MCP integration',
     },
     {
       id: 'copilot-cli',
