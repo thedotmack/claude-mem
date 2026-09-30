@@ -4,6 +4,696 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.28.0] - 2026-09-26
+
+## Non-interactive installs now finish, and capture the signup
+
+`npx claude-mem install` run without a TTY (an AI agent, CI, a script) used to stop on "provider must be explicit". It now completes on its own and still gives the user a way to sign in afterwards.
+
+### Installer
+
+- **Provider resolves instead of aborting.** A fresh non-interactive install with no `--provider` defaults to your Anthropic plan (local memory). An existing config keeps its saved provider, so `npx claude-mem update` never flips a CMEM Pro install to something else.
+- **Saved personal providers are validated, not assumed.** A kept `gemini` / `openrouter` provider needs a usable key: saved in `~/.claude-mem/settings.json`, or exported in the environment. A saved CMEM gateway config still requires its saved key, because the worker locks that tuple to the key on disk (an exported replacement base URL and key together are accepted).
+- **Deferred sign-in link.** Every non-interactive install that skipped sign-in prints an optional sign-in link as its last line, after the success line, so an agent relaying the output can show it to the user. It is best-effort, never changes the exit status, and is skipped when `CI` is set.
+- **30-minute browser sign-in wait.** Interactive OAuth polling now honours the pairing's `expires_in` (capped at 30 minutes; 4 minutes when the server reports none) instead of a fixed short budget.
+- **Persisted providers skip the blocking OAuth gate.** A non-interactive run that reuses a saved account-backed provider no longer opens a browser and polls until the pairing expires.
+- **Accurate install summary.** The `Account:` line reflects whether a login actually ran: `OAuth login complete`, `Kept existing account (no login this run)`, or `Not required (local provider / host observer)`.
+- **Provider error labels.** OAuth start failures are classified as `http_error` / `network` / `timeout` / `bad_body`; an abort that fires while the 2xx body is still streaming is a `timeout`, not `bad_body`.
+
+### Telemetry
+
+- New events: `installer_oauth_start_failed` (`outcome`, `interactive`, `phase`: login / deferred) and `installer_oauth_deferred` (`interactive`, always `false`).
+- `install_completed` gains `provider_source`: `flag` / `default` / `persisted` / `prompt`.
+- `installer_oauth_timeout` gains `phase` (login / enrollment).
+- The installer scrubber drops persisted key values before any event leaves the machine.
+
+### Privacy note
+
+Local installs contact cmem.ai once, at signup, to create the sign-in link. Nothing else is sent to cmem.ai. Product telemetry is a separate, opt-out channel (`npx claude-mem telemetry`). The public docs, the `/how-it-works` skill, and the installer summary line now all say this plainly.
+
+### Docs
+
+- Installation, CMEM Pro headless, Cursor, and Telemetry pages updated for the non-interactive flow, the deferred link, and the new events.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.27.1...v13.28.0
+
+## [13.27.1] - 2026-09-26
+
+## Fixes
+- **Grok Bot live INDEX lists the seat's own rows first** (#4240). Each seat's 80-row `zz-claude-mem-inject.md` now lists that seat's project rows before any house-wide rows; house rows only fill the remaining slots, and the house query is skipped when the seat fills the window.
+- **Seat self-saves show up in the INDEX.** Rows saved through `POST /api/memory/save` (for example Grok Bot `grok-seat-save`) were excluded by the concept filter; the seat query now includes them, and a successful manual save triggers an INDEX refresh.
+
+## Also in this range
+- Agent cost report: read-only GitHub merged-PR wins source (#4241).
+
+## [13.27.0] - 2026-09-26
+
+## Agent Cost Report — weekly rebuild
+
+The `agent-cost-report` skill is rebuilt around measured data (#4238):
+
+- **Dollars from transcripts.** Claude Code and Codex transcript tokens priced at OpenRouter list prices, labeled ESTIMATED; note-taker (observer) cost priced separately and never added to the headline; measured provider spend only from a sanctioned source (OpenRouter per-key snapshot, shown with its UTC bucket label); "unavailable" is never shown as $0.
+- **Default window** is the last 7 full days in PT, today excluded; single-session and project scopes supported.
+- **Timing-style report.** Self-contained `report.html` (no script, no external resources) plus PDF, `report.json`, `line-items.csv`, `evidence.json`: hero, Wins vs mistakes with two timelines on one day axis, cost ribbon, donut, day chart, useful ring, folded Details.
+- **Behavior metrics.** A human/bot tagger on every user turn, frustration episodes, the Frustration Arc patterns P1–P12 plus tool errors and hedging, a low same-session mistakes line (upper bound in Details only), rule effectiveness, and a 70% spot-check gate for summary tiles. Optional classifier, off by default, capped at $2.00.
+- **Gaps stay honest.** Mac transcripts extrapolated (low confidence) until a device export is merged; Grok Bot usage shown as unavailable; win cost unmeasured until sessions are linked to PRs.
+- **Pipeline CLI** (`scripts/acr.py`, stdlib Python): `prices`, `collect`, `rollup`, `review`, `render`, `pdf`, `measure-openrouter`, `collect --export-device`, `rollup --device-usage`, `behavior-sample`, `sync-check`. 117 unit tests; `VERIFICATION.md` records the checks.
+- The four mirror plugins carry byte copies of the skill, and `agent-cost-report` is pinned as a first-party skill id.
+
+## [13.26.1] - 2026-09-26
+
+## Cloud sync fixes (CMEM Pro)
+
+- **Lapsed trial or revoked token no longer retries forever.** When the sync server answers 401/403, claude-mem pauses cloud sync, re-checks once an hour, and resumes on its own after a renewal. Status explains the cause: renew at cmem.ai/pro (subscription inactive) or reconnect at cmem.ai → Connect (token no longer valid).
+- **Sync failures are no longer silent.** A paused or long-failing sync now shows one plain-language line in the SessionStart context, and `/api/sync/status` gains `authError` and `health`. HTML error pages are summarized instead of dumped.
+- **#4228:** installs with cloud sync off clear the leftover `sync_outbox` backlog on worker start.
+- **#4086:** one op the sync server keeps rejecting (e.g. `revision_hash_conflict`) is quarantined after 3 attempts so the rest of the queue keeps uploading.
+
+PR: #4236
+
+## [13.26.0] - 2026-09-26
+
+## CMEM Pro cloud sync moves off Cloudflare
+
+The old Cloudflare Worker hub (`sync-hub.black-pond-afbb.workers.dev`) was failing every request because it hit Cloudflare Free plan caps. Cloud sync now runs on a new protocol-v2 hub at **https://sync.cmem.ai** (Fly + Neon Postgres).
+
+### Plugin changes
+- **Automatic hub URL migration:** on startup, a `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` that still points at the legacy workers.dev host is rewritten to `https://sync.cmem.ai`. You don't need to reconnect.
+- **Retry-After backoff:** cloud sync now honors `Retry-After` on 429/503 responses and stops hammering the hub.
+- **Looser checkpoint check:** the push checkpoint validation is more tolerant, so a hub that moved no longer wedges sync.
+
+### Infrastructure (#4232, #4233)
+- New `services/sync-api`: a protocol-v2 port of `workers/sync-hub` on Postgres.
+- The Worker gets `FORWARD_ORIGIN` pass-through mode, which proxies every request to the new hub and touches no Durable Objects or KV.
+
+## [13.24.23] - 2026-09-11
+
+- fix(supervisor): jail SDK subprocess cwd (#4054)
+- fix(hooks): anchor project names to Claude project dir (#4055)
+
+npm publish is handled separately.
+
+## [13.24.22] - 2026-09-11
+
+- fix(sqlite): skip empty-title observations at capture (#3176)
+
+npm publish is handled separately.
+
+## [13.24.21] - 2026-09-11
+
+- fix(session): use latest user_prompts text on rehydration (#4049 / #4047)
+
+npm publish is handled separately.
+
+## [13.24.20] - 2026-09-11
+
+- fix(build): stop regex bundle rewrite that can delete a declaration (#4044)
+- fix(sync-hub): bound scheduled projection repair work (#4046 / #3555)
+
+npm publish is handled separately.
+
+## [13.24.20] - 2026-09-11
+
+- fix(build): stop regex bundle rewrite that can delete a declaration (#4044)
+- fix(sync-hub): bound scheduled projection repair work (#4046 / #3555)
+
+npm publish is handled separately.
+
+## [13.24.19] - 2026-09-11
+
+- fix(cli-resolve): stop cold-start false "too old" and name spawn failures (#4036)
+- fix(install): find bun/uv where installers place them (#4038)
+- fix(worker): stop ENOENT when Bun runtime path is bad (#4039)
+- fix(hooks): skip plugin cache sessions (#4042)
+- fix(chroma): stop JSON parse crashes aborting sync (#4040)
+- fix(settings): normalize localhost worker host to 127.0.0.1 (#4041)
+- fix(oauth): sanitize macOS keychain account to match Claude Code (#4045 / #4037)
+
+npm publish is handled separately.
+
+## [13.24.18] - 2026-09-11
+
+Ships from main since v13.24.17:
+
+- #4029 — stop discarding session-summary responses (server-beta; rehost #3587 / recurrence of #1345)
+- #4030 — bound session-summary input by payload size not event count (rehost #3584)
+- #4032 — reuse OpenAI-compatible synthetic session IDs (rehost #3597)
+- #4033 — trip worker-unavailable fail-loud latch once, then fail-open (rehost #3489)
+- #4034 — test pin observation type handling against mode enum (rehost #3593)
+- #4031 — bound sync_outbox growth when cloud sync unconfigured (rehost #3616; complementary to #4027)
+
+Does not npm publish from this release authoring step. Prioritizer publishes from tag.
+
+## [13.24.17] - 2026-09-11
+
+- #4026 / #3575 — health probes honor the caller's remaining deadline
+- #3445 — detect macOS Codex desktop-bundled CLI
+- #4027 — register memory_session_id once (NULL-only); keep first id so sync outbox stops amplifying
+
+## [13.24.16] - 2026-09-11
+
+- #3629 — fix(observer): stop writing NULL memory_session_id at generator start
+- #3640 — fix(install): write a runtime-only package.json / stop shipping dev tree-sitter grammars into the marketplace
+- #3631 — fix(chroma): classify a dead-transport handshake as ChromaUnavailableError
+
+## [13.25.3] - 2026-09-21
+
+- #4166 — security: harden unauthenticated settings writes and telemetry error scrubbing (reported privately by Theon Alleyne)
+
+## [13.24.15] - 2026-09-11
+
+- #3727 / #3706 — daemon no longer inherits user project cwd; worker cwd is DATA_DIR (Windows folder lock fix)
+- #4021 — test(windows): only skip the ghost gate for the one runtime signature
+
+## [13.24.14] - 2026-09-11
+
+- #4015 — skip creating empty CLAUDE.md files
+- #4016 — scan configured dot-directories for transcripts
+- #4017 — accept empty OpenRouter reasoning responses
+- #4014 — tolerate negative statfs availability in cleanup
+- #4019 — serialize FileTailer reads; clear partial on truncation
+- #4018 — upgrade shell-quote to 1.9.0 (CVE-2026-13311)
+
+## [13.24.13] - 2026-09-11
+
+- #3726 — Windows CredRead shim compiles (OAuth token lookup)
+- #4009 — ship bug-report CLI in the package
+- #4010 — Windsurf hooks.json BOM-tolerant read
+- #4011 — project-filter expand ~ with a path separator
+- #4012 — stop reparenting ~user/ transcript watch paths
+
+## [13.24.12] - 2026-09-11
+
+- #4003 retry max_completion_tokens on GPT-5 400s
+- #4005 use remote ancestry to adopt merged worktrees
+- #4006 fail open on malformed hook stdin
+- #3826 delete the stale trial acknowledgement constant
+- #3773 mention Codex hook trust after install
+- #4008 resolve Volta Bun shims to bun.exe
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.11...v13.24.12
+
+## [13.24.11] - 2026-09-11
+
+- #3994 CLAUDE_MEM_FETCH_VERBOSE
+- #3992 ghost-gate fixture handshake
+- #3996 strip image payloads from observation prompt
+- #3998 requeue on observer transport failure
+- #3999 pause session on reactive quota error
+- #3995 fit session block to hook output limit
+- #3997 CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS
+- #4000 configurable LLM per-attempt deadline
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.10...v13.24.11
+
+## [13.24.10] - 2026-09-11
+
+## What's Changed
+* fix(sync): shrink content flush batches and raise hub push timeout by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3991
+* chore(release): 13.24.10 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3993
+
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.9...v13.24.10
+
+## [13.24.9] - 2026-09-11
+
+## What's Changed
+* chore(release): 13.24.8 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3981
+* fix(worker): salvage prose-only observations instead of dropping them (closes #3351) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3363
+* fix(observer): skip textless assistant frames before batch confirm (Fixes #3492) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3501
+* fix(installer): tolerate non-string OpenCode context bodies (refs #3330) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3383
+* fix(opencode): honor persisted worker port settings (closes #3365) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3402
+* fix(search): fall back after empty semantic misses (closes #3361) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3399
+* fix(chroma): tolerate CJK list backfill by @ousamabenyounes in https://github.com/thedotmack/claude-mem/pull/3430
+* fix(sqlite): populate session_summaries files_read and files_edited (#3517) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3530
+* fix(hooks): dedupe file-context injection per session (#3480) by @ousamabenyounes in https://github.com/thedotmack/claude-mem/pull/3486
+* fix(observer): don't store observations parsed from the init reply by @sanztheo in https://github.com/thedotmack/claude-mem/pull/3877
+* fix(hooks): stop login-shell PATH rebuild on Claude Code hooks (#3190) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3453
+* fix: say why the worker died instead of listing suspects by @yetanotherflo in https://github.com/thedotmack/claude-mem/pull/3894
+* fix(openrouter): never send an empty messages array to the API (Fixes #3491) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3493
+* fix(server-beta): carry session folder onto generated observation metadata by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/2671
+* fix(server-beta): re-pin payload.generation_job_id on idempotent re-create by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/3583
+* fix(server-beta): accept contentSessionId on /v1/memories, mirroring /v1/events by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/3586
+* fix(search): answer CJK and Japanese queries by substring by @ntdatt812 in https://github.com/thedotmack/claude-mem/pull/3810
+* fix(observer): recognise the CLI's signed-out wording as an auth failure by @ntdatt812 in https://github.com/thedotmack/claude-mem/pull/3786
+* fix(observer): don't confirm the queued batch on mid-stream empty SDK chunks (#3869) by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3984
+* security: close credential leak paths (#3861 / #3680) by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3985
+* fix(sync): quarantine stale content-outbox origin_device_id after device remint by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3987
+* fix(opencode): read tool arguments from hook input (refs #3678) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3766
+* fix(opencode): stamp platformSource on worker posts (refs #3678) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3767
+* fix(windows): bound the port-occupancy probe so a ghost listener cannot hang the launcher by @weiconghe in https://github.com/thedotmack/claude-mem/pull/3989
+* fix(observer): surface quota cooldown on observer-health and session-start by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3986
+* chore(release): 13.24.9 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3990
+
+## New Contributors
+* @sanztheo made their first contribution in https://github.com/thedotmack/claude-mem/pull/3877
+* @yetanotherflo made their first contribution in https://github.com/thedotmack/claude-mem/pull/3894
+* @ntdatt812 made their first contribution in https://github.com/thedotmack/claude-mem/pull/3810
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.8...v13.24.9
+
+## [13.24.8] - 2026-09-11
+
+Bugfix patch — eight fixes that landed after 13.24.7.
+
+### Cloud sync
+- **Stale device-id outbox heads**: ops stamped with a stale `origin_device_id` that the server rejects with `400 invalid_ops` are now quarantined instead of blocking the whole sync outbox forever (#3973)
+
+### Hooks & sessions
+- **`resume` matcher**: the SessionStart hook now fires on `claude --resume`, so resumed sessions get memory context injected (#3969)
+- **Empty-string cwd**: an empty `cwd` is treated as absent and falls through to the normal fallbacks instead of resolving to the wrong project (#3977)
+
+### Worker / runtime
+- **bun-runner EPIPE**: `child.stdin` now has an error listener, so a worker that exits early no longer crashes the hook with an unhandled EPIPE (#3976)
+- **Bun socket closed**: Bun's "socket connection was closed" error is classified as worker-unavailable, so it takes the graceful fallback path rather than surfacing as a hard failure (#3978)
+
+### Providers
+- **OpenRouter detection**: OpenRouter is classified by exact hostname, not a URL substring match, so lookalike base URLs are no longer misrouted (#3979)
+
+### Database
+- **session_summaries FK cascade**: `ON UPDATE CASCADE` is preserved when the `session_summaries` table is rebuilt by migrations (#3980)
+
+### CI
+- **grammar-lib-reuse test**: fixed a CI timeout and an inter-test state leak (#3975)
+
+**Upgrade:** `npx claude-mem@13.24.8` or update the plugin from the marketplace.
+
+## [13.24.7] - 2026-09-11
+
+Post-13.24.6 stability & correctness fixes.
+
+### Chroma / vector store
+- **Chroma lock/owner**: reuse Chroma writer owner within process (#3919); reap unreadable writer lock past grace (#3916)
+- **Chroma backfill**: stop a backfill run after repeated batch failures
+- **Chroma-MCP reap**: reap chroma-mcp trees no worker owns at boot (#3905)
+
+### Quota & resource management
+- **Quota overage**: ignore inactive overage utilization (#3903)
+
+### Grammar & parsing
+- **Grammar-once**: build each grammar once instead of recompiling per query (#3926)
+
+### Windows
+- **Ghost listeners**: reclaim ghost listeners left by out-of-band worker deaths (#3900)
+
+### Auth / config
+- **OAuth CLAUDE_CONFIG_DIR**: honor CLAUDE_CONFIG_DIR for the Claude Code keychain entry and the SDK subprocess env (#3908)
+
+### Codex
+- **Codex reinject**: re-inject memory after compact and clear (#3880)
+
+### Search
+- **Search relevance**: hydrate Chroma matches in relevance order, not by date (#3881)
+
+### Worker / supervisor
+- **Field optimizer**: honor field optimizer deadline and compact Edit observer view (#3939)
+- **Supervisor concurrency**: parked slot-waiters follow the live concurrency cap; a provider switch restarts a parked generator (#3909)
+
+### OpenRouter
+- **Model fallbacks**: map the model list onto the native models[] fallback array (#3971)
+
+### Setup
+- **Plugin deps**: guard plugin deps on completeness, not node_modules existence (#3972)
+
+---
+
+**npm publish** is handled separately by the Prioritizer.
+
+## [13.24.6] - 2026-09-11
+
+### Bug Fixes
+
+- **Fix version-mismatch kill loop** — stale worker bundles stamped 13.24.1 triggered continuous recycle storms; worker-service now validates its own bundle version and exits cleanly on mismatch (#3940, #3961)
+- **Corpus type filter** — observation type filters are now preserved through corpus build, fixing incorrect unfiltered results (#3892)
+- **Title unwrap** — parser correctly unwraps label-wrapped observation titles instead of double-wrapping (#3907, #3947)
+
+### Also included (landed between v13.24.5 tag and this release)
+
+- fix(chroma): record failed live writes as pending (#3917, #3949)
+- fix(sqlite): keep post-v7 columns through session_summaries rebuild (#3955)
+
+### Notes
+
+- v13.24.5 was published with bundles incorrectly stamped 13.24.1, causing the kill-loop. This release rebuilds all bundles with the correct 13.24.6 stamp.
+- npm publish is handled separately by the Prioritizer.
+
+## [13.24.5] - 2026-09-09
+
+## CCS Align + overnight ships
+
+Fleet can install from npm again (`npx claude-mem@13.24.5` / `latest`).
+
+### Highlights since v13.24.1
+- **CCS Align Phases 0–3** (#3934–#3937) — middle cache, exclude marks, rules walker, sign-off; skill at `plugin/skills/ccs-align`
+- **Grok Bot awareness push pilot Phase 0+1** (#3931)
+- **OpenRouter daily list-price history** for expense reports (#3932)
+
+Main tip: `8bc631a7`
+
+## [Unreleased]
+
+### Grok Bot awareness push pilot (Phase 0 + Phase 1)
+
+- Transcript watches now carry `agentId` from `agent-transcripts/<agent_id>/` through `ingestObservation`, so Grok Bot observations are labeled with the host agent.
+- Agents that already have a `memory/` tree are watched even without `profile.json`.
+- Grok Bot capture stays on the transcript watcher (no host hooks), so `#2188` empty-stdin / `CAPTURE_BROKEN` does not block this feed.
+- After `processAgentResponse`, a fifth fire-and-forget consumer appends needle observations as `- YYYY-MM-DD [awareness] …` lines into `<agentDataRoot>/agents/<agent_id>/memory/log/YYYY-MM.md` for pilot agents LFG and Orifice. Atomic write + content dedupe. Never writes `profile.md` / user-memory / project memory. Gated by `CLAUDE_MEM_GROK_BOT_AWARENESS_*` settings.
+
+## [13.24.1] - 2026-09-05
+
+## Patch release — ship the rebuilt plugin bundles
+
+`v13.24.0` bumped every manifest to 13.24.0 but never re-ran the build, so the committed
+`plugin/scripts/*.cjs` artifacts still carried the 13.23.1 bytes. Because the Claude Code
+marketplace installs straight from this repo (`.claude-plugin/marketplace.json` →
+`"source": "./plugin"`), marketplace users on 13.24.0 were executing 13.23.1 code.
+
+That mismatch put the worker in an unbounded kill/respawn loop: `ensureWorkerRunning()`
+compares the resolved plugin version (13.24.0, from the plugin cache directory name)
+against the worker's baked-in `__DEFAULT_PACKAGE_VERSION__` (13.23.1, reported by
+`/api/health`), SIGKILLs on mismatch, and respawns the same stale file on the next hook
+event — taking the in-flight observer down with it every time.
+
+### What's in this release
+
+- **Rebuilt plugin bundles** (#3857, merged as #3878) — `plugin/scripts/worker-service.cjs`,
+  `mcp-server.cjs`, `server-service.cjs`, `transcript-watcher.cjs` and `plugin/sqlite/SessionStore.js`
+  are regenerated from source, so the shipped artifacts match the manifest version.
+- **Clean patch version** — 13.24.1 so existing 13.24.0 installs actually pull the corrected
+  artifacts on upgrade rather than sitting on a cached, byte-identical 13.24.0.
+
+### Upgrading
+
+Marketplace users: update the plugin. npm users: `npx claude-mem@13.24.1`.
+
+Ships the fix for #3857 (PR #3878).
+
+## [13.24.0] - 2026-09-03
+
+## Independent Cursor and Grok Bot marketplace plugins
+
+### Ship claude-mem as two store plugins plus a host-observer install path (#3842)
+
+claude-mem now installs as two independent Cursor marketplace plugins — `claude-mem-cursor` and `claude-mem-grok-bot` — instead of one glued listing. Each host can be installed alone. Grok Bot does not require Cursor hooks, the Claude CLI, or an xAI API key.
+
+**Install matrix**
+
+- `npx claude-mem install --ide cursor`
+- `npx claude-mem install --ide grok-bot`
+- both flags together is optional
+
+**Observer**
+
+- `--provider host` uses a local OpenAI-compat loopback so the already-logged-in host agent writes observations. No API key. Alias of OpenRouter + loopback URL + dummy key + host model.
+- `--provider openrouter` remains the remote path (cmem.ai inference or any OpenAI-compat URL)
+- Claude and Gemini providers stay
+
+**Worker**
+
+- Default stays local. Existing `--runtime server --server-url` still points at a remote worker.
+- The host-observer shim never binds the worker port. If 37777 is taken, the shim uses 37778 (or `CLAUDE_MEM_HOST_OBSERVER_PORT`). A healthy worker is not restarted.
+
+**Ingest**
+
+- Cursor: existing `hook cursor` events with `platformSource=cursor`
+- Grok Bot: no hooks. Transcript watcher on `agent-transcripts/*/*.jsonl` with `platformSource=grok-bot`
+- `POST /api/memory/save` honors `metadata.platformSource`
+
+**CLI**
+
+- `npx claude-mem mcp` stdio entry
+- `npx claude-mem hook cursor`
+
+Docs: `docs/store-plugins.md` install matrix and public Mintlify page `docs/public/grok-bot/index.mdx`. Plugin ids locked: `claude-mem-cursor`, `claude-mem-grok-bot`.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.23.1...v13.24.0
+
+## [13.23.1] - 2026-09-01
+
+## Fix: the quota guard and `usage_limit_hit` never fired
+
+### The SDK's rate-limit message was matched by the wrong shape (#3838)
+
+The quota guard (#2234) and the `usage_limit_hit` telemetry event added in 13.23.0 (#3837) both read the observer's SDK stream for a `system` message with subtype `rate_limit`. The SDK has never sent that. `SDKRateLimitEvent` in the pinned SDK (0.3.172) is a top-level `{ type: 'rate_limit_event', rate_limit_info }` message in the `SDKMessage` union, and no `system` subtype named `rate_limit` exists in its declarations.
+
+So the guard never matched, `RateLimitStore` stayed empty, the subscription quota abort never fired, and `usage_limit_hit` stayed at zero across more than a thousand Claude-provider installs already running 13.23.0.
+
+`extractRateLimitInfo` in `RateLimitStore.ts` now accepts the real shape and still tolerates the legacy `system`/`rate_limit` form. `ClaudeProvider` routes the stream through it. The guard logic and the event emission are unchanged.
+
+Verified against the SDK's own type declarations and, independently, by Greptile's mocked-stream harness: subscription and OAuth sessions abort after a rejected event, API-key sessions stay exempt, and unrelated or malformed messages leave the store untouched.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.23.0...v13.23.1
+
+## [13.23.0] - 2026-09-01
+
+## Telemetry: know when users run out of Claude Code usage
+
+### New `usage_limit_hit` event (#3837)
+
+claude-mem now reports to PostHog when the Claude subscription behind a session runs out of usage. Nothing tracked this before: the only quota signal was `abort_reason: quota` on the observer rollup, which fires when claude-mem's own guard stops early, not when the user's session is blocked. The Stop hook never fires on a limit-hit turn, so the transcript path could not carry it either.
+
+The observer runs on the same account as the observed session, so the SDK's `rate_limit` stream reporting a window as `rejected` is the moment the user's own Claude Code session ran out. The worker captures the event there with:
+
+- `limit_window` — five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage / unknown
+- `overage_status` — allowed / allowed_warning / rejected / unknown
+- `is_using_overage` — boolean
+- `resets_in_minutes` — whole minutes until the window resets, floored at 0
+- plus the existing `ide`, `provider`, `observed_model`, `observed_billing`
+
+Closed enums, a boolean, and one integer. The provider's limit message text never leaves the machine. All four keys are on the scrub whitelist and documented in `telemetry.mdx`.
+
+**Deduped.** `RateLimitStore.set` now reports only a fresh rejection, so a window that stays rejected across many observer requests emits once. It emits again after a reset or an allowed snapshot in between. A worker restart while still capped re-emits once.
+
+**Limits.** Fires only when the observer runs on Claude with a subscription login. API-key, Gemini, and OpenRouter observers never see the SDK rate_limit stream.
+
+### Fix: quota refusals in Claude Code's real wording no longer drop work
+
+`isQuotaLimitedObserverOutput` only matched "claude usage limit", "weekly", and "subscription" wordings. Claude Code actually writes "You've hit your session limit · resets …", "You've reached your Fable 5 limit…", and "You're out of usage credits…". Those turns were classified as ordinary prose and the queued batch was dropped. They now pause the generator and preserve the batch like every other quota refusal. The detector also skips XML like its two siblings.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.22.0...v13.23.0
+
+## [13.22.0] - 2026-09-01
+
+## What's new
+
+### Telemetry: observed model, source, and billing tier (#3836)
+
+PostHog previously only knew the *observer* model (the model claude-mem uses to write observations). The `observer_turn_rollup` event now also reports the session being observed:
+
+- **`observed_model`** — the model the user's IDE session is running (e.g. `claude-fable-5-1`), read from the transcript's last assistant entry on each Stop hook.
+- **`observed_billing`** — a closed, low-cardinality enum: `max | pro | team | enterprise | subscription | api_key | bedrock | vertex | foundry | unknown`, detected in the hook process from Claude Code's environment and `~/.claude.json`'s `oauthAccount.organizationType`.
+- **`ide`** and **`provider`** now actually reach PostHog on the rollup. The docs already claimed this; the rollup computation was dropping them.
+
+### Storage
+
+- `sdk_sessions` gains two nullable columns, `observed_model` and `observed_billing` (schema version 50). The migration is idempotent and runs on worker start.
+
+### Privacy
+
+- Only `oauthAccount.organizationType`, `oauthAccount` presence, and `customApiKeyResponses.approved` are read from `.claude.json`, and the parsed object is projected to those fields immediately. Parse failures log only the error class name, never the message.
+- Both new properties are whitelisted in the telemetry scrubber and documented in `docs/public/telemetry.mdx`.
+
+### Performance
+
+- The Stop hook now reads the transcript once for both the last assistant message and the observed model (previously one read; the new field did not add a second).
+
+## [13.21.2] - 2026-08-31
+
+**Payment is deferred until after you've read the offer.**
+
+Picking CMEM Pro in the installer opened a browser on a bare Stripe card form. `/api/pro/trial/claim` redirected a non-entitled user straight into Checkout, so `/pro` — the page that actually explains the plan — was only ever reached on an error or a cancellation.
+
+The claim route now sends those users to `/pro?from=installer&pairing=…&trial=30` and starts Checkout only when the offer page's CTA asks for it. Nothing about the Checkout session changed — same trial length, same pairing metadata, same success and cancel URLs. It just happens after the offer instead of before.
+
+That half is server-side and **already live for 13.21.0 and 13.21.1 too** — it changes where the route sends people, not the URL the installer opens.
+
+**In this release:**
+
+- **CMEM Pro is pre-selected** on the provider prompt. It is the recommended path, and selecting it no longer means "pay now".
+- **Claude Code is pre-selected** on the IDE prompt, along with anything else detected.
+
+Both prompts opened with nothing checked, which made the recommended path a required chore before the install could continue. They are still multiselects — uncheck and pick something else if you want.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.21.1...v13.21.2
+
+## [13.21.1] - 2026-08-31
+
+**The trial is 30 days everywhere now.**
+
+The installer's provider screen already advertised a 30 Day Free Trial and the server already issued 30-day checkout URLs — but every other surface still said 7, and the promo links carried no trial length at all.
+
+That last part mattered more than copy. `cmem.ai/pro` is deliberately length-neutral without an explicit `?trial=`, so a click from the session-start banner, the viewer, or the context banner landed on a page that never named a trial length and sent no trial into Stripe Checkout. Those links now carry it.
+
+- Every promo link emits `?from=<surface>&trial=30` — session-start banner, context banner, welcome hint, viewer header, installer, fallback notice.
+- `PRO_TRIAL_DAYS` in `src/shared/pro-promo.ts` is the single knob, mirrored in the viewer's own copy (its tsconfig pins `rootDir` and cannot import the shared module).
+- The installer's Next Steps screen shows the trial link again. `'installer'` was a declared promo source with no caller after the Next Steps trim in v13.21.0, so the last screen of the funnel never mentioned the offer. It shows for non-Pro installs only.
+- Copy: "free week" → "free trial" in the fallback notice and the countdown line. README and install docs now say 30 days.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.21.0...v13.21.1
+
+## [13.21.0] - 2026-08-31
+
+Installer release. Fixes the outage that made 13.20.0 uninstallable, and reworks the account/provider flow.
+
+## Installs no longer hard-fail when cmem.ai is unreachable
+
+13.20.0 required browser OAuth before the provider choice, unconditionally. When the server endpoint it depended on turned out not to be deployed, every install died on "Could not start OAuth login."
+
+`--provider claude` now skips login entirely. It configures memory against your own Anthropic plan and never contacts cmem.ai, so there is no account question for login to answer.
+
+Keyed on the explicit flag, not on reachability: falling back to a local install whenever cmem.ai happened to be down would silently change what you get. `gemini` and `openrouter` stay gated, because openrouter is the transport for the cmem gateway.
+
+## The trial length is no longer pinned to 7 days
+
+The installer used to require the checkout URL to say exactly `trial=7`, so the server could not change its own offer without breaking every published installer — and the rejection surfaced as "Could not start OAuth login", naming nothing. The URL shape is still validated strictly; the number is now the server's to choose.
+
+## The provider screen is two lines
+
+    Select Provider:
+    ================
+    [ ] CMEM Pro (30 Day Free Trial: Tokens for Observations + Real-Time Cloud
+        Sync for Claude.ai, ChatGPT.com, anything that accepts an MCP Connector)
+    [ ] Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)
+
+The nine-bullet benefits note that printed above it is gone.
+
+## The billing acknowledgement moved to checkout
+
+It was a terminal prompt asking you to confirm charge terms before you could see what you were agreeing to. It is a term of the charge, so it now appears on the screen that takes the card, above the pay button.
+
+## Login is only about logging in
+
+- A server-reported checkout stage during login no longer renders "Waiting for CMEM Pro setup in the browser...".
+- The login hand-off prints the URL, then waits: `Continue setup in browser... (hit return to open automatically)`. The URL comes first, so headless and SSH sessions are never blocked.
+- The post-login browser page now says "Close this window and go back to your terminal" instead of linking to the dashboard, which abandoned an install still waiting on that round-trip.
+
+Fixed: the checkout hand-off briefly also waited for Return, which stalled the install outright. It opens directly again.
+
+## Next Steps is shorter
+
+Dropped the `CLAUDE_MEM_WELCOME_HINT_ENABLED` opt-out, the uninstall warning, and the A/B framing that presented "just start working" as a decision.
+
+## [13.20.0] - 2026-08-31
+
+Consolidates the observer, quota, and installer work onto one release.
+
+## Observer no longer burns your allowance on doomed requests
+
+An exhausted allowance used to buy one refused request per captured tool call, for the rest of the billing cycle: the generator exits on the refusal, and the next observation starts a fresh one that earns the same refusal.
+
+- A quota breaker now withholds requests for a cooldown and then admits exactly **one** probe to re-check, instead of letting every live session through the moment the window elapses.
+- The breaker persists, so restarting the worker no longer resets it.
+- Quota returned as assistant prose (which aborts rather than throwing) now arms the breaker and the health ledger too. That path was previously invisible: the allowance was spent, nothing would ever store, and you were told nothing.
+- Probe claims are scoped to the generator that took them, so an earlier generator's exit can't clear a later session's probe and wedge the provider shut.
+
+## Capped users are no longer told to restart
+
+Hitting your allowance is not an outage. The session-start warning stopped presenting it as one, and stopped recommending a restart that cannot help.
+
+## Observer conversations are bounded
+
+The observer now runs in bounded generations seeded from memory, and a recycled generation is briefed from the real session-start context rather than starting cold. A recycle resumes on its own, so the last observation of a session is no longer stranded waiting for a tool call that never comes. Two unbounded request loops were closed.
+
+## Automatic fallback when the claude-mem key is exhausted
+
+When the cmem gateway terminally rejects the delivered key, memory falls back to your Anthropic plan and says so once at session start. This is treated as the promised switch, not an outage, so it stays out of the health ledger and never triggers the outage warning.
+
+## Installer: the login step is only about logging in
+
+Every install is account-first, and the provider choice (CMEM Pro vs. your own Anthropic plan) now happens strictly after login. The login step carries no plan or pricing language:
+
+- A server-reported checkout stage during login no longer renders "Waiting for CMEM Pro setup in the browser…". That wording is scoped to enrollment.
+- The pre-login note explaining provider mechanics is gone. Both browser hand-offs now print the URL, then wait: `Continue setup in browser... (hit return to open automatically)`. The URL prints first, so headless and SSH sessions are never blocked — open it by hand and the wait clears on Return.
+- Signup links were replaced with OAuth pairing, and signed-in provider transitions were hardened.
+
+**Known limitation:** a non-interactive install that cannot reach cmem.ai now fails rather than silently configuring a local-only install, including runs that pass `--provider claude`. A bypass for explicit local providers is coming in the next release.
+
+## [13.19.0] - 2026-08-31
+
+## Restart the memory worker in one click
+
+When the observer stops saving, the outage warning used to point at
+`~/.claude-mem/settings.json`. A restart clears nearly every one of these
+outages (a wedged or SIGKILL'd provider subprocess), so the warning now leads
+with the restart, offered two ways:
+
+```
+Restarting the memory worker clears almost every outage. Do one of these:
+  Click to restart:  http://localhost:37777/restart
+  Or in a terminal:  npx claude-mem restart
+
+Still failing after the restart? Run: npx claude-mem doctor
+```
+
+`GET /restart` serves a page whose button restarts the worker and waits until
+the replacement is actually up before telling you so.
+
+### The warning is also easier to see
+
+- **Moved below the injected context.** The timeline runs long enough that a
+  warning at the top had already scrolled off by the time context finished
+  printing.
+- **Shown in red** in the terminal. The agent's copy stays clean — ANSI escapes
+  there are just noise in the model's context.
+
+### Safety notes
+
+The restart page is deliberately conservative:
+
+- The `GET` is inert. Restarting is a `POST` behind a real click, so a page that
+  merely names the URL in an `<img>` cannot bounce your worker.
+- The route refuses to be framed (`frame-ancestors 'none'`, `X-Frame-Options:
+  DENY`), so an attacker cannot frame it and harvest the click through an
+  overlay.
+- Success requires the successor, not the corpse: a *different* pid on `/health`
+  (the dying worker answers for the whole graceful-shutdown window) **and**
+  `/api/readiness` ok (a bound port is not a ready worker).
+
+`/health` now reports `pid` to make that check possible.
+
+## [13.18.1] - 2026-08-31
+
+## Observer sessions stay silent and never contact other agents
+
+The memory observer is a passive recorder by design, but nothing in its prompt actually said so. This release makes both rules explicit in `observer_role`, which is injected into the observer's prompt on every turn.
+
+**SILENT BY DESIGN** — the observer session runs invisibly in the background. The session it watches does not know it is being observed, and it must stay that way: an agent that knows it is being watched changes its behavior in unpredictable ways, which corrupts the very record the observer exists to create.
+
+**NO CONTACT** — never contact, message, ping, or notify any other agent or session, including the observed one. No spawning subagents, no asking for input, no attempting to influence work in progress. One-way recorder: observations in, XML out.
+
+### Scope
+
+Applied to all four base modes — `code`, `email-investigation`, `law-study`, and `meme-tokens`. The 32 localized and `--chill` variants override only placeholders and footers, so they inherit the new text automatically.
+
+The mode-creator authoring reference also gained the rule (worked example plus a prompt-quality checklist item), so modes authored later carry it forward.
+
+**Full changelog**: https://github.com/thedotmack/claude-mem/compare/v13.18.0...v13.18.1
+
+## [13.18.0] - 2026-08-29
+
+Every CMEM Pro trial offer is now 30 days.
+
+The 7/14/30 installer split has been called — 30 won on signups. The installer offers 30 days on every run, and the session-start banner, context banner, welcome hint, viewer header, and cursor-hooks docs now say 30 days and pass trial=30 explicitly, so a click can't land on a shorter arm. 7 and 14 remain valid values on [cmem.ai](http://cmem.ai).
+
+## [13.17.2] - 2026-08-29
+
+## What changed
+
+- **Fast, bounded Codex startup context.** Removes the synchronous version/dependency check and duplicate one-shot MCP startup from Codex `SessionStart`, uses the persistent local worker path, caps API requests at 2 seconds, and keeps the supported cold-start path bounded. Warm startup verification returned injected context in under one second. ([#3789](https://github.com/thedotmack/claude-mem/pull/3789))
+- **7/14/30 installer-offer measurement.** Records every user-visible CMEM Pro offer surface as `pro_offer_viewed`, with `trial_days`, canonical `trial_variant`, and installer source/surface labels. Total displays and unique anonymous installs can now be compared with trial starts per arm. ([#3792](https://github.com/thedotmack/claude-mem/pull/3792))
+
+## Privacy and behavior
+
+Offer measurement uses the existing consent-gated anonymous install UUID and strict property whitelist. It never sends email addresses, sign-in links, pairing secrets, device codes, prompts, paths, or source content. This release does not change trial assignment, offer copy, pricing, or checkout behavior.
+
+## [13.17.0] - 2026-08-28
+
+Installer trial-length offers
+- Assigns one stable 7-, 14-, or 30-day CMEM Pro trial offer per installer flow.
+- Shows the exact assigned length consistently in prompts, retry/resend flows, activation summaries, and cmem.ai links.
+- Sends the same trial length to the web start API and preserves it across reruns.
+- Adds focused coverage for all three arms and legacy-state recovery.
+
 ## [13.16.1] - 2026-08-26
 
 ## 🪟 The Windows Megafix

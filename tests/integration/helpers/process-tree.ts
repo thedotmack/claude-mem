@@ -85,6 +85,17 @@ function readProcessTable(): ProcessRow[] {
 }
 
 /**
+ * Windows GitHub runners inject Visual Studio telemetry (`vctip.exe`) under
+ * almost any spawned tree. That is not a chroma-mcp descendant and must not
+ * fail the #3482 recycle gate.
+ */
+const WINDOWS_RUNNER_NOISE = new Set(['vctip.exe']);
+
+function isWindowsRunnerNoise(name: string): boolean {
+  return WINDOWS_RUNNER_NOISE.has(name.toLowerCase());
+}
+
+/**
  * Every transitive descendant of `rootPid`, with identity captured.
  *
  * MUST be called while the root is still alive: once it exits, its children
@@ -111,6 +122,7 @@ export function snapshotDescendants(rootPid: number): ProcessIdentity[] {
       if (seen.has(child.pid)) continue;
       seen.add(child.pid);
       queue.push(child.pid);
+      if (isWindowsRunnerNoise(child.name)) continue;
       found.push({
         pid: child.pid,
         startToken: captureProcessStartToken(child.pid),
