@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { isDirectChild } from '../../shared/path-utils.js';
+import { isDirectChild, normalizePath } from '../../shared/path-utils.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -13,6 +13,7 @@ import {
   ObservationRow
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { resolveDateBound } from '../../shared/date-bounds.js';
 import { applySqliteConnectionPragmas } from './connection.js';
 
 /**
@@ -22,6 +23,53 @@ import { applySqliteConnectionPragmas } from './connection.js';
  */
 const UNSEGMENTED_SCRIPT_RANGES =
   '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
+
+/**
+ * Sync triggers for the external-content FTS5 indexes, shared by FTS setup here and by the
+ * SessionStore migrations that rebuild these tables. The update triggers fire only when an
+ * indexed column is written: an unscoped AFTER UPDATE also fired for bookkeeping writes
+ * (sync_rev, merged_into_project, content_hash, ...), and every firing appended a delete
+ * marker plus a full re-insert of the row's text to the index (#2793).
+ */
+export const OBSERVATIONS_FTS_TRIGGERS_SQL = `
+  CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+    INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+    INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS observations_au
+  AFTER UPDATE OF title, subtitle, narrative, text, facts, concepts ON observations BEGIN
+    INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+    INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+  END;
+`;
+
+export const SESSION_SUMMARIES_FTS_TRIGGERS_SQL = `
+  CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS session_summaries_au
+  AFTER UPDATE OF request, investigated, learned, completed, next_steps, notes ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+    INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+  END;
+`;
 
 export class SessionSearch {
   private db: Database;
@@ -98,24 +146,7 @@ export class SessionSearch {
       FROM observations;
     `);
 
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-    `);
+    this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
 
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
@@ -136,24 +167,7 @@ export class SessionSearch {
       FROM session_summaries;
     `);
 
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-    `);
+    this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
   }
 
   private buildFilterClause(
@@ -164,8 +178,13 @@ export class SessionSearch {
     const conditions: string[] = [];
 
     if (filters.project) {
-      conditions.push(`${tableAlias}.project = ?`);
-      params.push(filters.project);
+      // #3641 — match the OR disjunction used by every other read path
+      // (SessionStore, PaginationHelper, ObservationCompiler). Without it the
+      // FTS/filter path ignores merged_into_project, so adopted worktree
+      // observations stay invisible to search even after adoption.
+      // #3531 — compared case-insensitively, like every other read path.
+      conditions.push(`(${tableAlias}.project COLLATE NOCASE = ? OR ${tableAlias}.merged_into_project COLLATE NOCASE = ?)`);
+      params.push(filters.project, filters.project);
     }
 
     // Source-scoping (#2389): when a platformSource is supplied, restrict to
@@ -195,14 +214,12 @@ export class SessionSearch {
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         conditions.push(`${tableAlias}.created_at_epoch >= ?`);
-        params.push(startEpoch);
+        params.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         conditions.push(`${tableAlias}.created_at_epoch <= ?`);
-        params.push(endEpoch);
+        params.push(resolveDateBound(end, 'end'));
       }
     }
 
@@ -573,23 +590,65 @@ export class SessionSearch {
     return checkFiles(session.files_read) || checkFiles(session.files_edited);
   }
 
+  /**
+   * LIKE patterns that find a path in a files JSON column.
+   *
+   * Stored paths come in two forms: absolute when they come from a tool's
+   * input (Claude Code's Read/Edit/Write), project-relative when they come
+   * from the observer's output or a Codex patch, and neither records the
+   * project root. So a folder given as an absolute path also matches paths
+   * stored under any trailing part of it, which is the rule isDirectChild
+   * applies to the fetched rows. Without these anchored prefixes the
+   * project-relative rows never reached that check and folder lookups missed
+   * them.
+   */
+  private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
+    const patterns = [`%${filePath}%`];
+    if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
+      return patterns;
+    }
+    const segments = normalizePath(filePath).split('/').filter(segment => segment.length > 0);
+    const firstRelativeSegment = /^[A-Za-z]:$/.test(segments[0] ?? '') ? 1 : 0;
+    for (let start = firstRelativeSegment; start < segments.length; start += 1) {
+      const trailing = segments.slice(start);
+      patterns.push(`${trailing.join('/')}/%`);
+      if (filePath.includes('\\')) {
+        patterns.push(`${trailing.join('\\')}\\%`);
+      }
+    }
+    return patterns;
+  }
+
+  /** Any of `columns` (JSON arrays) holds a value matching any pattern; bind every pattern once per column. */
+  private static jsonArrayLikeClause(columns: string[], patternCount: number): string {
+    const anyPattern = Array.from({ length: patternCount }, () => 'value LIKE ?').join(' OR ');
+    return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${anyPattern})`).join(' OR ')})`;
+  }
+
   findByFile(filePath: string, options: SearchOptions = {}): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', isFolder = false, ...filters } = options;
+    // filePath is the file filter; a caller's own `files` filter is not added on top.
+    delete filters.files;
 
     const queryLimit = isFolder ? limit * 3 : limit;
+    const pathPatterns = SessionSearch.filePathPatterns(filePath, isFolder);
 
-    const fileFilters = { ...filters, files: filePath };
-    const filterClause = this.buildFilterClause(fileFilters, params, 'o');
+    const filterClause = this.buildFilterClause(filters, params, 'o');
+    params.push(...pathPatterns, ...pathPatterns);
+    const whereClause = [
+      filterClause,
+      SessionSearch.jsonArrayLikeClause(['o.files_read', 'o.files_modified'], pathPatterns.length),
+    ].filter(Boolean).join(' AND ');
     const orderClause = this.buildOrderClause(orderBy, false);
 
     const observationsSql = `
       SELECT o.*, o.discovery_tokens
       FROM observations o
-      WHERE ${filterClause}
+      WHERE ${whereClause}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;
@@ -608,7 +667,7 @@ export class SessionSearch {
 
     const baseConditions: string[] = [];
     if (sessionFilters.project) {
-      baseConditions.push('s.project = ?');
+      baseConditions.push('s.project COLLATE NOCASE = ?');
       sessionParams.push(sessionFilters.project);
     }
 
@@ -622,22 +681,17 @@ export class SessionSearch {
     if (sessionFilters.dateRange) {
       const { start, end } = sessionFilters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         baseConditions.push('s.created_at_epoch >= ?');
-        sessionParams.push(startEpoch);
+        sessionParams.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         baseConditions.push('s.created_at_epoch <= ?');
-        sessionParams.push(endEpoch);
+        sessionParams.push(resolveDateBound(end, 'end'));
       }
     }
 
-    baseConditions.push(`(
-      EXISTS (SELECT 1 FROM json_each(s.files_read) WHERE value LIKE ?)
-      OR EXISTS (SELECT 1 FROM json_each(s.files_edited) WHERE value LIKE ?)
-    )`);
-    sessionParams.push(`%${filePath}%`, `%${filePath}%`);
+    baseConditions.push(SessionSearch.jsonArrayLikeClause(['s.files_read', 's.files_edited'], pathPatterns.length));
+    sessionParams.push(...pathPatterns, ...pathPatterns);
 
     const sessionsSql = `
       SELECT s.*, s.discovery_tokens
@@ -688,7 +742,7 @@ export class SessionSearch {
 
     const baseConditions: string[] = [];
     if (filters.project) {
-      baseConditions.push('s.project = ?');
+      baseConditions.push('s.project COLLATE NOCASE = ?');
       params.push(filters.project);
     }
 
@@ -700,14 +754,12 @@ export class SessionSearch {
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         baseConditions.push('up.created_at_epoch >= ?');
-        params.push(startEpoch);
+        params.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         baseConditions.push('up.created_at_epoch <= ?');
-        params.push(endEpoch);
+        params.push(resolveDateBound(end, 'end'));
       }
     }
 

@@ -8,6 +8,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
+import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
 import {
   shouldRecycleConversation,
@@ -16,6 +17,7 @@ import {
 } from '../../shared/observer-recycle.js';
 import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
+import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 
 import {
@@ -77,8 +79,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Throw a provider-specific "API key not configured" error. */
   protected abstract missingApiKeyError(): Error;
 
-  /** Issue the actual HTTP request and normalize its response. */
-  protected abstract query(history: ConversationMessage[], config: TConfig, signal?: AbortSignal): Promise<ProviderQueryResult>;
+  /**
+   * Issue the actual HTTP request and normalize its response.
+   * `perAttemptTimeoutMs` overrides the CLAUDE_MEM_LLM_TIMEOUT_MS per-attempt
+   * deadline for callers racing their own, longer deadline (the field pass).
+   */
+  protected abstract query(
+    history: ConversationMessage[],
+    config: TConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult>;
 
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
@@ -87,11 +98,21 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
    * `session.conversationHistory` would grow the very conversation the recycle
    * logic exists to bound.
    */
-  private async compressField(text: string, budgetChars: number, config: TConfig, signal: AbortSignal): Promise<string | null> {
+  private async compressField(
+    text: string,
+    budgetChars: number,
+    config: TConfig,
+    signal: AbortSignal,
+    deadlineMs?: number,
+  ): Promise<string | null> {
+    // The field pass races `deadlineMs` (CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).
+    // Without it the request keeps the LLM per-attempt default, and a longer
+    // field knob would never take effect on this path (#4134).
     const result = await this.query(
       [{ role: 'user', content: buildFieldCompressionPrompt(text, budgetChars) }],
       config,
       signal,
+      deadlineMs,
     );
     return result.content || null;
   }
@@ -207,7 +228,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     logger.success('SDK', `${this.providerName} agent completed`, {
       sessionId: session.sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-      historyLength: session.conversationHistory.length
+      historyLength: session.conversationHistory.length,
+      ...observerUsageLogFields(session)
     });
   }
 
@@ -241,6 +263,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session: ActiveSession,
     model: string
   ): void {
+    // The init turn is billed whether or not its reply carried any text.
+    accumulateObserverUsage(session, initResponse);
+
     if (!initResponse.content && !this.forwardEmptyMessageResponse) {
       logger.error('SDK', `Empty ${this.providerName} init response - session may lack context`, {
         sessionId: session.sessionDbId, model
@@ -248,9 +273,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       return;
     }
 
-    const tokensUsed = initResponse.tokensUsed || 0;
-    session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-    session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
     // The init prompt carries the user's request and no tool call, so nothing in
     // its reply can be an observation of this session — an <observation> here was
     // invented from <user_request> alone and would be stored as memory for work
@@ -294,8 +316,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // rather than a head/tail slice with the middle cut out (#3800).
     const optimized = await optimizeObservationFields(
       { toolInput: message.tool_input, toolOutput: message.tool_response },
-      (text, budgetChars, signal) => this.compressField(text, budgetChars, config, signal),
+      (text, budgetChars, signal, deadlineMs) => this.compressField(text, budgetChars, config, signal, deadlineMs),
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+      undefined,
+      resolveFieldOptimizeTimeoutMs,
     );
 
     const obsPrompt = buildObservationPrompt({
@@ -313,19 +337,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.lastGeneratorSource = 'ingest';
     const obsResponse = await this.query(session.conversationHistory, config);
 
-    let tokensUsed = 0;
-    if (obsResponse.content) {
-      // The assistant turn is appended once, by processAgentResponse below.
-      // Appending it here too stored every reply twice (#3619), inflating the
-      // window — and therefore every subsequent request — by ~50%.
-      tokensUsed = obsResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      // Both sides or nothing: a backend reporting only one of the two counts
-      // must not produce a half-real event (input=0 → compression_ratio 0.0).
-      session.lastUsage = this.buildLastUsage(obsResponse);
-    }
+    // Billed usage counts even when the reply came back empty.
+    accumulateObserverUsage(session, obsResponse);
+    // Both sides or nothing: a backend reporting only one of the two counts
+    // must not produce a half-real event (input=0 → compression_ratio 0.0).
+    session.lastUsage = this.buildLastUsage(obsResponse);
+    const tokensUsed = obsResponse.tokensUsed || 0;
 
+    // The assistant turn is appended once, by processAgentResponse below.
+    // Appending it here too stored every reply twice (#3619), inflating the
+    // window — and therefore every subsequent request — by ~50%.
     if (obsResponse.content || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
         obsResponse.content || '', session, this.dbManager, this.sessionManager,
@@ -373,15 +394,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
     const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
 
-    let tokensUsed = 0;
-    if (summaryResponse.content) {
-      // Appended once, by processAgentResponse below — see processObservationMessage.
-      tokensUsed = summaryResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      session.lastUsage = this.buildLastUsage(summaryResponse);
-    }
+    accumulateObserverUsage(session, summaryResponse);
+    session.lastUsage = this.buildLastUsage(summaryResponse);
+    const tokensUsed = summaryResponse.tokensUsed || 0;
 
+    // Appended once, by processAgentResponse below — see processObservationMessage.
     if (summaryResponse.content || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
         summaryResponse.content || '', session, this.dbManager, this.sessionManager,
@@ -427,7 +444,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
     if (isAbortError(error)) {
-      logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
+      logger.warn('SDK', `${this.providerName} agent aborted`, {
+        sessionId: session.sessionDbId,
+        ...observerUsageLogFields(session)
+      });
       throw error;
     }
 
@@ -452,13 +472,21 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         logger.warn('SDK', `${this.providerName} paused on ${error.kind}; preserving buffered work`, {
           sessionId: session.sessionDbId,
           kind: error.kind,
+          ...observerUsageLogFields(session)
         });
       }
 
       // Logged once at SessionRoutes' `Observer failed` line.
-      logger.debug('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId, kind: error.kind }, error);
+      logger.debug('SDK', `${this.providerName} agent error`, {
+        sessionDbId: session.sessionDbId,
+        kind: error.kind,
+        ...observerUsageLogFields(session)
+      }, error);
     } else {
-      logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+      logger.failure('SDK', `${this.providerName} agent error`, {
+        sessionDbId: session.sessionDbId,
+        ...observerUsageLogFields(session)
+      }, error instanceof Error ? error : new Error(String(error)));
     }
     throw error;
   }

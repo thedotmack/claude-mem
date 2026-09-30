@@ -24,7 +24,7 @@
 // logged.
 
 import { createHash, randomBytes } from 'crypto';
-import { chmodSync, existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
 import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
@@ -167,18 +167,9 @@ export function persistServerSettings(
     flat.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
   }
 
-  // Write the full document (via the atomic temp-file+rename writer), then
-  // tighten permissions. `writeJsonFileAtomic` creates new files under the
-  // process umask, so on first creation the API key plaintext is briefly
-  // world-readable until chmodSync narrows it to 0o600.
-  writeJsonFileAtomic(settingsPath, existing);
-  // Hooks read this file on every invocation; restrict permissions so other
-  // local users cannot read the API key.
-  try {
-    chmodSync(settingsPath, 0o600);
-  } catch {
-    // Non-POSIX filesystems may reject chmod; settings file remains readable.
-  }
+  // The temp file is created as 0600 before the first secret byte is written;
+  // there is no creation-to-chmod window on first install.
+  writeJsonFileAtomic(settingsPath, existing, { mode: 0o600 });
 }
 
 export function createRawApiKey(): string {

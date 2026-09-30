@@ -1,12 +1,14 @@
 
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import path from 'path';
+import { isIP } from 'net';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { getPackageRoot } from '../../../shared/paths.js';
 import {
   hasForwardedClientHeaders,
   isLocalhost,
   parseBearerToken,
+  parseHostWithoutPort,
 } from '../../../server/middleware/request-auth-helpers.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -46,11 +48,139 @@ export function createMiddleware(): RequestHandler[] {
   return middlewares;
 }
 
-export function createCorsMiddleware(): RequestHandler {
+/**
+ * Which browser origins and Host names the worker accepts (plan-23 step 4).
+ *
+ * Only the worker runtime sets this. The server runtime authenticates every
+ * request with an API key and is reached through public DNS names, so neither
+ * the Host check nor same-host CORS applies there.
+ */
+export interface WorkerOriginPolicy {
+  /**
+   * Exact origins allowed cross-origin besides `http://localhost:*` and
+   * `http://127.0.0.1:*` (CLAUDE_MEM_ALLOWED_ORIGINS). Their host names are
+   * also trusted by the Host check.
+   */
+  allowedOrigins: string[];
+  /** CLAUDE_MEM_WORKER_HOST. Trusted by the Host check when it is a DNS name. */
+  workerHost: string;
+}
+
+// Parses CLAUDE_MEM_ALLOWED_ORIGINS: comma-separated full origins. Trailing
+// slashes are stripped so `https://a.com/` matches the browser-sent
+// `Origin: https://a.com`.
+export function parseAllowedOriginsSetting(value: string): string[] {
+  return value
+    .split(',')
+    .map(origin => origin.trim().replace(/\/+$/, '').toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * The worker's policy from its settings. CLAUDE_MEM_PUBLIC_URL (the viewer's
+ * published base URL, e.g. a remote sandbox's port-forward) is where the browser
+ * loads the viewer from, so its origin is trusted like an allowlisted one.
+ */
+export function buildWorkerOriginPolicy(settings: {
+  CLAUDE_MEM_ALLOWED_ORIGINS?: string;
+  CLAUDE_MEM_WORKER_HOST?: string;
+  CLAUDE_MEM_PUBLIC_URL?: string;
+}): WorkerOriginPolicy {
+  const allowedOrigins = parseAllowedOriginsSetting(settings.CLAUDE_MEM_ALLOWED_ORIGINS ?? '');
+  const publicUrl = (settings.CLAUDE_MEM_PUBLIC_URL ?? '').trim();
+  if (publicUrl) {
+    try {
+      allowedOrigins.push(new URL(publicUrl).origin.toLowerCase());
+    } catch {
+      // Not a URL: there is no origin to trust.
+    }
+  }
+  return { allowedOrigins, workerHost: settings.CLAUDE_MEM_WORKER_HOST ?? '' };
+}
+
+export function isLocalhostOrigin(origin: string): boolean {
+  return origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:');
+}
+
+// An Origin naming the host and port the request was sent to: the viewer served
+// from http://<lan-ip>:<port> calling its own API. Safe only behind the Host
+// check, which has already refused any Host the operator did not trust;
+// otherwise a rebound attacker page would qualify as "same host".
+function isSameHostOrigin(origin: string, rawHost: string | undefined): boolean {
+  if (!rawHost) return false;
+  try {
+    return new URL(origin).host === rawHost.trim().toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+// Names that only ever refer to this machine (or, from inside a container, to
+// the machine hosting it). A browser sends one of these as Host only when it is
+// really talking to that name. A DNS-rebinding page always sends its own domain.
+const ALWAYS_TRUSTED_HOSTNAMES = ['localhost', 'host.docker.internal'];
+
+export function trustedWorkerHostnames(policy: WorkerOriginPolicy): Set<string> {
+  const names = new Set(ALWAYS_TRUSTED_HOSTNAMES);
+  const workerHost = policy.workerHost.trim().toLowerCase();
+  if (workerHost) names.add(workerHost);
+  for (const origin of policy.allowedOrigins) {
+    try {
+      names.add(new URL(origin).hostname.toLowerCase());
+    } catch {
+      // Not a parseable origin: there is no host name to trust.
+    }
+  }
+  return names;
+}
+
+/**
+ * The DNS-rebinding check. A page on evil.example whose DNS record is repointed
+ * at 127.0.0.1 can send same-origin requests to the worker, but the browser
+ * still sends `Host: evil.example`, never an IP address. So a Host that is a DNS
+ * name the operator did not name is refused. IP addresses, `localhost` and
+ * `*.localhost` always pass, so hooks, curl, the local viewer and LAN access by
+ * IP keep working. The socket peer is deliberately not checked.
+ */
+export function isTrustedWorkerHost(rawHost: string | undefined, trustedHostnames: Set<string>): boolean {
+  // Only HTTP/1.0 clients omit Host; browsers never do.
+  if (!rawHost) return true;
+  const host = parseHostWithoutPort(rawHost);
+  if (isIP(host) !== 0) return true;
+  if (host.endsWith('.localhost')) return true;
+  return trustedHostnames.has(host);
+}
+
+export function createWorkerHostGuard(policy: WorkerOriginPolicy): RequestHandler {
+  const trustedHostnames = trustedWorkerHostnames(policy);
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const rawHost = req.headers.host;
+    if (isTrustedWorkerHost(rawHost, trustedHostnames)) {
+      next();
+      return;
+    }
+    const host = parseHostWithoutPort(rawHost ?? '');
+    logger.warn('SECURITY', 'Refused a request whose Host is not a trusted name (DNS rebinding check)', {
+      host,
+      method: req.method,
+      path: req.path,
+    });
+    res.status(403).json({
+      error: 'Forbidden',
+      message: `Host "${host}" is not trusted. To reach the worker by this name, add its origin (for example http://${rawHost}) to CLAUDE_MEM_ALLOWED_ORIGINS and restart the worker.`,
+    });
+  };
+}
+
+export function createCorsMiddleware(policy?: WorkerOriginPolicy): RequestHandler {
+  const allowedOrigins = new Set(policy?.allowedOrigins ?? []);
   return (req: Request, res: Response, next: NextFunction): void => {
     const origin = req.headers.origin;
     if (origin) {
-      if (!origin.startsWith('http://localhost:') && !origin.startsWith('http://127.0.0.1:')) {
+      const allowed = isLocalhostOrigin(origin)
+        || allowedOrigins.has(origin.toLowerCase())
+        || (policy !== undefined && isSameHostOrigin(origin, req.headers.host));
+      if (!allowed) {
         // Write the response here rather than forwarding an error. The worker never
         // calls finalizeRoutes(), so it has no terminal error handler: a
         // forwarded error lands in Express's default handler, which returns a

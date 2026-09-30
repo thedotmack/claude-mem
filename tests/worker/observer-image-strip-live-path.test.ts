@@ -22,7 +22,7 @@ const BASE64 = 'iVBORw0KGgoAAAANSUhEUg' + 'A'.repeat(300_000);
 async function ingest(toolName: string, toolInput: unknown, toolResponse: unknown) {
   let queued: any;
   setIngestContext({
-    dbManager: { getSessionStore: () => ({ createSDKSession: () => 1,
+    dbManager: { getSessionStore: () => ({ createSDKSession: () => 1, setSessionCwd: () => {},
       getPromptNumberFromUserPrompts: () => 1, getUserPrompt: () => 'public fixture' }) } as any,
     sessionManager: { queueObservation: async (_id: number, observation: any) => { queued = observation; } } as any,
     eventBroadcaster: { broadcastObservationQueued: () => {} } as any,
