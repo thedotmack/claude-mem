@@ -12,6 +12,10 @@ import { join } from 'path';
  * statically imported here.
  */
 const TMP_DIR = mkdtempSync(join(tmpdir(), 'cm-selfheal-'));
+// Restored in afterAll: deleting it instead would unpin the preload's temp data
+// dir for every later test file in this run, sending lazily resolved paths to
+// the real ~/.claude-mem.
+const ORIGINAL_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
 process.env.CLAUDE_MEM_DATA_DIR = TMP_DIR;
 
 const {
@@ -24,7 +28,11 @@ const {
 } = await import('../../../src/services/worker/stale-spawn-recovery.js');
 
 afterAll(() => {
-  delete process.env.CLAUDE_MEM_DATA_DIR;
+  if (ORIGINAL_DATA_DIR === undefined) {
+    delete process.env.CLAUDE_MEM_DATA_DIR;
+  } else {
+    process.env.CLAUDE_MEM_DATA_DIR = ORIGINAL_DATA_DIR;
+  }
   rmSync(TMP_DIR, { recursive: true, force: true });
 });
 
