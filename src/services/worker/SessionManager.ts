@@ -370,7 +370,8 @@ export class SessionManager {
       consecutiveContextOverflows: 0,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
-      pendingAgentType: null
+      pendingAgentType: null,
+      pausedReason: null
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -697,6 +698,26 @@ export class SessionManager {
 
   getActiveSessionCount(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * Snapshot paused in-memory work without loading sessions or changing the buffer.
+   * The automatic sweep also leaves out sessions whose own overflow cooldown is
+   * still running: the start gate would only refuse them and log a skip. It
+   * leaves a session to a resume it scheduled for itself, too: a rate limit
+   * must not be retried before its Retry-After.
+   * A rate-limit pause is retried like a quota pause: the breaker it armed paces it.
+   */
+  getResumableSessionIds(includeOperatorOnly: boolean = false, nowMs: number = Date.now()): number[] {
+    const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall', 'setup_required']);
+    return Array.from(this.sessions.values())
+      .filter(session => !session.generatorPromise
+        && this.buffer.getPendingCount(session.sessionDbId) > 0
+        && (includeOperatorOnly || !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined))
+        && (includeOperatorOnly || !(session.overflowPausedUntilMs !== undefined && nowMs < session.overflowPausedUntilMs))
+        && (includeOperatorOnly || session.scheduledResumeTimer === undefined)
+        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
+      .map(session => session.sessionDbId);
   }
 
   getTotalQueueDepth(): number {

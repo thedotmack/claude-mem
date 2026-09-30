@@ -16,12 +16,16 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
 | `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
+| `CLAUDE_MEM_LLM_TIMEOUT_MS`   | `180000`                        | Per-request deadline (ms, 500–300000) for the Gemini and OpenRouter / OpenAI-compatible observer, including the cmem.ai gateway. It exists to catch a hung request; a slow backend just needs a higher value. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` | `false` | Include observations from every harness in SessionStart context |
 | `CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY` | `true`                   | Leave subagent observations out of SessionStart context so their step-logs don't crowd durable main-session memory out of the window. A subagent row carries both an agent id and an agent type; transcript-watch rows (e.g. Grok Bot seats) stay in. Search and the viewer still show everything. |
+| `CLAUDE_MEM_REINFORCE_ALPHA` | `0`                              | Opt-in ACT-R ranking for SessionStart context. `0` (default) keeps the N most recent observations, unchanged. Above `0` (try `0.5`), observations the write path saw re-confirmed on later days can climb into the window: each observation's creation and re-confirmation days are scored with power-law decay, `ln(1 + age^-0.5 + ALPHA · Σ age_k^-0.5)`. The newest quarter of the window is always kept by recency. |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `CLAUDE_MEM_WORKER_AUTOSTART` | `true`                          | Set `false` when you run the worker yourself (a process manager, a container, `worker-service.cjs --daemon`). Hooks, the MCP server and `start` then use a worker that is already running but never launch, kill or recycle one: no lazy spawn, no version-mismatch recycle, no wedged-worker recycle or reclaim. While your worker is down, hooks skip their work quietly instead of counting it as a failure. |
+| `CLAUDE_MEM_ALLOWED_ORIGINS`  | _(empty)_                       | Comma-separated browser origins (e.g. `https://app.example.com`) allowed to call the worker API cross-origin, besides `http://localhost:*` and `http://127.0.0.1:*`. A page loaded from the worker's own address (the viewer at `http://<lan-ip>:<port>`) is always allowed. To block DNS rebinding, the worker also refuses a request whose `Host` is a DNS name it does not trust. IP addresses, `localhost`, `host.docker.internal`, `CLAUDE_MEM_WORKER_HOST`, the host of `CLAUDE_MEM_PUBLIC_URL`, and the hosts listed here are trusted. To open the viewer by a machine name, such as `http://mybox.local:37777`, list that origin here. Restart the worker after changing it. |
 | `CLAUDE_MEM_PUBLIC_URL`       | _(empty)_                       | Browser-reachable base URL printed for the viewer (live view, welcome hint, restart link) when the worker runs in a remote sandbox behind a port-forward, e.g. `https://37700.host.example`. Empty = `http://localhost:<port>`. The env var wins over the setting. (The [hosted server runtime](hosted-server) reads the same variable as its own public base URL.) |
 | `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
@@ -29,6 +33,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each shell command (Claude Code `Bash`, Codex `exec_command`); on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
 | `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip **every** subagent observation (a tool call that carries both an agent id and an agent type). See [Subagent & Dynamic Workflow filtering](#subagent--dynamic-workflow-filtering). |
 | `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated subagent `agent_type` values to skip, e.g. `workflow-subagent,Explore,Plan`. Main-session observations are unaffected. |
+| `CLAUDE_MEM_CAPTURE_ADVISOR_CALLS` | `false`                    | When `true`, the Stop hook records each Claude Code `advisor` tool call (the advice text, the advisor model, and the turn's prompt) in the local database, readable at `GET /api/advisor-calls`. The advisor never fires PostToolUse, so the hook reads the end of the transcript for it. `<private>` content is removed before storage. Worker runtime only; nothing is generated, so it costs no tokens. |
 
 ### Subagent & Dynamic Workflow filtering
 
@@ -90,6 +95,17 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and rate
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
 
+### Observer Budget Settings
+
+These apply to every observer provider. The observer's conversation runs in generations. When one fills its budget, claude-mem retires it and starts a fresh one, briefed with the session's own observations. The budget is the smaller of `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` and half the observer model's context window (about 4 characters per token). Each tool call's parameters and outcome are capped at a tenth of the window, 16,000 characters at most.
+
+| Setting                                      | Default                     | Description                           |
+|----------------------------------------------|-----------------------------|---------------------------------------|
+| `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` | `400000`                    | Characters one observer generation may hold before it is retired |
+| `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`         | —                           | Observer model context window in tokens. Empty = resolve it: Claude models `200000` (`1000000` for a `[1m]` model id), Gemini models from a built-in map, OpenRouter models from the OpenRouter models catalogue. Any other OpenAI-compatible endpoint (a local server, a custom gateway) falls back to `131072`, so set this for a model with a smaller window, e.g. `16384`. Values below `8192` are clamped up to `8192` |
+
+If the provider still rejects a request as too long for the model's window, the observer retires the generation and retries the same work in a fresh one, the same way it handles Claude's "Prompt is too long".
+
 ### Claude Gateway Settings
 
 Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
@@ -109,9 +125,70 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data directory location               |
 | `CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
 | `CLAUDE_MEM_FETCH_VERBOSE`    | _(unset / off)_                 | Opt-in worker-IPC `fetch()` diagnostics (`1`/`true`/`on`/`yes`). Passes Node/undici `{ verbose: true }` and writes the error cause chain on socket-level hook failures. Default stays off. |
+| `CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS` | `10000`                   | Total time the UserPromptSubmit hook may spend reaching the worker for each prompt (startup check, session init, semantic context). When it runs out, the prompt goes through without memory for that turn. Accepts 500–14000; it has to stay under Claude Code's 15 s timeout for that hook. Codex keeps its own bounded worker-startup wait, and its requests stay within this budget. Also read from the environment. |
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
+| `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
+| `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns"}`. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
+
+### Grok Bot Brainbeat Webhook
+
+Optional. Set `CLAUDE_MEM_GROK_BOT_WEBHOOK_URL` and claude-mem POSTs every observation that matches the Grok Bot awareness triggers (`CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES` / `CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS`, default types `decision,bugfix,security_alert,sensitive`) to that URL. It is independent of every Telegram setting.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_GROK_BOT_WEBHOOK_URL` | — | Receiver for brainbeat POSTs; empty = off. File/env only, masked by `GET /api/settings` |
+| `CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET` | — | Optional shared secret sent as `x-claude-mem-shared-secret`. File/env only, masked by `GET /api/settings` |
+
+Each matching observation is sent as one JSON POST:
+
+```json
+{
+  "event": "claude_mem.brainbeat",
+  "observation_id": 1234,
+  "type": "security_alert",
+  "title": "PII exposure in logs",
+  "subtitle": "Raw token printed in retry path",
+  "project": "payments-service",
+  "concepts": ["auth", "logging"],
+  "why_fired": {
+    "matched_type": true,
+    "matched_concepts": ["auth"]
+  },
+  "timestamp": "2026-09-02T02:56:46.087Z"
+}
+```
+
+POSTs are sent concurrently and each times out after 5 seconds. Redirects are refused, so the shared secret and the observation only ever go to the configured URL; put the receiver's final address in the setting. A failure is logged with the receiver's origin and a short reason only (never the full URL) and never blocks observation storage or other notifications.
+
+### Near-Duplicate Deduplication
+
+Opt-in (off by default) dedup of observations whose titles describe the same recurring
+work but are worded slightly differently, so `content_hash` (byte-identical only) misses them.
+Two deterministic tiers:
+
+- **Tier 0 — exact-normalized-title** → safe silent auto-merge: a new observation whose
+  title matches an existing one after lowercasing / whitespace-collapse / punctuation-strip
+  is collapsed onto the existing row and its `occurrence_count` is bumped (cross-session,
+  within the same project and the same host platform, since context is platform-scoped).
+- **Tier 1 — IDF-weighted similarity** → *review-only* near-duplicate **candidates** are
+  recorded in `observation_dedup_candidates` (never auto-merged), so distinct work that
+  differs only in one rare token (`rdlp-api` vs `rdlp-plugin`) is never silently destroyed.
+
+| Setting                              | Default | Description                           |
+|--------------------------------------|---------|---------------------------------------|
+| `CLAUDE_MEM_DEDUP_ENABLED`           | `false` | Master switch. Off = byte-identical legacy behavior |
+| `CLAUDE_MEM_DEDUP_COSINE_THRESHOLD`  | `0.80`  | Min IDF-weighted cosine for a Tier-1 candidate |
+| `CLAUDE_MEM_DEDUP_IDF_VETO_DF`       | `10`    | A title token in ≤ N project rows is "discriminating" and vetoes a merge |
+| `CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS` | `2`     | Require ≥ N shared tokens before scoring (kills sparse-vector noise) |
+| `CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS`  | `10`    | Cold-start gate: skip Tier-1 below N docs/project (IDF unreliable) |
+| `CLAUDE_MEM_DEDUP_MAX_SCAN`          | `2000`  | Per-insert Tier-1 candidate-scan cap |
+| `CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS` | `50000` | `dedup-scan` skips a project larger than this (memory safety) |
+
+After enabling on an existing database, run a one-time scan to backfill the IDF model and
+surface accumulated near-duplicates: `POST /api/dedup/scan` (worker, localhost-only).
+Review candidates via `GET /api/dedup/candidates?project=<name>`.
 
 ## Model Configuration
 
@@ -169,8 +246,10 @@ Configure the active workflow mode and language.
 
 claude-mem files every observation under a project name, and SessionStart injects the memory stored for the current project.
 
-- **Inside a git repository** the name is the repository root's folder name, so every subfolder shares it. A git worktree is stored as `<repo>/<worktree>` and a git submodule as `<superproject>/<path>`; both also read their parent repository's memory. Memory a submodule stored under its own folder name before it was grouped this way stays readable from it. When a worktree or submodule checkout is deleted, the worker folds its memory into the parent repository at its next start (merged or not), so nothing is stranded.
+- **Inside a git repository** the name is the repository root's folder name, so every subfolder shares it. A git worktree is stored as `<repo>/<worktree>` (a worktree whose folder has the repository's own name, like Codex's `~/.codex/worktrees/<id>/<repo>`, is stored as `<repo>`) and a git submodule as `<superproject>/<path>`; both also read their parent repository's memory. Memory a submodule stored under its own folder name before it was grouped this way stays readable from it. When a worktree or submodule checkout is deleted, the worker folds its memory into the parent repository at its next start (merged or not), so nothing is stranded.
+- **With `CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote`** a repository that has an `origin` remote is named by its `org/repo` slug instead (e.g. `thedotmack/claude-mem`), so renaming or re-cloning the folder keeps its memory, two repositories with the same folder name stay apart, and every worktree of the repository shares the slug (a submodule, being a repository of its own, is named by its own `origin`). Memory stored under the folder-based names stays readable, and a deleted worktree's memory from before the switch is still folded into the repository. Repositories without a usable `origin` (or with a local one) keep the folder-based name.
 - **Outside git** the name is the current folder's name. To give a non-git project one name across all of its subfolders, put an empty `.claude-mem-project` file (or a `.claude-mem.json`) in its root folder: every folder below it then uses the root folder's name. Memory stored under a subfolder's own name before you added the file stays readable from that subfolder. Marker files in your home directory, the system temp directory or Claude's config directory are ignored, so they can never fold unrelated folders together.
+- **Named environments** (`CLAUDE_MEM_PROJECT_ENVIRONMENTS`) group several folders, git or not, into one project and win over every rule above. For example, `[{"name": "acme", "patterns": ["~/work/acme/**"]}]` files everything under `~/work/acme` as `acme`, and SessionStart labels it as an environment. Memory those folders stored under their own names stays readable from them; to fold it into the environment for good, run `npx claude-mem project merge <old-name> acme`. The merge rewrites nothing (rows are marked as merged, the way a worktree folds into its repository), reaches your other devices through cloud sync, and updates semantic search.
 
 ## Files and Directories
 

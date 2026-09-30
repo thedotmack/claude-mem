@@ -1,6 +1,7 @@
 export interface Observation {
   id: number;
   memory_session_id: string;
+  content_session_id: string;
   project: string;
   merged_into_project?: string | null;
   platform_source: string;
@@ -41,6 +42,15 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
+export interface SessionCatalogEntry {
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  custom_title: string | null;
+  started_at_epoch: number;
+  item_count: number;
+}
+
 export type FeedItem =
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })
@@ -49,7 +59,7 @@ export type FeedItem =
 export type FeedItemType = 'observation' | 'summary' | 'prompt';
 
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -61,6 +71,9 @@ export interface StreamEvent {
   queueDepth?: number;
   itemType?: FeedItemType;
   id?: number;
+  /** session_deleted */
+  platformSource?: string;
+  contentSessionId?: string;
 }
 
 export interface ProjectCatalog {

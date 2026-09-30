@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -10,7 +11,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
-import { getSelectedProvider, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -30,15 +31,24 @@ import {
   isDependencyStatusInCooldown,
   recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
-import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
+import { findClaudeExecutable, isClaudeExecutableUnspawnable } from '../../../../shared/find-claude-executable.js';
 import {
   tryAdmitQuotaProbe,
   releaseQuotaProbe,
   getQuotaCooldown,
+  isQuotaCooldownActive,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
+import { isClassified, type ClassifiedProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
+import {
+  canAttemptClaudeCliSelfHeal,
+  recordClaudeCliSelfHealAttempt,
+  clearClaudeCliSelfHealAttempts,
+  claudeCliSelfHealAttemptsInWindow,
+  SELF_HEAL_MAX_ATTEMPTS,
+} from '../../stale-spawn-recovery.js';
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
@@ -73,6 +83,52 @@ export class SessionRoutes extends BaseRouteHandler {
     this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
   }
 
+  /**
+   * A worker process self-heals the stale-Claude-spawn wedge at most once: the
+   * restart replaces this process, so concurrent sessions hitting the same wedge
+   * must not each burn a slot in the per-generation persistent budget.
+   */
+  private claudeSelfHealTriggered = false;
+
+  /**
+   * When the Claude CLI is present on disk but this worker process can no longer
+   * spawn it (ENOENT after a CLI auto-update swapped the binary underneath a
+   * long-running process), an in-process re-probe can never recover — only a
+   * fresh process can. Self-restart the worker via the successor-handoff path,
+   * bounded by a cross-process-persistent budget so a genuinely broken install
+   * cannot thrash. Returns true when a restart was triggered.
+   */
+  private maybeSelfHealStaleClaudeSpawn(error: unknown, source: string, sessionDbId: number): boolean {
+    const cause = isClassified(error) ? (error as ClassifiedProviderError).cause : undefined;
+    const unspawnable = isClaudeExecutableUnspawnable(error) || isClaudeExecutableUnspawnable(cause);
+    if (!unspawnable) return false;
+
+    // Restart already scheduled by an earlier session in this process — the
+    // successor will re-resolve the CLI; do not record another attempt.
+    if (this.claudeSelfHealTriggered) return true;
+
+    if (!canAttemptClaudeCliSelfHeal()) {
+      logger.warn('SESSION', 'Claude CLI present but unspawnable; self-heal restart budget exhausted — leaving in setup_required (restart claude-mem manually / verify the CLI)', {
+        sessionId: sessionDbId,
+        source,
+        attemptsInWindow: claudeCliSelfHealAttemptsInWindow(),
+        maxAttempts: SELF_HEAL_MAX_ATTEMPTS,
+      });
+      return false;
+    }
+
+    const attempt = recordClaudeCliSelfHealAttempt();
+    logger.warn('SESSION', 'Claude CLI present on disk but unspawnable from this worker (stale process after CLI auto-update) — self-restarting to recover', {
+      sessionId: sessionDbId,
+      source,
+      selfHealAttempt: attempt,
+      maxAttempts: SELF_HEAL_MAX_ATTEMPTS,
+    });
+    this.claudeSelfHealTriggered = true;
+    void this.workerService.shutdown('restart');
+    return true;
+  }
+
   private formatTelegramWrapup = async (input: TelegramWrapupFormatterInput): Promise<string> => {
     const activeSession = this.sessionManager.getSession(input.sessionDbId);
     const selection = activeSession?.currentProvider
@@ -89,10 +145,44 @@ export class SessionRoutes extends BaseRouteHandler {
         default:
           return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
       }
+    } catch (error) {
+      // A wrap-up is a gateway request like any other: a terminal rejection
+      // records the fallback, and when this wrap-up holds the post-window
+      // re-probe claim, its failure keeps memory on Claude.
+      if (selection.provider === 'openrouter') {
+        recordCmemFallbackIfEligible(error, selection.gatewayProbeClaimId);
+      }
+      throw error;
     } finally {
       releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
     }
   };
+
+  /** Schedule retries through the normal provider gates and per-session mutex.
+   * The count is attempts scheduled, not generators admitted by those gates.
+   *
+   * The automatic sweep is paced by the provider's quota breaker (read-only):
+   * nothing is scheduled while the breaker withholds requests, since every
+   * attempt would only log a skip (#4127 counted 159 of those). Once the window
+   * elapses, one session per tick goes through to carry the recovery probe; the
+   * rest follow after that probe succeeds and clears the breaker. The operator
+   * retry (`POST /api/processing`) is not paced.
+   */
+  public resumePendingSessions(source: string, includeOperatorOnly: boolean = false): number {
+    let sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
+    if (!includeOperatorOnly && sessionIds.length > 0) {
+      const provider = getSelectedProvider();
+      if (isQuotaCooldownActive(provider)) return 0;
+      if (getQuotaCooldown(provider)) sessionIds = sessionIds.slice(0, 1);
+    }
+    for (const sessionDbId of sessionIds) {
+      void this.ensureGeneratorRunning(sessionDbId, source).catch((error: unknown) => {
+        logger.warn('SESSION', 'Failed to resume buffered session', { sessionId: sessionDbId, source },
+          error instanceof Error ? error : new Error(String(error)));
+      });
+    }
+    return sessionIds.length;
+  }
 
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
@@ -171,11 +261,24 @@ export class SessionRoutes extends BaseRouteHandler {
           try {
             findClaudeExecutable('SDK');
             clearDependencyStatus('claude_cli');
+            clearClaudeCliSelfHealAttempts();
             logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {
               sessionId: sessionDbId,
               source,
             });
           } catch (error) {
+            if (this.maybeSelfHealStaleClaudeSpawn(error, source, sessionDbId)) {
+              // The self-heal restart can be delayed or fail to hand off, and a
+              // second session hitting the already-triggered flag returns here
+              // while the first restart is still pending — in any of those
+              // windows this worker keeps running. No generator is started to
+              // carry the claim, so release it now like every other early
+              // return in this block; otherwise the gateway probe stays
+              // in-flight and suppresses later gateway checks in a worker that
+              // survived its own restart trigger.
+              releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+              return;
+            }
             const err = error instanceof Error ? error : new Error(String(error));
             const classified = classifyClaudeError(error);
             if (classified.kind === 'setup_required') {
@@ -220,16 +323,9 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortReason = 'provider_switch';
       session.abortController.abort();
 
-      // Must fully await the OLD generator's .catch().finally() chain (which
-      // runs handleGeneratorExit) before starting a new one: handleGeneratorExit
-      // nulls session.generatorPromise/currentProvider unconditionally with no
-      // identity check, so racing this would let the old generator's async
-      // cleanup stomp the freshly-started generator's state.
-      if (oldGeneratorPromise) {
-        await oldGeneratorPromise;
-      }
-
-      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      await this.admitAndStartGenerator(
+        session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, oldGeneratorPromise,
+      );
       return;
     }
 
@@ -244,8 +340,9 @@ export class SessionRoutes extends BaseRouteHandler {
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider
-      // The shared conversationHistory ensures context is preserved
+      // Let current generator finish naturally, next one will use new provider.
+      // The buffered queue carries over; the next generator opens a new
+      // generation seeded from this session's memory (#3800, #3479).
     }
   }
 
@@ -262,56 +359,81 @@ export class SessionRoutes extends BaseRouteHandler {
     selectedProvider: 'claude' | 'gemini' | 'openrouter',
     source: string,
     gatewayProbeClaimId: number | null,
+    /** The parked generator a provider switch is replacing, if any. */
+    previousGenerator: Promise<void> | null = null,
   ): Promise<void> {
-    // Quota breaker (#3634). Without this, an exhausted allowance produced one
-    // doomed request per captured tool call for the rest of the billing cycle:
-    // the generator exits on the refusal, and the next observation starts a
-    // fresh one that earns the same refusal. Withhold requests for a cooldown,
-    // then let exactly one through to re-probe.
-    // Claim the probe rather than merely reading the clock: every live session
-    // sees the window elapse at the same instant, so a bare check would let
-    // them all through together.
-    const admission = tryAdmitQuotaProbe(selectedProvider);
-    if (!admission.admitted) {
-      // This run is not starting, so it must not hold the gateway re-probe.
-      releaseCmemGatewayProbe(gatewayProbeClaimId);
-      const cooldown = getQuotaCooldown(selectedProvider);
-      logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
-        sessionId: sessionDbId,
-        source,
-        provider: selectedProvider,
-        ...(cooldown?.window ? { window: cooldown.window } : {}),
-        probeInFlight: cooldown?.probeInFlightSinceMs !== null,
-        retryInMs: cooldown
-          ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
-          : 0,
-      });
-      return;
-    }
+    let quotaProbeClaimId: number | null = null;
+    try {
+      // Must fully await the OLD generator's .catch().finally() chain (which
+      // runs handleGeneratorExit) before starting a new one: handleGeneratorExit
+      // nulls session.generatorPromise/currentProvider unconditionally with no
+      // identity check, so racing this would let the old generator's async
+      // cleanup stomp the freshly-started generator's state.
+      if (previousGenerator) {
+        await previousGenerator;
+      }
 
-    await this.applyTierRouting(session);
-    // Tier routing yields before the generator is installed. Deletion can
-    // remove the session in that gap; do not restart its aborted controller or
-    // retain either probe claim for an orphaned generator.
-    if (this.sessionManager.getSession(sessionDbId) !== session
-      || this.sessionManager.isSessionDeleting?.(sessionDbId)
-      || session.abortReason === 'shutdown') {
-      releaseQuotaProbe(selectedProvider, admission.claimId);
+      // Quota breaker (#3634). Without this, an exhausted allowance produced one
+      // doomed request per captured tool call for the rest of the billing cycle:
+      // the generator exits on the refusal, and the next observation starts a
+      // fresh one that earns the same refusal. Withhold requests for a cooldown,
+      // then let exactly one through to re-probe.
+      // Claim the probe rather than merely reading the clock: every live session
+      // sees the window elapse at the same instant, so a bare check would let
+      // them all through together.
+      const admission = tryAdmitQuotaProbe(selectedProvider);
+      if (!admission.admitted) {
+        // This run is not starting, so it must not hold the gateway re-probe.
+        releaseCmemGatewayProbe(gatewayProbeClaimId);
+        const cooldown = getQuotaCooldown(selectedProvider);
+        logger.warn('SESSION', 'Skipping generator start while the provider cooldown is active', {
+          sessionId: sessionDbId,
+          source,
+          provider: selectedProvider,
+          ...(cooldown?.cause ? { cause: cooldown.cause } : {}),
+          ...(cooldown?.window ? { window: cooldown.window } : {}),
+          probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+          retryInMs: cooldown
+            ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+            : 0,
+        });
+        return;
+      }
+      quotaProbeClaimId = admission.claimId;
+
+      await this.applyTierRouting(session);
+      // Tier routing yields before the generator is installed. Deletion can
+      // remove the session in that gap; do not restart its aborted controller or
+      // retain either probe claim for an orphaned generator.
+      if (this.sessionManager.getSession(sessionDbId) !== session
+        || this.sessionManager.isSessionDeleting?.(sessionDbId)
+        || session.abortReason === 'shutdown') {
+        releaseQuotaProbe(selectedProvider, quotaProbeClaimId);
+        releaseCmemGatewayProbe(gatewayProbeClaimId);
+        return;
+      }
+      // The claim travels with the run that took it: only that run may release
+      // it, or an earlier generator's exit would clear a later session's probe.
+      await this.startGeneratorWithProvider(
+        session, selectedProvider, source, quotaProbeClaimId, gatewayProbeClaimId,
+      );
+    } catch (error) {
+      // Neither claim may outlive a run that never started, or it wedges its
+      // probe shut until it goes stale. A generator that did start releases
+      // its own on exit; releasing again is a no-op, scoped to the claim id.
+      releaseQuotaProbe(selectedProvider, quotaProbeClaimId);
       releaseCmemGatewayProbe(gatewayProbeClaimId);
-      return;
+      throw error;
     }
-    // The claim travels with the run that took it: only that run may release
-    // it, or an earlier generator's exit would clear a later session's probe.
-    await this.startGeneratorWithProvider(
-      session, selectedProvider, source, admission.claimId, gatewayProbeClaimId,
-    );
   }
 
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
     provider: 'claude' | 'gemini' | 'openrouter',
     source: string,
+    /** The quota probe this run claimed, or null when it was admitted without one. */
     quotaProbeClaimId: number | null,
+    /** The cmem-gateway re-probe this run claimed, or null when it took none. */
     gatewayProbeClaimId: number | null = null,
   ): Promise<void> {
     return startGeneratorWithProvider(session, provider, source, quotaProbeClaimId, gatewayProbeClaimId, {
@@ -322,10 +444,20 @@ export class SessionRoutes extends BaseRouteHandler {
       workerService: this.workerService,
       completionHandler: this.completionHandler,
       ensureGeneratorRunning: (id, trigger) => this.ensureGeneratorRunning(id, trigger),
+      maybeSelfHealStaleClaudeSpawn: (error, trigger, id) => this.maybeSelfHealStaleClaudeSpawn(error, trigger, id),
     });
   }
 
   setupRoutes(app: express.Application): void {
+    // Operator repair route: it starts generators and retries auth/transport
+    // pauses that the automatic sweep leaves alone, so it is localhost-only
+    // like the other admin routes.
+    app.post(
+      '/api/processing',
+      requireLocalhost,
+      validateBody(SessionRoutes.processingSchema),
+      this.handleProcessing.bind(this)
+    );
     app.post(
       '/api/sessions/init',
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
@@ -347,6 +479,24 @@ export class SessionRoutes extends BaseRouteHandler {
       this.handleSessionEnd.bind(this)
     );
   }
+
+  private static readonly processingSchema = z.object({
+    isProcessing: z.boolean(),
+  });
+
+  private handleProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // Legacy callers request false to unstick processing. There is no global
+    // processing flag to reset: retry existing buffered sessions instead.
+    const scheduledSessions = req.body.isProcessing ? 0 : this.resumePendingSessions('processing-api', true);
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    res.json({
+      status: 'ok',
+      isProcessing: queueDepth > 0,
+      queueDepth,
+      activeSessions: this.sessionManager.getActiveSessionCount(),
+      scheduledSessions,
+    });
+  });
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),

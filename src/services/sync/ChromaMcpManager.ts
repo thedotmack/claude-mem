@@ -18,6 +18,7 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import type { ChromaCollectionDrop } from './ChromaSync.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -73,6 +74,21 @@ const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 // An unparseable lock (typically a 0-byte file left by a crash mid-write) has no
 // owner to probe; once it is this old no concurrent writer is still filling it in.
 const CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS = 10_000;
+const CHROMA_STORE_RECORD_FILENAME = '.claude-mem-chroma-store.json';
+// Writer epoch — monotonic integer, bumped only when an older writer can no
+// longer safely follow a newer one's store layout. Deliberately not tied to
+// the package version so routine releases do not trigger spurious refusals.
+//
+// Bump it whenever the chromadb pin in CHROMA_MCP_DEP_OVERRIDES crosses a
+// store-format boundary. chromadb migrations are forward-only, and an older
+// engine can crash on a newer store: chromadb 1.0.16 panics opening a store
+// that 1.5.9 wrote ("range start index 10 out of range", #3384). After the
+// bump, an older claude-mem refuses such a store up front instead of handing
+// it to an engine that cannot read it.
+const CHROMA_WRITER_EPOCH = 1;
+// Size cap for the store record. A legitimate record is a small JSON envelope;
+// anything larger is damaged or adversarially written and must fail open.
+const CHROMA_STORE_RECORD_MAX_BYTES = 64 * 1024;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -108,6 +124,32 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'protobuf<7',
   'chromadb==1.5.9',
 ];
+
+// The chromadb version the launcher pins, read from the override list itself
+// so the store record can never disagree with what uvx actually runs.
+const CHROMADB_PINNED_VERSION: string | null =
+  CHROMA_MCP_DEP_OVERRIDES.find(spec => spec.startsWith('chromadb=='))?.slice('chromadb=='.length) ?? null;
+
+/** Chroma child health for /api/admin/doctor and `npx claude-mem doctor`. */
+export interface ChromaCrashState {
+  /** Unexpected exits of the chroma-mcp child (uvx) in this worker's lifetime. */
+  count: number;
+  /** The last one. uvx is the direct child, so a crash inside chroma-mcp usually shows as its exit code. */
+  lastExit: {
+    timestamp: string;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  } | null;
+  chromaMcpVersion: string;
+  dependencyOverrides: string[];
+  /** The uvx prewarm circuit breaker (#4108): paused after 5 consecutive failures, stopped after 20. */
+  prewarm: {
+    consecutiveFailures: number;
+    state: 'ok' | 'paused' | 'stopped';
+  };
+  /** The last collection dropped as corrupt and rebuilt from SQLite (#3202), if any. */
+  collectionDrop?: ChromaCollectionDrop | null;
+}
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
 // every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
@@ -161,6 +203,21 @@ interface ChromaWriterLockPayload {
   processName?: string | null;
 }
 
+interface ChromaStoreRecord {
+  writerEpoch: number;
+  chromaMcpVersion: string;
+  /** The chromadb engine version that last wrote the store ('' when unknown). */
+  chromadbVersion: string;
+  // depOverrides is written for diagnostic provenance but not parsed back —
+  // element types are unchecked and the field never participates in any predicate.
+  clientType: string;
+  claudeMemVersion: string;
+  updatedAt: string;
+}
+
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const claudeMemVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
 // Keep one writer identity for the lifetime of this process. Multiple manager
 // instances can be created during reconnects/tests, and they must be able to
 // re-acquire a lock that this process already owns.
@@ -197,6 +254,8 @@ export class ChromaMcpManager {
   private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
+  private chromaCrashCount = 0;
+  private chromaLastExit: ChromaCrashState['lastExit'] = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {
@@ -279,6 +338,15 @@ export class ChromaMcpManager {
     this.assertConnectionNotCancelled(connectionGeneration);
 
     const localChromaDataDir = this.getLocalPersistentChromaDataDir();
+
+    // Pre-spawn compatibility check (refs #3012): refuse before prewarm and
+    // before lock acquisition when the on-disk record proves this store was
+    // last written by a newer epoch than this runtime.  The reader never
+    // creates the data dir — acquireChromaWriterLock() retains that right.
+    if (localChromaDataDir) {
+      ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
+    }
+
     const commandArgs = this.buildCommandArgs(localChromaDataDir);
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
@@ -312,6 +380,7 @@ export class ChromaMcpManager {
     try {
       if (localChromaDataDir) {
         this.acquireChromaWriterLock(localChromaDataDir);
+        ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
       }
 
       this.transport = new StdioClientTransport({
@@ -382,6 +451,10 @@ export class ChromaMcpManager {
     }
     clearTimeout(timeoutId!);
 
+    if (localChromaDataDir) {
+      ChromaMcpManager.writeChromaStoreRecord(localChromaDataDir);
+    }
+
     this.connected = true;
     this.registerManagedProcess();
     clearDependencyStatus('chroma');
@@ -406,7 +479,23 @@ export class ChromaMcpManager {
         logger.debug('CHROMA_MCP', 'Ignoring onclose from intentionally closed transport');
         return;
       }
-      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
+      // The transport clears its own handle before onclose fires, so read the
+      // exit from the child captured at connect. That child is uvx, not
+      // python: a crash in chroma-mcp (e.g. SIGSEGV) usually surfaces as uvx's
+      // exit code rather than a signal on uvx itself, so both are recorded.
+      this.chromaCrashCount += 1;
+      this.chromaLastExit = {
+        timestamp: new Date().toISOString(),
+        code: transportChild?.exitCode ?? null,
+        signal: transportChild?.signalCode ?? null,
+      };
+      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff', {
+        count: this.chromaCrashCount,
+        exitCode: this.chromaLastExit.code,
+        signalCode: this.chromaLastExit.signal,
+        chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+        dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      });
       this.connected = false;
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
       this.client = null;
@@ -419,6 +508,24 @@ export class ChromaMcpManager {
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
       this.scheduleUnexpectedCloseCleanup(currentTracked);
+    };
+  }
+
+  getCrashState(): ChromaCrashState {
+    const consecutiveFailures = this.consecutivePrewarmFailures;
+    return {
+      count: this.chromaCrashCount,
+      lastExit: this.chromaLastExit ? { ...this.chromaLastExit } : null,
+      chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      prewarm: {
+        consecutiveFailures,
+        state: consecutiveFailures >= CHROMA_PREWARM_GIVE_UP_FAILURES
+          ? 'stopped'
+          : consecutiveFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES
+            ? 'paused'
+            : 'ok',
+      },
     };
   }
 
@@ -643,6 +750,7 @@ export class ChromaMcpManager {
 
   private static readChromaWriterLock(lockPath: string): ChromaWriterLockPayload | null {
     try {
+      if (!fs.statSync(lockPath).isFile()) return null;
       const raw = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as Partial<ChromaWriterLockPayload>;
       if (
         typeof raw.pid !== 'number' ||
@@ -693,6 +801,113 @@ export class ChromaMcpManager {
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
     return currentStartToken === null || currentStartToken === lock.startToken;
+  }
+
+  private static readChromaStoreRecord(
+    dataDir: string,
+  ): { kind: 'absent' } | { kind: 'damaged'; reason: string } | { kind: 'valid'; record: ChromaStoreRecord } {
+    const recordPath = path.join(path.resolve(dataDir), CHROMA_STORE_RECORD_FILENAME);
+    let raw: string;
+    try {
+      const stat = fs.statSync(recordPath);
+      if (!stat.isFile()) {
+        return { kind: 'damaged', reason: 'record path is not a regular file' };
+      }
+      if (stat.size > CHROMA_STORE_RECORD_MAX_BYTES) {
+        return { kind: 'damaged', reason: `record size ${stat.size} exceeds limit ${CHROMA_STORE_RECORD_MAX_BYTES}` };
+      }
+      raw = fs.readFileSync(recordPath, 'utf-8');
+    } catch (error) {
+      const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (errno === 'ENOENT') {
+        return { kind: 'absent' };
+      }
+      return { kind: 'damaged', reason: error instanceof Error ? error.message : String(error) };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { kind: 'damaged', reason: 'JSON parse error' };
+    }
+    if (typeof parsed !== 'object' || parsed === null) {
+      return { kind: 'damaged', reason: 'record is not an object' };
+    }
+    const candidate = parsed as Record<string, unknown>;
+    if (!Number.isInteger(candidate.writerEpoch)) {
+      return { kind: 'damaged', reason: `writerEpoch is ${typeof candidate.writerEpoch}, expected integer` };
+    }
+    return {
+      kind: 'valid',
+      record: {
+        writerEpoch: candidate.writerEpoch as number,
+        chromaMcpVersion: typeof candidate.chromaMcpVersion === 'string' ? candidate.chromaMcpVersion : '',
+        chromadbVersion: typeof candidate.chromadbVersion === 'string' ? candidate.chromadbVersion : '',
+        clientType: typeof candidate.clientType === 'string' ? candidate.clientType : '',
+        claudeMemVersion: typeof candidate.claudeMemVersion === 'string' ? candidate.claudeMemVersion : '',
+        updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : '',
+      },
+    };
+  }
+
+  private static assertChromaStoreCompatible(dataDir: string): void {
+    const stored = ChromaMcpManager.readChromaStoreRecord(dataDir);
+    if (stored.kind === 'damaged') {
+      logger.warn('CHROMA_MCP', 'Chroma store record is damaged; connecting anyway', {
+        dataDir,
+        reason: stored.reason,
+      });
+      return;
+    }
+    if (stored.kind !== 'valid' || stored.record.writerEpoch <= CHROMA_WRITER_EPOCH) {
+      return;
+    }
+
+    // Strip non-printables and cap each field so injected control characters
+    // or outsized strings cannot propagate through the health map to API responses.
+    const sanitizeField = (s: string) => s.replace(/[^\x20-\x7E]/g, '').slice(0, 80);
+    const version = sanitizeField(stored.record.claudeMemVersion);
+    const ts = sanitizeField(stored.record.updatedAt);
+    const engine = sanitizeField(stored.record.chromadbVersion);
+    const writerDesc = [
+      version
+        ? `claude-mem ${version}${ts ? ` at ${ts}` : ''}`
+        : ts || 'an unknown version',
+      ...(engine ? [`chromadb ${engine}`] : []),
+    ].join(', ');
+    const message =
+      `Chroma data dir ${path.resolve(dataDir)} was last written by epoch ` +
+      `${stored.record.writerEpoch} (${writerDesc}); this writer is epoch ${CHROMA_WRITER_EPOCH}. ` +
+      `Upgrade claude-mem to match the version that last wrote this store, ` +
+      `or configure a distinct CLAUDE_MEM_DATA_DIR.`;
+    recordChromaVectorSearchUnavailable(message);
+    throw new ChromaUnavailableError(message);
+  }
+
+  private static writeChromaStoreRecord(dataDir: string): void {
+    const normalizedDataDir = path.resolve(dataDir);
+    const recordPath = path.join(normalizedDataDir, CHROMA_STORE_RECORD_FILENAME);
+    const tmp = `${recordPath}.tmp`;
+    // depOverrides is written for diagnostic provenance but not typed on ChromaStoreRecord
+    // (see interface comment) — the write payload intentionally extends beyond the read type.
+    const record = {
+      writerEpoch: CHROMA_WRITER_EPOCH,
+      chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      chromadbVersion: CHROMADB_PINNED_VERSION ?? '',
+      depOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      clientType: 'persistent',
+      claudeMemVersion,
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(record, null, 2), 'utf-8');
+      fs.renameSync(tmp, recordPath);
+    } catch (error) {
+      logger.warn('CHROMA_MCP', 'Failed to write Chroma store record; connecting anyway', {
+        recordPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private static buildLauncherPrefix(pythonVersion: string): string[] {

@@ -107,6 +107,25 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   return match;
 }
 
+/**
+ * The verified-owner PID info from the worker PID file, or null when the file
+ * is missing, unparseable, or names a process that is not a live claude-mem
+ * worker. Read-only sibling of validateWorkerPidFile for callers that need
+ * the pid itself (the hook's stale-worker kill in shared/worker-utils.ts, the
+ * installer's cache prune and pre-overwrite stop). Lives here, beside
+ * verifyPidFileOwnership, so npx-cli callers need not import the supervisor.
+ */
+export function readOwnedWorkerPidInfo(pidFilePath: string = paths.workerPid()): PidInfo | null {
+  if (!existsSync(pidFilePath)) return null;
+  let pidInfo: PidInfo | null;
+  try {
+    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo | null;
+  } catch {
+    return null;
+  }
+  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
+}
+
 export class ProcessRegistry {
   private readonly registryPath: string;
   private readonly entries = new Map<string, ManagedProcessInfo>();
@@ -761,11 +780,17 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   const filteredArgs: string[] = [];
   for (const arg of args) {
     if (arg === '') {
-      // The SDK encodes optional flag/value pairs as `--flag ''` when the
-      // value is absent. Strip the whole pair, but only when the preceding
-      // token is a long option so positional args are left untouched.
-      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
-        filteredArgs.pop();
+      // The SDK encodes an explicitly empty value as the pair `--flag ''`:
+      // `tools: []` becomes `--tools ''`, which tells the CLI "no built-in
+      // tools". cmd.exe drops empty arguments (#3317), but stripping the pair
+      // changed its meaning: without `--tools` the CLI loads its full default
+      // tool set. Fold the pair into the single token `--flag=` instead, which
+      // carries the same empty value and survives cmd.exe. An empty positional
+      // argument is still dropped.
+      const previousIndex = filteredArgs.length - 1;
+      const previousArg = filteredArgs[previousIndex];
+      if (previousArg !== undefined && previousArg.startsWith('--') && !previousArg.includes('=')) {
+        filteredArgs[previousIndex] = `${previousArg}=`;
       }
       continue;
     }

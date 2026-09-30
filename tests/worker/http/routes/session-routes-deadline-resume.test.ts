@@ -431,6 +431,7 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       workerService: {} as any,
       completionHandler: { finalizeSession: async () => {} } as any,
       ensureGeneratorRunning: (id, source) => harness.routes.ensureGeneratorRunning(id, source),
+      maybeSelfHealStaleClaudeSpawn: () => false,
     });
     const running = harness.session.generatorPromise!;
 

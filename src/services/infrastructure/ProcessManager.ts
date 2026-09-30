@@ -9,6 +9,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
+import { buildWorktreeProjectKey } from '../../utils/project-name.js';
 import { paths } from '../../shared/paths.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 
@@ -19,7 +20,7 @@ const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
 
 const BUN_NOT_FOUND_MESSAGE =
-  'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.';
+  'Bun runtime not found — install from https://bun.sh and ensure it is on PATH, under ~/.bun/bin, or set BUN / BUN_PATH / BUN_INSTALL. The worker daemon requires Bun because it uses bun:sqlite.';
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
@@ -99,6 +100,19 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
   return result;
 }
 
+/**
+ * Bun's official installer honors BUN_INSTALL (default ~/.bun) and puts the
+ * binary in $BUN_INSTALL/bin. Hook shells on Windows often lack that
+ * directory on PATH (#3224).
+ */
+function bunInstallBinCandidates(bunInstall: string | undefined, platform: NodeJS.Platform): string[] {
+  const root = bunInstall?.trim();
+  if (!root) return [];
+  return platform === 'win32'
+    ? [path.join(root, 'bin', 'bun.exe'), path.join(root, 'bin', 'bun'), path.join(root, 'bun.exe')]
+    : [path.join(root, 'bin', 'bun'), path.join(root, 'bun')];
+}
+
 function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): string | null {
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
@@ -117,6 +131,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     ? [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
@@ -127,6 +142,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     : [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
@@ -261,7 +277,7 @@ function classifyCwdForRemap(cwd: string): CwdClassification {
     ? path.dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
   const parent = path.basename(parentRepoDir);
-  return { kind: 'worktree', project: `${parent}/${leaf}` };
+  return { kind: 'worktree', project: buildWorktreeProjectKey(parent, leaf) };
 }
 
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
@@ -405,8 +421,10 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
  * outlives the session that spawned it -- so a project folder became permanently locked
  * with "The process cannot access the file because it is being used by another process"
  * until the user found and killed bun.exe (#3706). POSIX allows the rename but still
- * pins the directory against unmount. claude-mem's own data directory always exists by
- * the time a daemon starts and is never a directory the user is reorganising.
+ * pins the directory against unmount. On Linux an inherited cwd that is later deleted (a
+ * removed git worktree) also makes every child spawn fail with ENOENT, the second
+ * trigger of the #3290 wedge. claude-mem's own data directory always exists by the time
+ * a daemon starts and is never a directory the user is reorganising.
  */
 export function daemonWorkingDirectory(): string {
   const dir = paths.dataDir();

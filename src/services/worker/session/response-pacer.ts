@@ -33,13 +33,33 @@ export const RESPONSE_STALL_RESUME_DELAY_MS = 30_000;
 export const MAX_CONSECUTIVE_STALL_RESUMES = 3;
 
 /**
+ * Consecutive rate-limit resumes allowed before a session stops resuming on its
+ * own and the provider breaker takes over. An answered queued-work turn resets
+ * the count, so this only trips when the provider keeps refusing.
+ */
+export const MAX_CONSECUTIVE_RATE_LIMIT_RESUMES = 3;
+
+/**
  * Count one response-stall exit and decide whether to resume automatically.
  * Returns the attempt number so the caller can log it.
  */
 export function planResponseStallResume(session: ActiveSession): { resume: boolean; attempts: number } {
-  const attempts = (session.consecutiveResponseStalls ?? 0) + 1;
-  session.consecutiveResponseStalls = attempts;
-  return { resume: attempts <= MAX_CONSECUTIVE_STALL_RESUMES, attempts };
+  return planBoundedResume(session, 'consecutiveResponseStalls', MAX_CONSECUTIVE_STALL_RESUMES);
+}
+
+/** Count one rate-limit pause that named a Retry-After and decide whether to resume after it. */
+export function planRateLimitResume(session: ActiveSession): { resume: boolean; attempts: number } {
+  return planBoundedResume(session, 'consecutiveRateLimitResumes', MAX_CONSECUTIVE_RATE_LIMIT_RESUMES);
+}
+
+function planBoundedResume(
+  session: ActiveSession,
+  counter: 'consecutiveResponseStalls' | 'consecutiveRateLimitResumes',
+  maxResumes: number,
+): { resume: boolean; attempts: number } {
+  const attempts = (session[counter] ?? 0) + 1;
+  session[counter] = attempts;
+  return { resume: attempts <= maxResumes, attempts };
 }
 
 export class ObserverResponsePacer {

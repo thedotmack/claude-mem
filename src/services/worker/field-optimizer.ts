@@ -28,10 +28,25 @@ import { logger } from '../../utils/logger.js';
  * A single bounded model call: condense `text` to at most `budgetChars`.
  * Returns null when the provider cannot do it. Supplied by each provider so
  * this module stays free of provider wiring and is testable on its own.
+ * `deadlineMs` is the deadline `signal` enforces; a provider whose request
+ * path has its own per-attempt timeout must use it there too, or its shorter
+ * default cuts the pass off first (#4134).
  */
-export type FieldCompressor = (text: string, budgetChars: number, signal: AbortSignal) => Promise<string | null>;
+export type FieldCompressor = (
+  text: string,
+  budgetChars: number,
+  signal: AbortSignal,
+  deadlineMs: number,
+) => Promise<string | null>;
 
-/** How long one compression pass may run before the observer gives up on it. */
+/**
+ * Default deadline for one compression pass before the observer gives up on it.
+ * Overridable per call via CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS — the providers
+ * pass resolveFieldOptimizeTimeoutMs (the function, not its result) so the
+ * settings file is read only on the rare oversized branch, not every turn. This
+ * constant stays the fallback so the module has no settings dependency of its
+ * own and remains testable in isolation.
+ */
 export const FIELD_OPTIMIZE_TIMEOUT_MS = 30_000;
 
 /**
@@ -85,6 +100,7 @@ export async function optimizeField(
   compress: FieldCompressor,
   context: { sessionDbId: number; field: string; toolName?: string },
   maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
+  timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
 ): Promise<unknown> {
   const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) {
@@ -92,9 +108,13 @@ export async function optimizeField(
   }
 
   const budget = Math.floor(maxChars * FIELD_OPTIMIZE_TARGET_RATIO);
+  // Resolve the deadline only now that a field is actually over budget — a lazy
+  // provider keeps the per-turn common case (everything fits) free of the
+  // settings-file read behind resolveFieldOptimizeTimeoutMs.
+  const deadlineMs = typeof timeoutMs === 'function' ? timeoutMs() : timeoutMs;
   let condensed: string | null = null;
   try {
-    condensed = await withTimeout(signal => compress(raw, budget, signal), FIELD_OPTIMIZE_TIMEOUT_MS);
+    condensed = await withTimeout(signal => compress(raw, budget, signal, deadlineMs), deadlineMs);
   } catch (error) {
     logger.warn('SDK', 'Oversized field compression failed; falling back to truncation', {
       sessionId: context.sessionDbId,
@@ -178,6 +198,7 @@ export async function optimizeObservationFields(
   compress: FieldCompressor,
   context: { sessionDbId: number; toolName?: string },
   maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
+  timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
 ): Promise<{ toolInput: unknown; toolOutput: unknown }> {
   // Inlined image payloads come out before anything measures or compresses the
   // field. `buildObservationPrompt` strips too, but it runs after this: a
@@ -192,9 +213,9 @@ export async function optimizeObservationFields(
   };
 
   const [toolInput, toolOutput] = await Promise.all([
-    optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars),
+    optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs),
     optimizeField(context.toolName === 'Edit' ? compactEditOutput(stripped, maxChars) : stripped.toolOutput,
-      compress, { ...context, field: 'outcome' }, maxChars),
+      compress, { ...context, field: 'outcome' }, maxChars, timeoutMs),
   ]);
   return { toolInput, toolOutput };
 }

@@ -3,6 +3,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
+import { DEADLINE_EXCEEDED_CODE } from '../provider-errors.js';
 
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
@@ -51,24 +52,32 @@ export async function handleGeneratorExit(
   // start a fresh generator for the newly-selected provider on this same
   // session — finalizeSession + removeSessionImmediate would dispose the
   // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
-  // wiping the very queue/conversationHistory the switch is meant to preserve.
+  // wiping the very queue the switch is meant to preserve. The transcript is
+  // not carried over: every generator start opens a new generation seeded from
+  // the session's memory (#3800, #3479), so the queue is what must survive.
   const abortCategory = (reason ?? '').split(':')[0];
   // Every category listed here has ALREADY called resetProcessingToPending
   // (except provider_switch, which parks a live buffer for a provider change).
   // Falling through to finalizeSession would remove the session and undo that
   // preservation — the second half of #3752.
-  const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
+  const PRESERVES_CLAIMED_WORK = ['quota', 'rate_limit', 'auth', 'overflow', 'provider_switch', 'transport'];
+  // A deadline pause resumes on the transport backoff: labelled with its own
+  // code since #4278, or as a generic transient fault that outlived the
+  // provider's retries.
+  const resumesOnTransportBackoff = reason === 'transport:transient'
+    || reason === `transport:${DEADLINE_EXCEEDED_CODE}`;
   // A later run may finish for a different reason before an earlier transport
   // timer fires. Its old timer must not bypass the new pause decision.
-  if (reason !== 'transport:transient') {
+  if (!resumesOnTransportBackoff) {
     sessionManager.clearTransportResume?.(sessionDbId);
   }
   if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
+    session.pausedReason = abortCategory;
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
-    if (reason === 'transport:transient') {
+    if (resumesOnTransportBackoff) {
       sessionManager.scheduleTransportResume?.(sessionDbId);
     }
     return;
