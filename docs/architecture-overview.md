@@ -5,7 +5,7 @@
 ```text
 +-----------------------------------------------------------+
 |  Claude Code (host)                                       |
-|  +-- Hook System (5 events)                               |
+|  +-- Hook System (Setup + 5 lifecycle events)             |
 |  +-- MCP Client (search tools)                            |
 +-----------------------------------------------------------+
 |  CLI Layer (Bun)                                          |

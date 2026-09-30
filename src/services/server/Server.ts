@@ -5,15 +5,23 @@ import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
-import { createCorsMiddleware, createMiddleware, summarizeRequestBody, requireLocalhost } from './Middleware.js';
+import {
+  createCorsMiddleware,
+  createMiddleware,
+  createRemoteReadOnlyGuard,
+  requireLocalhost,
+  type RemoteReadOnlyOptions,
+} from '../worker/http/middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { ENV_PREFIXES, ENV_EXACT_MATCHES } from '../../supervisor/env-sanitizer.js';
 import { flushResponseThen } from './flushResponseThen.js';
 import { getUptimeSeconds } from '../../shared/uptime.js';
+import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
+import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -80,17 +88,29 @@ export interface AiStatus {
 export interface ServerOptions {
   getInitializationComplete: () => boolean;
   getMcpReady: () => boolean;
-  onShutdown: () => Promise<void>;
+  // reason feeds worker_stopped telemetry: 'restart' when the CLI restart
+  // path tags /api/admin/shutdown with ?reason=restart, 'stop' otherwise.
+  onShutdown: (reason?: 'stop' | 'restart') => Promise<void>;
   onRestart: () => Promise<void>;
   workerPath: string;
   runtime?: string;
   getAiStatus: () => AiStatus;
+  getDependencyHealth?: () => DependencyHealthSnapshot;
   preBodyParserRoutes?: RouteHandler[];
   getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
   // #2572 — when true, install a minimal set of hardening response headers
   // (the same headers helmet's defaults emit) before any route runs. Opt-in so
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
   securityHeaders?: boolean;
+  /**
+   * Observation TV remote broadcast. When present, a guard runs BEFORE every
+   * other middleware and route: loopback requests are untouched, and non-loopback
+   * requests may reach only /tv, /tv.html, /stream and GET /api/observations, and
+   * only with the shared secret. Absent (the default, and the server runtime's
+   * choice — it has its own API-key auth) ⇒ nothing is mounted and behavior is
+   * unchanged.
+   */
+  remoteReadOnly?: RemoteReadOnlyOptions;
 }
 
 // #2572 — hand-rolled security headers.
@@ -122,6 +142,11 @@ export class Server {
     this.options = options;
     this.app = express();
     this.app.disable('x-powered-by');
+    // Position zero is load-bearing: /api/auth/*splat (setupPreBodyParserRoutes),
+    // the express.static mount (setupMiddleware), /api/admin/* (setupCoreRoutes)
+    // and every route registered later all mount after this point. Anything
+    // mounted afterwards leaves earlier routes uncovered.
+    this.setupRemoteReadOnlyGuard();
     this.setupSecurityHeaders();
     this.setupCors();
     this.setupPreBodyParserRoutes();
@@ -136,13 +161,19 @@ export class Server {
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const server = http.createServer(this.app);
-      this.server = server;
       const onError = (err: Error) => {
         server.off('listening', onListening);
         reject(err);
       };
       const onListening = () => {
         server.off('error', onError);
+        // #3380 — retain the handle only once it is actually listening. A
+        // failed bind (e.g. EADDRINUSE) must never leave a non-listening
+        // handle behind for graceful shutdown to trip on.
+        this.server = server;
+        // #3300: stop Windows children from inheriting the listen socket so a
+        // crashed daemon's port frees instead of staying LISTENING under a dead PID.
+        clearWindowsListenSocketInherit(server);
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
       };
@@ -184,8 +215,15 @@ export class Server {
   }
 
   private setupMiddleware(): void {
-    const middlewares = createMiddleware(summarizeRequestBody, { includeCors: false });
+    const middlewares = createMiddleware();
     middlewares.forEach(mw => this.app.use(mw));
+  }
+
+  private setupRemoteReadOnlyGuard(): void {
+    if (!this.options.remoteReadOnly) {
+      return;
+    }
+    this.app.use(createRemoteReadOnlyGuard(this.options.remoteReadOnly));
   }
 
   private setupSecurityHeaders(): void {
@@ -212,6 +250,9 @@ export class Server {
         ? await this.options.getQueueHealth()
         : null;
       const queueDegraded = queueHealth?.engine === 'bullmq' && queueHealth.redis.status === 'error';
+      const dependencyHealth = this.options.getDependencyHealth
+        ? this.options.getDependencyHealth()
+        : snapshotDependencyHealth();
       res.status(queueDegraded ? 503 : 200).json({
         status: queueDegraded ? 'degraded' : 'ok',
         ...(this.options.runtime ? { runtime: this.options.runtime } : {}),
@@ -225,6 +266,7 @@ export class Server {
         initialized: this.options.getInitializationComplete(),
         mcpReady: this.options.getMcpReady(),
         ai: this.options.getAiStatus(),
+        dependencies: dependencyHealth,
         rateLimits: globalRateLimitStore.getMostRecentByWindow(),
         ...(queueHealth ? { queue: queueHealth } : {}),
       });
@@ -291,7 +333,11 @@ export class Server {
       }
     });
 
-    this.app.post('/api/admin/shutdown', requireLocalhost, async (_req: Request, res: Response) => {
+    this.app.post('/api/admin/shutdown', requireLocalhost, async (req: Request, res: Response) => {
+      // Closed-enum mapping for worker_stopped telemetry: only the exact
+      // 'restart' tag (set by the CLI restart path) upgrades the reason;
+      // anything else stays 'stop'.
+      const shutdownReason: 'stop' | 'restart' = req.query.reason === 'restart' ? 'restart' : 'stop';
       const isWindowsManaged = process.platform === 'win32' &&
         process.env.CLAUDE_MEM_MANAGED === 'true' &&
         process.send;
@@ -299,9 +345,12 @@ export class Server {
       if (isWindowsManaged) {
         res.json({ status: 'shutting_down' });
         logger.info('SYSTEM', 'Sending shutdown request to wrapper');
-        process.send!({ type: 'shutdown' });
+        // No wrapper in this repo listens for this message (legacy external
+        // path), but forward the reason so a wrapper that does can preserve
+        // shutdown_reason fidelity instead of defaulting to 'stop'.
+        process.send!({ type: 'shutdown', reason: shutdownReason });
       } else {
-        flushResponseThen(res, { status: 'shutting_down' }, () => this.options.onShutdown());
+        flushResponseThen(res, { status: 'shutting_down' }, () => this.options.onShutdown(shutdownReason));
       }
     });
 
@@ -339,6 +388,9 @@ export class Server {
         health: {
           deadProcessPids,
           envClean,
+          dependencies: this.options.getDependencyHealth
+            ? this.options.getDependencyHealth()
+            : snapshotDependencyHealth(),
         },
       });
     });

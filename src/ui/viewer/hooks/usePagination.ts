@@ -2,7 +2,6 @@ import { useState, useCallback, useRef } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
-import { authFetch } from '../utils/api';
 
 interface PaginationState {
   isLoading: boolean;
@@ -50,7 +49,7 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
       params.append('project', currentFilter);
     }
 
-    const response = await authFetch(`${endpoint}?${params}`);
+    const response = await fetch(`${endpoint}?${params}`);
 
     if (!response.ok) {
       throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
@@ -76,9 +75,16 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
     return data.items;
   }, [currentFilter, endpoint, dataType]);
 
+  // A row from a loaded page was deleted: the server's list moved up by one,
+  // so the next page starts one earlier or it would skip a row.
+  const noteRemoved = useCallback(() => {
+    offsetRef.current = Math.max(0, offsetRef.current - 1);
+  }, []);
+
   return {
     ...state,
-    loadMore
+    loadMore,
+    noteRemoved
   };
 }
 

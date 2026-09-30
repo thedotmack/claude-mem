@@ -6,7 +6,16 @@ export interface ContextInput {
   hook_event_name?: string;
   source?: "startup" | "resume" | "clear" | "compact";
   projects?: string[];
+  platformSource?: string;
   full?: boolean;
+  /**
+   * Set false to build the context without the observer-health outage banner.
+   *
+   * The banner is written for the primary assistant and ends with an
+   * instruction addressed to it. Builds that are consumed by the observer
+   * itself must opt out (#4221).
+   */
+  includeHealthWarning?: boolean;
   [key: string]: any;
 }
 
@@ -26,6 +35,7 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+  mainAgentOnly: boolean;
 }
 
 export interface Observation {
@@ -79,7 +89,6 @@ export interface TokenEconomics {
 }
 
 export interface PriorMessages {
-  userMessage: string;
   assistantMessage: string;
 }
 

@@ -33,19 +33,22 @@ function tryParseJson(input: string): { success: true; value: unknown } | { succ
   }
 }
 
-const SAFETY_TIMEOUT_MS = 30000;
+export const SAFETY_TIMEOUT_MS = 30000;
 
-const PARSE_DELAY_MS = 50;
+export interface ReadJsonFromStdinOptions {
+  safetyTimeoutMs?: number;
+}
 
-export async function readJsonFromStdin(): Promise<unknown> {
+export async function readJsonFromStdin(options: ReadJsonFromStdinOptions = {}): Promise<unknown> {
   if (!isStdinAvailable()) {
     return undefined;
   }
 
+  const safetyTimeoutMs = options.safetyTimeoutMs ?? SAFETY_TIMEOUT_MS;
+
   return new Promise((resolve, reject) => {
     let input = '';
     let resolved = false;
-    let parseDelayId: ReturnType<typeof setTimeout> | null = null;
 
     const cleanup = () => {
       try {
@@ -60,7 +63,6 @@ export async function readJsonFromStdin(): Promise<unknown> {
     const resolveWith = (value: unknown) => {
       if (resolved) return;
       resolved = true;
-      if (parseDelayId) clearTimeout(parseDelayId);
       clearTimeout(safetyTimeoutId);
       cleanup();
       resolve(value);
@@ -69,7 +71,6 @@ export async function readJsonFromStdin(): Promise<unknown> {
     const rejectWith = (error: Error) => {
       if (resolved) return;
       resolved = true;
-      if (parseDelayId) clearTimeout(parseDelayId);
       clearTimeout(safetyTimeoutId);
       cleanup();
       reject(error);
@@ -88,29 +89,20 @@ export async function readJsonFromStdin(): Promise<unknown> {
       if (!resolved) {
         if (!tryResolveWithJson()) {
           if (input.trim()) {
-            rejectWith(new Error(`Incomplete JSON after ${SAFETY_TIMEOUT_MS}ms: ${input.slice(0, 100)}...`));
+            rejectWith(new Error(`Incomplete JSON after ${safetyTimeoutMs}ms: ${input.slice(0, 100)}...`));
           } else {
             resolveWith(undefined);
           }
         }
       }
-    }, SAFETY_TIMEOUT_MS);
+    }, safetyTimeoutMs);
 
     const onData = (chunk: Buffer | string) => {
       input += chunk;
 
-      if (parseDelayId) {
-        clearTimeout(parseDelayId);
-        parseDelayId = null;
-      }
-
       if (tryResolveWithJson()) {
         return;
       }
-
-      parseDelayId = setTimeout(() => {
-        tryResolveWithJson();
-      }, PARSE_DELAY_MS);
     };
 
     const onEnd = () => {

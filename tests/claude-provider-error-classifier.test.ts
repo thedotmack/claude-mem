@@ -120,3 +120,74 @@ describe('classifyClaudeError — sibling status codes (regression sanity)', () 
     expect(classified.kind).toBe('transient');
   });
 });
+
+/**
+ * Regression coverage for #2656: when the Anthropic Agent SDK wraps a 400
+ * `invalid_request_error` (e.g. "The provided model identifier is invalid")
+ * the `.status` field can be lost in the wrapping. Without a message-based
+ * fallback the error fell through to the default `transient` branch and the
+ * worker retried indefinitely while `/health` kept reporting `ok`.
+ */
+describe('classifyClaudeError — model identifier rejections without .status (#2656)', () => {
+  let warnSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    __resetEffortHintLatchForTesting();
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    __resetEffortHintLatchForTesting();
+  });
+
+  it('classifies "The provided model identifier is invalid" as unrecoverable even without a status field', () => {
+    const sdkErr = new Error('The provided model identifier is invalid');
+    const classified = classifyClaudeError(sdkErr);
+    expect(classified.kind).toBe('unrecoverable');
+  });
+
+  it('classifies wrapped errors exposing error.type=invalid_request_error as unrecoverable', () => {
+    const sdkErr = Object.assign(
+      new Error('Anthropic SDK error'),
+      { error: { type: 'invalid_request_error' } },
+    );
+    const classified = classifyClaudeError(sdkErr);
+    expect(classified.kind).toBe('unrecoverable');
+  });
+
+  it('classifies errors carrying the "invalid_request_error" string in the message as unrecoverable', () => {
+    const sdkErr = new Error('Request failed: invalid_request_error from upstream');
+    const classified = classifyClaudeError(sdkErr);
+    expect(classified.kind).toBe('unrecoverable');
+  });
+
+  it('does not match unrelated messages containing the word "invalid"', () => {
+    const sdkErr = new Error('Some unrelated invalid input from a tool');
+    const classified = classifyClaudeError(sdkErr);
+    // Must NOT be unrecoverable just because the word "invalid" appears —
+    // matching is anchored on the canonical Anthropic phrases only.
+    expect(classified.kind).toBe('transient');
+  });
+
+  it('still routes statused 400s through the existing branch (does not fall through)', () => {
+    const sdkErr = Object.assign(
+      new Error('The provided model identifier is invalid'),
+      { status: 400 },
+    );
+    const classified = classifyClaudeError(sdkErr);
+    expect(classified.kind).toBe('unrecoverable');
+    // The pre-existing status=400 branch handles this case before the new
+    // fallback runs; no effort-hint should fire (no effort marker present).
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps a statused 5xx carrying invalid_request_error transient (status guard)', () => {
+    const sdkErr = Object.assign(
+      new Error('gateway error: invalid_request_error from upstream'),
+      { status: 503, error: { type: 'invalid_request_error' } },
+    );
+    const classified = classifyClaudeError(sdkErr);
+    expect(classified.kind).toBe('transient');
+  });
+});

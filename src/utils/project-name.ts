@@ -1,101 +1,32 @@
-import { homedir } from 'os'
 import path from 'path';
-import { statSync, realpathSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import { execFileSync } from 'child_process';
-import picomatch from 'picomatch';
+import { expandHome } from '../shared/expand-home.js';
+import { CLAUDE_CONFIG_DIR } from '../shared/paths.js';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
-import type { Environment } from '../shared/SettingsDefaultsManager.js';
-import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 
-function expandTilde(p: string): string {
-  if (p === '~' || p.startsWith('~/')) {
-    return p.replace(/^~/, homedir())
-  }
-  return p
-}
-
-let cachedEnvironments: Environment[] | null = null;
-let cachedSettingsMtime = 0;
-let lastCacheTime = 0;
-let settingsPathOverride: string | null = null;
-const CACHE_DEBOUNCE_MS = 100;
-
-export function resetEnvironmentsCache(): void {
-  cachedEnvironments = null;
-  cachedSettingsMtime = 0;
-  lastCacheTime = 0;
-}
+const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
+const UNKNOWN_PROJECT_NAME = 'unknown-project';
 
 /**
- * Override the settings file path used by loadEnvironments.
- * Production code must not call this — it exists so tests can point at a
- * temporary settings file instead of mutating the user's real
- * ~/.claude-mem/settings.json.
+ * Resolve the anchor directory for a Claude Code hook payload: prefer
+ * `CLAUDE_PROJECT_DIR` (the directory Claude Code declares for the session) over
+ * the raw hook cwd, so SDK/subagent temp cwds never become the project identity
+ * (#3437). Returns `null` when neither a declared project dir nor a usable cwd
+ * exists. Scoped to the hook adapter boundary — callers that already hold an
+ * authoritative cwd (worker, transcript, worktree) must not route through this.
  */
-export function setEnvironmentsSettingsPathForTesting(p: string | null): void {
-  settingsPathOverride = p;
-  resetEnvironmentsCache();
-}
-
-function getSettingsPath(): string {
-  return settingsPathOverride ?? path.join(homedir(), '.claude-mem', 'settings.json');
-}
-
-export function loadEnvironments(): Environment[] {
-  const now = Date.now();
-  if (cachedEnvironments !== null && now - lastCacheTime < CACHE_DEBOUNCE_MS) {
-    return cachedEnvironments;
+export function resolveHookProjectPath(cwd: string | null | undefined): string | null {
+  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV]?.trim();
+  if (claudeProjectDir) {
+    return claudeProjectDir;
   }
-
-  try {
-    const settingsPath = getSettingsPath();
-    const mtime = statSync(settingsPath).mtimeMs;
-
-    if (cachedEnvironments !== null && mtime === cachedSettingsMtime) {
-      lastCacheTime = now;
-      return cachedEnvironments;
-    }
-
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    const raw = settings.environments;
-    // settings.environments is typed as string, but loadFromFile hands back
-    // whatever JSON.parse produced from the on-disk file — so it can be either
-    // a JSON string ("[{...}]") or a native array ([{...}]) depending on how
-    // the user wrote it. Accept both shapes.
-    cachedEnvironments = Array.isArray(raw)
-      ? (raw as Environment[])
-      : (typeof raw === 'string' && raw ? JSON.parse(raw) : []);
-    cachedSettingsMtime = mtime;
-    lastCacheTime = now;
-    return cachedEnvironments!;
-  } catch {
-    cachedEnvironments = [];
-    lastCacheTime = now;
-    return cachedEnvironments;
+  if (!cwd || cwd.trim() === '') {
+    return null;
   }
-}
-
-function matchEnvironment(cwd: string): string | null {
-  const environments = loadEnvironments();
-  if (environments.length === 0) return null;
-
-  let normalizedCwd = cwd;
-  try { normalizedCwd = realpathSync(cwd); } catch { /* path doesn't exist, use original */ }
-
-  const expandedCwd = expandTilde(normalizedCwd);
-
-  for (const env of environments) {
-    for (const pattern of env.patterns) {
-      const expandedPattern = expandTilde(pattern);
-      if (picomatch(expandedPattern)(expandedCwd)) {
-        logger.info('PROJECT_NAME', 'Environment matched', { cwd, envName: env.name, pattern });
-        return env.name;
-      }
-    }
-  }
-
-  return null;
+  return cwd;
 }
 
 /**
@@ -111,35 +42,87 @@ function findGitRepoRoot(dir: string): string | null {
       cwd: dir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).trim();
     return root || null;
-  } catch {
-    // Not a git repo, git not installed, or dir does not exist — fall back to basename.
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    // Not a git repo, git not installed, or dir does not exist — fall back further.
+    logger.debug('PROJECT_NAME', 'git rev-parse failed, falling back to non-git root', { dir }, err);
     return null;
   }
 }
 
-export function getProjectName(cwd: string | null | undefined): string {
-  if (!cwd || cwd.trim() === '') {
-    logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
-    return 'unknown-project';
+/**
+ * Explicit claude-mem project-root markers (#3194, plan-20 step 1). Outside a
+ * git repo, the nearest ancestor holding one names the project, so launches
+ * from any of its subdirectories share one key. Only explicit claude-mem files
+ * count: generic manifests (package.json, CLAUDE.md, ...) sit in home
+ * directories and nested packages, and treating them as roots would silently
+ * re-key memory users already have.
+ */
+const PROJECT_ROOT_MARKERS = ['.claude-mem-project', '.claude-mem.json'] as const;
+
+/** Upper bound on the marker walk; real directory trees are far shallower. */
+const MAX_MARKER_WALK_DEPTH = 64;
+
+function realpathOrSelf(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+function isWithin(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/**
+ * Directories that never name a project. The walk stops before reaching one:
+ * a marker in $HOME, TMPDIR or at the filesystem root would collapse every
+ * non-git directory below it into a single bucket. Claude's config directory
+ * (plugins and marketplaces live there) is excluded entirely.
+ */
+function markerWalkStops(): string[] {
+  return [homedir(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap(dir => {
+    const resolved = path.resolve(dir);
+    return [resolved, realpathOrSelf(resolved)];
+  });
+}
+
+/**
+ * Walk up from `dir` to the nearest ancestor holding a project-root marker.
+ * Returns that directory, or null when the walk reaches a stop directory or the
+ * filesystem root first.
+ */
+function findMarkerProjectRoot(dir: string): string | null {
+  const stops = markerWalkStops();
+  let current = path.resolve(dir);
+  const configDirs = [path.resolve(CLAUDE_CONFIG_DIR), realpathOrSelf(path.resolve(CLAUDE_CONFIG_DIR))];
+  if (configDirs.some(configDir => isWithin(current, configDir))) {
+    return null;
   }
 
-  const expanded = expandTilde(cwd)
-
-  // Environment matching wins over both git-repo-root and basename fallback —
-  // a user-configured environment is an explicit declaration of identity.
-  const envName = matchEnvironment(expanded);
-  if (envName) {
-    return envName;
+  for (let depth = 0; depth < MAX_MARKER_WALK_DEPTH; depth++) {
+    if (stops.includes(current)) {
+      return null;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null; // filesystem root
+    }
+    if (PROJECT_ROOT_MARKERS.some(marker => existsSync(path.join(current, marker)))) {
+      return current;
+    }
+    current = parent;
   }
+  return null;
+}
 
-  // #2663 — derive the project name from the git repo root when inside a repo so
-  // the name is stable across subdirectories/worktrees. Fall back to the cwd
-  // basename when not in a repo.
-  const repoRoot = findGitRepoRoot(expanded);
-  const nameSource = repoRoot ?? expanded;
-
+/** The project name for the directory that names it (git toplevel, marker root, or cwd). */
+function projectNameFromSource(cwd: string, nameSource: string): string {
   const basename = path.basename(nameSource);
 
   if (basename === '') {
@@ -154,10 +137,29 @@ export function getProjectName(cwd: string | null | undefined): string {
       }
     }
     logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd });
-    return 'unknown-project';
+    return UNKNOWN_PROJECT_NAME;
   }
 
   return basename;
+}
+
+export function getProjectName(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (!cwd || cwd.trim() === '') {
+    logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
+    return UNKNOWN_PROJECT_NAME;
+  }
+
+  const expanded = expandHome(cwd, platform);
+
+  // #2663 — inside a repo, the git root names the project so the name is stable
+  // across subdirectories and worktrees. #3194 — outside one, the nearest
+  // claude-mem marker root does; otherwise the cwd basename.
+  const repoRoot = findGitRepoRoot(expanded);
+  const nameSource = repoRoot ?? findMarkerProjectRoot(expanded) ?? expanded;
+  return projectNameFromSource(cwd, nameSource);
 }
 
 export interface ProjectContext {
@@ -167,15 +169,25 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
-export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const cwdProjectName = getProjectName(cwd);
-
-  if (!cwd) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+export function getProjectContext(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): ProjectContext {
+  if (!cwd || cwd.trim() === '') {
+    const fallback = getProjectName(cwd, platform);
+    return { primary: fallback, parent: null, isWorktree: false, allProjects: [fallback] };
   }
 
-  const expandedCwd = expandTilde(cwd);
-  const worktreeInfo = detectWorktree(expandedCwd);
+  const expandedCwd = expandHome(cwd, platform);
+  // One git spawn per resolution: the toplevel both names the project and
+  // anchors worktree detection. #3262 — detectWorktree stats `<dir>/.git`, which
+  // only exists at the worktree root, so a session started in a subdirectory
+  // must detect from the toplevel to get the parent/worktree compound key.
+  const repoRoot = findGitRepoRoot(expandedCwd);
+  const markerRoot = repoRoot ? null : findMarkerProjectRoot(expandedCwd);
+  const cwdProjectName = projectNameFromSource(cwd, repoRoot ?? markerRoot ?? expandedCwd);
+
+  const worktreeInfo = detectWorktree(repoRoot ?? expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
@@ -185,6 +197,17 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
       isWorktree: true,
       allProjects: [worktreeInfo.parentProjectName, composite]
     };
+  }
+
+  // A marker re-keys launches from below its root. Keep the key those launches
+  // were stored under before the marker existed (the cwd basename) readable as
+  // an alias, so adding a marker never hides existing memory. Writes use
+  // `primary` only.
+  if (markerRoot && path.resolve(markerRoot) !== path.resolve(expandedCwd)) {
+    const legacyKey = projectNameFromSource(cwd, expandedCwd);
+    if (legacyKey !== cwdProjectName && legacyKey !== UNKNOWN_PROJECT_NAME) {
+      return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [legacyKey, cwdProjectName] };
+    }
   }
 
   return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };

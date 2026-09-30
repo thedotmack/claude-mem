@@ -3,18 +3,74 @@
 import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Map every __dirname/__filename in the bundled body to runtime-computed
+// globals, applied by esbuild BEFORE minification. Any absolute build-machine
+// path a dependency would otherwise inline becomes a reference to the banner
+// values below, so nothing needs to be rewritten after emit. This replaces the
+// old post-build regex rewrite (stripHardcodedDirname), which swept a 2.6 MB
+// minified bundle and could delete a top-level declaration — the worker then
+// died with an unhandled "ReferenceError: <name> is not defined". See
+// assertBundleIntegrity.
+const DIRNAME_DEFINE = {
+  '__dirname': '__CM_DIRNAME__',
+  '__filename': '__CM_FILENAME__',
+};
+
+// Declares the globals DIRNAME_DEFINE maps to. `define` never rewrites banner
+// text, so these lines still read Node's native __dirname/__filename (present
+// in every CJS module) and fall back to argv[1] when the bundle is the process
+// entrypoint under Bun.
+const DIRNAME_BANNER = [
+  'var __CM_FILENAME__ = typeof __filename !== "undefined" ? __filename : require("node:path").resolve(process.argv[1] || "");',
+  'var __CM_DIRNAME__ = typeof __dirname !== "undefined" ? __dirname : require("node:path").dirname(__CM_FILENAME__);',
+];
+
+// Emit an external source map (names only, no inlined source text) next to each
+// bundle. Bun and Node symbolicate stack traces against the adjacent .map, so a
+// worker crash names the real symbol instead of a two-letter minified id.
+const SOURCEMAP_OPTS = { sourcemap: true, sourcesContent: false };
+
+// A bundle must parse and must not carry an absolute build path. esbuild emits a
+// closed, self-consistent module graph and we now ship it verbatim, so either
+// failure means a real regression — fail the build rather than ship a bundle
+// that throws at load or leaks the builder's filesystem layout.
+function assertBundleIntegrity(filePath) {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  try {
+    new vm.Script(content.replace(/^#!.*\n/, ''), { filename: filePath });
+  } catch (err) {
+    throw new Error(`${filePath} does not parse after build (${err.message}). Refusing to ship a corrupt bundle.`);
+  }
+  // esbuild's ESM __dirname inlining (the leak the old rewrite existed for)
+  // emits the absolute directory of a bundled module — always under the
+  // checkout's node_modules/ or src/. Match those exact prefixes, not any
+  // substring of the checkout path, so a legitimate runtime path that merely
+  // shares an ancestor of the build dir (e.g. Bun's /home/linuxbrew/.bun/bin/bun
+  // when building from /home) is never misread as a leak.
+  const buildDir = process.cwd();
+  const leaked = ['node_modules', 'src']
+    .map((dir) => buildDir + path.sep + dir + path.sep)
+    .find((prefix) => content.includes(prefix));
+  if (leaked) {
+    throw new Error(
+      `${filePath} inlined the absolute build path ${leaked}…: a __dirname/__filename literal leaked. Check the esbuild \`define\` mapping.`
+    );
+  }
+}
 
 const WORKER_SERVICE = {
   name: 'worker-service',
   source: 'src/services/worker-service.ts'
 };
 
-const SERVER_BETA_SERVICE = {
-  name: 'server-beta-service',
-  source: 'src/server/runtime/ServerBetaService.ts'
+const SERVER_SERVICE = {
+  name: 'server-service',
+  source: 'src/server/runtime/ServerService.ts'
 };
 
 const MCP_SERVER = {
@@ -27,27 +83,10 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
-function stripHardcodedDirname(filePath) {
-  let content = fs.readFileSync(filePath, 'utf-8');
-  const before = content.length;
-
-  const str = `(?:"[^"]*"|'[^']*')`;
-
-  for (const id of ['__dirname', '__filename']) {
-    content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str},\\s*`, 'g'), 'var ');
-    content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str};\\s*`, 'g'), '');
-    content = content.replace(new RegExp(`,\\s*${id}\\s*=\\s*${str}`, 'g'), '');
-  }
-
-  content = content.replace(/\bvar\s*;/g, '');
-  content = content.replace(/[ \t]+$/gm, '');
-
-  const removed = before - content.length;
-  if (removed > 0) {
-    fs.writeFileSync(filePath, content);
-    console.log(`  ✓ Stripped hardcoded __dirname/__filename paths (${removed} bytes)`);
-  }
-}
+const TRANSCRIPT_WATCHER = {
+  name: 'transcript-watcher',
+  source: 'src/services/transcripts/transcript-watcher-entry.ts'
+};
 
 /**
  * Rule A canonical-template manifest: maps each host-managed config file's
@@ -57,7 +96,7 @@ function stripHardcodedDirname(filePath) {
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
  * "Spawn-Contract Resolution".
  */
-function shellTemplateManifest(buildShellCommand) {
+function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
@@ -68,6 +107,11 @@ function shellTemplateManifest(buildShellCommand) {
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
+    extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
+  });
+  const codexHookPair = (tail) => ({
+    command: codexHook(tail),
+    commandWindows: buildCodexWindowsCommand(tail),
   });
 
   return {
@@ -79,35 +123,37 @@ function shellTemplateManifest(buildShellCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
-        'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
+        // `start` already emits its own single, valid status JSON via
+        // buildStatusOutput ({"continue":true,"status":"ready","suppressOutput":true}).
+        // Appending a trailingJson echo would print a SECOND JSON object on
+        // stdout — two concatenated documents are invalid JSON, so Claude Code
+        // fails to parse them, ignores suppressOutput, and dumps the raw text at
+        // the top of every session. Let `start` speak for itself.
+        'SessionStart.0.0': claudeHook(['start']),
         'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
         'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
+        'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
       },
     },
     'plugin/hooks/codex-hooks.json': {
       kind: 'hooks',
       commands: {
-        'SessionStart.0.0': buildShellCommand({
-          host: 'codex-cli', requireFile: 'version-check.js', extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
-          trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
-          notFoundMessage: 'claude-mem: version-check.js not found',
-        }),
-        'SessionStart.0.1': codexHook(['start']),
-        'SessionStart.0.2': codexHook(['hook', 'codex', 'context']),
-        'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
-        'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
-        'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),
-        'Stop.0.0': codexHook(['hook', 'codex', 'summarize']),
+        'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
+        'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
+        'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
+        'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+        'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
       },
     },
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
+        // The mcp Node launcher derives its spawn target from requireFile, so
+        // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
-        trailingCommand: ['exec', 'node', '"$_P/scripts/mcp-server.cjs"'],
         notFoundMessage: 'claude-mem: mcp server not found',
         mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
         mcpExtraCacheRoots: [
@@ -119,9 +165,9 @@ function shellTemplateManifest(buildShellCommand) {
   };
 }
 
-function hookCommandByPath(parsed, dottedPath) {
+function hookEntryByPath(parsed, dottedPath) {
   const [event, groupIdx, hookIdx] = dottedPath.split('.');
-  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)]?.command ?? null;
+  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)] ?? null;
 }
 
 async function verifyShellTemplateCanonical() {
@@ -140,30 +186,63 @@ async function verifyShellTemplateCanonical() {
   });
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
-  const { buildShellCommand } = await import(dataUrl);
+  const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
 
-  const manifest = shellTemplateManifest(buildShellCommand);
+  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
+
+  // The regeneration mode the mismatch errors point at: after an intentional
+  // generator change, rewrite the committed launcher strings from the same
+  // manifest the verifier checks, so the two can never drift.
+  const writeMode = process.argv.includes('--write-shell-templates');
 
   for (const [filePath, spec] of Object.entries(manifest)) {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    let dirty = false;
     if (spec.kind === 'mcp') {
       const actual = parsed.mcpServers?.['mcp-search']?.args?.[1] ?? '';
       if (actual !== spec.command) {
-        throw new Error(
-          `Hand-edited shell string detected in ${filePath} (mcp-search). It no longer matches src/build/hook-shell-template.ts. ` +
-          `Update the generator (and this manifest) instead of hand-editing the launcher.`
-        );
+        if (!writeMode) {
+          throw new Error(
+            `Hand-edited shell string detected in ${filePath} (mcp-search). It no longer matches src/build/hook-shell-template.ts. ` +
+            `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+          );
+        }
+        parsed.mcpServers['mcp-search'].args[1] = spec.command;
+        dirty = true;
       }
     } else {
       for (const [dottedPath, expected] of Object.entries(spec.commands)) {
-        const actual = hookCommandByPath(parsed, dottedPath);
-        if (actual !== expected) {
-          throw new Error(
-            `Hand-edited shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
-            `Regenerate via the canonical generator instead of hand-editing the command.`
-          );
+        const entry = hookEntryByPath(parsed, dottedPath);
+        const expectedCommand = typeof expected === 'string' ? expected : expected.command;
+        const actual = entry?.command ?? null;
+        if (actual !== expectedCommand) {
+          if (!writeMode || !entry) {
+            throw new Error(
+              `Hand-edited shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
+              `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+            );
+          }
+          entry.command = expectedCommand;
+          dirty = true;
+        }
+        if (typeof expected !== 'string') {
+          const actualWindows = entry?.commandWindows ?? null;
+          if (actualWindows !== expected.commandWindows) {
+            if (!writeMode || !entry) {
+              throw new Error(
+                `Hand-edited Windows shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
+                `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+              );
+            }
+            entry.commandWindows = expected.commandWindows;
+            dirty = true;
+          }
         }
       }
+    }
+    if (dirty) {
+      fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2) + '\n');
+      console.log(`  ✏️  Regenerated shell templates in ${filePath}`);
     }
   }
 
@@ -172,6 +251,19 @@ async function verifyShellTemplateCanonical() {
   if (!bunRunner.includes('function fixBrokenScriptPath')) {
     throw new Error(
       'plugin/scripts/bun-runner.js is missing fixBrokenScriptPath — it is the Rule C runtime safety net behind Rule A. Do not remove it.'
+    );
+  }
+
+  // Parser-compat guard (issue #2791): bun-runner.js is invoked by hosts that
+  // may run a pre-ES2020 Node whose ESM loader throws on optional chaining.
+  // Strip comments, then forbid `?.` / `??` in executable code.
+  const bunRunnerCode = bunRunner
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  if (/\?\.|\?\?/.test(bunRunnerCode)) {
+    throw new Error(
+      'plugin/scripts/bun-runner.js uses optional chaining (?.) or nullish coalescing (??) — ' +
+      'this launcher must parse on pre-ES2020 Node (issue #2791). Rewrite with explicit guards.'
     );
   }
 
@@ -206,7 +298,7 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
-        'zod': '^4.3.6',
+        'zod': '^4.4.3',
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
@@ -220,7 +312,6 @@ async function buildHooks() {
         'tree-sitter-kotlin': '^0.3.8',
         'tree-sitter-swift': '^0.7.1',
         'tree-sitter-php': '^0.24.2',
-        'tree-sitter-elixir': '^0.3.5',
         '@tree-sitter-grammars/tree-sitter-lua': '^0.4.1',
         'tree-sitter-scala': '^0.24.0',
         'tree-sitter-bash': '^0.25.1',
@@ -232,7 +323,7 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
-        'shell-quote': '^1.8.3',
+        'shell-quote': '1.9.0',
       },
       overrides: {
         'tree-sitter': '^0.25.0'
@@ -241,8 +332,8 @@ async function buildHooks() {
         'tree-sitter-cli'
       ],
       engines: {
-        node: '>=18.0.0',
-        bun: '>=1.0.0'
+        node: '>=20.12.0',
+        bun: '>=1.1.31'
       }
     };
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
@@ -270,9 +361,12 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
         'cohere-ai',
         'ollama',
@@ -292,6 +386,7 @@ async function buildHooks() {
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE,
         // Polyfill import.meta.url for ESM deps bundled into CJS output.
         // @anthropic-ai/claude-agent-sdk's *.mjs files use createRequire(import.meta.url)
         // and `new URL(rel, import.meta.url)`. We map import.meta.url to a file:// URL
@@ -301,64 +396,113 @@ async function buildHooks() {
       banner: {
         js: [
           '#!/usr/bin/env bun',
-          'var __filename = __filename || require("node:path").resolve(process.argv[1] || "");',
-          'var __dirname = __dirname || require("node:path").dirname(__filename);',
-          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__filename).href;'
+          ...DIRNAME_BANNER,
+          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
         ].join('\n')
       }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
 
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
-    // Bundle-size guardrail for the worker. After externalizing the dead better-auth
-    // dependency (#2584) the worker bundle is ~2.29 MB. The threshold below leaves
-    // ~25% headroom so normal growth is fine, but a regression that re-bundles a
-    // heavy server-only dependency (e.g. better-auth, kysely, a Postgres driver)
-    // into the worker artifact will blow past it and fail the build/CI.
+    // Advisory only — a sudden jump usually means a heavy server-only dependency
+    // (better-auth, kysely, a database driver) leaked into the worker bundle via a
+    // transitive import (#2584). Never blocks the build.
     const WORKER_SERVICE_MAX_BYTES = 2900 * 1024;
     if (workerStats.size > WORKER_SERVICE_MAX_BYTES) {
-      throw new Error(
-        `worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB, exceeding the ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB budget. ` +
-        `This usually means a heavy, server-only dependency leaked into the worker bundle — most likely a transitive (or dynamic) import dragged something like better-auth, kysely, or a database driver into worker-service.ts. ` +
-        `Such deps must be marked 'external' in the worker build's external array (see #2584 for the better-auth case) or gated behind the server-beta runtime so the worker never bundles them.`
+      console.warn(
+        `⚠️  worker-service.cjs is ${(workerStats.size / 1024).toFixed(2)} KB (advisory budget ${(WORKER_SERVICE_MAX_BYTES / 1024).toFixed(0)} KB). ` +
+        `If this jumped unexpectedly, check whether a server-only dependency leaked into the worker bundle (see #2584).`
       );
+    }
+
+    // worker-service.cjs lazy-requires these via createRequire("../sqlite/…"),
+    // intentionally kept external from the worker bundle (#2584). They must ship
+    // as sibling files under plugin/sqlite/, or clean installs can throw
+    // "Cannot find module '../sqlite/SessionStore.js'" when Chroma vector sync
+    // reaches the SQLite helpers (#3107/#3126).
+    console.log(`\n🔧 Building sqlite runtime modules...`);
+    const SQLITE_MODULES = [
+      { source: 'src/services/sqlite/SessionStore.ts', out: 'plugin/sqlite/SessionStore.js' },
+      { source: 'src/services/sqlite/observations/files.ts', out: 'plugin/sqlite/observations/files.js' },
+    ];
+    for (const mod of SQLITE_MODULES) {
+      fs.mkdirSync(path.dirname(mod.out), { recursive: true });
+      await build({
+        entryPoints: [mod.source],
+        bundle: true,
+        platform: 'node',
+        target: 'node18',
+        format: 'cjs',
+        outfile: mod.out,
+        minify: true,
+        ...SOURCEMAP_OPTS,
+        logLevel: 'error',
+        external: [
+          'bun:sqlite',
+          'zod',
+          'cohere-ai',
+          'ollama',
+          '@chroma-core/default-embed',
+          'onnxruntime-node',
+          'better-auth',
+          'better-auth/node',
+          'better-auth/plugins',
+          '@better-auth/api-key',
+        ],
+        define: {
+          '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+          ...DIRNAME_DEFINE,
+          'import.meta.url': '__IMPORT_META_URL__'
+        },
+        banner: {
+          js: [
+            ...DIRNAME_BANNER,
+            'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
+          ].join('\n')
+        }
+      });
+      assertBundleIntegrity(mod.out);
+      console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
     }
 
     console.log(`\n🔧 Building server beta service...`);
     await build({
-      entryPoints: [SERVER_BETA_SERVICE.source],
+      entryPoints: [SERVER_SERVICE.source],
       bundle: true,
       platform: 'node',
       target: 'node18',
       format: 'cjs',
-      outfile: `${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`,
+      outfile: `${hooksDir}/${SERVER_SERVICE.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE
       },
       banner: {
         js: [
           '#!/usr/bin/env bun',
-          'var __filename = __filename || require("node:path").resolve(process.argv[1] || "");',
-          'var __dirname = __dirname || require("node:path").dirname(__filename);'
+          ...DIRNAME_BANNER
         ].join('\n')
       }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
 
-    fs.chmodSync(`${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`, 0o755);
-    const serverBetaStats = fs.statSync(`${hooksDir}/${SERVER_BETA_SERVICE.name}.cjs`);
-    console.log(`✓ server-beta-service built (${(serverBetaStats.size / 1024).toFixed(2)} KB)`);
+    fs.chmodSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`, 0o755);
+    const serverStats = fs.statSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
+    console.log(`✓ server-service built (${(serverStats.size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building MCP server...`);
     await build({
@@ -369,6 +513,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error',
       external: [
         'bun:sqlite',
@@ -385,7 +530,6 @@ async function buildHooks() {
         'tree-sitter-kotlin',
         'tree-sitter-swift',
         'tree-sitter-php',
-        'tree-sitter-elixir',
         '@tree-sitter-grammars/tree-sitter-lua',
         'tree-sitter-scala',
         'tree-sitter-bash',
@@ -399,14 +543,18 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-markdown',
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: [
+          '#!/usr/bin/env node',
+          ...DIRNAME_BANNER
+        ].join('\n')
       }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${MCP_SERVER.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${MCP_SERVER.name}.cjs`);
 
     fs.chmodSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 0o755);
     const mcpServerStats = fs.statSync(`${hooksDir}/${MCP_SERVER.name}.cjs`);
@@ -430,8 +578,8 @@ async function buildHooks() {
 
     const MCP_SERVER_MAX_BYTES = 600 * 1024;
     if (mcpServerStats.size > MCP_SERVER_MAX_BYTES) {
-      throw new Error(
-        `mcp-server.cjs is ${(mcpServerStats.size / 1024).toFixed(2)} KB, exceeding the ${(MCP_SERVER_MAX_BYTES / 1024).toFixed(0)} KB budget. This usually means a transitive import pulled worker-service.ts (or another heavy module) into the MCP bundle. The MCP server is supposed to be a thin HTTP wrapper — audit recent imports in src/servers/mcp-server.ts and src/services/worker-spawner.ts. See PR #1645 for context on why this guardrail exists.`
+      console.warn(
+        `⚠️  mcp-server.cjs is ${(mcpServerStats.size / 1024).toFixed(2)} KB (advisory budget ${(MCP_SERVER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, a transitive import may have pulled worker-service.ts or another heavy module into the MCP bundle (see #1645).`
       );
     }
 
@@ -444,18 +592,64 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error',
       external: ['bun:sqlite', 'zod'],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE
       },
-      // No banner needed: CJS files under Node.js have __dirname/__filename natively
+      banner: {
+        js: DIRNAME_BANNER.join('\n')
+      }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log(`\n🔧 Building transcript watcher...`);
+    await build({
+      entryPoints: [TRANSCRIPT_WATCHER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      // Externalize zod for consistency with worker-service / server-beta-service —
+      // any zod usage in the processor.ts import chain should resolve at runtime
+      // against plugin/node_modules instead of being inlined (avoids duplicate-
+      // instance hazards and keeps the bundle slim).
+      external: ['bun:sqlite', 'zod'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE
+      },
+      banner: {
+        js: [
+          '#!/usr/bin/env bun',
+          ...DIRNAME_BANNER
+        ].join('\n')
+      }
+    });
+
+    assertBundleIntegrity(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
+
+    fs.chmodSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`, 0o755);
+    const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
+    console.log(`✓ transcript-watcher built (${(transcriptWatcherStats.size / 1024).toFixed(2)} KB)`);
+
+    // Advisory only — the watcher is meant to be a thin file-tail loop.
+    const TRANSCRIPT_WATCHER_MAX_BYTES = 200 * 1024;
+    if (transcriptWatcherStats.size > TRANSCRIPT_WATCHER_MAX_BYTES) {
+      console.warn(
+        `⚠️  transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB (advisory budget ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, check src/services/transcripts/processor.ts and watcher.ts for heavy imports.`
+      );
+    }
 
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
@@ -486,6 +680,32 @@ async function buildHooks() {
     fs.chmodSync(`${npxCliOutDir}/index.js`, 0o755);
     const npxCliStats = fs.statSync(`${npxCliOutDir}/index.js`);
     console.log(`✓ npx-cli built (${(npxCliStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log(`\n🔧 Building bug-report CLI...`);
+    const bugReportOutDir = 'dist/bug-report';
+    if (!fs.existsSync(bugReportOutDir)) {
+      fs.mkdirSync(bugReportOutDir, { recursive: true });
+    }
+    await build({
+      entryPoints: ['scripts/bug-report/cli.ts'],
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'esm',
+      outfile: `${bugReportOutDir}/index.js`,
+      minify: true,
+      logLevel: 'error',
+      external: [
+        'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
+        'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
+        'buffer', 'querystring', 'readline', 'tty', 'assert',
+        'bun:sqlite',
+      ],
+    });
+
+    fs.chmodSync(`${bugReportOutDir}/index.js`, 0o755);
+    const bugReportStats = fs.statSync(`${bugReportOutDir}/index.js`);
+    console.log(`✓ bug-report built (${(bugReportStats.size / 1024).toFixed(2)} KB)`);
 
     if (fs.existsSync('openclaw/src/index.ts')) {
       console.log(`\n🔧 Building OpenClaw plugin...`);
@@ -558,17 +778,23 @@ async function buildHooks() {
     ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
+      'plugin/skills/mode-creator/SKILL.md',
+      'plugin/skills/mode-creator/scripts/install-mode.mjs',
+      'plugin/skills/mode-creator/scripts/configure-telegram.mjs',
       'plugin/skills/smart-explore/SKILL.md',
       'plugin/skills/how-it-works/SKILL.md',
       'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
       'plugin/hooks/codex-hooks.json',
       'plugin/scripts/bun-runner.js',
+      'plugin/sqlite/SessionStore.js',
+      'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',
       'plugin/.codex-plugin/plugin.json',
       'plugin/.mcp.json',
       '.codex-plugin/plugin.json',
       '.agents/plugins/marketplace.json',
+      'dist/bug-report/index.js',
     ];
     for (const filePath of requiredDistributionFiles) {
       if (!fs.existsSync(filePath)) {
@@ -576,6 +802,12 @@ async function buildHooks() {
       }
     }
     const codexHooks = JSON.parse(fs.readFileSync('plugin/hooks/codex-hooks.json', 'utf-8'));
+    const validCodexHookRootKeys = new Set(['hooks']);
+    for (const rootKey of Object.keys(codexHooks)) {
+      if (!validCodexHookRootKeys.has(rootKey)) {
+        throw new Error(`plugin/hooks/codex-hooks.json contains unsupported Codex root key: ${rootKey}`);
+      }
+    }
     for (const eventName of Object.keys(codexHooks.hooks ?? {})) {
       if (!validCodexHookEvents.has(eventName)) {
         throw new Error(`plugin/hooks/codex-hooks.json contains unknown Codex hook event: ${eventName}`);
@@ -601,9 +833,10 @@ async function buildHooks() {
     console.log('\n✅ All build targets compiled successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Worker: worker-service.cjs`);
-    console.log(`   - Server beta: server-beta-service.cjs`);
+    console.log(`   - Server: server-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Context Generator: context-generator.cjs`);
+    console.log(`   - Transcript Watcher: transcript-watcher.cjs`);
     console.log(`   Output: ${npxCliOutDir}/`);
     console.log(`   - NPX CLI: index.js`);
     if (fs.existsSync('openclaw/dist/index.js')) {

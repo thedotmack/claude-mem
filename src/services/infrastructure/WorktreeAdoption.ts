@@ -4,8 +4,10 @@ import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { ChromaSync } from '../sync/ChromaSync.js';
+import { ChromaSync, MergedIntoProjectTarget } from '../sync/ChromaSync.js';
+import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
+import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
 const DEFAULT_DATA_DIR = paths.dataDir();
 
@@ -22,9 +24,26 @@ export interface AdoptionResult {
   errors: Array<{ worktree: string; error: string }>;
 }
 
+/**
+ * Render per-branch adoption errors as a string for logger CONTEXT values —
+ * the logger interpolates context values with a template literal
+ * (logger.ts `${k}=${v}`), so a raw object array renders as
+ * '[object Object]' (#3378).
+ */
+export function formatAdoptionErrors(errors: AdoptionResult['errors']): string {
+  return errors.map(e => `${e.worktree}: ${e.error}`).join('; ');
+}
+
 interface WorktreeEntry {
   path: string;
   branch: string | null;
+  head: string | null;
+}
+
+interface GitCommandResult {
+  status: number | null;
+  stdout: string;
+  error: Error | undefined;
 }
 
 const GIT_TIMEOUT_MS = 15000;
@@ -36,11 +55,12 @@ class DryRunRollback extends Error {
   }
 }
 
-function gitCapture(cwd: string, args: string[]): string | null {
+function gitRun(cwd: string, args: string[]): GitCommandResult {
   const startTime = Date.now();
   const r = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
-    timeout: GIT_TIMEOUT_MS
+    timeout: GIT_TIMEOUT_MS,
+    windowsHide: true
   });
   const duration = Date.now() - startTime;
   
@@ -53,16 +73,21 @@ function gitCapture(cwd: string, args: string[]): string | null {
       error: r.error.message,
       timedOut: r.error.name === 'ETIMEDOUT' || (r.status === null && r.signal === 'SIGTERM')
     });
-    return null;
+    return { status: r.status, stdout: '', error: r.error };
   }
 
   if (r.status !== 0) {
     logger.debug('GIT', `Git returned non-zero exit code ${r.status}: git -C ${cwd} ${args.join(' ')}`, {
       stderr: r.stderr?.toString().trim()
     });
-    return null;
+    return { status: r.status, stdout: '', error: undefined };
   }
-  return (r.stdout ?? '').trim();
+  return { status: r.status, stdout: (r.stdout ?? '').trim(), error: undefined };
+}
+
+function gitCapture(cwd: string, args: string[]): string | null {
+  const result = gitRun(cwd, args);
+  return result.status === 0 ? result.stdout : null;
 }
 
 function resolveMainRepoPath(cwd: string): string | null {
@@ -87,33 +112,41 @@ function listWorktrees(mainRepo: string): WorktreeEntry[] {
   let current: Partial<WorktreeEntry> = {};
   for (const line of raw.split('\n')) {
     if (line.startsWith('worktree ')) {
-      if (current.path) entries.push({ path: current.path, branch: current.branch ?? null });
-      current = { path: line.slice('worktree '.length).trim(), branch: null };
+      if (current.path) entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
+      current = { path: line.slice('worktree '.length).trim(), branch: null, head: null };
+    } else if (line.startsWith('HEAD ')) {
+      current.head = line.slice('HEAD '.length).trim() || null;
     } else if (line.startsWith('branch ')) {
       const refName = line.slice('branch '.length).trim();
       current.branch = refName.startsWith('refs/heads/')
         ? refName.slice('refs/heads/'.length)
         : refName;
     } else if (line === '' && current.path) {
-      entries.push({ path: current.path, branch: current.branch ?? null });
+      entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
       current = {};
     }
   }
-  if (current.path) entries.push({ path: current.path, branch: current.branch ?? null });
+  if (current.path) entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
   return entries;
 }
 
-function listMergedBranches(mainRepo: string): Set<string> {
-  const raw = gitCapture(mainRepo, [
-    'branch',
-    '--merged',
-    'HEAD',
-    '--format=%(refname:short)'
-  ]);
-  if (!raw) return new Set();
-  return new Set(
-    raw.split('\n').map(b => b.trim()).filter(b => b.length > 0)
-  );
+function resolveCandidateOids(mainRepo: string): Set<string> {
+  const oids = new Set<string>();
+  for (const ref of ['HEAD', 'origin/HEAD', 'origin/main', 'origin/master']) {
+    const result = gitRun(mainRepo, ['rev-parse', '--verify', `${ref}^{commit}`]);
+    if (result.status === 0 && result.stdout) oids.add(result.stdout);
+  }
+  return oids;
+}
+
+export function hasProvenAncestry(mainRepo: string, worktreeHead: string, candidateOids: Set<string>): boolean {
+  for (const candidateOid of candidateOids) {
+    const result = gitRun(mainRepo, ['merge-base', '--is-ancestor', worktreeHead, candidateOid]);
+    if (result.status === 0 && !result.error) return true;
+    // Status 1 is a known negative. Spawn failures and other statuses remain
+    // conservative by simply leaving this worktree unselected.
+  }
+  return false;
 }
 
 export async function adoptMergedWorktrees(opts: {
@@ -165,8 +198,14 @@ export async function adoptMergedWorktrees(opts: {
   if (opts.onlyBranch) {
     targets = childWorktrees.filter(w => w.branch === opts.onlyBranch);
   } else {
-    const merged = listMergedBranches(mainRepo);
-    targets = childWorktrees.filter(w => w.branch !== null && merged.has(w.branch));
+    const candidateOids = resolveCandidateOids(mainRepo);
+    targets = childWorktrees.filter(w =>
+      w.head !== null &&
+      // A branch at the current parent tip is a valid existing worktree;
+      // detached exact-tip checkouts are fresh inspection worktrees.
+      (w.branch !== null || !candidateOids.has(w.head)) &&
+      hasProvenAncestry(mainRepo, w.head, candidateOids)
+    );
   }
 
   result.mergedBranches = targets
@@ -177,12 +216,11 @@ export async function adoptMergedWorktrees(opts: {
     return result;
   }
 
-  const adoptedSqliteIds: number[] = [];
+  const adoptedChromaTargets: MergedIntoProjectTarget[] = [];
 
   let db: import('bun:sqlite').Database | null = null;
   try {
-    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-    db = new Database(dbPath);
+    db = openConfiguredSqliteDatabase(dbPath);
 
     interface ColumnInfo { name: string }
     const obsColumns = db
@@ -207,6 +245,11 @@ export async function adoptMergedWorktrees(opts: {
        WHERE project = ?
          AND (merged_into_project IS NULL OR merged_into_project = ?)`
     );
+    const selectSumForPatch = db.prepare(
+      `SELECT id FROM session_summaries
+       WHERE project = ?
+         AND (merged_into_project IS NULL OR merged_into_project = ?)`
+    );
     const updateObs = db.prepare(
       'UPDATE observations SET merged_into_project = ? WHERE project = ? AND merged_into_project IS NULL'
     );
@@ -214,16 +257,45 @@ export async function adoptMergedWorktrees(opts: {
       'UPDATE session_summaries SET merged_into_project = ? WHERE project = ? AND merged_into_project IS NULL'
     );
 
+    // Two-lane sync (plan Phase 3 task 2): this function runs on its OWN DB
+    // connection, so the remap must be pure SQL — emitRemapProject bumps
+    // sync_rev to R = 1+MAX per the SyncApply contract, re-nulls synced_at
+    // on native rows, and queues the remap_project mutation op in the same
+    // transaction. Pre-migration DBs (no sync lane yet) take the legacy
+    // plain-UPDATE path.
+    const syncLane = hasSyncLane(db);
+
     const adoptWorktreeInTransaction = (wt: WorktreeEntry) => {
       const worktreeProject = getProjectContext(wt.path).primary;
       const rows = selectObsForPatch.all(
         worktreeProject,
         parentProject
       ) as Array<{ id: number }>;
+      const summaryRows = selectSumForPatch.all(
+        worktreeProject,
+        parentProject
+      ) as Array<{ id: number }>;
 
-      const obsChanges = updateObs.run(parentProject, worktreeProject).changes;
-      const sumChanges = updateSum.run(parentProject, worktreeProject).changes;
-      for (const r of rows) adoptedSqliteIds.push(r.id);
+      let obsChanges: number;
+      let sumChanges: number;
+      if (syncLane) {
+        const remap = emitRemapProject(
+          db!,
+          { project: worktreeProject, merged_into_project_is_null: true },
+          { merged_into_project: parentProject }
+        );
+        obsChanges = remap.observations;
+        sumChanges = remap.summaries;
+      } else {
+        obsChanges = updateObs.run(parentProject, worktreeProject).changes;
+        sumChanges = updateSum.run(parentProject, worktreeProject).changes;
+      }
+      for (const r of rows) {
+        adoptedChromaTargets.push({ docType: 'observation', sqliteId: r.id });
+      }
+      for (const r of summaryRows) {
+        adoptedChromaTargets.push({ docType: 'session_summary', sqliteId: r.id });
+      }
       result.adoptedObservations += obsChanges;
       result.adoptedSummaries += sumChanges;
     };
@@ -264,29 +336,27 @@ export async function adoptMergedWorktrees(opts: {
     db?.close();
   }
 
-  if (!dryRun && adoptedSqliteIds.length > 0) {
+  if (!dryRun && adoptedChromaTargets.length > 0) {
     const chromaSync = new ChromaSync('claude-mem');
     try {
-      await chromaSync.updateMergedIntoProject(adoptedSqliteIds, parentProject);
-      result.chromaUpdates = adoptedSqliteIds.length;
+      await chromaSync.updateMergedIntoProject(adoptedChromaTargets, parentProject);
+      result.chromaUpdates = adoptedChromaTargets.length;
     } catch (err) {
       if (err instanceof Error) {
         logger.error(
           'SYSTEM',
           'Worktree adoption Chroma patch failed (SQL already committed)',
-          { parentProject, sqliteIdCount: adoptedSqliteIds.length },
+          { parentProject, sqliteIdCount: adoptedChromaTargets.length },
           err
         );
       } else {
         logger.error(
           'SYSTEM',
           'Worktree adoption Chroma patch failed (SQL already committed)',
-          { parentProject, sqliteIdCount: adoptedSqliteIds.length, error: String(err) }
+          { parentProject, sqliteIdCount: adoptedChromaTargets.length, error: String(err) }
         );
       }
-      result.chromaFailed = adoptedSqliteIds.length;
-    } finally {
-      await chromaSync.close();
+      result.chromaFailed = adoptedChromaTargets.length;
     }
   }
 

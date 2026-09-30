@@ -2,7 +2,8 @@ import { readJsonFromStdin } from './stdin-reader.js';
 import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
-import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
+import type { HookResult } from './types.js';
+import { HOOK_EXIT_CODES, isToolHookDisabledByEnv } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
   emitModelContext,
@@ -10,10 +11,34 @@ import {
   exitGraceful,
   resetHookIoState,
 } from '../shared/hook-io.js';
+import {
+  recordWorkerUnreachable,
+  setActiveHookType,
+  getActiveHookType,
+} from '../shared/worker-utils.js';
+import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
 import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
+  stdinSafetyTimeoutMs?: number;
+}
+
+/**
+ * No-op result for hooks that must exit before their handler ran (adapter
+ * rejected input, transcript path missing). `context` is the sole handler
+ * key that produces SessionStart output on every platform; a bare
+ * `{continue:true}` fallback for it — with no hookSpecificOutput — is what
+ * Codex's strict SessionStart validator rejects as "invalid session start
+ * JSON output" (issue #2972). Attaching the minimal valid payload keeps the
+ * no-op harmless everywhere else too.
+ */
+export function buildNoOpResult(event: string): HookResult {
+  const result: HookResult = { continue: true, suppressOutput: true };
+  if (event === 'context') {
+    result.hookSpecificOutput = { hookEventName: 'SessionStart', additionalContext: '' };
+  }
+  return result;
 }
 
 export function isWorkerUnavailableError(error: unknown): boolean {
@@ -32,6 +57,8 @@ export function isWorkerUnavailableError(error: unknown): boolean {
     'fetch failed',
     'unable to connect',
     'socket hang up',
+    'socket connection was closed',
+    'connection closed',
   ];
   if (transportPatterns.some(p => lower.includes(p))) return true;
 
@@ -54,6 +81,10 @@ export function isNonBlockingHookInputError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
+  if (lower.startsWith('malformed json at stdin eof:') || lower.startsWith('incomplete json after ')) {
+    return true;
+  }
+
   return lower.includes('transcript path') &&
     (lower.includes('missing') || lower.includes('does not exist'));
 }
@@ -64,7 +95,7 @@ async function executeHookPipeline(
   platform: string,
   options: HookCommandOptions
 ): Promise<number> {
-  const rawInput = await readJsonFromStdin();
+  const rawInput = await readJsonFromStdin({ safetyTimeoutMs: options.stdinSafetyTimeoutMs });
   const input = adapter.normalizeInput(rawInput);
   input.platform = platform;
   const result = await handler.execute(input);
@@ -78,6 +109,19 @@ async function executeHookPipeline(
 
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
   resetHookIoState();
+  // Register the hook event for the threshold-gated hook_failed telemetry
+  // (closed enum enforced inside; non-enum events just omit hook_type).
+  setActiveHookType(event);
+
+  // #3106: env opt-out for the high-frequency tool hooks. Checked before stdin
+  // and handler work, and still emits the no-op envelope so the host gets
+  // valid JSON.
+  if (isToolHookDisabledByEnv(event)) {
+    const adapter = getPlatformAdapter(platform);
+    emitModelContext(adapter, buildNoOpResult(event));
+    exitGraceful(options);
+    return HOOK_EXIT_CODES.SUCCESS;
+  }
 
   // Hook IO Discipline (issue #2292):
   // We BUFFER stderr during handler execution so that unsolicited writes from
@@ -99,13 +143,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
   } catch (error) {
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
-      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      emitModelContext(adapter, buildNoOpResult(event));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
-      emitModelContext(adapter, { continue: true, suppressOutput: true });
+      emitModelContext(adapter, buildNoOpResult(event));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
@@ -113,12 +157,27 @@ export async function hookCommand(platform: string, event: string, options: Hook
       logger.warn('HOOK', `Worker unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
       // EXIT_SIGNAL per CLAUDE.md: transient worker errors exit 0 to avoid
       // Windows Terminal tab accumulation. The fail-loud counter (worker-utils
-      // recordWorkerUnreachable) handles the surface-after-N-failures path.
+      // recordWorkerUnreachable) never exits; when the count JUST reaches the
+      // threshold it sends the hook_failed telemetry and writes a diagnostic.
+      // Awaited: exitGraceful below would kill a pending POST mid-flight.
+      await recordWorkerUnreachable();
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
 
     logger.error('HOOK', `Hook error: ${error instanceof Error ? error.message : error}`, {}, error instanceof Error ? error : undefined);
+    // hook_failed telemetry MUST be awaited BEFORE emitBlockingError — it
+    // calls process.exit(2), which would kill a fire-and-forget POST
+    // mid-flight. captureCliEvent never throws and is hard-capped at 2s.
+    // Closed-enum props only: the error message itself is never sent.
+    {
+      const hookType = getActiveHookType();
+      await captureCliEvent('hook_failed', {
+        ...(hookType !== null ? { hook_type: hookType } : {}),
+        error_mode: 'blocking_error',
+        threshold_tripped: false,
+      });
+    }
     // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
     // exit 2 so the model receives it per Claude Code's hook contract.
     emitBlockingError(

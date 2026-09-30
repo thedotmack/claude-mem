@@ -1,6 +1,5 @@
 🌐 這是自動翻譯。歡迎社群貢獻修正！
 
----
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -11,51 +10,57 @@
     </picture>
   </a>
   <br>
+  <a href="https://vercel.com/open-source-program">
+    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+  </a>
 </h1>
 
 <p align="center">
-  <a href="README.zh.md">🇨🇳 中文</a> •
-  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="README.ja.md">🇯🇵 日本語</a> •
-  <a href="README.pt-br.md">🇧🇷 Português</a> •
-  <a href="README.ko.md">🇰🇷 한국어</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.de.md">🇩🇪 Deutsch</a> •
-  <a href="README.fr.md">🇫🇷 Français</a>
-  <a href="README.he.md">🇮🇱 עברית</a> •
-  <a href="README.ar.md">🇸🇦 العربية</a> •
-  <a href="README.ru.md">🇷🇺 Русский</a> •
-  <a href="README.pl.md">🇵🇱 Polski</a> •
-  <a href="README.cs.md">🇨🇿 Čeština</a> •
-  <a href="README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="README.uk.md">🇺🇦 Українська</a> •
-  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="README.id.md">🇮🇩 Indonesia</a> •
-  <a href="README.th.md">🇹🇭 ไทย</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="README.ro.md">🇷🇴 Română</a> •
-  <a href="README.sv.md">🇸🇪 Svenska</a> •
-  <a href="README.it.md">🇮🇹 Italiano</a> •
-  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="README.hu.md">🇭🇺 Magyar</a> •
-  <a href="README.fi.md">🇫🇮 Suomi</a> •
-  <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
+  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
+  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
+  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
+  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
+  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
+  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
+  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
+  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
+  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
+  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
+  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
+  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
+  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
+  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
+  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
+  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
+  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
+  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
+  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
+  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
+  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
+  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">為 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 打造的持久記憶壓縮系統</h4>
+<h4 align="center">為 <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> 打造的持久記憶壓縮系統。</h4>
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -74,13 +79,40 @@
 
 <br>
 
-<p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
-    </picture>
-  </a>
-</p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://github.com/thedotmack/claude-mem">
+        <picture>
+          <img
+            src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif"
+            alt="Claude-Mem Preview"
+            width="500"
+          >
+        </picture>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://www.star-history.com/#thedotmack/claude-mem&Date">
+        <picture>
+          <source
+            media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+          />
+          <source
+            media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+          />
+          <img
+            alt="Star History Chart"
+            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+            width="500"
+          />
+        </picture>
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="#快速開始">快速開始</a> •
@@ -100,41 +132,69 @@
 
 ## 快速開始
 
-在終端機中開啟新的 Claude Code 工作階段，並輸入以下指令：
+使用單一指令安裝：
 
+```bash
+npx claude-mem install
 ```
-> /plugin marketplace add thedotmack/claude-mem
 
-> /plugin install claude-mem
+或為 OpenCode 安裝：
+
+```bash
+npx claude-mem install --ide opencode
+```
+
+或為 Antigravity CLI 安裝（[設定指南](https://docs.claude-mem.ai/antigravity-cli/setup)）：
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+或在 Claude Code 內從外掛市集安裝：
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+
+/plugin install claude-mem
 ```
 
 重新啟動 Claude Code。先前工作階段的脈絡將自動出現在新的工作階段中。
+
+> **注意：** Claude-Mem 也發布於 npm，但 `npm install -g claude-mem` 僅安裝 **SDK/函式庫**——它不會註冊外掛掛鉤或設定 Worker 服務。請務必透過 `npx claude-mem install` 或上述 `/plugin` 指令安裝。
+
+### 🦞 OpenClaw Gateway
+
+只需一個指令，即可在 [OpenClaw](https://openclaw.ai) 閘道上安裝 claude-mem 作為持久記憶外掛：
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+安裝程式會處理相依性、外掛設定、AI 提供者設定、Worker 啟動，以及選用的即時觀察推播至 Telegram、Discord、Slack 等平台。詳情請參閱 [OpenClaw 整合指南](https://docs.claude-mem.ai/openclaw-integration)。
 
 **主要功能：**
 
 - 🧠 **持久記憶** - 脈絡跨工作階段保留
 - 📊 **漸進式揭露** - 具有 Token 成本可見性的分層記憶擷取
 - 🔍 **技能式搜尋** - 使用 mem-search 技能查詢專案歷史
-- 🖥️ **網頁檢視介面** - 在 http://localhost:37777 即時檢視記憶串流
+- 🖥️ **網頁檢視介面** - 在啟動時顯示的 Worker URL 即時檢視記憶串流
 - 💻 **Claude Desktop 技能** - 從 Claude Desktop 對話中搜尋記憶
 - 🔒 **隱私控制** - 使用 `<private>` 標籤排除敏感內容的儲存
 - ⚙️ **脈絡設定** - 精細控制注入哪些脈絡
 - 🤖 **自動運作** - 無需手動介入
-- 🔗 **引用** - 使用 ID 參考過去的觀察（透過 http://localhost:37777/api/observation/{id} 存取，或在 http://localhost:37777 的網頁檢視器中檢視全部）
-- 🧪 **Beta 通道** - 透過版本切換試用 Endless Mode 等實驗性功能
+- 🔗 **引用** - 透過 Worker API 使用 ID 參考過去的觀察，或在網頁檢視器中檢視全部
 
 ---
 
 ## 文件
 
-📚 **[檢視完整文件](docs/)** - 在 GitHub 上瀏覽 Markdown 文件
+📚 **[檢視完整文件](https://docs.claude-mem.ai/)** - 於官方網站瀏覽
 
 ### 入門指南
 
 - **[安裝指南](https://docs.claude-mem.ai/installation)** - 快速開始與進階安裝
 - **[使用指南](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Mem 如何自動運作
 - **[搜尋工具](https://docs.claude-mem.ai/usage/search-tools)** - 使用自然語言查詢專案歷史
-- **[Beta 功能](https://docs.claude-mem.ai/beta-features)** - 試用 Endless Mode 等實驗性功能
 
 ### 最佳實務
 
@@ -155,6 +215,7 @@
 
 - **[設定](https://docs.claude-mem.ai/configuration)** - 環境變數與設定
 - **[開發](https://docs.claude-mem.ai/development)** - 建置、測試、貢獻
+- **[發布分支](https://docs.claude-mem.ai/branches)** - Stable、core-dev 與 community-edge 分支流程
 - **[疑難排解](https://docs.claude-mem.ai/troubleshooting)** - 常見問題與解決方案
 
 ---
@@ -165,7 +226,7 @@
 
 1. **5 個生命週期掛鉤** - SessionStart、UserPromptSubmit、PostToolUse、Stop、SessionEnd（6 個掛鉤腳本）
 2. **智慧安裝** - 快取的相依性檢查器（pre-hook 腳本，非生命週期掛鉤）
-3. **Worker 服務** - 連接埠 37777 上的 HTTP API，含網頁檢視介面與 10 個搜尋端點，由 Bun 管理
+3. **Worker 服務** - 具備網頁檢視介面與搜尋端點的本機 HTTP API，由 Bun 管理
 4. **SQLite 資料庫** - 儲存工作階段、觀察、摘要
 5. **mem-search 技能** - 具有漸進式揭露的自然語言查詢
 6. **Chroma 向量資料庫** - 用於智慧脈絡擷取的混合語意 + 關鍵字搜尋
@@ -185,7 +246,6 @@ Claude-Mem 透過遵循 Token 高效的 **3 層工作流程模式**，以 **4 �
 3. **`get_observations`** - 僅為過濾後的 ID 擷取完整詳情（每筆結果約 500-1,000 tokens）
 
 **運作方式：**
-
 - Claude 使用 MCP 工具搜尋您的記憶
 - 從 `search` 開始取得結果索引
 - 使用 `timeline` 檢視特定觀察周圍發生的事情
@@ -196,18 +256,17 @@ Claude-Mem 透過遵循 Token 高效的 **3 層工作流程模式**，以 **4 �
 
 1. **`search`** - 使用全文查詢搜尋記憶索引，依類型/日期/專案過濾
 2. **`timeline`** - 取得特定觀察或查詢周圍的時間脈絡
-3. **`get_observations`** - 依 ID 擷取完整觀察詳情（批次處理多個 ID）
-4. **`__IMPORTANT`** - 工作流程文件（Claude 永遠可見）
+3. **`get_observations`** - 依 ID 擷取完整觀察詳情（務必批次處理多個 ID）
 
 **使用範例：**
 
 ```typescript
-// 步驟 1：搜尋索引
+// Step 1: Search for index
 search(query="authentication bug", type="bugfix", limit=10)
 
-// 步驟 2：檢閱索引，識別相關 ID（例如 #123、#456）
+// Step 2: Review index, identify relevant IDs (e.g., #123, #456)
 
-// 步驟 3：擷取完整詳情
+// Step 3: Fetch full details
 get_observations(ids=[123, 456])
 ```
 
@@ -215,21 +274,32 @@ get_observations(ids=[123, 456])
 
 ---
 
-## Beta 功能
+## 發布分支
 
-Claude-Mem 提供具有實驗性功能的 **Beta 通道**，例如 **Endless Mode**（用於延長工作階段的仿生記憶架構）。在 http://localhost:37777 → Settings 的網頁檢視介面中切換穩定版與 Beta 版。
-
-有關 Endless Mode 與如何試用的詳情，請參閱 **[Beta 功能文件](https://docs.claude-mem.ai/beta-features)**。
+穩定版發布來自 `main` 分支並發布至 npm。`core-dev` 與
+`community-edge` 是用於早期可靠性修復與社群整合的原始碼執行分支。分支流程與非穩定版執行說明請參閱
+**[發布分支](https://docs.claude-mem.ai/branches)**。
 
 ---
 
 ## 系統需求
 
-- **Node.js**：18.0.0 或更高版本
+- **Node.js**：20.0.0 或更高版本
 - **Claude Code**：具有外掛支援的最新版本
 - **Bun**：JavaScript 執行環境與程序管理員（如缺少將自動安裝）
 - **uv**：用於向量搜尋的 Python 套件管理員（如缺少將自動安裝）
 - **SQLite 3**：用於持久儲存（已內建）
+
+---
+### Windows 設定注意事項
+
+若您看到如下錯誤訊息：
+
+```powershell
+npm : The term 'npm' is not recognized as the name of a cmdlet
+```
+
+請確認 Node.js 和 npm 已安裝並加入您的 PATH。請從 https://nodejs.org 下載最新版 Node.js 安裝程式，並在安裝後重新啟動終端機。
 
 ---
 
@@ -239,6 +309,45 @@ Claude-Mem 提供具有實驗性功能的 **Beta 通道**，例如 **Endless Mod
 
 所有可用設定與範例請參閱 **[設定指南](https://docs.claude-mem.ai/configuration)**。
 
+### 模式與語言設定
+
+Claude-Mem 透過 `CLAUDE_MEM_MODE` 設定支援多種工作流程模式與語言。
+
+此選項控制以下兩者：
+- 工作流程行為（例如 code、chill、investigation）
+- 產生觀察時使用的語言
+
+#### 如何設定
+
+編輯您位於 `~/.claude-mem/settings.json` 的設定檔：
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+```
+
+模式定義於 `plugin/modes/` 中。若要在本機檢視所有可用模式：
+
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### 可用模式
+
+| 模式 | 說明 |
+|------------|-------------------------|
+| `code` | 預設英文模式 |
+| `code--zh` | 簡體中文模式 |
+| `code--ja` | 日文模式 |
+
+特定語言模式遵循 `code--[lang]` 的模式，其中 `[lang]` 為 ISO 639-1 語言代碼（例如中文為 `zh`、日文為 `ja`、西班牙文為 `es`）。
+
+> 注意：`code--zh`（簡體中文）已內建——無需額外安裝或更新外掛。
+
+#### 變更模式後
+
+重新啟動 Claude Code 以套用新的模式設定。
 ---
 
 ## 開發
@@ -274,24 +383,28 @@ npm run bug-report
 4. 更新文件
 5. 提交 Pull Request
 
+Claude-Mem 從三個分支發布：`main`（穩定版）、`core-dev` 與
+`community-edge`。僅 `main` 會發布至 npm；其他分支則從原始碼執行。策略與本機執行說明請參閱
+[發布分支](https://docs.claude-mem.ai/branches)。
+
 貢獻工作流程請參閱[開發指南](https://docs.claude-mem.ai/development)。
 
 ---
 
-## License
+## 授權條款
 
-This project is licensed under the **Apache License 2.0** (Apache-2.0).
+Claude-Mem 採用 Apache License 2.0 授權。
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+我們選擇 Apache-2.0 是因為持久的代理記憶應該易於嵌入至
+開發工具、本機代理、MCP 伺服器、企業系統、機器人技術堆疊，
+以及生產環境代理框架中。
 
-See the [LICENSE](LICENSE) file for full details.
+完整詳情請參閱 [LICENSE](LICENSE) 檔案。授權範圍與開源／商業界線
+請參閱 [docs/license.md](docs/license.md) 與 [docs/ip-boundary.md](docs/ip-boundary.md)。
 
-Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
-
-**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+**關於 Ragtime 的說明**：`ragtime/` 目錄採用 **Apache License 2.0** 授權。詳情請參閱 [ragtime/LICENSE](ragtime/LICENSE)。
 
 ---
-
 
 ## 支援
 
@@ -305,3 +418,11 @@ Apache-2.0 allows broad use, modification, distribution, and commercial use, sub
 ---
 
 **使用 Claude Agent SDK 建置** | **由 Claude Code 驅動** | **以 TypeScript 開發**
+
+---
+
+### CMEM 是什麼？
+
+CMEM 是由第三方創建的代幣，但獲得 Claude-Mem 創作者（Alex Newman，@thedotmack）的正式支持。該代幣作為社群成長的催化劑，也是將 CMEM 帶給最需要它的開發者與知識工作者的媒介。
+
+官方 BASE 合約地址：0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

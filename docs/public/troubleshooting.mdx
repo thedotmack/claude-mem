@@ -23,6 +23,12 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 ## Common Issues
 
+For worker API commands below, set `PORT` first:
+
+```bash
+PORT=${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)}
+```
+
 ### Viewer UI Not Loading
 
 **Symptoms**: Cannot reach the viewer URL, page doesn't load, or browser shows a connection error.
@@ -71,7 +77,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 2. Verify settings endpoint is working:
    ```bash
-   curl http://localhost:37777/api/settings
+   curl http://127.0.0.1:$PORT/api/settings
    ```
 
 3. Clear localStorage and try again:
@@ -90,7 +96,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 1. Check SSE endpoint is accessible:
    ```bash
-   curl -N http://localhost:37777/stream
+   curl -N http://127.0.0.1:$PORT/stream
    ```
 
 2. Check browser console for errors:
@@ -143,6 +149,24 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    ```
 
 5. If Chroma continues to fail, hybrid search will gracefully degrade to SQLite FTS5 only
+
+### Turning off tool-hook capture (PreToolUse / PostToolUse)
+
+**When to use it**: you want claude-mem to stop capturing tool calls (`PostToolUse` `observation`) or injecting file history before `Read` (`PreToolUse` `file-context`), for example because the per-tool-call hook cost is too high on your machine. Do not rename those keys in `hooks.json` instead: Claude Code rejects unknown hook keys and drops the entire plugin hook set.
+
+**Opt-out** (SessionStart context, UserPromptSubmit and Stop summaries keep working):
+
+```json
+{
+  "env": {
+    "CLAUDE_MEM_DISABLE_TOOL_HOOKS": "1"
+  }
+}
+```
+
+Add that to `~/.claude/settings.json` (or export the variable in your shell). To turn off just one of the two hooks, use `CLAUDE_MEM_DISABLE_OBSERVATION=1` or `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1`. See [Configuration](configuration).
+
+**Windows console windows**: this switch is an opt-out, not a fix for the console window that can flash on each tool call. Claude Code still starts the hook through bash, and the window appears before claude-mem runs. The switch only makes each tool hook exit right away. The fix for the window itself is tracked in [#3605](https://github.com/thedotmack/claude-mem/issues/3605).
 
 ### Smart Install Caching Issues (v5.0.3+)
 
@@ -210,14 +234,14 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 **Solutions**:
 
-1. Check if port 37777 is in use:
+1. Check if the configured port is in use:
    ```bash
-   lsof -i :37777
+   lsof -i :$PORT
    ```
 
 2. Kill process using the port:
    ```bash
-   kill -9 $(lsof -t -i:37777)
+   kill -9 $(lsof -t -i:$PORT)
    ```
 
 3. Or use a different port:
@@ -337,7 +361,7 @@ For automation or scripting scenarios:
 
 1. **Check queue status**:
    ```bash
-   curl http://localhost:37777/api/pending-queue
+   curl http://127.0.0.1:$PORT/api/pending-queue
    ```
 
    Response shows:
@@ -348,7 +372,7 @@ For automation or scripting scenarios:
 
 2. **Trigger manual recovery**:
    ```bash
-   curl -X POST http://localhost:37777/api/pending-queue/process \
+   curl -X POST http://127.0.0.1:$PORT/api/pending-queue/process \
      -H "Content-Type: application/json" \
      -d '{"sessionLimit": 10}'
    ```
@@ -392,8 +416,8 @@ If recovery fails or messages remain stuck:
 
 1. **Verify worker is healthy**:
    ```bash
-   curl http://localhost:37777/health
-   # Should return: {"status":"ok","uptime":12345,"port":37777}
+   curl http://127.0.0.1:$PORT/health
+   # Should return: {"status":"ok","uptime":12345,"port":...}
    ```
 
 2. **Check database for corruption**:
@@ -560,6 +584,30 @@ sqlite3 ~/.claude-mem/claude-mem.db "
    ```bash
    sqlite3 ~/.claude-mem/claude-mem.db "VACUUM;"
    ```
+
+### Windows: `"bun" is not recognized` Hook Errors
+
+**Symptoms**: Every hook fails on Windows with:
+
+```
+SessionStart:startup hook error
+Failed with non-blocking status code: ""bun"" is not recognized as an internal or external command
+```
+
+(or the localized equivalent), even though `bun --version` works fine in any terminal and `where bun` resolves correctly.
+
+**Cause**: cmd.exe silently drops environment variables longer than ~8,191 characters. The hooks prepend the login-shell PATH to the inherited PATH, which can double it past that limit — inside cmd.exe the PATH is then empty, so a bare `bun` command cannot be resolved even though `where.exe` (which uses Win32 APIs and has no such limit) finds it. This only reproduces when the combined PATH exceeds the limit, which is why the same setup works on machines with a shorter PATH.
+
+**Solutions**:
+
+1. Update claude-mem — the launcher now resolves the absolute `bun.exe` path and spawns it directly without cmd.exe.
+
+2. Check your PATH length; if it is near or above ~4,000 characters it will exceed the cmd.exe limit once doubled:
+   ```powershell
+   $env:Path.Length
+   ```
+
+3. Trim duplicate or dead PATH entries (Windows merges the machine and user PATH, and many installers add both).
 
 ### Dependencies Not Installing
 
@@ -891,7 +939,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 2. Check Node.js version:
    ```bash
-   node --version  # Should be >= 18.0.0
+   node --version  # Should be >= 20.0.0
    ```
 
 3. Check for TypeScript errors:
