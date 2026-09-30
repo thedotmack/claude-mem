@@ -156,6 +156,10 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
   spawnPlugin(bunPath, [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs]);
 }
 
+export function runProjectCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('project', extraArgs);
+}
+
 export function runCleanupCommand(extraArgs: string[] = []): void {
   spawnBunWorkerCommand('cleanup', extraArgs);
 }
