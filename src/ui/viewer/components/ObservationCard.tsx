@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { Observation, FeedItemType } from '../types';
+import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
 import { DeleteButton } from './DeleteButton';
+import type { DeletableItemType } from '../utils/feed-deletion';
 
 interface ObservationCardProps {
   observation: Observation;
-  onDelete: (itemType: FeedItemType, id: number) => void;
+  onDeleted: (itemType: DeletableItemType, id: number) => void;
 }
 
 function stripProjectRoot(filePath: string): string {
@@ -27,7 +28,7 @@ function stripProjectRoot(filePath: string): string {
   return parts.length > 3 ? parts.slice(-3).join('/') : filePath;
 }
 
-export function ObservationCard({ observation, onDelete }: ObservationCardProps) {
+export function ObservationCard({ observation, onDeleted }: ObservationCardProps) {
   const [showFacts, setShowFacts] = useState(false);
   const [showNarrative, setShowNarrative] = useState(false);
   const date = formatDate(observation.created_at_epoch);
@@ -90,7 +91,7 @@ export function ObservationCard({ observation, onDelete }: ObservationCardProps)
               <span>narrative</span>
             </button>
           )}
-          <DeleteButton itemType="observation" id={observation.id} onDelete={onDelete} />
+          <DeleteButton itemType="observation" id={observation.id} onDeleted={onDeleted} />
         </div>
       </div>
 

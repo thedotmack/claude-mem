@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useEffect } from 'react';
-import { Observation, Summary, UserPrompt, FeedItem, FeedItemType } from '../types';
+import { Observation, Summary, UserPrompt, FeedItem } from '../types';
+import type { DeletableItemType } from '../utils/feed-deletion';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
@@ -11,12 +12,12 @@ interface FeedProps {
   summaries: Summary[];
   prompts: UserPrompt[];
   onLoadMore: () => void;
-  onDelete: (itemType: FeedItemType, id: number) => void;
+  onDeleted: (itemType: DeletableItemType, id: number) => void;
   isLoading: boolean;
   hasMore: boolean;
 }
 
-export function Feed({ observations, summaries, prompts, onLoadMore, onDelete, isLoading, hasMore }: FeedProps) {
+export function Feed({ observations, summaries, prompts, onLoadMore, onDeleted, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -66,11 +67,11 @@ export function Feed({ observations, summaries, prompts, onLoadMore, onDelete, i
         {items.map(item => {
           const key = `${item.itemType}-${item.id}`;
           if (item.itemType === 'observation') {
-            return <ObservationCard key={key} observation={item} onDelete={onDelete} />;
+            return <ObservationCard key={key} observation={item} onDeleted={onDeleted} />;
           } else if (item.itemType === 'summary') {
-            return <SummaryCard key={key} summary={item} onDelete={onDelete} />;
+            return <SummaryCard key={key} summary={item} onDeleted={onDeleted} />;
           } else {
-            return <PromptCard key={key} prompt={item} onDelete={onDelete} />;
+            return <PromptCard key={key} prompt={item} />;
           }
         })}
         {items.length === 0 && !isLoading && (
