@@ -3,6 +3,8 @@
 import type { Job } from 'bullmq';
 import { logger } from '../../utils/logger.js';
 import { PostgresAgentEventsRepository } from '../../storage/postgres/agent-events.js';
+import type { PostgresAgentEvent } from '../../storage/postgres/agent-events.js';
+import { eventBlockBytes } from './providers/shared/prompt-builder.js';
 import { PostgresObservationGenerationJobRepository } from '../../storage/postgres/generation-jobs.js';
 import { PostgresProjectsRepository } from '../../storage/postgres/projects.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -58,6 +60,76 @@ export interface ProviderObservationGeneratorOptions {
   workerId?: string;
 }
 
+
+// The `limit` on listUnprocessedEvents caps the event COUNT, not the payload
+// volume, and event size varies by orders of magnitude. Long sessions therefore
+// still blow the provider context window: measured on a production deployment,
+// sessions that failed with "context overflow" carried up to 34 MB of event
+// payload (~9M tokens), and even truncated to the 500-event default they still
+// averaged ~634k tokens with a 1.55M worst case — against a ~200k window. No
+// model currently on offer absorbs that, so the input has to be bounded by size.
+//
+// Keep the head and the tail of the session: the opening carries the goal, the
+// close carries the outcome and what was left pending. Dropping the middle
+// yields a partial summary, which is strictly better than the current outcome
+// for these sessions — an unrecoverable failure and no summary at all.
+// Bounds the SESSION INPUT, not the finished prompt: buildServerGenerationPrompt
+// wraps the selected event blocks in request/project/job tags, the instructions and
+// the observation schema. That envelope is a fixed cost — 1,244 bytes with the mode
+// active here, independent of event count and payload size — so it is left out of
+// the budget rather than reserved from it. At the default that is 0.2%; only a
+// budget small enough to be unusable anyway (~1 KB buys one truncated tool call)
+// would be decided by it.
+const SUMMARY_INPUT_BUDGET_BYTES = Number.parseInt(
+  process.env.CLAUDE_MEM_SUMMARY_INPUT_BUDGET_BYTES ?? '',
+  10,
+) || 600_000;
+
+/**
+ * Bytes this event will actually contribute to the prompt.
+ *
+ * Delegates to the prompt builder instead of estimating: the builder
+ * pretty-prints, privacy-strips, truncates, XML-escapes and wraps every payload,
+ * and an estimate that skips any of those steps under-counts the request it is
+ * supposed to bound. Measuring the raw row would also count UTF-16 units rather
+ * than bytes, and would charge full price for a payload the builder truncates.
+ *
+ * Not defensive on purpose: an event that cannot be turned into a block here
+ * cannot be turned into one during prompt construction either, so swallowing the
+ * error would only trade a loud failure for the context overflow this budget
+ * exists to prevent.
+ */
+function promptFootprint(event: unknown): number {
+  return eventBlockBytes(event as PostgresAgentEvent);
+}
+
+export function capSummaryInput<T>(events: T[]): T[] {
+  const size = (e: T): number => promptFootprint(e);
+  let total = 0;
+  for (const e of events) total += size(e);
+  if (total <= SUMMARY_INPUT_BUDGET_BYTES) return events;
+
+  const half = SUMMARY_INPUT_BUDGET_BYTES / 2;
+  const head: T[] = [];
+  let headBytes = 0;
+  for (const e of events) {
+    const s = size(e);
+    if (headBytes + s > half) break;
+    head.push(e);
+    headBytes += s;
+  }
+  const tail: T[] = [];
+  let tailBytes = 0;
+  for (let i = events.length - 1; i >= head.length; i -= 1) {
+    const e = events[i] as T;
+    const s = size(e);
+    if (tailBytes + s > SUMMARY_INPUT_BUDGET_BYTES - headBytes) break;
+    tail.unshift(e);
+    tailBytes += s;
+  }
+  return [...head, ...tail];
+}
+
 export class ProviderObservationGenerator {
   constructor(private readonly options: ProviderObservationGeneratorOptions) {}
 
@@ -89,16 +161,11 @@ export class ProviderObservationGenerator {
           correlationId,
           issues: error.issues,
         });
+      } else {
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.error('SYSTEM', 'unexpected error validating job payload', { correlationId }, err);
       }
       throw error;
-    }
-
-    if (payload.kind !== 'event' && payload.kind !== 'event-batch' && payload.kind !== 'summary') {
-      logger.warn('SYSTEM', 'unsupported job kind for ProviderObservationGenerator', {
-        correlationId,
-        kind: payload.kind,
-      });
-      throw new Error(`unsupported job kind: ${payload.kind}`);
     }
 
     // Phase 11 — anti-bypass guard. We MUST NOT trust BullMQ payload data
@@ -194,64 +261,7 @@ export class ProviderObservationGenerator {
     });
 
     try {
-      const events = await this.loadEvents(fresh, payload);
-      const project = await this.loadProject(fresh);
-
-      const result = await this.options.provider.generate({
-        job: fresh,
-        events,
-        project: {
-          projectId: fresh.projectId,
-          teamId: fresh.teamId,
-          serverSessionId: fresh.serverSessionId,
-          projectName: project?.name ?? null,
-        },
-      });
-
-      const persistInput = {
-        pool: this.options.pool,
-        job: fresh,
-        rawText: result.rawText,
-        modelId: result.modelId,
-        providerLabel: result.providerLabel,
-        // Phase 11 — flow identity context from BullMQ payload into the
-        // persistence layer so observations and audit rows carry the same
-        // generation_job_id reference back through to the original API key.
-        apiKeyId: payload.api_key_id,
-        actorId: payload.actor_id,
-        sourceAdapter: payload.source_adapter,
-        ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
-      };
-      const outcome: ProcessGeneratedResponseOutcome = fresh.sourceType === 'session_summary'
-        ? await processSessionSummaryResponse(persistInput)
-        : await processGeneratedResponse(persistInput);
-
-      if (outcome.kind === 'parse_error') {
-        await markGenerationFailed({
-          pool: this.options.pool,
-          job: fresh,
-          reason: outcome.reason,
-          classification: 'parse_error',
-          retryable: false,
-          ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
-        });
-        throw new Error(`generation parse error: ${outcome.reason}`);
-      }
-
-      logger.info('SYSTEM', 'generation completed', {
-        correlationId,
-        jobId: outcome.jobId,
-        bullmqJobId: job.id ?? null,
-        requestId: payloadRequestId,
-        observationCount: outcome.observations.length,
-        privateContentDetected: outcome.privateContentDetected,
-      });
-
-      return {
-        jobId: outcome.jobId,
-        status: 'completed',
-        observationCount: outcome.observations.length,
-      };
+      return await this.generateAndPersist(job, payload, fresh, correlationId, payloadRequestId);
     } catch (error) {
       const classified = error instanceof ServerClassifiedProviderError ? error : null;
       const retryable = classified
@@ -267,6 +277,77 @@ export class ProviderObservationGenerator {
       });
       throw error;
     }
+  }
+
+  // Steps 3+4 of the job pipeline: call the provider with the reloaded
+  // context, then persist + link + advance the outbox. Failures propagate to
+  // process()'s catch, which routes them through markGenerationFailed.
+  private async generateAndPersist(
+    job: Job<ServerGenerationJobPayload>,
+    payload: ServerGenerationJobPayload,
+    fresh: PostgresObservationGenerationJob,
+    correlationId: string,
+    payloadRequestId: string | null,
+  ): Promise<{ jobId: string; status: 'completed'; observationCount: number }> {
+    const events = await this.loadEvents(fresh, payload);
+    const project = await this.loadProject(fresh);
+
+    const result = await this.options.provider.generate({
+      job: fresh,
+      events,
+      project: {
+        projectId: fresh.projectId,
+        teamId: fresh.teamId,
+        serverSessionId: fresh.serverSessionId,
+        projectName: project?.name ?? null,
+      },
+    });
+
+    const persistInput = {
+      pool: this.options.pool,
+      job: fresh,
+      rawText: result.rawText,
+      modelId: result.modelId,
+      providerLabel: result.providerLabel,
+      tokensUsed: result.tokensUsed,
+      // Phase 11 — flow identity context from BullMQ payload into the
+      // persistence layer so observations and audit rows carry the same
+      // generation_job_id reference back through to the original API key.
+      apiKeyId: payload.api_key_id,
+      actorId: payload.actor_id,
+      sourceAdapter: payload.source_adapter,
+      ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
+    };
+    const outcome: ProcessGeneratedResponseOutcome = fresh.sourceType === 'session_summary'
+      ? await processSessionSummaryResponse(persistInput)
+      : await processGeneratedResponse(persistInput);
+
+    if (outcome.kind === 'parse_error') {
+      await markGenerationFailed({
+        pool: this.options.pool,
+        job: fresh,
+        reason: outcome.reason,
+        classification: 'parse_error',
+        retryable: false,
+        ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
+      });
+      throw new Error(`generation parse error: ${outcome.reason}`);
+    }
+
+    logger.info('SYSTEM', 'generation completed', {
+      correlationId,
+      jobId: outcome.jobId,
+      bullmqJobId: job.id ?? null,
+      requestId: payloadRequestId,
+      observationCount: outcome.observations.length,
+      privateContentDetected: outcome.privateContentDetected,
+    });
+
+    return {
+      jobId: outcome.jobId,
+      status: 'completed',
+      observationCount: outcome.observations.length,
+    };
   }
 
   // Phase 11 — load the outbox row by id WITHOUT a scope filter so we can
@@ -421,23 +502,35 @@ export class ProviderObservationGenerator {
     details?: Record<string, unknown>;
   }): Promise<void> {
     try {
-      const repo = new PostgresAuthRepository(this.options.pool);
-      await repo.createAuditLog({
-        teamId: input.teamId,
-        projectId: input.projectId,
-        actorId: input.actorId,
-        apiKeyId: input.apiKeyId,
-        action: input.action,
-        resourceType: 'observation_generation_job',
-        resourceId: input.resourceId,
-        details: input.details ?? {},
-      });
+      await this.insertAuditLog(input);
     } catch (auditError) {
       logger.warn('SYSTEM', 'audit_log insert failed in ProviderObservationGenerator', {
         action: input.action,
         error: auditError instanceof Error ? auditError.message : String(auditError),
       });
     }
+  }
+
+  private async insertAuditLog(input: {
+    teamId: string | null;
+    projectId: string | null;
+    apiKeyId: string | null;
+    actorId: string | null;
+    action: string;
+    resourceId: string | null;
+    details?: Record<string, unknown>;
+  }): Promise<void> {
+    const repo = new PostgresAuthRepository(this.options.pool);
+    await repo.createAuditLog({
+      teamId: input.teamId,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      apiKeyId: input.apiKeyId,
+      action: input.action,
+      resourceType: 'observation_generation_job',
+      resourceId: input.resourceId,
+      details: input.details ?? {},
+    });
   }
 
   private async lockOutbox(
@@ -486,8 +579,6 @@ export class ProviderObservationGenerator {
   ): Promise<NonNullable<Awaited<ReturnType<PostgresAgentEventsRepository['getByIdForScope']>>>[]> {
     const repo = new PostgresAgentEventsRepository(this.options.pool);
 
-    type Event = NonNullable<Awaited<ReturnType<PostgresAgentEventsRepository['getByIdForScope']>>>;
-
     if (job.sourceType === 'session_summary') {
       // Summary jobs feed the provider every event tied to the server_session
       // that hasn't already been collapsed into a completed event-generation
@@ -499,7 +590,7 @@ export class ProviderObservationGenerator {
         projectId: job.projectId,
         teamId: job.teamId,
       });
-      return events;
+      return capSummaryInput(events);
     }
 
     if (job.sourceType !== 'agent_event') {
@@ -513,19 +604,6 @@ export class ProviderObservationGenerator {
         teamId: job.teamId,
       });
       return event ? [event] : [];
-    }
-
-    if (payload.kind === 'event-batch') {
-      const out: Event[] = [];
-      for (const id of payload.agent_event_ids) {
-        const event = await repo.getByIdForScope({
-          id,
-          projectId: job.projectId,
-          teamId: job.teamId,
-        });
-        if (event) out.push(event);
-      }
-      return out;
     }
 
     return [];

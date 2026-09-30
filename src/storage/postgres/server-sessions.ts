@@ -3,6 +3,7 @@
 import type { JsonObject, PostgresQueryable } from './utils.js';
 import { assertProjectOwnership, deterministicKey, newId, queryOne, toDate, toEpoch, toJsonObject } from './utils.js';
 import type { PostgresAgentEvent } from './agent-events.js';
+import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 
 export interface PostgresServerSession {
   id: string;
@@ -59,7 +60,11 @@ export class PostgresServerSessionsRepository {
   }): Promise<PostgresServerSession> {
     await assertProjectOwnership(this.client, input.projectId, input.teamId);
     const id = input.id ?? newId();
-    const idempotencyKey = buildServerSessionIdempotencyKey(input);
+    const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+    const idempotencyKey = buildServerSessionIdempotencyKey({
+      ...input,
+      platformSource,
+    });
     const row = await queryOne<ServerSessionRow>(
       this.client,
       `
@@ -88,7 +93,7 @@ export class PostgresServerSessionsRepository {
         input.contentSessionId ?? null,
         input.agentId ?? null,
         input.agentType ?? null,
-        input.platformSource ?? null,
+        platformSource,
         input.generationStatus ?? 'idle',
         JSON.stringify(input.metadata ?? {})
       ]
@@ -125,14 +130,26 @@ export class PostgresServerSessionsRepository {
     externalSessionId: string;
     projectId: string;
     teamId: string;
+    platformSource?: string | null;
   }): Promise<PostgresServerSession | null> {
+    const hasPlatformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource');
+    const platformSource = hasPlatformScope
+      ? normalizePlatformSourceOrNull(input.platformSource)
+      : null;
     const row = await queryOne<ServerSessionRow>(
       this.client,
       `
         SELECT * FROM server_sessions
         WHERE external_session_id = $1 AND project_id = $2 AND team_id = $3
+          AND (
+            $4::boolean = false
+            OR ($5::text IS NULL AND platform_source IS NULL)
+            OR platform_source = $5
+          )
+        ORDER BY started_at DESC
+        LIMIT 1
       `,
-      [input.externalSessionId, input.projectId, input.teamId]
+      [input.externalSessionId, input.projectId, input.teamId, hasPlatformScope, platformSource]
     );
     return row ? mapServerSessionRow(row) : null;
   }
@@ -144,16 +161,26 @@ export class PostgresServerSessionsRepository {
     contentSessionId: string;
     projectId: string;
     teamId: string;
+    platformSource?: string | null;
   }): Promise<string | null> {
+    const hasPlatformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource');
+    const platformSource = hasPlatformScope
+      ? normalizePlatformSourceOrNull(input.platformSource)
+      : null;
     const row = await queryOne<{ id: string }>(
       this.client,
       `
         SELECT id FROM server_sessions
         WHERE content_session_id = $1 AND project_id = $2 AND team_id = $3
+          AND (
+            $4::boolean = false
+            OR ($5::text IS NULL AND platform_source IS NULL)
+            OR platform_source = $5
+          )
         ORDER BY started_at DESC
         LIMIT 1
       `,
-      [input.contentSessionId, input.projectId, input.teamId]
+      [input.contentSessionId, input.projectId, input.teamId, hasPlatformScope, platformSource]
     );
     return row ? row.id : null;
   }
@@ -327,13 +354,19 @@ export function buildServerSessionIdempotencyKey(input: {
   agentType?: string | null;
   platformSource?: string | null;
 }): string | null {
+  const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+
   if (input.externalSessionId) {
-    return `server_session:v1:${deterministicKey([
+    const parts = [
       input.teamId,
       input.projectId,
       'external',
-      input.externalSessionId
-    ])}`;
+    ];
+    if (platformSource) {
+      parts.push(platformSource);
+    }
+    parts.push(input.externalSessionId);
+    return `server_session:v1:${deterministicKey(parts)}`;
   }
 
   if (input.contentSessionId) {
@@ -341,18 +374,18 @@ export function buildServerSessionIdempotencyKey(input: {
       input.teamId,
       input.projectId,
       'content',
-      input.platformSource ?? null,
+      platformSource,
       input.agentId ?? null,
       input.contentSessionId
     ])}`;
   }
 
-  if (input.agentId && input.platformSource) {
+  if (input.agentId && platformSource) {
     return `server_session:v1:${deterministicKey([
       input.teamId,
       input.projectId,
       'agent',
-      input.platformSource,
+      platformSource,
       input.agentId,
       input.agentType ?? null
     ])}`;

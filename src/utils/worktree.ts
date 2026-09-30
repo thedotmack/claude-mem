@@ -47,7 +47,7 @@ export function detectWorktree(cwd: string): WorktreeInfo {
     return NOT_A_WORKTREE;
   }
 
-  const gitdirPath = match[1];
+  const gitdirPath = path.resolve(path.dirname(gitPath), match[1]);
 
   const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
   if (!worktreesMatch) {

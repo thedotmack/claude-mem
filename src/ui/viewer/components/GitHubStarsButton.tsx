@@ -1,6 +1,4 @@
-import React from 'react';
-import { useGitHubStars } from '../hooks/useGitHubStars';
-import { formatStarCount } from '../utils/formatNumber';
+import React, { useState, useEffect } from 'react';
 
 interface GitHubStarsButtonProps {
   username: string;
@@ -8,8 +6,39 @@ interface GitHubStarsButtonProps {
   className?: string;
 }
 
+function formatStarCount(count: number): string {
+  if (count < 1000) return count.toString();
+  if (count < 1000000) return `${(count / 1000).toFixed(1)}k`;
+  return `${(count / 1000000).toFixed(1)}M`;
+}
+
 export function GitHubStarsButton({ username, repo, className = '' }: GitHubStarsButtonProps) {
-  const { stars, isLoading, error } = useGitHubStars(username, repo);
+  const [stars, setStars] = useState<number | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        setIsLoading(true);
+        setError(null);
+        const response = await fetch(`https://api.github.com/repos/${username}/${repo}`);
+        if (!response.ok) {
+          throw new Error(`GitHub API error: ${response.status}`);
+        }
+        const data: { stargazers_count: number } = await response.json();
+        if (!cancelled) setStars(data.stargazers_count);
+      } catch (err) {
+        console.error('Failed to fetch GitHub stars:', err);
+        if (!cancelled) setError(err instanceof Error ? err : new Error('Unknown error'));
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [username, repo]);
+
   const repoUrl = `https://github.com/${username}/${repo}`;
 
   if (error) {

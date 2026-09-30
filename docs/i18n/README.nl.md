@@ -10,46 +10,51 @@
     </picture>
   </a>
   <br>
+  <a href="https://vercel.com/open-source-program">
+    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+  </a>
 </h1>
 
 <p align="center">
-  <a href="README.zh.md">🇨🇳 中文</a> •
-  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="README.ja.md">🇯🇵 日本語</a> •
-  <a href="README.pt-br.md">🇧🇷 Português</a> •
-  <a href="README.ko.md">🇰🇷 한국어</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.de.md">🇩🇪 Deutsch</a> •
-  <a href="README.fr.md">🇫🇷 Français</a>
-  <a href="README.he.md">🇮🇱 עברית</a> •
-  <a href="README.ar.md">🇸🇦 العربية</a> •
-  <a href="README.ru.md">🇷🇺 Русский</a> •
-  <a href="README.pl.md">🇵🇱 Polski</a> •
-  <a href="README.cs.md">🇨🇿 Čeština</a> •
-  <a href="README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="README.uk.md">🇺🇦 Українська</a> •
-  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="README.id.md">🇮🇩 Indonesia</a> •
-  <a href="README.th.md">🇹🇭 ไทย</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="README.ur.md">🇵🇰 اردو</a> •
-  <a href="README.ro.md">🇷🇴 Română</a> •
-  <a href="README.sv.md">🇸🇪 Svenska</a> •
-  <a href="README.it.md">🇮🇹 Italiano</a> •
-  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="README.hu.md">🇭🇺 Magyar</a> •
-  <a href="README.fi.md">🇫🇮 Suomi</a> •
-  <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
+  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
+  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
+  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
+  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
+  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
+  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
+  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
+  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
+  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
+  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
+  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
+  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
+  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
+  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
+  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
+  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
+  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
+  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
+  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
+  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
+  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
+  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center">Persistent geheugencompressiesysteem gebouwd voor <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
@@ -74,18 +79,45 @@
 
 <br>
 
-<p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
-    </picture>
-  </a>
-</p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://github.com/thedotmack/claude-mem">
+        <picture>
+          <img
+            src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif"
+            alt="Claude-Mem Preview"
+            width="500"
+          >
+        </picture>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://www.star-history.com/#thedotmack/claude-mem&Date">
+        <picture>
+          <source
+            media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+          />
+          <source
+            media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+          />
+          <img
+            alt="Star History Chart"
+            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+            width="500"
+          />
+        </picture>
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="#snel-starten">Snel Starten</a> •
   <a href="#hoe-het-werkt">Hoe Het Werkt</a> •
-  <a href="#zoektools">Zoektools</a> •
+  <a href="#mcp-zoektools">Zoektools</a> •
   <a href="#documentatie">Documentatie</a> •
   <a href="#configuratie">Configuratie</a> •
   <a href="#probleemoplossing">Probleemoplossing</a> •
@@ -100,28 +132,57 @@
 
 ## Snel Starten
 
-Start een nieuwe Claude Code sessie in de terminal en voer de volgende commando's in:
+Installeer met één enkel commando:
 
+```bash
+npx claude-mem install
 ```
-> /plugin marketplace add thedotmack/claude-mem
 
-> /plugin install claude-mem
+Of installeer voor OpenCode:
+
+```bash
+npx claude-mem install --ide opencode
+```
+
+Of installeer voor Antigravity CLI ([installatiegids](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+Of installeer vanuit de plugin marketplace binnen Claude Code:
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+
+/plugin install claude-mem
 ```
 
 Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieuwe sessies.
+
+> **Let op:** Claude-Mem wordt ook op npm gepubliceerd, maar `npm install -g claude-mem` installeert alleen de **SDK/bibliotheek** — het registreert de plugin hooks niet en zet de worker service niet op. Installeer altijd via `npx claude-mem install` of de bovenstaande `/plugin` commando's.
+
+### 🦞 OpenClaw Gateway
+
+Installeer claude-mem als een persistente geheugenplugin op [OpenClaw](https://openclaw.ai) gateways met één enkel commando:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+Het installatieprogramma regelt afhankelijkheden, plugin-instellingen, AI-providerconfiguratie, worker-opstart en optionele real-time waarnemingsfeeds naar Telegram, Discord, Slack en meer. Zie de [OpenClaw Integratiegids](https://docs.claude-mem.ai/openclaw-integration) voor details.
 
 **Belangrijkste Functies:**
 
 - 🧠 **Persistent Geheugen** - Context blijft behouden tussen sessies
 - 📊 **Progressieve Onthulling** - Gelaagde geheugenophaling met zichtbaarheid van tokenkosten
-- 🔍 **Vaardigheidgebaseerd Zoeken** - Bevraag je projectgeschiedenis met mem-search vaardigheid
-- 🖥️ **Web Viewer UI** - Real-time geheugenstroom op http://localhost:37777
+- 🔍 **Vaardigheidgebaseerd Zoeken** - Bevraag je projectgeschiedenis met de mem-search vaardigheid
+- 🖥️ **Web Viewer UI** - Real-time geheugenstroom op de worker-URL die bij het opstarten wordt weergegeven
 - 💻 **Claude Desktop Vaardigheid** - Zoek geheugen vanuit Claude Desktop gesprekken
 - 🔒 **Privacycontrole** - Gebruik `<private>` tags om gevoelige content uit te sluiten van opslag
 - ⚙️ **Context Configuratie** - Fijnmazige controle over welke context wordt geïnjecteerd
 - 🤖 **Automatische Werking** - Geen handmatige tussenkomst vereist
-- 🔗 **Citaten** - Verwijs naar eerdere waarnemingen met ID's (toegang via http://localhost:37777/api/observation/{id} of bekijk alle in de web viewer op http://localhost:37777)
-- 🧪 **Bètakanaal** - Probeer experimentele functies zoals Endless Mode via versieschakeling
+- 🔗 **Citaten** - Verwijs naar eerdere waarnemingen met ID's via de worker API of bekijk alles in de web viewer
 
 ---
 
@@ -134,7 +195,6 @@ Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieu
 - **[Installatiegids](https://docs.claude-mem.ai/installation)** - Snel starten & geavanceerde installatie
 - **[Gebruikersgids](https://docs.claude-mem.ai/usage/getting-started)** - Hoe Claude-Mem automatisch werkt
 - **[Zoektools](https://docs.claude-mem.ai/usage/search-tools)** - Bevraag je projectgeschiedenis met natuurlijke taal
-- **[Bètafuncties](https://docs.claude-mem.ai/beta-features)** - Probeer experimentele functies zoals Endless Mode
 
 ### Beste Praktijken
 
@@ -155,6 +215,7 @@ Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieu
 
 - **[Configuratie](https://docs.claude-mem.ai/configuration)** - Omgevingsvariabelen & instellingen
 - **[Ontwikkeling](https://docs.claude-mem.ai/development)** - Bouwen, testen, bijdragen
+- **[Release Branches](https://docs.claude-mem.ai/branches)** - Stable, core-dev en community-edge branch-flow
 - **[Probleemoplossing](https://docs.claude-mem.ai/troubleshooting)** - Veelvoorkomende problemen & oplossingen
 
 ---
@@ -165,7 +226,7 @@ Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieu
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Slimme Installatie** - Gecachte afhankelijkheidscontrole (pre-hook script, geen lifecycle hook)
-3. **Worker Service** - HTTP API op poort 37777 met web viewer UI en 10 zoekeindpunten, beheerd door Bun
+3. **Worker Service** - Lokale HTTP API met web viewer UI en zoekendpoints, beheerd door Bun
 4. **SQLite Database** - Slaat sessies, waarnemingen, samenvattingen op
 5. **mem-search Vaardigheid** - Natuurlijke taal queries met progressieve onthulling
 6. **Chroma Vector Database** - Hybride semantisch + zoekwoord zoeken voor intelligente context ophaling
@@ -174,46 +235,51 @@ Zie [Architectuuroverzicht](https://docs.claude-mem.ai/architecture/overview) vo
 
 ---
 
-## mem-search Vaardigheid
+## MCP Zoektools
 
-Claude-Mem biedt intelligent zoeken via de mem-search vaardigheid die automatisch wordt aangeroepen wanneer je vraagt over eerder werk:
+Claude-Mem biedt intelligent geheugenzoeken via **4 MCP-tools** volgens een tokenefficiënt **3-lagen workflowpatroon**:
+
+**De 3-Lagen Workflow:**
+
+1. **`search`** - Krijg een compacte index met ID's (~50-100 tokens/resultaat)
+2. **`timeline`** - Krijg chronologische context rond interessante resultaten
+3. **`get_observations`** - Haal volledige details op ALLEEN voor gefilterde ID's (~500-1.000 tokens/resultaat)
 
 **Hoe Het Werkt:**
-- Vraag gewoon natuurlijk: *"Wat hebben we vorige sessie gedaan?"* of *"Hebben we deze bug eerder opgelost?"*
-- Claude roept automatisch de mem-search vaardigheid aan om relevante context te vinden
+- Claude gebruikt MCP-tools om je geheugen te doorzoeken
+- Begin met `search` om een index van resultaten te krijgen
+- Gebruik `timeline` om te zien wat er gebeurde rond specifieke waarnemingen
+- Gebruik `get_observations` om volledige details op te halen voor relevante ID's
+- **~10x tokenbesparing** door te filteren vóórdat details worden opgehaald
 
-**Beschikbare Zoekoperaties:**
+**Beschikbare MCP-Tools:**
 
-1. **Search Observations** - Volledige tekst zoeken door waarnemingen
-2. **Search Sessions** - Volledige tekst zoeken door sessiesamenvattingen
-3. **Search Prompts** - Zoek ruwe gebruikersverzoeken
-4. **By Concept** - Vind op concepttags (discovery, problem-solution, pattern, etc.)
-5. **By File** - Vind waarnemingen die specifieke bestanden refereren
-6. **By Type** - Vind op type (decision, bugfix, feature, refactor, discovery, change)
-7. **Recent Context** - Krijg recente sessiecontext voor een project
-8. **Timeline** - Krijg uniforme tijdlijn van context rond een specifiek tijdstip
-9. **Timeline by Query** - Zoek naar waarnemingen en krijg tijdlijncontext rond beste match
-10. **API Help** - Krijg zoek API documentatie
+1. **`search`** - Doorzoek de geheugenindex met volledige-tekst queries, filter op type/datum/project
+2. **`timeline`** - Krijg chronologische context rond een specifieke waarneming of query
+3. **`get_observations`** - Haal volledige waarnemingsdetails op via ID's (bundel altijd meerdere ID's)
 
-**Voorbeeld Natuurlijke Taal Queries:**
+**Voorbeeldgebruik:**
 
-```
-"Welke bugs hebben we vorige sessie opgelost?"
-"Hoe hebben we authenticatie geïmplementeerd?"
-"Welke wijzigingen zijn gemaakt aan worker-service.ts?"
-"Laat me recent werk aan dit project zien"
-"Wat gebeurde er toen we de viewer UI toevoegden?"
+```typescript
+// Stap 1: Zoek naar index
+search(query="authentication bug", type="bugfix", limit=10)
+
+// Stap 2: Bekijk de index, identificeer relevante ID's (bijv. #123, #456)
+
+// Stap 3: Haal volledige details op
+get_observations(ids=[123, 456])
 ```
 
 Zie [Zoektools Gids](https://docs.claude-mem.ai/usage/search-tools) voor gedetailleerde voorbeelden.
 
 ---
 
-## Bètafuncties
+## Release Branches
 
-Claude-Mem biedt een **bètakanaal** met experimentele functies zoals **Endless Mode** (biomimetische geheugenarchitectuur voor uitgebreide sessies). Schakel tussen stabiele en bètaversies vanuit de web viewer UI op http://localhost:37777 → Settings.
-
-Zie **[Bètafuncties Documentatie](https://docs.claude-mem.ai/beta-features)** voor details over Endless Mode en hoe je het kunt proberen.
+Stabiele releases worden uitgebracht vanuit `main` en gepubliceerd op npm. `core-dev` en
+`community-edge` zijn branches die vanuit de broncode draaien voor vroege betrouwbaarheidsfixes en
+community-integraties. Zie **[Release Branches](https://docs.claude-mem.ai/branches)**
+voor de branch-flow en instructies voor het draaien van niet-stabiele versies.
 
 ---
 
@@ -226,13 +292,63 @@ Zie **[Bètafuncties Documentatie](https://docs.claude-mem.ai/beta-features)** v
 - **SQLite 3**: Voor persistente opslag (meegeleverd)
 
 ---
+### Opmerkingen bij Windows-installatie
+
+Als je een fout ziet zoals:
+
+```powershell
+npm : The term 'npm' is not recognized as the name of a cmdlet
+```
+
+Zorg ervoor dat Node.js en npm zijn geïnstalleerd en toegevoegd aan je PATH. Download het nieuwste Node.js-installatieprogramma van https://nodejs.org en herstart je terminal na installatie.
+
+---
 
 ## Configuratie
 
-Instellingen worden beheerd in `~/.claude-mem/settings.json` (automatisch aangemaakt met standaardinstellingen bij eerste run). Configureer AI model, worker poort, data directory, logniveau en context injectie-instellingen.
+Instellingen worden beheerd in `~/.claude-mem/settings.json` (automatisch aangemaakt met standaardinstellingen bij eerste run). Configureer AI-model, worker-poort, datamap, logniveau en context-injectie-instellingen.
 
 Zie de **[Configuratiegids](https://docs.claude-mem.ai/configuration)** voor alle beschikbare instellingen en voorbeelden.
 
+### Modus- & Taalconfiguratie
+
+Claude-Mem ondersteunt meerdere workflowmodi en talen via de `CLAUDE_MEM_MODE` instelling.
+
+Deze optie regelt zowel:
+- Het workflowgedrag (bijv. code, chill, investigation)
+- De taal die wordt gebruikt in gegenereerde waarnemingen
+
+#### Hoe te Configureren
+
+Bewerk je instellingenbestand op `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+```
+
+Modi zijn gedefinieerd in `plugin/modes/`. Om alle lokaal beschikbare modi te zien:
+
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### Beschikbare Modi
+
+| Modus | Beschrijving |
+|------------|-------------------------|
+| `code` | Standaard Engelse modus |
+| `code--zh` | Vereenvoudigd Chinese modus |
+| `code--ja` | Japanse modus |
+
+Taalspecifieke modi volgen het patroon `code--[lang]` waarbij `[lang]` de ISO 639-1 taalcode is (bijv. `zh` voor Chinees, `ja` voor Japans, `es` voor Spaans).
+
+> Let op: `code--zh` (Vereenvoudigd Chinees) is al ingebouwd — geen extra installatie of plugin-update is vereist.
+
+#### Na het Wijzigen van de Modus
+
+Herstart Claude Code om de nieuwe modusconfiguratie toe te passen.
 ---
 
 ## Ontwikkeling
@@ -268,32 +384,48 @@ Bijdragen zijn welkom! Gelieve:
 4. Update documentatie
 5. Dien een Pull Request in
 
+Claude-Mem wordt uitgebracht vanuit drie branches: `main` (stable), `core-dev`, en
+`community-edge`. Alleen `main` wordt gepubliceerd op npm; de andere draaien vanuit
+de broncode. Zie [Release Branches](https://docs.claude-mem.ai/branches) voor de
+strategie en instructies voor lokaal draaien.
+
 Zie [Ontwikkelingsgids](https://docs.claude-mem.ai/development) voor bijdrageworkflow.
 
 ---
 
-## License
+## Licentie
 
-This project is licensed under the **Apache License 2.0** (Apache-2.0).
+Claude-Mem wordt uitgebracht onder de Apache License 2.0.
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+We hebben voor Apache-2.0 gekozen omdat duurzaam agentic geheugen eenvoudig ingebed
+moet kunnen worden in ontwikkelaarstools, lokale agents, MCP-servers, enterprise-systemen,
+robotica-stacks en productie-agentharnassen.
 
-See the [LICENSE](LICENSE) file for full details.
+Zie het [LICENSE](LICENSE) bestand voor volledige details. Zie [docs/license.md](docs/license.md)
+en [docs/ip-boundary.md](docs/ip-boundary.md) voor de licentiescope en de
+grens tussen open en commercieel gebruik.
 
-Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
-
-**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+**Opmerking over Ragtime**: De `ragtime/` map is gelicenseerd onder de **Apache License 2.0**. Zie [ragtime/LICENSE](ragtime/LICENSE) voor details.
 
 ---
-
 
 ## Ondersteuning
 
 - **Documentatie**: [docs/](docs/)
 - **Issues**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Repository**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
+- **Officieel X-account**: [@Claude_Memory](https://x.com/Claude_Memory)
+- **Officiële Discord**: [Word lid van Discord](https://discord.com/invite/J4wttp9vDu)
 - **Auteur**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
 
-**Gebouwd met Claude Agent SDK** | **Aangedreven door Claude Code** | **Gemaakt met TypeScript**
+**Gebouwd met Claude Agent SDK** | **Werkt met Claude Code** | **Gemaakt met TypeScript**
+
+---
+
+### Hoe Zit Het met CMEM?
+
+CMEM is een token gecreëerd door een derde partij, maar officieel omarmd door de maker van Claude-Mem (Alex Newman, @thedotmack). Het token fungeert als een katalysator voor de community voor groei en een middel om CMEM te brengen naar de ontwikkelaars en kenniswerkers die het het hardst nodig hebben.
+
+Officieel BASE CA: 0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

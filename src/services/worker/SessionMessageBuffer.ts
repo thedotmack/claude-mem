@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import type { PendingMessage, PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
-const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+export const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
 
 interface BufferedMessage {
   id: number;
@@ -133,6 +133,30 @@ export class SessionMessageBuffer {
       total += list.length;
     }
     return total;
+  }
+
+  getMessagesByIds(sessionDbId: number, messageIds: number[]): PendingMessageWithId[] {
+    if (messageIds.length === 0) {
+      return [];
+    }
+
+    const lookup = new Map<number, PendingMessageWithId>();
+    for (const buffered of this.buffers.get(sessionDbId) ?? []) {
+      lookup.set(buffered.id, {
+        ...buffered.message,
+        _persistentId: buffered.id,
+        _originalTimestamp: buffered.enqueuedAt,
+      });
+    }
+
+    const messages: PendingMessageWithId[] = [];
+    for (const messageId of messageIds) {
+      const message = lookup.get(messageId);
+      if (message) {
+        messages.push(message);
+      }
+    }
+    return messages;
   }
 
   peekTypes(sessionDbId: number): Array<{ message_type: string; tool_name: string | null }> {

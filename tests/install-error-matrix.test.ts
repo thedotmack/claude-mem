@@ -12,7 +12,6 @@ import {
   createInstallSummary,
   installerError,
   flushSummary,
-  withRetry,
   InstallAbortError,
 } from '../src/npx-cli/install/error-reporter';
 import {
@@ -22,12 +21,12 @@ import {
 
 const CANONICAL_IDES = [
   'claude-code',
-  'gemini-cli',
   'opencode',
   'openclaw',
   'windsurf',
   'codex-cli',
   'cursor',
+  'grok-bot',
   'copilot-cli',
   'antigravity',
   'goose',
@@ -39,10 +38,10 @@ describe('error taxonomy', () => {
   it('exposes ErrorSeverity, ERROR_CATEGORIES, classifyError', () => {
     expect(ErrorSeverity.ABORT).toBe('ABORT');
     expect(Array.isArray(ERROR_CATEGORIES)).toBe(true);
-    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(13);
+    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(12);
   });
 
-  it('has no SILENT severity (only SILENT_RETRY)', () => {
+  it('has no SILENT severity', () => {
     const severities = new Set(ERROR_CATEGORIES.map((c) => c.severity));
     expect(severities.has('SILENT' as ErrorSeverity)).toBe(false);
   });
@@ -70,6 +69,25 @@ describe('error taxonomy', () => {
       phase: 'marketplace-deps',
     });
     expect(cat.id).toBe('tree-sitter-eresolve');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+  });
+
+  it('classifies a non-interactive provider-selection abort with its own id', () => {
+    const cat = classifyError(new Error('A provider must be explicit when stdin is not interactive.'), {
+      component: 'provider-selection',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('provider-selection-non-interactive');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+    expect(cat.remediation({ platform: 'linux', dataDir: '/x' })).toContain('--provider claude');
+  });
+
+  it('classifies missing non-interactive provider credentials with its own id', () => {
+    const cat = classifyError(new Error('gemini requires a preconfigured personal API key when stdin is not interactive.'), {
+      component: 'provider-credentials',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('provider-credentials-missing');
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
   });
 
@@ -154,28 +172,6 @@ describe('installerError decision logic', () => {
     }, summary);
     expect(summary.failedIDEs).toEqual(['cursor']);
     expect(summary.warnings[0].message).toContain('EACCES');
-  });
-
-  it('SILENT_RETRY stays silent on first occurrence, escalates on second', () => {
-    const summary = createInstallSummary();
-    const ctx = { component: 'bun-net', phase: 'setup-runtime', cause: new Error('error: failed to resolve') };
-    installerError(ErrorSeverity.SILENT_RETRY, ctx, summary);
-    expect(summary.warnings).toHaveLength(0);
-    expect(summary.retryCount['bun-net']).toBe(1);
-    installerError(ErrorSeverity.SILENT_RETRY, ctx, summary);
-    expect(summary.warnings).toHaveLength(1);
-    expect(summary.retryCount['bun-net']).toBe(2);
-  });
-
-  it('withRetry retries once then rethrows', async () => {
-    const summary = createInstallSummary();
-    let calls = 0;
-    await expect(
-      withRetry(async () => { calls++; throw new Error('boom'); }, {
-        component: 'x', phase: 'y', cause: undefined,
-      }, summary, 2),
-    ).rejects.toThrow('boom');
-    expect(calls).toBe(2);
   });
 
   it('flushSummary emits each warning with remediation', () => {
@@ -273,16 +269,23 @@ function simulateInstall(_ide: string, scenario: Scenario): Outcome {
   return { status, aborted: false };
 }
 
-describe('cross-IDE failure matrix (12 IDEs x 4 scenarios)', () => {
+describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
   const scenarios: Scenario[] = ['happy', 'eresolve', 'missing-uv', 'missing-bun'];
 
+  let prevMatrixDataDir: string | undefined;
   beforeEach(() => {
+    prevMatrixDataDir = process.env.CLAUDE_MEM_DATA_DIR;
     process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'cm-matrix-'));
   });
   afterEach(() => {
     const dir = process.env.CLAUDE_MEM_DATA_DIR;
     if (dir) rmSync(dir, { recursive: true, force: true });
-    delete process.env.CLAUDE_MEM_DATA_DIR;
+    // Restore (not delete): the preload tripwire (tests/preload.ts) pins a
+    // per-run default temp dir, and unconditionally deleting the env var
+    // would expose later test files to the real ~/.claude-mem fallback in
+    // call-time resolvers.
+    if (prevMatrixDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = prevMatrixDataDir;
   });
 
   it('produces 48 cells (12 IDEs x 4 scenarios)', () => {

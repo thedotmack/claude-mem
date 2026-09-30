@@ -11,9 +11,10 @@ import {
   SearchOptions,
   SearchFilters,
   DateRange,
-  ObservationRow,
-  UserPromptRow
+  ObservationRow
 } from './types.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { applySqliteConnectionPragmas } from './connection.js';
 
 export class SessionSearch {
   private db: Database;
@@ -26,8 +27,9 @@ export class SessionSearch {
     } else {
       ensureDir(DATA_DIR);
       this.db = new Database(dbPathOrDb);
-      this.db.run('PRAGMA journal_mode = WAL');
     }
+
+    applySqliteConnectionPragmas(this.db);
 
     this._fts5Available = this.isFts5Available();
 
@@ -65,7 +67,8 @@ export class SessionSearch {
       this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
       this.db.run('DROP TABLE _fts5_probe');
       return true;
-    } catch {
+    } catch (error) {
+      logger.debug('DB', 'FTS5 probe failed — FTS5 unavailable on this platform', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
   }
@@ -168,9 +171,9 @@ export class SessionSearch {
     // codex/other-agent search.
     if (filters.platformSource) {
       conditions.push(
-        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), 'claude') = ?`
+        `COALESCE(NULLIF((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
       );
-      params.push(filters.platformSource);
+      params.push(normalizePlatformSource(filters.platformSource));
     }
 
     if (filters.type) {
@@ -228,6 +231,58 @@ export class SessionSearch {
     return conditions.length > 0 ? conditions.join(' AND ') : '';
   }
 
+  /**
+   * Scripts whose runs FTS5's unicode61 tokenizer cannot split: Hiragana, Katakana, the CJK
+   * ideograph blocks, Bopomofo, and Hangul. unicode61 breaks on Unicode whitespace and
+   * punctuation, and these scripts put neither between the characters of a run — so a run
+   * folds into a single token and no substring of it can ever match (#3801), which is every
+   * query a user types in them.
+   *
+   * Korean does space its words, so only the sub-word case is affected there — but that is
+   * still every partial-word query. Measured directly against `tokenize='unicode61'`:
+   *
+   *   설정   inside 설정을            -> 0 rows
+   *   설정을 as a whole token         -> 1 row
+   *   ㄓㄨ   inside ㄓㄨㄛ            -> 0 rows
+   *   项目   inside 修改了项目配置    -> 0 rows
+   *
+   * Bopomofo and Hangul were raised in review on #3810. The blocks are adjacent, so
+   * \u3100-\u318F covers Bopomofo together with the Hangul compatibility jamo beside it.
+   */
+  private static readonly UNSEGMENTED_SCRIPT =
+    /[\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/;
+
+  /**
+   * Build the substring predicate used when the index cannot represent the query. The
+   * escaping matches {@link searchUserPrompts}, which has always searched by substring.
+   */
+  private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
+    const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+    return {
+      clause: `(${columns.map(column => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`,
+      params: columns.map(() => pattern),
+    };
+  }
+
+  /**
+   * Build an FTS5 query that preserves literal-token safety while allowing multi-word
+   * input to behave as an AND of terms instead of an exact phrase.
+   *
+   * Tokens with no letter or digit (a lone `-`, `&`, `—`) are dropped: unicode61 indexes
+   * nothing for them, so each would become an empty phrase that matches no row and, ANDed
+   * in, would zero out the whole query.
+   */
+  private static buildFTSMatchQuery(query: string): string {
+    const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
+    if (tokens.length === 0) {
+      return `"${query.replace(/"/g, '""')}"`;
+    }
+
+    return tokens
+      .map(token => `"${token.replace(/"/g, '""')}"`)
+      .join(' AND ');
+  }
+
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
     switch (orderBy) {
       case 'relevance':
@@ -265,6 +320,27 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
+    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
+      const filterClause = this.buildFilterClause(filters, params, 'o');
+      const orderClause = this.buildOrderClause(orderBy, false);
+      const match = SessionSearch.buildSubstringClause(query, [
+        'o.title', 'o.subtitle', 'o.narrative', 'o.text', 'o.facts', 'o.concepts',
+      ]);
+
+      const sql = `
+        SELECT o.*, o.discovery_tokens
+        FROM observations o
+        WHERE ${match.clause}
+        ${filterClause ? 'AND ' + filterClause : ''}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.unshift(...match.params);
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    }
+
     if (this._fts5Available) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       const orderClause = this.buildOrderClause(orderBy, true, 'observations_fts');
@@ -279,7 +355,7 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
+      const escapedQuery = SessionSearch.buildFTSMatchQuery(query);
       params.unshift(escapedQuery);
       params.push(limit, offset);
 
@@ -323,6 +399,31 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
 
+    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
+      const filterOptions = { ...filters };
+      delete filterOptions.type;
+      const filterClause = this.buildFilterClause(filterOptions, params, 's');
+      const orderClause = orderBy === 'date_asc'
+        ? 'ORDER BY s.created_at_epoch ASC'
+        : 'ORDER BY s.created_at_epoch DESC';
+      const match = SessionSearch.buildSubstringClause(query, [
+        's.request', 's.investigated', 's.learned', 's.completed', 's.next_steps', 's.notes',
+      ]);
+
+      const sql = `
+        SELECT s.*, s.discovery_tokens
+        FROM session_summaries s
+        WHERE ${match.clause}
+        ${filterClause ? 'AND ' + filterClause : ''}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.unshift(...match.params);
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+    }
+
     if (this._fts5Available) {
       const filterOptions = { ...filters };
       delete filterOptions.type;
@@ -344,7 +445,7 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
+      const escapedQuery = SessionSearch.buildFTSMatchQuery(query);
       params.unshift(escapedQuery);
       params.push(limit, offset);
 
@@ -454,6 +555,13 @@ export class SessionSearch {
       sessionParams.push(sessionFilters.project);
     }
 
+    if (sessionFilters.platformSource) {
+      baseConditions.push(
+        `COALESCE(NULLIF((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = s.memory_session_id), ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
+      );
+      sessionParams.push(normalizePlatformSource(sessionFilters.platformSource));
+    }
+
     if (sessionFilters.dateRange) {
       const { start, end } = sessionFilters.dateRange;
       if (start) {
@@ -527,6 +635,11 @@ export class SessionSearch {
       params.push(filters.project);
     }
 
+    if (filters.platformSource) {
+      baseConditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+      params.push(normalizePlatformSource(filters.platformSource));
+    }
+
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
@@ -552,9 +665,13 @@ export class SessionSearch {
         : 'ORDER BY up.created_at_epoch DESC';
 
       const sql = `
-        SELECT up.*
+        SELECT
+          up.*,
+          s.project,
+          s.memory_session_id,
+          COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
         FROM user_prompts up
-        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+        JOIN sdk_sessions s ON up.session_db_id = s.id
         ${whereClause}
         ${orderClause}
         LIMIT ? OFFSET ?
@@ -574,9 +691,13 @@ export class SessionSearch {
       : 'ORDER BY up.created_at_epoch DESC';
 
     const sql = `
-      SELECT up.*
+      SELECT
+        up.*,
+        s.project,
+        s.memory_session_id,
+        COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
       ${whereClause}
       ${orderClause}
       LIMIT ? OFFSET ?
@@ -584,23 +705,6 @@ export class SessionSearch {
 
     params.push(limit, offset);
     return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
-  }
-
-  getUserPromptsBySession(contentSessionId: string): UserPromptRow[] {
-    const stmt = this.db.prepare(`
-      SELECT
-        id,
-        content_session_id,
-        prompt_number,
-        prompt_text,
-        created_at,
-        created_at_epoch
-      FROM user_prompts
-      WHERE content_session_id = ?
-      ORDER BY prompt_number ASC
-    `);
-
-    return stmt.all(contentSessionId) as UserPromptRow[];
   }
 
   close(): void {
