@@ -26,6 +26,7 @@ const CANONICAL_IDES = [
   'windsurf',
   'codex-cli',
   'cursor',
+  'grok-bot',
   'copilot-cli',
   'antigravity',
   'goose',
@@ -68,6 +69,25 @@ describe('error taxonomy', () => {
       phase: 'marketplace-deps',
     });
     expect(cat.id).toBe('tree-sitter-eresolve');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+  });
+
+  it('classifies a non-interactive provider-selection abort with its own id', () => {
+    const cat = classifyError(new Error('A provider must be explicit when stdin is not interactive.'), {
+      component: 'provider-selection',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('provider-selection-non-interactive');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+    expect(cat.remediation({ platform: 'linux', dataDir: '/x' })).toContain('--provider claude');
+  });
+
+  it('classifies missing non-interactive provider credentials with its own id', () => {
+    const cat = classifyError(new Error('gemini requires a preconfigured personal API key when stdin is not interactive.'), {
+      component: 'provider-credentials',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('provider-credentials-missing');
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
   });
 
@@ -268,8 +288,8 @@ describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
     else process.env.CLAUDE_MEM_DATA_DIR = prevMatrixDataDir;
   });
 
-  it('produces 44 cells (11 IDEs x 4 scenarios)', () => {
-    expect(CANONICAL_IDES.length * scenarios.length).toBe(44);
+  it('produces 48 cells (12 IDEs x 4 scenarios)', () => {
+    expect(CANONICAL_IDES.length * scenarios.length).toBe(48);
   });
 
   for (const ide of CANONICAL_IDES) {

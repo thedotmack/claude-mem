@@ -58,8 +58,8 @@ export class SearchOrchestrator {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       try {
         const chromaResult = await this.chromaStrategy.search(options);
-        if (options.platformSource && this.isEmptyResult(chromaResult)) {
-          logger.debug('SEARCH', 'Orchestrator: platform-scoped Chroma search returned zero matches; falling back to SQLite', {});
+        if (this.isEmptyResult(chromaResult)) {
+          logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches; falling back to SQLite', {});
           return await this.sqliteStrategy.search(options);
         }
         return chromaResult;
@@ -128,14 +128,20 @@ export class SearchOrchestrator {
       }
     }
 
-    if (normalized.dateStart || normalized.dateEnd) {
+    const dateStart = normalized.dateStart ?? normalized.date_start ?? normalized.date_from;
+    const dateEnd = normalized.dateEnd ?? normalized.date_end ?? normalized.date_to;
+    if (dateStart || dateEnd) {
       normalized.dateRange = {
-        start: normalized.dateStart,
-        end: normalized.dateEnd
+        start: dateStart,
+        end: dateEnd
       };
-      delete normalized.dateStart;
-      delete normalized.dateEnd;
     }
+    delete normalized.dateStart;
+    delete normalized.dateEnd;
+    delete normalized.date_start;
+    delete normalized.date_end;
+    delete normalized.date_from;
+    delete normalized.date_to;
 
     const rawPlatformSource = normalized.platformSource ?? normalized.platform_source;
     if (typeof rawPlatformSource === 'string' && rawPlatformSource.trim()) {

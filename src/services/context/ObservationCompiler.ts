@@ -1,7 +1,7 @@
 
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
@@ -15,21 +15,9 @@ import type {
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
-export function queryObservationsMulti(
-  db: SessionStore,
-  projects: string[],
-  config: ContextConfig,
-  platformSource?: string
-): Observation[] {
-  const typeArray = Array.from(config.observationTypes);
-  const typePlaceholders = typeArray.map(() => '?').join(',');
-  const conceptArray = Array.from(config.observationConcepts);
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+type DatabaseOwner = { db: Database };
 
-  const projectPlaceholders = projects.map(() => '?').join(',');
-
-  return db.db.prepare(`
-    SELECT
+const OBSERVATION_SELECT = `
       o.id,
       o.memory_session_id,
       COALESCE(s.platform_source, 'claude') as platform_source,
@@ -45,30 +33,85 @@ export function queryObservationsMulti(
       o.created_at,
       o.created_at_epoch,
       o.project
+`;
+
+export function queryObservationsMulti(
+  db: DatabaseOwner,
+  projects: string[],
+  config: ContextConfig,
+  platformSource?: string
+): Observation[] {
+  return queryObservationsNewest(db, config, {
+    limit: config.totalObservationCount,
+    platformSource,
+    projects,
+  });
+}
+
+/**
+ * Newest observations matching the active mode filters.
+ *
+ * Pass `projects` to stay on the SessionStart / `/api/context/inject` path
+ * (strict project scope). Omit `projects` for a house-wide newest feed — used
+ * only by the Grok Bot INDEX writer when a seat diary is thin. Do not add a
+ * house-fallback query param to `/api/context/inject`.
+ *
+ * `includeManualSaves` also admits rows from `/api/memory/save` (session
+ * `manual-<project>`), which are stored with no concepts and so never pass the
+ * mode concept filter. The Grok Bot seat query sets it so seat self-saves land
+ * in the live INDEX.
+ */
+export function queryObservationsNewest(
+  db: DatabaseOwner,
+  config: ContextConfig,
+  options: {
+    limit: number;
+    platformSource?: string;
+    projects?: string[];
+    includeManualSaves?: boolean;
+  }
+): Observation[] {
+  const typeArray = Array.from(config.observationTypes);
+  const typePlaceholders = typeArray.map(() => '?').join(',');
+  const conceptArray = Array.from(config.observationConcepts);
+  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+  const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
+  const projectClause = projects.length > 0
+    ? `AND (o.project IN (${projects.map(() => '?').join(',')})
+           OR o.merged_into_project IN (${projects.map(() => '?').join(',')}))`
+    : '';
+
+  const manualClause = options.includeManualSaves
+    ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
+    : '';
+
+  return db.db.prepare(`
+    SELECT
+      ${OBSERVATION_SELECT}
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-           OR o.merged_into_project IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
+    WHERE (? IS NULL OR s.platform_source = ?)
+      ${projectClause}
+      AND (${manualClause} (
+        type IN (${typePlaceholders})
+        AND EXISTS (
+          SELECT 1 FROM json_each(o.concepts)
+          WHERE value IN (${conceptPlaceholders})
+        )
+      ))
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
-    ...projects,
-    ...projects,
-    platformSource ?? null,
-    platformSource ?? null,
+    options.platformSource ?? null,
+    options.platformSource ?? null,
+    ...(projects.length > 0 ? [...projects, ...projects] : []),
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
+    options.limit
   ) as Observation[];
 }
 
-export function countObservationsByProjects(db: SessionStore, projects: string[], platformSource?: string): number {
+export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
   if (projects.length === 0) return 0;
   const projectPlaceholders = projects.map(() => '?').join(',');
   const row = db.db.prepare(`
@@ -83,7 +126,7 @@ export function countObservationsByProjects(db: SessionStore, projects: string[]
 }
 
 export function querySummariesMulti(
-  db: SessionStore,
+  db: DatabaseOwner,
   projects: string[],
   config: ContextConfig,
   platformSource?: string

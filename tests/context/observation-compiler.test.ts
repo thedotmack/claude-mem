@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
   buildTimeline,
   countObservationsByProjects,
   queryObservationsMulti,
+  queryObservationsNewest,
   querySummariesMulti,
 } from '../../src/services/context/ObservationCompiler.js';
 import type { ContextConfig, Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
@@ -288,6 +290,105 @@ describe('context compiler platform scoping', () => {
         'WORKTREE_CODEX_SUMMARY',
         'PARENT_CODEX_SUMMARY',
       ]);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('concept exact-match injection (#3379)', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['gotcha']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  it('excludes a row whose stored concept carries a "keyword: description" prefix', () => {
+    // The injection query matches concepts exactly (`WHERE value IN (...)`).
+    // A row stored as "gotcha: x" must NOT match — this is the #3379 defect
+    // that the parser normalization and the v49 backfill remove at the write
+    // side; the query itself intentionally stays exact-match.
+    const db = new Database(':memory:');
+    try {
+      const store = new SessionStore(db);
+      const sessionDbId = store.createSDKSession('content-3379', 'concept-project', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-3379');
+      // Insert directly: the fresh store is already past v49, so this mimics
+      // a malformed row written before the migration existed.
+      db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, concepts, created_at, created_at_epoch)
+        VALUES ('mem-3379', 'concept-project', 'discovery', 'MALFORMED_CONCEPT_OBS', '["gotcha: x"]', ?, ?)
+      `).run(new Date().toISOString(), 1_700_000_000_000);
+
+      expect(queryObservationsMulti(store, ['concept-project'], config)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('queryObservationsNewest house feed', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['platform-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  it('returns newest rows across projects when no project filter is passed', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const seat = store.createSDKSession('seat-content', 'cmem_work_thin', 'seat', undefined, 'grok-bot');
+      store.ensureMemorySessionIdRegistered(seat, 'seat-mem');
+      store.storeObservation('seat-mem', 'cmem_work_thin', {
+        type: 'discovery',
+        title: 'SEAT_ONLY',
+        subtitle: null,
+        facts: [],
+        narrative: 'thin diary',
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      }, 1, 0, 1_700_000_000_000);
+
+      const house = store.createSDKSession('house-content', 'claude-mem', 'house', undefined, 'claude');
+      store.ensureMemorySessionIdRegistered(house, 'house-mem');
+      store.storeObservation('house-mem', 'claude-mem', {
+        type: 'discovery',
+        title: 'HOUSE_NEWEST',
+        subtitle: null,
+        facts: [],
+        narrative: 'house feed',
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      }, 1, 0, 1_700_000_100_000);
+
+      const scoped = queryObservationsNewest(store, config, {
+        limit: 10,
+        projects: ['cmem_work_thin'],
+      });
+      expect(scoped.map(obs => obs.title)).toEqual(['SEAT_ONLY']);
+
+      const houseFeed = queryObservationsNewest(store, config, { limit: 10 });
+      expect(houseFeed.map(obs => obs.title)).toEqual(['HOUSE_NEWEST', 'SEAT_ONLY']);
     } finally {
       store.close();
     }
