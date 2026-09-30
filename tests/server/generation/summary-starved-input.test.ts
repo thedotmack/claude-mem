@@ -109,8 +109,10 @@ describe('the summary loader feeds the WHOLE session', () => {
   class RecordingProvider implements ServerGenerationProvider {
     readonly providerLabel = 'claude' as const;
     seen: number | null = null;
+    events: readonly PostgresAgentEvent[] = [];
     async generate(context: ServerGenerationContext) {
       this.seen = context.events.length;
+      this.events = context.events;
       return { rawText: '<summary><learned>a thing</learned></summary>', providerLabel: this.providerLabel };
     }
   }
@@ -176,6 +178,38 @@ describe('the summary loader feeds the WHOLE session', () => {
 
     expect(provider.seen).toBe(3);
     expect(result.observationCount).toBe(1);
+  });
+
+  // plan-24's 2,000-event matrix cell: a long session must reach the model with
+  // its END intact. A head-only count cap (ORDER BY occurred_at ASC LIMIT 500)
+  // only ever showed the opening, never how the session finished.
+  it('keeps the end of a long session: head AND tail events reach the provider', async () => {
+    // 1,200 later events on top of the 3 collapsed ones: more than twice the
+    // per-end bound (500), so the middle must drop out and both ends survive.
+    await client.query(
+      `INSERT INTO agent_events
+         (id, project_id, team_id, server_session_id, source_adapter, idempotency_key, event_type, payload, occurred_at)
+       SELECT 'evt-long-' || g, $1, $2, $3, 'api', 'ik-long-' || g, 'tool_use',
+              jsonb_build_object('late_step', g), now() + make_interval(secs => g)
+       FROM generate_series(1, 1200) AS g`,
+      [projectId, teamId, sessionId],
+    );
+    const provider = new RecordingProvider();
+    const generator = new ProviderObservationGenerator({ pool: pool as unknown as pg.Pool, provider });
+
+    await generator.process(makeJob());
+
+    const lateSteps = provider.events
+      .map(event => (event.payload as { late_step?: number }).late_step)
+      .filter((step): step is number => typeof step === 'number');
+    expect(provider.events).toHaveLength(1000);
+    // The opening: the session's first event is still first.
+    expect((provider.events[0]!.payload as { step?: number }).step).toBe(0);
+    // The close: the final event is last, and the events stay in order.
+    expect(lateSteps.at(-1)).toBe(1200);
+    expect(lateSteps).toEqual([...lateSteps].sort((a, b) => a - b));
+    // The middle is what gets dropped.
+    expect(lateSteps).not.toContain(600);
   });
 
   it('records the input event count on the completion, so a zero is never anonymous', async () => {

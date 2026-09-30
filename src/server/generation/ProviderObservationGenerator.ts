@@ -70,8 +70,8 @@ export interface ProviderObservationGeneratorOptions {
 const DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS = 600_000;
 
 
-// The `limit` on the session event query caps the event COUNT, not the payload
-// volume, and event size varies by orders of magnitude. Long sessions therefore
+// The session event query (`listSessionEvents`, head + tail) caps the event
+// COUNT, not the payload volume, and event size varies by orders of magnitude. Long sessions therefore
 // still blow the provider context window: measured on a production deployment,
 // sessions that failed with "context overflow" carried up to 34 MB of event
 // payload (~9M tokens), and even truncated to the 500-event default they still
