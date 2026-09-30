@@ -3,6 +3,7 @@ import net from 'net';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -171,7 +172,7 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
     }
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message?.includes('ECONNREFUSED')) {
+    if (error instanceof Error && isConnectionRefusedError(error)) {
       logger.debug('SYSTEM', 'Worker already stopped', {}, error);
       return false;
     }

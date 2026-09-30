@@ -1531,13 +1531,13 @@ async function main() {
           logger.info('SYSTEM', 'Worker already running (health verified), refusing to start duplicate', { port });
           process.exit(0);
         }
-        // Bound but silent: likely a ghost listener — a dead worker whose
-        // surviving chroma sidecar chain holds the inherited socket
-        // (plan-15 #3603). Reclaim when the owner is provably dead; a live
-        // owner (wedged worker, foreign process) keeps the duplicate refusal.
+        // Bound but silent: a wedged worker we own that stopped answering
+        // /health (#4127), or a ghost listener — a dead worker whose chroma
+        // sidecar chain holds the inherited socket (plan-15 #3603). Reclaim
+        // both; a live FOREIGN owner keeps the duplicate refusal.
         const reclaim = await reclaimGhostListeningPort(port);
         if (reclaim.reclaimed) {
-          logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — starting anyway', {
+          logger.info('SYSTEM', 'Reclaimed the worker port (wedged or dead-owner ghost listener) — starting anyway', {
             port,
             killedPids: reclaim.killedPids,
           });
