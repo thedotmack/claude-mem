@@ -13,6 +13,7 @@ import type {
   ObservationSearchResult
 } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
+import { assertSearchHasQueryOrFilter } from './search-request.js';
 import { logger } from '../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 
@@ -42,6 +43,7 @@ export class SearchOrchestrator {
 
   async search(args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
+    assertSearchHasQueryOrFilter(options);
 
     return await this.executeWithFallback(options);
   }

@@ -2,11 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 
-// Regression (#019f64f9): an empty search — no query text and no
-// project/platformSource/dateRange filters — must return an empty result set,
-// not throw. Previously the filter-only path in SearchManager forwarded this
-// benign request straight into these methods, which threw an AppError that
-// bubbled up as an uncaught worker exception into error tracking.
+// Each leg returns [] when none of the filters apply to it. Previously each leg threw a 400
+// on its own empty filter set, so a valid filter-only search such as obs_type-only or
+// concepts-only (which only the observations leg can apply) failed as a whole. A request
+// with no query and no filter at all is still rejected with a 400 at the request boundary
+// (SearchManager.search / SearchOrchestrator.search; see search-request-boundary.test.ts).
 describe('search with no query and no filters', () => {
   let store: SessionStore;
   let search: SessionSearch;
