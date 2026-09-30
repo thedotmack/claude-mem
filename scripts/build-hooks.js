@@ -102,7 +102,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
   ];
   const claudeHook = (tail, extra = {}) => buildShellCommand({
     host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
+    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', failOpen: true, ...extra,
   });
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
@@ -365,6 +365,8 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
         'cohere-ai',
         'ollama',
@@ -480,6 +482,8 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
       ],
       define: {

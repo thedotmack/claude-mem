@@ -292,8 +292,15 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return contents;
   }
 
-  protected async query(history: ConversationMessage[], config: GeminiConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
-    return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled, signal);
+  protected async query(
+    history: ConversationMessage[],
+    config: GeminiConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult> {
+    return this.queryGeminiMultiTurn(
+      history, config.apiKey, config.model, config.rateLimitingEnabled, signal, perAttemptTimeoutMs,
+    );
   }
 
   private fetchGenerateContent(
@@ -324,7 +331,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     apiKey: string,
     model: GeminiModel,
     rateLimitingEnabled: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
     const contents = this.conversationToGeminiContents(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -372,7 +380,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       }
 
       return await response.json() as GeminiResponse;
-    }, { label: `Gemini ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
+    }, { label: `Gemini ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}) });
 
     if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
       logger.error('SDK', 'Empty response from Gemini');

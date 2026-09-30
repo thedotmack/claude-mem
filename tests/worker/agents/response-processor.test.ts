@@ -12,15 +12,20 @@ import { logger } from '../../../src/utils/logger.js';
 import * as realWorkerServiceModule from '../../../src/services/worker-service.js';
 import * as realWorkerUtilsModule from '../../../src/shared/worker-utils.js';
 import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+import * as realSettingsDefaultsModule from '../../../src/shared/SettingsDefaultsManager.js';
 
 const realWorkerServiceSnapshot = { ...realWorkerServiceModule };
 const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
 const realModeManagerSnapshot = { ...realModeManagerModule };
+// The 4-key SettingsDefaultsManager stub below would otherwise leak into every
+// later file that reads settings (e.g. ingestObservation's SKIP_TOOLS split).
+const realSettingsDefaultsSnapshot = { ...realSettingsDefaultsModule };
 
 afterAll(() => {
   mock.module('../../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
   mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsDefaultsSnapshot);
 });
 
 function mockSettingsDefaults(): Record<string, string> {
@@ -122,6 +127,7 @@ describe('ResponseProcessor', () => {
   let mockChromaSyncSummary: ReturnType<typeof mock>;
   let mockBroadcast: ReturnType<typeof mock>;
   let mockBroadcastProcessingStatus: ReturnType<typeof mock>;
+  let mockRecordAiInteraction: ReturnType<typeof mock>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
@@ -177,12 +183,14 @@ describe('ResponseProcessor', () => {
 
     mockBroadcast = mock(() => {});
     mockBroadcastProcessingStatus = mock(() => {});
+    mockRecordAiInteraction = mock(() => {});
 
     mockWorker = {
       sseBroadcaster: {
         broadcast: mockBroadcast,
       },
       broadcastProcessingStatus: mockBroadcastProcessingStatus,
+      recordAiInteraction: mockRecordAiInteraction,
     };
   });
 
@@ -631,6 +639,37 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
 
+    // #3460: the CLI's own stream-cut message used to be classified prose, so
+    // the batch was confirmed and lost. It must take the preserve path.
+    it('requeues the claimed batch when the CLI reports a connection closed mid-response', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'API Error: Connection closed mid-response. The response above may be incomplete.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('transport:observer_text');
+    });
+
     it('pauses the generator with a preserving abort reason on transport failure', async () => {
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
@@ -837,6 +876,72 @@ describe('ResponseProcessor', () => {
       expect(resetProcessingToPending).not.toHaveBeenCalled();
       expect(session.consecutiveContextOverflows).toBe(0);
       expect(session.forceInit).toBeUndefined();
+    });
+  });
+
+  describe('AI interaction health signal', () => {
+    it('records a failed interaction when the observer returns auth-failure prose', async () => {
+      const session = createMockSession();
+      const responseText = 'API Error: 401 Invalid authentication credentials';
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: 'unauthenticated' })
+      );
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it("labels the interaction with the session's provider, not the current settings", async () => {
+      const session = createMockSession();
+      (session as { currentProvider?: string }).currentProvider = 'gemini';
+
+      await processAgentResponse(
+        'API Error: 401 Invalid authentication credentials', session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'SDK'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith({
+        success: false,
+        error: 'unauthenticated',
+        provider: 'gemini',
+      });
+    });
+
+    it('does NOT record an interaction for ordinary non-auth prose', async () => {
+      const session = createMockSession();
+      const responseText = 'Skipping — repeated log scan with no new findings.';
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).not.toHaveBeenCalled();
+    });
+
+    it('records a successful interaction when observations store', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test</title>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
   });
 

@@ -9,6 +9,8 @@ import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  getViewerBaseUrl,
+  consumeWorkerOutageNotice,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -55,7 +57,9 @@ export const contextHandler: EventHandler = {
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
-    const platformSourceParam = input.platform
+    // Let users share startup memory across harnesses without changing the
+    // source-scoped behavior of search and other context requests.
+    const platformSourceParam = input.platform && settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true'
       ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
       : '';
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
@@ -73,7 +77,10 @@ export const contextHandler: EventHandler = {
       : undefined;
     const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     if (isWorkerFallback(contextResult)) {
-      return emptyResult;
+      // SessionStart context is synchronous, so a systemMessage here is shown
+      // to the user: the once-per-session worker-outage notice, if any.
+      const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
+      return outageNotice ? { ...emptyResult, systemMessage: outageNotice } : emptyResult;
     }
 
     let additionalContext: string;
@@ -141,7 +148,7 @@ export const contextHandler: EventHandler = {
       : null;
 
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
+      ? `${displayContent}\n\nView Observations Live @ ${getViewerBaseUrl(port)}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
 
     return {
