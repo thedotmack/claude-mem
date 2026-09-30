@@ -211,6 +211,41 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     );
   });
 
+  it('proceeds with cleanup when statfsSync returns a negative available block count', () => {
+    const dbPath = path.join(tmpDataDir, 'claude-mem.db');
+    seedDatabase(dbPath, { observerSessions: 2, stuckCount: 10 });
+
+    const statfsSpy = spyOn(fs, 'statfsSync').mockImplementation(() => ({
+      type: 0,
+      bsize: 4096,
+      blocks: 4096,
+      bfree: 1048576,
+      bavail: -1,
+      files: 0,
+      ffree: 0,
+    }) as unknown as ReturnType<typeof fs.statfsSync>);
+
+    try {
+      runOneTimeV12_4_3Cleanup(tmpDataDir);
+    } finally {
+      statfsSpy.mockRestore();
+    }
+
+    const markerPath = path.join(tmpDataDir, '.cleanup-v12.4.3-applied');
+    expect(existsSync(markerPath)).toBe(true);
+    const payload = JSON.parse(readFileSync(markerPath, 'utf8'));
+    expect(payload.counts.observerSessions).toBe(2);
+    expect(payload.counts.stuckPendingMessages).toBe(10);
+    expect(payload.backupPath).toBeTruthy();
+    expect(existsSync(payload.backupPath)).toBe(true);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      'SYSTEM',
+      expect.stringContaining('non-credible'),
+      expect.objectContaining({ bsize: 4096, bavail: -1 }),
+    );
+  });
+
   it('honors CLAUDE_MEM_SKIP_CLEANUP_V12_4_3=1 by exiting without writing the marker', () => {
     const dbPath = path.join(tmpDataDir, 'claude-mem.db');
     seedDatabase(dbPath, { observerSessions: 1, stuckCount: 10 });
