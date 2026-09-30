@@ -7,6 +7,8 @@ import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { shouldSkipAgentObservation } from '../../shared/should-skip-agent-observation.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
@@ -59,6 +61,20 @@ export const observationHandler: EventHandler = {
     if (!shouldTrackProject(cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping observation', { cwd, toolName });
       return { continue: true, suppressOutput: true };
+    }
+
+    // #2736 — drop subagent observations BEFORE any worker HTTP call or provider
+    // request. Placed ahead of the runtime branch so it covers both the worker
+    // and server runtimes. Saves the round-trip and the provider tokens, and
+    // prevents Dynamic Workflows fan-out from exhausting provider quota.
+    const skip = shouldSkipAgentObservation(input.agentId, input.agentType, loadFromFileOnce());
+    if (skip.skip) {
+      logger.debug('HOOK', `Skipping observation: ${skip.reason}`, {
+        toolName,
+        agentId: input.agentId,
+        agentType: input.agentType,
+      });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
     const runtime = resolveRuntimeContext();
