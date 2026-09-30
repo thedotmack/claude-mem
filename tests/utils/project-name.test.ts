@@ -1,24 +1,48 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { basename } from 'path';
 import { homedir } from 'os';
-import { getProjectName, getProjectContext, buildWorktreeProjectKey } from '../../src/utils/project-name.js';
+import { getProjectName, getProjectContext, resolveHookProjectPath, buildWorktreeProjectKey } from '../../src/utils/project-name.js';
+
+const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
+const ANCHORED_PROJECT_DIR_NAME = 'anchored-project';
+const OTHER_PROJECT_DIR_NAME = 'other-project';
+const SDK_TEMP_DIR_NAME = 'T';
+const CLAUDE_PROJECT_TEMP_PREFIX = 'cm-claude-project-dir-';
+const REPO_NESTED_DIR = ['packages', 'sdk-session'];
+const GIT_INIT_ARGS = ['init', '-q'];
+const savedClaudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV];
+
+beforeAll(() => {
+  delete process.env[CLAUDE_PROJECT_DIR_ENV];
+});
+
+afterAll(() => {
+  if (savedClaudeProjectDir !== undefined) {
+    process.env[CLAUDE_PROJECT_DIR_ENV] = savedClaudeProjectDir;
+  } else {
+    delete process.env[CLAUDE_PROJECT_DIR_ENV];
+  }
+});
 
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
     it('resolves bare ~ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~')).toBe(expected);
+      expect(getProjectName('~')).toBe(basename(homedir()));
     });
 
     it('resolves ~/subpath to subpath', () => {
-      expect(getProjectName('~/projects/my-app')).toBe('my-app');
+      // Do not use ~/projects/... : on Windows that case-folds onto a real
+      // Projects directory and the #3194 marker walk will pick it up.
+      expect(getProjectName('~/cm-3194-nosuch/my-app')).toBe('my-app');
     });
 
     it('resolves ~/ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~/')).toBe(expected);
+      expect(getProjectName('~/')).toBe(basename(homedir()));
+    });
+
+    it('resolves a leading ~\\ on Windows', () => {
+      expect(getProjectName('~\\windows-project', 'win32')).toBe('windows-project');
     });
   });
 
@@ -51,6 +75,18 @@ describe('getProjectName', () => {
 
     it('returns unknown-project for whitespace', () => {
       expect(getProjectName('   ')).toBe('unknown-project');
+    });
+
+    it('returns unknown-project for the filesystem root', () => {
+      expect(getProjectName('/')).toBe('unknown-project');
+    });
+
+    it('keeps the hook cwd when CLAUDE_PROJECT_DIR is unavailable', () => {
+      expect(resolveHookProjectPath(SDK_TEMP_DIR_NAME)).toBe(SDK_TEMP_DIR_NAME);
+    });
+
+    it('returns null when hook cwd and CLAUDE_PROJECT_DIR are unavailable', () => {
+      expect(resolveHookProjectPath(null)).toBeNull();
     });
   });
 
@@ -91,6 +127,200 @@ describe('getProjectName', () => {
       // A path that does not exist (and therefore cannot be in a repo) must
       // fall back to basename(cwd) rather than throwing or returning a root.
       expect(getProjectName('/no/such/dir/standalone-folder')).toBe('standalone-folder');
+    });
+  });
+
+  describe('#3194 — an explicit claude-mem marker names a non-git project', () => {
+    let tmp: string;
+    let markedParent: string;
+    let markedSub: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      // Isolate under a unique temp root so upward marker walks stay inside it.
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-3194-')));
+      markedParent = join(tmp, 'home-project');
+      markedSub = join(markedParent, 'automation');
+      mkdirSync(markedSub, { recursive: true });
+      writeFileSync(join(markedParent, '.claude-mem-project'), '');
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('a subdir under a .claude-mem-project root resolves to the root basename', () => {
+      expect(getProjectName(markedSub)).toBe('home-project');
+      expect(getProjectName(markedParent)).toBe('home-project');
+    });
+
+    it('writes use the marker key; the pre-marker key stays readable as an alias', () => {
+      const sub = getProjectContext(markedSub);
+      expect(sub.primary).toBe('home-project');
+      // Sessions launched from `automation` before the marker existed were
+      // stored under `automation`; adding a marker must not hide them.
+      expect(sub.allProjects).toEqual(['automation', 'home-project']);
+      expect(sub.parent).toBeNull();
+
+      expect(getProjectContext(markedParent).allProjects).toEqual(['home-project']);
+    });
+
+    it('accepts the existing .claude-mem.json project file as a marker', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const app = join(tmp, 'projects', 'json-app');
+      const nested = join(app, 'src');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(app, '.claude-mem.json'), '{}\n');
+      expect(getProjectName(nested)).toBe('json-app');
+    });
+
+    it('ignores generic manifests, so existing keys do not move', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const app = join(tmp, 'projects', 'my-app');
+      const nested = join(app, 'src');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(app, 'package.json'), '{"name":"my-app"}\n');
+      writeFileSync(join(app, 'CLAUDE.md'), '# my app\n');
+      expect(getProjectName(nested)).toBe('src');
+      expect(getProjectContext(nested).allProjects).toEqual(['src']);
+    });
+
+    it('a marker-less non-git dir keeps basename(cwd) and never widens to its parent', () => {
+      expect(getProjectName('/no/such/lc/bin')).toBe('bin');
+      const ctx = getProjectContext('/no/such/lc/bin');
+      expect(ctx.primary).toBe('bin');
+      expect(ctx.allProjects).toEqual(['bin']);
+      expect(ctx.parent).toBeNull();
+    });
+
+    it('uses resolveHookProjectPath then marker walk for a non-git CLAUDE_PROJECT_DIR', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = markedParent;
+      try {
+        const hookPath = resolveHookProjectPath(SDK_TEMP_DIR_NAME);
+        expect(hookPath).toBe(markedParent);
+        expect(getProjectName(hookPath)).toBe('home-project');
+        expect(getProjectContext(hookPath).primary).toBe('home-project');
+      } finally {
+        delete process.env[CLAUDE_PROJECT_DIR_ENV];
+      }
+    });
+
+    // os.homedir() is fixed for the life of a Bun process, so the stop
+    // directories are exercised in a child with its own HOME / TMPDIR /
+    // CLAUDE_CONFIG_DIR.
+    function resolveInChild(cwd: string, env: Record<string, string>): { name: string; allProjects: string[] } {
+      const { join } = require('path') as typeof import('path');
+      const modulePath = join(import.meta.dir, '../../src/utils/project-name.ts');
+      const script = `
+        const { getProjectName, getProjectContext } = await import(${JSON.stringify(modulePath)});
+        const cwd = ${JSON.stringify(cwd)};
+        console.log(JSON.stringify({ name: getProjectName(cwd), allProjects: getProjectContext(cwd).allProjects }));
+      `;
+      const result = Bun.spawnSync(['bun', '-e', script], { env: { ...process.env, ...env } });
+      if (result.exitCode !== 0) {
+        throw new Error(new TextDecoder().decode(result.stderr));
+      }
+      const lines = new TextDecoder().decode(result.stdout).trim().split('\n');
+      return JSON.parse(lines[lines.length - 1]);
+    }
+
+    it('never treats the home directory as a marker root', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const fakeHome = join(tmp, 'fake-home');
+      const notes = join(fakeHome, 'notes');
+      mkdirSync(notes, { recursive: true });
+      // A ~/.claude-mem.json would otherwise fold every non-git directory under
+      // $HOME into one bucket named after the user.
+      writeFileSync(join(fakeHome, '.claude-mem.json'), '{}\n');
+      writeFileSync(join(fakeHome, '.claude-mem-project'), '');
+
+      const resolved = resolveInChild(notes, { HOME: fakeHome, CLAUDE_CONFIG_DIR: join(fakeHome, '.claude') });
+      expect(resolved).toEqual({ name: 'notes', allProjects: ['notes'] });
+    });
+
+    it('never treats TMPDIR or Claude\'s config dir as marker roots', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const fakeTmp = join(tmp, 'fake-tmp');
+      const scratch = join(fakeTmp, 'scratch');
+      mkdirSync(scratch, { recursive: true });
+      writeFileSync(join(fakeTmp, '.claude-mem-project'), '');
+
+      const fakeConfig = join(tmp, 'fake-config');
+      const pluginDir = join(fakeConfig, 'plugins', 'cache', 'thedotmack', 'claude-mem', '13.0.0');
+      mkdirSync(join(pluginDir, 'scripts'), { recursive: true });
+      writeFileSync(join(pluginDir, '.claude-mem.json'), '{}\n');
+
+      const env = { TMPDIR: fakeTmp, CLAUDE_CONFIG_DIR: fakeConfig };
+      expect(resolveInChild(scratch, env)).toEqual({ name: 'scratch', allProjects: ['scratch'] });
+      expect(resolveInChild(join(pluginDir, 'scripts'), env)).toEqual({ name: 'scripts', allProjects: ['scripts'] });
+    });
+  });
+
+  describe('#3437 — Claude project dir anchors SDK/subagent sessions', () => {
+    let tmp: string;
+    let repoRoot: string;
+    let nestedRepoDir: string;
+    let otherProjectDir: string;
+    let sdkTempDir: string;
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, realpathSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), CLAUDE_PROJECT_TEMP_PREFIX)));
+      repoRoot = join(tmp, ANCHORED_PROJECT_DIR_NAME);
+      nestedRepoDir = join(repoRoot, ...REPO_NESTED_DIR);
+      otherProjectDir = join(tmp, OTHER_PROJECT_DIR_NAME);
+      sdkTempDir = join(tmp, SDK_TEMP_DIR_NAME);
+      mkdirSync(nestedRepoDir, { recursive: true });
+      mkdirSync(otherProjectDir, { recursive: true });
+      mkdirSync(sdkTempDir, { recursive: true });
+      execFileSync('git', GIT_INIT_ARGS, { cwd: repoRoot });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+
+      delete process.env[CLAUDE_PROJECT_DIR_ENV];
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses CLAUDE_PROJECT_DIR instead of an SDK temp cwd', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = repoRoot;
+
+      const hookProjectPath = resolveHookProjectPath(sdkTempDir);
+      expect(getProjectName(hookProjectPath)).toBe(ANCHORED_PROJECT_DIR_NAME);
+      expect(getProjectName(hookProjectPath)).not.toBe(SDK_TEMP_DIR_NAME);
+    });
+
+    it('resolves CLAUDE_PROJECT_DIR through its git root when it points at a subdirectory', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = nestedRepoDir;
+
+      expect(getProjectName(resolveHookProjectPath(sdkTempDir))).toBe(ANCHORED_PROJECT_DIR_NAME);
+    });
+
+    it('anchors getProjectContext to CLAUDE_PROJECT_DIR for write-path callers', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = repoRoot;
+
+      const ctx = getProjectContext(resolveHookProjectPath(sdkTempDir));
+      expect(ctx.primary).toBe(ANCHORED_PROJECT_DIR_NAME);
+      expect(ctx.allProjects).toEqual([ANCHORED_PROJECT_DIR_NAME]);
+    });
+
+    it('keeps an explicit project cwd authoritative outside hook normalization', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = repoRoot;
+
+      expect(getProjectName(otherProjectDir)).toBe(OTHER_PROJECT_DIR_NAME);
+      expect(getProjectContext(otherProjectDir).primary).toBe(OTHER_PROJECT_DIR_NAME);
     });
   });
 
@@ -217,7 +447,9 @@ describe('getProjectContext', () => {
       expect(ctx.isWorktree).toBe(true);
       expect(ctx.primary).toBe('q-companies-master');
       expect(ctx.parent).toBe('q-companies-master');
-      expect(ctx.allProjects).toEqual(['q-companies-master']);
+      // Rows written before the collapse are stored under the doubled key; it
+      // stays readable until the adoption sweep folds them into the repo.
+      expect(ctx.allProjects).toEqual(['q-companies-master/q-companies-master', 'q-companies-master']);
     });
   });
 
