@@ -2477,11 +2477,15 @@ export class SessionStore {
   /**
    * Session catalog for the viewer's Sessions view: newest first, one row per
    * (platform_source, content_session_id), with the session's combined
-   * observation + summary + prompt count. Bounded by `limit` and filterable by
-   * project and platform so the payload stays small on large databases.
+   * observation + summary + prompt count. Paged by `limit`/`offset` and
+   * filterable by project and platform so the payload stays small on large
+   * databases; `hasMore` says whether older sessions follow this page.
    */
-  getSessionCatalog(options: { project?: string; platformSource?: string; limit?: number } = {}): SessionCatalogRow[] {
+  getSessionCatalog(
+    options: { project?: string; platformSource?: string; limit?: number; offset?: number } = {}
+  ): { sessions: SessionCatalogRow[]; hasMore: boolean } {
     const limit = Math.min(Math.max(Math.trunc(options.limit ?? SESSION_CATALOG_DEFAULT_LIMIT), 1), SESSION_CATALOG_MAX_LIMIT);
+    const offset = Math.max(Math.trunc(options.offset ?? 0), 0);
     let query = `
       SELECT
         s.content_session_id,
@@ -2509,10 +2513,12 @@ export class SessionStore {
       params.push(normalizePlatformSource(options.platformSource));
     }
 
-    query += ' ORDER BY s.started_at_epoch DESC, s.id DESC LIMIT ?';
-    params.push(limit);
+    // One row past the page tells whether older sessions follow it.
+    query += ' ORDER BY s.started_at_epoch DESC, s.id DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
 
-    return this.db.prepare(query).all(...params) as SessionCatalogRow[];
+    const rows = this.db.prepare(query).all(...params) as SessionCatalogRow[];
+    return { sessions: rows.slice(0, limit), hasMore: rows.length > limit };
   }
 
   getLatestUserPrompt(contentSessionId: string, sessionDbId?: number): LatestPromptResult | undefined {

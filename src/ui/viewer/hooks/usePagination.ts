@@ -62,13 +62,21 @@ function usePaginationFor<TItem extends DataItem>(
       params.append('platformSource', currentSession.platformSource);
     }
 
+    // A response that lands after the selection changed (another session or
+    // project opened mid-request) belongs to the old selection: the cursor and
+    // state now serve the new one, so drop it instead of advancing them.
+    const requestSelectionKey = selectionKey;
+    const isStale = () => lastSelectionKeyRef.current !== requestSelectionKey;
+
     const response = await fetch(`${endpoint}?${params}`);
+    if (isStale()) return [];
 
     if (!response.ok) {
       throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
     }
 
     const data = await response.json() as { items: TItem[], hasMore: boolean };
+    if (isStale()) return [];
 
     const nextState = {
       ...stateRef.current,

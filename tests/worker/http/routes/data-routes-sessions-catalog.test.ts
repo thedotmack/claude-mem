@@ -37,11 +37,15 @@ describe('GET /api/sessions', () => {
     db.close();
   });
 
-  function callCatalog(query: Record<string, string>) {
+  function callCatalogPage(query: Record<string, string>) {
     let responseBody: any;
     const response = { json(value: unknown) { responseBody = value; return this; } } as unknown as Response;
     handlers.get('/api/sessions')!({ query, get: () => undefined } as unknown as Request, response);
-    return responseBody.sessions as Array<{ content_session_id: string; project: string; platform_source: string }>;
+    return responseBody as { sessions: Array<{ content_session_id: string; project: string; platform_source: string }>; hasMore: boolean };
+  }
+
+  function callCatalog(query: Record<string, string>) {
+    return callCatalogPage(query).sessions;
   }
 
   it('returns the session catalog with each session\'s platform', () => {
@@ -55,5 +59,14 @@ describe('GET /api/sessions', () => {
     expect(callCatalog({ project: 'proj-catalog' }).map(s => s.content_session_id)).toEqual(['content-catalog']);
     expect(callCatalog({ platformSource: 'codex' }).map(s => s.content_session_id)).toEqual(['content-other']);
     expect(callCatalog({ limit: '1' })).toHaveLength(1);
+  });
+
+  it('pages through older sessions: hasMore until the offset passes the last one', () => {
+    const first = callCatalogPage({ limit: '1' });
+    expect(first.hasMore).toBe(true);
+    const second = callCatalogPage({ limit: '1', offset: '1' });
+    expect(second.sessions).toHaveLength(1);
+    expect(second.sessions[0].content_session_id).not.toBe(first.sessions[0].content_session_id);
+    expect(second.hasMore).toBe(false);
   });
 });

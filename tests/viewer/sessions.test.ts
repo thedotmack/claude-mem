@@ -2,6 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import {
   deleteSession,
   describeSessionDeleteFailure,
+  emptyCatalogJournal,
+  mergeCatalogPage,
   parseViewRoute,
   removeSessionRows,
   sameSession,
@@ -11,6 +13,7 @@ import {
   sessionRefOf,
   sessionsHash,
 } from '../../src/ui/viewer/utils/sessions';
+import type { SessionCatalogEntry } from '../../src/ui/viewer/types';
 
 const claudeRef = { platformSource: 'claude', contentSessionId: 'abc-123' };
 const codexRef = { platformSource: 'codex', contentSessionId: 'abc-123' };
@@ -97,5 +100,47 @@ describe('loaded page bookkeeping after a session delete', () => {
     const result = removeSessionRows(rows, claudeRef);
     expect(result.rows.map(row => row.id)).toEqual([2, 4]);
     expect(result.removedCount).toBe(2);
+  });
+});
+
+describe('catalog pages merge with live changes made while they loaded', () => {
+  const entry = (contentSessionId: string, overrides: Partial<SessionCatalogEntry> = {}): SessionCatalogEntry => ({
+    content_session_id: contentSessionId,
+    project: 'proj',
+    platform_source: 'claude',
+    custom_title: null,
+    started_at_epoch: 1000,
+    item_count: 1,
+    ...overrides,
+  });
+  const ids = (entries: SessionCatalogEntry[]) => entries.map(e => e.content_session_id);
+
+  it('a refresh keeps a session first seen live mid-request, preferring the page row when it has one', () => {
+    const journal = emptyCatalogJournal();
+    journal.added.push(entry('fresh'), entry('both', { custom_title: null, item_count: 1 }));
+    const page = [entry('both', { custom_title: 'Titled', item_count: 7 }), entry('older')];
+
+    const merged = mergeCatalogPage([entry('stale-list-row')], page, journal, 'replace');
+
+    expect(ids(merged)).toEqual(['fresh', 'both', 'older']);
+    expect(merged[1]).toMatchObject({ custom_title: 'Titled', item_count: 7 });
+  });
+
+  it('a refresh never restores a session deleted mid-request', () => {
+    const journal = emptyCatalogJournal();
+    journal.removed.add(sessionKey({ platformSource: 'claude', contentSessionId: 'doomed' }));
+
+    expect(ids(mergeCatalogPage([], [entry('doomed'), entry('kept')], journal, 'replace'))).toEqual(['kept']);
+  });
+
+  it('an older page extends the list once per session and skips sessions deleted mid-request', () => {
+    const journal = emptyCatalogJournal();
+    journal.removed.add(sessionKey({ platformSource: 'claude', contentSessionId: 'gone' }));
+    const current = [entry('a'), entry('b')];
+    // The server list shifted while the page loaded, so it repeats 'b'.
+    const page = [entry('b'), entry('gone'), entry('c'), entry('b', { platform_source: 'codex' })];
+
+    expect(mergeCatalogPage(current, page, journal, 'append').map(e => `${e.platform_source}/${e.content_session_id}`))
+      .toEqual(['claude/a', 'claude/b', 'claude/c', 'codex/b']);
   });
 });

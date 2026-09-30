@@ -244,9 +244,11 @@ export function App() {
         header={tabs}
         sessions={visibleSessions}
         isLoading={catalog.isLoading}
+        hasMore={catalog.hasMore}
         loadError={catalog.loadError}
         onOpen={session => navigate(sessionHash(session))}
         onDelete={handleDeleteSession}
+        onLoadMore={catalog.loadMore}
       />
     );
   } else if (route.view === 'session') {

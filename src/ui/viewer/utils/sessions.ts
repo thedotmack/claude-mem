@@ -114,3 +114,46 @@ export function removeSessionRows<T extends SessionScopedRow>(rows: T[], ref: Se
   const remaining = rows.filter(row => !sameSession(sessionRefOf(row), ref));
   return { rows: remaining, removedCount: rows.length - remaining.length };
 }
+
+/** Live catalog changes seen while a catalog page request was in flight. */
+export interface CatalogJournal {
+  /** Sessions first seen live (SSE) during the request. */
+  added: SessionCatalogEntry[];
+  /** sessionKey of every session deleted during the request. */
+  removed: Set<string>;
+}
+
+export function emptyCatalogJournal(): CatalogJournal {
+  return { added: [], removed: new Set() };
+}
+
+/**
+ * Fold a fetched catalog page into the list. `replace` (a refresh) starts from
+ * the page and keeps sessions first seen live during the request; `append` (an
+ * older page) extends the current list. Either way a session deleted during
+ * the request stays gone and no session is listed twice.
+ */
+export function mergeCatalogPage(
+  current: SessionCatalogEntry[],
+  page: SessionCatalogEntry[],
+  journal: CatalogJournal,
+  mode: 'replace' | 'append',
+): SessionCatalogEntry[] {
+  const keyOf = (entry: SessionCatalogEntry) => sessionKey(catalogEntryRef(entry));
+  let combined: SessionCatalogEntry[];
+  if (mode === 'replace') {
+    // The page's row carries the real title and count; a live placeholder only
+    // survives for a session the page does not have yet.
+    const pageKeys = new Set(page.map(keyOf));
+    combined = [...journal.added.filter(entry => !pageKeys.has(keyOf(entry))), ...page];
+  } else {
+    combined = [...current, ...page];
+  }
+  const seen = new Set<string>();
+  return combined.filter(entry => {
+    const key = keyOf(entry);
+    if (seen.has(key) || journal.removed.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

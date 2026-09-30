@@ -555,13 +555,14 @@ export class DataRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
     const project = BaseRouteHandler.firstString(req.query.project)?.trim() || undefined;
     const requestedLimit = Number(BaseRouteHandler.firstString(req.query.limit));
-    res.json({
-      sessions: store.getSessionCatalog({
-        project,
-        platformSource: this.getOptionalPlatformSourceFromRequest(req),
-        limit: Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : undefined,
-      }),
-    });
+    const requestedOffset = Number(BaseRouteHandler.firstString(req.query.offset));
+    // { sessions, hasMore }: the viewer pages through older sessions with offset.
+    res.json(store.getSessionCatalog({
+      project,
+      platformSource: this.getOptionalPlatformSourceFromRequest(req),
+      limit: Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : undefined,
+      offset: Number.isFinite(requestedOffset) && requestedOffset > 0 ? requestedOffset : undefined,
+    }));
   });
 
   /**
