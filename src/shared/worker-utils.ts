@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, getTimeout, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
@@ -70,8 +70,8 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
  */
 const WEDGED_WORKER_UPTIME_S = readTimeoutEnv(
   'CLAUDE_MEM_WEDGED_WORKER_UPTIME_S',
-  300,
-  { min: 60, max: 86400 }
+  WEDGED_WORKER_UPTIME_DEFAULT_S,
+  WEDGED_WORKER_UPTIME_BOUNDS_S
 );
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
