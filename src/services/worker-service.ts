@@ -960,14 +960,16 @@ export class WorkerService implements WorkerRef {
     })();
   }
 
-  recordAiInteraction(result: { success: boolean; error?: string }): void {
-    let provider = 'claude';
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
-    else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+  /**
+   * Record the outcome of the latest observer response for /api/health's
+   * ai.lastInteraction. `provider` is the one that produced the response (the
+   * session's), passed by the caller; it is only a label, never a routing input.
+   */
+  recordAiInteraction(result: { success: boolean; error?: string; provider: string }): void {
     this.lastAiInteraction = {
       timestamp: Date.now(),
       success: result.success,
-      provider,
+      provider: result.provider,
       ...(result.error ? { error: result.error } : {}),
     };
   }

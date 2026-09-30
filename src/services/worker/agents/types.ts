@@ -4,7 +4,7 @@ export interface WorkerRef {
     broadcast(event: SSEEventPayload): void;
   };
   broadcastProcessingStatus?: () => void;
-  recordAiInteraction?: (result: { success: boolean; error?: string }) => void;
+  recordAiInteraction?: (result: { success: boolean; error?: string; provider: string }) => void;
 }
 
 export interface ObservationSSEPayload {

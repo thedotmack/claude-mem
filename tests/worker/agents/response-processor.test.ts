@@ -858,8 +858,26 @@ describe('ResponseProcessor', () => {
         100, null, 'TestAgent'
       );
 
-      expect(mockRecordAiInteraction).toHaveBeenCalledWith({ success: false, error: 'unauthenticated' });
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: 'unauthenticated' })
+      );
       expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it("labels the interaction with the session's provider, not the current settings", async () => {
+      const session = createMockSession();
+      (session as { currentProvider?: string }).currentProvider = 'gemini';
+
+      await processAgentResponse(
+        'API Error: 401 Invalid authentication credentials', session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'SDK'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith({
+        success: false,
+        error: 'unauthenticated',
+        provider: 'gemini',
+      });
     });
 
     it('does NOT record an interaction for ordinary non-auth prose', async () => {
@@ -892,7 +910,7 @@ describe('ResponseProcessor', () => {
         100, null, 'TestAgent'
       );
 
-      expect(mockRecordAiInteraction).toHaveBeenCalledWith({ success: true });
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
   });
 
