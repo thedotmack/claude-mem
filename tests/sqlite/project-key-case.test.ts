@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 
-const NOCASE_SCHEMA_VERSION = 54;
+const NOCASE_SCHEMA_VERSION = 55;
 
 function seed(store: SessionStore, contentId: string, memoryId: string, project: string, title: string): void {
   const sessionDbId = store.createSDKSession(contentId, project, 'prompt');
@@ -85,6 +85,26 @@ describe('case-insensitive project keys (#3531)', () => {
         .map(row => row.title)
         .sort();
       expect(titles).toEqual(['MACHINE_A', 'MACHINE_B']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('search follows merged_into_project across case', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      // A worktree row adopted into the repo under one spelling (#3641) is found
+      // by a search for another spelling of the repo.
+      seed(store, 'content-wt', 'memory-wt', 'PasteyPal/feature-x', 'ADOPTED_WORKTREE');
+      store.db
+        .prepare('UPDATE observations SET merged_into_project = ? WHERE memory_session_id = ?')
+        .run('PasteyPal', 'memory-wt');
+      seed(store, 'content-c', 'memory-c', 'other-project', 'UNRELATED');
+
+      const search = new SessionSearch(store.db);
+      const titles = search.searchObservations(undefined, { project: 'pasteypal', limit: 10 })
+        .map(row => row.title);
+      expect(titles).toEqual(['ADOPTED_WORKTREE']);
     } finally {
       store.close();
     }
