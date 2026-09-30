@@ -6,6 +6,7 @@ import { styleText } from 'node:util';
 import { getBunPath } from '../install/setup-runtime.js';
 import { isPluginInstalled, marketplaceDirectory, npmPackageRootDirectory } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
 function ensureInstalledOrExit(): void {
   if (!isPluginInstalled()) {
@@ -224,8 +225,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     response = await fetch(searchUrl);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    const cause = error instanceof Error ? (error as any).cause : undefined;
-    if (cause?.code === 'ECONNREFUSED' || message.includes('ECONNREFUSED')) {
+    if (isConnectionRefusedError(error)) {
       console.error(styleText('red', 'Worker is not running.'));
       console.error(`Start it with: ${styleText('bold', 'npx claude-mem start')}`);
       process.exit(1);

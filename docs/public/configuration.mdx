@@ -18,11 +18,57 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
+| `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` | `false` | Include observations from every harness in SessionStart context |
+| `CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY` | `true`                   | Leave subagent observations out of SessionStart context so their step-logs don't crowd durable main-session memory out of the window. A subagent row carries both an agent id and an agent type; transcript-watch rows (e.g. Grok Bot seats) stay in. Search and the viewer still show everything. |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `CLAUDE_MEM_PUBLIC_URL`       | _(empty)_                       | Browser-reachable base URL printed for the viewer (live view, welcome hint, restart link) when the worker runs in a remote sandbox behind a port-forward, e.g. `https://37700.host.example`. Empty = `http://localhost:<port>`. The env var wins over the setting. (The [hosted server runtime](hosted-server) reads the same variable as its own public base URL.) |
 | `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each shell command (Claude Code `Bash`, Codex `exec_command`); on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
+| `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip **every** subagent observation (a tool call that carries both an agent id and an agent type). See [Subagent & Dynamic Workflow filtering](#subagent--dynamic-workflow-filtering). |
+| `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated subagent `agent_type` values to skip, e.g. `workflow-subagent,Explore,Plan`. Main-session observations are unaffected. |
+
+### Subagent & Dynamic Workflow filtering
+
+Claude Code [Dynamic Workflows](https://code.claude.com/docs/en/workflows) fan a single
+prompt out to tens-to-hundreds of parallel subagents (`agent_type: workflow-subagent`).
+Every tool call by every subagent fires a `PostToolUse` hook, so claude-mem creates one
+provider-analyzed observation per call — a single run can emit **hundreds-to-thousands**
+of low-signal observations. That can exhaust the configured provider's free-tier quota
+(HTTP 429) and drop the rest of the run, including valuable main-session work.
+
+Two settings let you filter these out **before** any worker round-trip or provider call.
+Both default to off, so existing behavior is preserved.
+
+- **Drop all subagent noise (recommended for heavy workflow users):**
+
+  ```json
+  { "CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS": "true" }
+  ```
+
+  This is the robust lever — it catches every subagent tool call (one that carries both
+  an agent id and an agent type) regardless of type. Main-session observations are kept,
+  including `claude --agent <type>` main threads and transcript-watch hosts such as
+  Grok Bot seats, which carry only one of the two.
+
+- **Surgically drop specific agent types** (keep some subagents, drop others):
+
+  ```json
+  { "CLAUDE_MEM_SKIP_AGENT_TYPES": "workflow-subagent" }
+  ```
+
+  Add a comma-separated list of `agent_type` values. The two settings combine as a
+  union: a subagent observation is skipped if the global toggle is on **or** its
+  `agent_type` is in the list.
+
+> Subagent **summaries** are already skipped automatically; these settings add the same
+> control for **observations**. Durable cross-session knowledge generally comes from the
+> main session, so dropping ephemeral subagent steps usually improves signal-to-noise.
+> SessionStart already leaves subagent rows out of injected context by default
+> (`CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY`); these settings go further and skip capturing
+> them at all, which also saves the observer's provider tokens.
 
 ### Gemini Provider Settings
 
@@ -64,7 +110,7 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
 | `CLAUDE_MEM_FETCH_VERBOSE`    | _(unset / off)_                 | Opt-in worker-IPC `fetch()` diagnostics (`1`/`true`/`on`/`yes`). Passes Node/undici `{ verbose: true }` and writes the error cause chain on socket-level hook failures. Default stays off. |
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
-| `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
+| `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
 
 ## Model Configuration
@@ -118,6 +164,13 @@ Configure the active workflow mode and language.
   "CLAUDE_MEM_MODE": "email-investigation"
 }
 ```
+
+## Project Names
+
+claude-mem files every observation under a project name, and SessionStart injects the memory stored for the current project.
+
+- **Inside a git repository** the name is the repository root's folder name, so every subfolder shares it. A git worktree is stored as `<repo>/<worktree>` and also reads its repository's memory.
+- **Outside git** the name is the current folder's name. To give a non-git project one name across all of its subfolders, put an empty `.claude-mem-project` file (or a `.claude-mem.json`) in its root folder: every folder below it then uses the root folder's name. Memory stored under a subfolder's own name before you added the file stays readable from that subfolder. Marker files in your home directory, the system temp directory or Claude's config directory are ignored, so they can never fold unrelated folders together.
 
 ## Files and Directories
 
@@ -298,7 +351,7 @@ Access the settings modal from the web viewer. The worker prints its URL on star
 3. See changes reflected live in the **Terminal Preview** on the left
 4. Settings auto-save as you change them
 
-The Terminal Preview shows exactly what will be injected at the start of your next Claude Code session for the selected project.
+The Terminal Preview shows the selected project and source. Select **All sources** to preview a combined SessionStart context.
 
 ### Loading Settings
 
@@ -307,6 +360,7 @@ Control how many observations are injected:
 | Setting | Default | Range | Description |
 |---------|---------|-------|-------------|
 | **Observations** | 50 | 1-200 | Total number of recent observations to include |
+| **Include all sources at session start** | Off | On/Off | Include observations from Claude, Codex, and other harnesses in startup context |
 | **Sessions** | 10 | 1-50 | Number of recent sessions to pull observations from |
 
 **Considerations**:
@@ -375,6 +429,7 @@ Settings are stored in `~/.claude-mem/settings.json`:
 ```json
 {
   "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
+  "CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true",
   "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
   "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
   "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
