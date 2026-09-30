@@ -5,9 +5,11 @@ import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  getViewerBaseUrl,
 } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { proTrialLine } from '../../shared/pro-promo.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -37,7 +39,8 @@ export const userMessageHandler: EventHandler = {
       output +
       "\n\n" + String.fromCodePoint(0x1F4A1) + " Wrap any message with <private> ... </private> to prevent storing sensitive information.\n" +
       "\n" + String.fromCodePoint(0x1F4AC) + " Community https://discord.gg/J4wttp9vDu" +
-      `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser http://localhost:${port}/\n`;
+      `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser ${getViewerBaseUrl(port)}/\n` +
+      proTrialLine('context-banner') + `\n`;
 
     return { exitCode: HOOK_EXIT_CODES.SUCCESS, systemMessage: bannerText };
   },

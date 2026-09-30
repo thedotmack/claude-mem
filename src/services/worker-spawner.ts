@@ -1,13 +1,13 @@
 
 import path from 'path';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'fs';
-import { execSync } from 'child_process';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
+  probeWorkerBootFailure,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -15,136 +15,13 @@ import {
   isPortInUse,
   waitForHealth,
   waitForReadiness,
-  waitForPortFree,
 } from './infrastructure/HealthMonitor.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
+import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 
-const WINDOWS_SPAWN_COOLDOWN_MS = 30 * 1000;  // #2996: reduced from 2min to 30s
+const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
-/**
- * #2996: On Windows, when the port is bound but health checks fail (zombie worker),
- * try to kill the stale process holding the port. Uses netstat to find the PID,
- * then taskkill to terminate it. Without this, the spawn attempt fails with
- * EADDRINUSE, the cooldown kicks in, and all concurrent sessions are blocked.
- */
-async function reapStalePortHolderOnWindows(port: number): Promise<void> {
-  if (process.platform !== 'win32') return;
-
-  try {
-    // Find PID holding the port using netstat
-    // #2996: use raw netstat output and filter in JS to avoid findstr prefix matching
-    // (e.g. findstr :3000 would falsely match :30000)
-    const netstatResult = execSync(`netstat -ano`, {
-      encoding: 'utf-8',
-      windowsHide: true,
-      timeout: 5000,
-    });
-
-    // Parse and filter lines: must match exact port field and be in LISTENING state
-    // #2996 (round 14): parse the actual port component from the local address
-    // instead of regex-searching the full address. A regex like \\b80\\b can
-    // falsely match "80" inside an IP like 192.168.80.1:1234, killing the wrong PID.
-    const lines = netstatResult
-      .split('\n')
-      .filter(line => {
-        const parts = line.trim().split(/\s+/);
-        // netstat format: Protocol Local Address Foreign Address State PID
-        if (parts.length < 5) return false;
-        const [_proto, localAddr, _foreign, state, _pid] = parts;
-        // Extract the port from the local address (e.g. "0.0.0.0:80" -> "80")
-        const portField = localAddr.split(':').pop();
-        return state === 'LISTENING' && parseInt(portField || '', 10) === port;
-      });
-
-    if (lines.length === 0) {
-      logger.debug('SYSTEM', 'No process found holding exact port', { port });
-      return;
-    }
-
-    // Parse PID from first matching line
-    const firstLine = lines[0];
-    const parts = firstLine.trim().split(/\s+/);
-    const pid = parseInt(parts[parts.length - 1], 10);
-
-    if (!pid || pid <= 0) {
-      logger.debug('SYSTEM', 'Could not parse PID from netstat output', { port, output: firstLine });
-      return;
-    }
-
-    // Verify ownership: check command line for claude-mem/worker
-    // Try wmic first, fall back to tasklist if wmic is unavailable
-    let isOurWorker: boolean = false;
-    try {
-      const wmicResult = execSync(`wmic process where ProcessId=${pid} get CommandLine /FORMAT:LIST`, {
-        encoding: 'utf-8',
-        windowsHide: true,
-        timeout: 3000,
-      });
-
-      const cmdLine = wmicResult.toLowerCase();
-      isOurWorker = cmdLine.includes('claude-mem') ||
-                    cmdLine.includes('worker-service');
-    } catch (wmicError) {
-      // #2996: wmic may be unavailable on some Windows installs.
-      // Fall back to tasklist to verify process name is bun or node.
-      logger.debug('SYSTEM', 'wmic unavailable, falling back to tasklist', {
-        port, pid,
-        error: wmicError instanceof Error ? wmicError.message : String(wmicError),
-      });
-      try {
-        const tasklistResult = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
-          encoding: 'utf-8',
-          windowsHide: true,
-          timeout: 3000,
-        });
-
-        const procLine = tasklistResult.toLowerCase();
-        isOurWorker = procLine.includes('bun') || procLine.includes('node');
-
-        if (!isOurWorker) {
-          logger.warn('SYSTEM', 'Port held by non-bun/node process, skipping reap', {
-            port, pid, process: tasklistResult.trim(),
-          });
-          return;
-        }
-      } catch (tasklistError) {
-        // #2996: both wmic and tasklist failed - verification is mandatory
-        logger.warn('SYSTEM', 'Could not verify process ownership, skipping reap', {
-          port, pid,
-          error: tasklistError instanceof Error ? tasklistError.message : String(tasklistError),
-        });
-        return;
-      }
-    }
-
-    if (!isOurWorker) {
-      logger.warn('SYSTEM', 'Port held by non-claude-mem process, skipping reap', {
-        port, pid,
-      });
-      return;
-    }
-
-    logger.warn('SYSTEM', 'Reaping stale claude-mem worker process holding port', { port, pid });
-
-    // Kill the stale process
-    execSync(`taskkill /PID ${pid} /F /T`, {
-      encoding: 'utf-8',
-      windowsHide: true,
-      timeout: 5000,
-    });
-
-    // Wait a bit for the port to be released
-    await new Promise<void>(resolve => setTimeout(resolve, 1000));
-
-    logger.info('SYSTEM', 'Successfully reaped stale claude-mem worker process', { port, pid });
-  } catch (error) {
-    logger.debug('SYSTEM', 'Failed to reap stale port holder (non-critical)', {
-      port,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
 function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
 }
@@ -194,10 +71,23 @@ function clearWorkerSpawnAttempted(): void {
 
 export type WorkerStartResult = 'ready' | 'warming' | 'dead';
 
+// Why the last spawn died, when we could prove it. ensureWorkerStarted returns
+// a three-state verdict that callers switch on, and widening that union to
+// carry a reason would churn every call site for a string only the failure
+// branch ever has. Set immediately before returning 'dead', cleared on entry so
+// a later failure can never be explained by an earlier one's diagnosis.
+let lastWorkerBootFailure: string | undefined;
+
+export function getLastWorkerBootFailure(): string | undefined {
+  return lastWorkerBootFailure;
+}
+
 export async function ensureWorkerStarted(
   port: number,
   workerScriptPath: string
 ): Promise<WorkerStartResult> {
+  lastWorkerBootFailure = undefined;
+
   if (!workerScriptPath) {
     logger.error('SYSTEM', 'ensureWorkerStarted called with empty workerScriptPath — caller bug');
     return 'dead';
@@ -211,7 +101,11 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
-  const pidFileStatus = cleanStalePidFile();
+  // I-4 (bwrap --unshare-pid): don't delete the pid file on a 'stale'
+  // verdict until we know whether the port is actually unhealthy — under a
+  // PID namespace a perfectly healthy host worker's pid reads back as
+  // invisible (ESRCH), not dead. removeStale:false defers the rmSync.
+  let pidFileStatus = cleanStalePidFile({ removeStale: false });
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -231,6 +125,9 @@ export async function ensureWorkerStarted(
   }
 
   if (await waitForHealth(port, 1000)) {
+    if (pidFileStatus === 'stale') {
+      logger.debug('SYSTEM', 'pid not visible (likely pid namespace); keeping pid file');
+    }
     clearWorkerSpawnAttempted();
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
@@ -238,6 +135,13 @@ export async function ensureWorkerStarted(
     }
     logger.info('SYSTEM', 'Worker already running and healthy');
     return ready ? 'ready' : 'warming';
+  }
+
+  if (pidFileStatus === 'stale') {
+    // Health genuinely failed above, so the pid file was not shielding a
+    // healthy-but-invisible worker after all — remove it now (this is the
+    // deferred rmSync from the removeStale:false call above).
+    pidFileStatus = cleanStalePidFile();
   }
 
   const portInUse = await isPortInUse(port);
@@ -250,22 +154,29 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-
-    // #2996: Port is bound but health checks failed - likely a zombie worker.
-    // On Windows, try to reap the stale process holding the port before giving up.
-    // This prevents the spawn attempt from failing with EADDRINUSE and triggering
-    // the cooldown that blocks all concurrent sessions.
-    await reapStalePortHolderOnWindows(port);
-
-    // After reaping, check if port is now free and worker can be spawned
-    const portFree = await waitForPortFree(port, 3000);
-    if (portFree) {
-      // #2996: clear cooldown marker so shouldSkipSpawnOnWindows() won't block the respawn
+    // The port is bound but nothing answers health. Usually this is a dead
+    // worker whose surviving chroma sidecar chain (uvx -> uv -> python) holds
+    // the inherited listening socket — a ghost listener under a dead PID
+    // (plan-15 #3603). Without a reclaim the launcher returns 'dead' forever
+    // and the port stays blocked until a human tree-kills the chain by hand.
+    // Reclaim only fires when the owner is provably dead and the survivors
+    // are chroma sidecars; a live owner keeps the old 'dead' behavior.
+    const reclaim = await reclaimGhostListeningPort(port);
+    if (reclaim.reclaimed) {
+      logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — proceeding to spawn', {
+        port,
+        killedPids: reclaim.killedPids,
+      });
+      // The cooldown marker may have been written by the very spawn attempts
+      // this ghost blocked; the reason for those failures is now gone, so a
+      // time-based cooldown would only delay the recovery that just became
+      // possible (the plan-15 "cooldowns keyed to evidence, not time" rule).
       clearWorkerSpawnAttempted();
-      logger.info('SYSTEM', 'Port freed after reaping stale process, proceeding with spawn');
-      // Fall through to spawn logic below
     } else {
-      logger.error('SYSTEM', 'Port in use but worker not responding to health checks (reap failed or port still held)');
+      logger.error('SYSTEM', 'Port in use but worker not responding to health checks', {
+        port,
+        reclaimReason: reclaim.reason,
+      });
       return 'dead';
     }
   }
@@ -303,9 +214,19 @@ export async function ensureWorkerStarted(
       const workerPidStillAlive = cleanStalePidFile() === 'alive';
       const spawnedProcessStillAlive = spawnedPid !== undefined && spawnedPid > 0 && isPidAlive(spawnedPid);
       if (!workerStillHealthy && !workerPidStillAlive && !spawnedProcessStillAlive) {
-        logger.error('SYSTEM', spawnLockHeld
-          ? 'Worker exited before readiness endpoint became available'
-          : 'Spawn-lock holder never produced a live worker before readiness timed out');
+        if (!spawnLockHeld) {
+          logger.error('SYSTEM', 'Spawn-lock holder never produced a live worker before readiness timed out');
+          return 'dead';
+        }
+        // We launched it and it is gone, so the bundle itself is the suspect —
+        // and its stderr went to a hidden window. Ask it again where we can
+        // hear the answer.
+        lastWorkerBootFailure = probeWorkerBootFailure(workerScriptPath);
+        logger.error(
+          'SYSTEM',
+          'Worker exited before readiness endpoint became available',
+          lastWorkerBootFailure ? { bootFailure: lastWorkerBootFailure } : {}
+        );
         return 'dead';
       }
       logger.warn('SYSTEM', spawnLockHeld

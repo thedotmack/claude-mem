@@ -4,6 +4,7 @@ import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManag
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 const calls: Array<{ tool: string; args: any }> = [];
+let createCollectionImpl: () => Promise<unknown> = async () => ({});
 // Stateful stand-in for a Chroma collection so the reconcile path exercises
 // real Chroma semantics: add rejects the whole batch on any existing ID,
 // update ignores absent IDs, get reports which of the requested IDs exist.
@@ -16,6 +17,8 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
         calls.push({ tool, args });
         const ids: string[] = args?.ids ?? [];
         switch (tool) {
+          case 'chroma_create_collection':
+            return createCollectionImpl();
           case 'chroma_add_documents': {
             // Chroma rejects the entire batch if ANY id already exists.
             if (ids.some(id => stored.has(id))) {
@@ -47,6 +50,7 @@ afterAll(() => {
 beforeEach(() => {
   calls.length = 0;
   stored.clear();
+  createCollectionImpl = async () => ({});
 });
 
 function newSync(): ChromaSync {
@@ -57,6 +61,24 @@ function newSync(): ChromaSync {
 }
 
 describe('ChromaSync duplicate-ID reconcile', () => {
+  it('coalesces concurrent collection creation into one Chroma mutation', async () => {
+    const sync = new ChromaSync('project');
+    let releaseCreation: (() => void) | null = null;
+    createCollectionImpl = async () => new Promise<void>(resolve => {
+      releaseCreation = resolve;
+    });
+
+    const creations = Array.from({ length: 50 }, () => sync.ensureCollectionExists());
+    await Promise.resolve();
+
+    expect(calls.filter(call => call.tool === 'chroma_create_collection')).toHaveLength(1);
+    releaseCreation?.();
+    await Promise.all(creations);
+    await sync.ensureCollectionExists();
+
+    expect(calls.filter(call => call.tool === 'chroma_create_collection')).toHaveLength(1);
+  });
+
   it('reconciles a fully-duplicate batch with an in-place update, never delete+add', async () => {
     const sync = newSync();
     const docs = [{ id: 'obs_1_narrative', document: 'hello world', metadata: { sqlite_id: 1 } }];
