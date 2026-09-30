@@ -186,6 +186,42 @@ describe('HybridSearchStrategy', () => {
       expect(result.sessions).toEqual([mockSession]);
     });
 
+    it('falls back to the exact file matches when Chroma ranks none of them, with no platform filter', async () => {
+      // Chroma empty, stale or mid-backfill must not hide exact metadata matches.
+      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+        ids: [],
+        distances: [],
+        metadatas: []
+      }));
+
+      const result = await strategy.findByFile('/path/to/file.ts', { limit: 10 });
+
+      expect(result.usedChroma).toBe(false);
+      expect(result.observations.map(obs => obs.id)).toEqual([1, 2]);
+    });
+
+    it('keeps exact file matches Chroma did not rank, after the ranked ones', async () => {
+      // Chroma only reorders the metadata matches; it never drops one.
+      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+        ids: [2],
+        distances: [0.1],
+        metadatas: []
+      }));
+
+      const result = await strategy.findByFile('/path/to/file.ts', { limit: 10 });
+
+      expect(result.usedChroma).toBe(true);
+      expect(result.observations.map(obs => obs.id)).toEqual([2, 1]);
+    });
+
+    it('forwards isFolder so a folder is matched by its direct children, not as one file', async () => {
+      await strategy.findByFile('/repo/src/utils', { limit: 10, isFolder: true });
+
+      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/repo/src/utils', expect.objectContaining({
+        isFolder: true
+      }));
+    });
+
     it('should return usedChroma: false when no observations to rank', async () => {
       mockSessionSearch.findByFile = mock(() => ({
         observations: [],

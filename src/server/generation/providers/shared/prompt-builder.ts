@@ -3,6 +3,7 @@
 import { ModeManager } from '../../../../services/domain/ModeManager.js';
 import type { ModeConfig, ObservationType } from '../../../../services/domain/types.js';
 import { stripTags } from '../../../../utils/tag-stripping.js';
+import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../../../../utils/redaction.js';
 import { logger } from '../../../../utils/logger.js';
 import type { PostgresAgentEvent } from '../../../../storage/postgres/agent-events.js';
 import type { ServerGenerationContext } from './types.js';
@@ -119,6 +120,7 @@ export function buildServerGenerationPrompt(
     '</server_beta_observation_request>',
     '',
     ...(isSessionSummary ? summaryInstruction : observationInstruction),
+    ...(eventBlocks.some(hasRedactionMarker) ? ['', REDACTION_MARKER_HINT] : []),
   ].join('\n');
 
   return { prompt, hadPrivateContent, skippedAll };
