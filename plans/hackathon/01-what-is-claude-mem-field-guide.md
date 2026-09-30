@@ -150,7 +150,7 @@ Title, facts, narrative, category, tags, files, time. Every note. Same shape. Th
 ## Part 5 — Where the notes live, and how they come back
 
 ### Where they live
-On your machine. Claude-Mem stores every observation in a local database in your home folder (`~/.claude-mem`), alongside a search index that understands meaning — not just exact words — so you can search for "that cookie thing" and find the redirect-loop note. Nothing leaves your machine except the calls to the AI model doing the observing. (There's an optional Pro tier with cloud sync if you want the same memory across machines — it's optional.)
+On your machine. Claude-Mem stores every observation in a local database in your home folder (`~/.claude-mem`), alongside a search index that understands meaning — not just exact words — so you can search for "that cookie thing" and find the redirect-loop note. Nothing leaves your machine except the calls to the AI model doing the observing. Local installs contact cmem.ai once, at signup, to create the sign-in link; nothing else is sent to cmem.ai. (There's an optional Pro tier with cloud sync if you want the same memory across machines — it's optional.)
 
 ### How they come back — the cheap way first
 This is the part that makes Claude-Mem practical rather than just nice. If it handed the agent *every note in full* at the start of every session, it would blow the budget instantly. Instead it uses layers, cheapest first:

@@ -61,6 +61,10 @@ mock.module('../../../src/utils/claude-md-utils.js', () => ({
   updateFolderClaudeMdFiles: (...args: unknown[]) => mockUpdateFolderClaudeMdFiles(...args),
 }));
 
+mock.module('../../../src/services/integrations/GrokBotIndexWriter.js', () => ({
+  notifyGrokBotIndex: () => undefined,
+}));
+
 mock.module('../../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
