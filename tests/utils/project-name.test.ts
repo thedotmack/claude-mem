@@ -130,7 +130,7 @@ describe('getProjectName', () => {
     });
   });
 
-  describe('#3194 — non-git subdir shares parent project key', () => {
+  describe('#3194 — an explicit claude-mem marker names a non-git project', () => {
     let tmp: string;
     let markedParent: string;
     let markedSub: string;
@@ -140,13 +140,12 @@ describe('getProjectName', () => {
       const { join } = await import('path');
       const { tmpdir } = await import('os');
 
-      // Isolate under a unique temp root so upward marker walks cannot hit
-      // CLAUDE.md / package.json in the real home directory.
+      // Isolate under a unique temp root so upward marker walks stay inside it.
       tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-3194-')));
       markedParent = join(tmp, 'home-project');
       markedSub = join(markedParent, 'automation');
       mkdirSync(markedSub, { recursive: true });
-      writeFileSync(join(markedParent, 'CLAUDE.md'), '# home project\n');
+      writeFileSync(join(markedParent, '.claude-mem-project'), '');
     });
 
     afterAll(async () => {
@@ -154,36 +153,50 @@ describe('getProjectName', () => {
       rmSync(tmp, { recursive: true, force: true });
     });
 
-    it('subdir under a CLAUDE.md parent resolves to the parent basename', () => {
+    it('a subdir under a .claude-mem-project root resolves to the root basename', () => {
       expect(getProjectName(markedSub)).toBe('home-project');
       expect(getProjectName(markedParent)).toBe('home-project');
     });
 
-    it('context primary matches for parent and marked subdir', () => {
-      expect(getProjectContext(markedSub).primary).toBe('home-project');
-      expect(getProjectContext(markedParent).primary).toBe('home-project');
-      expect(getProjectContext(markedSub).allProjects).toEqual(['home-project']);
+    it('writes use the marker key; the pre-marker key stays readable as an alias', () => {
+      const sub = getProjectContext(markedSub);
+      expect(sub.primary).toBe('home-project');
+      // Sessions launched from `automation` before the marker existed were
+      // stored under `automation`; adding a marker must not hide them.
+      expect(sub.allProjects).toEqual(['automation', 'home-project']);
+      expect(sub.parent).toBeNull();
+
+      expect(getProjectContext(markedParent).allProjects).toEqual(['home-project']);
     });
 
-    it('marker-less subdir keeps basename primary but includes parent in allProjects', () => {
-      // Non-existent path: no markers on the walk, so primary stays basename(cwd)
-      // while read scope also includes the immediate parent (#3194).
-      expect(getProjectName('/no/such/lc/bin')).toBe('bin');
-      const ctx = getProjectContext('/no/such/lc/bin');
-      expect(ctx.primary).toBe('bin');
-      expect(ctx.allProjects).toEqual(['lc', 'bin']);
-      expect(ctx.parent).toBe('lc');
+    it('accepts the existing .claude-mem.json project file as a marker', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const app = join(tmp, 'projects', 'json-app');
+      const nested = join(app, 'src');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(app, '.claude-mem.json'), '{}\n');
+      expect(getProjectName(nested)).toBe('json-app');
     });
 
-    it('package.json marker wins over cwd basename', async () => {
+    it('ignores generic manifests, so existing keys do not move', async () => {
       const { mkdirSync, writeFileSync } = await import('fs');
       const { join } = await import('path');
       const app = join(tmp, 'projects', 'my-app');
       const nested = join(app, 'src');
       mkdirSync(nested, { recursive: true });
       writeFileSync(join(app, 'package.json'), '{"name":"my-app"}\n');
-      expect(getProjectName(nested)).toBe('my-app');
-      expect(getProjectContext(nested).allProjects).toEqual(['my-app']);
+      writeFileSync(join(app, 'CLAUDE.md'), '# my app\n');
+      expect(getProjectName(nested)).toBe('src');
+      expect(getProjectContext(nested).allProjects).toEqual(['src']);
+    });
+
+    it('a marker-less non-git dir keeps basename(cwd) and never widens to its parent', () => {
+      expect(getProjectName('/no/such/lc/bin')).toBe('bin');
+      const ctx = getProjectContext('/no/such/lc/bin');
+      expect(ctx.primary).toBe('bin');
+      expect(ctx.allProjects).toEqual(['bin']);
+      expect(ctx.parent).toBeNull();
     });
 
     it('uses resolveHookProjectPath then marker walk for a non-git CLAUDE_PROJECT_DIR', () => {
@@ -196,6 +209,58 @@ describe('getProjectName', () => {
       } finally {
         delete process.env[CLAUDE_PROJECT_DIR_ENV];
       }
+    });
+
+    // os.homedir() is fixed for the life of a Bun process, so the stop
+    // directories are exercised in a child with its own HOME / TMPDIR /
+    // CLAUDE_CONFIG_DIR.
+    function resolveInChild(cwd: string, env: Record<string, string>): { name: string; allProjects: string[] } {
+      const { join } = require('path') as typeof import('path');
+      const modulePath = join(import.meta.dir, '../../src/utils/project-name.ts');
+      const script = `
+        const { getProjectName, getProjectContext } = await import(${JSON.stringify(modulePath)});
+        const cwd = ${JSON.stringify(cwd)};
+        console.log(JSON.stringify({ name: getProjectName(cwd), allProjects: getProjectContext(cwd).allProjects }));
+      `;
+      const result = Bun.spawnSync(['bun', '-e', script], { env: { ...process.env, ...env } });
+      if (result.exitCode !== 0) {
+        throw new Error(new TextDecoder().decode(result.stderr));
+      }
+      const lines = new TextDecoder().decode(result.stdout).trim().split('\n');
+      return JSON.parse(lines[lines.length - 1]);
+    }
+
+    it('never treats the home directory as a marker root', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const fakeHome = join(tmp, 'fake-home');
+      const notes = join(fakeHome, 'notes');
+      mkdirSync(notes, { recursive: true });
+      // A ~/.claude-mem.json would otherwise fold every non-git directory under
+      // $HOME into one bucket named after the user.
+      writeFileSync(join(fakeHome, '.claude-mem.json'), '{}\n');
+      writeFileSync(join(fakeHome, '.claude-mem-project'), '');
+
+      const resolved = resolveInChild(notes, { HOME: fakeHome, CLAUDE_CONFIG_DIR: join(fakeHome, '.claude') });
+      expect(resolved).toEqual({ name: 'notes', allProjects: ['notes'] });
+    });
+
+    it('never treats TMPDIR or Claude\'s config dir as marker roots', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const fakeTmp = join(tmp, 'fake-tmp');
+      const scratch = join(fakeTmp, 'scratch');
+      mkdirSync(scratch, { recursive: true });
+      writeFileSync(join(fakeTmp, '.claude-mem-project'), '');
+
+      const fakeConfig = join(tmp, 'fake-config');
+      const pluginDir = join(fakeConfig, 'plugins', 'cache', 'thedotmack', 'claude-mem', '13.0.0');
+      mkdirSync(join(pluginDir, 'scripts'), { recursive: true });
+      writeFileSync(join(pluginDir, '.claude-mem.json'), '{}\n');
+
+      const env = { TMPDIR: fakeTmp, CLAUDE_CONFIG_DIR: fakeConfig };
+      expect(resolveInChild(scratch, env)).toEqual({ name: 'scratch', allProjects: ['scratch'] });
+      expect(resolveInChild(join(pluginDir, 'scripts'), env)).toEqual({ name: 'scripts', allProjects: ['scripts'] });
     });
   });
 
@@ -278,11 +343,9 @@ describe('getProjectContext', () => {
   it('returns primary project name for normal path', () => {
     const ctx = getProjectContext('/home/user/my-project');
     expect(ctx.primary).toBe('my-project');
-    // #3194 — marker-less non-git paths keep basename as primary but include
-    // the immediate parent basename in read scope (allProjects / parent).
-    expect(ctx.parent).toBe('user');
+    expect(ctx.parent).toBeNull();
     expect(ctx.isWorktree).toBe(false);
-    expect(ctx.allProjects).toEqual(['user', 'my-project']);
+    expect(ctx.allProjects).toEqual(['my-project']);
   });
 
   it('resolves ~ path correctly', () => {

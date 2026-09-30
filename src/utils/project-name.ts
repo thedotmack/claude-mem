@@ -1,7 +1,9 @@
 import path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import { execFileSync } from 'child_process';
 import { expandHome } from '../shared/expand-home.js';
+import { CLAUDE_CONFIG_DIR } from '../shared/paths.js';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
@@ -52,75 +54,75 @@ function findGitRepoRoot(dir: string): string | null {
 }
 
 /**
- * Markers that indicate a non-git directory is still a project root (#3194).
- * Do not treat `~/.claude` as a marker: that is Claude Code's global config
- * directory, present for every user, and would collapse all home subdirs into
- * one project key.
+ * Explicit claude-mem project-root markers (#3194, plan-20 step 1). Outside a
+ * git repo, the nearest ancestor holding one names the project, so launches
+ * from any of its subdirectories share one key. Only explicit claude-mem files
+ * count: generic manifests (package.json, CLAUDE.md, ...) sit in home
+ * directories and nested packages, and treating them as roots would silently
+ * re-key memory users already have.
  */
-const NON_GIT_PROJECT_MARKERS = [
-  'CLAUDE.md',
-  'package.json',
-  'pyproject.toml',
-  'Cargo.toml',
-  'go.mod',
-  '.claude-mem.json',
-] as const;
+const PROJECT_ROOT_MARKERS = ['.claude-mem-project', '.claude-mem.json'] as const;
 
-function hasNonGitProjectMarker(dir: string): boolean {
-  for (const marker of NON_GIT_PROJECT_MARKERS) {
-    if (existsSync(path.join(dir, marker))) {
-      return true;
-    }
+/** Upper bound on the marker walk; real directory trees are far shallower. */
+const MAX_MARKER_WALK_DEPTH = 64;
+
+function realpathOrSelf(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
   }
-  return false;
+}
+
+function isWithin(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 /**
- * Walk up from `dir` looking for a non-git project root marker. Returns the
- * absolute directory that owns the marker, or null when none is found (or the
- * path does not exist). Stops at the filesystem root.
+ * Directories that never name a project. The walk stops before reaching one:
+ * a marker in $HOME, TMPDIR or at the filesystem root would collapse every
+ * non-git directory below it into a single bucket. Claude's config directory
+ * (plugins and marketplaces live there) is excluded entirely.
  */
-function findNonGitProjectRoot(dir: string): string | null {
-  let current = path.resolve(dir);
-  const { root } = path.parse(current);
+function markerWalkStops(): string[] {
+  return [homedir(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap(dir => {
+    const resolved = path.resolve(dir);
+    return [resolved, realpathOrSelf(resolved)];
+  });
+}
 
-  // Cap walk depth so a huge path cannot spin; filesystem roots are shallow.
-  for (let i = 0; i < 64; i++) {
-    if (hasNonGitProjectMarker(current)) {
-      return current;
-    }
-    if (current === root) {
+/**
+ * Walk up from `dir` to the nearest ancestor holding a project-root marker.
+ * Returns that directory, or null when the walk reaches a stop directory or the
+ * filesystem root first.
+ */
+function findMarkerProjectRoot(dir: string): string | null {
+  const stops = markerWalkStops();
+  let current = path.resolve(dir);
+  const configDirs = [path.resolve(CLAUDE_CONFIG_DIR), realpathOrSelf(path.resolve(CLAUDE_CONFIG_DIR))];
+  if (configDirs.some(configDir => isWithin(current, configDir))) {
+    return null;
+  }
+
+  for (let depth = 0; depth < MAX_MARKER_WALK_DEPTH; depth++) {
+    if (stops.includes(current)) {
       return null;
     }
     const parent = path.dirname(current);
     if (parent === current) {
-      return null;
+      return null; // filesystem root
+    }
+    if (PROJECT_ROOT_MARKERS.some(marker => existsSync(path.join(current, marker)))) {
+      return current;
     }
     current = parent;
   }
   return null;
 }
 
-export function getProjectName(
-  cwd: string | null | undefined,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  if (!cwd || cwd.trim() === '') {
-    logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
-    return UNKNOWN_PROJECT_NAME;
-  }
-
-  const expanded = expandHome(cwd, platform);
-
-  // #2663 — derive the project name from the git repo root when inside a repo so
-  // the name is stable across subdirectories/worktrees.
-  // #3194 — outside a repo, walk up to a project-marker directory (CLAUDE.md,
-  // package.json, ...) so subdir launches share the parent project key with
-  // capture. Fall back to the cwd basename when no marker exists.
-  const repoRoot = findGitRepoRoot(expanded);
-  const markerRoot = repoRoot ? null : findNonGitProjectRoot(expanded);
-  const nameSource = repoRoot ?? markerRoot ?? expanded;
-
+/** The project name for the directory that names it (git toplevel, marker root, or cwd). */
+function projectNameFromSource(cwd: string, nameSource: string): string {
   const basename = path.basename(nameSource);
 
   if (basename === '') {
@@ -141,6 +143,25 @@ export function getProjectName(
   return basename;
 }
 
+export function getProjectName(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (!cwd || cwd.trim() === '') {
+    logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
+    return UNKNOWN_PROJECT_NAME;
+  }
+
+  const expanded = expandHome(cwd, platform);
+
+  // #2663 — inside a repo, the git root names the project so the name is stable
+  // across subdirectories and worktrees. #3194 — outside one, the nearest
+  // claude-mem marker root does; otherwise the cwd basename.
+  const repoRoot = findGitRepoRoot(expanded);
+  const nameSource = repoRoot ?? findMarkerProjectRoot(expanded) ?? expanded;
+  return projectNameFromSource(cwd, nameSource);
+}
+
 export interface ProjectContext {
   primary: string;
   parent: string | null;
@@ -148,40 +169,25 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
-/**
- * When SessionStart reports a subdirectory cwd but capture used a parent
- * directory (common outside git repos), include the immediate parent basename
- * in the read scope so context injection can still find parent-scoped memory.
- */
-function withNonGitParentReadScope(cwd: string, primary: string): string[] {
-  const parentDir = path.dirname(path.resolve(cwd));
-  const parentBase = path.basename(parentDir);
-  if (!parentBase || parentBase === primary) {
-    return [primary];
-  }
-  // Skip filesystem roots / drive letters (empty meaningful project keys).
-  if (parentDir === path.parse(parentDir).root) {
-    return [primary];
-  }
-  return [parentBase, primary];
-}
-
 export function getProjectContext(
   cwd: string | null | undefined,
   platform: NodeJS.Platform = process.platform,
 ): ProjectContext {
-  const cwdProjectName = getProjectName(cwd, platform);
-
-  if (!cwd) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+  if (!cwd || cwd.trim() === '') {
+    const fallback = getProjectName(cwd, platform);
+    return { primary: fallback, parent: null, isWorktree: false, allProjects: [fallback] };
   }
 
   const expandedCwd = expandHome(cwd, platform);
-  // #3262 — detectWorktree stats `<cwd>/.git`, which only exists at the
-  // worktree root. Resolve the git working-tree root first (same pattern as
-  // getProjectName / #2663) so sessions started in a subdirectory still get
-  // the parent/worktree compound key.
-  const worktreeInfo = detectWorktree(findGitRepoRoot(expandedCwd) ?? expandedCwd);
+  // One git spawn per resolution: the toplevel both names the project and
+  // anchors worktree detection. #3262 — detectWorktree stats `<dir>/.git`, which
+  // only exists at the worktree root, so a session started in a subdirectory
+  // must detect from the toplevel to get the parent/worktree compound key.
+  const repoRoot = findGitRepoRoot(expandedCwd);
+  const markerRoot = repoRoot ? null : findMarkerProjectRoot(expandedCwd);
+  const cwdProjectName = projectNameFromSource(cwd, repoRoot ?? markerRoot ?? expandedCwd);
+
+  const worktreeInfo = detectWorktree(repoRoot ?? expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
@@ -193,16 +199,14 @@ export function getProjectContext(
     };
   }
 
-  const repoRoot = findGitRepoRoot(expandedCwd);
-  if (!repoRoot) {
-    const markerRoot = findNonGitProjectRoot(expandedCwd);
-    // Marker already folded into primary via getProjectName. When we still
-    // fell back to basename(cwd), widen read scope to the immediate parent
-    // (#3194) so inject can meet capture's parent key.
-    if (!markerRoot) {
-      const allProjects = withNonGitParentReadScope(expandedCwd, cwdProjectName);
-      const parent = allProjects.length > 1 ? allProjects[0] : null;
-      return { primary: cwdProjectName, parent, isWorktree: false, allProjects };
+  // A marker re-keys launches from below its root. Keep the key those launches
+  // were stored under before the marker existed (the cwd basename) readable as
+  // an alias, so adding a marker never hides existing memory. Writes use
+  // `primary` only.
+  if (markerRoot && path.resolve(markerRoot) !== path.resolve(expandedCwd)) {
+    const legacyKey = projectNameFromSource(cwd, expandedCwd);
+    if (legacyKey !== cwdProjectName && legacyKey !== UNKNOWN_PROJECT_NAME) {
+      return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [legacyKey, cwdProjectName] };
     }
   }
 
