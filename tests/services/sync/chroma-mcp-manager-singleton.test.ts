@@ -127,7 +127,10 @@ mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({
 }));
 
 let connectImpl: (transport: FakeTransport) => Promise<void> = async () => {};
-let callToolImpl: (request?: { name: string; arguments?: Record<string, unknown> }) => Promise<unknown> = async () => ({
+let callToolImpl: (
+  request?: { name: string; arguments?: Record<string, unknown> },
+  options?: { timeout?: number }
+) => Promise<unknown> = async () => ({
   content: [{ type: 'text', text: '{}' }],
 });
 
@@ -136,8 +139,12 @@ class FakeClient {
   async connect(transport: FakeTransport): Promise<void> {
     await connectImpl(transport);
   }
-  async callTool(request?: { name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
-    return await callToolImpl(request);
+  async callTool(
+    request?: { name: string; arguments?: Record<string, unknown> },
+    _resultSchema?: unknown,
+    options?: { timeout?: number }
+  ): Promise<unknown> {
+    return await callToolImpl(request, options);
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -154,6 +161,7 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
     getInt: () => 0,
     loadFromFile: () => ({
       CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000',
+      CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: '600000',
       ...mockedSettings,
     }),
   },
@@ -304,6 +312,7 @@ process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import { ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import {
   getDependencyStatus,
   resetDependencyStatusesForTesting,
@@ -519,6 +528,52 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await Promise.all([firstMutation, secondMutation]);
 
     expect(maxActiveMutations).toBe(1);
+  });
+
+  it('extends only mutation request timeouts and honors the configured bound', async () => {
+    mockedSettings = {
+      CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: '900000',
+    };
+    const mgr = ChromaMcpManager.getInstance();
+    const calls: Array<{ name?: string; timeout?: number }> = [];
+    callToolImpl = async (request, options) => {
+      calls.push({ name: request?.name, timeout: options?.timeout });
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    await mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await mgr.callTool('chroma_query_documents', { query_texts: ['fast read'] });
+
+    expect(calls).toEqual([
+      { name: 'chroma_add_documents', timeout: 900000 },
+      { name: 'chroma_query_documents', timeout: undefined },
+    ]);
+  });
+
+  it('leaves chroma-mcp running when a slow mutation times out instead of tree-killing it mid-commit', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(1);
+    killProcessTreeCalls.length = 0;
+
+    let attempts = 0;
+    callToolImpl = async () => {
+      attempts += 1;
+      throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 600000 });
+    };
+
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['slow'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+
+    // No dispose, no tree-kill, no reconnect, no retry of the same slow write.
+    expect(attempts).toBe(1);
+    expect(killProcessTreeCalls).toEqual([]);
+    expect(transportInstances.length).toBe(1);
+    expect(transportInstances[0].closed).toBe(false);
+
+    // The connection stays usable for the next call.
+    callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(1);
   });
 
   it('bounds the pending mutation queue and leaves rejected writes for backfill', async () => {
@@ -828,6 +883,10 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     mkdirSync(leaked, { recursive: true });
     const dayAgo = new Date(Date.now() - 25 * 60 * 60_000);
     utimesSync(leaked, dayAgo, dayAgo);
+    // A drain started by an earlier test's failed prewarm can still be running
+    // against that test's cache dir; while it runs, a new sweep request is
+    // dropped. Let it finish so the sweep below is this test's own.
+    await ChromaMcpManager.waitForUvBuildsScratchSweepForTesting();
 
     await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
     await ChromaMcpManager.waitForUvBuildsScratchSweepForTesting();

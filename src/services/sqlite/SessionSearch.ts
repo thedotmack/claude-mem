@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { isDirectChild } from '../../shared/path-utils.js';
+import { isDirectChild, normalizePath } from '../../shared/path-utils.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -573,23 +573,65 @@ export class SessionSearch {
     return checkFiles(session.files_read) || checkFiles(session.files_edited);
   }
 
+  /**
+   * LIKE patterns that find a path in a files JSON column.
+   *
+   * Stored paths come in two forms: absolute when they come from a tool's
+   * input (Claude Code's Read/Edit/Write), project-relative when they come
+   * from the observer's output or a Codex patch, and neither records the
+   * project root. So a folder given as an absolute path also matches paths
+   * stored under any trailing part of it, which is the rule isDirectChild
+   * applies to the fetched rows. Without these anchored prefixes the
+   * project-relative rows never reached that check and folder lookups missed
+   * them.
+   */
+  private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
+    const patterns = [`%${filePath}%`];
+    if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
+      return patterns;
+    }
+    const segments = normalizePath(filePath).split('/').filter(segment => segment.length > 0);
+    const firstRelativeSegment = /^[A-Za-z]:$/.test(segments[0] ?? '') ? 1 : 0;
+    for (let start = firstRelativeSegment; start < segments.length; start += 1) {
+      const trailing = segments.slice(start);
+      patterns.push(`${trailing.join('/')}/%`);
+      if (filePath.includes('\\')) {
+        patterns.push(`${trailing.join('\\')}\\%`);
+      }
+    }
+    return patterns;
+  }
+
+  /** Any of `columns` (JSON arrays) holds a value matching any pattern; bind every pattern once per column. */
+  private static jsonArrayLikeClause(columns: string[], patternCount: number): string {
+    const anyPattern = Array.from({ length: patternCount }, () => 'value LIKE ?').join(' OR ');
+    return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${anyPattern})`).join(' OR ')})`;
+  }
+
   findByFile(filePath: string, options: SearchOptions = {}): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', isFolder = false, ...filters } = options;
+    // filePath is the file filter; a caller's own `files` filter is not added on top.
+    delete filters.files;
 
     const queryLimit = isFolder ? limit * 3 : limit;
+    const pathPatterns = SessionSearch.filePathPatterns(filePath, isFolder);
 
-    const fileFilters = { ...filters, files: filePath };
-    const filterClause = this.buildFilterClause(fileFilters, params, 'o');
+    const filterClause = this.buildFilterClause(filters, params, 'o');
+    params.push(...pathPatterns, ...pathPatterns);
+    const whereClause = [
+      filterClause,
+      SessionSearch.jsonArrayLikeClause(['o.files_read', 'o.files_modified'], pathPatterns.length),
+    ].filter(Boolean).join(' AND ');
     const orderClause = this.buildOrderClause(orderBy, false);
 
     const observationsSql = `
       SELECT o.*, o.discovery_tokens
       FROM observations o
-      WHERE ${filterClause}
+      WHERE ${whereClause}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;
@@ -633,11 +675,8 @@ export class SessionSearch {
       }
     }
 
-    baseConditions.push(`(
-      EXISTS (SELECT 1 FROM json_each(s.files_read) WHERE value LIKE ?)
-      OR EXISTS (SELECT 1 FROM json_each(s.files_edited) WHERE value LIKE ?)
-    )`);
-    sessionParams.push(`%${filePath}%`, `%${filePath}%`);
+    baseConditions.push(SessionSearch.jsonArrayLikeClause(['s.files_read', 's.files_edited'], pathPatterns.length));
+    sessionParams.push(...pathPatterns, ...pathPatterns);
 
     const sessionsSql = `
       SELECT s.*, s.discovery_tokens
