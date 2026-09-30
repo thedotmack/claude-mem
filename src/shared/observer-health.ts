@@ -16,6 +16,8 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
+import { loadFromFileOnce } from './hook-settings.js';
+import { viewerBaseUrl } from './viewer-url.js';
 import { logger } from '../utils/logger.js';
 
 export interface ObserverHealthState {
@@ -45,6 +47,37 @@ export interface ObserverHealthState {
   lastErrorUrl?: string | null;
   /** Gateway/upstream request id for support. */
   lastErrorRequestId?: string | null;
+  /**
+   * Classified failure kind (`quota_exhausted`, `auth`, …). The warning reads
+   * this to pick its remedy: a spent allowance is the one outage a restart
+   * cannot clear, so it must not be offered one.
+   */
+  lastErrorKind?: string | null;
+  /**
+   * Intentional pause while the provider quota breaker is withholding
+   * generator starts. Distinct from lastError*: a cooldown is not a failure,
+   * and must not flip the ledger to unhealthy. Null when no breaker is armed
+   * (or after it was cleared on a successful store).
+   */
+  quotaCooldown: ObserverQuotaCooldown | null;
+}
+
+/**
+ * Persisted half of the quota breaker, mirrored into the health ledger so a
+ * cooldown is visible without tailing the worker log. `until` is authoritative:
+ * a stale `active: true` after expiry must not keep the banner up.
+ */
+export interface ObserverQuotaCooldown {
+  active: boolean;
+  provider: string;
+  /** Epoch ms when the breaker was armed. */
+  armedAt: number;
+  /** Epoch ms when the next probe is allowed. */
+  until: number;
+  /** Window the provider named, when it named one (e.g. 'weekly'). */
+  window?: string;
+  /** Provider-reported reason, already free of any user prompt text. */
+  message?: string;
 }
 
 /**
@@ -54,6 +87,8 @@ export interface ObserverHealthState {
  */
 export interface ObserverFailureDetail {
   message: string;
+  /** Classified error kind, when the failure came from the provider taxonomy. */
+  kind?: string;
   code?: string;
   action?: string;
   url?: string;
@@ -78,6 +113,7 @@ const EMPTY_STATE: ObserverHealthState = {
   lastErrorAction: null,
   lastErrorUrl: null,
   lastErrorRequestId: null,
+  quotaCooldown: null,
 };
 
 function defaultHealthFilePath(): string {
@@ -228,6 +264,7 @@ export function recordObserverFailure(
       // Always overwrite (never inherit from `prior`): a string-form failure
       // after a classified one must not keep the stale action/link/request id.
       lastErrorCode: detail.code ?? null,
+      lastErrorKind: detail.kind ?? null,
       lastErrorAction: detail.action ? scrubErrorMessage(detail.action) : null,
       lastErrorUrl: detail.url ?? null,
       lastErrorRequestId: detail.requestId ?? null,
@@ -247,6 +284,41 @@ export function recordObserverSuccess(filePath: string = defaultHealthFilePath()
   });
 }
 
+/**
+ * Mirror an armed quota breaker into the health ledger. Does not increment
+ * consecutiveFailures — a cooldown is an intentional pause, not a failure.
+ */
+export function recordObserverQuotaCooldown(
+  cooldown: ObserverQuotaCooldown,
+  filePath: string = defaultHealthFilePath(),
+): void {
+  withLedgerLock(filePath, () => {
+    const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
+    writeObserverHealth({
+      ...prior,
+      quotaCooldown: {
+        active: true,
+        provider: cooldown.provider,
+        armedAt: cooldown.armedAt,
+        until: cooldown.until,
+        ...(cooldown.window ? { window: cooldown.window } : {}),
+        ...(cooldown.message ? { message: scrubErrorMessage(cooldown.message) } : {}),
+      },
+    }, filePath);
+  });
+}
+
+/** Clear the cooldown field after the breaker is released. */
+export function clearObserverQuotaCooldown(
+  filePath: string = defaultHealthFilePath(),
+): void {
+  withLedgerLock(filePath, () => {
+    const prior = readObserverHealth(filePath);
+    if (!prior || prior.quotaCooldown === null) return;
+    writeObserverHealth({ ...prior, quotaCooldown: null }, filePath);
+  });
+}
+
 export function isObserverUnhealthy(state: ObserverHealthState | null): state is ObserverHealthState {
   return state !== null
     && state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD
@@ -263,11 +335,146 @@ export function describeDuration(ms: number): string {
 }
 
 /**
+ * Where the one-click restart lives: the same base the viewer is printed at, so
+ * it stays reachable when the worker runs behind a port-forward
+ * (`CLAUDE_MEM_PUBLIC_URL`). Read through hook-settings rather than
+ * worker-utils: this module is imported by hooks as well as the worker, and
+ * must not drag in the supervisor, telemetry and process-management tree just
+ * to format a URL.
+ */
+export function workerRestartUrl(): string {
+  const settings = loadFromFileOnce();
+  return `${viewerBaseUrl(settings.CLAUDE_MEM_WORKER_PORT, settings.CLAUDE_MEM_PUBLIC_URL)}/restart`;
+}
+
+/**
  * The block prepended to session-start context when unhealthy. Read by both
  * the user and the agent, so it stays calm and plain-spoken — but the agent
  * must still relay the outage (and the remedy embedded in the provider's
  * error message) to the user immediately.
+ *
+ * A restart clears nearly every observer outage (a wedged or SIGKILL'd provider
+ * subprocess), so the remedy leads with one — as a link the user clicks, not as
+ * something claude-mem fires on its own. Restarting the worker from inside the
+ * worker means guarding the automation against itself (once per outage? per
+ * flap? what about two failures racing?), and every one of those guards is a
+ * bound on a loop that only exists because the restart was automatic. A human
+ * pressing the button is the bound.
  */
+/**
+ * True when the current outage is a spent provider allowance. Reads the
+ * classified `kind` recorded with the failure; the quota-as-prose path records
+ * the same kind so both outage shapes are covered.
+ */
+export function isQuotaFailure(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'quota_exhausted';
+}
+
+/**
+ * How old a quota failure has to be before the banner stops asserting it as a
+ * present fact.
+ *
+ * The number is `QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS` from `quota-cooldown.ts`,
+ * copied rather than imported because that module imports this one. The test
+ * suite asserts the two agree, so the copy cannot drift.
+ *
+ * Reusing that window rather than inventing a "provider reset interval" is the
+ * point: it is already this codebase's answer to "long enough that a reset (or
+ * a plan upgrade) is picked up". Once the breaker itself would let a probe
+ * through, a recorded failure has stopped being evidence of a present outage —
+ * it is the last thing we know, not the current state.
+ */
+export const OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS = 30 * 60_000;
+
+/**
+ * True when a quota outage is old enough that it may well be over.
+ *
+ * `observer-health.json` only heals as a side effect of the next SUCCESSFUL
+ * generation, and that cannot happen until traffic arrives — which is after
+ * SessionStart has already read the file. So the first session following any
+ * recovered outage is guaranteed to read a stale ledger, however long ago the
+ * allowance reset (#4083: a 63-hour-old error rendered as a live outage while
+ * the worker stored observations four minutes later in the same session).
+ *
+ * Only the quota shape ages out. Every other failure — a bad key, a missing
+ * base URL — stays true until someone fixes it, so its banner should keep
+ * saying so.
+ */
+export function isQuotaFailureStale(
+  state: ObserverHealthState,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!isQuotaFailure(state)) return false;
+  const lastErrorAt = state.lastErrorAt;
+  // `>=`, not `>`: `isObserverQuotaCooldownActive` calls the cooldown expired
+  // at `until > nowMs`, so at exactly the recheck interval the breaker has
+  // already released. A strict `>` left one instant where the breaker was
+  // open and the banner still called the outage current.
+  return lastErrorAt !== null && nowMs - lastErrorAt >= OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
+}
+
+/**
+ * True while the persisted cooldown window is still in the future. `until`
+ * wins over the stored `active` flag so an expired ledger cannot latch the
+ * banner (the #3902 failure mode, inverted).
+ */
+export function isObserverQuotaCooldownActive(
+  state: ObserverHealthState | null,
+  nowMs: number = Date.now(),
+): state is ObserverHealthState {
+  const cooldown = state?.quotaCooldown;
+  return cooldown != null
+    && typeof cooldown.until === 'number'
+    && cooldown.until > nowMs;
+}
+
+/**
+ * Session-start notice for an intentional quota pause. Distinct from the
+ * failure warning: nothing is broken, the generator is withheld on purpose,
+ * and queued work drains when the window clears.
+ */
+export function renderObserverQuotaCooldownNotice(
+  state: ObserverHealthState,
+  nowMs: number = Date.now(),
+): string {
+  const cooldown = state.quotaCooldown;
+  const provider = cooldown?.provider ?? 'unknown provider';
+  const until = cooldown?.until;
+  const untilText = until
+    ? `${new Date(until).toISOString()} (${describeDuration(Math.max(0, until - nowMs))} from now)`
+    : 'the next probe window';
+  const windowText = cooldown?.window ? ` (${cooldown.window})` : '';
+  const message = cooldown?.message ? scrubErrorMessage(cooldown.message) : null;
+
+  return [
+    '⚠️ Heads up: claude-mem is paused while a provider quota cooldown is active.',
+    '',
+    `The memory observer is waiting out a quota cooldown on ${provider}${windowText} until ${untilText}.`,
+    '',
+    ...(message ? [`Latest signal: ${message}`, ''] : []),
+    'This is not a failure. Incoming observations stay queued and will be written',
+    'when the cooldown clears — the worker is intentionally not starting the',
+    'generator so it does not keep spending a spent allowance.',
+    '',
+    'Restarting will NOT help here, and it clears the backoff that is currently keeping',
+    'claude-mem from hammering the provider — so please leave the worker alone.',
+    '',
+    '(Assistant: tell the user that memory capture is paused for a quota cooldown',
+    'at the very start of your first reply. Do NOT restart the worker and do NOT',
+    'suggest restarting it.)',
+  ].join('\n');
+}
+
+/** The latest error plus the classified remedy, shared by every warning shape. */
+function renderFailureDetailLines(state: ObserverHealthState, action: string | null): string[] {
+  return [
+    `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+    ...(action ? [`What to do: ${action}`] : []),
+    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+    ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+  ];
+}
+
 export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: number = Date.now()): string {
   const since = state.failingSinceAt ?? state.lastErrorAt;
   const sinceText = since
@@ -276,26 +483,107 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   const provider = state.lastErrorProvider ?? 'unknown provider';
   const count = state.consecutiveFailures;
   const action = state.lastErrorAction ? scrubErrorMessage(state.lastErrorAction) : null;
+
+  if (isQuotaFailureStale(state, nowMs)) {
+    // Same facts, stated as what they are: the last thing we know, not the
+    // current state. No "nothing will be remembered", because that would be a
+    // claim about right now that nothing has checked; and no instruction to
+    // lead the reply with an outage report, because the likeliest case by far
+    // is that the allowance reset hours ago and capture is working.
+    const age = state.lastErrorAt ? describeDuration(nowMs - state.lastErrorAt) : 'an unknown time';
+    return [
+      'ℹ️ claude-mem: the memory observer last failed with a spent allowance on',
+      `${provider}, ${age} ago. Nothing has re-tested it since — the health ledger only`,
+      'updates on the next successful save, which happens after this message is written.',
+      '',
+      `Last error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+      ...(action ? [`If it is still spent: ${action}`] : []),
+      ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+      '',
+      'Allowances reset on their own, so memory capture may already be working. If it is',
+      'not, the next failed save brings the full warning back.',
+      '',
+      '(Assistant: do not open your reply with this. Mention it only if the user asks why',
+      'something was not remembered, or if a later message reports a save failing.)',
+    ].join('\n');
+  }
+
+  // A spent allowance is the one outage a restart cannot clear. Worse, the
+  // restart link is the code path that clears the quota breaker (the process
+  // serving /api/admin/restart is the process holding the cooldown), so
+  // offering it here talks the user into re-opening the per-observation
+  // request storm the breaker exists to stop. Nothing is wedged; the account
+  // is out of allowance. Say that, and relay the provider's own remedy.
+  if (isQuotaFailure(state)) {
+    return [
+      "⚠️ Heads up: claude-mem can't save memories right now.",
+      '',
+      `The memory observer's allowance on ${provider} is used up (since ${sinceText.replace(/^for .*?\(since /, '').replace(/\)$/, '')}).`,
+      '',
+      ...renderFailureDetailLines(state, action),
+      '',
+      "Until the allowance resets or you add capacity, nothing from this session — or any",
+      'other — will be remembered.',
+      '',
+      // Deliberately no restart link: nothing is broken to restart, and doing
+      // it disarms the breaker that is currently protecting the account.
+      'Restarting will NOT help here, and it clears the backoff that is currently keeping',
+      'claude-mem from hammering the provider — so please leave the worker alone.',
+      ...(action ? [] : [
+        'Switch the observer to another provider in ~/.claude-mem/settings.json if you need',
+        'memory capture before the allowance resets.',
+      ]),
+      '',
+      '(Assistant: tell the user about this outage at the very start of your first reply,',
+      'quoting the error above. Do NOT restart the worker and do NOT suggest restarting it.)',
+    ].join('\n');
+  }
+
+  // A retired or unknown model is the other outage a restart cannot clear:
+  // every fresh generator asks for the same model and gets the same refusal.
+  // Only changing the model fixes it, so relay that remedy, not a restart link.
+  if (state.lastErrorCode === 'model_unavailable') {
+    return [
+      "⚠️ Heads up: claude-mem can't save memories right now.",
+      '',
+      `The memory observer (provider: ${provider}) has failed ${count} time${count === 1 ? '' : 's'} in a row ${sinceText}: its configured model is no longer available.`,
+      '',
+      ...renderFailureDetailLines(state, action),
+      '',
+      "Until the model is changed, nothing from this session — or any other — will be remembered.",
+      '',
+      'Restarting will NOT help here: after a restart the observer asks for the same model',
+      'and gets the same refusal.',
+      '',
+      '(Assistant: tell the user about this outage at the very start of your first reply,',
+      'quoting the error and the "What to do" line above. Do NOT suggest restarting the worker.)',
+    ].join('\n');
+  }
+
   const lines = [
     "⚠️ Heads up: claude-mem can't save memories right now.",
     '',
     `The memory observer (provider: ${provider}) has failed ${count} time${count === 1 ? '' : 's'} in a row ${sinceText}.`,
     '',
-    `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
-    ...(action ? [`What to do: ${action}`] : []),
-    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
-    ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+    ...renderFailureDetailLines(state, action),
     '',
     "Until it's fixed, nothing from this session — or any other — will be remembered.",
+    '',
+    'Restarting the memory worker clears almost every outage. Do one of these:',
+    `  Click to restart:  ${workerRestartUrl()}`,
+    '  Or in a terminal:  npx claude-mem restart',
+    '',
+    'Still failing after the restart? Run: npx claude-mem doctor',
     // A classified error already says what to do; the generic settings.json
     // remedy is wrong for e.g. Pro users whose allowance ran out.
     ...(action ? [] : [
-      "To fix it, check the observer provider's API key, spend limit, and base URL in",
-      '~/.claude-mem/settings.json. The error above may include a management link with the remedy.',
+      "If doctor comes back clean, check the observer provider's API key, spend limit, and base",
+      'URL in ~/.claude-mem/settings.json. The error above may include a management link.',
     ]),
     '',
-    '(Assistant: please tell the user about this outage at the very start of your first reply,',
-    'quoting the error above.)',
+    '(Assistant: tell the user about this outage at the very start of your first reply,',
+    'quoting the error above, and give them the restart link — let them press it rather',
+    'than restarting the worker yourself.)',
   ];
   return lines.join('\n');
 }

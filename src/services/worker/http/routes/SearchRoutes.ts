@@ -12,6 +12,7 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -20,22 +21,32 @@ import { proTrialLine } from '../../../../shared/pro-promo.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
-const cachedOnboardingExplainer: string | null = (() => {
+// Read on first request, not at import. Hook processes share this module but
+// never serve the onboarding explainer, so caching at import made every hook
+// spawn read the file and log a boot line for nothing (#3665).
+let onboardingExplainerCache: { text: string | null } | undefined;
+
+function getOnboardingExplainer(): string | null {
+  if (onboardingExplainerCache) {
+    return onboardingExplainerCache.text;
+  }
+  let text: string | null;
   try {
-    const text = fs.readFileSync(ONBOARDING_EXPLAINER_PATH, 'utf-8');
-    logger.info('SYSTEM', 'Cached onboarding explainer at boot', {
+    text = fs.readFileSync(ONBOARDING_EXPLAINER_PATH, 'utf-8');
+    logger.debug('SYSTEM', 'Cached onboarding explainer on first request', {
       path: ONBOARDING_EXPLAINER_PATH,
       bytes: Buffer.byteLength(text, 'utf-8'),
     });
-    return text;
   } catch (error: unknown) {
-    logger.debug('SYSTEM', 'Onboarding explainer not present at boot, /api/onboarding/explainer will 404', {
+    logger.debug('SYSTEM', 'Onboarding explainer not present, /api/onboarding/explainer will 404', {
       path: ONBOARDING_EXPLAINER_PATH,
       message: error instanceof Error ? error.message : String(error),
     });
-    return null;
+    text = null;
   }
-})();
+  onboardingExplainerCache = { text };
+  return text;
+}
 
 // TTL-cached settings reader. handleContextInject runs on every hook callback
 // (PostToolUse fires after every Read/Edit), so re-parsing settings.json from
@@ -224,7 +235,7 @@ export class SearchRoutes extends BaseRouteHandler {
     ];
 
     combined.sort((a, b) => b.epoch - a.epoch);
-    const resultsByDate = groupByDate(combined, item => item.created_at);
+    const resultsByDate = groupByDate(combined, item => item.created_at, { order: 'desc' });
 
     const lines: string[] = [];
     lines.push(`Found ${totalResults} result(s) for file "${filePath}"`);
@@ -259,6 +270,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   private handleContextPreview = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const projectName = req.query.project as string;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!projectName) {
       this.badRequest(res, 'Project parameter is required');
@@ -273,7 +285,8 @@ export class SearchRoutes extends BaseRouteHandler {
       {
         session_id: 'preview-' + Date.now(),
         cwd: cwd,
-        projects: [projectName]
+        projects: [projectName],
+        ...(platformSource ? { platformSource } : {})
       },
       true  
     );
@@ -313,7 +326,7 @@ export class SearchRoutes extends BaseRouteHandler {
       // observations. Hot-path: PostToolUse fires after every Read/Edit.
       if (!this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
-        const viewerUrl = `http://localhost:${port}`;
+        const viewerUrl = getViewerBaseUrl(port);
         const hintBody = WELCOME_HINT_TEMPLATE
           .replace('{viewer_url}', viewerUrl)
           .replace('{pro_trial_line}', proTrialLine('welcome-hint'));
@@ -321,7 +334,7 @@ export class SearchRoutes extends BaseRouteHandler {
         // A project with zero observations is exactly where a failing observer
         // hides: without this the health warning (applied inside
         // generateContextWithStats) never reached the user this early-return serves.
-        res.send(withObserverHealthWarning(hintBody));
+        res.send(withObserverHealthWarning(hintBody, forHuman));
         return;
       }
     }
@@ -438,6 +451,7 @@ export class SearchRoutes extends BaseRouteHandler {
   }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
+    const cachedOnboardingExplainer = getOnboardingExplainer();
     if (cachedOnboardingExplainer === null) {
       res.status(404).json({ error: 'Onboarding explainer not available' });
       return;
