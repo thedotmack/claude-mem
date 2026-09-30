@@ -8,6 +8,14 @@ export interface ContextInput {
   projects?: string[];
   platformSource?: string;
   full?: boolean;
+  /**
+   * Set false to build the context without the observer-health outage banner.
+   *
+   * The banner is written for the primary assistant and ends with an
+   * instruction addressed to it. Builds that are consumed by the observer
+   * itself must opt out (#4221).
+   */
+  includeHealthWarning?: boolean;
   [key: string]: any;
 }
 
