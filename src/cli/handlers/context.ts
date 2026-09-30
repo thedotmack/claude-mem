@@ -56,7 +56,9 @@ export const contextHandler: EventHandler = {
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
-    const platformSourceParam = input.platform
+    // Let users share startup memory across harnesses without changing the
+    // source-scoped behavior of search and other context requests.
+    const platformSourceParam = input.platform && settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true'
       ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
       : '';
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;

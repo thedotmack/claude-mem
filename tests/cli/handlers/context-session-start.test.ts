@@ -17,11 +17,14 @@ const realProjectNameSnapshot = { ...realProjectName };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const calls: unknown[][] = [];
-let troubleNotice: string | null = null;
-let workerFallback = false;
+let includeAllSources = false;
+let showTerminalOutput = false;
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
-  loadFromFileOnce: () => ({ CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'false' }),
+  loadFromFileOnce: () => ({
+    CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: String(showTerminalOutput),
+    CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: String(includeAllSources),
+  }),
 }));
 
 mock.module('../../../src/shared/oauth-token.js', () => ({ readStaleMarker: () => null }));
@@ -41,8 +44,7 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
     return 'context from worker';
   },
   getWorkerPort: () => 37777,
-  isWorkerFallback: () => workerFallback,
-  readWorkerTroubleNotice: () => troubleNotice,
+  isWorkerFallback: () => false,
 }));
 
 afterAll(() => {
@@ -55,8 +57,6 @@ afterAll(() => {
 describe('contextHandler SessionStart path', () => {
   it('injects Codex context with one bounded worker startup and request', async () => {
     calls.length = 0;
-    troubleNotice = null;
-    workerFallback = false;
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');
 
     const result = await contextHandler.execute({
@@ -76,8 +76,6 @@ describe('contextHandler SessionStart path', () => {
 
   it('keeps the existing worker lifecycle behavior for Claude', async () => {
     calls.length = 0;
-    troubleNotice = null;
-    workerFallback = false;
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');
 
     await contextHandler.execute({
@@ -94,38 +92,46 @@ describe('contextHandler SessionStart path', () => {
     ]]);
   });
 
-  it('prepends the worker-trouble notice to the injected context (#4127)', async () => {
+  it('includes every source in both Claude startup renders when opted in', async () => {
     calls.length = 0;
-    troubleNotice = 'claude-mem: the memory worker is unreachable.';
-    workerFallback = false;
-    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    includeAllSources = true;
+    showTerminalOutput = true;
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-all-sources',
+        cwd: '/tmp/repo',
+        platform: 'claude-code',
+      });
 
-    const result = await contextHandler.execute({
-      sessionId: 'session-context-trouble',
-      cwd: '/tmp/repo',
-      platform: 'claude-code',
-    });
-
-    expect(result.hookSpecificOutput?.additionalContext).toBe(
-      'claude-mem: the memory worker is unreachable.\n\ncontext from worker'
-    );
+      expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+      expect(result.systemMessage).toContain('context from worker');
+      expect(calls.map(call => call[0])).toEqual([
+        '/api/context/inject?projects=parent-project%2Crepo-project',
+        '/api/context/inject?projects=parent-project%2Crepo-project&colors=true',
+      ]);
+    } finally {
+      includeAllSources = false;
+      showTerminalOutput = false;
+    }
   });
 
-  it('still surfaces the notice when the worker is unreachable (fail open)', async () => {
+  it('includes every source in Codex startup context when opted in', async () => {
     calls.length = 0;
-    troubleNotice = 'claude-mem: the memory worker is unreachable.';
-    workerFallback = true;
-    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    includeAllSources = true;
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      await contextHandler.execute({
+        sessionId: 'session-all-sources-codex',
+        cwd: '/tmp/repo',
+        platform: 'codex',
+      });
 
-    const result = await contextHandler.execute({
-      sessionId: 'session-context-fallback',
-      cwd: '/tmp/repo',
-      platform: 'claude-code',
-    });
-
-    expect(result.exitCode).toBe(0);
-    expect(result.hookSpecificOutput?.additionalContext).toBe(
-      'claude-mem: the memory worker is unreachable.'
-    );
+      expect(calls.map(call => call[0])).toEqual([
+        '/api/context/inject?projects=parent-project%2Crepo-project',
+      ]);
+    } finally {
+      includeAllSources = false;
+    }
   });
 });
