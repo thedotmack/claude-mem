@@ -465,6 +465,16 @@ export function renderObserverQuotaCooldownNotice(
   ].join('\n');
 }
 
+/** The latest error plus the classified remedy, shared by every warning shape. */
+function renderFailureDetailLines(state: ObserverHealthState, action: string | null): string[] {
+  return [
+    `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+    ...(action ? [`What to do: ${action}`] : []),
+    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+    ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+  ];
+}
+
 export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: number = Date.now()): string {
   const since = state.failingSinceAt ?? state.lastErrorAt;
   const sinceText = since
@@ -510,10 +520,7 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       '',
       `The memory observer's allowance on ${provider} is used up (since ${sinceText.replace(/^for .*?\(since /, '').replace(/\)$/, '')}).`,
       '',
-      `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
-      ...(action ? [`What to do: ${action}`] : []),
-      ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
-      ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+      ...renderFailureDetailLines(state, action),
       '',
       "Until the allowance resets or you add capacity, nothing from this session — or any",
       'other — will be remembered.',
@@ -532,15 +539,33 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     ].join('\n');
   }
 
+  // A retired or unknown model is the other outage a restart cannot clear:
+  // every fresh generator asks for the same model and gets the same refusal.
+  // Only changing the model fixes it, so relay that remedy, not a restart link.
+  if (state.lastErrorCode === 'model_unavailable') {
+    return [
+      "⚠️ Heads up: claude-mem can't save memories right now.",
+      '',
+      `The memory observer (provider: ${provider}) has failed ${count} time${count === 1 ? '' : 's'} in a row ${sinceText}: its configured model is no longer available.`,
+      '',
+      ...renderFailureDetailLines(state, action),
+      '',
+      "Until the model is changed, nothing from this session — or any other — will be remembered.",
+      '',
+      'Restarting will NOT help here: after a restart the observer asks for the same model',
+      'and gets the same refusal.',
+      '',
+      '(Assistant: tell the user about this outage at the very start of your first reply,',
+      'quoting the error and the "What to do" line above. Do NOT suggest restarting the worker.)',
+    ].join('\n');
+  }
+
   const lines = [
     "⚠️ Heads up: claude-mem can't save memories right now.",
     '',
     `The memory observer (provider: ${provider}) has failed ${count} time${count === 1 ? '' : 's'} in a row ${sinceText}.`,
     '',
-    `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
-    ...(action ? [`What to do: ${action}`] : []),
-    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
-    ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+    ...renderFailureDetailLines(state, action),
     '',
     "Until it's fixed, nothing from this session — or any other — will be remembered.",
     '',
