@@ -24,10 +24,32 @@ import type { ConversationMessage } from '../services/worker-types.js';
  *
  * ~4 chars/token puts 400k chars near 100k tokens — half of a 200k window, so a
  * generation retires with room to spare rather than discovering the ceiling by
- * being refused at it. Narrower-window models are covered by the reactive
- * overflow path, which recycles on the provider's actual refusal.
+ * being refused at it. A narrower-window model gets the same half of its own
+ * window (windowAwareConversationMaxChars); the reactive overflow path, which
+ * recycles on the provider's actual refusal, is the net under both.
  */
 export const OBSERVER_CONVERSATION_MAX_CHARS = 400_000;
+
+/** ~4 chars per token, the estimate the budget above assumes. */
+const CHARS_PER_TOKEN = 4;
+
+/** Share of the model's window one generation may fill before it retires. */
+const GENERATION_WINDOW_SHARE = 0.5;
+
+/**
+ * The generation budget for a model with this context window: the configured
+ * budget, lowered to half the window when the window is narrower than the
+ * budget assumes (#3625). A 16k-token local model retires its generation near
+ * 32k chars instead of 400k, instead of overflowing on every request long
+ * before a recycle could trigger. An unknown window keeps the configured budget.
+ */
+export function windowAwareConversationMaxChars(
+  maxChars: number,
+  contextWindowTokens: number | undefined,
+): number {
+  if (!contextWindowTokens) return maxChars;
+  return Math.min(maxChars, Math.floor(contextWindowTokens * GENERATION_WINDOW_SHARE * CHARS_PER_TOKEN));
+}
 
 /** Total characters currently held in a session's conversation. */
 export function conversationChars(history: ConversationMessage[]): number {

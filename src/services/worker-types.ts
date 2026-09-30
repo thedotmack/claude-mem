@@ -94,6 +94,12 @@ export interface ActiveSession {
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
   endpointClass?: 'openrouter' | 'custom';
   /**
+   * The observer model's context window in tokens, resolved once per
+   * generation at generator start (#3625). The generation budget and the
+   * per-field cap scale with it.
+   */
+  observerContextWindowTokens?: number;
+  /**
    * session_compressed properties stashed by ResponseProcessor on the claude
    * path: the streamed assistant message's output_tokens is an early-streaming
    * placeholder, so the event waits for the SDK result message's finalized

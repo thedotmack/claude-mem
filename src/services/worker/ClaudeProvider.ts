@@ -38,7 +38,9 @@ import {
   shouldRecycleConversation,
   conversationChars,
   resolveConversationMaxChars,
+  windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
+import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
 import { ObserverResponsePacer } from './session/response-pacer.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
@@ -197,10 +199,16 @@ export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 
-  /** Character budget for one observer generation, operator-overridable (#3800). */
-  private conversationMaxChars(): number {
-    return resolveConversationMaxChars(
-      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+  /**
+   * Character budget for one observer generation: operator-overridable (#3800)
+   * and never more than half this generation's model window (#3625).
+   */
+  private conversationMaxChars(session: ActiveSession): number {
+    return windowAwareConversationMaxChars(
+      resolveConversationMaxChars(
+        SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+      ),
+      session.observerContextWindowTokens,
     );
   }
 
@@ -257,6 +265,9 @@ export class ClaudeProvider {
 
     const modelId = session.modelOverride || this.getModelId();
     session.lastModelId = typeof modelId === 'string' ? modelId : undefined;
+    // Resolved once per generation: the generation budget and the per-field
+    // cap both scale with the model's window (#3625).
+    session.observerContextWindowTokens = await resolveContextWindowTokens('claude', String(modelId ?? ''));
     // Each query() starts a fresh SDK process, so its total_cost_usd
     // accumulator starts from zero — reset the per-turn cost baseline with it.
     session.lastResultTotalCostUsd = null;
@@ -829,7 +840,7 @@ export class ClaudeProvider {
         // conversation server-side, but conversationHistory tracks every prompt
         // fed into it, so its size is the proxy for how close that conversation
         // is to the ceiling (#3800).
-        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars())) {
+        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars(session))) {
           await recycleObserverConversation(
             session,
             this.sessionManager,
@@ -843,12 +854,14 @@ export class ClaudeProvider {
         // An oversized payload is condensed by a bounded model pass before the
         // prompt is built, so the observation carries a summary of the whole
         // field rather than a head/tail slice with the middle cut out (#3800).
+        // The field cap scales with the model's window (#3625).
+        const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
         const optimized = compressField
           ? await optimizeObservationFields(
               { toolInput: message.tool_input, toolOutput: message.tool_response },
               compressField,
               { sessionDbId: session.sessionDbId, toolName: message.tool_name },
-              undefined,
+              fieldMaxChars,
               resolveFieldOptimizeTimeoutMs,
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
@@ -860,7 +873,7 @@ export class ClaudeProvider {
           tool_output: JSON.stringify(optimized.toolOutput),
           created_at_epoch: Date.now(),
           cwd: message.cwd
-        });
+        }, fieldMaxChars);
         activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
