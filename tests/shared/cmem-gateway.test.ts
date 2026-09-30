@@ -164,6 +164,28 @@ describe('cmem-gateway', () => {
       expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).toBeUndefined();
     });
 
+    it('round-trips the marker in an old viewer\'s wrapped document, dropping its masked root copies', () => {
+      writeFileSync(settingsPath, JSON.stringify({
+        theme: 'dark',
+        CLAUDE_MEM_OPENROUTER_API_KEY: '****',
+        CLAUDE_MEM_PRO_FALLBACK_AT: '',
+        env: { CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567' },
+      }));
+
+      writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath);
+      let parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.env.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
+      expect(parsed.env.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('cm_pro_0123456789abcdef01234567');
+      expect(parsed.CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
+      expect(parsed.theme).toBe('dark');
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
+
+      clearProFallback(settingsPath, tempDir);
+      parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.env.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+    });
+
     it('does not create settings.json just to clear a fallback that was never recorded', () => {
       clearProFallback(settingsPath, tempDir);
 

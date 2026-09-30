@@ -5,7 +5,7 @@ import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
-import { settingsTarget } from './settings-document.js';
+import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -568,7 +568,10 @@ export class SettingsDefaultsManager {
       // (settings-document.ts), so a value written anywhere is read back here.
       let flatSettings: Record<string, any> = settingsTarget(settings);
       const hasNestedEnv = flatSettings !== settings;
-      const hasPeerRootKeys = hasNestedEnv && Object.keys(settings).some((key) => key !== 'env');
+      // Stale root CLAUDE_MEM_* copies beside a wrapped document are not the
+      // user's peers: they are never kept, and never block the flatten below.
+      const writableRoot = withoutStaleRootCopies(settings);
+      const hasPeerRootKeys = hasNestedEnv && Object.keys(writableRoot).some((key) => key !== 'env');
       if (hasNestedEnv) {
         // A legacy file containing only `{ env: {...} }` can be flattened
         // safely. If it also contains peer root keys (hooks, permissions,
@@ -594,7 +597,7 @@ export class SettingsDefaultsManager {
         try {
           writeJsonFileAtomic(
             settingsPath,
-            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+            hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
             { mode: 0o600 },
           );
           // stderr, never stdout — same JSON-on-stdout contract as above.
@@ -615,7 +618,7 @@ export class SettingsDefaultsManager {
         try {
           writeJsonFileAtomic(
             settingsPath,
-            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+            hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
             { mode: 0o600 },
           );
           // stderr, never stdout — same JSON-on-stdout contract as above.
@@ -639,7 +642,7 @@ export class SettingsDefaultsManager {
         try {
           writeJsonFileAtomic(
             settingsPath,
-            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+            hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
             { mode: 0o600 },
           );
           console.warn('[SETTINGS] Migrated cloud sync hub URL off the legacy workers.dev host:', settingsPath);
@@ -658,7 +661,7 @@ export class SettingsDefaultsManager {
           try {
             writeJsonFileAtomic(
               settingsPath,
-              hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
               { mode: 0o600 },
             );
             markLlmTimeoutMigrationDone(settingsPath);

@@ -279,6 +279,46 @@ describe('SettingsDefaultsManager', () => {
         expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual(wrapped);
       });
 
+      // The old viewer wrote claude-mem's keys at the ROOT of a wrapped document,
+      // secrets as `****` masks. Reading those copies turned sync off (empty
+      // CLOUD_SYNC_*) and handed providers a masked key.
+      it('reads the real env values when an old viewer left masked root copies beside a wrapped document', () => {
+        const wrapped = {
+          theme: 'dark',
+          CLAUDE_MEM_OPENROUTER_API_KEY: '****',
+          CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
+          CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',
+          env: {
+            CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-real',
+            CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token',
+            CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user-1',
+            CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.example',
+          },
+        };
+        writeFileSync(settingsPath, JSON.stringify(wrapped));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('sk-or-v1-real');
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe('sync-token');
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_USER_ID).toBe('user-1');
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.example');
+      });
+
+      it('flattens an old viewer\'s wrapped document with no real peers, keeping the env values and dropping the stale copies', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_API_KEY: '****',
+          env: { CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-real', CLAUDE_MEM_MODEL: 'env-model' },
+        }));
+
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_OPENROUTER_API_KEY).toBe('sk-or-v1-real');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual({
+          CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-real',
+          CLAUDE_MEM_MODEL: 'env-model',
+        });
+      });
+
       it('reads root claude-mem keys when the env block beside them only holds Claude Code settings', () => {
         writeFileSync(settingsPath, JSON.stringify({
           CLAUDE_MEM_MODEL: 'root-model',
