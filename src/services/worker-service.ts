@@ -50,7 +50,7 @@ import {
   touchPidFile
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
-import { runPeriodicFtsOptimize } from './infrastructure/FtsMaintenance.js';
+import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
@@ -574,14 +574,10 @@ export class WorkerService implements WorkerRef {
 
       runOneTimeV12_4_3Cleanup();
 
-      // Reclaim FTS5 delete-marker bloat that VACUUM/auto_vacuum can't touch
-      // (refs #2793). Throttled to once/day via a marker file and wrapped so a
-      // maintenance failure never blocks worker startup.
-      try {
-        runPeriodicFtsOptimize(this.dbManager.getConnection());
-      } catch (error) {
-        logger.warn('WORKER', 'Periodic FTS optimize failed', {}, error instanceof Error ? error : undefined);
-      }
+      // One-time, deferred and bounded: reclaim the FTS5 bloat an install already
+      // accumulated (#2793). Schema v53 stops new bloat at the source; the reclaim runs
+      // on an unref'd timer so startup and health checks never wait for it.
+      scheduleOneTimeFtsBloatReclaim(this.dbManager.getConnection());
 
       // Worktree adoption stays fire-and-forget (#2122) — init never awaits
       // it — but it is kicked only after dbManager.initialize() and the
