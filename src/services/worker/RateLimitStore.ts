@@ -88,10 +88,13 @@ export class RateLimitStore {
    */
   set(info: RateLimitInfo | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
+    // The raw per-window map is consumed below. Storing it too would leave a
+    // nested copy on the entry that goes stale on /api/health.
+    const { unifiedWindows, ...reported } = info;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
     const previousRejection = this.rejections.get(key);
     const observedAt = Date.now();
-    const unified = readUnifiedWindows(info.unifiedWindows);
+    const unified = readUnifiedWindows(unifiedWindows);
 
     // Other windows: refresh fields the unified snapshot actually reports.
     // Utilization establishes a new display state and drops stale status;
@@ -129,7 +132,7 @@ export class RateLimitStore {
 
     const own = info.rateLimitType ? unified.get(info.rateLimitType) : undefined;
     const merged: RateLimitEntry = {
-      ...info,
+      ...reported,
       utilization: info.utilization ?? own?.utilization,
       resetsAt: info.resetsAt ?? own?.resetsAt,
       observedAt,
