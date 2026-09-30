@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -23,6 +24,30 @@ const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 const LEGACY_CLOUD_SYNC_HUB_HOST = 'sync-hub.black-pond-afbb.workers.dev';
 /** Canonical Pro hub after the Fly cutover. */
 const CANONICAL_CLOUD_SYNC_HUB_URL = 'https://sync.cmem.ai';
+
+// OpenRouter retires `:free` model ids on its own schedule, and the same seeding
+// (every default written on first load, persisted values winning over
+// DEFAULTS) freezes the shipped OpenRouter default on disk. When that id is
+// retired, every observer call 404s and nothing is remembered — the
+// xiaomi/mimo-v2-flash:free outage (#3659). Rewrite a retired shipped default
+// to the current one, but only for a tuple that talks to openrouter.ai (blank
+// or openrouter.ai base URL): a custom OpenAI-compatible endpoint or the cmem
+// gateway serves its own model ids, and any other value is a deliberate
+// choice. Add the next retired shipped default here.
+const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
+  'xiaomi/mimo-v2-flash:free',
+]);
+
+function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
+  const model = flatSettings.CLAUDE_MEM_OPENROUTER_MODEL;
+  if (typeof model !== 'string' || !RETIRED_OPENROUTER_DEFAULT_MODELS.has(model.trim())) {
+    return false;
+  }
+  const baseUrl = typeof flatSettings.CLAUDE_MEM_OPENROUTER_BASE_URL === 'string'
+    ? flatSettings.CLAUDE_MEM_OPENROUTER_BASE_URL.trim()
+    : '';
+  return baseUrl === '' || isOpenRouterApiUrl(baseUrl);
+}
 
 function migratedCloudSyncHubUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -206,7 +231,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
+    // Default OpenRouter model (free tier). Changing it strands installs that
+    // were seeded with the old id: add that id to RETIRED_OPENROUTER_DEFAULT_MODELS.
+    CLAUDE_MEM_OPENROUTER_MODEL: 'cohere/north-mini-code:free',
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
@@ -430,6 +457,29 @@ export class SettingsDefaultsManager {
           console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+          // Continue with the in-memory migration even if the write fails
+        }
+      }
+
+      if (hasRetiredOpenRouterDefault(flatSettings)) {
+        const retiredModel = String(flatSettings.CLAUDE_MEM_OPENROUTER_MODEL).trim();
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_OPENROUTER_MODEL: this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL,
+        };
+
+        try {
+          writeJsonFileAtomic(
+            settingsPath,
+            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+          );
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn(
+            `[SETTINGS] Migrated OpenRouter model off the retired default ${retiredModel} to ${this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL}:`,
+            settingsPath,
+          );
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to migrate the retired OpenRouter model:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with the in-memory migration even if the write fails
         }
       }

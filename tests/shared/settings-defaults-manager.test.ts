@@ -367,6 +367,152 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    // Every settings.json was seeded with xiaomi/mimo-v2-flash:free, which
+    // OpenRouter has since retired: each observer call 404s and nothing is
+    // remembered (#3659). Only the openrouter.ai tuple is rewritten.
+    describe('retired OpenRouter default model migration', () => {
+      const RETIRED = 'xiaomi/mimo-v2-flash:free';
+      const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+      const CMEM_GATEWAY = 'https://cmem.ai/api/inference/v1';
+
+      function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
+        const warnings: string[] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+        try {
+          return { value: run(), warnings };
+        } finally {
+          console.warn = originalWarn;
+        }
+      }
+
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes('retired default'));
+      }
+
+      it('ships a default that is not itself retired', () => {
+        expect(CURRENT).toBe('cohere/north-mini-code:free');
+        expect(CURRENT).not.toBe(RETIRED);
+      });
+
+      it.each([
+        ['blank', { CLAUDE_MEM_OPENROUTER_BASE_URL: '' }],
+        ['missing', {}],
+        ['openrouter.ai', { CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1' }],
+      ])('moves the retired default to the current one once when the base URL is %s', (_label, baseUrl) => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-personal',
+          CLAUDE_MEM_OPENROUTER_MODEL: RETIRED,
+          ...baseUrl,
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(first.value.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        // The rest of the tuple survives the rewrite.
+        expect(parsed.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('sk-or-personal');
+        expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`${RETIRED} to ${CURRENT}`);
+        expect(logLine).toContain(settingsPath);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+        expect(second.value.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        expect(migrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it('never touches a cmem gateway tuple', () => {
+        // A real gateway tuple (cmem-observer) and the retired id behind the
+        // gateway URL: the base-URL gate alone must keep both unwritten.
+        for (const model of ['cmem-observer', RETIRED]) {
+          const raw = JSON.stringify({
+            CLAUDE_MEM_PROVIDER: 'openrouter',
+            CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_test_key_value',
+            CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_GATEWAY,
+            CLAUDE_MEM_OPENROUTER_MODEL: model,
+          });
+          writeFileSync(settingsPath, raw);
+
+          const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+          expect(value.CLAUDE_MEM_OPENROUTER_MODEL).toBe(model);
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+          expect(migrationWarnings(warnings)).toEqual([]);
+        }
+      });
+
+      it('never rewrites the staged CLAUDE_MEM_PRO_MEMORY_MODEL', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_MODEL: RETIRED,
+          CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+          CLAUDE_MEM_PRO_MEMORY_KEY: 'cm_pro_staged_key_value',
+          CLAUDE_MEM_PRO_MEMORY_BASE_URL: CMEM_GATEWAY,
+          CLAUDE_MEM_PRO_MEMORY_MODEL: RETIRED,
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        expect(result.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe(RETIRED);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe(RETIRED);
+        expect(parsed.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe(CMEM_GATEWAY);
+      });
+
+      it.each([
+        'https://api.deepseek.com',
+        'http://localhost:1234/v1',
+        'https://openrouter.ai.evil.example/v1',
+        'https://gateway.example.com/proxy/openrouter.ai/v1',
+      ])('leaves the model alone on the custom endpoint %s', (baseUrl) => {
+        const raw = JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_BASE_URL: baseUrl,
+          CLAUDE_MEM_OPENROUTER_MODEL: RETIRED,
+        });
+        writeFileSync(settingsPath, raw);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe(RETIRED);
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+      });
+
+      it.each([
+        ['a different model', 'anthropic/claude-haiku-4.5'],
+        ['a fallback list led by the retired id', [RETIRED, 'vendor/backup-model:free']],
+        ['a comma list led by the retired id', `${RETIRED},vendor/backup-model:free`],
+      ])('leaves %s chosen by the user untouched', (_label, model) => {
+        const raw = JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+          CLAUDE_MEM_OPENROUTER_MODEL: model,
+        });
+        writeFileSync(settingsPath, raw);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toEqual(model as string);
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+      });
+
+      it('keeps the peer root keys of a nested settings file', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          env: { CLAUDE_MEM_OPENROUTER_MODEL: RETIRED },
+          hooks: { SessionStart: [] },
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.env.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        expect(parsed.hooks).toEqual({ SessionStart: [] });
+      });
+    });
+
     // loadFromFile only carries keys declared in DEFAULTS, so before the Pro
     // sign-in keys were declared, an installer-written settings.json lost
     // them on every load (the round-trip-loss gap fixed by the install-first
