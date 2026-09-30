@@ -367,6 +367,28 @@ export class ChromaSync {
       return 0;
     }
 
+    // SQLite FTS5's trigram tokenizer accepts NUL-containing TEXT but builds
+    // an index that subsequently fails PRAGMA quick_check / integrity_check as
+    // "malformed inverted index". Codex transcripts can legitimately contain
+    // NUL bytes copied from terminal or binary output, so sanitize at the last
+    // common boundary before every Chroma add/update path. U+FFFD preserves a
+    // visible boundary without making unrelated text run together.
+    let nulSanitizedDocuments = 0;
+    const safeDocuments = documents.map(document => {
+      if (!document.document.includes('\0')) return document;
+      nulSanitizedDocuments += 1;
+      return {
+        ...document,
+        document: document.document.replaceAll('\0', '�'),
+      };
+    });
+    if (nulSanitizedDocuments > 0) {
+      logger.warn('CHROMA_SYNC', 'Sanitized NUL bytes before Chroma FTS indexing', {
+        collection: this.collectionName,
+        documents: nulSanitizedDocuments,
+      });
+    }
+
     try {
       await this.ensureCollectionExists();
     } catch (error) {
@@ -389,8 +411,8 @@ export class ChromaSync {
     const chromaMcp = ChromaMcpManager.getInstance();
 
     let written = 0;
-    for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
-      const batch = documents.slice(i, i + this.BATCH_SIZE);
+    for (let i = 0; i < safeDocuments.length; i += this.BATCH_SIZE) {
+      const batch = safeDocuments.slice(i, i + this.BATCH_SIZE);
 
       const cleanMetadatas = batch.map(d =>
         Object.fromEntries(

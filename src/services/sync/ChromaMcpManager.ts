@@ -1,6 +1,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { execFile, execSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -1095,10 +1096,11 @@ export class ChromaMcpManager {
 
     // Chroma embedding/index mutations routinely exceed the MCP SDK's
     // 60-second default once a persistent collection grows. The SDK treats
-    // that deadline as a request failure; our reconnect path then tears down
-    // chroma-mcp while SQLite/FTS5 may still be committing, which can leave the
-    // persistent index malformed. Give mutations a bounded, configurable
-    // deadline while keeping read/query latency at the SDK default.
+    // that deadline as a request failure, and tearing chroma-mcp down while
+    // SQLite/FTS5 may still be committing can leave the persistent index
+    // malformed (a timeout is therefore never handled as a transport error,
+    // see below). Give mutations a bounded, configurable deadline while
+    // keeping read/query latency at the SDK default.
     const requestOptions = ChromaMcpManager.isMutationTool(toolName)
       ? { timeout: this.mutationTimeoutMs }
       : undefined;
@@ -1115,6 +1117,20 @@ export class ChromaMcpManager {
         arguments: toolArguments
       }, undefined, requestOptions);
     } catch (transportError) {
+      if (ChromaMcpManager.isRequestTimeout(transportError)) {
+        // A request that outlived its deadline means chroma-mcp is slow, not
+        // gone: the SDK has already sent notifications/cancelled, and a write
+        // may still be committing. Tree-killing it here is what leaves a
+        // persistent index malformed, and a retry would repeat the same slow
+        // work, so neither happens. The caller keeps the row pending.
+        const message = `chroma-mcp "${toolName}" timed out; the subprocess was left running`;
+        logger.warn('CHROMA_MCP', message, {
+          timeoutMs: requestOptions?.timeout,
+          error: transportError instanceof Error ? transportError.message : String(transportError)
+        });
+        throw new ChromaUnavailableError(message, transportError instanceof Error ? transportError : undefined);
+      }
+
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
@@ -1205,6 +1221,10 @@ export class ChromaMcpManager {
 
   private static isMutationTool(toolName: string): boolean {
     return CHROMA_MUTATION_TOOL_PATTERN.test(toolName);
+  }
+
+  private static isRequestTimeout(error: unknown): boolean {
+    return error instanceof McpError && error.code === ErrorCode.RequestTimeout;
   }
 
   async isHealthy(): Promise<boolean> {
