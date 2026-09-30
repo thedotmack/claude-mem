@@ -501,8 +501,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     return messages;
   }
 
-  protected async query(history: ConversationMessage[], config: OpenRouterConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName, signal, config.plainText);
+  protected async query(
+    history: ConversationMessage[],
+    config: OpenRouterConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult> {
+    return this.queryOpenRouterMultiTurn(
+      history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
+      signal, config.plainText, perAttemptTimeoutMs,
+    );
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -542,6 +550,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     appName?: string,
     signal?: AbortSignal,
     plainText?: boolean,
+    perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -596,7 +605,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
+    }, { label: `OpenRouter ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}) });
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
