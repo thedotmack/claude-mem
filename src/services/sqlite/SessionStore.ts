@@ -180,6 +180,18 @@ interface SdkSessionDetailRow {
   observed_billing: string | null;
 }
 
+export interface SessionCatalogRow {
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  custom_title: string | null;
+  started_at_epoch: number;
+  item_count: number;
+}
+
+const SESSION_CATALOG_DEFAULT_LIMIT = 200;
+const SESSION_CATALOG_MAX_LIMIT = 1000;
+
 /** #3038 near-duplicate dedup tables/columns. v50–55 are taken on main (v53: sdk_sessions.cwd, #3525; v54: FTS trigger scoping, #3284; v55: NOCASE project indexes, #3536). */
 const DEDUP_SCHEMA_VERSION = 56;
 
@@ -2663,6 +2675,53 @@ export class SessionStore {
         sources.map(source => [source, projectsBySource[source] || []])
       )
     };
+  }
+
+  /**
+   * Session catalog for the viewer's Sessions view: newest first, one row per
+   * (platform_source, content_session_id), with the session's combined
+   * observation + summary + prompt count. Paged by `limit`/`offset` and
+   * filterable by project and platform so the payload stays small on large
+   * databases; `hasMore` says whether older sessions follow this page.
+   */
+  getSessionCatalog(
+    options: { project?: string; platformSource?: string; limit?: number; offset?: number } = {}
+  ): { sessions: SessionCatalogRow[]; hasMore: boolean } {
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? SESSION_CATALOG_DEFAULT_LIMIT), 1), SESSION_CATALOG_MAX_LIMIT);
+    const offset = Math.max(Math.trunc(options.offset ?? 0), 0);
+    let query = `
+      SELECT
+        s.content_session_id,
+        s.project,
+        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        s.custom_title,
+        s.started_at_epoch,
+        (
+          (SELECT COUNT(*) FROM observations o WHERE o.memory_session_id = s.memory_session_id)
+          + (SELECT COUNT(*) FROM session_summaries ss WHERE ss.memory_session_id = s.memory_session_id)
+          + (SELECT COUNT(*) FROM user_prompts up WHERE up.session_db_id = s.id)
+        ) as item_count
+      FROM sdk_sessions s
+      WHERE s.project IS NOT NULL AND s.project != ''
+        AND s.project != ?
+    `;
+    const params: SQLQueryBindings[] = [OBSERVER_SESSIONS_PROJECT];
+
+    if (options.project) {
+      query += ' AND s.project = ?';
+      params.push(options.project);
+    }
+    if (options.platformSource) {
+      query += ` AND COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') = ?`;
+      params.push(normalizePlatformSource(options.platformSource));
+    }
+
+    // One row past the page tells whether older sessions follow it.
+    query += ' ORDER BY s.started_at_epoch DESC, s.id DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+
+    const rows = this.db.prepare(query).all(...params) as SessionCatalogRow[];
+    return { sessions: rows.slice(0, limit), hasMore: rows.length > limit };
   }
 
   getLatestUserPrompt(contentSessionId: string, sessionDbId?: number): LatestPromptResult | undefined {
