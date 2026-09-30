@@ -806,7 +806,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline))) return false;
       const runtimePath = resolveWorkerRuntimePath();
       if (!runtimePath) {
-        logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found on PATH');
+        logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found (PATH, BUN / BUN_PATH / BUN_INSTALL, or ~/.bun/bin)');
         return false;
       }
       if (!scriptPath) {
