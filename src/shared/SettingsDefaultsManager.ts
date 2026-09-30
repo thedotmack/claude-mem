@@ -586,6 +586,7 @@ export class SettingsDefaultsManager {
           writeJsonFileAtomic(
             settingsPath,
             hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+            { mode: 0o600 },
           );
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn(

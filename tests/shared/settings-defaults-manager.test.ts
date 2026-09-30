@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -596,6 +596,20 @@ describe('SettingsDefaultsManager', () => {
         expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toEqual(value as string);
         expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
         expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+      });
+
+      // Like every other settings.json writer since #3498: the file holds API
+      // keys and sync tokens, so the rewrite leaves it owner-only even when an
+      // older build had left it readable.
+      it('rewrites the file owner-only', () => {
+        if (process.platform === 'win32') return;
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY }));
+        chmodSync(settingsPath, 0o644);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
 
       it('keeps the peer root keys of a nested settings file', () => {
