@@ -7,6 +7,18 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
 
+/** Run `run` and collect every console.warn line it printed (the migration log channel). */
+function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  try {
+    return { value: run(), warnings };
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 describe('SettingsDefaultsManager', () => {
   let tempDir: string;
   let settingsPath: string;
@@ -376,17 +388,6 @@ describe('SettingsDefaultsManager', () => {
       const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
       const CMEM_GATEWAY = 'https://cmem.ai/api/inference/v1';
 
-      function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
-        const warnings: string[] = [];
-        const originalWarn = console.warn;
-        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-        try {
-          return { value: run(), warnings };
-        } finally {
-          console.warn = originalWarn;
-        }
-      }
-
       function migrationWarnings(warnings: string[]): string[] {
         return warnings.filter((line) => line.includes('retired default'));
       }
@@ -525,6 +526,79 @@ describe('SettingsDefaultsManager', () => {
         expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
         const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
         expect(parsed.env.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        expect(parsed.hooks).toEqual({ SessionStart: [] });
+      });
+    });
+
+    // Every settings.json seeded since #4125 carries the then-default 30000ms
+    // observer deadline, and a persisted value wins over DEFAULTS — so a raised
+    // default would never reach those installs. The cmem.ai gateway's normal
+    // tail runs past 30s, and an abandoned request can still be billed upstream.
+    describe('legacy LLM deadline default migration', () => {
+      const LEGACY = '30000';
+      const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_LLM_TIMEOUT_MS;
+
+      function deadlineMigrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes('CLAUDE_MEM_LLM_TIMEOUT_MS'));
+      }
+
+      it('ships a default above the legacy one', () => {
+        expect(Number(CURRENT)).toBeGreaterThan(Number(LEGACY));
+      });
+
+      it('moves the seeded 30000 to the current default once, with one log line', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY,
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(first.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        // The rest of the file survives the rewrite.
+        expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
+        const [logLine, ...extra] = deadlineMigrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`30000ms default to ${CURRENT}ms`);
+        expect(logLine).toContain(settingsPath);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+        expect(second.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(deadlineMigrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it.each([
+        ['a raised deadline', '120000'],
+        ['a lowered deadline', '15000'],
+        ['a deadline written as a JSON number', 90000],
+        // Every writer persists the string; a bare number is a hand edit.
+        ['the legacy value hand-written as a JSON number', 30000],
+      ])('leaves %s chosen by the user untouched', (_label, value) => {
+        const raw = JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: value });
+        writeFileSync(settingsPath, raw);
+
+        const { value: result, warnings } = captureWarnings(
+          () => SettingsDefaultsManager.loadFromFile(settingsPath, false),
+        );
+
+        expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toEqual(value as string);
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+      });
+
+      it('keeps the peer root keys of a nested settings file', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          env: { CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY },
+          hooks: { SessionStart: [] },
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.env.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
         expect(parsed.hooks).toEqual({ SessionStart: [] });
       });
     });

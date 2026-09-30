@@ -9,9 +9,9 @@
  * provider-supplied request-id (best-effort) for dedup.
  */
 
-import { ClassifiedProviderError, isClassified } from './provider-errors.js';
+import { ClassifiedProviderError, DEADLINE_EXCEEDED_CODE, isClassified } from './provider-errors.js';
 import { logger } from '../../utils/logger.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { DEFAULT_LLM_TIMEOUT_MS, SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 /**
@@ -35,7 +35,7 @@ export function parseRetryAfterMs(value: string | null): number | undefined {
 export interface RetryOptions {
   /** Maximum retry attempts (in addition to the initial attempt). Cap=2 by default for non-idempotent POSTs. */
   maxRetries?: number;
-  /** Per-attempt timeout in ms. Default 30s. */
+  /** Per-attempt timeout in ms. Default: CLAUDE_MEM_LLM_TIMEOUT_MS (resolveLlmTimeoutMs). */
   perAttemptTimeoutMs?: number;
   /** Base delay used for exponential backoff. Default 100ms. */
   baseDelayMs?: number;
@@ -49,16 +49,16 @@ export interface RetryOptions {
 
 /** Bounds shared with the other CLAUDE_MEM_*_TIMEOUT_MS settings. */
 const LLM_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
-const FALLBACK_PER_ATTEMPT_TIMEOUT_MS = 30_000;
 
 /**
  * Per-attempt deadline for a provider request.
  *
- * 30s suits a hosted provider and is far too short for a local model: a
- * report on an Ollama backend measured successful requests with a median of
- * 21s and a p99 of 29.8s, so the deadline was truncating work that had
- * already been computed. The value was unreachable from configuration, and
- * the workaround was editing the installed bundle after every update.
+ * The deadline catches a hung request; it must sit above normal latency, or it
+ * abandons work the backend already computed — and, on a metered backend, work
+ * that can still be billed. The old 30s did exactly that twice over: an Ollama
+ * backend measured a p99 of 29.8s (#3794), and the cmem.ai gateway runs p90
+ * 40–72s, p99 ~100–140s, so ~20% of its served requests were cut off. The
+ * default (DEFAULT_LLM_TIMEOUT_MS) now clears that tail; see its note.
  *
  * Resolved like every other CLAUDE_MEM_* setting — env override first, then
  * ~/.claude-mem/settings.json — and on every call, so a settings change takes
@@ -71,7 +71,7 @@ export function resolveLlmTimeoutMs(
 ): number {
   const raw = env.CLAUDE_MEM_LLM_TIMEOUT_MS
     ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_LLM_TIMEOUT_MS;
-  if (!raw) return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
+  if (!raw) return DEFAULT_LLM_TIMEOUT_MS;
   // Complete integer only. parseInt('90000ms') would silently accept a typo
   // as 90000 — Greptile reproduced that on #3808. settings.json values come
   // back as parsed JSON, so a bare number (90000) arrives as a number, not a string.
@@ -90,7 +90,7 @@ export function resolveLlmTimeoutMs(
     min: LLM_TIMEOUT_BOUNDS.min,
     max: LLM_TIMEOUT_BOUNDS.max,
   });
-  return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
+  return DEFAULT_LLM_TIMEOUT_MS;
 }
 
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal' | 'perAttemptTimeoutMs'>> = {
@@ -156,12 +156,17 @@ export async function withRetry<T>(
       // a congestion collapse, so it throws immediately. It is still a
       // transient condition: classified as such, the session preserves its
       // buffered work for the next generator instead of finalizing with
-      // reason=null and dropping it.
+      // reason=null and dropping it. The code keeps it apart from a network
+      // fault — we abandoned a request the backend may still bill.
       if (deadlineExpired) {
         throw new ClassifiedProviderError(
-          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline. `
-          + 'Raise CLAUDE_MEM_LLM_TIMEOUT_MS if the backend is simply slow.',
-          { kind: 'transient', cause: err },
+          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline.`,
+          {
+            kind: 'transient',
+            code: DEADLINE_EXCEEDED_CODE,
+            action: `Raise CLAUDE_MEM_LLM_TIMEOUT_MS in ~/.claude-mem/settings.json (up to ${LLM_TIMEOUT_BOUNDS.max}) if the backend is simply slow.`,
+            cause: err,
+          },
         );
       }
 

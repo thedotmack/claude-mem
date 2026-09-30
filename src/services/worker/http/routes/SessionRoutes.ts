@@ -45,7 +45,7 @@ import {
   getQuotaCooldown,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
-import { isClassified, describeProviderError } from '../../provider-errors.js';
+import { DEADLINE_EXCEEDED_CODE, isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
@@ -59,7 +59,11 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'provider_switch' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'provider_switch' | typeof DEADLINE_EXCEEDED_CODE | 'none' {
+  // The one transport pause that is ours: a request abandoned at the LLM
+  // deadline, possibly already billed upstream. Every other transport pause
+  // stays 'none', as before.
+  if (reason === `transport:${DEADLINE_EXCEEDED_CODE}`) return DEADLINE_EXCEEDED_CODE;
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
@@ -374,6 +378,18 @@ export class SessionRoutes extends BaseRouteHandler {
     generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
         if (myController.signal.aborted) {
+          // A deadline expiry aborts the controller so it is booked once, as a
+          // pause (see .finally), yet nothing was stored. Put it in the health
+          // ledger, or a backend that is always slower than the deadline would
+          // store nothing and never raise the session-start warning.
+          if (isClassified(error) && error.code === DEADLINE_EXCEEDED_CODE) {
+            recordObserverFailure(provider, {
+              message: error.message,
+              kind: error.kind,
+              code: error.code,
+              action: error.action,
+            });
+          }
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
           return;
         }

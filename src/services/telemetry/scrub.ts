@@ -109,7 +109,8 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // session_compressed trust signals — booleans, counters, and our own
   // closed enums (invalid_output_class: xml | idle | prose, where 'xml' means
   // XML-shaped output that still failed to parse; abort_reason:
-  // idle | shutdown | overflow | restart_guard | quota | provider_switch | none).
+  // idle | shutdown | overflow | restart_guard | quota | provider_switch |
+  // deadline_exceeded | none).
   // Never model output, never raw abort strings.
   'invalid_output_class',
   'consecutive_invalid_outputs',
@@ -176,6 +177,8 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_ok',
   'outcomes_error',
   'outcomes_aborted',
+  // Integer subset of outcomes_aborted: turns abandoned at the LLM deadline.
+  'outcomes_aborted_deadline_exceeded',
   'outcomes_invalid_output',
   'top_model',
   // Observed-session identity (NOT the observer): the model id the user's IDE
