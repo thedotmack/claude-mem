@@ -31,6 +31,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each shell command (Claude Code `Bash`, Codex `exec_command`); on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
 | `CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS` | `false`               | When `true`, skip **every** subagent observation (a tool call that carries both an agent id and an agent type). See [Subagent & Dynamic Workflow filtering](#subagent--dynamic-workflow-filtering). |
 | `CLAUDE_MEM_SKIP_AGENT_TYPES` | _(empty)_                       | Comma-separated subagent `agent_type` values to skip, e.g. `workflow-subagent,Explore,Plan`. Main-session observations are unaffected. |
+| `CLAUDE_MEM_CAPTURE_ADVISOR_CALLS` | `false`                    | When `true`, the Stop hook records each Claude Code `advisor` tool call (the advice text, the advisor model, and the turn's prompt) in the local database, readable at `GET /api/advisor-calls`. The advisor never fires PostToolUse, so the hook reads the end of the transcript for it. `<private>` content is removed before storage. Worker runtime only; nothing is generated, so it costs no tokens. |
 
 ### Subagent & Dynamic Workflow filtering
 
