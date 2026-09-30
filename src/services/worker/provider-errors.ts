@@ -13,8 +13,9 @@ export type ProviderErrorClass =
  * per-attempt deadline (CLAUDE_MEM_LLM_TIMEOUT_MS). The request was abandoned by
  * us, not failed by the backend — which may still have completed and billed it —
  * so it is kept countable apart from network faults: as the
- * `transport:deadline_exceeded` abort reason and the `deadline_exceeded`
- * telemetry abort_reason.
+ * `transport:deadline_exceeded` abort reason, the `deadline_exceeded` telemetry
+ * abort_reason, and the observer-health ledger's lastErrorCode (observer-health
+ * compares the same string as a literal, to stay free of worker imports).
  */
 export const DEADLINE_EXCEEDED_CODE = 'deadline_exceeded';
 

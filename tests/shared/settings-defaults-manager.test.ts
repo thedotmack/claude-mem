@@ -542,23 +542,27 @@ describe('SettingsDefaultsManager', () => {
         return warnings.filter((line) => line.includes('CLAUDE_MEM_LLM_TIMEOUT_MS'));
       }
 
-      it('ships a default above the legacy one', () => {
-        expect(Number(CURRENT)).toBeGreaterThan(Number(LEGACY));
+      it('ships the raised 180s default', () => {
+        expect(CURRENT).toBe('180000');
       });
 
       it('moves the seeded 30000 to the current default once, with one log line', () => {
         writeFileSync(settingsPath, JSON.stringify({
           CLAUDE_MEM_PROVIDER: 'openrouter',
           CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY,
+          // Seeded beside it with the same string, and still its own default.
+          CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '30000',
         }));
 
         const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
 
         expect(first.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(first.value.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('30000');
         const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
         expect(parsed.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
-        // The rest of the file survives the rewrite.
+        // The rest of the file survives the rewrite, the field budget included.
         expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
+        expect(parsed.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('30000');
         const [logLine, ...extra] = deadlineMigrationWarnings(first.warnings);
         expect(extra).toEqual([]);
         expect(logLine).toContain(`30000ms default to ${CURRENT}ms`);

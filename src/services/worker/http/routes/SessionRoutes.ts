@@ -13,6 +13,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
+import type { ActiveSession } from '../../../worker-types.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
@@ -423,6 +424,37 @@ export class SessionRoutes extends BaseRouteHandler {
     );
   }
 
+  /**
+   * Book a deadline expiry in the observer-health ledger.
+   *
+   * The provider pauses on it: it aborts the controller, so the finally books
+   * the turn once as aborted and the buffered work survives, and the catch
+   * otherwise ignores it. But nothing was stored. A backend that is always
+   * slower than CLAUDE_MEM_LLM_TIMEOUT_MS would store nothing and never raise
+   * the session-start warning. The error's own code and remedy (raise the
+   * deadline) let the warning say what to do, and age it into a last-known
+   * note once nothing has re-tested it (isDeadlineFailureStale). Every other
+   * transient pause stays out of the ledger: a network blip is not an outage.
+   *
+   * Only while this session is still the registered one. OpenAI-compatible
+   * queries do not take the session's abort signal, so a deleted session's
+   * request runs on to its deadline with nobody waiting for the answer.
+   */
+  private recordDeadlineExpiry(
+    provider: 'claude' | 'gemini' | 'openrouter',
+    session: ActiveSession,
+    error: unknown,
+  ): void {
+    if (!isClassified(error) || error.code !== DEADLINE_EXCEEDED_CODE) return;
+    if (this.sessionManager.getSession(session.sessionDbId) !== session) return;
+    recordObserverFailure(provider, {
+      message: error.message,
+      kind: error.kind,
+      code: error.code,
+      action: error.action,
+    });
+  }
+
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
     provider: 'claude' | 'gemini' | 'openrouter',
@@ -476,6 +508,9 @@ export class SessionRoutes extends BaseRouteHandler {
     generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
         if (myController.signal.aborted) {
+          // A deadline expiry is a pause (booked by the finally) and, for the
+          // health ledger, a failure all the same.
+          this.recordDeadlineExpiry(provider, session, error);
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
           return;
         }

@@ -189,12 +189,17 @@ export async function withRetry<T>(
       // transient condition: classified as such, the session preserves its
       // buffered work for the next generator instead of finalizing with
       // reason=null and dropping it. The code keeps it apart from a network
-      // fault — we abandoned a request the backend may still bill.
+      // fault — we abandoned a request the backend may still bill — and the
+      // action is the remedy the session-start warning shows for it.
       if (deadlineExpired) {
         throw new ClassifiedProviderError(
-          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline. `
-          + 'Raise CLAUDE_MEM_LLM_TIMEOUT_MS if the backend is simply slow.',
-          { kind: 'transient', code: DEADLINE_EXCEEDED_CODE, cause: err },
+          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline.`,
+          {
+            kind: 'transient',
+            code: DEADLINE_EXCEEDED_CODE,
+            action: `Raise CLAUDE_MEM_LLM_TIMEOUT_MS in ~/.claude-mem/settings.json (up to ${LLM_TIMEOUT_BOUNDS.max}) if the backend is simply slow.`,
+            cause: err,
+          },
         );
       }
 
