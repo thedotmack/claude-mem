@@ -183,6 +183,9 @@ export interface ServerContextObservationsRequest {
   query?: string;
   limit?: number;
   platformSource?: string | null;
+  // Folder labels (observations.metadata.project) to scope the read to. Omitted
+  // or empty means every folder in the server project.
+  folderProjects?: string[];
 }
 
 export interface ServerContextObservationsResponse {
@@ -263,8 +266,10 @@ export class ServerClient {
     );
   }
 
-  // Phase 8 — MCP `observation_context`. Same FTS surface as search, but
-  // returns a pre-joined context string suitable for direct prompt injection.
+  // Phase 8 — MCP `observation_context` and the server-runtime session-start
+  // read. With a query this is the same FTS surface as search; without one the
+  // route returns the most recent rows. Either way it also returns a pre-joined
+  // context string.
   async contextObservations(
     input: ServerContextObservationsRequest,
   ): Promise<ServerContextObservationsResponse> {
@@ -276,6 +281,9 @@ export class ServerClient {
     if (input.limit !== undefined) payload.limit = input.limit;
     if (input.platformSource !== undefined) {
       payload.platformSource = normalizePlatformSourceField(input.platformSource);
+    }
+    if (input.folderProjects && input.folderProjects.length > 0) {
+      payload.folderProjects = input.folderProjects;
     }
     return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload);
   }
