@@ -168,6 +168,24 @@ work tracked in [issue #4068](https://github.com/thedotmack/claude-mem/issues/40
 
 5. If Chroma continues to fail, hybrid search will gracefully degrade to SQLite FTS5 only
 
+### Turning off tool-hook capture (PreToolUse / PostToolUse)
+
+**When to use it**: you want claude-mem to stop capturing tool calls (`PostToolUse` `observation`) or injecting file history before `Read` (`PreToolUse` `file-context`), for example because the per-tool-call hook cost is too high on your machine. Do not rename those keys in `hooks.json` instead: Claude Code rejects unknown hook keys and drops the entire plugin hook set.
+
+**Opt-out** (SessionStart context, UserPromptSubmit and Stop summaries keep working):
+
+```json
+{
+  "env": {
+    "CLAUDE_MEM_DISABLE_TOOL_HOOKS": "1"
+  }
+}
+```
+
+Add that to `~/.claude/settings.json` (or export the variable in your shell). To turn off just one of the two hooks, use `CLAUDE_MEM_DISABLE_OBSERVATION=1` or `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1`. See [Configuration](configuration).
+
+**Windows console windows**: this switch is an opt-out, not a fix for the console window that can flash on each tool call. Claude Code still starts the hook through bash, and the window appears before claude-mem runs. The switch only makes each tool hook exit right away. The fix for the window itself is tracked in [#3605](https://github.com/thedotmack/claude-mem/issues/3605).
+
 ### Smart Install Caching Issues (v5.0.3+)
 
 **Symptoms**: Dependencies not updating after plugin update, stale version marker.

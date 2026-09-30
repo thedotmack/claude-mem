@@ -13,6 +13,10 @@ interface ContextSettingsModalProps {
   saveStatus: string;
 }
 
+export function saveStatusClass(saveStatus: string): string {
+  return saveStatus.includes('✗') ? 'error' : saveStatus.includes('✓') ? 'success' : '';
+}
+
 function CollapsibleSection({
   title,
   description,
@@ -185,6 +189,7 @@ export function ContextSettingsModal({
                 onChange={(e) => setSelectedSource(e.target.value)}
                 disabled={sources.length === 0}
               >
+                <option value="">All sources</option>
                 {sources.map(source => (
                   <option key={source} value={source}>{source}</option>
                 ))}
@@ -249,6 +254,13 @@ export function ContextSettingsModal({
                   onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value)}
                 />
               </FormField>
+              <ToggleSwitch
+                id="session-start-all-sources"
+                label="Include all sources at session start"
+                description="Show observations from Claude, Codex, and other harnesses in startup context"
+                checked={formState.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'}
+                onChange={() => toggleBoolean('CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES')}
+              />
               <FormField
                 label="Sessions"
                 tooltip="Number of recent sessions to pull observations from (1-50)"
@@ -415,13 +427,13 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="OpenRouter Model"
-                    tooltip="Model identifier from OpenRouter (e.g., anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-thinking-exp)"
+                    tooltip="Model identifier from openrouter.ai/models (e.g., anthropic/claude-haiku-4.5, google/gemini-2.5-flash)"
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free'}
+                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
-                      placeholder="e.g., xiaomi/mimo-v2-flash:free"
+                      placeholder={`e.g., ${DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL}`}
                     />
                   </FormField>
                   <FormField
@@ -501,7 +513,7 @@ export function ContextSettingsModal({
         {/* Footer with Save button */}
         <div className="modal-footer">
           <div className="save-status">
-            {saveStatus && <span className={saveStatus.includes('✓') ? 'success' : saveStatus.includes('✗') ? 'error' : ''}>{saveStatus}</span>}
+            {saveStatus && <span className={saveStatusClass(saveStatus)}>{saveStatus}</span>}
           </div>
           <button
             className="save-btn"

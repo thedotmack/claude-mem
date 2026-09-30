@@ -448,3 +448,50 @@ describe('isTransportFailureObserverOutput separates envelope from diagnosis (re
     expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
   });
 });
+
+// #3460 (danemil): CLI stream cuts and deadlines that the anchored detector
+// missed. Each was classified prose, so its claimed batch was confirmed away.
+describe('isTransportFailureObserverOutput — CLI stream cuts and deadlines (#3460)', () => {
+  const cliFailures = [
+    'API Error: Connection closed mid-response. The response above may be incomplete.',
+    'API Error: Connection closed mid-response',
+    'Connection closed mid-response. The response above may be incomplete.',
+    'API ERROR:   Connection   Closed\n  Mid-Response.',
+    'API Error: Request timed out.',
+    'Request error: request timed out',
+    'API Error: premature close',
+    'Error: premature close',
+    'Error: stream ended unexpectedly',
+  ];
+  for (const output of cliFailures) {
+    it(`preserves the batch for: ${output.replace(/\s+/g, ' ').slice(0, 60)}`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(true);
+    });
+  }
+
+  // The same words inside an observer's narrative must stay prose: a false
+  // positive requeues completed work and pauses the generator.
+  const prose = [
+    'The Read tool failed with ECONNRESET while fetching the config file.',
+    'Connection closed mid-response handling was reviewed and is covered by the retry wrapper.',
+    'The observed test run showed the stream ended unexpectedly; the retry wrapper now handles it.',
+    'API Error: request timed out handling was added to the retry wrapper',
+    'Request timed out errors are now retried with backoff.',
+  ];
+  for (const output of prose) {
+    it(`leaves prose alone: ${output.slice(0, 50)}…`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(false);
+    });
+  }
+
+  it('does not steal XML that mentions a dropped connection', () => {
+    expect(
+      isTransportFailureObserverOutput(
+        '<observation><title>Connection closed mid-response in the retry path</title></observation>'
+      )
+    ).toBe(false);
+    expect(
+      isTransportFailureObserverOutput('<skip_summary reason="premature close in observed code"/>')
+    ).toBe(false);
+  });
+});

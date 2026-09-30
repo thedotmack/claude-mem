@@ -207,11 +207,17 @@ function createSession(): ActiveSession {
 }
 
 function createHarness(backlog: number, payloadChars = 200) {
+  const storedObservations: unknown[][] = [];
   const dbManager = {
     getSessionById: () => ({ project: 'observer-project', memory_session_id: null }),
     getSessionStore: () => ({
       ensureMemorySessionIdRegistered: (_id: number, memoryId: string) => memoryId,
       updateMemorySessionId: () => {},
+      storeObservations: (_memoryId: string, _project: string, observations: unknown[]) => {
+        storedObservations.push(observations);
+        return { observationIds: [storedObservations.length], summaryId: null, createdAtEpoch: Date.now() };
+      },
+      linkToolUsesToObservation: () => 0,
     }),
     getChromaSync: () => null,
     getCloudSync: () => null,
@@ -237,6 +243,7 @@ function createHarness(backlog: number, payloadChars = 200) {
     session,
     sessionManager,
     provider,
+    storedObservations,
     pending: () => buffer.getPendingCount(SESSION_ID),
   };
 }
@@ -546,6 +553,46 @@ describe('Claude observer feed pacing (#4066)', () => {
     expect(h.session.claimedMessageIds).toEqual([]);
     expect(h.pending()).toBe(2);
   });
+
+  it('does not requeue a stored batch while claim acknowledgement is in flight', async () => {
+    const h = createHarness(2);
+    liveSessions.push(h.session);
+    (h.provider as any).responseStallMs = () => 40;
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+    await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+    sdk().answer(SKIP_REPLY);
+    await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+    h.session.memorySessionId = 'memory-4066';
+
+    const confirm = h.sessionManager.confirmClaimedMessages.bind(h.sessionManager);
+    let releaseAcknowledgement!: () => void;
+    const acknowledgementGate = new Promise<void>(resolve => { releaseAcknowledgement = resolve; });
+    h.sessionManager.confirmClaimedMessages = async sessionDbId => {
+      await acknowledgementGate;
+      return confirm(sessionDbId);
+    };
+
+    sdk().answer(`<observation>
+      <type>discovery</type><title>Stored once</title>
+      <narrative>The claimed batch produced an observation.</narrative>
+    </observation>`);
+    try {
+      await sdk().until(() => h.storedObservations.length === 1, 'durable store');
+      await settle(100); // Cross the 40 ms response-stall window before acknowledgement.
+      expect(h.session.abortReason).not.toBe('transport:response_stall');
+      expect(h.session.claimedMessageIds.length).toBe(1);
+      expect(h.pending()).toBe(2);
+    } finally {
+      releaseAcknowledgement();
+    }
+
+    await sdk().until(() => sdk().prompts.length >= 3, 'next observation');
+    expect(h.storedObservations.length).toBe(1);
+    expect(h.pending()).toBe(1);
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after acknowledgement');
+  });
 });
 
 describe('ObserverResponsePacer', () => {
@@ -559,6 +606,16 @@ describe('ObserverResponsePacer', () => {
   it('reports a stall once the window passes without an answer', async () => {
     const pacer = new ObserverResponsePacer();
     expect(await pacer.waitForAnswer(pacer.mark(), new AbortController().signal, 10)).toBe('stalled');
+  });
+
+  it('restarts the silence window after response processing finishes', async () => {
+    const pacer = new ObserverResponsePacer();
+    const waiting = pacer.waitForAnswer(pacer.mark(), new AbortController().signal, 30);
+    pacer.processingStarted();
+    await settle(60);
+    expect(pacer.hasStalled).toBe(false);
+    pacer.processingFinished();
+    expect(await withTimeout(waiting, 'stall after processing')).toBe('stalled');
   });
 
   it('fences late frames only after a stall', async () => {

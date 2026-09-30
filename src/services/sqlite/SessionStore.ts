@@ -216,6 +216,7 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
+    this.ensureSessionCwdColumn();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1963,6 +1964,28 @@ export class SessionStore {
     );
   }
 
+  // v53 — sdk_sessions.cwd. Worktree adoption discovers repos from this;
+  // sdk_sessions is local-only, so no sync-lane plumbing (#2864).
+  //
+  // Runs LAST in the constructor, after every migration that rebuilds
+  // sdk_sessions from a fixed column list (v33's composite-identity rebuild):
+  // added any earlier, a pre-v33 database would lose the column in that
+  // rebuild and every ingest would then fail on setSessionCwd.
+  private ensureSessionCwdColumn(): void {
+    const cols = this.db
+      .query('PRAGMA table_info(sdk_sessions)')
+      .all() as TableColumnInfo[];
+    if (!cols.some(c => c.name === 'cwd')) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN cwd TEXT');
+      logger.debug('DB', 'Added cwd column to sdk_sessions table (#2864)');
+    }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_sdk_sessions_cwd ON sdk_sessions(cwd)'
+    );
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
+  }
+
   private addObservationSubagentColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
 
@@ -2276,6 +2299,33 @@ export class SessionStore {
       SET status = 'completed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
     `).run(nowIso, nowEpoch, sessionDbId);
+  }
+
+  /**
+   * Put a completed row back to 'active' because the session it labels carried
+   * on (#4080).
+   *
+   * `markSessionCompleted` above is the only writer of `status`, and it only
+   * ever writes 'completed'; `finalizeSession` returns early on every later
+   * end once it reads that. So a session that continues after a finalize — a
+   * `claude --resume`, or one finalized while it was still live — keeps the
+   * FIRST end's `completed_at` for the rest of its life while new prompts land
+   * under the same row. Every reader of `status` is then wrong about it:
+   * SearchManager prints **In Progress** only for 'active', and anything
+   * counting sessions by status counts this one at an end it has already
+   * passed.
+   *
+   * Guarded on `status = 'completed'`, so it is a no-op for a row that is
+   * already active, and it clears BOTH completion stamps — leaving the row
+   * active with a stale `completed_at` would trade one wrong label for
+   * another. sdk_sessions rows do not sync, so there is no op to enqueue.
+   */
+  reopenCompletedSession(sessionDbId: number): void {
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET status = 'active', completed_at = NULL, completed_at_epoch = NULL
+      WHERE id = ? AND status = 'completed'
+    `).run(sessionDbId);
   }
 
   ensureMemorySessionIdRegistered(
@@ -2944,6 +2994,15 @@ export class SessionStore {
     return Number(result.lastInsertRowid);
   }
 
+  // First write wins: cwd drifts when the agent `cd`s into a subdirectory, and
+  // the launch directory is the one that identifies the repo.
+  setSessionCwd(sessionDbId: number, cwd: string): void {
+    if (!cwd.trim()) return;
+    this.db.prepare(
+      'UPDATE sdk_sessions SET cwd = ? WHERE id = ? AND cwd IS NULL'
+    ).run(cwd, sessionDbId);
+  }
+
   /**
    * Custom-title mutation op (plan Phase 3 task 2). sdk_sessions rows do not
    * sync, so there is no sync_rev to bump and no synced_at to null — the
@@ -3424,11 +3483,19 @@ export class SessionStore {
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
+      // Strict comparisons: rows tied exactly at anchorEpoch (routine, since
+      // storeObservations() stamps a turn's observations and its session
+      // summary with one shared timestamp) must not compete with real
+      // before/after rows for depth budget. They're picked up regardless by
+      // the final inclusive [startEpoch, endEpoch] range query below, so
+      // excluding them here at the boundary step is enough to guarantee
+      // exactly depthBefore/depthAfter real neighbors on each side, whether
+      // zero, one, or many rows tie the anchor.
       const beforeQuery = `
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.created_at_epoch <= ? ${observationScope.clause}
+        WHERE o.created_at_epoch < ? ${observationScope.clause}
         ORDER BY o.created_at_epoch DESC
         LIMIT ?
       `;
@@ -3436,19 +3503,19 @@ export class SessionStore {
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.created_at_epoch >= ? ${observationScope.clause}
+        WHERE o.created_at_epoch > ? ${observationScope.clause}
         ORDER BY o.created_at_epoch ASC
         LIMIT ?
       `;
 
       try {
         const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...observationScope.params, depthBefore) as Array<{created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter + 1) as Array<{created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter) as Array<{created_at_epoch: number}>;
 
-        if (beforeRecords.length === 0 && afterRecords.length === 0) {
-          return { observations: [], sessions: [], prompts: [] };
-        }
-
+        // No early return on "both empty" here: unlike the id-anchored branch,
+        // an empty before/after pair does not mean nothing matches, rows
+        // tied exactly at anchorEpoch are excluded from both by design (see
+        // above) and still need the final range query below to surface them.
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err) {
@@ -3461,12 +3528,14 @@ export class SessionStore {
       }
     }
 
+    // `id` breaks created_at_epoch ties so a turn's rows (which share one epoch) render in the
+    // order they were written instead of whatever order the index scan returns them in.
     const obsQuery = `
       SELECT o.*
       FROM observations o
       LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
       WHERE o.created_at_epoch >= ? AND o.created_at_epoch <= ? ${observationScope.clause}
-      ORDER BY o.created_at_epoch ASC
+      ORDER BY o.created_at_epoch ASC, o.id ASC
     `;
 
     const sessQuery = `
@@ -3474,7 +3543,7 @@ export class SessionStore {
       FROM session_summaries ss
       LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id
       WHERE ss.created_at_epoch >= ? AND ss.created_at_epoch <= ? ${summaryScope.clause}
-      ORDER BY ss.created_at_epoch ASC
+      ORDER BY ss.created_at_epoch ASC, ss.id ASC
     `;
 
     const promptQuery = `
@@ -3482,7 +3551,7 @@ export class SessionStore {
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${promptScope.clause}
-      ORDER BY up.created_at_epoch ASC
+      ORDER BY up.created_at_epoch ASC, up.id ASC
     `;
 
     const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...observationScope.params) as ObservationRecord[];
