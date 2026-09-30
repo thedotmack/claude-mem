@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
-import { probeChromaDiagnostics } from '../../src/npx-cli/commands/doctor.js';
+import { probeChromaDiagnostics, treeSitterCliCheck } from '../../src/npx-cli/commands/doctor.js';
 
 // `npx claude-mem doctor` reads the worker's /api/admin/doctor `health.chroma`
 // block (#3362). These rows are optional: a missing, malformed or unreachable
@@ -123,5 +126,32 @@ describe('npx doctor Chroma diagnostics', () => {
 
     workerReportingChroma(undefined);
     expect(await probeChromaDiagnostics(WORKER_URL)).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('npx doctor tree-sitter CLI row', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'doctor-tree-sitter-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('checks the executable at the plugin root the worker runs from', async () => {
+    const cliDir = join(root, 'node_modules', 'tree-sitter-cli');
+    mkdirSync(cliDir, { recursive: true });
+    writeFileSync(join(cliDir, 'tree-sitter'), "#!/usr/bin/env node\nprocess.stdout.write('tree-sitter 0.26.8\\n');\n");
+    chmodSync(join(cliDir, 'tree-sitter'), 0o755);
+
+    expect(await treeSitterCliCheck(root)).toMatchObject({ name: 'tree-sitter CLI', status: 'ok', required: false });
+  });
+
+  it('warns with the repair hint when the executable is missing', async () => {
+    const row = await treeSitterCliCheck(root);
+    expect(row).toMatchObject({ status: 'warn', required: false });
+    expect(row.detail).toContain('npx claude-mem repair');
   });
 });

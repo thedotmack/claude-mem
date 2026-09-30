@@ -94,6 +94,21 @@ export interface ActiveSession {
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
   endpointClass?: 'openrouter' | 'custom';
   /**
+   * The observer model's context window in tokens, resolved once per
+   * generation at generator start (#3625). The generation budget and the
+   * per-field cap scale with it.
+   */
+  observerContextWindowTokens?: number;
+  /**
+   * The context the model actually read on the last answered turn of this
+   * generation, in tokens, as the provider reported it: the Claude result
+   * frame's input + cache writes + cache reads, or an HTTP provider's prompt
+   * tokens. Unlike the character proxy it counts the system prompt and tool
+   * schemas a provider adds. Reset at every generation start; an init turn's
+   * reading is never recorded (#2957).
+   */
+  lastContextTokens?: number;
+  /**
    * session_compressed properties stashed by ResponseProcessor on the claude
    * path: the streamed assistant message's output_tokens is an early-streaming
    * placeholder, so the event waits for the SDK result message's finalized
@@ -168,7 +183,8 @@ export interface ViewerSettings {
 
 export interface Observation {
   id: number;
-  memory_session_id: string;  
+  memory_session_id: string;
+  content_session_id: string;
   project: string;
   merged_into_project: string | null;
   platform_source: string;

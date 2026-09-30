@@ -10,7 +10,7 @@ import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -18,6 +18,7 @@ import {
   ensureBun,
   ensureUv,
   installPluginDependencies,
+  provisionTreeSitterCli,
   writeInstallMarker,
   isInstallCurrent,
   getBunPath,
@@ -33,7 +34,7 @@ import {
   InstallAbortError,
   type InstallSummary,
 } from '../install/error-reporter.js';
-import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
+import { extractEresolveBlock, isEresolve, npmErrorCode, runNpmStrict } from '../install/npm-install-helper.js';
 import {
   buildProviderLabels,
   CMEM_INSTALLER_OAUTH_POLL_URL,
@@ -58,6 +59,9 @@ function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[
 }
 
 const isInteractive = process.stdin.isTTY === true;
+
+/** How long `install` waits for the tree-sitter CLI download before warning and moving on to sign-in. */
+const TREE_SITTER_INSTALL_BUDGET_MS = 2 * 60 * 1000;
 
 /**
  * Which package manager launched this CLI (npx / bunx / pnpm / yarn), parsed
@@ -182,7 +186,7 @@ import {
 import { prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
-import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
+import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
@@ -696,6 +700,7 @@ function copyPluginToMarketplace(): void {
 
   const allowedTopLevelEntries = [
     '.agents',
+    '.claude-plugin',
     '.codex-plugin',
     '.cursor-plugin',
     'claude-mem-cursor',
@@ -724,6 +729,32 @@ function copyPluginToMarketplace(): void {
   }
 
   writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
+  writeTrimmedMarketplaceManifest(marketplaceDir);
+}
+
+/**
+ * Keep only the marketplace entries whose local `source` shipped.
+ *
+ * The repo's root .claude-plugin/marketplace.json also lists claude-mem-cowork
+ * (`./cowork`), which the npm package does not ship. Copied verbatim, the
+ * manifest would advertise a plugin whose source is missing from the
+ * marketplace directory, so drop every entry whose relative source path does
+ * not exist there. Non-path sources (a GitHub repo object) are kept as-is.
+ */
+export function writeTrimmedMarketplaceManifest(marketplaceDir: string): void {
+  const manifestPath = join(marketplaceDir, '.claude-plugin', 'marketplace.json');
+  if (!existsSync(manifestPath)) return;
+
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { plugins?: unknown };
+  if (!Array.isArray(manifest.plugins)) return;
+
+  const shipped = manifest.plugins.filter((entry) => {
+    const source = (entry as { source?: unknown } | null)?.source;
+    return typeof source !== 'string' || !source.startsWith('.') || existsSync(join(marketplaceDir, source));
+  });
+  if (shipped.length === manifest.plugins.length) return;
+
+  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, plugins: shipped }, null, 2)}\n`);
 }
 
 /**
@@ -822,10 +853,12 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 
   if (!isEresolve(strictResult.stderr)) {
     // A strict failure with no ERESOLVE is a real bug — never retry, ABORT.
+    // npm's own error code goes in the cause so the taxonomy can name the fix.
+    const npmCode = npmErrorCode(strictResult.stderr);
     installerError(ErrorSeverity.ABORT, {
       component: 'marketplace-npm-install',
       phase: 'marketplace-deps',
-      cause: new Error(`npm install failed (exit ${strictResult.code})`),
+      cause: new Error(`npm install failed (exit ${strictResult.code})${npmCode ? `: ${npmCode}` : ''}`),
       details: strictResult.stderr.slice(0, 4000),
     }, summary);
   }
@@ -852,56 +885,35 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
   }, summary);
 }
 
-function mergeSettings(updates: Record<string, string>): boolean {
-  const path = USER_SETTINGS_PATH;
-  try {
-    // Read the FULL document so we can write it back intact. The
-    // Claude-Code-style settings.json wraps env vars in a top-level `env`
-    // block and exposes peer keys at the root (hooks, permissions,
-    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
-    // env subtree for reads, but writing that flattened view back as the
-    // entire file silently drops every non-env top-level key — destroying
-    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
-    // had carefully written.
-    //
-    // Track whether the file uses the env-nested shape so we mutate only the
-    // relevant subtree and preserve every other top-level key on write.
-    let document: Record<string, unknown> = {};
-    let envNested = false;
-    if (existsSync(path)) {
-      try {
-        const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
-        if (parsed && typeof parsed === 'object') {
-          document = parsed as Record<string, unknown>;
-          envNested = typeof document.env === 'object' && document.env !== null;
-        }
-      } catch (parseError: unknown) {
-        console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        document = {};
-      }
-    } else {
-      const dir = dirname(path);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    }
-
-    const target = envNested
-      ? (document.env as Record<string, unknown>)
-      : document;
-    for (const [key, value] of Object.entries(updates)) {
-      target[key] = value;
-    }
-
-    // settings.json can carry tokens (CMEM Pro setup token, provider API
-    // keys). The temp file is created owner-only before the first byte is
-    // written, so there is no window in which a fresh file is world-readable.
-    writeSettingsJsonAtomic(path, document, { mode: 0o600 });
-    return true;
-  } catch (error: unknown) {
-    log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
+/**
+ * Merge installer settings into settings.json through the shared settings
+ * document boundary. The whole document is kept (a Claude-Code-style `env`
+ * wrapper and its root peers survive). An unreadable file is no longer reset
+ * to `{}`: it is moved aside to `settings.json.corrupt-<epoch-ms>` (the user's
+ * bytes are kept) and a fresh document is written, so a corrupt file can never
+ * stop setup or drop the sign-in's memory key. Returns false only when the
+ * write itself fails; the worker and hooks refuse-and-report instead. The
+ * boundary writes settings.json owner-only from the first byte (it can carry
+ * the CMEM Pro setup token and provider API keys).
+ */
+export function mergeSettings(
+  updates: Record<string, string>,
+  settingsPath: string = USER_SETTINGS_PATH,
+): boolean {
+  const result = updateSettingsDocument(settingsPath, updates, {}, undefined, { quarantineCorrupt: true });
+  if (result.status === 'refused') {
+    const reason = result.error instanceof Error ? result.error.message : String(result.error);
+    // A quarantined file is moved back when the fresh write fails; quarantinedTo
+    // survives only if even that move failed, so say where the bytes are.
+    log.error(result.quarantinedTo
+      ? `Failed to write settings to ${settingsPath}: ${reason}. Its unreadable previous contents are in ${result.quarantinedTo}.`
+      : `Failed to write settings to ${settingsPath}: ${reason}`);
     return false;
   }
+  if (result.quarantinedTo) {
+    log.warn(`${settingsPath} could not be read, so it was moved to ${result.quarantinedTo} and a fresh settings file was started. Copy back any settings you still need from it.`);
+  }
+  return true;
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
@@ -1051,18 +1063,27 @@ async function maybeBootstrapServerApiKey(): Promise<void> {
 }
 
 async function bootstrapAndPersistServerApiKey(): Promise<void> {
-  const { bootstrapServerApiKey, persistServerSettings } = await import(
+  const { bootstrapServerApiKey, revokeServerApiKey, persistServerSettings } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
   const result = await bootstrapServerApiKey();
-  persistServerSettings(USER_SETTINGS_PATH, {
+  const persisted = persistServerSettings(USER_SETTINGS_PATH, {
     apiKey: result.rawKey,
     projectId: result.projectId,
   });
-  log.info(
-    `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
-      + 'Settings saved with mode 0600.',
-  );
+  if (persisted) {
+    log.info(
+      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
+        + 'Settings saved with mode 0600.',
+    );
+    return;
+  }
+  // The key exists server-side but no hook can use it: revoke it rather than
+  // leave an orphaned live credential, and say how to recover.
+  await revokeServerApiKey(result.apiKeyId).catch((error: unknown) => {
+    log.warn(`Could not revoke the unpersisted server API key: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  log.warn('Server API key was provisioned but settings.json could not be updated. Repair or restore ~/.claude-mem/settings.json and rerun the installer.');
 }
 
 /**
@@ -2029,6 +2050,40 @@ export interface InstallOptions {
   serverUrl?: string;
 }
 
+/**
+ * How the installer reacts when the worker port is not free. A claude-mem
+ * worker that will not stop fails closed: its in-memory configuration would
+ * outlive the overwrite. A port held by some other process only warns: there
+ * is no claude-mem worker to protect, and this runs before the sign-in/trial
+ * step, which the install must still reach. Exported for tests.
+ */
+export function workerShutdownFailure(
+  blocker: ShutdownBlocker | undefined,
+  port: number | string,
+): { severity: ErrorSeverity; cause: string; remediation: string } {
+  if (blocker?.kind === 'port-held-by-other-process') {
+    return {
+      severity: ErrorSeverity.WARN_CONTINUE,
+      cause: `Port ${port} is held by a process that is not a claude-mem worker (no live claude-mem worker owns it), so the worker cannot listen there.`,
+      remediation: `Stop the process using port ${port}, or set CLAUDE_MEM_WORKER_PORT to a free port in ${USER_SETTINGS_PATH}, then run \`npx claude-mem start\`.`,
+    };
+  }
+  const pid = blocker?.kind === 'worker-still-running' ? blocker.pid : null;
+  if (pid === null) {
+    return {
+      severity: ErrorSeverity.ABORT,
+      cause: 'The existing worker did not stop within 10 seconds.',
+      remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+    };
+  }
+  const killCommand = process.platform === 'win32' ? `taskkill /PID ${pid} /F` : `kill ${pid}`;
+  return {
+    severity: ErrorSeverity.ABORT,
+    cause: `The claude-mem worker (PID ${pid}) did not stop within 10 seconds.`,
+    remediation: `Run \`npx claude-mem stop\`, or end PID ${pid} (\`${killCommand}\`), then run \`npx claude-mem install\` again.`,
+  };
+}
+
 async function requireWorkerStopped(
   port: number | string,
   phase: 'pre-overwrite' | 'provider-cutover',
@@ -2043,18 +2098,24 @@ async function requireWorkerStopped(
   try {
     const result = await shutdownWorkerAndWait(port, 10000);
     if (!result.stopped) {
-      spinner?.error('Running worker did not stop; refusing to overwrite its live configuration.');
-      installerError(ErrorSeverity.ABORT, {
+      const failure = workerShutdownFailure(result.blocker, port);
+      if (failure.severity === ErrorSeverity.ABORT) {
+        spinner?.error('Running worker did not stop; refusing to overwrite its live configuration.');
+      }
+      // ABORT throws; WARN_CONTINUE records the warning for the end-of-install summary.
+      installerError(failure.severity, {
         component: 'worker-shutdown',
         phase,
-        cause: new Error('The existing worker did not stop within 10 seconds.'),
-        remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+        cause: new Error(failure.cause),
+        remediation: failure.remediation,
       }, summary);
     }
 
     const stopMessage = result.workerWasRunning
       ? 'Stopped running worker before configuration cutover.'
-      : 'No worker running — proceeding.';
+      : result.stopped
+        ? 'No worker running — proceeding.'
+        : `Port ${port} is held by another process, not a claude-mem worker — proceeding.`;
     if (spinner) spinner.stop(stopMessage);
     else if (result.workerWasRunning) log.info(stopMessage);
   } catch (error: unknown) {
@@ -2336,6 +2397,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               stopHeartbeat();
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
+          }
+          // Installs run with lifecycle scripts suppressed, so tree-sitter-cli's
+          // own download never ran (#2910). This runs before the sign-in/trial
+          // step, so a failure only warns and a stalled download is cut off at
+          // TREE_SITTER_INSTALL_BUDGET_MS; `npx claude-mem repair` retries it
+          // with the full dependency timeout.
+          const stopTreeSitterHeartbeat = startHeartbeat(message, 'Checking the tree-sitter CLI…');
+          try {
+            await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary, TREE_SITTER_INSTALL_BUDGET_MS);
+          } finally {
+            stopTreeSitterHeartbeat();
           }
           writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
@@ -2735,6 +2807,8 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         message('Reinstalling plugin dependencies…');
         const { bunPath } = bun;
         await installPluginDependencies(cacheDir, bunPath);
+        message('Provisioning the tree-sitter CLI…');
+        await provisionTreeSitterCli(cacheDir, ErrorSeverity.ABORT, summary);
         writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
         return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
       },

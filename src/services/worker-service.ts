@@ -34,6 +34,7 @@ import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+import { resolveRuntimeContext } from './hooks/runtime-selector.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -121,10 +122,12 @@ import { SyncClient } from './sync/SyncClient.js';
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
+import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
@@ -453,9 +456,11 @@ export class WorkerService implements WorkerRef {
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
+    this.server.registerRoutes(new AdvisorRoutes(this.dbManager));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new DedupRoutes(this.dbManager));
     this.server.registerRoutes(new ServerV1Routes({
       getDatabase: () => this.dbManager.getConnection(),
     }));
@@ -1272,6 +1277,16 @@ async function main() {
 
   switch (command) {
     case 'start': {
+      // hooks.json runs `start` at every SessionStart, whatever the runtime. In
+      // server runtime the hooks talk to the shared server and nothing uses a
+      // local worker, so there is nothing to start (plan-24 step 4). Probing the
+      // worker port there waits on health checks that never answer when another
+      // process holds the port, stalling session start until the hook timeout.
+      // Incomplete server settings resolve to the worker runtime, as every other
+      // hook does, and start it as usual.
+      if (resolveRuntimeContext().runtime === 'server') {
+        exitWithStatus('ready');
+      }
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
         // Carry the boot probe's own words into the hook's status line — this

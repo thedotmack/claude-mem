@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { logger } from "../../utils/logger.js";
 import { resolveDataDir } from "../../shared/paths.js";
+import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
 
 const _require = typeof __filename !== 'undefined'
   ? createRequire(__filename)
@@ -359,7 +360,7 @@ function getQueryFile(queryKey: string): string {
 // silently falling through to a bare `tree-sitter` that may not be on PATH —
 // smart file parsing then returns empty results with no error.
 export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
-  const binName = platform === "win32" ? "tree-sitter.exe" : "tree-sitter";
+  const binName = treeSitterBinaryName(platform);
 
   try {
     const pkgPath = _require.resolve("tree-sitter-cli/package.json");
