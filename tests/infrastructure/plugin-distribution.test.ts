@@ -371,8 +371,7 @@ describe('Plugin Distribution - package.json Files Field', () => {
 
     expect(result.status).toBe(0);
     const packed = JSON.parse(result.stdout);
-    const filesList = Array.isArray(packed) ? packed[0].files : (packed.files ?? Object.values(packed)[0]?.files ?? []);
-    const filePaths = new Set(filesList.map((file: { path: string }) => file.path));
+    const filePaths = new Set(packed[0].files.map((file: { path: string }) => file.path));
 
     expect(filePaths.has('dist/bug-report/index.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);

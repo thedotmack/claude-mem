@@ -181,6 +181,16 @@ describe('SessionStore.importObservation', () => {
     expect(observationCount()).toBe(0);
   });
 
+  // Truthiness is not enough: {}, true and 123 are truthy but are not session ids.
+  for (const notASessionId of [{}, true, 123, '   ']) {
+    it(`rejects an observation whose memory_session_id is ${JSON.stringify(notASessionId)}`, () => {
+      const result = store.importObservation(importedObs(notASessionId as any) as any);
+
+      expect(result.imported).toBe(false);
+      expect(observationCount()).toBe(0);
+    });
+  }
+
   it('still imports valid rows that follow a rejected one in the same batch', () => {
     registeredSession('mem-import');
 

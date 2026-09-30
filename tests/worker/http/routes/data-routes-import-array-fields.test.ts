@@ -8,6 +8,7 @@ function capturePostChain(routes: DataRoutes, targetPath: string): (req: Request
   let handler: ((req: Request, res: Response) => void) | undefined;
   const app = {
     get: mock(() => {}),
+    delete: mock(() => {}),
     post: mock((path: string, ...rest: any[]) => {
       if (path !== targetPath) return;
       if (rest.length === 1) {
@@ -199,5 +200,96 @@ describe('DataRoutes import with array-valued fields (cloud shape)', () => {
 
     expect(JSON.parse(row.files_read)).toEqual(['/src/a.ts']);
     expect(JSON.parse(row.files_edited)).toEqual(['/src/b.ts', '/src/c.ts']);
+  });
+});
+
+describe('DataRoutes import reports rejected rows instead of aborting the batch', () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  function observationRow(memorySessionId: unknown, title: string, epoch: number): Record<string, unknown> {
+    return {
+      memory_session_id: memorySessionId,
+      project: 'reject-project',
+      text: null,
+      type: 'discovery',
+      title,
+      subtitle: null,
+      facts: '[]',
+      narrative: 'narrative',
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(epoch).toISOString(),
+      created_at_epoch: epoch,
+    };
+  }
+
+  function runImport(body: Record<string, unknown>): any {
+    const handler = capturePostChain(makeRoutes(store), '/api/import');
+    const json = mock((_payload: unknown) => {});
+    const status = mock(() => ({ json }));
+    handler({ path: '/api/import', query: {}, body } as any, { json, status, headersSent: false } as any);
+    expect(json).toHaveBeenCalledTimes(1);
+    return json.mock.calls[0]![0];
+  }
+
+  it('imports the valid rows and names each rejected row by index and reason', () => {
+    const result = runImport({
+      sessions: [{
+        content_session_id: 'reject-content',
+        memory_session_id: 'reject-memory',
+        project: 'reject-project',
+        platform_source: 'claude',
+        user_prompt: 'prompt',
+        started_at: new Date(1).toISOString(),
+        started_at_epoch: 1,
+        completed_at: null,
+        completed_at_epoch: null,
+        status: 'completed',
+      }],
+      observations: [
+        observationRow('reject-memory', 'kept first', 10),
+        observationRow(null, 'no session id', 11),
+        observationRow({}, 'object session id', 12),
+        observationRow('memory-session-not-in-this-database', 'unknown session', 13),
+        observationRow('reject-memory', 'kept last', 14),
+      ],
+      summaries: [
+        { memory_session_id: '   ', project: 'reject-project', created_at: 'x', created_at_epoch: 1 },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.stats).toMatchObject({
+      sessionsImported: 1,
+      observationsImported: 2,
+      observationsRejected: 3,
+      summariesRejected: 1,
+    });
+    expect(result.rejected.observations.map((row: { index: number }) => row.index)).toEqual([1, 2, 3]);
+    expect(result.rejected.observations[0].reason).toContain('memory_session_id');
+    expect(result.rejected.observations[2].reason).toContain('FOREIGN KEY');
+    expect(result.rejected.summaries[0]).toMatchObject({ index: 0 });
+    expect(result.rejected.summaries[0].reason).toContain('memory_session_id');
+
+    const titles = (store.db.prepare('SELECT title FROM observations ORDER BY created_at_epoch').all() as Array<{ title: string }>)
+      .map(row => row.title);
+    expect(titles).toEqual(['kept first', 'kept last']);
+  });
+
+  it('reports no rejections for a clean batch', () => {
+    const result = runImport({ observations: [], summaries: [] });
+    expect(result.rejected).toEqual({ sessions: [], summaries: [], observations: [], prompts: [] });
+    expect(result.stats.observationsRejected).toBe(0);
   });
 });

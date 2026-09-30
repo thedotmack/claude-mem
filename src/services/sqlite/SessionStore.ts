@@ -3654,11 +3654,11 @@ export class SessionStore {
     created_at: string;
     created_at_epoch: number;
   }): { imported: boolean; id: number } {
-    // Same unvalidated-import exposure as importObservation above: the
-    // /api/import route declares session_summaries as z.unknown(), and
-    // session_summaries.memory_session_id is NOT NULL — skip malformed rows
-    // instead of letting the constraint abort the batch.
-    if (!summary?.memory_session_id) {
+    // Same exposure as importObservation below: an import row can arrive
+    // without a usable session id, and session_summaries.memory_session_id is
+    // NOT NULL. /api/import validates rows first; this guard covers any other
+    // caller. Skip the row instead of letting the constraint abort the batch.
+    if (typeof summary?.memory_session_id !== 'string' || summary.memory_session_id.trim() === '') {
       logger.warn('DB', 'Skipping imported session summary without memory_session_id', {
         project: typeof summary?.project === 'string' ? summary.project : null,
       });
@@ -3720,13 +3720,13 @@ export class SessionStore {
     agent_type?: string | null;
     agent_id?: string | null;
   }): { imported: boolean; id: number } {
-    // Import payloads reach this method unvalidated — DataRoutes declares the
-    // observations array as z.unknown() — so a row from a legacy or hand-edited
-    // export can arrive without a session id. observations.memory_session_id is
-    // NOT NULL: skip the malformed row with a warning instead of letting the
-    // SQLite constraint ("NOT NULL constraint failed: observations.memory_session_id")
-    // abort the whole import batch.
-    if (!obs?.memory_session_id) {
+    // A row from a legacy or hand-edited export can arrive without a session
+    // id, and observations.memory_session_id is NOT NULL. /api/import validates
+    // rows first; this guard covers any other caller. Skip the malformed row
+    // with a warning instead of letting the SQLite constraint ("NOT NULL
+    // constraint failed: observations.memory_session_id") abort the batch.
+    // Only a non-empty string is a session id: {}, true or 123 are not.
+    if (typeof obs?.memory_session_id !== 'string' || obs.memory_session_id.trim() === '') {
       logger.warn('DB', 'Skipping imported observation without memory_session_id', {
         title: typeof obs?.title === 'string' ? obs.title : null,
         type: typeof obs?.type === 'string' ? obs.type : null,
