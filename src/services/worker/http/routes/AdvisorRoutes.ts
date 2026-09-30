@@ -1,13 +1,11 @@
-
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
-import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
+import { stripMemoryTags } from '../../../../utils/tag-stripping.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
@@ -23,7 +21,7 @@ const advisorCallsIngestSchema = z.object({
     advisorModel: z.string().nullable().optional(),
     occurredAtEpoch: z.number().int().nonnegative(),
     lastUserMessage: z.string().nullable().optional(),
-    transcriptLineNumber: z.number().int().nullable().optional(),
+    transcriptByteOffset: z.number().int().nonnegative().nullable().optional(),
   })).min(1).max(50),
 }).passthrough();
 
@@ -35,11 +33,7 @@ const advisorCallsIngestSchema = z.object({
  * the UNIQUE tool_use_id makes replayed scans no-ops.
  */
 export class AdvisorRoutes extends BaseRouteHandler {
-  constructor(
-    private paginationHelper: PaginationHelper,
-    private dbManager: DatabaseManager,
-    private eventBroadcaster: SessionEventBroadcaster,
-  ) {
+  constructor(private dbManager: DatabaseManager) {
     super();
   }
 
@@ -57,8 +51,7 @@ export class AdvisorRoutes extends BaseRouteHandler {
     const project = req.query.project as string | undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
-    const result = this.paginationHelper.getAdvisorCalls(offset, limit, project, platformSource);
-    res.json(result);
+    res.json(this.dbManager.getSessionStore().getAdvisorCalls(offset, limit, project, platformSource));
   });
 
   private handleGetAdvisorCallById = this.wrapHandler((req: Request, res: Response): void => {
@@ -94,7 +87,17 @@ export class AdvisorRoutes extends BaseRouteHandler {
 
     let stored = 0;
     let duplicates = 0;
+    let privateOnly = 0;
     for (const call of calls) {
+      // <private> content never reaches the database, the same rule as
+      // prompts and tool payloads. Advice that was entirely private is dropped.
+      const advice = stripMemoryTags(call.advice).trim();
+      if (!advice) {
+        privateOnly++;
+        continue;
+      }
+      const lastUserMessage = call.lastUserMessage ? stripMemoryTags(call.lastUserMessage).trim() || null : null;
+
       const result = store.recordAdvisorCall({
         sessionDbId,
         contentSessionId,
@@ -103,25 +106,21 @@ export class AdvisorRoutes extends BaseRouteHandler {
         toolUseId: call.toolUseId,
         advisorModel: call.advisorModel ?? null,
         cwd: cwd ?? null,
-        lastUserMessage: call.lastUserMessage ?? null,
+        lastUserMessage,
         transcriptPath: transcriptPath ?? null,
-        transcriptLineNumber: call.transcriptLineNumber ?? null,
-        advice: call.advice,
+        transcriptByteOffset: call.transcriptByteOffset ?? null,
+        advice,
         occurredAtEpoch: call.occurredAtEpoch,
       });
 
       if (result.inserted) {
         stored++;
-        const row = store.getAdvisorCallById(result.id);
-        if (row) {
-          this.eventBroadcaster.broadcastNewAdvisorCall(row);
-        }
       } else {
         duplicates++;
       }
     }
 
-    logger.debug('WORKER', 'Advisor calls ingested', { contentSessionId, stored, duplicates });
-    res.json({ status: 'stored', stored, duplicates });
+    logger.debug('WORKER', 'Advisor calls ingested', { contentSessionId, stored, duplicates, privateOnly });
+    res.json({ status: 'stored', stored, duplicates, privateOnly });
   });
 }

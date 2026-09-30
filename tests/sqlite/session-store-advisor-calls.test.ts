@@ -43,7 +43,7 @@ describe('SessionStore advisor_calls', () => {
         cwd: '/repo',
         lastUserMessage: 'why is this failing?',
         transcriptPath: '/tmp/transcript.jsonl',
-        transcriptLineNumber: 42,
+        transcriptByteOffset: 4096,
         advice: 'Long detailed advice text that must survive round-tripping intact.',
         occurredAtEpoch: 1000,
       });
@@ -58,7 +58,7 @@ describe('SessionStore advisor_calls', () => {
       expect(call!.advisor_model).toBe('claude-fable-5');
       expect(call!.last_user_message).toBe('why is this failing?');
       expect(call!.transcript_path).toBe('/tmp/transcript.jsonl');
-      expect(call!.transcript_line_number).toBe(42);
+      expect(call!.transcript_byte_offset).toBe(4096);
       expect(call!.project).toBe('test-project');
       expect(call!.platform_source).toBe('claude');
       expect(call!.session_db_id).toBe(sessionDbId);
@@ -96,11 +96,25 @@ describe('SessionStore advisor_calls', () => {
       expect(call!.cwd).toBeNull();
       expect(call!.last_user_message).toBeNull();
       expect(call!.transcript_path).toBeNull();
-      expect(call!.transcript_line_number).toBeNull();
+      expect(call!.transcript_byte_offset).toBeNull();
     });
 
     it('returns null for an unknown id', () => {
       expect(store.getAdvisorCallById(999999)).toBeNull();
+    });
+  });
+
+  describe('migration', () => {
+    it('creates advisor_calls with a unique tool_use_id index and stamps schema version 58', () => {
+      const db = store.db;
+      const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'advisor_calls'").get();
+      expect(table).toBeTruthy();
+
+      const unique = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_advisor_calls_tool_use'").get() as { sql: string };
+      expect(unique.sql).toContain('UNIQUE');
+
+      const stamped = db.prepare('SELECT version FROM schema_versions WHERE version = 58').get();
+      expect(stamped).toBeTruthy();
     });
   });
 

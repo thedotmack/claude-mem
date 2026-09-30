@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { extractAdvisorCallsFromJsonl, extractAdvisorCalls } from '../../src/shared/advisor-transcript.js';
 
 // Line shapes mirror real Claude Code transcripts: advisor is a server-side
@@ -61,7 +64,8 @@ describe('extractAdvisorCallsFromJsonl', () => {
     expect(calls[0].advice).toBe('The actual advice text.');
     expect(calls[0].advisorModel).toBe('claude-fable-5');
     expect(calls[0].lastUserMessage).toBe('why is this failing?');
-    expect(calls[0].transcriptLineNumber).toBe(2);
+    // Points at the call entry's line: just past the first line and its newline.
+    expect(calls[0].transcriptByteOffset).toBe(Buffer.byteLength(userLine('why is this failing?')) + 1);
     expect(calls[0].occurredAtEpoch).toBe(Date.parse('2026-07-06T05:00:01.000Z'));
   });
 
@@ -162,11 +166,56 @@ describe('extractAdvisorCallsFromJsonl', () => {
 });
 
 describe('extractAdvisorCalls', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeTranscript(lines: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'advisor-transcript-'));
+    dirs.push(dir);
+    const path = join(dir, 'transcript.jsonl');
+    writeFileSync(path, lines.join('\n') + '\n');
+    return path;
+  }
+
   it('returns [] for a missing file', () => {
     expect(extractAdvisorCalls('/nonexistent/transcript.jsonl')).toEqual([]);
   });
 
   it('returns [] for an empty path', () => {
     expect(extractAdvisorCalls('')).toEqual([]);
+  });
+
+  it('reads only the tail of a long transcript, and its offsets still point into the file', () => {
+    // An old turn with its own call, padded well past the tail window.
+    const filler = Array.from({ length: 200 }, (_, i) => userLine(`old question ${i} ${'x'.repeat(200)}`));
+    const path = writeTranscript([
+      userLine('old turn'),
+      advisorCallLine('srvtoolu_old'),
+      advisorResultLine('srvtoolu_old', 'old advice'),
+      ...filler,
+      userLine('current question'),
+      advisorCallLine('srvtoolu_new'),
+      advisorResultLine('srvtoolu_new', 'new advice'),
+    ]);
+
+    const calls = extractAdvisorCalls(path, { currentTurnOnly: true, maxTailBytes: 4096 });
+    expect(calls.map(c => c.toolUseId)).toEqual(['srvtoolu_new']);
+    expect(calls[0].lastUserMessage).toBe('current question');
+
+    const lineAtOffset = readFileSync(path).subarray(calls[0].transcriptByteOffset).toString('utf-8').split('\n', 1)[0];
+    expect(JSON.parse(lineAtOffset).message.content[0].id).toBe('srvtoolu_new');
+  });
+
+  it('keeps the calls of a turn that started before the tail window', () => {
+    const path = writeTranscript([
+      userLine(`long turn ${'y'.repeat(6000)}`),
+      advisorCallLine('srvtoolu_late'),
+      advisorResultLine('srvtoolu_late', 'late advice'),
+    ]);
+
+    const calls = extractAdvisorCalls(path, { currentTurnOnly: true, maxTailBytes: 1024 });
+    expect(calls.map(c => c.toolUseId)).toEqual(['srvtoolu_late']);
   });
 });

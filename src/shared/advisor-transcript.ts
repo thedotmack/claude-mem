@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFileSync, existsSync } from 'fs';
+import { closeSync, existsSync, fstatSync, openSync, readSync } from 'fs';
 import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
 /**
@@ -21,6 +21,14 @@ import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
  * (e.g. 'claude-fable-5'). Failed calls carry no advice and are skipped.
  */
 
+/**
+ * How much of the transcript's end one Stop-hook scan reads. The scan runs on
+ * every Stop, so reading whole multi-megabyte transcripts would make the hook
+ * slower as the session grows (plan-17: hooks stay thin). A turn's advisor
+ * calls sit at the end of the file.
+ */
+export const ADVISOR_SCAN_TAIL_BYTES = 2 * 1024 * 1024;
+
 export interface TranscriptAdvisorCall {
   /** `srvtoolu_...` id of the server_tool_use block — stable dedup key. */
   toolUseId: string;
@@ -30,8 +38,8 @@ export interface TranscriptAdvisorCall {
   advice: string;
   /** Timestamp of the call entry (falls back to result-entry time). */
   occurredAtEpoch: number;
-  /** 1-based line number of the call entry within the transcript. */
-  transcriptLineNumber: number;
+  /** Byte offset of the call entry's line in the transcript file. */
+  transcriptByteOffset: number;
   /** Text of the user message that started the turn containing the call. */
   lastUserMessage: string | null;
 }
@@ -39,7 +47,7 @@ export interface TranscriptAdvisorCall {
 interface PendingCall {
   advisorModel: string | null;
   occurredAtEpoch: number;
-  transcriptLineNumber: number;
+  transcriptByteOffset: number;
   lastUserMessage: string | null;
   userTurnLine: number;
 }
@@ -68,6 +76,36 @@ export interface ExtractAdvisorCallsOptions {
    * storage-level dedup on toolUseId is the backstop for re-fired hooks.
    */
   currentTurnOnly?: boolean;
+  /** Read at most this many bytes from the end of the file. */
+  maxTailBytes?: number;
+}
+
+/**
+ * The last `maxBytes` of a file, starting at a line boundary, and the byte
+ * offset where that text starts in the file.
+ */
+function readTail(transcriptPath: string, maxBytes: number): { text: string; startOffset: number } {
+  const fd = openSync(transcriptPath, 'r');
+  try {
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const buffer = Buffer.alloc(size - start);
+    readSync(fd, buffer, 0, buffer.length, start);
+    if (start === 0) {
+      return { text: buffer.toString('utf-8'), startOffset: 0 };
+    }
+    // Drop the partial first line: the scan starts at the next whole entry.
+    const firstNewline = buffer.indexOf(0x0a);
+    if (firstNewline === -1) {
+      return { text: '', startOffset: size };
+    }
+    return {
+      text: buffer.subarray(firstNewline + 1).toString('utf-8'),
+      startOffset: start + firstNewline + 1,
+    };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function extractAdvisorCalls(
@@ -77,16 +115,22 @@ export function extractAdvisorCalls(
   if (!transcriptPath || !existsSync(transcriptPath)) {
     return [];
   }
-  const content = readFileSync(transcriptPath, 'utf-8');
-  if (!content.trim()) {
+  const { text, startOffset } = readTail(transcriptPath, options.maxTailBytes ?? ADVISOR_SCAN_TAIL_BYTES);
+  if (!text.trim()) {
     return [];
   }
-  return extractAdvisorCallsFromJsonl(content, options);
+  return extractAdvisorCallsFromJsonl(text, options, startOffset);
 }
 
+/**
+ * `startOffset` is where `content` begins in the transcript file, so the byte
+ * offsets reported for each call point into the file even when only its tail
+ * was read.
+ */
 export function extractAdvisorCallsFromJsonl(
   content: string,
-  options: ExtractAdvisorCallsOptions = {}
+  options: ExtractAdvisorCallsOptions = {},
+  startOffset = 0
 ): TranscriptAdvisorCall[] {
   const lines = content.split('\n');
 
@@ -95,8 +139,11 @@ export function extractAdvisorCallsFromJsonl(
   const pending = new Map<string, PendingCall>();
   const completed: Array<{ call: TranscriptAdvisorCall; userTurnLine: number }> = [];
 
+  let lineOffset = startOffset;
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
+    const offsetOfLine = lineOffset;
+    lineOffset += Buffer.byteLength(rawLine, 'utf-8') + 1;
     if (!rawLine || !rawLine.trim()) continue;
     // Tolerate truncated/malformed JSONL lines (crash mid-write, partial
     // flush) — same policy as transcript-parser.ts.
@@ -132,7 +179,7 @@ export function extractAdvisorCallsFromJsonl(
         pending.set(block.id, {
           advisorModel: typeof entry.advisorModel === 'string' ? entry.advisorModel : null,
           occurredAtEpoch: parseEpoch(entry.timestamp) ?? 0,
-          transcriptLineNumber: i + 1,
+          transcriptByteOffset: offsetOfLine,
           lastUserMessage,
           userTurnLine: lastUserLine,
         });
@@ -158,7 +205,7 @@ export function extractAdvisorCallsFromJsonl(
             advisorModel: started.advisorModel,
             advice,
             occurredAtEpoch: started.occurredAtEpoch || (parseEpoch(entry.timestamp) ?? Date.now()),
-            transcriptLineNumber: started.transcriptLineNumber,
+            transcriptByteOffset: started.transcriptByteOffset,
             lastUserMessage: started.lastUserMessage,
           },
           userTurnLine: started.userTurnLine,
@@ -167,6 +214,9 @@ export function extractAdvisorCallsFromJsonl(
     }
   }
 
+  // With only the file's tail read, the turn may have started before it; then
+  // no user line was seen (lastUserLine 0) and every call in the tail belongs
+  // to the current turn, which the filter below still keeps.
   return completed
     .filter(c => !options.currentTurnOnly || c.userTurnLine === lastUserLine)
     .map(c => c.call);

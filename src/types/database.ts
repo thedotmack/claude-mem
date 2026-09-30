@@ -75,7 +75,7 @@ export interface AdvisorCallRecord {
   cwd: string | null;
   last_user_message: string | null;
   transcript_path: string | null;
-  transcript_line_number: number | null;
+  transcript_byte_offset: number | null;
   advice: string;
   occurred_at_epoch: number;
   created_at: string;
