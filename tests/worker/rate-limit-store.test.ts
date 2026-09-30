@@ -217,6 +217,11 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     });
   });
 
+  it('still aborts on a snapshot with no resetsAt (cannot tell it is stale)', () => {
+    store.set({ rateLimitType: 'seven_day', utilization: 0.98 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
+  });
+
   it('does not re-abort a later allowed window because an earlier rejection expired', () => {
     store.set({
       rateLimitType: 'five_hour',
@@ -600,6 +605,13 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     expect(store.get('five_hour')?.status).toBeUndefined();
 
     expect(store.set(rejected)).toBe(false);
+  });
+
+  it('does not persist unifiedWindows on the stored entry', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', unifiedWindows: { seven_day: { utilization: 0.1 } } });
+    expect((store.get('five_hour') as any).unifiedWindows).toBeUndefined();
+    expect((store.get('seven_day') as any).unifiedWindows).toBeUndefined();
   });
 });
 
