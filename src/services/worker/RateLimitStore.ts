@@ -131,7 +131,10 @@ export class RateLimitStore {
     const merged: RateLimitEntry = {
       ...info,
       utilization: info.utilization ?? own?.utilization,
-      resetsAt: info.resetsAt ?? own?.resetsAt,
+      // Stored in epoch ms whatever unit the event used, so the rejection
+      // de-dupe below and /api/health compare like with like.
+      resetsAt: normalizeResetTimeMs(info.resetsAt) ?? own?.resetsAt,
+      overageResetsAt: normalizeResetTimeMs(info.overageResetsAt),
       observedAt,
     };
     this.entries.set(key, merged);
@@ -198,7 +201,7 @@ function readUnifiedWindows(raw: unknown): Map<RateLimitWindow, UnifiedWindowSna
     const { utilization, resetsAt } = entry as Record<string, unknown>;
     const snapshot: UnifiedWindowSnapshot = {};
     if (typeof utilization === 'number' && Number.isFinite(utilization)) snapshot.utilization = utilization;
-    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = resetsAt;
+    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = normalizeResetTimeMs(resetsAt);
     if (snapshot.utilization !== undefined || snapshot.resetsAt !== undefined) out.set(window, snapshot);
   }
   return out;
