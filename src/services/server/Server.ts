@@ -9,8 +9,10 @@ import {
   createCorsMiddleware,
   createMiddleware,
   createRemoteReadOnlyGuard,
+  createWorkerHostGuard,
   requireLocalhost,
   type RemoteReadOnlyOptions,
+  type WorkerOriginPolicy,
 } from '../worker/http/middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -128,6 +130,13 @@ export interface ServerOptions {
    * unchanged.
    */
   remoteReadOnly?: RemoteReadOnlyOptions;
+  /**
+   * Worker only: trusted browser origins and Host names (plan-23 step 4). When
+   * present, a DNS-rebinding Host check runs before CORS, and CORS also admits
+   * same-host and explicitly allowlisted origins. The server runtime leaves it
+   * unset: it authenticates with API keys and serves public DNS names.
+   */
+  originPolicy?: WorkerOriginPolicy;
 }
 
 // #2572 — hand-rolled security headers.
@@ -254,7 +263,10 @@ export class Server {
   }
 
   private setupCors(): void {
-    this.app.use(createCorsMiddleware());
+    if (this.options.originPolicy) {
+      this.app.use(createWorkerHostGuard(this.options.originPolicy));
+    }
+    this.app.use(createCorsMiddleware(this.options.originPolicy));
   }
 
   private setupPreBodyParserRoutes(): void {
