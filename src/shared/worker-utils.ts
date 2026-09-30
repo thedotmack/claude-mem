@@ -6,6 +6,7 @@ import { HOOK_TIMEOUTS, getTimeout, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKE
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
+import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
@@ -637,6 +638,9 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   // or when the resolved version is unreadable ('unknown').
   let expectedPluginVersion: string | null = null;
   let recycleBuildKey: string | null = null;
+  // CLAUDE_MEM_WORKER_AUTOSTART=false: use a running worker, but never launch,
+  // kill or recycle one (see worker-autostart.ts).
+  const autostartDisabled = isWorkerAutostartDisabled(loadFromFileOnce());
 
   if (await isWorkerPortAlive()) {
     // A worker is already alive. If it is a DIFFERENT version than the one
@@ -670,12 +674,26 @@ export async function ensureWorkerRunning(): Promise<boolean> {
         return false;
       }
 
+      if (autostartDisabled) {
+        logger.warn('SYSTEM', 'Worker is healthy but never became ready; CLAUDE_MEM_WORKER_AUTOSTART=false, so leaving it to whatever manages it', {
+          uptimeSeconds,
+        });
+        return false;
+      }
+
       logger.info('SYSTEM', 'Worker healthy but never became ready — recycling wedged worker', {
         uptimeSeconds,
         wedgedAfterSeconds: WEDGED_WORKER_UPTIME_S,
         version: workerVersion,
       });
     } else {
+      if (autostartDisabled) {
+        logger.warn('SYSTEM', 'Worker version differs from the installed plugin; CLAUDE_MEM_WORKER_AUTOSTART=false, so using it as is', {
+          pluginVersion,
+          workerVersion,
+        });
+        return waitForWorkerReadiness();
+      }
       // The version-mismatch recycle keeps its own guard: an unchanged bundle
       // that still reports a stale version must not be recycled again. The
       // wedged-worker branch above deliberately has no such guard — its bundle
@@ -746,6 +764,13 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // The killed worker's PID file is left behind; the successor's boot
     // removes it (validateWorkerPidFile returns 'stale' for a dead pid).
     // Fall through to (re)spawn + readiness wait below.
+  }
+
+  if (autostartDisabled) {
+    // No worker is up and hooks may not start one; the caller's fallback
+    // reports worker_autostart_disabled without counting a failure.
+    logger.debug('SYSTEM', 'Worker not running and CLAUDE_MEM_WORKER_AUTOSTART=false — not lazy-spawning');
+    return false;
   }
 
   const runtimePath = resolveWorkerRuntimePath();
@@ -872,21 +897,8 @@ let orphanedPortDiagnosis: number | null = null;
 
 let aliveCache: boolean | null = null;
 
-/** Test-only: reset the ensureWorkerAliveOnce() cache (mirrors clearPortCache). */
-export function resetAliveCache(): void {
-  aliveCache = null;
-}
-
 export async function ensureWorkerAliveOnce(): Promise<boolean> {
   if (aliveCache !== null) return aliveCache;
-  // Opt-out: when CLAUDE_MEM_WORKER_AUTOSTART=false, hooks must NOT lazy-spawn
-  // the worker daemon. Lets server-beta-only or externally-managed deployments
-  // stop hook activity from resurrecting the worker. Default 'true' preserves
-  // existing behavior.
-  if ((loadFromFileOnce().CLAUDE_MEM_WORKER_AUTOSTART ?? 'true').trim().toLowerCase() === 'false') {
-    aliveCache = false;
-    return aliveCache;
-  }
   aliveCache = await ensureWorkerRunning();
   return aliveCache;
 }
@@ -905,13 +917,16 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
 
   if (await probe()) return true;
 
-  const runtimePath = resolveWorkerRuntimePath();
-  const scriptPath = resolveWorkerScriptPath();
-  if (!runtimePath || !scriptPath) return false;
+  // CLAUDE_MEM_WORKER_AUTOSTART=false: wait out the budget for the externally
+  // managed worker, but never take the spawn lock or launch one.
+  const mayLaunch = !isWorkerAutostartDisabled(loadFromFileOnce());
+  const runtimePath = mayLaunch ? resolveWorkerRuntimePath() : null;
+  const scriptPath = mayLaunch ? resolveWorkerScriptPath() : null;
+  if (mayLaunch && (!runtimePath || !scriptPath)) return false;
 
-  const spawnLockHeld = acquireSpawnLock();
+  const spawnLockHeld = mayLaunch && acquireSpawnLock();
   try {
-    if (spawnLockHeld) {
+    if (spawnLockHeld && runtimePath && scriptPath) {
       // Same launch as ensureWorkerRunning: hidden on Windows (#3521) and
       // with the daemon's cwd pinned to the data dir, not the caller's project
       // (#3706). This path used to spawn with no cwd at all.
@@ -1288,6 +1303,12 @@ export async function executeWithWorkerFallback<T = unknown>(
     ? await ensureWorkerReadyWithin(options.workerStartupTimeoutMs!)
     : await ensureWorkerAliveOnce();
   if (!alive) {
+    // An externally managed worker (CLAUDE_MEM_WORKER_AUTOSTART=false) being
+    // down is the operator's call, not a claude-mem failure: skip quietly and
+    // never feed the fail-loud counter.
+    if (isWorkerAutostartDisabled(loadFromFileOnce())) {
+      return { continue: true, reason: 'worker_autostart_disabled', [WORKER_FALLBACK_BRAND]: true };
+    }
     if (!boundedStartup) {
       await recordWorkerUnreachable();
     }

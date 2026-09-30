@@ -19,6 +19,7 @@ import {
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
+import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 
 /**
  * Windows spawn cooldown, keyed to evidence rather than time (plan-15 step 7,
@@ -115,6 +116,19 @@ export async function ensureWorkerStarted(
       'ensureWorkerStarted: worker script not found at expected path — likely a partial install or build artifact missing',
       { workerScriptPath }
     );
+    return 'dead';
+  }
+
+  // CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally. Report
+  // on it, but never launch, kill or reclaim anything (and leave its PID file
+  // alone). Read fresh: this runs in long-lived processes (the MCP server).
+  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  if (isWorkerAutostartDisabled(SettingsDefaultsManager.loadFromFile(settingsPath))) {
+    if (await waitForHealth(port, 1000)) {
+      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+      return ready ? 'ready' : 'warming';
+    }
+    logger.info('SYSTEM', 'CLAUDE_MEM_WORKER_AUTOSTART=false and no worker is running — not launching one');
     return 'dead';
   }
 
