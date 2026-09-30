@@ -95,10 +95,6 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
-  // The bridge below patches verified chromadb 1.5.9 internals (default
-  // embedding reuse and the SQLite FTS NUL guard). Do not let uvx silently
-  // resolve a future, incompatible chromadb release underneath it.
-  'chromadb==1.5.9',
   'onnxruntime>=1.20',
   'protobuf<7',
 ];
@@ -691,29 +687,20 @@ export class ChromaMcpManager {
 
   private static buildLauncherPrefix(pythonVersion: string): string[] {
     const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
-    const bridgeScript = ChromaMcpManager.resolveBridgeScript();
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
       '--from', `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
-      ...(bridgeScript ? ['python', bridgeScript] : ['chroma-mcp']),
+      'chroma-mcp',
     ];
   }
 
   private static buildPrewarmCommandArgs(commandArgs: string[]): string[] {
-    const pythonIndex = commandArgs.indexOf('python');
-    const executableIndex = pythonIndex >= 0 ? pythonIndex + 1 : commandArgs.indexOf('chroma-mcp');
-    const launcherPrefix = executableIndex >= 0 ? commandArgs.slice(0, executableIndex + 1) : commandArgs;
+    const executableIndex = commandArgs.indexOf('chroma-mcp');
+    const launcherPrefix = executableIndex >= 0
+      ? commandArgs.slice(0, executableIndex + 1)
+      : commandArgs;
     return [...launcherPrefix, '--help'];
-  }
-
-  private static resolveBridgeScript(): string | null {
-    const entryDir = process.argv[1] ? path.dirname(path.resolve(process.argv[1])) : '';
-    const candidates = [
-      entryDir ? path.join(entryDir, 'chroma-mcp-bridge.py') : '',
-      path.join(process.cwd(), 'plugin', 'scripts', 'chroma-mcp-bridge.py'),
-    ].filter(Boolean);
-    return candidates.find(candidate => fs.existsSync(candidate)) ?? null;
   }
 
   private static parseBoundedTimeoutMs(rawValue: string | undefined): number | null {
