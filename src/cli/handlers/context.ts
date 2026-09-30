@@ -9,6 +9,7 @@ import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  getViewerBaseUrl,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -55,7 +56,9 @@ export const contextHandler: EventHandler = {
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
-    const platformSourceParam = input.platform
+    // Let users share startup memory across harnesses without changing the
+    // source-scoped behavior of search and other context requests.
+    const platformSourceParam = input.platform && settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true'
       ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
       : '';
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
@@ -141,7 +144,7 @@ export const contextHandler: EventHandler = {
       : null;
 
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
+      ? `${displayContent}\n\nView Observations Live @ ${getViewerBaseUrl(port)}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
 
     return {
