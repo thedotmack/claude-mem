@@ -88,8 +88,8 @@ export interface ProviderObservationGeneratorOptions {
 const DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS = 600_000;
 
 
-// The `limit` on listUnprocessedEvents caps the event COUNT, not the payload
-// volume, and event size varies by orders of magnitude. Long sessions therefore
+// The session event query (`listSessionEvents`, head + tail) caps the event
+// COUNT, not the payload volume, and event size varies by orders of magnitude. Long sessions therefore
 // still blow the provider context window: measured on a production deployment,
 // sessions that failed with "context overflow" carried up to 34 MB of event
 // payload (~9M tokens), and even truncated to the 500-event default they still
@@ -354,6 +354,7 @@ export class ProviderObservationGenerator {
     const persistInput = {
       pool: this.options.pool,
       job: fresh,
+      inputEventCount: events.length,
       rawText: result.rawText,
       modelId: result.modelId,
       providerLabel: result.providerLabel,
@@ -633,12 +634,13 @@ export class ProviderObservationGenerator {
     const repo = new PostgresAgentEventsRepository(this.options.pool);
 
     if (job.sourceType === 'session_summary') {
-      // Summary jobs feed the provider every event tied to the server_session
-      // that hasn't already been collapsed into a completed event-generation
-      // job. The session repo enforces tenant scope inside its WHERE clause.
+      // Summary jobs feed the provider every event tied to the server_session.
+      // NOT only the uncollapsed ones: the per-event lane normally wins that
+      // race, which left the summary with nothing to read. The session repo
+      // enforces tenant scope inside its WHERE clause.
       if (!job.serverSessionId) return [];
       const sessions = new PostgresServerSessionsRepository(this.options.pool);
-      const events = await sessions.listUnprocessedEvents({
+      const events = await sessions.listSessionEvents({
         serverSessionId: job.serverSessionId,
         projectId: job.projectId,
         teamId: job.teamId,
