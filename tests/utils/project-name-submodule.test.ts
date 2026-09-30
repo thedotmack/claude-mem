@@ -95,7 +95,10 @@ describe('#2842 — submodule folds into the superproject', () => {
 
   it('reads the superproject history alongside the submodule key', () => {
     const ctx = getProjectContext(submodule);
-    expect(ctx.allProjects).toEqual(['react', 'react/peerless']);
+    // `peerless` is the key this submodule's rows were stored under before it
+    // folded into the superproject; it stays readable so the re-key never
+    // hides existing memory. Writes use the composite primary only.
+    expect(ctx.allProjects).toEqual(['react', 'peerless', 'react/peerless']);
   });
 
   it('does not claim a submodule is a worktree', () => {
