@@ -44,6 +44,27 @@ describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
     await expect(bash('git commit -m "fix"')).rejects.toThrow();
   });
 
+  it('skips a Codex exec_command whose cmd matches the pattern', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
+    const result = await ingestObservation({
+      contentSessionId: 'test-session',
+      toolName: 'exec_command',
+      toolInput: { cmd: 'pwd' },
+      toolResponse: {},
+    });
+    expect(result).toEqual({ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' });
+  });
+
+  it('never applies the pattern to non-shell tools', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '.*';
+    await expect(ingestObservation({
+      contentSessionId: 'test-session',
+      toolName: 'Grep',
+      toolInput: { command: 'ls', pattern: 'x' },
+      toolResponse: {},
+    })).rejects.toThrow();
+  });
+
   it('ignores an invalid regex instead of dropping the observation', async () => {
     process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '(unbalanced';
     await expect(bash('ls -la')).rejects.toThrow();

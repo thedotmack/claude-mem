@@ -45,6 +45,16 @@ function getBashSkipPattern(pattern: string): RegExp | null {
   return compiled;
 }
 
+// The shell command CLAUDE_MEM_SKIP_BASH_PATTERNS is matched against. Claude
+// Code sends `Bash` + `command` (Cursor and Windsurf adapters normalize to the
+// same shape); the Codex transcript watcher sends `exec_command` + `cmd`.
+function shellCommandOf(toolName: string, toolInput: unknown): string {
+  if (!toolInput || typeof toolInput !== 'object') return '';
+  const input = toolInput as { command?: unknown; cmd?: unknown };
+  const command = toolName === 'Bash' ? input.command : toolName === 'exec_command' ? input.cmd : undefined;
+  return typeof command === 'string' ? command : '';
+}
+
 export function setIngestContext(next: IngestContext): void {
   ctx = next;
 }
@@ -119,12 +129,11 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const skipBashPatterns = settings.CLAUDE_MEM_SKIP_BASH_PATTERNS.trim();
-  if (payload.toolName === 'Bash' && skipBashPatterns) {
-    const input = payload.toolInput as { command?: unknown } | null;
-    const command = input && typeof input.command === 'string' ? input.command : '';
+  const command = skipBashPatterns ? shellCommandOf(payload.toolName, payload.toolInput) : '';
+  if (command) {
     // A bad user regex never throws here — getBashSkipPattern returns null, so the
     // command is captured as if no pattern was set.
-    const pattern = command ? getBashSkipPattern(skipBashPatterns) : null;
+    const pattern = getBashSkipPattern(skipBashPatterns);
     if (pattern && pattern.test(command)) {
       return { ok: true, status: 'skipped', reason: 'bash_pattern_excluded' };
     }
