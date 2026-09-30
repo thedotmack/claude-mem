@@ -19,14 +19,36 @@ import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 // the feature dead on arrival for every pre-existing install.
 const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 
+/** Pinned workers.dev hub from the Cloudflare SyncHub era. */
+const LEGACY_CLOUD_SYNC_HUB_HOST = 'sync-hub.black-pond-afbb.workers.dev';
+/** Canonical Pro hub after the Fly cutover. */
+const CANONICAL_CLOUD_SYNC_HUB_URL = 'https://sync.cmem.ai';
+
+function migratedCloudSyncHubUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  try {
+    if (new URL(trimmed).hostname === LEGACY_CLOUD_SYNC_HUB_HOST) {
+      return CANONICAL_CLOUD_SYNC_HUB_URL;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_PUBLIC_URL: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
-  CLAUDE_MEM_PROVIDER: string;  
+  CLAUDE_MEM_SKIP_BASH_PATTERNS: string;
+  CLAUDE_MEM_PROVIDER: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
@@ -54,6 +76,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SESSION_COUNT: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: string;
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
@@ -98,6 +121,7 @@ export interface SettingsDefaults {
   // (#3618). Defaults: 40 ops / 90s (hub projection lease).
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
   CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: string;
+  CLAUDE_MEM_LLM_TIMEOUT_MS: string;
   // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
   // mounted and the worker behaves exactly as before. Set (with a non-loopback
   // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
@@ -141,6 +165,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: string;
   CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: string;
   CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: string;
   // CCS Align (Worker Watch seat, Phase 0 breathing slice). Seat-owned middle
   // cache under ~/.claude-mem/ccs-align/<viewerId>/; pull-only, never a second
   // writer on LFG/Orifice logs. See plans/2026-09-09-ccs-align.md.
@@ -171,10 +196,15 @@ export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+    CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_PUBLIC_URL: '',  // Browser-reachable base for the live-view URL when the
+                                // worker runs behind a port-forward (e.g.
+                                // https://37700.host.<user>.<domain>). Empty => localhost.
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
+    CLAUDE_MEM_SKIP_BASH_PATTERNS: '',  // Regex matched against a shell command (Bash; Codex exec_command); when it matches, the observation is skipped. Empty = capture every command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
     // Deliberate divergence from the installer prompt: the interactive
     // provider prompt defaults to 'cmem' (the hosted observer), but headless
     // installs land here — no delivered key exists headlessly, so the settings
@@ -206,6 +236,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
@@ -245,6 +276,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
+    CLAUDE_MEM_LLM_TIMEOUT_MS: '30000',                  // Per-attempt observer LLM deadline (retry.ts); raise for slow/local backends
     // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
     // mounted and the worker behaves exactly as before. Set (with a non-loopback
     // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
@@ -286,6 +318,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: '',
     CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: '160',
     CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: '1500',
+    CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: '',
     CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
     CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: 'ccs-align',
     // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.
@@ -408,6 +441,24 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with the in-memory migration even if the write fails
+        }
+      }
+
+      const rewrittenHubUrl = migratedCloudSyncHubUrl(flatSettings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL);
+      if (rewrittenHubUrl !== null) {
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: rewrittenHubUrl,
+        };
+
+        try {
+          writeJsonFileAtomic(
+            settingsPath,
+            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+          );
+          console.warn('[SETTINGS] Migrated cloud sync hub URL off the legacy workers.dev host:', settingsPath);
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
         }
       }
 
