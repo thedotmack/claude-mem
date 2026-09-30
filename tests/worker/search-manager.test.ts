@@ -91,7 +91,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       limit: 10,
     });
 
-    expect(queryChroma).toHaveBeenCalledWith('overlap', 1000, {
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
       $and: [
         { doc_type: 'observation' },
         { $or: [{ project: 'search-project' }, { merged_into_project: 'search-project' }] },
@@ -148,6 +148,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     );
 
     const result = await manager.search({
+      project: 'search-project',
       orderBy: 'date_desc',
       format: 'text',
       limit: 5,
@@ -157,10 +158,13 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     expect(text.indexOf('### Jan 6')).toBeLessThan(text.indexOf('### Jan 4'));
   });
 
-  it('widens Chroma candidates and preserves date ordering when date sorting is requested', async () => {
+  it('keeps Chroma at its candidate batch, hydrates in the requested date order, and adds FTS matches selected by date', async () => {
     const getObservationsByIds = mock(() => []);
     const getSessionSummariesByIds = mock(() => []);
     const getUserPromptsByIds = mock(() => []);
+    const searchObservations = mock(() => []);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
     const queryChroma = mock(() => Promise.resolve({
       ids: [11, 22, 33],
       distances: [0.1, 0.2, 0.3],
@@ -173,9 +177,9 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
 
     const manager = new SearchManager(
       {
-        searchObservations: mock(() => []),
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
       } as any,
       {
         getObservationsByIds,
@@ -194,10 +198,122 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       limit: 5,
     });
 
-    expect(queryChroma).toHaveBeenCalledWith('trading', 1000, undefined);
+    expect(queryChroma).toHaveBeenCalledWith('trading', 100, undefined);
     expect(getObservationsByIds).toHaveBeenCalledWith([11], expect.objectContaining({ orderBy: 'date_asc' }));
     expect(getSessionSummariesByIds).toHaveBeenCalledWith([22], expect.objectContaining({ orderBy: 'date_asc' }));
     expect(getUserPromptsByIds).toHaveBeenCalledWith([33], expect.objectContaining({ orderBy: 'date_asc' }));
+    expect(searchObservations).toHaveBeenCalledWith('trading', expect.objectContaining({ orderBy: 'date_asc', limit: 5 }));
+    expect(searchSessions).toHaveBeenCalledWith('trading', expect.objectContaining({ orderBy: 'date_asc', limit: 5 }));
+    expect(searchUserPrompts).toHaveBeenCalledWith('trading', expect.objectContaining({ orderBy: 'date_asc', limit: 5 }));
+  });
+
+  // #4135: Chroma picks its candidates by relevance, so the newest match can sit outside them.
+  it('returns and renders first the newest keyword match that is outside the Chroma candidates (date_desc)', async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const makeRow = (id: number, title: string, epoch: number) => ({
+      id,
+      memory_session_id: `session-${id}`,
+      project: 'search-project',
+      text: null,
+      type: 'discovery',
+      title,
+      subtitle: null,
+      facts: '[]',
+      narrative: title,
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(epoch).toISOString(),
+      created_at_epoch: epoch,
+    });
+    const olderChromaCandidate = makeRow(11, 'Older semantic match', Date.now() - 10 * dayMs);
+    const newestKeywordMatch = makeRow(99, 'Newest keyword match', Date.now() - dayMs);
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [olderChromaCandidate.id],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: olderChromaCandidate.id, doc_type: 'observation', created_at_epoch: olderChromaCandidate.created_at_epoch }],
+    }));
+
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => [newestKeywordMatch]),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => [olderChromaCandidate]),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      { queryChroma } as any,
+      {
+        formatSearchTableHeader: mock(() => '| h |'),
+        formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
+      } as any,
+      {} as any,
+    );
+
+    const newestOnly = await manager.search({ query: 'trading', type: 'observations', orderBy: 'date_desc', format: 'json', limit: 1 });
+    expect(newestOnly.observations.map((o: { id: number }) => o.id)).toEqual([newestKeywordMatch.id]);
+
+    const rendered = await manager.search({ query: 'trading', type: 'observations', orderBy: 'date_desc', format: 'text', limit: 2 });
+    const text = rendered.content[0].text as string;
+    expect(text.indexOf('Newest keyword match')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('Newest keyword match')).toBeLessThan(text.indexOf('Older semantic match'));
+  });
+
+  it('renders relevance-ordered unified results with the most relevant day first, not oldest first', async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const makeRow = (id: number, title: string, epoch: number) => ({
+      id,
+      memory_session_id: `session-${id}`,
+      project: 'search-project',
+      text: null,
+      type: 'discovery',
+      title,
+      subtitle: null,
+      facts: '[]',
+      narrative: title,
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(epoch).toISOString(),
+      created_at_epoch: epoch,
+    });
+    const mostRelevantNewer = makeRow(1, 'Most relevant match', Date.now() - dayMs);
+    const lessRelevantOlder = makeRow(2, 'Less relevant match', Date.now() - 10 * dayMs);
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [1, 2],
+      distances: [0.1, 0.4],
+      metadatas: [
+        { sqlite_id: 1, doc_type: 'observation', created_at_epoch: mostRelevantNewer.created_at_epoch },
+        { sqlite_id: 2, doc_type: 'observation', created_at_epoch: lessRelevantOlder.created_at_epoch },
+      ],
+    }));
+
+    const manager = new SearchManager(
+      { searchObservations: mock(() => []), searchSessions: mock(() => []), searchUserPrompts: mock(() => []) } as any,
+      {
+        getObservationsByIds: mock(() => [lessRelevantOlder, mostRelevantNewer]),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      { queryChroma } as any,
+      {
+        formatSearchTableHeader: mock(() => '| h |'),
+        formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
+      } as any,
+      {} as any,
+    );
+
+    const rendered = await manager.search({ query: 'trading', type: 'observations', format: 'text', limit: 5 });
+    const text = rendered.content[0].text as string;
+    expect(text.indexOf('Most relevant match')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('Most relevant match')).toBeLessThan(text.indexOf('Less relevant match'));
   });
 
   it('hydrates Chroma observation matches in relevance order, not by date', async () => {
@@ -317,7 +433,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       limit: 10,
     });
 
-    expect(queryChroma).toHaveBeenCalledWith('overlap', 1000, {
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
       $and: [
         { doc_type: 'session_summary' },
         { $or: [{ project: 'search-project' }, { merged_into_project: 'search-project' }] },

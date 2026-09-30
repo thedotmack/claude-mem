@@ -74,22 +74,6 @@ export class SearchManager {
     return await this.chromaSync.queryChroma(query, limit, whereFilter);
   }
 
-  private getChromaCandidateLimit(
-    orderBy: 'relevance' | 'date_desc' | 'date_asc' = 'date_desc'
-  ): number {
-    return orderBy === 'date_desc' || orderBy === 'date_asc'
-      ? SEARCH_CONSTANTS.CHROMA_DATE_ORDER_BATCH_SIZE
-      : SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
-  }
-
-  private getSqlOrderBy(
-    orderBy: 'relevance' | 'date_desc' | 'date_asc' = 'date_desc'
-  ): 'relevance' | 'date_desc' | 'date_asc' {
-    return orderBy === 'date_desc' || orderBy === 'date_asc'
-      ? orderBy
-      : 'relevance';
-  }
-
   /**
    * Build a Chroma where-filter scoped to a single doc_type, applying the
    * dual-project ($or: project + merged_into_project) scoping used by every
@@ -126,7 +110,7 @@ export class SearchManager {
     hydrate: (ids: number[]) => T[]
   ): Promise<T[]> {
     const whereFilter = this.buildDocTypeWhereFilter(docType, project, platformSource);
-    const chromaResults = await this.queryChroma(query, this.getChromaCandidateLimit('relevance'), whereFilter);
+    const chromaResults = await this.queryChroma(query, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, whereFilter);
     logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
 
     if (chromaResults?.ids && chromaResults.ids.length > 0) {
@@ -391,8 +375,11 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
 
-    const sqlOrderBy = this.getSqlOrderBy(options.orderBy);
-    const chromaResults = await this.queryChroma(query, this.getChromaCandidateLimit(sqlOrderBy), whereFilter);
+    // Hydration applies `limit`, so a requested date order has to reach it; otherwise the wrong
+    // end of the candidates is kept (date_asc hydrated newest-first keeps the newest rows).
+    const requestedDateOrder: 'date_desc' | 'date_asc' | undefined =
+      options.orderBy === 'date_desc' || options.orderBy === 'date_asc' ? options.orderBy : undefined;
+    const chromaResults = await this.queryChroma(query, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, whereFilter);
     logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
     if (chromaResults.ids.length > 0) {
@@ -441,15 +428,15 @@ export class SearchManager {
       }
 
       if (obsIds.length > 0) {
-        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: sqlOrderBy };
+        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: requestedDateOrder ?? 'relevance' };
         observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
-        if (sqlOrderBy === 'relevance') {
+        if (!requestedDateOrder) {
           observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
         }
       }
       if (sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
-          orderBy: sqlOrderBy,
+          orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
           platformSource: options.platformSource
@@ -457,7 +444,7 @@ export class SearchManager {
       }
       if (promptIds.length > 0) {
         prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
-          orderBy: sqlOrderBy,
+          orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
           platformSource: options.platformSource
@@ -466,6 +453,44 @@ export class SearchManager {
     }
 
     return { observations, sessions, prompts };
+  }
+
+  /**
+   * Exact selection for a date-ordered search on the Chroma path (#4135). Chroma picks its
+   * top-N candidates by relevance, so re-sorting only those by date misses the newest (or
+   * oldest) matches outside them. Each requested category is unioned with its FTS5 keyword
+   * matches, which SQL selects by date, then deduped by id, sorted by date and cut to `limit`.
+   */
+  private mergeKeywordMatchesByDate(
+    query: string,
+    dateOrder: 'date_desc' | 'date_asc',
+    chromaResults: SearchResults,
+    observationOptions: any,
+    options: any,
+    scope: { searchObservations: boolean; searchSessions: boolean; searchPrompts: boolean }
+  ): SearchResults {
+    const limit = options.limit || SEARCH_CONSTANTS.DEFAULT_LIMIT;
+    const byDate = (a: { created_at_epoch: number }, b: { created_at_epoch: number }) =>
+      dateOrder === 'date_desc' ? b.created_at_epoch - a.created_at_epoch : a.created_at_epoch - b.created_at_epoch;
+    const mergeByDate = <T extends { id: number; created_at_epoch: number }>(chromaRows: T[], keywordRows: T[]): T[] => {
+      const rowsById = new Map<number, T>();
+      for (const row of [...chromaRows, ...keywordRows]) {
+        if (!rowsById.has(row.id)) rowsById.set(row.id, row);
+      }
+      return Array.from(rowsById.values()).sort(byDate).slice(0, limit);
+    };
+
+    return {
+      observations: scope.searchObservations
+        ? mergeByDate(chromaResults.observations, this.sessionSearch.searchObservations(query, { ...observationOptions, orderBy: dateOrder, limit }))
+        : chromaResults.observations,
+      sessions: scope.searchSessions
+        ? mergeByDate(chromaResults.sessions, this.sessionSearch.searchSessions(query, { ...options, orderBy: dateOrder, limit }))
+        : chromaResults.sessions,
+      prompts: scope.searchPrompts
+        ? mergeByDate(chromaResults.prompts, this.sessionSearch.searchUserPrompts(query, { ...options, orderBy: dateOrder, limit }))
+        : chromaResults.prompts,
+    };
   }
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
@@ -584,6 +609,17 @@ export class SearchManager {
         if (searchPrompts) {
           prompts = this.sessionSearch.searchUserPrompts(query, options);
         }
+      }
+
+      if (!chromaFailed && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
+        ({ observations, sessions, prompts } = this.mergeKeywordMatchesByDate(
+          query,
+          options.orderBy,
+          { observations, sessions, prompts },
+          { ...options, type: effectiveObsType, concepts, files },
+          options,
+          { searchObservations, searchSessions, searchPrompts }
+        ));
       }
     }
     // PATH 3: FTS5 KEYWORD SEARCH (Chroma not initialized)
@@ -713,7 +749,9 @@ export class SearchManager {
     const resultsByDate = groupByDate(
       limitedResults,
       item => item.created_at,
-      { order: options.orderBy === 'date_desc' ? 'desc' : 'asc' }
+      // Date orders render their day groups in that order; relevance-ordered results keep the
+      // order in which each day's first (most relevant) result appears.
+      { order: options.orderBy === 'date_desc' ? 'desc' : options.orderBy === 'date_asc' ? 'asc' : 'first-seen' }
     );
 
     const lines: string[] = [];

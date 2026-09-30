@@ -88,7 +88,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100, // CHROMA_BATCH_SIZE
         undefined 
       );
     });
@@ -188,7 +188,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100,
         { doc_type: 'observation' }
       );
     });
@@ -203,7 +203,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100,
         { doc_type: 'session_summary' }
       );
     });
@@ -218,7 +218,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100,
         { doc_type: 'user_prompt' }
       );
     });
@@ -233,7 +233,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100,
         { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
       );
     });
@@ -249,7 +249,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100,
         { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] }
       );
     });
@@ -264,7 +264,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100,
         { platform_source: 'cursor' }
       );
     });
@@ -281,7 +281,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100,
         { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] }
       );
     });
@@ -296,7 +296,7 @@ describe('ChromaSearchStrategy', () => {
 
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
-        1000,
+        100,
         { doc_type: 'observation' }
       );
     });

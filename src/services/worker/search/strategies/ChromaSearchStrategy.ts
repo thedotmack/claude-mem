@@ -29,14 +29,6 @@ export class ChromaSearchStrategy {
     };
   }
 
-  private getChromaCandidateLimit(
-    orderBy: 'relevance' | 'date_desc' | 'date_asc'
-  ): number {
-    return orderBy === 'date_desc' || orderBy === 'date_asc'
-      ? SEARCH_CONSTANTS.CHROMA_DATE_ORDER_BATCH_SIZE
-      : SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
-  }
-
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
     const {
       query,
@@ -86,10 +78,9 @@ export class ChromaSearchStrategy {
       dateRange?: DateRange;
     }
   ): Promise<StrategySearchResult> {
-    const sqlOrderBy = options.orderBy;
     const chromaResults = await this.chromaSync.queryChroma(
       query,
-      this.getChromaCandidateLimit(sqlOrderBy),
+      SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
       whereFilter
     );
 
@@ -107,6 +98,8 @@ export class ChromaSearchStrategy {
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
+
+    const sqlOrderBy = options.orderBy;
 
     if (categorized.obsIds.length > 0) {
       const obsOptions = {
