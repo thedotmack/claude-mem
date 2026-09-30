@@ -650,6 +650,62 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     }
   });
 
+  it('resolves a valid CLAUDE_PLUGIN_ROOT without scanning the plugin cache (#3449, #4121)', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cm-root-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const shimBin = mkdtempSync(path.join(tmpdir(), 'cm-bin-'));
+    const cacheScanMarker = path.join(home, 'cache-scan-ran');
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(root, 'scripts', file), '');
+    }
+    // Only the cache scan sorts with `sort -r`; the NVM PATH prelude sorts by
+    // -t. keys. This shim records `-r` calls and passes input through.
+    writeFileSync(
+      path.join(shimBin, 'sort'),
+      '#!/bin/sh\n[ "$1" = "-r" ] && printf touched > "$CACHE_SCAN_MARKER"\ncat\n',
+    );
+    chmodSync(path.join(shimBin, 'sort'), 0o755);
+
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const codexCommands = Object.keys(RULE_A_EXPECTATIONS['plugin/hooks/codex-hooks.json']).map(
+      (dottedPath) => ({ dottedPath, command: hookCommandByPath(codexHooks, dottedPath)! }),
+    );
+
+    try {
+      for (const { dottedPath, command } of [...claudeCommands(), ...codexCommands]) {
+        rmSync(cacheScanMarker, { force: true });
+        const { status, stdout } = shellEval(instrument(command), {
+          CLAUDE_PLUGIN_ROOT: root,
+          HOME: home,
+          CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
+          PATH: `${shimBin}${path.delimiter}${process.env.PATH ?? ''}`,
+        });
+        expect({ dottedPath, status }).toEqual({ dottedPath, status: 0 });
+        expectResolvedPath(stdout, root);
+        expect({ dottedPath, cacheScanned: existsSync(cacheScanMarker) }).toEqual({ dottedPath, cacheScanned: false });
+      }
+
+      // Control: with an invalid CLAUDE_PLUGIN_ROOT the cache scan still runs,
+      // so the shim above would have caught a fast path that never engaged.
+      rmSync(cacheScanMarker, { force: true });
+      const [{ command: sessionStartCommand }] = claudeCommands().filter(
+        ({ dottedPath }) => dottedPath === 'SessionStart.0.1',
+      );
+      shellEval(instrument(sessionStartCommand), {
+        CLAUDE_PLUGIN_ROOT: path.join(home, 'not-a-plugin-root'),
+        HOME: home,
+        CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
+        PATH: `${shimBin}${path.delimiter}${process.env.PATH ?? ''}`,
+      });
+      expect(existsSync(cacheScanMarker)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+      rmSync(shimBin, { recursive: true, force: true });
+    }
+  });
+
   it('resolves _P from the cache directory when CLAUDE_PLUGIN_ROOT is unset', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');

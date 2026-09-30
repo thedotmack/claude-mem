@@ -229,6 +229,7 @@ export class SessionStore {
     this.ensureTelegramWrapupsTable();
     this.ensureSessionCwdColumn();
     this.dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers();
+    this.ensureProjectNocaseIndexes();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1953,6 +1954,21 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
   }
 
+  // v55 — #3531: retrieval compares `project`/`merged_into_project` with COLLATE
+  // NOCASE, so checkouts whose directory names differ only in case read one
+  // bucket. Stored keys are NOT rewritten (no re-key, nothing to remap for
+  // cloud sync). The BINARY indexes cannot serve a NOCASE predicate, so these
+  // keep the hot read paths on an index seek. Runs last: v33 rebuilds
+  // sdk_sessions and would drop an index created on the old table.
+  private ensureProjectNocaseIndexes(): void {
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_project_nocase ON observations(project COLLATE NOCASE)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_merged_into_nocase ON observations(merged_into_project COLLATE NOCASE)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_project_nocase ON session_summaries(project COLLATE NOCASE)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_merged_into_nocase ON session_summaries(merged_into_project COLLATE NOCASE)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project_nocase ON sdk_sessions(project COLLATE NOCASE)');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(55, new Date().toISOString());
+  }
+
   private addObservationSubagentColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
 
@@ -2359,6 +2375,23 @@ export class SessionStore {
     return session.memory_session_id ?? memorySessionId;
   }
 
+  /**
+   * Every stored spelling of `project` that matches it case-insensitively,
+   * always including `project` itself (#3531). SQLite reads compare with
+   * COLLATE NOCASE, but Chroma metadata filters compare exactly, so semantic
+   * search hands Chroma each spelling it should accept.
+   */
+  getProjectKeyCaseVariants(project: string): string[] {
+    const rows = this.db.prepare(`
+      SELECT project AS key FROM sdk_sessions WHERE project = ? COLLATE NOCASE
+      UNION SELECT project FROM observations WHERE project = ? COLLATE NOCASE
+      UNION SELECT merged_into_project FROM observations WHERE merged_into_project = ? COLLATE NOCASE
+      UNION SELECT project FROM session_summaries WHERE project = ? COLLATE NOCASE
+      UNION SELECT merged_into_project FROM session_summaries WHERE merged_into_project = ? COLLATE NOCASE
+    `).all(project, project, project, project, project) as Array<{ key: string }>;
+    return Array.from(new Set([project, ...rows.map(row => row.key)]));
+  }
+
   getAllProjects(platformSource?: string): string[] {
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
     let query = `
@@ -2484,7 +2517,7 @@ export class SessionStore {
           CASE WHEN sum.memory_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
         FROM sdk_sessions s
         LEFT JOIN session_summaries sum ON s.memory_session_id = sum.memory_session_id
-        WHERE s.project = ? AND s.memory_session_id IS NOT NULL
+        WHERE s.project COLLATE NOCASE = ? AND s.memory_session_id IS NOT NULL
         ${platformClause}
         GROUP BY s.memory_session_id
         ORDER BY s.started_at_epoch DESC
@@ -2593,7 +2626,7 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      additionalConditions.push('(o.project COLLATE NOCASE = ? OR o.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     }
 
@@ -3276,7 +3309,7 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      additionalConditions.push('(ss.project COLLATE NOCASE = ? OR ss.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     }
 
@@ -3321,7 +3354,7 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('s.project = ?');
+      additionalConditions.push('s.project COLLATE NOCASE = ?');
       params.push(project);
     }
 
@@ -3388,10 +3421,10 @@ export class SessionStore {
 
       if (project) {
         if (includeMergedProject) {
-          conditions.push(`(${rowAlias}.project = ? OR ${rowAlias}.merged_into_project = ?)`);
+          conditions.push(`(${rowAlias}.project COLLATE NOCASE = ? OR ${rowAlias}.merged_into_project COLLATE NOCASE = ?)`);
           params.push(project, project);
         } else {
-          conditions.push(`${rowAlias}.project = ?`);
+          conditions.push(`${rowAlias}.project COLLATE NOCASE = ?`);
           params.push(project);
         }
       }
