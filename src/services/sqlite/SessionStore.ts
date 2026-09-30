@@ -10,6 +10,7 @@ import {
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
+  AdvisorCallRecord,
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
@@ -240,6 +241,7 @@ export class SessionStore {
     this.ensureSessionCwdColumn();
     this.dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers();
     this.ensureProjectNocaseIndexes();
+    this.ensureAdvisorCallsTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -2041,6 +2043,133 @@ export class SessionStore {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_merged_into_nocase ON session_summaries(merged_into_project COLLATE NOCASE)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project_nocase ON sdk_sessions(project COLLATE NOCASE)');
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(55, new Date().toISOString());
+  }
+
+  // v58 — advisor_calls: a durable, verbatim record of every `advisor` tool
+  // call. The advisor is a server-side tool (server_tool_use in the
+  // transcript): it never fires PostToolUse and never enters the observation
+  // pipeline, so rows come from the Stop hook's transcript scan (see
+  // shared/advisor-transcript.ts) via POST /api/advisor-calls, and only when
+  // CLAUDE_MEM_CAPTURE_ADVISOR_CALLS is on. The advice is stored in full; the
+  // forwarded context is not (it already lives in the transcript), only a
+  // pointer to it (transcript path + byte offset) and the turn's user message.
+  // tool_use_id is UNIQUE so replayed scans are no-ops. Local only: not synced.
+  //
+  // Guarded by introspection (CREATE ... IF NOT EXISTS) like the other late
+  // migrations, and runs last so no older sdk_sessions rebuild can drop it.
+  private ensureAdvisorCallsTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS advisor_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_db_id INTEGER NOT NULL,
+        content_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        platform_source TEXT NOT NULL,
+        tool_use_id TEXT NOT NULL,
+        advisor_model TEXT,
+        cwd TEXT,
+        last_user_message TEXT,
+        transcript_path TEXT,
+        transcript_byte_offset INTEGER,
+        advice TEXT NOT NULL,
+        occurred_at_epoch INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_advisor_calls_tool_use ON advisor_calls(tool_use_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_session ON advisor_calls(session_db_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_project ON advisor_calls(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_occurred ON advisor_calls(occurred_at_epoch DESC)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(58, new Date().toISOString());
+  }
+
+  /**
+   * Insert an advisor call; a duplicate tool_use_id (replayed transcript
+   * scan, re-fired Stop hook) is ignored. Returns the row id and whether
+   * this call actually inserted it.
+   */
+  recordAdvisorCall(input: {
+    sessionDbId: number;
+    contentSessionId: string;
+    project: string;
+    platformSource: string;
+    toolUseId: string;
+    advisorModel?: string | null;
+    cwd?: string | null;
+    lastUserMessage?: string | null;
+    transcriptPath?: string | null;
+    transcriptByteOffset?: number | null;
+    advice: string;
+    occurredAtEpoch: number;
+  }): { id: number; inserted: boolean } {
+    const now = new Date();
+
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO advisor_calls
+      (session_db_id, content_session_id, project, platform_source, tool_use_id, advisor_model, cwd, last_user_message, transcript_path, transcript_byte_offset, advice, occurred_at_epoch, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.sessionDbId,
+      input.contentSessionId,
+      input.project,
+      input.platformSource,
+      input.toolUseId,
+      input.advisorModel ?? null,
+      input.cwd ?? null,
+      input.lastUserMessage ?? null,
+      input.transcriptPath ?? null,
+      input.transcriptByteOffset ?? null,
+      input.advice,
+      input.occurredAtEpoch,
+      now.toISOString(),
+      now.getTime()
+    );
+
+    if (result.changes > 0) {
+      return { id: Number(result.lastInsertRowid), inserted: true };
+    }
+
+    const existing = this.db.prepare('SELECT id FROM advisor_calls WHERE tool_use_id = ?').get(input.toolUseId) as { id: number } | undefined;
+    return { id: existing?.id ?? 0, inserted: false };
+  }
+
+  getAdvisorCalls(offset: number, limit: number, project?: string, platformSource?: string): { items: AdvisorCallRecord[]; hasMore: boolean; offset: number; limit: number } {
+    let query = 'SELECT * FROM advisor_calls';
+    const params: SQLQueryBindings[] = [];
+    const conditions: string[] = [];
+
+    if (project) {
+      conditions.push('project = ?');
+      params.push(project);
+    } else {
+      conditions.push('project != ?');
+      params.push(OBSERVER_SESSIONS_PROJECT);
+    }
+    if (platformSource) {
+      conditions.push('platform_source = ?');
+      params.push(platformSource);
+    }
+    query += ` WHERE ${conditions.join(' AND ')}`;
+
+    query += ' ORDER BY occurred_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+
+    const results = this.db.prepare(query).all(...params) as AdvisorCallRecord[];
+
+    return {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
+      offset,
+      limit
+    };
+  }
+
+  getAdvisorCallById(id: number): AdvisorCallRecord | null {
+    const row = this.db.prepare('SELECT * FROM advisor_calls WHERE id = ?').get(id) as AdvisorCallRecord | undefined;
+    return row ?? null;
   }
 
   private addObservationSubagentColumns(): void {
