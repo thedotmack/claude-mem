@@ -843,12 +843,17 @@ export function mergeSettings(
   settingsPath: string = USER_SETTINGS_PATH,
 ): boolean {
   const result = updateSettingsDocument(settingsPath, updates, {}, undefined, { quarantineCorrupt: true });
+  if (result.status === 'refused') {
+    const reason = result.error instanceof Error ? result.error.message : String(result.error);
+    // A quarantined file is moved back when the fresh write fails; quarantinedTo
+    // survives only if even that move failed, so say where the bytes are.
+    log.error(result.quarantinedTo
+      ? `Failed to write settings to ${settingsPath}: ${reason}. Its unreadable previous contents are in ${result.quarantinedTo}.`
+      : `Failed to write settings to ${settingsPath}: ${reason}`);
+    return false;
+  }
   if (result.quarantinedTo) {
     log.warn(`${settingsPath} could not be read, so it was moved to ${result.quarantinedTo} and a fresh settings file was started. Copy back any settings you still need from it.`);
-  }
-  if (result.status === 'refused') {
-    log.error(`Failed to write settings to ${settingsPath}: ${result.error instanceof Error ? result.error.message : String(result.error)}`);
-    return false;
   }
   // settings.json can carry tokens (CMEM Pro setup token, provider API
   // keys); a fresh file inherits the umask (usually 0644), leaving them

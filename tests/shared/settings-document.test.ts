@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { describe, expect, it, setSystemTime } from 'bun:test';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import {
   classifySettingsDocument,
   ensureSettingsDocument,
@@ -47,6 +47,35 @@ describe('settings document boundary', () => {
     expect(result.quarantinedTo).toMatch(/settings\.json\.corrupt-\d+$/);
     expect(readFileSync(result.quarantinedTo!, 'utf8')).toBe('{"CLAUDE_MEM_MODEL":"old"');
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ CLAUDE_MEM_MODEL: 'new' });
+  });
+
+  it('gives a second quarantine in the same millisecond its own name instead of replacing the first', () => {
+    setSystemTime(new Date('2026-09-30T12:00:00.000Z'));
+    try {
+      const path = tempFile('{"first":');
+      const first = updateSettingsDocument(path, { CLAUDE_MEM_MODEL: 'a' }, {}, undefined, { quarantineCorrupt: true });
+      writeFileSync(path, '{"second":');
+      const second = updateSettingsDocument(path, { CLAUDE_MEM_MODEL: 'b' }, {}, undefined, { quarantineCorrupt: true });
+
+      expect(first.status).toBe('created');
+      expect(second.status).toBe('created');
+      expect(second.quarantinedTo).not.toBe(first.quarantinedTo);
+      expect(readFileSync(first.quarantinedTo!, 'utf8')).toBe('{"first":');
+      expect(readFileSync(second.quarantinedTo!, 'utf8')).toBe('{"second":');
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it('moves the quarantined bytes back when the fresh write fails, so readers still find the file', () => {
+    const path = tempFile('{"CLAUDE_MEM_MODEL":"old"');
+    // A BigInt cannot be serialized, so the replacement write throws after the quarantine.
+    const result = updateSettingsDocument(path, {}, {}, target => { target.CLAUDE_MEM_BAD = BigInt(1); }, { quarantineCorrupt: true });
+
+    expect(result.status).toBe('refused');
+    expect(result.quarantinedTo).toBeUndefined();
+    expect(readFileSync(path, 'utf8')).toBe('{"CLAUDE_MEM_MODEL":"old"');
+    expect(readdirSync(dirname(path))).toEqual(['settings.json']);
   });
 
   it('writes into the env block of a wrapped document and keeps its root peers', () => {

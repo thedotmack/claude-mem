@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { persistServerSettings } from '../src/services/hooks/server-bootstrap.js';
+import { persistServerSettings, readServerKeyRotationState } from '../src/services/hooks/server-bootstrap.js';
 
 const VALUES = { apiKey: 'cmem_testkey', projectId: 'proj-test' };
 
@@ -147,5 +147,29 @@ describe('persistServerSettings: rotation retry marker', () => {
 
     persistServerSettings(settingsPath, VALUES);
     expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID).toBeUndefined();
+  });
+});
+
+describe('readServerKeyRotationState: only the retry marker resumes a rotation', () => {
+  it('treats settings without a marker as an ordinary rotation, never a pending revocation of the current key', () => {
+    persistServerSettings(settingsPath, VALUES);
+    const state = readServerKeyRotationState(JSON.parse(readFileSync(settingsPath, 'utf-8')));
+    expect(state).toEqual({ pendingRevocationKeyId: null, currentApiKey: 'cmem_testkey', currentProjectId: 'proj-test' });
+  });
+
+  it('resumes the pending revocation a failed rotation left behind', () => {
+    persistServerSettings(settingsPath, { ...VALUES, previousApiKeyId: 'old-key-id' });
+    const state = readServerKeyRotationState(JSON.parse(readFileSync(settingsPath, 'utf-8')));
+    expect(state.pendingRevocationKeyId).toBe('old-key-id');
+    expect(state.currentApiKey).toBe('cmem_testkey');
+  });
+
+  it('reads pre-rename CLAUDE_MEM_SERVER_BETA_* credentials and ignores empty values', () => {
+    expect(readServerKeyRotationState({
+      CLAUDE_MEM_SERVER_BETA_API_KEY: 'cmem_beta',
+      CLAUDE_MEM_SERVER_BETA_PROJECT_ID: 'proj-beta',
+      CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID: '',
+    })).toEqual({ pendingRevocationKeyId: null, currentApiKey: 'cmem_beta', currentProjectId: 'proj-beta' });
+    expect(readServerKeyRotationState(null)).toEqual({ pendingRevocationKeyId: null, currentApiKey: null, currentProjectId: null });
   });
 });

@@ -185,6 +185,31 @@ export function persistServerSettings(
   return true;
 }
 
+export interface ServerKeyRotationState {
+  /** Set only by an unfinished rotation (persistServerSettings' retry marker). */
+  pendingRevocationKeyId: string | null;
+  currentApiKey: string | null;
+  currentProjectId: string | null;
+}
+
+/**
+ * What `server keys rotate` finds in settings.json. Only an explicit
+ * CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID means an earlier rotation saved its new
+ * key but could not revoke the old one; that run finishes the revocation and
+ * mints nothing. The current key's own id is never a pending revocation: an
+ * ordinary rotation revokes it only after its replacement is saved.
+ */
+export function readServerKeyRotationState(flat: Record<string, unknown> | null | undefined): ServerKeyRotationState {
+  const nonEmpty = (value: unknown): string | null =>
+    typeof value === 'string' && value.length > 0 ? value : null;
+  return {
+    pendingRevocationKeyId: nonEmpty(flat?.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID),
+    // The canonical key first, then the pre-rename CLAUDE_MEM_SERVER_BETA_* name.
+    currentApiKey: nonEmpty(flat?.CLAUDE_MEM_SERVER_API_KEY ?? flat?.CLAUDE_MEM_SERVER_BETA_API_KEY),
+    currentProjectId: nonEmpty(flat?.CLAUDE_MEM_SERVER_PROJECT_ID ?? flat?.CLAUDE_MEM_SERVER_BETA_PROJECT_ID),
+  };
+}
+
 export function createRawApiKey(): string {
   return `cmem_${randomBytes(32).toString('base64url')}`;
 }

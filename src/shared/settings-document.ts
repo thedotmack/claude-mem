@@ -49,11 +49,24 @@ function loadDocument(path: string): { exists: boolean; document?: SettingsDocum
 }
 
 /**
+ * First unused `<path>.corrupt-<epoch-ms>[-n]` name, so a second quarantine in
+ * the same millisecond never replaces an earlier backup.
+ */
+function unusedQuarantinePath(path: string): string {
+  const base = `${path}.corrupt-${Date.now()}`;
+  let candidate = base;
+  for (let suffix = 1; existsSync(candidate); suffix++) candidate = `${base}-${suffix}`;
+  return candidate;
+}
+
+/**
  * Apply `updates` (then `mutate`) to the settings target and write atomically.
  * An unreadable existing file is never overwritten: by default the write is
  * refused and reported. `quarantineCorrupt` (the installer only) instead moves
  * the unreadable file aside to `<path>.corrupt-<epoch-ms>`, keeping the user's
- * bytes, and writes a fresh document — so a corrupt file cannot stop setup.
+ * bytes, and writes a fresh document — so a corrupt file cannot stop setup. If
+ * that fresh write fails, the bytes are moved back to `path`, so every reader
+ * still finds the file where it was.
  */
 export function updateSettingsDocument(
   path: string,
@@ -66,7 +79,7 @@ export function updateSettingsDocument(
   let quarantinedTo: string | undefined;
   if (loaded.error) {
     if (!options.quarantineCorrupt) return { status: 'refused', error: loaded.error };
-    quarantinedTo = `${path}.corrupt-${Date.now()}`;
+    quarantinedTo = unusedQuarantinePath(path);
     try {
       renameSync(path, quarantinedTo);
     } catch (error) {
@@ -86,7 +99,26 @@ export function updateSettingsDocument(
     writeJsonFileAtomic(path, document);
     return { status: loaded.exists ? 'updated' : 'created', document, quarantinedTo };
   } catch (error) {
+    if (quarantinedTo && restoreQuarantined(quarantinedTo, path)) quarantinedTo = undefined;
     return { status: 'refused', document: loaded.document, error, quarantinedTo };
+  }
+}
+
+/**
+ * Move a quarantined file back after the fresh write failed. Returns false
+ * (the caller keeps reporting `quarantinedTo`) when something already took
+ * `path` or the move itself fails.
+ */
+function restoreQuarantined(quarantinedTo: string, path: string): boolean {
+  if (existsSync(path)) return false;
+  try {
+    renameSync(quarantinedTo, path);
+    return true;
+  } catch {
+    // [ANTI-PATTERN IGNORED]: the write error is what the caller reports; a
+    // false return keeps quarantinedTo in the result so it can say where the
+    // user's bytes are.
+    return false;
   }
 }
 
