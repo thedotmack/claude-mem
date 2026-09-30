@@ -21,7 +21,7 @@ import { isCmemGatewayUrl, writeProFallbackAt } from '../../shared/cmem-gateway.
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import type { ClassifiedProviderError } from './provider-errors.js';
-import { releaseQuotaProbe, tryAdmitQuotaProbe } from '../../shared/quota-cooldown.js';
+import { QUOTA_PROBE_STALE_MS } from '../../shared/quota-cooldown.js';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -81,11 +81,12 @@ export function getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
  * re-arm the marker, so a concurrent settings edit can be clobbered.
  *
  * Claiming makes it what the comment always said it was: exactly one probe.
- * It reuses the quota breaker's claim machinery under a DISTINCT key, because
- * `tryAdmitQuotaProbe` takes the cooldown per call and this path's period
- * (15 min) differs from the provider breaker's (30 min) — pointing both at one
- * key would let two callers reach contradictory answers about whether the same
- * breaker is armed.
+ * The claim is kept here, not in the quota breaker's map. That map admits
+ * every caller claim-free when no breaker is armed, and nothing arms one for
+ * the gateway — the marker IS its window — so routing the claim through it
+ * admitted the whole herd. Arming a breaker instead would persist it and
+ * mirror it into observer-health as "claude-mem is paused", which is false
+ * while the fallback keeps memory running on the Anthropic plan.
  */
 export function selectProviderForGenerator(): ProviderSelection {
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
@@ -95,12 +96,13 @@ export function selectProviderForGenerator(): ProviderSelection {
         return { provider: 'claude', gatewayProbeClaimId: null };
       }
       // Window elapsed: exactly one caller re-probes the gateway, the rest stay
-      // on the Anthropic plan until that probe resolves.
-      const admission = tryAdmitQuotaProbe('cmem-gateway', Date.now(), CMEM_FALLBACK_RETRY_MS);
-      if (!admission.admitted) {
+      // on the Anthropic plan until that probe resolves — a failure re-arms
+      // the marker, a success clears it, and every exit releases the claim.
+      const claimId = claimCmemGatewayProbe(Date.now());
+      if (claimId === null) {
         return { provider: 'claude', gatewayProbeClaimId: null };
       }
-      return { provider: 'openrouter', gatewayProbeClaimId: admission.claimId };
+      return { provider: 'openrouter', gatewayProbeClaimId: claimId };
     }
     return { provider: 'openrouter', gatewayProbeClaimId: null };
   }
@@ -110,9 +112,35 @@ export function selectProviderForGenerator(): ProviderSelection {
   };
 }
 
-/** Release a gateway re-probe claim taken by `selectProviderForGenerator`. */
+/**
+ * The gateway re-probe in flight, or null. In-memory only, like the quota
+ * breaker's own claim: a restart kills the generator that held it, and the
+ * window it guards is the marker on disk, which survives.
+ */
+let gatewayProbe: { claimId: number; claimedAtMs: number } | null = null;
+let nextGatewayProbeClaimId = 1;
+
+/** Claim the single gateway re-probe; null while another is in flight. */
+function claimCmemGatewayProbe(nowMs: number): number | null {
+  // A holder that never released within the stale window is presumed dead, so
+  // a lost claim cannot wedge the gateway shut. The takeover mints a fresh id:
+  // the abandoned owner's late release then finds a claim it does not own.
+  if (gatewayProbe !== null && nowMs - gatewayProbe.claimedAtMs < QUOTA_PROBE_STALE_MS) {
+    return null;
+  }
+  gatewayProbe = { claimId: nextGatewayProbeClaimId++, claimedAtMs: nowMs };
+  return gatewayProbe.claimId;
+}
+
+/**
+ * Release a gateway re-probe claim taken by `selectProviderForGenerator`.
+ * Scoped to the caller's own claim: null (a claim-free run) or an id that was
+ * since taken over releases nothing.
+ */
 export function releaseCmemGatewayProbe(claimId: number | null): void {
-  releaseQuotaProbe('cmem-gateway', claimId);
+  if (claimId !== null && gatewayProbe?.claimId === claimId) {
+    gatewayProbe = null;
+  }
 }
 
 /**

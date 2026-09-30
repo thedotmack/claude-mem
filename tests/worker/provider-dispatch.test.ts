@@ -1,5 +1,5 @@
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -7,9 +7,13 @@ import {
   CMEM_FALLBACK_RETRY_MS,
   getSelectedProvider,
   recordCmemFallbackIfEligible,
+  releaseCmemGatewayProbe,
+  selectProviderForGenerator,
   shouldUseCmemFallback,
+  type ProviderSelection,
 } from '../../src/services/worker/provider-dispatch.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import { QUOTA_PROBE_STALE_MS } from '../../src/shared/quota-cooldown.js';
 
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
 
@@ -107,6 +111,84 @@ describe('provider-dispatch', () => {
       process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
       process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
       expect(getSelectedProvider()).toBe('claude');
+    });
+  });
+
+  describe('selectProviderForGenerator — the single gateway re-probe', () => {
+    // The claim is process-wide state: hand back every one a test takes.
+    const takenClaims: Array<number | null> = [];
+
+    afterEach(() => {
+      setSystemTime();
+      while (takenClaims.length > 0) releaseCmemGatewayProbe(takenClaims.pop() ?? null);
+    });
+
+    function select(): ProviderSelection {
+      const selection = selectProviderForGenerator();
+      takenClaims.push(selection.gatewayProbeClaimId);
+      return selection;
+    }
+
+    function elapsedFallbackAt(): string {
+      return new Date(Date.now() - CMEM_FALLBACK_RETRY_MS - 1_000).toISOString();
+    }
+
+    it('keeps every caller on claude, claim-free, while the fallback window is fresh', () => {
+      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString() });
+      const selections = Array.from({ length: 5 }, select);
+      expect(selections).toEqual(Array.from({ length: 5 }, () => ({ provider: 'claude', gatewayProbeClaimId: null })));
+    });
+
+    it('admits exactly one of N concurrent callers once the window elapses', () => {
+      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsedFallbackAt() });
+      const selections = Array.from({ length: 10 }, select);
+
+      const probes = selections.filter(selection => selection.provider === 'openrouter');
+      expect(probes).toHaveLength(1);
+      expect(probes[0].gatewayProbeClaimId).not.toBeNull();
+      expect(selections.filter(selection => selection.provider === 'claude')).toHaveLength(9);
+    });
+
+    it('re-admits a caller only after the probe releases its own claim', () => {
+      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsedFallbackAt() });
+      const probe = select();
+      expect(probe.provider).toBe('openrouter');
+      expect(probe.gatewayProbeClaimId).not.toBeNull();
+
+      // A claim-free run and a foreign claim id release nothing.
+      releaseCmemGatewayProbe(null);
+      releaseCmemGatewayProbe((probe.gatewayProbeClaimId ?? 0) + 1_000);
+      expect(select().provider).toBe('claude');
+
+      releaseCmemGatewayProbe(probe.gatewayProbeClaimId);
+      const next = select();
+      expect(next.provider).toBe('openrouter');
+      expect(next.gatewayProbeClaimId).not.toBe(probe.gatewayProbeClaimId);
+    });
+
+    it('lets a stale probe be taken over, so a lost claim cannot wedge the gateway shut', () => {
+      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsedFallbackAt() });
+      const probe = select();
+      expect(probe.provider).toBe('openrouter');
+
+      setSystemTime(new Date(Date.now() + QUOTA_PROBE_STALE_MS + 1_000));
+      const takeover = select();
+      expect(takeover.provider).toBe('openrouter');
+      expect(takeover.gatewayProbeClaimId).not.toBe(probe.gatewayProbeClaimId);
+
+      // The abandoned owner's late release leaves the new claim alone.
+      releaseCmemGatewayProbe(probe.gatewayProbeClaimId);
+      expect(select().provider).toBe('claude');
+    });
+
+    it('takes no claim for a user-owned openrouter.ai key', () => {
+      pinOpenRouterEnv({
+        CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+        CLAUDE_MEM_PRO_FALLBACK_AT: elapsedFallbackAt(),
+      });
+      expect(Array.from({ length: 3 }, select)).toEqual(
+        Array.from({ length: 3 }, () => ({ provider: 'openrouter', gatewayProbeClaimId: null })),
+      );
     });
   });
 

@@ -69,6 +69,17 @@ export function isCmemGatewayUrl(url: string | undefined | null): boolean {
 }
 
 /**
+ * Whether an API key is the account-owned cmem.ai memory key. Every key the
+ * gateway has issued is `cm_pro_` + 24 or 32 hex chars (the server-side
+ * validator the installer once mirrored, 9d6742f1a); the prefix alone is the
+ * test, so a future key length is still recognized. Such a key authenticates
+ * only against the gateway and must never be sent anywhere else.
+ */
+export function isCmemMemoryKey(apiKey: string | undefined | null): boolean {
+  return (apiKey ?? '').trim().startsWith('cm_pro_');
+}
+
+/**
  * Read settings.json while retaining both the complete document and the
  * subtree where claude-mem settings live. The legacy `{ env: {...} }` shape
  * may also contain peer root keys such as hooks and permissions; flattening
