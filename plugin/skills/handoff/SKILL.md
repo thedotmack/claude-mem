@@ -7,6 +7,8 @@ description: Generate a HANDOFF.md that captures goal, current state, files touc
 
 Generate a structured `HANDOFF.md` file that gives a fresh Claude session everything it needs to continue this work without dragging the current degraded context forward.
 
+claude-mem already injects recent observations into every new session, so the fresh agent starts with a timeline of what happened. The handoff adds what that timeline cannot: the goal, the failed attempts and why they failed, the current theory, and exact next steps, plus pointers into memory for deeper recall.
+
 ## When to Use
 
 - The session is long and Claude feels confused or repetitive
@@ -34,6 +36,8 @@ Think hard about the full arc of this conversation before writing. The handoff m
 6. **Next Steps** — Concrete, ordered actions for the fresh agent to take. Be specific: file paths, function names, commands to run. The fresh agent should be able to start on step 1 immediately.
 
 7. **Key Constraints and Context** — Any non-obvious constraints: environment specifics, user preferences expressed during this session, things the user explicitly said NOT to do, external dependencies, performance requirements, etc.
+
+8. **Memory Pointers** — If claude-mem's search tools are available, run `search` for this task's key terms and list the few observation IDs that matter most (a decision, the root cause, a failed approach), so the fresh agent can pull full details with `get_observations`. Also list one or two `search` queries worth re-running. Skip this section if the tools are not available.
 
 ## Writing Rules
 
@@ -97,6 +101,11 @@ Use this structure:
 
 - [Non-obvious constraint or preference the user expressed]
 - [Things explicitly ruled out]
+
+## Memory Pointers
+
+- Observations: [#ID — one line on why it matters]
+- Searches worth re-running: [`search` query]
 ```
 
 ## After Writing
@@ -106,6 +115,7 @@ Tell the user:
 1. That `HANDOFF.md` has been written
 2. To run `/clear` or start a new Claude Code session
 3. To open the new session and say: **"Read HANDOFF.md and continue from where we left off."**
-4. That the fresh agent will have no memory of this session, so the handoff doc is its only briefing
+4. That claude-mem gives the fresh agent the recent timeline automatically, and `HANDOFF.md` is its precise briefing on top of that
+5. That `HANDOFF.md` is a scratch file: don't commit it (delete it once the new session has picked up, or add it to `.gitignore`)
 
 Keep the message short. The user is ready to move — don't make them read a wall of text.
