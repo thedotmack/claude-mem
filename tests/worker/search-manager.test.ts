@@ -463,7 +463,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       result_count: 3,
       search_strategy: 'fts',
       chroma_available: true,
-      fallback_reason: 'chroma_error',
+      fallback_reason: 'chroma_zero_results',
     }));
   });
 
@@ -526,7 +526,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       result_count: 1,
       search_strategy: 'fts',
       chroma_available: true,
-      fallback_reason: 'chroma_error',
+      fallback_reason: 'chroma_zero_results',
     }));
   });
 
@@ -735,12 +735,19 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       {} as any,
     );
 
-    const result = await manager.search({ query: 'テスト', format: 'json', limit: 10 });
+    const telemetry = {};
+    const result = await manager.search({ query: 'テスト', format: 'json', limit: 10 }, telemetry);
 
     expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({ limit: 10 }));
     expect(result.observations).toEqual([observation]);
     expect(result.prompts).toEqual([userPrompt]);
     expect(result.totalResults).toBe(2);
+    expect(telemetry).toEqual(expect.objectContaining({
+      result_count: 2,
+      search_strategy: 'hybrid',
+      chroma_available: true,
+      fallback_reason: 'chroma_zero_results',
+    }));
   });
 
   it('does not touch SQLite when every requested category already has Chroma matches', async () => {
