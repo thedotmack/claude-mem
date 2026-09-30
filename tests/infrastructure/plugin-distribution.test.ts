@@ -626,6 +626,26 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     }
   });
 
+  it('falls back to the cache directory when CLAUDE_PLUGIN_ROOT is set but invalid', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    mkdirSync(path.join(cacheRoot, 'scripts'), { recursive: true });
+    writeFileSync(path.join(cacheRoot, 'scripts', 'version-check.js'), '');
+    writeFileSync(path.join(cacheRoot, 'scripts', 'bun-runner.js'), '');
+    writeFileSync(path.join(cacheRoot, 'scripts', 'worker-service.cjs'), '');
+    try {
+      for (const { command } of claudeCommands()) {
+        const { stdout } = shellEval(instrument(command), {
+          CLAUDE_PLUGIN_ROOT: path.join(home, 'missing-root'),
+          HOME: home,
+        });
+        expectResolvedPath(stdout, cacheRoot);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('prefers the highest cache version over the newest mtime and skips .orphaned_at dirs (2026-07-22 restart storm)', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
@@ -683,6 +703,24 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       });
       expect(status).toBe(0);
       expect(normalizeShellPath((stdout ?? '').split(':')[0])).toBe(normalizeShellPath(newestBin));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('skips the Claude hook NVM PATH probe on Windows shells', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-msys-'));
+    const newestBin = installFakeNvmNode(home, '20.11.0');
+    const prelude = claudePathPreludeFrom(commandHooksFrom('plugin/hooks/hooks.json')[0]);
+    try {
+      const { status, stdout } = shellEval(`${prelude} printf '%s' "$PATH"`, {
+        HOME: home,
+        PATH: '/usr/bin:/bin',
+        MSYSTEM: 'MINGW64',
+      });
+      expect(status).toBe(0);
+      expect(stdout).toBe('/usr/bin:/bin');
+      expect(stdout).not.toContain(normalizeShellPath(newestBin));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
