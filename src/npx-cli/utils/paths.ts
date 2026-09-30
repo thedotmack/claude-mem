@@ -6,6 +6,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 export { ensureDirectoryExists, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { resolvePluginRoot } from '../../shared/worker-utils.js';
 
 export const IS_WINDOWS = process.platform === 'win32';
 
@@ -81,9 +82,13 @@ export function readPluginVersion(): string {
   return '0.0.0';
 }
 
+/**
+ * Installed = the shared worker-script oracle finds a plugin root (cache,
+ * marketplace, or dev checkout) — the same answer the worker spawner uses, so a
+ * working cache-only install is never reported as missing (#3534).
+ */
 export function isPluginInstalled(): boolean {
-  const marketplaceDir = marketplaceDirectory();
-  return existsSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'));
+  return resolvePluginRoot() !== null;
 }
 
 export { readJsonSafe } from '../../utils/json-utils.js';
