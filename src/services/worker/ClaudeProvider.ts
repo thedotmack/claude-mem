@@ -36,7 +36,7 @@ import { resolveSummaryTierModel, resolveTierAlias } from './model-aliases.js';
 import { accumulateClaudeUsage, observerUsageLogFields } from './observer-usage.js';
 import {
   shouldRecycleConversation,
-  conversationChars,
+  describeGenerationUsage,
   resolveConversationMaxChars,
   windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
@@ -193,6 +193,26 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   // Default: treat unknown errors as transient (preserve old behavior of
   // retrying everything not explicitly marked unrecoverable).
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
+}
+
+/**
+ * The full context the model read on a turn: fresh input + cache writes +
+ * cache reads. This is the value that grows across an observer generation and
+ * eventually meets the model's window (#2956).
+ */
+export function computeFullContextTokens(
+  usage: {
+    input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  } | undefined | null
+): number {
+  if (!usage) return 0;
+  return (
+    (usage.input_tokens || 0) +
+    (usage.cache_creation_input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0)
+  );
 }
 
 export class ClaudeProvider {
@@ -479,9 +499,7 @@ export class ClaudeProvider {
             // Real per-response usage for telemetry (tokens_input includes the
             // full context the model read: fresh + cache writes + cache reads).
             session.lastUsage = {
-              input: (usage.input_tokens || 0) +
-                (usage.cache_creation_input_tokens || 0) +
-                (usage.cache_read_input_tokens || 0),
+              input: computeFullContextTokens(usage),
               output: usage.output_tokens || 0,
             };
 
@@ -561,6 +579,15 @@ export class ClaudeProvider {
             cache_read_input_tokens?: number;
             output_tokens?: number;
           } | undefined;
+          // What this turn actually read feeds the generation budget (#2957):
+          // the proxy history misses the SDK's system prompt and tool schemas.
+          // An init turn's reading is not kept, so a budget smaller than the
+          // init prompt cannot recycle every fresh generation on it. With the
+          // feed paced to one unanswered prompt, lastGeneratorSource names the
+          // prompt this result answers.
+          if (resultUsage && session.lastGeneratorSource !== 'init') {
+            session.lastContextTokens = computeFullContextTokens(resultUsage);
+          }
           const totalCostUsd = (message as any).total_cost_usd as number | undefined;
           let turnCostUsd: number | undefined;
           if (typeof totalCostUsd === 'number') {
@@ -574,11 +601,7 @@ export class ClaudeProvider {
           const pending = session.pendingCompressionEvent;
           if (pending) {
             session.pendingCompressionEvent = null;
-            const finalInput = resultUsage
-              ? (resultUsage.input_tokens || 0) +
-                (resultUsage.cache_creation_input_tokens || 0) +
-                (resultUsage.cache_read_input_tokens || 0)
-              : undefined;
+            const finalInput = resultUsage ? computeFullContextTokens(resultUsage) : undefined;
             const finalOutput = resultUsage ? resultUsage.output_tokens || 0 : undefined;
             telemetryBuffer.record('session_compressed', session.sessionDbId, {
               ...pending,
@@ -840,13 +863,13 @@ export class ClaudeProvider {
         // conversation server-side, but conversationHistory tracks every prompt
         // fed into it, so its size is the proxy for how close that conversation
         // is to the ceiling (#3800).
-        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars(session))) {
+        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars(session), session.lastContextTokens)) {
           await recycleObserverConversation(
             session,
             this.sessionManager,
             worker,
             'budget',
-            `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+            describeGenerationUsage(session.conversationHistory, session.lastContextTokens),
           );
           return;
         }

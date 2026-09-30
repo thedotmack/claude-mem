@@ -13,7 +13,7 @@ import { accumulateObserverUsage, observerUsageLogFields } from './observer-usag
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
 import {
   shouldRecycleConversation,
-  conversationChars,
+  describeGenerationUsage,
   resolveConversationMaxChars,
   windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
@@ -326,13 +326,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // Retire a full generation BEFORE sending, so the request that would cross
     // the ceiling is never paid for. The batch is preserved and drained by the
     // fresh generation the next ingest starts (#3800).
-    if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars(session))) {
+    if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars(session), session.lastContextTokens)) {
       await recycleObserverConversation(
         session,
         this.sessionManager,
         worker,
         'budget',
-        `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+        describeGenerationUsage(session.conversationHistory, session.lastContextTokens),
       );
       return;
     }
@@ -373,6 +373,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     // Billed usage counts even when the reply came back empty.
     accumulateObserverUsage(session, obsResponse);
+    this.recordMeasuredContext(session, obsResponse);
     // Both sides or nothing: a backend reporting only one of the two counts
     // must not produce a half-real event (input=0 → compression_ratio 0.0).
     session.lastUsage = this.buildLastUsage(obsResponse);
@@ -434,6 +435,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
 
     accumulateObserverUsage(session, summaryResponse);
+    this.recordMeasuredContext(session, summaryResponse);
     session.lastUsage = this.buildLastUsage(summaryResponse);
     const tokensUsed = summaryResponse.tokensUsed || 0;
 
@@ -447,6 +449,18 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
         sessionId: session.sessionDbId
       });
+    }
+  }
+
+  /**
+   * The prompt tokens a request actually read feed the generation budget
+   * (#2957). Called for observation and summary replies only: an init reading
+   * is never kept, so an init prompt larger than the budget cannot recycle
+   * every fresh generation on it.
+   */
+  private recordMeasuredContext(session: ActiveSession, result: ProviderQueryResult): void {
+    if (typeof result.inputTokens === 'number' && result.inputTokens > 0) {
+      session.lastContextTokens = result.inputTokens;
     }
   }
 

@@ -232,8 +232,8 @@ describe('SettingsDefaultsManager', () => {
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
-      });
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+    });
 
       it('should auto-migrate file from nested to flat schema', () => {
         const nestedSettings = {
@@ -249,6 +249,61 @@ describe('SettingsDefaultsManager', () => {
         const parsed = JSON.parse(content);
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
+      });
+
+      it('retains the env wrapper when it has root peers, and reads settings from it', () => {
+        const wrapped = {
+          theme: 'dark',
+          permissions: { defaultMode: 'auto' },
+          env: {
+            CLAUDE_MEM_MODEL: 'wrapped-model',
+          },
+        };
+        writeFileSync(settingsPath, JSON.stringify(wrapped));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_MODEL).toBe('wrapped-model');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual(wrapped);
+      });
+
+      it('reads root claude-mem keys when the env block beside them only holds Claude Code settings', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_MODEL: 'root-model',
+          env: { CLAUDE_CODE_PATH: '~/bin/claude' },
+        }));
+
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_MODEL).toBe('root-model');
+      });
+
+      it('should not overwrite the settings file when env is an array containing ["sentinel"]', () => {
+        const original = JSON.stringify({ env: ['sentinel'], CLAUDE_MEM_MODEL: 'keep-me' });
+        writeFileSync(settingsPath, original);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const after = readFileSync(settingsPath, 'utf-8');
+        const parsed = JSON.parse(after);
+        expect(Array.isArray(parsed)).toBe(false);
+        expect(parsed.env).toEqual(['sentinel']);
+        expect(parsed.CLAUDE_MEM_MODEL).toBe('keep-me');
+        expect(result.CLAUDE_MEM_MODEL).toBe('keep-me');
+      });
+
+      it('should preserve an object-valued env setting across repeated loads', () => {
+        const nestedValue = { enabled: true, sources: ['local'] };
+        writeFileSync(settingsPath, JSON.stringify({
+          env: {
+            env: nestedValue,
+            CLAUDE_MEM_MODEL: 'nested-model',
+          },
+        }));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
       });
 
       it('should preserve peer root keys instead of flattening a mixed nested document', () => {
@@ -712,6 +767,8 @@ describe('SettingsDefaultsManager', () => {
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
+      expect(defaults.CLAUDE_MEM_GROK_BOT_WEBHOOK_URL).toBeDefined();
+      expect(defaults.CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET).toBeDefined();
     });
 
     // #2753 — new key: empty by default (fall through to
@@ -782,7 +839,20 @@ describe('SettingsDefaultsManager', () => {
 
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+      });
+
+    it('keeps a wrapped document with a root peer intact, including a nested setting named env', () => {
+      const wrapped = {
+        theme: 'dark',
+        env: { env: 'keep-me', CLAUDE_MEM_MODEL: 'nested-model' },
+      };
+      writeFileSync(settingsPath, JSON.stringify(wrapped));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual(wrapped);
     });
 
     it('should prioritize env var over default', () => {

@@ -5,6 +5,7 @@ import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
+import { settingsTarget } from './settings-document.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -195,6 +196,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
+  CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: string;
+  CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: string;
   CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: string;
   CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_INJECT_TIER: string;
@@ -383,6 +386,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '521e962d-2ec3-4488-bfbc-54d5209ce118,95601360-61f7-4fd9-bb3a-2c976b2b85c0',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
+    // Optional brainbeat webhook: awareness-trigger matches are POSTed here
+    // (off while empty). File/env only; both are masked on GET /api/settings.
+    CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: '',
+    CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: '',
     // Live Grok Bot Memory INDEX. Worker writes zz-claude-mem-inject.md as
     // observations land. Default on; no-op when no Grok Bot seats exist.
     CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'true',
@@ -489,12 +496,12 @@ export class SettingsDefaultsManager {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
-      let flatSettings = settings;
-      const hasNestedEnv = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env);
+      // Where claude-mem's keys live: the same rule every settings writer uses
+      // (settings-document.ts), so a value written anywhere is read back here.
+      let flatSettings: Record<string, any> = settingsTarget(settings);
+      const hasNestedEnv = flatSettings !== settings;
       const hasPeerRootKeys = hasNestedEnv && Object.keys(settings).some((key) => key !== 'env');
       if (hasNestedEnv) {
-        flatSettings = settings.env;
-
         // A legacy file containing only `{ env: {...} }` can be flattened
         // safely. If it also contains peer root keys (hooks, permissions,
         // theme, etc.), retain the wrapper: flattening would destroy user data.

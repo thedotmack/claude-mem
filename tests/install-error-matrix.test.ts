@@ -94,6 +94,18 @@ describe('error taxonomy', () => {
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
   });
 
+  it('classifies a tree-sitter CLI provisioning failure with the repair remediation', () => {
+    const cat = classifyError(new Error('tree-sitter-cli provisioning failed in /x: exited with code 2'), {
+      component: 'tree-sitter-cli-cache',
+      phase: 'dependency-install',
+    });
+    expect(cat.id).toBe('tree-sitter-cli-cache-provisioning-failed');
+    const remediation = cat.remediation({ platform: 'win32', dataDir: 'C:\\temp\\claude-mem' });
+    expect(remediation).toContain('npx claude-mem repair');
+    expect(remediation).toContain('C:\\temp\\claude-mem/last-install-error.json');
+    expect(remediation).toContain('CLAUDE_MEM_INSTALL_TIMEOUT_MS');
+  });
+
   it('defaults unknown errors to ABORT (fail-loud)', () => {
     const cat = classifyError(new Error('something we have never seen'), {
       component: 'mystery',
