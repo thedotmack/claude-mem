@@ -19,6 +19,11 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import {
+  MAX_CONSECUTIVE_STALL_RESUMES,
+  RESPONSE_STALL_RESUME_DELAY_MS,
+  planResponseStallResume,
+} from '../../session/response-pacer.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
@@ -50,6 +55,7 @@ import {
   claudeCliSelfHealAttemptsInWindow,
   SELF_HEAL_MAX_ATTEMPTS,
 } from '../../stale-spawn-recovery.js';
+import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -99,6 +105,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private completionHandler: SessionCompletionHandler,
   ) {
     super();
+    this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
   }
 
   /**
@@ -146,6 +153,27 @@ export class SessionRoutes extends BaseRouteHandler {
     void this.workerService.shutdown('restart');
     return true;
   }
+
+  private formatTelegramWrapup = async (input: TelegramWrapupFormatterInput): Promise<string> => {
+    const activeSession = this.sessionManager.getSession(input.sessionDbId);
+    const selection = activeSession?.currentProvider
+      ? { provider: activeSession.currentProvider, gatewayProbeClaimId: null }
+      : selectProviderForGenerator();
+    const activeModelId = activeSession?.currentProvider ? activeSession.lastModelId : undefined;
+
+    try {
+      switch (selection.provider) {
+        case 'gemini':
+          return await this.geminiAgent.formatTelegramWrapup(input, activeModelId);
+        case 'openrouter':
+          return await this.openRouterAgent.formatTelegramWrapup(input, activeModelId);
+        default:
+          return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
+      }
+    } finally {
+      releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+    }
+  };
 
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
@@ -374,6 +402,12 @@ export class SessionRoutes extends BaseRouteHandler {
   ): Promise<void> {
     if (!session) return;
 
+    // A generator is starting, so a pending stall resume has nothing left to do.
+    if (session.stallResumeTimer !== undefined) {
+      clearTimeout(session.stallResumeTimer);
+      session.stallResumeTimer = undefined;
+    }
+
     if (session.abortController.signal.aborted) {
       logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
         sessionId: session.sessionDbId
@@ -584,6 +618,33 @@ export class SessionRoutes extends BaseRouteHandler {
           }, 0);
           resume.unref?.();
         }
+
+        // A response stall preserved its claimed batch but, like a recycle, has
+        // no later ingest guaranteed to pick it up. Resume after a delay, a
+        // bounded number of times in a row; an answered queued-work turn resets
+        // the count (#4066).
+        if (reason === 'transport:response_stall') {
+          const { resume, attempts } = planResponseStallResume(session);
+          if (!resume) {
+            logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {
+              sessionId: session.sessionDbId,
+              consecutiveStalls: attempts,
+              maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
+            });
+          } else {
+            const resume = setTimeout(() => {
+              session.stallResumeTimer = undefined;
+              void this.ensureGeneratorRunning(session.sessionDbId, 'response-stall')
+                .catch(error => {
+                  logger.error('SESSION', 'Failed to resume the observer after a response stall', {
+                    sessionId: session.sessionDbId,
+                  }, error instanceof Error ? error : new Error(String(error)));
+                });
+            }, RESPONSE_STALL_RESUME_DELAY_MS);
+            resume.unref?.();
+            session.stallResumeTimer = resume;
+          }
+        }
       });
     session.generatorPromise = generatorPromise;
   }
@@ -603,6 +664,11 @@ export class SessionRoutes extends BaseRouteHandler {
       '/api/sessions/summarize',
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
+    );
+    app.post(
+      '/api/sessions/session-end',
+      validateBody(SessionRoutes.sessionEndSchema),
+      this.handleSessionEnd.bind(this)
     );
   }
 
@@ -640,6 +706,13 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     observedModel: z.string().min(1).max(200).optional(),
     observedBilling: z.string().min(1).max(40).optional(),
+  }).passthrough();
+
+  private static readonly sessionEndSchema = z.object({
+    contentSessionId: z.string().min(1),
+    platformSource: z.string().optional(),
+    reason: z.string().optional(),
+    cwd: z.string().optional(),
   }).passthrough();
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -733,6 +806,21 @@ export class SessionRoutes extends BaseRouteHandler {
     this.eventBroadcaster.broadcastSummarizeQueued();
 
     res.json({ status: 'queued' });
+  });
+
+  private handleSessionEnd = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId } = req.body;
+    const platformSource = this.getPlatformSourceFromRequest(req);
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+
+    if (sessionDbId === null) {
+      res.json({ status: 'unknown_session' });
+      return;
+    }
+
+    await this.sessionManager.requestSessionWrapup(sessionDbId);
+    res.json({ status: 'accepted' });
   });
 
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -847,6 +935,20 @@ export class SessionRoutes extends BaseRouteHandler {
       });
       return;
     }
+
+    // A prompt this route ACCEPTS on a row a previous end already completed
+    // means the session carried on, so put it back to active and let the next
+    // end stamp the real completion time (#4080).
+    //
+    // After the privacy and duplicate gates, not before them. Both of those
+    // return early without saving a prompt or starting a generator, so a
+    // reopen above them would clear the completion of a session nothing is
+    // going to finalize again — a retry of an already-saved prompt would leave
+    // the row 'active' for good, which is the bug in the other direction
+    // (#2373). Only this route reopens at all: the observation and summarize
+    // routes can carry trailing traffic from the turn that just ended, where
+    // 'completed' is the truth.
+    store.reopenCompletedSession(sessionDbId);
 
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
 

@@ -2,7 +2,7 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, realpathSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
@@ -10,6 +10,10 @@ import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
+import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+
+/** Bound Windows PowerShell Start-Process so a stalled shell cannot hold the spawn lock forever (#3529 Greptile P1). */
+export const WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.POWERSHELL_COMMAND);
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -42,20 +46,31 @@ function isBunExecutablePath(executablePath: string | undefined | null): boolean
 }
 
 function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): string | null {
-  const command = platform === 'win32' ? `where ${binaryName}` : `which ${binaryName}`;
+  const lookupCommand = platform === 'win32' ? 'where.exe' : 'which';
+  const lookupArgs = [binaryName];
 
   let output: string;
   try {
-    output = execSync(command, {
+    output = execFileSync(lookupCommand, lookupArgs, {
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf-8',
       windowsHide: true
     });
   } catch (error: unknown) {
     if (error instanceof Error) {
-      logger.debug('SYSTEM', `Binary lookup failed for ${binaryName}`, { command }, error);
+      logger.debug(
+        'SYSTEM',
+        `Binary lookup failed for ${binaryName}`,
+        { command: lookupCommand, args: lookupArgs },
+        error,
+      );
     } else {
-      logger.debug('SYSTEM', `Binary lookup failed for ${binaryName}`, { command }, new Error(String(error)));
+      logger.debug(
+        'SYSTEM',
+        `Binary lookup failed for ${binaryName}`,
+        { command: lookupCommand, args: lookupArgs },
+        new Error(String(error)),
+      );
     }
     return null;
   }
@@ -515,42 +530,87 @@ export function probeWorkerBootFailure(
   return output.split(/\r?\n/).slice(0, WORKER_BOOT_PROBE_MAX_LINES).join('\n');
 }
 
-export function spawnDaemon(
-  scriptPath: string,
-  port: number,
-  extraEnv: Record<string, string> = {}
-): number | undefined {
-  getSupervisor().assertCanSpawn('worker daemon');
-
-  const env = sanitizeEnv({
-    ...process.env,
-    CLAUDE_MEM_WORKER_PORT: String(port),
-    ...extraEnv
-  });
-
-  const runtimePath = resolveWorkerRuntimePath();
-  if (!runtimePath) {
-    logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE);
-    return undefined;
+/** Absolute powershell.exe when SystemRoot is set; otherwise PATH lookup. */
+export function resolveWindowsPowerShellPath(
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT;
+  if (systemRoot) {
+    return `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   }
+  return 'powershell.exe';
+}
 
-  if (process.platform === 'win32') {
-    const psScript = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
-    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
+/**
+ * Argv for launching a hidden worker daemon via Start-Process.
+ * -WindowStyle Hidden on powershell.exe itself plus Start-Process
+ * -WindowStyle Hidden inside the encoded script (#3521). Never use
+ * Node `detached: true` for this on Windows — that allocates a console.
+ */
+export function buildWindowsHiddenDaemonPowerShellArgs(
+  runtimePath: string,
+  scriptPath: string,
+  workingDirectory: string = daemonWorkingDirectory()
+): string[] {
+  const encodedCommand = Buffer.from(
+    buildWindowsDaemonStartCommand(runtimePath, scriptPath, workingDirectory),
+    'utf16le'
+  ).toString('base64');
+  return ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', encodedCommand];
+}
 
+/**
+ * Spawn the worker as a background daemon without a visible console, with its
+ * cwd pinned to claude-mem's data dir (daemonWorkingDirectory, #3706).
+ *
+ * Windows: Start-Process -WindowStyle Hidden via powershell argv (sync,
+ * bounded). Returns 0 as a success sentinel (Start-Process does not yield the
+ * child pid), so callers must treat only `> 0` as a real pid.
+ *
+ * POSIX: setsid/detached spawnHidden; returns the child pid.
+ *
+ * Returns undefined when the launch itself failed. Used by spawnDaemon
+ * (CLI/MCP) and both hook lazy-spawn paths in worker-utils.ts.
+ */
+export function spawnDetachedWorkerDaemon(
+  runtimePath: string,
+  scriptPath: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform
+): number | undefined {
+  if (platform === 'win32') {
+    const powershell = resolveWindowsPowerShellPath(env);
+    const args = buildWindowsHiddenDaemonPowerShellArgs(runtimePath, scriptPath);
     try {
-      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
+      // argv spawnSync — never `execSync('powershell ...')` shell string.
+      // A shell-string launch can allocate a console before windowsHide
+      // applies; argv + -WindowStyle Hidden keeps the flash off (#3521).
+      const result = spawnSync(powershell, args, {
         stdio: 'ignore',
         windowsHide: true,
-        env
+        env,
+        timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS,
+        killSignal: 'SIGTERM',
       });
+      if (result.error) {
+        throw result.error;
+      }
+      if (result.signal) {
+        throw new Error(
+          `powershell Start-Process killed by signal=${result.signal}` +
+            ` after ${WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS}ms`
+        );
+      }
+      if (result.status !== 0) {
+        throw new Error(`powershell Start-Process exited ${result.status ?? 'null'}`);
+      }
       return 0;
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       logger.error(
         'SYSTEM',
         'Failed to spawn worker daemon on Windows',
-        { runtimePath },
+        { runtimePath, powershell },
         err
       );
       return undefined;
@@ -565,14 +625,6 @@ export function spawnDaemon(
     ? [runtimePath, scriptPath, '--daemon']
     : [scriptPath, '--daemon'];
 
-  // Pin the daemon's cwd to the claude-mem data dir (daemonWorkingDirectory).
-  // The daemon outlives the session that spawned it, but an inherited cwd can
-  // vanish underneath it: spawn one from inside a git worktree and remove the
-  // worktree, and every later child spawn in the daemon fails with ENOENT even
-  // though the binary is fine (the second trigger of the #3290 wedge). A
-  // pinned cwd also keeps the self-heal restart effective: without it the
-  // successor inherits the same dead directory and re-wedges against its
-  // restart budget.
   const child = spawnHidden(execPath, args, {
     detached: true,
     stdio: 'ignore',
@@ -595,6 +647,28 @@ export function spawnDaemon(
 
   child.unref();
   return child.pid;
+}
+
+export function spawnDaemon(
+  scriptPath: string,
+  port: number,
+  extraEnv: Record<string, string> = {}
+): number | undefined {
+  getSupervisor().assertCanSpawn('worker daemon');
+
+  const env = sanitizeEnv({
+    ...process.env,
+    CLAUDE_MEM_WORKER_PORT: String(port),
+    ...extraEnv
+  });
+
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath) {
+    logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE);
+    return undefined;
+  }
+
+  return spawnDetachedWorkerDaemon(runtimePath, scriptPath, env);
 }
 
 export function isPidFileRecent(thresholdMs: number = 15000): boolean {
@@ -621,6 +695,6 @@ export function touchPidFile(): void {
   }
 }
 
-export function cleanStalePidFile(): ValidateWorkerPidStatus {
-  return validateWorkerPidFile({ logAlive: false });
+export function cleanStalePidFile(options: { removeStale?: boolean } = {}): ValidateWorkerPidStatus {
+  return validateWorkerPidFile({ logAlive: false, removeStale: options.removeStale });
 }

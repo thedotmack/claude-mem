@@ -135,6 +135,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
+        'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
       },
     },
     'plugin/hooks/codex-hooks.json': {
@@ -332,7 +333,7 @@ async function buildHooks() {
       ],
       engines: {
         node: '>=20.12.0',
-        bun: '>=1.0.0'
+        bun: '>=1.1.31'
       }
     };
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
@@ -364,6 +365,8 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
         'cohere-ai',
         'ollama',
@@ -479,6 +482,8 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
       ],
       define: {

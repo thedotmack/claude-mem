@@ -11,6 +11,8 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import type * as SqliteFilesModule from '../sqlite/observations/files.js';
 
@@ -128,6 +130,21 @@ function parseStringListField(
   }
 }
 
+/**
+ * Whether the worker has begun shutting down: local Chroma then refuses every
+ * mutation (see {@link ChromaMcpManager.acceptsMutations}).
+ */
+function shutdownBegan(): boolean {
+  return !ChromaMcpManager.getInstance().acceptsMutations();
+}
+
+// The embedding functions the pinned chroma-mcp (0.2.6) knows. It resolves the
+// name before checking whether the collection exists, so any other value would
+// fail every chroma_create_collection call, and with it every write.
+const CHROMA_MCP_EMBEDDING_FUNCTIONS: ReadonlySet<string> = new Set([
+  'default', 'openai', 'cohere', 'jina', 'voyageai', 'roboflow',
+]);
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
@@ -168,9 +185,19 @@ export class ChromaSync {
 
   private async createCollection(): Promise<void> {
     const chromaMcp = ChromaMcpManager.getInstance();
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const embeddingFunction =
+      settings.CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION || 'default';
+    if (!CHROMA_MCP_EMBEDDING_FUNCTIONS.has(embeddingFunction)) {
+      throw new Error(
+        `CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION="${embeddingFunction}" is not an embedding function chroma-mcp supports ` +
+        `(${[...CHROMA_MCP_EMBEDDING_FUNCTIONS].join(', ')})`
+      );
+    }
     try {
       await chromaMcp.callTool('chroma_create_collection', {
-        collection_name: this.collectionName
+        collection_name: this.collectionName,
+        embedding_function_name: embeddingFunction
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -340,6 +367,28 @@ export class ChromaSync {
       return 0;
     }
 
+    // SQLite FTS5's trigram tokenizer accepts NUL-containing TEXT but builds
+    // an index that subsequently fails PRAGMA quick_check / integrity_check as
+    // "malformed inverted index". Codex transcripts can legitimately contain
+    // NUL bytes copied from terminal or binary output, so sanitize at the last
+    // common boundary before every Chroma add/update path. U+FFFD preserves a
+    // visible boundary without making unrelated text run together.
+    let nulSanitizedDocuments = 0;
+    const safeDocuments = documents.map(document => {
+      if (!document.document.includes('\0')) return document;
+      nulSanitizedDocuments += 1;
+      return {
+        ...document,
+        document: document.document.replaceAll('\0', '�'),
+      };
+    });
+    if (nulSanitizedDocuments > 0) {
+      logger.warn('CHROMA_SYNC', 'Sanitized NUL bytes before Chroma FTS indexing', {
+        collection: this.collectionName,
+        documents: nulSanitizedDocuments,
+      });
+    }
+
     try {
       await this.ensureCollectionExists();
     } catch (error) {
@@ -362,8 +411,8 @@ export class ChromaSync {
     const chromaMcp = ChromaMcpManager.getInstance();
 
     let written = 0;
-    for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
-      const batch = documents.slice(i, i + this.BATCH_SIZE);
+    for (let i = 0; i < safeDocuments.length; i += this.BATCH_SIZE) {
+      const batch = safeDocuments.slice(i, i + this.BATCH_SIZE);
 
       const cleanMetadatas = batch.map(d =>
         Object.fromEntries(
@@ -760,16 +809,35 @@ export class ChromaSync {
     });
   }
 
-  async ensureBackfilled(project: string, store: SessionStore): Promise<void> {
+  /**
+   * Backfill one project's rows above its watermarks. Resolves true when the
+   * run finished, false when it stopped early (repeated write failures or a
+   * worker shutdown), in which case the next run resumes from the watermarks.
+   */
+  async ensureBackfilled(project: string, store: SessionStore): Promise<boolean> {
+    if (shutdownBegan()) {
+      logger.info('CHROMA_SYNC', 'Backfill skipped: worker shutdown began', { project });
+      return false;
+    }
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project });
 
-    await this.ensureCollectionExists();
+    try {
+      await this.ensureCollectionExists();
+    } catch (error) {
+      // stop() can begin while the create call is in flight; Chroma then
+      // refuses it. That is an interrupted run, not a failed one.
+      if (shutdownBegan()) {
+        logger.info('CHROMA_SYNC', 'Backfill stopped: worker shutdown began', { project });
+        return false;
+      }
+      throw error;
+    }
 
     this.backfillAborted = false;
     const watermarks = ChromaSyncState.get(project);
 
     try {
-      await this.runBackfillPipeline(store, project, watermarks);
+      return await this.runBackfillPipeline(store, project, watermarks);
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Backfill failed', { project }, error instanceof Error ? error : new Error(String(error)));
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -780,18 +848,18 @@ export class ChromaSync {
     db: SessionStore,
     backfillProject: string,
     watermarks: ProjectWatermarks
-  ): Promise<void> {
+  ): Promise<boolean> {
     const observationDocs = await this.backfillObservations(db, backfillProject, watermarks.observations);
     if (this.backfillAborted) {
-      return;
+      return false;
     }
     const summaryDocs = await this.backfillSummaries(db, backfillProject, watermarks.summaries);
     if (this.backfillAborted) {
-      return;
+      return false;
     }
     const promptDocs = await this.backfillPrompts(db, backfillProject, watermarks.prompts);
     if (this.backfillAborted) {
-      return;
+      return false;
     }
 
     logger.info('CHROMA_SYNC', 'Smart backfill complete', {
@@ -799,6 +867,7 @@ export class ChromaSync {
       synced: { observationDocs, summaryDocs, promptDocs },
       watermarks: ChromaSyncState.get(backfillProject)
     });
+    return true;
   }
 
   /**
@@ -847,6 +916,16 @@ export class ChromaSync {
 
       let rowComplete = true;
       for (let i = 0; i < docs.length; i += this.BATCH_SIZE) {
+        // Checked before every batch, not once per row: a row can span
+        // several batches, and shutdown can begin between any two of them.
+        if (shutdownBegan()) {
+          if (i > 0) {
+            // Part of this row landed; keep it pending like any partial write.
+            ChromaSyncState.markPending(backfillProject, kind, [row.id]);
+          }
+          rowComplete = false;
+          break;
+        }
         const batch = docs.slice(i, i + this.BATCH_SIZE);
         const writtenInBatch = await this.addDocuments(batch);
         processedDocs += batch.length;
@@ -875,6 +954,21 @@ export class ChromaSync {
       }
 
       if (!rowComplete) {
+        // Once the worker begins shutting down, local Chroma refuses every
+        // write (#4069), including one already in flight. Stop the run rather
+        // than walking the remaining rows through the same refusal; they stay
+        // above the watermark or pending and the next start resumes from them.
+        if (shutdownBegan()) {
+          this.backfillAborted = true;
+          logger.info('CHROMA_SYNC', 'Backfill stopped: worker shutdown began', {
+            project: backfillProject,
+            kind,
+            lastRowId: row.id,
+            remainingRows: rowsWithDocs.length - rowIndex - 1
+          });
+          return totalDocs;
+        }
+
         consecutiveFailures += 1;
         // A write that fails for several rows in a row is not a per-row
         // problem, it is Chroma refusing writes. Walking every remaining row
@@ -1172,11 +1266,15 @@ export class ChromaSync {
    * Concurrency: processes at most BACKFILL_CONCURRENCY_LIMIT projects in parallel
    * to bound CPU and memory pressure from concurrent Chroma embedding operations.
    * A re-entrant guard prevents overlapping backfill runs from accumulating.
+   *
+   * Resolves true only when every project's backfill finished; false when a
+   * project failed or stopped early, when the sweep stopped for a worker
+   * shutdown, or when another sweep was already running.
    */
-  static async backfillAllProjects(store: SessionStore): Promise<void> {
+  static async backfillAllProjects(store: SessionStore): Promise<boolean> {
     if (ChromaSync.backfillInProgress) {
       logger.info('CHROMA_SYNC', 'Backfill already in progress, skipping duplicate run');
-      return;
+      return false;
     }
 
     const sync = new ChromaSync('claude-mem');
@@ -1192,9 +1290,17 @@ export class ChromaSync {
       if (!ChromaSyncState.exists()) {
         logger.info('CHROMA_SYNC', 'Watermark cache missing — bootstrapping from Chroma (one-time)');
         for (const { project } of projects) {
+          if (shutdownBegan()) {
+            logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
+            return false;
+          }
           try {
             await sync.bootstrapWatermarksFromChroma(project, store);
           } catch (error) {
+            if (shutdownBegan()) {
+              logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
+              return false;
+            }
             logger.error('CHROMA_SYNC', `Bootstrap failed for project: ${project}`,
               {}, error instanceof Error ? error : new Error(String(error)));
           }
@@ -1208,7 +1314,15 @@ export class ChromaSync {
       // before starting the next one. Simple and predictable — no semaphore
       // overhead, no unbounded fan-out.
       const concurrency = ChromaSync.BACKFILL_CONCURRENCY_LIMIT;
+      let allCompleted = true;
       for (let i = 0; i < projects.length; i += concurrency) {
+        if (shutdownBegan()) {
+          logger.info('CHROMA_SYNC', 'Backfill sweep stopped: worker shutdown began', {
+            remainingProjects: projects.length - i
+          });
+          return false;
+        }
+
         const chunk = projects.slice(i, i + concurrency);
         const chunkResults = await Promise.allSettled(
           chunk.map(({ project }) => sync.ensureBackfilled(project, store))
@@ -1216,7 +1330,10 @@ export class ChromaSync {
 
         for (let j = 0; j < chunkResults.length; j++) {
           const result = chunkResults[j];
-          if (result.status === 'rejected') {
+          if (result.status === 'fulfilled') {
+            allCompleted &&= result.value;
+          } else {
+            allCompleted = false;
             const project = chunk[j].project;
             const error = result.reason;
             if (error instanceof Error) {
@@ -1228,6 +1345,7 @@ export class ChromaSync {
           }
         }
       }
+      return allCompleted;
     } finally {
       ChromaSync.backfillInProgress = false;
     }

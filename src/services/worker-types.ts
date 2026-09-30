@@ -50,6 +50,17 @@ export interface ActiveSession {
    * tool call spawns a generator that can only abort on the same budget check.
    */
   overflowPausedUntilMs?: number;
+  /**
+   * Consecutive generations that ended because a prompt went unanswered
+   * ('transport:response_stall'). Bounds their automatic resume; reset when a
+   * queued-work turn is answered (#4066).
+   */
+  consecutiveResponseStalls?: number;
+  /**
+   * The delayed resume a response stall scheduled. Any generator start cancels
+   * it, so a stale timer never restarts a session a newer generation paused.
+   */
+  stallResumeTimer?: ReturnType<typeof setTimeout>;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
@@ -82,6 +93,10 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /** SessionEnd requested one Telegram wrap-up after the latest summary lands. */
+  telegramWrapupRequestedAt?: number | null;
+  /** One-shot grace timer for a SessionEnd wrap-up request. */
+  telegramWrapupTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 export interface PendingMessage {

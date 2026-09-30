@@ -36,6 +36,46 @@ import {
   type CanonicalMutation,
 } from '../sync/CanonicalContent.js';
 
+// A Telegram send normally completes in seconds. A five-minute lease absorbs
+// a slow request while allowing a later SessionEnd delivery to recover work
+// abandoned by a process crash between claiming and marking the row sent.
+export const TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS = 5 * 60_000;
+
+let warnedMissingIterate = false;
+
+/**
+ * Iterate a prepared statement's rows, preferring the streaming `.iterate()`
+ * added in Bun v1.1.31 and falling back to the materializing `.all()` on
+ * older runtimes.
+ *
+ * package.json declares `engines.bun >= 1.1.31`, but engines is advisory —
+ * nothing enforces it when the plugin is installed through the Claude Code
+ * marketplace. On an older Bun the bare `.iterate()` call threw
+ * "…iterate is not a function" from inside schema migration v46, which runs
+ * during background init. That rejection left the worker permanently
+ * `initialized:false` while still serving 200 on /api/health, so every hook
+ * silently skipped until the failure counter began blocking them outright.
+ *
+ * Falling back keeps the migration correct on old runtimes (it only costs
+ * peak memory, and this scan runs once per install) and the one-time warning
+ * names the real cause instead of a cryptic TypeError.
+ */
+function streamRows(statement: {
+  iterate?: () => Iterable<unknown>;
+  all: () => unknown[];
+}): Iterable<unknown> {
+  if (typeof statement.iterate === 'function') return statement.iterate();
+  if (!warnedMissingIterate) {
+    warnedMissingIterate = true;
+    logger.warn('DB', 'bun:sqlite lacks Statement.iterate(); falling back to .all()', {
+      bunVersion: typeof Bun !== 'undefined' ? Bun.version : 'unknown',
+      requiredBunVersion: '>=1.1.31',
+      impact: 'migration rows are materialized in memory; upgrade Bun to restore streaming',
+    });
+  }
+  return statement.all();
+}
+
 interface IndexColumnInfo {
   seqno: number;
   cid: number;
@@ -175,6 +215,7 @@ export class SessionStore {
     this.normalizeConceptTags();
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
+    this.ensureTelegramWrapupsTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -666,12 +707,12 @@ export class SessionStore {
           throw new Error(`schema v46: missing ${target.table}.${target.column}`);
         }
 
-        for (const raw of this.db.query(`
+        for (const raw of streamRows(this.db.query(`
           SELECT CAST(id AS TEXT) AS row_id,
                  typeof(${target.column}) AS storage_type,
                  CAST(${target.column} AS TEXT) AS revision
           FROM ${target.table}
-        `).iterate()) {
+        `))) {
           const row = raw as { row_id: string; storage_type: string; revision: string | null };
           if (row.storage_type === 'real') {
             throw new Error(
@@ -1876,6 +1917,30 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
   }
 
+  // v52 — durable claim ledger for one Telegram session wrap-up per route.
+  // The DDL is intentionally idempotent so fresh installs and existing DBs
+  // converge even if a fixture has an incomplete schema_versions ledger.
+  private ensureTelegramWrapupsTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS telegram_wrapups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform_source TEXT NOT NULL,
+        content_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        route_key TEXT NOT NULL,
+        summary_created_at_epoch INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('claimed', 'sent')),
+        claimed_at_epoch INTEGER NOT NULL,
+        sent_at_epoch INTEGER,
+        UNIQUE(platform_source, content_session_id, project, route_key)
+      )
+    `);
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_telegram_wrapups_platform_content ON telegram_wrapups(platform_source, content_session_id)'
+    );
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
+  }
+
   private ensureMergedIntoProjectColumns(): void {
     const obsCols = this.db
       .query('PRAGMA table_info(observations)')
@@ -2211,6 +2276,33 @@ export class SessionStore {
       SET status = 'completed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
     `).run(nowIso, nowEpoch, sessionDbId);
+  }
+
+  /**
+   * Put a completed row back to 'active' because the session it labels carried
+   * on (#4080).
+   *
+   * `markSessionCompleted` above is the only writer of `status`, and it only
+   * ever writes 'completed'; `finalizeSession` returns early on every later
+   * end once it reads that. So a session that continues after a finalize — a
+   * `claude --resume`, or one finalized while it was still live — keeps the
+   * FIRST end's `completed_at` for the rest of its life while new prompts land
+   * under the same row. Every reader of `status` is then wrong about it:
+   * SearchManager prints **In Progress** only for 'active', and anything
+   * counting sessions by status counts this one at an end it has already
+   * passed.
+   *
+   * Guarded on `status = 'completed'`, so it is a no-op for a row that is
+   * already active, and it clears BOTH completion stamps — leaving the row
+   * active with a stale `completed_at` would trade one wrong label for
+   * another. sdk_sessions rows do not sync, so there is no op to enqueue.
+   */
+  reopenCompletedSession(sessionDbId: number): void {
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET status = 'active', completed_at = NULL, completed_at_epoch = NULL
+      WHERE id = ? AND status = 'completed'
+    `).run(sessionDbId);
   }
 
   ensureMemorySessionIdRegistered(
@@ -2614,6 +2706,132 @@ export class SessionStore {
     `);
 
     return (stmt.get(id) as SdkSessionDetailRow | null) || null;
+  }
+
+  findSessionDbIdByContentSessionId(contentSessionId: string, platformSource: string): number | null {
+    const row = this.db.prepare(`
+      SELECT id
+      FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
+        AND content_session_id = ?
+      LIMIT 1
+    `).get(
+      DEFAULT_PLATFORM_SOURCE,
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+    ) as { id: number } | null;
+
+    return row?.id ?? null;
+  }
+
+  claimTelegramWrapup({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+    summaryCreatedAtEpoch,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+    summaryCreatedAtEpoch: number;
+  }): boolean {
+    const claimedAtEpoch = Date.now();
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO telegram_wrapups
+      (platform_source, content_session_id, project, route_key, summary_created_at_epoch, status, claimed_at_epoch, sent_at_epoch)
+      VALUES (?, ?, ?, ?, ?, 'claimed', ?, NULL)
+    `).run(
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+      summaryCreatedAtEpoch,
+      claimedAtEpoch,
+    );
+
+    if (result.changes === 1) return true;
+
+    // A process can die after recording its claim but before it attempts the
+    // Telegram POST (or before it marks the result sent). Treat a long-held
+    // claim as an abandoned lease, while sent rows remain permanent dedupe
+    // records. The compare-and-set predicate lets only one racing recovery
+    // caller reclaim the row.
+    const reclaim = this.db.prepare(`
+      UPDATE telegram_wrapups
+      SET summary_created_at_epoch = ?, claimed_at_epoch = ?, sent_at_epoch = NULL
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+        AND claimed_at_epoch <= ?
+    `).run(
+      summaryCreatedAtEpoch,
+      claimedAtEpoch,
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+      claimedAtEpoch - TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS,
+    );
+
+    return reclaim.changes === 1;
+  }
+
+  markTelegramWrapupSent({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+  }): void {
+    this.db.prepare(`
+      UPDATE telegram_wrapups
+      SET status = 'sent', sent_at_epoch = ?
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+    `).run(
+      Date.now(),
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+    );
+  }
+
+  releaseTelegramWrapupClaim({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+  }): void {
+    this.db.prepare(`
+      DELETE FROM telegram_wrapups
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+    `).run(
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+    );
   }
 
   /**
@@ -3233,11 +3451,19 @@ export class SessionStore {
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
+      // Strict comparisons: rows tied exactly at anchorEpoch (routine, since
+      // storeObservations() stamps a turn's observations and its session
+      // summary with one shared timestamp) must not compete with real
+      // before/after rows for depth budget. They're picked up regardless by
+      // the final inclusive [startEpoch, endEpoch] range query below, so
+      // excluding them here at the boundary step is enough to guarantee
+      // exactly depthBefore/depthAfter real neighbors on each side, whether
+      // zero, one, or many rows tie the anchor.
       const beforeQuery = `
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.created_at_epoch <= ? ${observationScope.clause}
+        WHERE o.created_at_epoch < ? ${observationScope.clause}
         ORDER BY o.created_at_epoch DESC
         LIMIT ?
       `;
@@ -3245,19 +3471,19 @@ export class SessionStore {
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.created_at_epoch >= ? ${observationScope.clause}
+        WHERE o.created_at_epoch > ? ${observationScope.clause}
         ORDER BY o.created_at_epoch ASC
         LIMIT ?
       `;
 
       try {
         const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...observationScope.params, depthBefore) as Array<{created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter + 1) as Array<{created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter) as Array<{created_at_epoch: number}>;
 
-        if (beforeRecords.length === 0 && afterRecords.length === 0) {
-          return { observations: [], sessions: [], prompts: [] };
-        }
-
+        // No early return on "both empty" here: unlike the id-anchored branch,
+        // an empty before/after pair does not mean nothing matches, rows
+        // tied exactly at anchorEpoch are excluded from both by design (see
+        // above) and still need the final range query below to surface them.
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err) {
@@ -3270,12 +3496,14 @@ export class SessionStore {
       }
     }
 
+    // `id` breaks created_at_epoch ties so a turn's rows (which share one epoch) render in the
+    // order they were written instead of whatever order the index scan returns them in.
     const obsQuery = `
       SELECT o.*
       FROM observations o
       LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
       WHERE o.created_at_epoch >= ? AND o.created_at_epoch <= ? ${observationScope.clause}
-      ORDER BY o.created_at_epoch ASC
+      ORDER BY o.created_at_epoch ASC, o.id ASC
     `;
 
     const sessQuery = `
@@ -3283,7 +3511,7 @@ export class SessionStore {
       FROM session_summaries ss
       LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id
       WHERE ss.created_at_epoch >= ? AND ss.created_at_epoch <= ? ${summaryScope.clause}
-      ORDER BY ss.created_at_epoch ASC
+      ORDER BY ss.created_at_epoch ASC, ss.id ASC
     `;
 
     const promptQuery = `
@@ -3291,7 +3519,7 @@ export class SessionStore {
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${promptScope.clause}
-      ORDER BY up.created_at_epoch ASC
+      ORDER BY up.created_at_epoch ASC, up.id ASC
     `;
 
     const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...observationScope.params) as ObservationRecord[];
