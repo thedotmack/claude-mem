@@ -828,7 +828,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 });
 
 describe("large cursor pagination", () => {
-	it("reads 10,001 canonical operations without overlap or gaps", { timeout: 20_000 }, async () => {
+	it("reads 10,001 canonical operations without overlap or gaps", async () => {
 		const stub = hub("pagination-10001");
 		for (let start = 1; start <= 10_001; start += 500) {
 			const count = Math.min(500, 10_002 - start);
@@ -1413,7 +1413,7 @@ describe("per-user device admission bound", () => {
 		expect((await metadata(userId)).devices.map((device) => device.device_id)).toEqual(["known-device"]);
 	});
 
-	it("concurrent status probes create zero devices and cannot exhaust admission", { timeout: 20_000 }, async () => {
+	it("concurrent status probes create zero devices and cannot exhaust admission", async () => {
 		const userId = "device-cap-concurrent";
 		const probes = await Promise.all(Array.from({ length: 80 }, (_, index) => {
 			const device = `device-${String(index).padStart(2, "0")}`;
