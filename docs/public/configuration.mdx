@@ -92,6 +92,17 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and rate
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
 
+### Observer Budget Settings
+
+These apply to every observer provider. The observer's conversation runs in generations. When one fills its budget, claude-mem retires it and starts a fresh one, briefed with the session's own observations. The budget is the smaller of `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` and half the observer model's context window (about 4 characters per token). Each tool call's parameters and outcome are capped at a tenth of the window, 16,000 characters at most.
+
+| Setting                                      | Default                     | Description                           |
+|----------------------------------------------|-----------------------------|---------------------------------------|
+| `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` | `400000`                    | Characters one observer generation may hold before it is retired |
+| `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`         | —                           | Observer model context window in tokens. Empty = resolve it: Claude models `200000` (`1000000` for a `[1m]` model id), Gemini models from a built-in map, OpenRouter models from the OpenRouter models catalogue. Any other OpenAI-compatible endpoint (a local server, a custom gateway) falls back to `131072`, so set this for a model with a smaller window, e.g. `16384`. Values below `8192` are clamped up to `8192` |
+
+If the provider still rejects a request as too long for the model's window, the observer retires the generation and retries the same work in a fresh one, the same way it handles Claude's "Prompt is too long".
+
 ### Claude Gateway Settings
 
 Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
@@ -116,6 +127,34 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
+
+### Near-Duplicate Deduplication
+
+Opt-in (off by default) dedup of observations whose titles describe the same recurring
+work but are worded slightly differently, so `content_hash` (byte-identical only) misses them.
+Two deterministic tiers:
+
+- **Tier 0 — exact-normalized-title** → safe silent auto-merge: a new observation whose
+  title matches an existing one after lowercasing / whitespace-collapse / punctuation-strip
+  is collapsed onto the existing row and its `occurrence_count` is bumped (cross-session,
+  within the same project and the same host platform, since context is platform-scoped).
+- **Tier 1 — IDF-weighted similarity** → *review-only* near-duplicate **candidates** are
+  recorded in `observation_dedup_candidates` (never auto-merged), so distinct work that
+  differs only in one rare token (`rdlp-api` vs `rdlp-plugin`) is never silently destroyed.
+
+| Setting                              | Default | Description                           |
+|--------------------------------------|---------|---------------------------------------|
+| `CLAUDE_MEM_DEDUP_ENABLED`           | `false` | Master switch. Off = byte-identical legacy behavior |
+| `CLAUDE_MEM_DEDUP_COSINE_THRESHOLD`  | `0.80`  | Min IDF-weighted cosine for a Tier-1 candidate |
+| `CLAUDE_MEM_DEDUP_IDF_VETO_DF`       | `10`    | A title token in ≤ N project rows is "discriminating" and vetoes a merge |
+| `CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS` | `2`     | Require ≥ N shared tokens before scoring (kills sparse-vector noise) |
+| `CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS`  | `10`    | Cold-start gate: skip Tier-1 below N docs/project (IDF unreliable) |
+| `CLAUDE_MEM_DEDUP_MAX_SCAN`          | `2000`  | Per-insert Tier-1 candidate-scan cap |
+| `CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS` | `50000` | `dedup-scan` skips a project larger than this (memory safety) |
+
+After enabling on an existing database, run a one-time scan to backfill the IDF model and
+surface accumulated near-duplicates: `POST /api/dedup/scan` (worker, localhost-only).
+Review candidates via `GET /api/dedup/candidates?project=<name>`.
 
 ## Model Configuration
 
