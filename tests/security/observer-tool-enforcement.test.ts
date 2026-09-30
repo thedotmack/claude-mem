@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { readFileSync, existsSync, rmSync } from 'fs';
-import { buildHardenedSdkOptions } from '../../src/sdk/hardened-options.js';
+import {
+  buildHardenedSdkOptions,
+  OBSERVER_DISALLOWED_TOOLS,
+} from '../../src/sdk/hardened-options.js';
 import {
   recordObserverToolAttempt,
   getObserverAuditLogPath,
@@ -12,7 +15,6 @@ const BASE_INPUT = {
   model: 'claude-sonnet-4-6',
   env: {} as NodeJS.ProcessEnv,
   pathToClaudeCodeExecutable: '/usr/bin/claude',
-  systemPrompt: 'You are a test observer.',
 };
 
 const AUDIT_PATH = getObserverAuditLogPath();
@@ -26,23 +28,44 @@ function readAuditLines(): Array<Record<string, unknown>> {
 }
 
 describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () => {
-  describe('tool lockdown: tools:[] + canUseTool audit backstop', () => {
-    it('sets tools to an empty array (disables ALL built-in tools)', () => {
+  describe('belt + suspenders + braces: option surface', () => {
+    it('sets tools to an empty array (disables ALL built-in tools on the SDK path)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       expect(Array.isArray(opts.tools)).toBe(true);
       expect(opts.tools).toHaveLength(0);
     });
 
-    it('does not set allowedTools, disallowedTools, or permissionMode', () => {
+    it('sets allowedTools to an empty array (nothing auto-approved)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
-      expect(opts.allowedTools).toBeUndefined();
-      expect(opts.disallowedTools).toBeUndefined();
-      expect(opts.permissionMode).toBeUndefined();
+      expect(Array.isArray(opts.allowedTools)).toBe(true);
+      expect(opts.allowedTools).toHaveLength(0);
     });
 
-    it('passes systemPrompt through unchanged', () => {
+    it('keeps the full disallowedTools deny-list (14 tools)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
-      expect(opts.systemPrompt).toBe('You are a test observer.');
+      const denied = opts.disallowedTools ?? [];
+      for (const tool of OBSERVER_DISALLOWED_TOOLS) {
+        expect(denied).toContain(tool);
+      }
+      expect(denied).toHaveLength(OBSERVER_DISALLOWED_TOOLS.length);
+      expect(OBSERVER_DISALLOWED_TOOLS).toHaveLength(14);
+    });
+
+    it('denies the peer-session tools that let a toolless Observer borrow authority', () => {
+      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
+      const denied = opts.disallowedTools ?? [];
+      expect(denied).toContain('SendMessage');
+      expect(denied).toContain('ListAgents');
+    });
+
+    it("uses the most restrictive non-interactive permissionMode ('dontAsk')", () => {
+      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
+      expect(opts.permissionMode).toBe('dontAsk');
+    });
+
+    it('never uses bypassPermissions', () => {
+      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
+      expect(opts.permissionMode).not.toBe('bypassPermissions');
     });
 
     it('isolates settings, MCP, and extra directories', () => {
@@ -150,7 +173,9 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       const o = buildHardenedSdkOptions(input);
       return {
         tools: o.tools,
-        systemPrompt: o.systemPrompt,
+        allowedTools: o.allowedTools,
+        disallowedTools: o.disallowedTools,
+        permissionMode: o.permissionMode,
         mcpServers: o.mcpServers,
         settingSources: o.settingSources,
         strictMcpConfig: o.strictMcpConfig,
@@ -169,7 +194,6 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
         model: 'm',
         env: {},
         pathToClaudeCodeExecutable: '/c',
-        systemPrompt: 'You are a test observer.',
         abortController: new AbortController(),
         spawnClaudeCodeProcess: () => ({}) as never,
       });
@@ -179,17 +203,9 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
         model: 'm',
         env: {},
         pathToClaudeCodeExecutable: '/c',
-        systemPrompt: 'You are a test observer.',
         resume: 'session-xyz',
       });
       expect(observer).toEqual(knowledge);
-    });
-  });
-
-  describe('OBSERVER_DISALLOWED_TOOLS is no longer exported', () => {
-    it('is not present on the hardened-options module', async () => {
-      const mod = await import('../../src/sdk/hardened-options.js');
-      expect('OBSERVER_DISALLOWED_TOOLS' in mod).toBe(false);
     });
   });
 });
