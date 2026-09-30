@@ -10,7 +10,13 @@ import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
-import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
+import {
+  getBunVersion,
+  getUvVersion,
+  isInstallCurrent,
+  isTreeSitterCliBinaryUsable,
+  treeSitterCliBinaryPath,
+} from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
@@ -221,6 +227,20 @@ export function pluginRootCheck(resolution: PluginRootResolution | null): CheckR
   };
 }
 
+/** The "tree-sitter CLI" row for the plugin root the worker runs from. Exported for tests. */
+export async function treeSitterCliCheck(pluginRoot: string): Promise<CheckResult> {
+  const name = 'tree-sitter CLI';
+  const binaryPath = treeSitterCliBinaryPath(pluginRoot);
+  return (await isTreeSitterCliBinaryUsable(pluginRoot))
+    ? { name, status: 'ok', detail: binaryPath, required: false }
+    : {
+        name,
+        status: 'warn',
+        detail: `missing or unusable at ${binaryPath} — smart_search/smart_outline disabled; run \`npx claude-mem repair\``,
+        required: false,
+      };
+}
+
 /** The "Marketplace manifest" row. Exported for tests. */
 export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
   const manifestPath = join(marketplaceDir, '.claude-plugin', 'marketplace.json');
@@ -262,6 +282,10 @@ export async function runDoctorCommand(): Promise<void> {
   const pluginRoot = resolvePluginRoot();
   const installed = pluginRoot !== null;
   checks.push(pluginRootCheck(pluginRoot));
+
+  // 3b. tree-sitter CLI at that root: smart_search and smart_outline shell out
+  // to it, and installs suppress the script that downloads it (#2910).
+  if (pluginRoot) checks.push(await treeSitterCliCheck(pluginRoot.root));
 
   // 4. Marketplace runtime root materialized. The .install-version marker is
   // written only by the npx installer; installs via Claude Code's own plugin
