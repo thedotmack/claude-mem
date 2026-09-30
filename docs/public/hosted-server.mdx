@@ -218,6 +218,27 @@ can have up to 2N provider calls in flight. Size N against your provider's rate
 limit. Values above 64 are clamped to 64, and invalid values are ignored with a
 warning.
 
+### Custom generation provider (advanced)
+
+The generation worker ships with `claude`, `gemini` and `openrouter` providers, and
+each one reads a single set of credentials from its environment. If your deployment
+needs something else, such as a different key per project, set
+`CLAUDE_MEM_SERVER_PROVIDER=custom` and point `CLAUDE_MEM_CUSTOM_PROVIDER_MODULE`
+at a JavaScript module. The module must export `createProvider(helpers)`, which
+returns an object with a `generate(context)` method. `helpers` gives the module this
+server's prompt builder, its Anthropic client (`ClaudeObservationProvider`, which
+accepts a `baseUrl`), its retryable error class, the resolved `maxOutputTokens`, and
+an `apiVersion` (currently `1`) that changes whenever any of those contracts
+change.
+
+<Warning>
+The module runs inside the generation worker with everything that process holds:
+the database URL, every provider key and the Redis credentials. Treat it like any
+other code you deploy. The path is read only from the process environment, never
+from `settings.json` or an API route. It must be an absolute path, and the worker
+logs the path and the file's sha256 when it loads the module.
+</Warning>
+
 ## Endpoint reference
 
 All endpoints are mounted under `/v1`; legacy worker routes remain under `/api`.

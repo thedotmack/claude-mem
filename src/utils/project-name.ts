@@ -172,6 +172,25 @@ export interface ProjectContext {
 }
 
 /**
+/**
+ * Build the worktree compound project key from its parent and worktree names.
+ *
+ * #3641 — Codex CLI puts worktrees at `~/.codex/worktrees/<id>/<repo>`, so the
+ * worktree basename equals the repo name and the naive `<parent>/<worktree>`
+ * key doubles to `<repo>/<repo>`. That doubled key matches neither session-start
+ * injection nor search, so every observation is orphaned. A worktree named after
+ * its repo adds no distinguishing information, so collapse the key to the parent
+ * name alone. This is the one shared resolver — both getProjectContext and
+ * ProcessManager.classifyCwdForRemap call it so the write path and the migration
+ * path agree.
+ */
+export function buildWorktreeProjectKey(parentProjectName: string, worktreeName: string): string {
+  return worktreeName === parentProjectName
+    ? parentProjectName
+    : `${parentProjectName}/${worktreeName}`;
+}
+
+/**
  * A submodule's key component is its path under the superproject, not its
  * basename: two nested submodules can share a leaf repo name
  * (`outer/alpha/shared` and `outer/beta/shared`), and keying on the basename
@@ -209,19 +228,28 @@ export function getProjectContext(
 
   if ((worktreeInfo.isWorktree || worktreeInfo.isSubmodule) && worktreeInfo.parentProjectName) {
     const parent = worktreeInfo.parentProjectName;
-    const composite = `${parent}/${submoduleLeaf(worktreeInfo, checkoutRoot) ?? cwdProjectName}`;
-    // #2842 — before submodules folded into their superproject, a submodule's
-    // rows were stored under its own leaf name. Keep that key readable so the
-    // re-key never hides existing memory; writes use the composite only.
-    const legacySubmoduleKey = worktreeInfo.isSubmodule && cwdProjectName !== parent
-      ? [cwdProjectName]
-      : [];
+    // Keys this checkout's rows may already be stored under, kept readable so a
+    // re-key never hides existing memory; writes use the primary only.
+    // - #2842: before submodules folded into their superproject, a submodule's
+    //   rows were stored under its own leaf name.
+    // - #3641: a worktree named after its repo now writes to the repo itself;
+    //   rows written before sit under the doubled `<repo>/<repo>` key until the
+    //   adoption sweep folds them into the repo (merged_into_project).
+    let primary: string;
+    let legacyKeys: string[];
+    if (worktreeInfo.isSubmodule) {
+      primary = `${parent}/${submoduleLeaf(worktreeInfo, checkoutRoot) ?? cwdProjectName}`;
+      legacyKeys = cwdProjectName !== parent ? [cwdProjectName] : [];
+    } else {
+      primary = buildWorktreeProjectKey(parent, cwdProjectName);
+      legacyKeys = primary === parent ? [`${parent}/${cwdProjectName}`] : [];
+    }
     return {
-      primary: composite,
+      primary,
       parent,
       isWorktree: worktreeInfo.isWorktree,
       isSubmodule: worktreeInfo.isSubmodule,
-      allProjects: [parent, ...legacySubmoduleKey, composite]
+      allProjects: [...new Set([parent, ...legacyKeys, primary])].filter(key => key !== primary).concat(primary)
     };
   }
 
