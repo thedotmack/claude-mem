@@ -774,7 +774,7 @@ describe('SyncApply', () => {
 
     // observations/summaries FTS + triggers live in SessionSearch — create
     // them BEFORE applying, exactly like a running worker does.
-    new SessionSearch(db);
+    const search = new SessionSearch(db);
 
     makeApply().applyOps(remoteBatch());
 
@@ -788,10 +788,8 @@ describe('SyncApply', () => {
     ).all();
     expect(summaryHits.length).toBe(1);
 
-    const promptHits = db.prepare(
-      `SELECT rowid FROM user_prompts_fts WHERE user_prompts_fts MATCH 'remote'`
-    ).all();
-    expect(promptHits.length).toBe(1);
+    // Prompts have no FTS index (it was write-only, schema v53); they are searched by substring.
+    expect(search.searchUserPrompts('remote', {})).toHaveLength(1);
   });
 
   // ---------------------------------------------------------------------------

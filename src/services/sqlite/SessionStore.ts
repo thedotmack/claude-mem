@@ -29,6 +29,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
+import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
   assertCanonicalDecimal,
   incrementCanonicalDecimal,
@@ -216,6 +217,7 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
+    this.dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -392,7 +394,6 @@ export class SessionStore {
 
     if (applied && hasSessionDbId && !hasContentSessionFk) return;
 
-    const hasFTS = (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='user_prompts_fts'").all() as { name: string }[]).length > 0;
     const sessionDbIdSelect = hasSessionDbId
       ? `COALESCE(up.session_db_id, (
           SELECT s.id FROM sdk_sessions s
@@ -416,7 +417,7 @@ export class SessionStore {
     this.db.run('PRAGMA foreign_keys = OFF');
     this.db.run('BEGIN TRANSACTION');
     try {
-      this.rebuildUserPromptsWithSessionDbId(applied, sessionDbIdSelect, hasFTS);
+      this.rebuildUserPromptsWithSessionDbId(applied, sessionDbIdSelect);
       this.db.run('COMMIT');
     } catch (error) {
       this.db.run('ROLLBACK');
@@ -428,7 +429,7 @@ export class SessionStore {
     }
   }
 
-  private rebuildUserPromptsWithSessionDbId(applied: SchemaVersion | undefined, sessionDbIdSelect: string, hasFTS: boolean): void {
+  private rebuildUserPromptsWithSessionDbId(applied: SchemaVersion | undefined, sessionDbIdSelect: string): void {
     this.db.run('DROP TRIGGER IF EXISTS user_prompts_ai');
     this.db.run('DROP TRIGGER IF EXISTS user_prompts_ad');
     this.db.run('DROP TRIGGER IF EXISTS user_prompts_au');
@@ -469,27 +470,8 @@ export class SessionStore {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_lookup ON user_prompts(session_db_id, prompt_number)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_content_lookup ON user_prompts(content_session_id, prompt_number)');
 
-    if (hasFTS) {
-      this.db.run(`
-        CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(rowid, prompt_text)
-          VALUES (new.id, new.prompt_text);
-        END;
-
-        CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-          VALUES('delete', old.id, old.prompt_text);
-        END;
-
-        CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
-          INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-          VALUES('delete', old.id, old.prompt_text);
-          INSERT INTO user_prompts_fts(rowid, prompt_text)
-          VALUES (new.id, new.prompt_text);
-        END;
-      `);
-      this.db.run("INSERT INTO user_prompts_fts(user_prompts_fts) VALUES('rebuild')");
-    }
+    // The prompt FTS triggers dropped above are not recreated: user_prompts_fts is write-only
+    // and v53 drops it (dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers).
 
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
@@ -1411,10 +1393,11 @@ export class SessionStore {
       return;
     }
 
-    logger.debug('DB', 'Creating user_prompts table with FTS5 support');
+    logger.debug('DB', 'Creating user_prompts table');
 
+    // No FTS index: prompts are searched by substring (searchUserPrompts), so an index would
+    // only be written, never read (see dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers).
     this.db.run('BEGIN TRANSACTION');
-
     this.db.run(`
       CREATE TABLE user_prompts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1434,48 +1417,6 @@ export class SessionStore {
       CREATE INDEX idx_user_prompts_lookup ON user_prompts(session_db_id, prompt_number);
       CREATE INDEX idx_user_prompts_content_lookup ON user_prompts(content_session_id, prompt_number);
     `);
-
-    const ftsCreateSQL = `
-      CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
-        prompt_text,
-        content='user_prompts',
-        content_rowid='id'
-      );
-    `;
-    const ftsTriggersSQL = `
-      CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
-        INSERT INTO user_prompts_fts(rowid, prompt_text)
-        VALUES (new.id, new.prompt_text);
-      END;
-
-      CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
-        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-        VALUES('delete', old.id, old.prompt_text);
-      END;
-
-      CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
-        INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
-        VALUES('delete', old.id, old.prompt_text);
-        INSERT INTO user_prompts_fts(rowid, prompt_text)
-        VALUES (new.id, new.prompt_text);
-      END;
-    `;
-
-    try {
-      this.db.run(ftsCreateSQL);
-      this.db.run(ftsTriggersSQL);
-    } catch (ftsError) {
-      if (ftsError instanceof Error) {
-        logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, ftsError);
-      } else {
-        logger.warn('DB', 'FTS5 not available — user_prompts_fts skipped (search uses ChromaDB)', {}, new Error(String(ftsError)));
-      }
-      this.db.run('COMMIT');
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
-      logger.debug('DB', 'Created user_prompts table (without FTS5)');
-      return;
-    }
-
     this.db.run('COMMIT');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
@@ -1657,25 +1598,6 @@ export class SessionStore {
       CREATE INDEX idx_observations_type ON observations(type);
       CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
     `;
-    const observationsFTSTriggersSQL = `
-      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-    `;
-
     const summariesKnownColumns = [
       'id', 'memory_session_id', 'project', 'request', 'investigated', 'learned',
       'completed', 'next_steps', 'files_read', 'files_edited', 'notes',
@@ -1706,24 +1628,6 @@ export class SessionStore {
       CREATE INDEX idx_session_summaries_project ON session_summaries(project);
       CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
     `;
-    const summariesFTSTriggersSQL = `
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-    `;
 
     try {
       if (observationsNeedsCascade) {
@@ -1735,7 +1639,7 @@ export class SessionStore {
           observationsNewSQL,
           observationsKnownColumns,
           observationsIndexesSQL,
-          observationsFTSTriggersSQL
+          OBSERVATIONS_FTS_TRIGGERS_SQL
         );
       }
       if (summariesNeedsCascade) {
@@ -1747,7 +1651,7 @@ export class SessionStore {
           summariesNewSQL,
           summariesKnownColumns,
           summariesIndexesSQL,
-          summariesFTSTriggersSQL
+          SESSION_SUMMARIES_FTS_TRIGGERS_SQL
         );
       }
 
@@ -1939,6 +1843,59 @@ export class SessionStore {
       'CREATE INDEX IF NOT EXISTS idx_telegram_wrapups_platform_content ON telegram_wrapups(platform_source, content_session_id)'
     );
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
+  }
+
+  // v53 — stop FTS5 shadow-index bloat at the source (plan-21, #2793).
+  //
+  // 1. observations_au / session_summaries_au become column-scoped (AFTER UPDATE OF the
+  //    indexed columns). Unscoped, every bookkeeping update (sync_rev, merged_into_project,
+  //    content_hash, session_db_id, ...) appended a delete marker plus a full re-insert of the
+  //    row's text to the index.
+  // 2. user_prompts_fts and its three triggers are dropped: prompt search uses LIKE and nothing
+  //    reads the index, yet every prompt write grew it (the 12 GB table in #2793).
+  //
+  // Introspection-driven and idempotent, like v51/v52, so a later table rebuild that recreated
+  // an old-style trigger converges again on the next start.
+  private dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers(): void {
+    const unscopedUpdateTriggers = (this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'trigger'
+        AND name IN ('observations_au', 'session_summaries_au')
+        AND sql NOT LIKE '%UPDATE OF%'
+    `).all() as { name: string }[]).map(row => row.name);
+    const userPromptsFtsObjects = this.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE name IN ('user_prompts_fts', 'user_prompts_ai', 'user_prompts_ad', 'user_prompts_au')
+    `).all() as { name: string }[];
+
+    if (unscopedUpdateTriggers.length > 0 || userPromptsFtsObjects.length > 0) {
+      this.db.run('BEGIN TRANSACTION');
+      try {
+        if (unscopedUpdateTriggers.includes('observations_au')) {
+          this.db.run('DROP TRIGGER observations_au');
+          this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
+        }
+        if (unscopedUpdateTriggers.includes('session_summaries_au')) {
+          this.db.run('DROP TRIGGER session_summaries_au');
+          this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
+        }
+        this.db.run('DROP TRIGGER IF EXISTS user_prompts_ai');
+        this.db.run('DROP TRIGGER IF EXISTS user_prompts_ad');
+        this.db.run('DROP TRIGGER IF EXISTS user_prompts_au');
+        this.db.run('DROP TABLE IF EXISTS user_prompts_fts');
+        this.db.run('COMMIT');
+      } catch (error) {
+        this.db.run('ROLLBACK');
+        logger.error('DB', 'Failed to scope FTS update triggers / drop user_prompts_fts, rolled back', {}, error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+      logger.info('DB', 'Scoped FTS update triggers to indexed columns and dropped the write-only user_prompts_fts', {
+        rescopedTriggers: unscopedUpdateTriggers,
+        droppedUserPromptsFts: userPromptsFtsObjects.length > 0,
+      });
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
   }
 
   private ensureMergedIntoProjectColumns(): void {
