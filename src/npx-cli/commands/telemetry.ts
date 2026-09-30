@@ -97,6 +97,7 @@ const EVENT_NAMES = [
   'uninstall_completed',
   'worker_started',
   'worker_stopped',
+  'supervisor_registry_degraded',
   'session_compressed',
   'context_injected',
   'search_performed',
