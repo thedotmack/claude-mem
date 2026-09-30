@@ -139,7 +139,7 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
-    WHERE o.project = ?
+    WHERE o.project COLLATE NOCASE = ?
       AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
