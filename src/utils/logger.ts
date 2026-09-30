@@ -30,6 +30,7 @@ export type Component =
   | 'ENV'
   | 'FOLDER_INDEX'
   | 'GIT'
+  | 'GROK_INDEX'
   | 'HOOK'
   | 'HTTP'
   | 'IMPORT'
@@ -276,7 +277,15 @@ class Logger {
     if (context) {
       const { sessionId, memorySessionId, correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
-        const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
+        const pairs = Object.entries(rest).map(([k, v]) => {
+          if (typeof v !== 'object' || v === null || v instanceof Error || v instanceof Date) return `${k}=${v}`;
+          try {
+            return `${k}=${Array.isArray(v) ? JSON.stringify(v) : this.formatData(v)}`;
+          } catch {
+            // [ANTI-PATTERN IGNORED]: JSON.stringify (directly for arrays, via formatData for objects) fails on circular/BigInt payloads, an expected shape for caller-supplied context; recovery is the '[unserializable]' fallback, avoiding an uncaught throw from a logger call.
+            return `${k}=[unserializable]`;
+          }
+        });
         contextStr = ` {${pairs.join(', ')}}`;
       }
     }
