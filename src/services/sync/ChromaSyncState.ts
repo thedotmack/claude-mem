@@ -13,6 +13,11 @@ export interface ProjectWatermarks {
   summaries: number;
   prompts: number;
   pending?: PendingIdsByKind;
+  /**
+   * Set once this project's title-only observations, which older versions
+   * skipped while advancing the watermark, have been requeued (#4069).
+   */
+  titleOnlyRequeued?: boolean;
 }
 
 const ZERO: ProjectWatermarks = { observations: 0, summaries: 0, prompts: 0 };
@@ -51,6 +56,10 @@ function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefine
 
   if (pending && (pending.observations.length > 0 || pending.summaries.length > 0 || pending.prompts.length > 0)) {
     normalized.pending = pending;
+  }
+
+  if (marks?.titleOnlyRequeued === true) {
+    normalized.titleOnlyRequeued = true;
   }
 
   return normalized;
@@ -105,6 +114,19 @@ export const ChromaSyncState = {
 
   getPending(project: string, kind: DocKind): number[] {
     return this.get(project).pending?.[kind] ?? [];
+  },
+
+  isTitleOnlyRequeued(project: string): boolean {
+    return this.get(project).titleOnlyRequeued === true;
+  },
+
+  markTitleOnlyRequeued(project: string): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if (current.titleOnlyRequeued) return;
+    current.titleOnlyRequeued = true;
+    all[project] = current;
+    persist();
   },
 
   bump(project: string, kind: DocKind, id: number): void {
