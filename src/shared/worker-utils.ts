@@ -11,6 +11,7 @@ import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/ind
 import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index.js";
+import { classifyPortOccupancy } from "../services/infrastructure/HealthMonitor.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
@@ -19,6 +20,7 @@ import {
   spawnDetachedWorkerDaemon,
 } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { reclaimGhostListeningPort } from "./port-reclaim.js";
 import { sanitizeEnv } from "../supervisor/env-sanitizer.js";
 import { killProcessTree } from "./kill-process-tree.js";
 import { writeJsonFileAtomic } from "./atomic-json.js";
@@ -354,7 +356,7 @@ export function workerHttpRequest(
   return workerFetch(url, init);
 }
 
-async function isWorkerHealthy(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
+async function isWorkerHealthy(timeoutMs: number): Promise<boolean> {
   const response = await workerHttpRequest('/api/health', { timeoutMs });
   return response.ok;
 }
@@ -500,7 +502,7 @@ async function waitForWorkerPort(
   let delayMs = options.backoffMs;
   for (let attempt = 1; attempt <= options.attempts; attempt++) {
     if (isBudgetExhausted(deadlineAt)) return false;
-    if (await isWorkerPortAlive(boundedByBudget(HEALTH_CHECK_TIMEOUT_MS, deadlineAt))) return true;
+    if (await isWorkerPortAlive(deadlineAt ?? Number.POSITIVE_INFINITY)) return true;
     if (attempt < options.attempts) {
       await new Promise<void>(resolve => setTimeout(resolve, boundedByBudget(delayMs, deadlineAt)));
       delayMs *= 2;
@@ -650,10 +652,12 @@ async function warnIfVersionStillMismatched(
   }
 }
 
-async function isWorkerPortAlive(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
+async function isWorkerPortAlive(deadline: number = Number.POSITIVE_INFINITY): Promise<boolean> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return false;
   let healthy: boolean;
   try {
-    healthy = await isWorkerHealthy(timeoutMs);
+    healthy = await isWorkerHealthy(Math.min(HEALTH_CHECK_TIMEOUT_MS, remainingMs));
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'Worker health check threw', {
       error: error instanceof Error ? error.message : String(error),
@@ -694,6 +698,9 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
   // Budgeted probe timeouts; undefined keeps each callee's own default.
   const probeTimeoutMs = (): number | undefined =>
     deadlineAt === null ? undefined : boundedByBudget(HEALTH_CHECK_TIMEOUT_MS, deadlineAt);
+  // #3171: the pre-spawn probes (health check, port classification) share a
+  // 5 s bound, cut further by the caller's budget.
+  const preSpawnDeadline = Math.min(Date.now() + 5000, deadlineAt ?? Number.POSITIVE_INFINITY);
 
   // Resolve ONCE and use the result for both the staleness check and the
   // (re)spawn script below. Detection and spawn sharing this single oracle
@@ -710,9 +717,10 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
   // or when the resolved version is unreadable ('unknown').
   let expectedPluginVersion: string | null = null;
   let recycleBuildKey: string | null = null;
+  let recycledStaleWorker = false;
 
   if (outOfBudget('health probe')) return false;
-  if (await isWorkerPortAlive(probeTimeoutMs())) {
+  if (await isWorkerPortAlive(preSpawnDeadline)) {
     // A worker is already alive. If it is a DIFFERENT version than the one
     // this resolution would spawn (e.g. the user upgraded but the previous
     // worker is still squatting the port), recycle it so the resolved
@@ -830,22 +838,13 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
       });
       return false;
     }
+    recycledStaleWorker = true;
     // The killed worker's PID file is left behind; the successor's boot
     // removes it (validateWorkerPidFile returns 'stale' for a dead pid).
     // Fall through to (re)spawn + readiness wait below.
   }
 
-  const runtimePath = resolveWorkerRuntimePath();
   const scriptPath = resolvedScript?.scriptPath ?? null;
-
-  if (!runtimePath) {
-    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found on PATH');
-    return false;
-  }
-  if (!scriptPath) {
-    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: worker-service.cjs not found in plugin/scripts');
-    return false;
-  }
 
   // Spawn gate (worker-spawn-gate.ts): only ONE gated launcher — hook, MCP
   // server, or the CLI restart fallback — may spawn at a time. (The dying
@@ -861,6 +860,19 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
+      // A stale worker we just killed already proved its port closed
+      // (waitForWorkerPortClosed); every other spawn must first prove the port
+      // free (#3171).
+      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline))) return false;
+      const runtimePath = resolveWorkerRuntimePath();
+      if (!runtimePath) {
+        logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found on PATH');
+        return false;
+      }
+      if (!scriptPath) {
+        logger.warn('SYSTEM', 'Cannot lazy-spawn worker: worker-service.cjs not found in plugin/scripts');
+        return false;
+      }
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {
@@ -964,6 +976,47 @@ const ORPHANED_PORT_REMEDIATION =
  * across a reboot or a port change the way a persisted flag could.
  */
 let orphanedPortDiagnosis: number | null = null;
+
+/**
+ * The hook's pre-spawn port gate (#3171, plan-15 steps 2-3). A failed health
+ * request is not proof the port is free: a wedged or orphaned listener refuses
+ * HTTP yet keeps the port bound, and every hook that lazy-spawned onto it added
+ * another doomed daemon. So only a bind decides, within the caller's budget:
+ * - free → spawn;
+ * - occupied → one reclaim attempt (a dead owner's ghost listener, or a
+ *   provably wedged worker of ours, see port-reclaim.ts). Spawn only if it
+ *   freed the port; when it declines and no PID file claims the listener,
+ *   record the orphaned port so the fail-loud message names the fix (#4002);
+ * - indeterminate (the bind neither succeeded nor hit EADDRINUSE in time) →
+ *   no spawn: never start another worker onto a port in an unknown state.
+ */
+async function preSpawnPortIsFree(deadline: number): Promise<boolean> {
+  const port = getWorkerPort();
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return false;
+
+  const occupancy = await classifyPortOccupancy(port, remainingMs);
+  if (occupancy === 'free') return true;
+  if (occupancy === 'indeterminate') {
+    logger.warn('SYSTEM', 'Worker port state could not be determined in time — skipping lazy-spawn', { port });
+    return false;
+  }
+
+  const reclaim = await reclaimGhostListeningPort(port);
+  if (reclaim.reclaimed) {
+    logger.info('SYSTEM', 'Reclaimed the worker port before lazy-spawn', { port, killedPids: reclaim.killedPids });
+    return true;
+  }
+  if (readOwnedWorkerPidInfo() === null) {
+    orphanedPortDiagnosis = port;
+  }
+  logger.warn('SYSTEM', 'Worker port is held by a listener that does not answer health — skipping lazy-spawn', {
+    port,
+    reclaimReason: reclaim.reason,
+    ...(orphanedPortDiagnosis === port ? { fix: ORPHANED_PORT_REMEDIATION } : {}),
+  });
+  return false;
+}
 
 let aliveCache: boolean | null = null;
 
