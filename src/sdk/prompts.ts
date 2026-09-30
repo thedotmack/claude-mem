@@ -139,6 +139,140 @@ export const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
 const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
 const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
 
+// Image content blocks carry base64 payloads that are worthless to a text
+// observer and ruinously expensive to carry. Two things compound (#3730):
+// truncateObservationField keeps the head and tail of an oversized field, so
+// what survives a screenshot is thousands of characters of base64 rather than
+// the caption beside it; and the prompt is appended to
+// session.conversationHistory, which every later observation in the session
+// re-sends in full. A browser-automation session taking a few hundred
+// screenshots replays all of it, every time.
+//
+// Stripping generically, on the shape of the content block, rather than by
+// tool name: CLAUDE_MEM_SKIP_TOOLS needs every screenshot-producing tool
+// enumerated ahead of time, and it drops the observation entirely instead of
+// keeping the part that has signal.
+const MAX_SANITIZE_DEPTH = 12;
+
+// URI schemes are case-insensitive. A `DATA:image/png;base64,…` source is the
+// same inlined payload as `data:` — Greptile reproduced the bypass on #3762.
+function isDataUrl(url: string): boolean {
+  return url.slice(0, 5).toLowerCase() === 'data:';
+}
+
+// A field is stripped twice — once before the condense pass, once when the
+// prompt is built — so a block that has already been elided has to survive the
+// second pass as it is, rather than losing the byte count it recorded.
+function isElided(container: Record<string, unknown>): boolean {
+  return typeof container.elided === 'string';
+}
+
+function elideImageSource(source: Record<string, unknown>, dataKey: string = 'data'): Record<string, unknown> {
+  const data = source[dataKey];
+  const elided: Record<string, unknown> = { elided: 'image data withheld from the observer' };
+  if (typeof source.media_type === 'string') elided.media_type = source.media_type;
+  if (typeof data === 'string') elided.bytes = data.length;
+  return elided;
+}
+
+function stripImagePayloads(value: unknown, depth = 0): unknown {
+  if (depth > MAX_SANITIZE_DEPTH || value === null || typeof value !== 'object') return value;
+
+  if (Array.isArray(value)) {
+    let changed = false;
+    const mapped = value.map((entry) => {
+      const next = stripImagePayloads(entry, depth + 1);
+      if (next !== entry) changed = true;
+      return next;
+    });
+    return changed ? mapped : value;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  // Anthropic content block: { type: 'image', source: { data: '<base64>' } }.
+  // A url-backed source is the same case as OpenAI's plain http URL — short,
+  // and it carries signal — so only an inlined payload is removed.
+  const source = record.source;
+  if (record.type === 'image' && source !== null && typeof source === 'object') {
+    const record_source = source as Record<string, unknown>;
+    if (isElided(record_source)) return value;
+    const url = record_source.url;
+    if (typeof url === 'string' && !isDataUrl(url)) {
+      return value;
+    }
+    return { type: 'image', source: elideImageSource(record_source) };
+  }
+
+  // Claude Code's Read returns an image file as
+  // { type: 'image', file: { base64: '<base64>' } } — no `source`, so the
+  // block above never matched it and a video frame or screenshot read off
+  // disk went to the model whole (#3606).
+  const file = record.file;
+  if (record.type === 'image' && file !== null && typeof file === 'object') {
+    const record_file = file as Record<string, unknown>;
+    if (isElided(record_file)) return value;
+    if (typeof record_file.base64 === 'string') {
+      return { type: 'image', file: elideImageSource(record_file, 'base64') };
+    }
+  }
+
+  // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
+  const imageUrl = record.image_url;
+  if (record.type === 'image_url' && imageUrl !== null && typeof imageUrl === 'object') {
+    if (isElided(imageUrl as Record<string, unknown>)) return value;
+    const url = (imageUrl as Record<string, unknown>).url;
+    // A plain http(s) URL is short and can carry signal; only a data: URL is
+    // the inlined payload this exists to remove.
+    if (typeof url === 'string' && isDataUrl(url)) {
+      return {
+        type: 'image_url',
+        image_url: { elided: 'image data withheld from the observer', bytes: url.length },
+      };
+    }
+    return value;
+  }
+
+  // Identity is the signal that nothing was stripped, so it is preserved all
+  // the way up: callers rely on an untouched payload staying the very object
+  // they passed in, and `stripImagePayloadsFromField` uses it to decide
+  // whether a field needs re-encoding at all.
+  const out: Record<string, unknown> = {};
+  let changed = false;
+  for (const [key, entry] of Object.entries(record)) {
+    const next = stripImagePayloads(entry, depth + 1);
+    if (next !== entry) changed = true;
+    out[key] = next;
+  }
+  return changed ? out : value;
+}
+
+/**
+ * Strip the image payloads out of one observation field.
+ *
+ * The stripper matches on the *shape* of a content block, so it has to be
+ * handed parsed JSON. A field does not arrive that way: the ingest boundary
+ * stores a tool payload as JSON text (`http/shared.ts` JSON.stringify()s it),
+ * so what reaches the worker is a string. Passing that string straight to
+ * `stripImagePayloads` returns it unchanged — which is why the sanitizer never
+ * fired on a real observation, only in tests that build the field themselves.
+ *
+ * Text that is not JSON is returned as-is; it has no content blocks to find.
+ */
+export function stripImagePayloadsFromField(value: unknown): unknown {
+  if (typeof value !== 'string') return stripImagePayloads(value);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return value;
+  }
+  const stripped = stripImagePayloads(parsed);
+  // No image in it: hand back the original text, so every field that did not
+  // need this is encoded exactly as it was before.
+  return stripped === parsed ? value : stripped;
+}
+
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   // JSON.stringify returns undefined for undefined / functions / symbols;
   // fall back to empty string so the call sites (template literal output)
@@ -178,13 +312,13 @@ export function buildObservationPrompt(obs: Observation): string {
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
-  <parameters>${truncateObservationField(toolInput)}</parameters>
-  <outcome>${truncateObservationField(toolOutput)}</outcome>
+  <parameters>${truncateObservationField(stripImagePayloadsFromField(toolInput))}</parameters>
+  <outcome>${truncateObservationField(stripImagePayloadsFromField(toolOutput))}</outcome>
 </observed_from_primary_session>
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
 
-Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
+Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" /> if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
 }

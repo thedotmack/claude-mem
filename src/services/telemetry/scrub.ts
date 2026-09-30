@@ -1,3 +1,5 @@
+import { redactText } from './error-scrub.js';
+
 /**
  * Whitelist scrubber for telemetry event properties.
  *
@@ -39,8 +41,15 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // trial_poll_timeout — never an email, token, pairing secret, or device
   // user code (those never enter any event property).
   'stage',
+  // phase is the installer OAuth pairing phase, a closed enum
+  // (login | enrollment | deferred) on installer_oauth_timeout and
+  // installer_oauth_start_failed.
+  'phase',
   'install_method',
   'interactive',
+  // provider_source is how the installer decided the provider, a closed enum
+  // (flag | default | persisted | prompt) on install_completed.
+  'provider_source',
   'bun_version',
   'uv_version',
   'claude_code_version',
@@ -92,7 +101,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'days_since_last_obs',
   // search_performed retrieval quality — result_count is an integer,
   // chroma_available a boolean, fallback_reason one of OUR enum values
-  // (none | chroma_connection | chroma_error | chroma_not_initialized).
+  // (none | chroma_connection | chroma_error | chroma_not_initialized | chroma_zero_results).
   // Never the query, never an error message.
   'result_count',
   'chroma_available',
@@ -100,7 +109,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // session_compressed trust signals — booleans, counters, and our own
   // closed enums (invalid_output_class: xml | idle | prose, where 'xml' means
   // XML-shaped output that still failed to parse; abort_reason:
-  // idle | shutdown | overflow | restart_guard | quota | none).
+  // idle | shutdown | overflow | restart_guard | quota | provider_switch | none).
   // Never model output, never raw abort strings.
   'invalid_output_class',
   'consecutive_invalid_outputs',
@@ -116,7 +125,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'process_rss_mb',
   'heap_used_mb',
   // hook_failed distress signal — hook_type is one of OUR hook names
-  // (context | session-init | observation | summarize | file-context),
+  // (context | session-init | observation | summarize | session-end | file-context),
   // error_mode (worker_unavailable | blocking_error), plus a consecutive
   // failure counter and threshold flag. Never an error message.
   'hook_type',
@@ -185,6 +194,13 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // context_injected_rollup aggregation fields:
   'total_tokens',
   'avg_tokens',
+  // skill_invoked — closed skill identity only. skill_id is a first-party
+  // plugin/skills/ name or `other`; skill_source is first_party | third_party;
+  // skill_trigger is tool | prompt. Never a third-party skill name, never
+  // tool_input.args, never the prompt body.
+  'skill_id',
+  'skill_source',
+  'skill_trigger',
   // Per-session/window observation volume folded into the rollups so the
   // context-cache-value and observation-type metrics survive the retirement of
   // the legacy per-occurrence streams. observations_created (generation side,
@@ -212,7 +228,12 @@ function copyAllowedProperties(
     if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
     const value = props[key];
     if (typeof value === 'string') {
-      scrubbed[key] = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
+      const truncated = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
+      // Allowed keys are supposed to be enums/counters, but a call site can
+      // still stuff a URL-shaped token into e.g. `endpoint`. Run the error
+      // redaction pipeline so query/userinfo/assignment secrets cannot ride
+      // along on a whitelisted key.
+      scrubbed[key] = redactText(truncated);
     } else if (typeof value === 'number' && Number.isFinite(value)) {
       scrubbed[key] = value;
     } else if (typeof value === 'boolean') {

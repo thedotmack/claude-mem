@@ -9,6 +9,15 @@ import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
 
 let rateLimitingEnabled = 'false';
+let queuedMessages: Array<Record<string, unknown>> = [];
+
+const toolObservationMessage = {
+  type: 'observation',
+  tool_name: 'Read',
+  tool_input: { file_path: 'src/main.ts' },
+  tool_response: 'file contents',
+  prompt_number: 1,
+};
 
 const mockMode = {
   name: 'code',
@@ -91,6 +100,7 @@ describe('GeminiProvider', () => {
 
   beforeEach(() => {
     rateLimitingEnabled = 'false';
+    queuedMessages = [];
 
     modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
@@ -156,7 +166,7 @@ describe('GeminiProvider', () => {
     };
 
     mockSessionManager = {
-      getMessageIterator: async function* () { yield* []; },
+      getMessageIterator: async function* () { yield* queuedMessages; },
       getClaimedMessages: mock(() => []),
       confirmClaimedMessages: mock(() => Promise.resolve(0)),
       resetProcessingToPending: mock(() => Promise.resolve(0)),
@@ -318,6 +328,7 @@ describe('GeminiProvider', () => {
       </observation>
     `;
 
+    queuedMessages = [toolObservationMessage];
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: observationXml }] } }],
       usageMetadata: { totalTokenCount: 50 }
@@ -325,12 +336,12 @@ describe('GeminiProvider', () => {
 
     await agent.startSession(session);
 
-    expect(mockStoreObservations).toHaveBeenCalled();
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
     expect(mockSyncObservation).toHaveBeenCalled();
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
   });
 
-  it('stores a deferred init response under the original prompt project after the live session advances', async () => {
+  it('stores a deferred observation response under the original prompt project after the live session advances', async () => {
     const session = makeSession({
       project: 'repo-a',
       userPrompt: 'prompt 1',
@@ -339,7 +350,7 @@ describe('GeminiProvider', () => {
     const observationXml = `
       <observation>
         <type>discovery</type>
-        <title>Late init response</title>
+        <title>Late observation response</title>
         <narrative>Should stay on the original prompt project.</narrative>
         <facts></facts>
         <concepts></concepts>
@@ -348,10 +359,23 @@ describe('GeminiProvider', () => {
       </observation>
     `;
 
+    queuedMessages = [toolObservationMessage];
     let resolveFetch!: (response: Response) => void;
-    global.fetch = mock(() => new Promise<Response>(resolve => {
-      resolveFetch = resolve;
-    }));
+    let sends = 0;
+    global.fetch = mock(() => {
+      sends++;
+      // Only the observation query is held open; the init query has to complete
+      // for the message loop to reach it.
+      if (sends === 1) {
+        return Promise.resolve(new Response(JSON.stringify({
+          candidates: [{ content: { parts: [{ text: 'Ready.' }] } }],
+          usageMetadata: { totalTokenCount: 10 }
+        })));
+      }
+      return new Promise<Response>(resolve => {
+        resolveFetch = resolve;
+      });
+    });
 
     const pending = agent.startSession(session);
     // Wait for the request to actually be in flight rather than assuming it

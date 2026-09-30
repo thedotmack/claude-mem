@@ -2,17 +2,8 @@
 import net from 'net';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-
-// A hook asks for the worker's version while it is spending a bounded
-// session-init budget, so the probe must never outlive that budget: a worker
-// that answers the liveness check and then stalls on the version request used
-// to hold the hook open past its host deadline (#3434). Callers inside a
-// budget pass their remaining time; everyone else gets the liveness bound.
-const WORKER_VERSION_PROBE_TIMEOUT_MS = HOOK_TIMEOUTS.HEALTH_CHECK;
-
-const HTTP_GET = 'GET';
+import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -25,15 +16,23 @@ function formatHostForUrl(host: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
+// Probes against a ghost listener (plan-15 #3603) can connect — the kernel
+// completes handshakes on the inherited socket — but never receive a response,
+// because no application is reading. An unbounded fetch would hang the probe
+// forever, so every HTTP probe is aborted after this budget. 5s is above a
+// healthy worker's sub-100ms response and below every caller's retry budget.
+const HEALTH_PROBE_TIMEOUT_MS = 5_000;
+
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
-  method: string = HTTP_GET,
-  timeoutMs?: number
+  method: string = 'GET',
+  timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const init: RequestInit = { method };
-  if (timeoutMs !== undefined) init.signal = AbortSignal.timeout(timeoutMs);
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, init);
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
+    method,
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+  });
   let body = '';
   try {
     body = await response.text();
@@ -43,13 +42,24 @@ async function httpRequestToWorker(
   return { ok: response.ok, statusCode: response.status, body };
 }
 
-export async function isPortInUse(port: number): Promise<boolean> {
+export async function isPortInUse(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<boolean> {
   if (process.platform === 'win32') {
     // Fast path: HTTP health check. A live claude-mem worker responds to
     // /api/health, so this is the cheapest non-disruptive probe for the
     // common case (worker is running and healthy).
+    //
+    // Bounded like every other probe (HEALTH_PROBE_TIMEOUT_MS): a ghost
+    // listener — the dead worker's inherited socket, held open by its chroma
+    // sidecar chain (plan-15 #3603) — completes the TCP handshake and then
+    // never answers. Unbounded, this fetch would hang forever, and with it
+    // ensureWorkerStarted(), which calls this BEFORE it can reach the reclaim:
+    // the very bug the reclaim exists to fix would instead wedge every
+    // launcher. On timeout the flow falls through to the socket probe below,
+    // which still reports a bound port as in use.
     try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {
+        signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+      });
       if (response.ok) return true;
       // Non-ok response: port is reachable but the worker is unhealthy.
       // Fall through to the net.createServer check below so we still report
@@ -102,10 +112,16 @@ async function pollEndpointUntilOk(
   timeoutMs: number,
   retryLogMessage: string
 ): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
-      const result = await httpRequestToWorker(port, endpointPath);
+      const remainingMs = deadline - Date.now();
+      const result = await httpRequestToWorker(
+        port,
+        endpointPath,
+        'GET',
+        Math.min(HEALTH_PROBE_TIMEOUT_MS, remainingMs),
+      );
       if (result.ok) return true;
     } catch (error) {
       if (error instanceof Error) {
@@ -114,7 +130,10 @@ async function pollEndpointUntilOk(
         logger.debug('SYSTEM', retryLogMessage, { error: String(error) });
       }
     }
-    await new Promise(r => setTimeout(r, 500));
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }
@@ -128,10 +147,14 @@ export function waitForReadiness(port: number, timeoutMs: number = 30000): Promi
 }
 
 export async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!(await isPortInUse(port))) return true;
-    await new Promise(r => setTimeout(r, 500));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (!(await isPortInUse(port, Math.min(HEALTH_PROBE_TIMEOUT_MS, remainingMs)))) return true;
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }
@@ -149,7 +172,7 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
     }
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message?.includes('ECONNREFUSED')) {
+    if (error instanceof Error && isConnectionRefusedError(error)) {
       logger.debug('SYSTEM', 'Worker already stopped', {}, error);
       return false;
     }
@@ -158,12 +181,9 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
   }
 }
 
-export async function getRunningWorkerVersion(
-  port: number,
-  timeoutMs: number = WORKER_VERSION_PROBE_TIMEOUT_MS
-): Promise<string | null> {
+export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/health', HTTP_GET, timeoutMs);
+    const result = await httpRequestToWorker(port, '/api/health');
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;
@@ -185,18 +205,10 @@ export interface VersionCheckResult {
  * spawn. The caller supplies it so detection and respawn can never consult
  * different oracles (the 2026-07-22 restart storm). Either side unknown →
  * matches, since a recycle could not change the outcome deterministically.
- *
- * timeoutMs bounds the version probe so a wedged worker cannot stall a caller
- * that is spending a deadline (#3434); an expired probe reads as "unknown",
- * which is the existing no-recycle fallback.
  */
-export async function checkVersionMatch(
-  port: number,
-  expectedVersion: string | null,
-  timeoutMs: number = WORKER_VERSION_PROBE_TIMEOUT_MS
-): Promise<VersionCheckResult> {
+export async function checkVersionMatch(port: number, expectedVersion: string | null): Promise<VersionCheckResult> {
   const pluginVersion = expectedVersion ?? 'unknown';
-  const workerVersion = await getRunningWorkerVersion(port, timeoutMs);
+  const workerVersion = await getRunningWorkerVersion(port);
 
   if (!workerVersion || pluginVersion === 'unknown') {
     return { matches: true, pluginVersion, workerVersion };

@@ -45,8 +45,20 @@ export async function handleGeneratorExit(
   // has already reset the claimed batch to pending and (on a recycle) cleared
   // the conversation, so the session must survive for the next ingest to open a
   // fresh generator and drain it. Finalizing here would drop that work (#3800).
+  // 'provider_switch' (#2756) is the same shape for a different reason:
+  // SessionRoutes aborted a generator that was PARKED in waitForSlot (never
+  // acquired a slot / never spawned) to switch providers, and is about to
+  // start a fresh generator for the newly-selected provider on this same
+  // session — finalizeSession + removeSessionImmediate would dispose the
+  // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
+  // wiping the very queue/conversationHistory the switch is meant to preserve.
   const abortCategory = (reason ?? '').split(':')[0];
-  if (abortCategory === 'quota' || abortCategory === 'auth' || abortCategory === 'overflow') {
+  // Every category listed here has ALREADY called resetProcessingToPending
+  // (except provider_switch, which parks a live buffer for a provider change).
+  // Falling through to finalizeSession would remove the session and undo that
+  // preservation — the second half of #3752.
+  const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
+  if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
