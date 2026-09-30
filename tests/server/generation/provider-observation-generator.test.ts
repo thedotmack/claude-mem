@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
@@ -12,12 +12,9 @@ import { ProviderObservationGenerator } from '../../../src/server/generation/Pro
 import type { ServerGenerationProvider } from '../../../src/server/generation/providers/shared/types.js';
 import type { Job } from 'bullmq';
 import type { GenerateObservationsForEventJob } from '../../../src/server/jobs/types.js';
+import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
 
 class StubProvider implements ServerGenerationProvider {
   readonly providerLabel = 'claude' as const;
@@ -52,7 +49,7 @@ describe('ProviderObservationGenerator', () => {
     schemaName = `cm_phase5_gen_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
 
     pool.on('connect', (poolClient) => {
@@ -149,5 +146,36 @@ describe('ProviderObservationGenerator', () => {
       teamId,
     });
     expect(reloaded?.status).toBe('failed');
+  });
+
+  it('times out a hung provider call and requeues it as transient (#4100)', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const provider: ServerGenerationProvider = {
+      providerLabel: 'openrouter',
+      generate(_context, signal) {
+        receivedSignal = signal;
+        // Never resolves on its own; settles only when the signal aborts,
+        // mirroring fetch()/response.json() in the real providers.
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    };
+    const generator = new ProviderObservationGenerator({
+      pool: pool as unknown as ConstructorParameters<typeof ProviderObservationGenerator>[0]['pool'],
+      provider,
+      providerTimeoutMs: 50,
+    });
+
+    await expect(generator.process(makeJob())).rejects.toThrow(/timed out after 50ms/);
+    expect(receivedSignal?.aborted).toBe(true);
+
+    const reloaded = await storage.observationGenerationJobs.getByIdForScope({
+      id: jobId,
+      projectId,
+      teamId,
+    });
+    expect(reloaded?.status).toBe('queued');
+    expect(reloaded?.lastError).toMatchObject({ classification: 'transient' });
   });
 });

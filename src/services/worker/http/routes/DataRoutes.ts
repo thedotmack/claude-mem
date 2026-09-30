@@ -16,7 +16,9 @@ import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
+import { getParkedSlotWaiterCount } from '../../../../supervisor/process-registry.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -51,22 +53,39 @@ const observationsBatchSchema = z.object({
   orderBy: z.enum(['date_desc', 'date_asc']).optional(),
   limit: z.number().int().positive().optional(),
   project: z.string().optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
 }).passthrough();
 
-const sdkSessionsBatchSchema = z.preprocess((value) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-
-  const body = value as Record<string, unknown>;
-  if (body.memorySessionIds === undefined && body.sdkSessionIds !== undefined) {
-    return { ...body, memorySessionIds: body.sdkSessionIds };
-  }
-
-  return value;
-}, z.object({
+const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
-}).passthrough());
+}).passthrough();
 
-const setProcessingSchema = z.object({}).passthrough();
+// Layer 4 of progressive disclosure: raw tool bodies, by explicit id only.
+// `ids` accepts numeric tool_uses.id AND opaque tool_use_id strings, because a
+// caller may hold either (search/list hands back the former, a transcript or an
+// observation ref the latter). Required and non-empty on purpose — this route
+// must never be a way to page the whole table of raw payloads.
+const toolUsesBatchSchema = z.object({
+  ids: z.preprocess((value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // not JSON, fall through to comma split
+      }
+      return value.split(',').map((part) => part.trim()).filter(Boolean);
+    }
+    return value;
+  }, z.array(z.union([z.number().int(), z.string()]))),
+  limit: z.number().int().positive().max(200).optional(),
+  project: z.string().optional(),
+  contentSessionId: z.string().optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
+}).passthrough();
 
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
@@ -97,13 +116,17 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
+    app.get('/api/tool-uses', this.handleListToolUses.bind(this));
+    app.post('/api/tool-uses/batch', validateBody(toolUsesBatchSchema), this.handleGetToolUsesByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
+    app.delete('/api/observation/:id', this.handleDeleteObservation.bind(this));
+    app.delete('/api/summary/:id', this.handleDeleteSummary.bind(this));
+    app.delete('/api/prompt/:id', this.handleDeletePrompt.bind(this));
 
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
 
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
-    app.post('/api/processing', validateBody(setProcessingSchema), this.handleSetProcessing.bind(this));
 
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
@@ -131,7 +154,8 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const observation = store.getObservationById(id);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const observation = store.getObservationById(id, platformSource);
 
     if (!observation) {
       this.notFound(res, `Observation #${id} not found`);
@@ -158,9 +182,10 @@ export class DataRoutes extends BaseRouteHandler {
     const projects = projectsParam ? projectsParam.split(',').filter(Boolean) : undefined;
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
     const limit = Number.isFinite(parsedLimit) && parsedLimit! > 0 ? parsedLimit : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     const db = this.dbManager.getSessionStore().db;
-    const observations = getObservationsByFilePath(db, candidatePaths, { projects, limit });
+    const observations = getObservationsByFilePath(db, candidatePaths, { projects, limit, platformSource });
 
     res.json({ observations, count: observations.length });
   });
@@ -174,9 +199,81 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
     res.json(observations);
+  });
+
+  /**
+   * Index/tally listing for `tool_uses` — Receipt's read path and the way a
+   * caller finds ids worth disclosing. Deliberately projects a CHEAP shape:
+   * identity + sizes, never `tool_input` / `tool_response`. Full bodies come
+   * only from POST /api/tool-uses/batch with explicit ids.
+   */
+  private handleListToolUses = this.wrapHandler((req: Request, res: Response): void => {
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    const asString = (value: unknown): string | undefined =>
+      typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+    const asNumber = (value: unknown): number | undefined => {
+      const parsed = Number(asString(value));
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+
+    const toolName = asString(req.query.tool_name ?? req.query.toolName);
+
+    const rows = store.queryToolUses({
+      project: asString(req.query.project),
+      contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
+      memorySessionId: asString(req.query.memorySessionId),
+      toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
+      agentId: asString(req.query.agentId),
+      platformSource,
+      dateStart: asNumber(req.query.dateStart),
+      dateEnd: asNumber(req.query.dateEnd),
+      limit: asNumber(req.query.limit),
+      offset: asNumber(req.query.offset),
+      orderBy: req.query.orderBy === 'date_asc' ? 'date_asc' : 'date_desc',
+    });
+
+    res.json({
+      count: rows.length,
+      toolUses: rows.map(row => ({
+        id: row.id,
+        tool_use_id: row.tool_use_id,
+        tool_name: row.tool_name,
+        project: row.project,
+        content_session_id: row.content_session_id,
+        memory_session_id: row.memory_session_id,
+        platform_source: row.platform_source,
+        agent_id: row.agent_id,
+        agent_type: row.agent_type,
+        observation_id: row.observation_id,
+        or_generation_id: row.or_generation_id,
+        or_session_id: row.or_session_id,
+        prompt_number: row.prompt_number,
+        created_at: row.created_at,
+        created_at_epoch: row.created_at_epoch,
+        // Size hints so a caller can budget tokens before disclosing a body.
+        tool_input_bytes: row.tool_input ? Buffer.byteLength(row.tool_input, 'utf8') : 0,
+        tool_response_bytes: row.tool_response ? Buffer.byteLength(row.tool_response, 'utf8') : 0,
+      })),
+    });
+  });
+
+  private handleGetToolUsesByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, limit, project, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    res.json(store.getToolUsesByIds(ids, { limit, project, contentSessionId, platformSource }));
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
@@ -184,7 +281,9 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSessionSummariesByIds([id]);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const project = DataRoutes.firstString(req.query.project);
+    const sessions = store.getSessionSummariesByIds([id], { project, platformSource });
 
     if (sessions.length === 0) {
       this.notFound(res, `Session #${id} not found`);
@@ -207,7 +306,9 @@ export class DataRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const store = this.dbManager.getSessionStore();
-    const prompts = store.getUserPromptsByIds([id]);
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const project = DataRoutes.firstString(req.query.project);
+    const prompts = store.getUserPromptsByIds([id], { project, platformSource });
 
     if (prompts.length === 0) {
       this.notFound(res, `Prompt #${id} not found`);
@@ -216,6 +317,72 @@ export class DataRoutes extends BaseRouteHandler {
 
     res.json(prompts[0]);
   });
+
+  private handleDeleteObservation = this.wrapHandler((req: Request, res: Response): void => {
+    this.deleteSyncedContent(req, res, 'observation', 'observations');
+  });
+
+  private handleDeleteSummary = this.wrapHandler((req: Request, res: Response): void => {
+    this.deleteSyncedContent(req, res, 'summary', 'session_summaries');
+  });
+
+  private handleDeletePrompt = this.wrapHandler((req: Request, res: Response): void => {
+    this.deleteSyncedContent(req, res, 'prompt', 'user_prompts');
+  });
+
+  /** Production deletion surface: tombstone enqueue and row delete are one transaction. */
+  private deleteSyncedContent(
+    req: Request,
+    res: Response,
+    kind: ContentKind,
+    table: 'observations' | 'session_summaries' | 'user_prompts',
+  ): void {
+    let originLocalId: string;
+    try {
+      originLocalId = assertCanonicalDecimal(req.params.id, { positive: true });
+    } catch {
+      this.badRequest(res, 'id must be a positive canonical decimal string');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const row = store.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id FROM ${table}
+      WHERE id = ? AND origin_device_id IS NULL
+    `).get(originLocalId) as { id: string } | undefined;
+    if (!row) {
+      this.notFound(res, `${kind} #${originLocalId} not found`);
+      return;
+    }
+
+    const cloudSync = this.dbManager.getCloudSync();
+    let entityRev: string | null = null;
+    if (cloudSync?.isConfigured()) {
+      if (!cloudSync.status().deviceId) {
+        res.status(503).json({ error: 'cloud sync identity unavailable; refusing an unreplicated delete' });
+        return;
+      }
+      entityRev = cloudSync.queueDelete(kind, originLocalId);
+    } else {
+      // A row with an acknowledged entity head must never be silently deleted
+      // while its sync identity is unavailable: that would strand replicas.
+      const acknowledged = store.db.prepare(`
+        SELECT 1 AS found FROM sync_entity_heads
+        WHERE kind = ? AND origin_local_id = ? LIMIT 1
+      `).get(kind, originLocalId) as { found: number } | undefined;
+      if (acknowledged) {
+        res.status(503).json({ error: 'cloud sync unavailable; refusing an unreplicated delete' });
+        return;
+      }
+      store.db.prepare(
+        `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
+      ).run(originLocalId);
+    }
+
+    // Only after the delete committed: open viewer tabs drop the row live.
+    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: kind, id: Number(originLocalId) });
+    res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev });
+  }
 
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
@@ -261,8 +428,7 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetProjects = this.wrapHandler((req: Request, res: Response): void => {
     const store = this.dbManager.getSessionStore();
-    const rawPlatformSource = req.query.platformSource as string | undefined;
-    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (platformSource) {
       const projects = store.getAllProjects(platformSource);
@@ -279,24 +445,18 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const isProcessing = await this.sessionManager.isAnySessionProcessing();
-    const queueDepth = await this.sessionManager.getTotalActiveWork(); 
-    res.json({ isProcessing, queueDepth });
-  });
-
-  private handleSetProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const isProcessing = await this.sessionManager.isAnySessionProcessing();
-    const queueDepth = await this.sessionManager.getTotalQueueDepth();
-    const activeSessions = this.sessionManager.getActiveSessionCount();
-
-    res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
+    const queueDepth = await this.sessionManager.getTotalActiveWork();
+    // #2756 — additive: sessions currently parked in waitForSlot, never a
+    // breaking change to existing isProcessing/queueDepth consumers.
+    const parkedSessions = getParkedSlotWaiterCount();
+    res.json({ isProcessing, queueDepth, parkedSessions });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); 
     const project = req.query.project as string | undefined;
-    const rawPlatformSource = req.query.platformSource as string | undefined;
-    const platformSource = rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     return { offset, limit, project, platformSource };
   }
@@ -316,10 +476,26 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const sessionContextByKey = new Map<string, { id: number; platformSource: string }>();
+    const sessionContextsByContentId = new Map<string, Array<{ id: number; platformSource: string }>>();
+    const sessionContextKey = (platformSource: string, contentSessionId: string): string =>
+      `${platformSource}\0${contentSessionId}`;
+    const rememberSessionContext = (session: any, id: number): void => {
+      if (!session || typeof session !== 'object' || typeof session.content_session_id !== 'string') {
+        return;
+      }
+      const platformSource = normalizePlatformSource(session.platform_source);
+      const context = { id, platformSource };
+      sessionContextByKey.set(sessionContextKey(platformSource, session.content_session_id), context);
+      const existing = sessionContextsByContentId.get(session.content_session_id) ?? [];
+      existing.push(context);
+      sessionContextsByContentId.set(session.content_session_id, existing);
+    };
 
     if (Array.isArray(sessions)) {
       for (const session of sessions) {
         const result = store.importSdkSession(session);
+        rememberSessionContext(session, result.id);
         if (result.imported) {
           stats.sessionsImported++;
         } else {
@@ -364,6 +540,15 @@ export class DataRoutes extends BaseRouteHandler {
         };
 
         const syncOne = async ({ id, obs }: { id: number; obs: any }) => {
+          const sourceRow = store.db.prepare(`
+            SELECT COALESCE(NULLIF(platform_source, ''), 'claude') as platform_source
+            FROM sdk_sessions
+            WHERE memory_session_id = ?
+            LIMIT 1
+          `).get(obs.memory_session_id) as { platform_source?: string } | undefined;
+          const platformSource = typeof obs.platform_source === 'string'
+            ? normalizePlatformSource(obs.platform_source)
+            : normalizePlatformSource(sourceRow?.platform_source);
           const parsedObs = {
             type: obs.type || 'discovery',
             title: obs.title || null,
@@ -382,7 +567,7 @@ export class DataRoutes extends BaseRouteHandler {
             parsedObs,
             obs.prompt_number || 0,
             obs.created_at_epoch,
-            obs.discovery_tokens || 0
+            platformSource
           ).catch(err => {
             logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
           });
@@ -401,7 +586,41 @@ export class DataRoutes extends BaseRouteHandler {
 
     if (Array.isArray(prompts)) {
       for (const prompt of prompts) {
-        const result = store.importUserPrompt(prompt);
+        let promptToImport = prompt;
+        if (prompt && typeof prompt === 'object' && !Array.isArray(prompt)) {
+          const promptRecord = prompt as Record<string, unknown>;
+          const contentSessionId = typeof promptRecord.content_session_id === 'string'
+            ? promptRecord.content_session_id
+            : undefined;
+          const explicitPlatformSource = typeof promptRecord.platform_source === 'string'
+            ? normalizePlatformSource(promptRecord.platform_source)
+            : undefined;
+
+          if (contentSessionId) {
+            let sessionContext: { id: number; platformSource: string } | undefined;
+            if (explicitPlatformSource) {
+              sessionContext = sessionContextByKey.get(sessionContextKey(explicitPlatformSource, contentSessionId));
+            } else {
+              const candidates = sessionContextsByContentId.get(contentSessionId) ?? [];
+              sessionContext = candidates.length === 1 ? candidates[0] : undefined;
+            }
+
+            if (sessionContext) {
+              promptToImport = {
+                ...promptRecord,
+                session_db_id: sessionContext.id,
+                platform_source: explicitPlatformSource ?? sessionContext.platformSource,
+              };
+            } else if (explicitPlatformSource) {
+              promptToImport = {
+                ...promptRecord,
+                platform_source: explicitPlatformSource,
+              };
+            }
+          }
+        }
+
+        const result = store.importUserPrompt(promptToImport as any);
         if (result.imported) {
           stats.promptsImported++;
         } else {

@@ -6,7 +6,6 @@
  *   ABORT             -> write last-install-error.json, throw InstallAbortError
  *   FAIL_LOUD_PER_IDE -> record the failed IDE + a warning, continue
  *   WARN_CONTINUE     -> enqueue a warning to the summary, continue
- *   SILENT_RETRY      -> count the retry; escalate to WARN_CONTINUE after 2
  *
  * Warnings are NEVER printed live (a clack spinner would clobber them); they are
  * collected on the summary and flushed by `flushSummary` after the spinners.
@@ -62,11 +61,10 @@ export interface InstallWarning {
 export interface InstallSummary {
   warnings: InstallWarning[];
   failedIDEs: string[];
-  retryCount: Record<string, number>;
 }
 
 export function createInstallSummary(): InstallSummary {
-  return { warnings: [], failedIDEs: [], retryCount: {} };
+  return { warnings: [], failedIDEs: [] };
 }
 
 function causeMessage(cause: unknown): string {
@@ -85,18 +83,18 @@ function writeLastInstallError(
   remediation: string,
   dataDir: string,
 ): void {
+  const payload = {
+    severity: category.severity,
+    categoryId: category.id,
+    component: ctx.component,
+    phase: ctx.phase,
+    cause: causeMessage(ctx.cause),
+    remediation,
+    details: ctx.details ?? null,
+    timestamp: new Date().toISOString(),
+  };
   try {
     mkdirSync(dataDir, { recursive: true });
-    const payload = {
-      severity: category.severity,
-      categoryId: category.id,
-      component: ctx.component,
-      phase: ctx.phase,
-      cause: causeMessage(ctx.cause),
-      remediation,
-      details: ctx.details ?? null,
-      timestamp: new Date().toISOString(),
-    };
     writeFileSync(join(dataDir, 'last-install-error.json'), JSON.stringify(payload, null, 2));
   } catch {
     // Diagnostics are best-effort; never let them mask the real failure.
@@ -145,45 +143,7 @@ export function installerError(
       });
       return;
     }
-    case ErrorSeverity.SILENT_RETRY: {
-      const count = (summary.retryCount[ctx.component] ?? 0) + 1;
-      summary.retryCount[ctx.component] = count;
-      if (count > 1) {
-        // Exhausted the retry budget — make it visible.
-        summary.warnings.push({
-          component: ctx.component,
-          message: causeMessage(ctx.cause),
-          remediation,
-        });
-      }
-      return;
-    }
   }
-}
-
-/**
- * Run `action`, retrying once on failure for SILENT_RETRY-classified errors.
- * After the budget is exhausted, the failure is re-thrown so the caller can
- * route it through `installerError` with a terminal severity.
- */
-export async function withRetry<T>(
-  action: () => Promise<T>,
-  ctx: ErrorContext,
-  summary: InstallSummary,
-  maxAttempts = 2,
-): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await action();
-    } catch (error) {
-      lastError = error;
-      const count = (summary.retryCount[ctx.component] ?? 0) + 1;
-      summary.retryCount[ctx.component] = count;
-      if (attempt >= maxAttempts) break;
-    }
-  }
-  throw lastError;
 }
 
 /**

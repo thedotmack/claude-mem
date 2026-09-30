@@ -18,6 +18,11 @@ export function normalizePlatformSource(value?: string | null): string {
   return source;
 }
 
+export function normalizePlatformSourceOrNull(value?: string | null): string | null {
+  if (typeof value !== 'string') return null;
+  return normalizePlatformSource(value);
+}
+
 export function sortPlatformSources(sources: string[]): string[] {
   const priority = ['claude', 'codex', 'cursor'];
 
