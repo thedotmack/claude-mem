@@ -8,7 +8,7 @@
  */
 
 import * as p from '@clack/prompts';
-import pc from 'picocolors';
+import { styleText } from 'node:util';
 import {
   explainTelemetryConsent,
   loadTelemetryConfig,
@@ -43,6 +43,8 @@ const COLLECTED_FIELDS = [
   'has_summary      whether a compression produced a summary',
   'is_update        whether an install was an update',
   'interactive      whether the installer ran in a TTY',
+  'provider_source  how the installer chose the provider (flag / default / persisted / prompt)',
+  'phase            installer OAuth pairing phase (login / enrollment / deferred)',
   'install_method   npm / bun / pnpm / yarn (launcher of the CLI)',
   'bun_version / uv_version / claude_code_version',
   '                 toolchain versions detected during install',
@@ -69,27 +71,37 @@ const COLLECTED_FIELDS = [
   'invalid_output_class   xml / idle / prose (never the output)',
   'consecutive_invalid_outputs   legacy unusable-output counter',
   'respawn_triggered      legacy recovery flag for old invalid-output restarts',
-  'abort_reason     idle / shutdown / overflow / restart_guard / quota / none',
+  'abort_reason     idle / shutdown / overflow / restart_guard / quota / provider_switch / none',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',
   '                 worker uptime in whole seconds (previous run / at stop)',
   'shutdown_reason  stop / restart / signal',
   'process_rss_mb / heap_used_mb   worker memory, integer megabytes',
-  'hook_type        context / session-init / observation / summarize / file-context',
+  'hook_type        context / session-init / observation / summarize / session-end / file-context',
   'error_mode       worker_unavailable / blocking_error (never a message)',
   'consecutive_failures   hook failures in a row (the fail-loud counter)',
   'threshold_tripped      whether the fail-loud threshold was reached',
+  'skill_id         first-party plugin/skills name or other (never a third-party name)',
+  'skill_source     first_party / third_party',
+  'skill_trigger    tool (Skill tool) / prompt (typed /skill)',
 ];
 
 const EVENT_NAMES = [
   'install_completed',
   'install_failed',
+  'installer_oauth_started',
+  'installer_oauth_completed',
+  'installer_oauth_timeout',
+  'installer_oauth_start_failed',
+  'installer_oauth_deferred',
   'uninstall_completed',
   'worker_started',
   'worker_stopped',
+  'supervisor_registry_degraded',
   'session_compressed',
   'context_injected',
   'search_performed',
+  'skill_invoked',
   'hook_failed',
   'error_occurred',
 ];
@@ -102,7 +114,7 @@ const SOURCE_LABELS: Record<TelemetryConsentSource, string> = {
 };
 
 function printTelemetryUsage(): void {
-  console.error(`Usage: ${pc.bold('npx claude-mem telemetry [status|enable|disable]')}`);
+  console.error(`Usage: ${styleText('bold', 'npx claude-mem telemetry [status|enable|disable]')}`);
   console.error('  status   Show whether telemetry is on and which setting decided it (default)');
   console.error('  enable   Turn anonymous usage analytics back on (interactive)');
   console.error('  disable  Opt out of telemetry');
@@ -114,28 +126,28 @@ function runTelemetryStatus(): void {
   const config = loadTelemetryConfig();
   const { enabled, source } = explainTelemetryConsent(process.env, config);
 
-  const state = enabled ? pc.green('ENABLED') : pc.yellow('DISABLED');
-  console.log(`${pc.bold('Telemetry:')} ${state}`);
-  console.log(`${pc.bold('Decided by:')} ${SOURCE_LABELS[source]}`);
+  const state = enabled ? styleText('green', 'ENABLED') : styleText('yellow', 'DISABLED');
+  console.log(`${styleText('bold', 'Telemetry:')} ${state}`);
+  console.log(`${styleText('bold', 'Decided by:')} ${SOURCE_LABELS[source]}`);
   if (config?.installId) {
-    console.log(`${pc.bold('Install ID:')} ${config.installId} ${pc.dim('(random UUID, not tied to you)')}`);
+    console.log(`${styleText('bold', 'Install ID:')} ${config.installId} ${styleText('dim', '(random UUID, not tied to you)')}`);
   } else if (config) {
-    console.log(`${pc.bold('Install ID:')} ${pc.dim('none recorded')}`);
+    console.log(`${styleText('bold', 'Install ID:')} ${styleText('dim', 'none recorded')}`);
   } else {
-    console.log(`${pc.bold('Install ID:')} ${pc.dim('none (no telemetry config has been written)')}`);
+    console.log(`${styleText('bold', 'Install ID:')} ${styleText('dim', 'none (no telemetry config has been written)')}`);
   }
-  console.log(`${pc.bold('Config file:')} ${getTelemetryConfigPath()}`);
-  console.log(`${pc.bold('Docs:')} ${DOCS_URL}`);
+  console.log(`${styleText('bold', 'Config file:')} ${getTelemetryConfigPath()}`);
+  console.log(`${styleText('bold', 'Docs:')} ${DOCS_URL}`);
 }
 
 async function runTelemetryEnable(): Promise<void> {
   if (!process.stdin.isTTY) {
-    console.error(pc.red('telemetry enable requires an interactive terminal (consent prompt).'));
+    console.error(styleText('red', 'telemetry enable requires an interactive terminal (consent prompt).'));
     console.error(`Read what is collected first: ${DOCS_URL}`);
     process.exit(1);
   }
 
-  p.intro(pc.bgBlue(pc.white(' claude-mem telemetry ')));
+  p.intro(styleText(['bgBlue', 'white'], ' claude-mem telemetry '));
 
   p.note(
     [
@@ -183,7 +195,7 @@ async function runTelemetryEnable(): Promise<void> {
   });
 
   p.log.success(`Telemetry enabled. Config: ${getTelemetryConfigPath()}`);
-  p.outro(`Change your mind anytime: ${pc.cyan('npx claude-mem telemetry disable')}`);
+  p.outro(`Change your mind anytime: ${styleText('cyan', 'npx claude-mem telemetry disable')}`);
 }
 
 function runTelemetryDisable(): void {
@@ -194,8 +206,8 @@ function runTelemetryDisable(): void {
     decidedAt: new Date().toISOString(),
   });
 
-  console.log(pc.green('Telemetry disabled.'));
-  console.log(`${pc.bold('Config file:')} ${getTelemetryConfigPath()}`);
+  console.log(styleText('green', 'Telemetry disabled.'));
+  console.log(`${styleText('bold', 'Config file:')} ${getTelemetryConfigPath()}`);
 }
 
 export async function runTelemetryCommand(argv: string[] = []): Promise<void> {
@@ -212,7 +224,7 @@ export async function runTelemetryCommand(argv: string[] = []): Promise<void> {
       runTelemetryDisable();
       break;
     default:
-      console.error(pc.red(`Unknown telemetry subcommand: ${subCommand}`));
+      console.error(styleText('red', `Unknown telemetry subcommand: ${subCommand}`));
       printTelemetryUsage();
       process.exit(1);
   }

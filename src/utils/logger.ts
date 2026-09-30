@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
+import { parseJsonWithBom } from '../shared/atomic-json.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -14,11 +15,13 @@ export enum LogLevel {
 
 export type Component =
   | 'AGENTS_MD'
+  | 'AWARENESS'
   | 'BRANCH'
   | 'CHROMA'
   | 'CHROMA_MCP'
   | 'CHROMA_SYNC'
   | 'CLAUDE_MD'
+  | 'CLOUD_SYNC'
   | 'CONFIG'
   | 'CONSOLE'
   | 'CURSOR'
@@ -27,6 +30,7 @@ export type Component =
   | 'ENV'
   | 'FOLDER_INDEX'
   | 'GIT'
+  | 'GROK_INDEX'
   | 'HOOK'
   | 'HTTP'
   | 'IMPORT'
@@ -45,6 +49,8 @@ export type Component =
   | 'SESSION'
   | 'SETTINGS'
   | 'SHUTDOWN'
+  | 'SYNC_APPLY'
+  | 'SYNC_CLIENT'
   | 'SYSTEM'
   | 'TELEGRAM'
   | 'TRANSCRIPT'
@@ -76,6 +82,7 @@ class Logger {
   private useColor: boolean;
   private logFilePath: string | null = null;
   private logFileInitialized: boolean = false;
+  private logFileDate: string | null = null;
 
   constructor() {
     this.useColor = process.stdout.isTTY ?? false;
@@ -83,8 +90,14 @@ class Logger {
   }
 
   private ensureLogFileInitialized(): void {
-    if (this.logFileInitialized) return;
+    // The date is computed BEFORE the latch is consulted, so a long-lived process rolls onto a new
+    // log file at UTC midnight. Latching on the boolean alone freezes logFilePath at the day the
+    // process started, and the daemon then writes entries stamped with today's date into a file
+    // named for a previous day.
+    const date = new Date().toISOString().split('T')[0];
+    if (this.logFileInitialized && this.logFileDate === date) return;
     this.logFileInitialized = true;
+    this.logFileDate = date;
 
     try {
       const logsDir = paths.logsDir();
@@ -93,7 +106,6 @@ class Logger {
         mkdirSync(logsDir, { recursive: true });
       }
 
-      const date = new Date().toISOString().split('T')[0];
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
     } catch (error: unknown) {
       console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
@@ -107,7 +119,7 @@ class Logger {
         const settingsPath = paths.settings();
         if (existsSync(settingsPath)) {
           const settingsData = readFileSync(settingsPath, 'utf-8');
-          const settings = JSON.parse(settingsData);
+          const settings = parseJsonWithBom<Record<string, any>>(settingsData);
           const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {
@@ -156,7 +168,8 @@ class Logger {
     if (typeof toolInput === 'string') {
       try {
         input = JSON.parse(toolInput);
-      } catch (_parseError: unknown) {
+      } catch {
+        // [ANTI-PATTERN IGNORED]: tool_input is often a plain non-JSON string, so parse failure is the expected signal here; recovery is falling back to the raw string, and logging would spam every formatted log line.
         input = toolInput;
       }
     }
@@ -252,6 +265,7 @@ class Logger {
         try {
           dataStr = '\n' + JSON.stringify(data, null, 2);
         } catch {
+          // [ANTI-PATTERN IGNORED]: JSON.stringify fails on circular/BigInt payloads, an expected data shape inside the logger's own log() path; recovery is the formatData fallback, and self-logging here would recurse.
           dataStr = ' ' + this.formatData(data);
         }
       } else {
@@ -263,7 +277,15 @@ class Logger {
     if (context) {
       const { sessionId, memorySessionId, correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
-        const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
+        const pairs = Object.entries(rest).map(([k, v]) => {
+          if (typeof v !== 'object' || v === null || v instanceof Error || v instanceof Date) return `${k}=${v}`;
+          try {
+            return `${k}=${Array.isArray(v) ? JSON.stringify(v) : this.formatData(v)}`;
+          } catch {
+            // [ANTI-PATTERN IGNORED]: JSON.stringify (directly for arrays, via formatData for objects) fails on circular/BigInt payloads, an expected shape for caller-supplied context; recovery is the '[unserializable]' fallback, avoiding an uncaught throw from a logger call.
+            return `${k}=[unserializable]`;
+          }
+        });
         contextStr = ` {${pairs.join(', ')}}`;
       }
     }
@@ -274,10 +296,12 @@ class Logger {
       try {
         appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
       } catch (error: unknown) {
+        // [ANTI-PATTERN IGNORED]: this is the logger's own file-write failure path — calling the logger here would recurse into the same failing appendFileSync, so the error is surfaced via emitDiagnostic to real stderr instead.
         // DIAGNOSTIC: route through hook-io so the message bypasses the Phase 2
         // hook stderr buffer (#2292). Outside the hook context emitDiagnostic
         // writes straight to real stderr, so non-hook callers are unaffected.
-        emitDiagnostic(`[LOGGER] Failed to write to log file: ${error instanceof Error ? error.message : String(error)}\n`);
+        const err = error instanceof Error ? error : new Error(String(error));
+        emitDiagnostic(`[LOGGER] Failed to write to log file: ${err.message}\n${err.stack ?? ''}\n`);
       }
     } else {
       // DIAGNOSTIC: see note above.
@@ -347,31 +371,6 @@ class Logger {
 
   failure(component: Component, message: string, context?: LogContext, data?: any): void {
     this.error(component, `✗ ${message}`, context, data);
-  }
-
-  happyPathError<T = string>(
-    component: Component,
-    message: string,
-    context?: LogContext,
-    data?: any,
-    fallback: T = '' as T
-  ): T {
-    const stack = new Error().stack || '';
-    const stackLines = stack.split('\n');
-    const callerLine = stackLines[2] || '';
-    const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
-    const location = callerMatch
-      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
-      : 'unknown';
-
-    const enhancedContext = {
-      ...context,
-      location
-    };
-
-    this.warn(component, `[HAPPY-PATH] ${message}`, enhancedContext, data);
-
-    return fallback;
   }
 }
 

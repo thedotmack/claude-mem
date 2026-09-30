@@ -13,8 +13,12 @@ import type {
   ServerGenerationResult,
 } from './shared/types.js';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+// v1beta is required: current Gemini 3.x models and the `-latest` aliases are
+// only served under v1beta, and the retired v1-only 2.x models 404 for new keys.
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+// `gemini-flash-latest` is a Google-maintained alias for the current GA Flash
+// model, so it stays valid for new API keys instead of pinning a retired ID.
+const DEFAULT_MODEL = 'gemini-flash-latest';
 
 export interface GeminiObservationProviderOptions {
   apiKey: string;
@@ -158,21 +162,11 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: this.maxOutputTokens,
-          },
-        }),
-        signal,
-      });
+      response = await this.postGenerateContent(url, prompt, signal);
     } catch (networkError) {
+      const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyGeminiServerError({
-        cause: networkError,
+        cause: err,
       });
     }
 
@@ -190,9 +184,10 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
     try {
       data = (await response.json()) as GeminiResponse;
     } catch (parseError) {
+      const err = parseError instanceof Error ? parseError : new Error(String(parseError));
       throw new ServerClassifiedProviderError('Gemini returned invalid JSON', {
         kind: 'parse_error',
-        cause: parseError,
+        cause: err,
       });
     }
 
@@ -221,6 +216,21 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
       modelId: this.model,
     };
   }
+
+  private postGenerateContent(url: string, prompt: string, signal?: AbortSignal): Promise<Response> {
+    return this.fetchImpl(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: this.maxOutputTokens,
+        },
+      }),
+      signal,
+    });
+  }
 }
 
 // Re-export for tests/auditing parity with worker classifier surface.
@@ -229,7 +239,9 @@ export { parseRetryAfterMs };
 async function safeReadBody(response: Response): Promise<string> {
   try {
     return await response.text();
-  } catch {
+  } catch (readError) {
+    const err = readError instanceof Error ? readError : new Error(String(readError));
+    logger.warn('SDK', 'Failed to read Gemini error response body', { provider: 'gemini', status: response.status }, err);
     return '';
   }
 }

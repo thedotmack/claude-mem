@@ -1,9 +1,8 @@
 export type DependencyStatusKind =
-  | 'ok'
   | 'setup_required'
   | 'vector_search_unavailable';
 
-export type DependencyName = 'claude_cli' | 'uvx';
+export type DependencyName = 'claude_cli' | 'uvx' | 'chroma';
 
 export interface DependencyStatus {
   dependency: DependencyName;
@@ -23,6 +22,10 @@ export const UVX_VECTOR_SEARCH_REMEDIATION =
   'Install uv/uvx and make uvx visible to the worker PATH, then restart claude-mem. ' +
   'Try `curl -LsSf https://astral.sh/uv/install.sh | sh` or `brew install uv`.';
 
+export const CHROMA_VECTOR_SEARCH_REMEDIATION =
+  'Stop the other claude-mem worker using the same Chroma data directory, or configure a distinct ' +
+  'CLAUDE_MEM_DATA_DIR / remote Chroma instance, then restart claude-mem.';
+
 const statuses = new Map<DependencyName, DependencyStatus>();
 
 export interface DependencyHealthSnapshot {
@@ -32,7 +35,7 @@ export interface DependencyHealthSnapshot {
 
 export function recordDependencyStatus(
   dependency: DependencyName,
-  kind: Exclude<DependencyStatusKind, 'ok'>,
+  kind: DependencyStatusKind,
   message: string,
   remediation?: string,
 ): DependencyStatus {
@@ -55,21 +58,16 @@ export function recordUvxVectorSearchUnavailable(message: string): DependencySta
   return recordDependencyStatus('uvx', 'vector_search_unavailable', message, UVX_VECTOR_SEARCH_REMEDIATION);
 }
 
+export function recordChromaVectorSearchUnavailable(message: string): DependencyStatus {
+  return recordDependencyStatus('chroma', 'vector_search_unavailable', message, CHROMA_VECTOR_SEARCH_REMEDIATION);
+}
+
 export function clearDependencyStatus(dependency: DependencyName): void {
   statuses.delete(dependency);
 }
 
 export function getDependencyStatus(dependency: DependencyName): DependencyStatus | null {
   return statuses.get(dependency) ?? null;
-}
-
-export function isDependencyBlocked(
-  dependency: DependencyName,
-  kind?: Exclude<DependencyStatusKind, 'ok'>,
-): boolean {
-  const status = getDependencyStatus(dependency);
-  if (!status) return false;
-  return kind ? status.kind === kind : status.kind !== 'ok';
 }
 
 export function isDependencyStatusInCooldown(
@@ -85,7 +83,7 @@ export function snapshotDependencyHealth(): DependencyHealthSnapshot {
     .map(status => ({ ...status }))
     .sort((a, b) => a.dependency.localeCompare(b.dependency));
   return {
-    degraded: currentStatuses.some(status => status.kind !== 'ok'),
+    degraded: currentStatuses.length > 0,
     statuses: currentStatuses,
   };
 }

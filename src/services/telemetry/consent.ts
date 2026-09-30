@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { resolveDataDir } from '../../shared/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { logger } from '../../utils/logger.js';
 
 export type TelemetryConfig = {
   /** Explicit user decision. Absent = no decision recorded; the opt-out default applies. */
@@ -98,22 +99,25 @@ export function getTelemetryConfigPath(): string {
  * missing, corrupt, or malformed — never throws.
  */
 export function loadTelemetryConfig(): TelemetryConfig | null {
+  let raw: Partial<TelemetryConfig> | null;
   try {
-    const raw = readJsonSafe<Partial<TelemetryConfig> | null>(getTelemetryConfigPath(), null);
-    if (!raw || typeof raw !== 'object') return null;
-    if (typeof raw.installId !== 'string') return null;
-    // enabled may be absent (no decision recorded — default applies), but a
-    // present non-boolean value means the file is malformed.
-    if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') return null;
-    return {
-      enabled: raw.enabled,
-      installId: raw.installId,
-      decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
-    };
-  } catch {
+    raw = readJsonSafe<Partial<TelemetryConfig> | null>(getTelemetryConfigPath(), null);
+  } catch (error) {
     // Corrupt JSON — treat as no recorded consent
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: corrupt telemetry.json; treating as no recorded consent', undefined, err);
     return null;
   }
+  if (!raw || typeof raw !== 'object') return null;
+  if (typeof raw.installId !== 'string') return null;
+  // enabled may be absent (no decision recorded — default applies), but a
+  // present non-boolean value means the file is malformed.
+  if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') return null;
+  return {
+    enabled: raw.enabled,
+    installId: raw.installId,
+    decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
+  };
 }
 
 export function saveTelemetryConfig(config: TelemetryConfig): void {

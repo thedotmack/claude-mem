@@ -1,0 +1,88 @@
+---
+title: "Release Branches"
+description: "The three runtime branches Claude-Mem ships from, and how to run the non-stable lines locally"
+---
+
+# Release Branches
+
+Claude-Mem ships from three long-lived runtime branches. Only one is published to npm.
+
+| Line | Branch | Who it's for | Published to npm? |
+|------|--------|--------------|-------------------|
+| **Stable** | `main` | Everyone. This is the `npx claude-mem` install. | **Yes** - the only published line |
+| **Core Dev** | `core-dev` | Maintainer and testers who want root-cause reliability fixes early. | No - run from source |
+| **Community Edge** | `community-edge` | New community integrations before they are hardened. | No - run from source |
+
+## How Changes Flow
+
+Runtime work is promoted upward toward stable. Code that changes release behavior
+does not land on `main` directly.
+
+- New runtime work enters as a PR to `core-dev` or `community-edge`, not `main`.
+- `community-edge -> core-dev`: promote validated edge work up.
+- `core-dev -> main`: stable advances from hardened `core-dev` work.
+
+```text
+community-edge -> core-dev -> main
+```
+
+Releases happen only from `main`. There are no required gates or reviewers on the
+edge lines; merge there at maintainer discretion.
+
+Docs-only work can be staged on `updates/docs` and merged to `main` when ready.
+That branch is not a runtime release line.
+
+## Which One Should I Use?
+
+- **Just want memory that works?** Use stable. `npx claude-mem@latest` is always `main`.
+- **Want to test root-cause worker/runtime reliability fixes before they land?** Use `core-dev`.
+- **Want the newest community integrations and do not mind rough edges?** Use `community-edge`.
+
+## Run a Non-Stable Line Locally
+
+Only `main` is published to npm, so `core-dev` and `community-edge` are run from source:
+
+```bash
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+git checkout core-dev          # or: community-edge
+npm install
+npm run build-and-sync         # builds, syncs to your local marketplace, restarts the worker
+```
+
+`build-and-sync` installs the checked-out branch into your local Claude Code
+plugin marketplace and restarts the worker, so the running plugin reflects that
+branch.
+
+### Go Back to Stable
+
+```bash
+git checkout main
+npm run build-and-sync
+```
+
+Or reinstall the published build:
+
+```bash
+npx claude-mem@latest install
+```
+
+## Published Versions
+
+GitHub releases and npm releases are separate:
+
+- A GitHub release or tag makes the source archive visible on GitHub.
+- An npm publish is what makes `npx claude-mem@<version>` resolve.
+- `latest` points at the current stable npm publish.
+
+If npm channel tags are added later, they should use npm dist-tags such as
+`core-dev` and `community-edge`. Until then, non-stable branches are run from
+source.
+
+## Releasing
+
+Production releases happen from `main` only. The release flow updates the version
+manifests, builds generated artifacts, pushes a git tag, publishes to npm, creates
+the GitHub release, then regenerates `CHANGELOG.md`.
+
+The edge lines are source-run and are never published to npm.

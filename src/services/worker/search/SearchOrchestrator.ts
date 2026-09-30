@@ -13,6 +13,7 @@ import type {
   ObservationSearchResult
 } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
+import { AppError } from '../../server/ErrorHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 
@@ -20,6 +21,38 @@ interface NormalizedParams extends StrategySearchOptions {
   concepts?: string[];
   files?: string[];
   obsType?: string[];
+}
+
+interface SearchRequestInput {
+  query?: unknown;
+  project?: unknown;
+  platformSource?: unknown;
+  dateRange?: { start?: unknown; end?: unknown } | null;
+  obsType?: unknown;
+  concepts?: unknown;
+  files?: unknown;
+}
+
+function isPresent(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== undefined && value !== null && value !== '';
+}
+
+/**
+ * Request-boundary check for search: a request needs query text or at least one row filter.
+ * Each SessionSearch leg returns [] when none of the filters apply to it (so an obs_type-only
+ * search is not rejected by the sessions and prompts legs), which means an empty request would
+ * otherwise come back as a silent zero-result success instead of a 400.
+ * A document category (`type: 'observations'`) selects what to search, not which rows, so it
+ * does not count as a filter.
+ */
+export function assertSearchHasQueryOrFilter(input: SearchRequestInput): void {
+  const hasDateRange = !!input.dateRange && (isPresent(input.dateRange.start) || isPresent(input.dateRange.end));
+  const hasFilter = hasDateRange
+    || [input.project, input.platformSource, input.obsType, input.concepts, input.files].some(isPresent);
+  if (!isPresent(input.query) && !hasFilter) {
+    throw new AppError('Either query or filters required for search', 400, 'INVALID_SEARCH_REQUEST');
+  }
 }
 
 export class SearchOrchestrator {
@@ -42,6 +75,7 @@ export class SearchOrchestrator {
 
   async search(args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
+    assertSearchHasQueryOrFilter(options);
 
     return await this.executeWithFallback(options);
   }
@@ -58,8 +92,8 @@ export class SearchOrchestrator {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       try {
         const chromaResult = await this.chromaStrategy.search(options);
-        if (options.platformSource && this.isEmptyResult(chromaResult)) {
-          logger.debug('SEARCH', 'Orchestrator: platform-scoped Chroma search returned zero matches; falling back to SQLite', {});
+        if (this.isEmptyResult(chromaResult)) {
+          logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches; falling back to SQLite', {});
           return await this.sqliteStrategy.search(options);
         }
         return chromaResult;
@@ -84,36 +118,6 @@ export class SearchOrchestrator {
     return result.results.observations.length === 0
       && result.results.sessions.length === 0
       && result.results.prompts.length === 0;
-  }
-
-  async findByConcept(concept: string, args: any): Promise<StrategySearchResult> {
-    const options = this.normalizeParams(args);
-
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByConcept(concept, options);
-    }
-
-    const results = this.sqliteStrategy.findByConcept(concept, options);
-    return {
-      results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
-  }
-
-  async findByType(type: string | string[], args: any): Promise<StrategySearchResult> {
-    const options = this.normalizeParams(args);
-
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByType(type, options);
-    }
-
-    const results = this.sqliteStrategy.findByType(type, options);
-    return {
-      results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
   }
 
   async findByFile(filePath: string, args: any): Promise<{
@@ -158,14 +162,20 @@ export class SearchOrchestrator {
       }
     }
 
-    if (normalized.dateStart || normalized.dateEnd) {
+    const dateStart = normalized.dateStart ?? normalized.date_start ?? normalized.date_from;
+    const dateEnd = normalized.dateEnd ?? normalized.date_end ?? normalized.date_to;
+    if (dateStart || dateEnd) {
       normalized.dateRange = {
-        start: normalized.dateStart,
-        end: normalized.dateEnd
+        start: dateStart,
+        end: dateEnd
       };
-      delete normalized.dateStart;
-      delete normalized.dateEnd;
     }
+    delete normalized.dateStart;
+    delete normalized.dateEnd;
+    delete normalized.date_start;
+    delete normalized.date_end;
+    delete normalized.date_from;
+    delete normalized.date_to;
 
     const rawPlatformSource = normalized.platformSource ?? normalized.platform_source;
     if (typeof rawPlatformSource === 'string' && rawPlatformSource.trim()) {

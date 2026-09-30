@@ -318,11 +318,10 @@ export async function updateFolderClaudeMdFiles(
   });
 
   for (const folderPath of folderPaths) {
-    const queryPath = projectRoot ? path.relative(projectRoot, folderPath) : folderPath;
     let response: Response;
     try {
       response = await workerHttpRequest(
-        `/api/search/by-file?filePath=${encodeURIComponent(queryPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+        `/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -348,8 +347,10 @@ export async function updateFolderClaudeMdFiles(
 
     const formatted = formatTimelineForClaudeMd(result.content[0].text);
 
+    const claudeMdPath = path.join(folderPath, targetFilename);
     const hasNoActivity = formatted.includes('*No recent activity*');
     const isEmptyOrSkeleton = formatted.trim() === '' || hasNoActivity;
+    const fileExists = existsSync(claudeMdPath);
 
     // #2400 — when the generated content is empty/skeleton AND the folder
     // matches the user's deny-list, never inject (skip even if the file exists,
@@ -359,7 +360,7 @@ export async function updateFolderClaudeMdFiles(
       continue;
     }
 
-    if (isEmptyOrSkeleton) {
+    if (isEmptyOrSkeleton && !fileExists) {
       logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
       continue;
     }

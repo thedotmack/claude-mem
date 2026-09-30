@@ -157,6 +157,156 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(storeObservations).not.toHaveBeenCalled();
   });
 
+  it('pauses on auth-failure prose without confirming or storing the claimed batch', async () => {
+    const storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }));
+    const sm = new SessionManager(makeDbManager(storeObservations));
+    const session = sm.initializeSession(7, 'do the thing', 1);
+    session.memorySessionId = 'mem-7';
+    session.consecutiveInvalidOutputs = 2;
+    await queueAndClaimOne(sm, 7);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const worker = makeWorker();
+
+    await processAgentResponse(
+      'Failed to authenticate. API Error: 401 · Please run /login',
+      session,
+      makeDbManager(storeObservations),
+      sm,
+      worker,
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).toHaveBeenCalledWith(7);
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(7)).toBe(1);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(session.earliestPendingTimestamp).not.toBeNull();
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.abortReason).toBe('auth:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('pauses on a bare unauthorized status and preserves the claimed batch', async () => {
+    const storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }));
+    const sm = new SessionManager(makeDbManager(storeObservations));
+    const session = sm.initializeSession(9, 'do the thing', 1);
+    session.memorySessionId = 'mem-9';
+    await queueAndClaimOne(sm, 9);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      '401 Unauthorized',
+      session,
+      makeDbManager(storeObservations),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).toHaveBeenCalledWith(9);
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(9)).toBe(1);
+    expect(session.abortReason).toBe('auth:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('confirms unrelated login instructions as ordinary prose', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(10, 'do the thing', 1);
+    session.memorySessionId = 'mem-10';
+    await queueAndClaimOne(sm, 10);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      'Please run /login in the observed project instructions.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).toHaveBeenCalledWith(10);
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(10)).toBe(0);
+    expect(session.abortController.signal.aborted).toBe(false);
+  });
+
+  it('confirms project auth-guide prose as ordinary prose', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(11, 'do the thing', 1);
+    session.memorySessionId = 'mem-11';
+    await queueAndClaimOne(sm, 11);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      'The project authentication guide says to run /login before testing.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).toHaveBeenCalledWith(11);
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(11)).toBe(0);
+    expect(session.abortController.signal.aborted).toBe(false);
+  });
+
+  it('auth generator exit keeps the active session and in-memory buffer', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(8, 'do the thing', 1);
+    session.memorySessionId = 'mem-8';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 8);
+
+    await processAgentResponse(
+      'Failed to authenticate. API Error: 401 · Please run /login',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, session.abortReason, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.getSession(8)).toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(8)).toBe(1);
+  });
+
   it('quota generator exit keeps the active session and in-memory buffer', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(6, 'do the thing', 1);

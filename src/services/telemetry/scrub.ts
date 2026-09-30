@@ -1,3 +1,5 @@
+import { redactText } from './error-scrub.js';
+
 /**
  * Whitelist scrubber for telemetry event properties.
  *
@@ -34,11 +36,29 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'is_update',
   // Install funnel shape — install_method is a package-manager enum parsed
   // from npm_config_user_agent, the *_version keys are tool version strings.
+  // stage is the cmem Pro trial poll's closed enum
+  // (awaiting_login | awaiting_checkout | awaiting_approval) on
+  // trial_poll_timeout — never an email, token, pairing secret, or device
+  // user code (those never enter any event property).
+  'stage',
+  // phase is the installer OAuth pairing phase, a closed enum
+  // (login | enrollment | deferred) on installer_oauth_timeout and
+  // installer_oauth_start_failed.
+  'phase',
   'install_method',
   'interactive',
+  // provider_source is how the installer decided the provider, a closed enum
+  // (flag | default | persisted | prompt) on install_completed.
+  'provider_source',
   'bun_version',
   'uv_version',
   'claude_code_version',
+  // Installer CMEM Pro offer exposure — a fixed trial-length integer plus
+  // closed experiment/surface/source enums. Never user or account data.
+  'trial_days',
+  'trial_variant',
+  'offer_surface',
+  'funnel_source',
   // context_injected depth/economics — integers, booleans, and our own enums.
   'observation_count',
   'session_count',
@@ -89,7 +109,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // session_compressed trust signals — booleans, counters, and our own
   // closed enums (invalid_output_class: xml | idle | prose, where 'xml' means
   // XML-shaped output that still failed to parse; abort_reason:
-  // idle | shutdown | overflow | restart_guard | quota | none).
+  // idle | shutdown | overflow | restart_guard | quota | provider_switch | none).
   // Never model output, never raw abort strings.
   'invalid_output_class',
   'consecutive_invalid_outputs',
@@ -105,13 +125,22 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'process_rss_mb',
   'heap_used_mb',
   // hook_failed distress signal — hook_type is one of OUR hook names
-  // (context | session-init | observation | summarize | file-context),
+  // (context | session-init | observation | summarize | session-end | file-context),
   // error_mode (worker_unavailable | blocking_error), plus a consecutive
   // failure counter and threshold flag. Never an error message.
   'hook_type',
   'error_mode',
   'consecutive_failures',
   'threshold_tripped',
+  // usage_limit_hit — the SDK's rate_limit_info projected to closed enums:
+  // limit_window (five_hour | seven_day | seven_day_opus | seven_day_sonnet |
+  // overage | unknown), overage_status (allowed | allowed_warning | rejected |
+  // unknown), a boolean, and whole minutes until the window resets. Never the
+  // provider's limit message text.
+  'limit_window',
+  'overage_status',
+  'is_using_overage',
+  'resets_in_minutes',
   // Historical backfill (backfill.ts) — anonymous per-day rollup counters,
   // the backfilled:true flag, and the single inferred-install date string
   // (YYYY-MM-DD). Counts/sums and closed-enum buckets only — never project
@@ -149,6 +178,11 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_aborted',
   'outcomes_invalid_output',
   'top_model',
+  // Observed-session identity (NOT the observer): the model id the user's IDE
+  // session ran (from its transcript) and a closed-enum billing posture
+  // (max | pro | team | enterprise | subscription | api_key | bedrock | vertex | foundry | unknown).
+  'observed_model',
+  'observed_billing',
   'window_start_ts',
   // Phase 2 per-session rollup: rollup_reason is a closed enum
   // (session_end | worker_shutdown | safety_flush) explaining why the session's
@@ -160,6 +194,13 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // context_injected_rollup aggregation fields:
   'total_tokens',
   'avg_tokens',
+  // skill_invoked — closed skill identity only. skill_id is a first-party
+  // plugin/skills/ name or `other`; skill_source is first_party | third_party;
+  // skill_trigger is tool | prompt. Never a third-party skill name, never
+  // tool_input.args, never the prompt body.
+  'skill_id',
+  'skill_source',
+  'skill_trigger',
   // Per-session/window observation volume folded into the rollups so the
   // context-cache-value and observation-type metrics survive the retirement of
   // the legacy per-occurrence streams. observations_created (generation side,
@@ -175,6 +216,35 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
 const MAX_STRING_LENGTH = 200;
 
 /**
+ * Copies whitelisted primitive values from props into scrubbed, truncating
+ * strings to MAX_STRING_LENGTH. Extracted so scrubProperties' try stays small.
+ */
+function copyAllowedProperties(
+  props: Record<string, unknown>,
+  scrubbed: Record<string, string | number | boolean>
+): void {
+  if (!props || typeof props !== 'object') return;
+  for (const key of Object.keys(props)) {
+    if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
+    const value = props[key];
+    if (typeof value === 'string') {
+      const truncated = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
+      // Allowed keys are supposed to be enums/counters, but a call site can
+      // still stuff a URL-shaped token into e.g. `endpoint`. Run the error
+      // redaction pipeline so query/userinfo/assignment secrets cannot ride
+      // along on a whitelisted key.
+      scrubbed[key] = redactText(truncated);
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      scrubbed[key] = value;
+    } else if (typeof value === 'boolean') {
+      scrubbed[key] = value;
+    }
+    // Everything else (objects, arrays, functions, null, undefined,
+    // NaN/Infinity, symbols, bigints) is dropped silently.
+  }
+}
+
+/**
  * Filters properties down to whitelisted keys with primitive values only.
  * Strings are truncated to 200 chars. Objects, arrays, functions, null,
  * undefined, and non-finite numbers are dropped. Pure, never throws.
@@ -184,20 +254,7 @@ export function scrubProperties(
 ): Record<string, string | number | boolean> {
   const scrubbed: Record<string, string | number | boolean> = {};
   try {
-    if (!props || typeof props !== 'object') return scrubbed;
-    for (const key of Object.keys(props)) {
-      if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
-      const value = props[key];
-      if (typeof value === 'string') {
-        scrubbed[key] = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
-      } else if (typeof value === 'number' && Number.isFinite(value)) {
-        scrubbed[key] = value;
-      } else if (typeof value === 'boolean') {
-        scrubbed[key] = value;
-      }
-      // Everything else (objects, arrays, functions, null, undefined,
-      // NaN/Infinity, symbols, bigints) is dropped silently.
-    }
+    copyAllowedProperties(props, scrubbed);
   } catch {
     // Never throw from the scrubber — worst case we send fewer properties
   }

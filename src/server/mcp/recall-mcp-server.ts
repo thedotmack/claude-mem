@@ -20,6 +20,7 @@ import {
   type CallToolResult,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import { logger } from '../../utils/logger.js';
 
 export interface RecallBackend {
   // Returns serialized observations (already shaped by serializeObservation),
@@ -95,6 +96,43 @@ function jsonResult(payload: unknown): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
 }
 
+// Dispatches a single tool call to the backend. Throws on unknown tools or
+// invalid arguments; `createRecallMcpServer` converts those into MCP errors.
+async function dispatchToolCall(
+  backend: RecallBackend,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult> {
+  if (name === 'search') {
+    const observations = await backend.search({
+      projectId: requireString(args, 'projectId'),
+      query: requireString(args, 'query'),
+      limit: clampLimit(args.limit, SEARCH_LIMIT),
+    });
+    return jsonResult({ observations });
+  }
+  if (name === 'context') {
+    const observations = await backend.context({
+      projectId: requireString(args, 'projectId'),
+      query: requireString(args, 'query'),
+      limit: clampLimit(args.limit, CONTEXT_LIMIT),
+    });
+    const context = observations
+      .map((o) => (o as { content?: unknown }).content)
+      .filter((t): t is string => typeof t === 'string' && t.length > 0)
+      .join('\n\n');
+    return jsonResult({ observations, context });
+  }
+  if (name === 'recent') {
+    const observations = await backend.recent({
+      projectId: requireString(args, 'projectId'),
+      limit: clampLimit(args.limit, RECENT_LIMIT),
+    });
+    return jsonResult({ observations });
+  }
+  throw new Error(`Unknown tool: ${name}`);
+}
+
 /**
  * Build a read-only recall MCP server bound to `backend`. The caller owns the
  * transport (stdio in the CLI, streamable-HTTP in Server Beta).
@@ -111,37 +149,11 @@ export function createRecallMcpServer(backend: RecallBackend, version: string): 
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     try {
-      if (name === 'search') {
-        const observations = await backend.search({
-          projectId: requireString(args, 'projectId'),
-          query: requireString(args, 'query'),
-          limit: clampLimit(args.limit, SEARCH_LIMIT),
-        });
-        return jsonResult({ observations });
-      }
-      if (name === 'context') {
-        const observations = await backend.context({
-          projectId: requireString(args, 'projectId'),
-          query: requireString(args, 'query'),
-          limit: clampLimit(args.limit, CONTEXT_LIMIT),
-        });
-        const context = observations
-          .map((o) => (o as { content?: unknown }).content)
-          .filter((t): t is string => typeof t === 'string' && t.length > 0)
-          .join('\n\n');
-        return jsonResult({ observations, context });
-      }
-      if (name === 'recent') {
-        const observations = await backend.recent({
-          projectId: requireString(args, 'projectId'),
-          limit: clampLimit(args.limit, RECENT_LIMIT),
-        });
-        return jsonResult({ observations });
-      }
-      throw new Error(`Unknown tool: ${name}`);
+      return await dispatchToolCall(backend, name, args);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { isError: true, content: [{ type: 'text', text: message }] };
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('SYSTEM', 'recall MCP tool call failed', { tool: name }, err);
+      return { isError: true, content: [{ type: 'text', text: err.message }] };
     }
   });
 

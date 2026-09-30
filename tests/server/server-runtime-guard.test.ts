@@ -52,7 +52,7 @@ describe('assertServerRuntimeForCli — wrong-runtime guard (#2572)', () => {
 
 describe('Claude provider default model (#2554)', () => {
   it('uses a current, valid model id (not the stale claude-3-5-sonnet-latest)', () => {
-    expect(DEFAULT_SERVER_CLAUDE_MODEL).toBe('claude-sonnet-4-6');
+    expect(DEFAULT_SERVER_CLAUDE_MODEL).toBe('claude-sonnet-5');
     expect(DEFAULT_SERVER_CLAUDE_MODEL).not.toBe('claude-3-5-sonnet-latest');
   });
 });

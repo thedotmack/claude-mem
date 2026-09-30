@@ -15,6 +15,9 @@ import {
 } from './error-scrub.js';
 import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
 import { telemetryBuffer } from './buffer.js';
+// logger.warn ONLY in this module — logger.error routes through the error sink
+// back into captureException (logger.ts setErrorSink), which would recurse.
+import { logger } from '../../utils/logger.js';
 
 let client: PostHog | null = null;
 let isShutdown = false;
@@ -140,7 +143,9 @@ function fingerprintError(type: string, message: string, stack: string): string 
     // First line is usually the "Type: message" header; the first real frame
     // begins with "at ". Prefer that; fall back to the second line.
     topFrame = lines.find(l => l.startsWith('at ')) ?? lines[1] ?? '';
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: stack parse failed while fingerprinting; using empty top frame', undefined, err);
     topFrame = '';
   }
   return `${type}::${messageTemplate(message)}::${topFrame}`.slice(0, 400);
@@ -156,41 +161,54 @@ function applyErrorRateLimit(
   now: number
 ): { send: boolean; count: number } {
   try {
-    let state = errorRateMap.get(fingerprint);
-    if (!state) {
-      // Bound the map BEFORE inserting a new key. Evict the least-recently
-      // ACTIVE entry (LRU): order by the most recent of lastSentTs / firstTs so
-      // a hot, still-firing fingerprint outlives a genuinely stale one.
-      if (errorRateMap.size >= ERROR_FINGERPRINT_MAX) {
-        let oldestKey: string | null = null;
-        let oldestTs = Infinity;
-        for (const [k, v] of errorRateMap) {
-          const activity = Math.max(v.lastSentTs, v.firstTs);
-          if (activity < oldestTs) {
-            oldestTs = activity;
-            oldestKey = k;
-          }
-        }
-        if (oldestKey !== null) errorRateMap.delete(oldestKey);
-      }
-      state = { count: 1, firstTs: now, lastSentTs: now };
-      errorRateMap.set(fingerprint, state);
-      return { send: true, count: 1 };
-    }
-    state.count += 1;
-    if (now - state.lastSentTs >= ERROR_RATELIMIT_WINDOW_MS) {
-      state.lastSentTs = now;
-      const count = state.count;
-      // Reset the occurrence counter for the next window so each sent event
-      // carries the count accumulated since the last send.
-      state.count = 0;
-      return { send: true, count };
-    }
-    return { send: false, count: state.count };
-  } catch {
-    // On any failure, fail CLOSED (don't send) — never risk a storm.
+    return applyErrorRateLimitInner(fingerprint, now);
+  } catch (error) {
+    // On any failure, fail CLOSED (do not send) — never risk a storm.
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: error rate-limit bookkeeping failed; failing closed (event dropped)', undefined, err);
     return { send: false, count: 0 };
   }
+}
+
+/**
+ * Rate-limit bookkeeping proper (map lookup, LRU eviction, window reset).
+ * Only ever called from applyErrorRateLimit's try, which fails closed.
+ */
+function applyErrorRateLimitInner(
+  fingerprint: string,
+  now: number
+): { send: boolean; count: number } {
+  let state = errorRateMap.get(fingerprint);
+  if (!state) {
+    // Bound the map BEFORE inserting a new key. Evict the least-recently
+    // ACTIVE entry (LRU): order by the most recent of lastSentTs / firstTs so
+    // a hot, still-firing fingerprint outlives a genuinely stale one.
+    if (errorRateMap.size >= ERROR_FINGERPRINT_MAX) {
+      let oldestKey: string | null = null;
+      let oldestTs = Infinity;
+      for (const [k, v] of errorRateMap) {
+        const activity = Math.max(v.lastSentTs, v.firstTs);
+        if (activity < oldestTs) {
+          oldestTs = activity;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey !== null) errorRateMap.delete(oldestKey);
+    }
+    state = { count: 1, firstTs: now, lastSentTs: now };
+    errorRateMap.set(fingerprint, state);
+    return { send: true, count: 1 };
+  }
+  state.count += 1;
+  if (now - state.lastSentTs >= ERROR_RATELIMIT_WINDOW_MS) {
+    state.lastSentTs = now;
+    const count = state.count;
+    // Reset the occurrence counter for the next window so each sent event
+    // carries the count accumulated since the last send.
+    state.count = 0;
+    return { send: true, count };
+  }
+  return { send: false, count: state.count };
 }
 
 /**
@@ -212,7 +230,10 @@ function redactFilename(value: unknown): string {
   try {
     if (typeof value !== 'string' || value.length === 0) return '';
     return redactAbsolutePaths(redactHomeDir(value));
-  } catch {
+  } catch (error) {
+    // Fail to an empty string — never ship an unredacted path.
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: frame filename redaction failed; stripping value entirely', undefined, err);
     return '';
   }
 }
@@ -373,66 +394,77 @@ export function captureException(
   ctx?: Record<string, unknown>
 ): void {
   try {
-    if (isShutdown || !hasConsent() || !isErrorTelemetryEnabled(process.env)) {
-      return;
-    }
-
-    const scrubbed = scrubError(err);
-    const fingerprint = fingerprintError(scrubbed.type, scrubbed.message, scrubbed.stack);
-    const decision = applyErrorRateLimit(fingerprint, Date.now());
-    if (!decision.send) {
-      return;
-    }
-
-    // Structured context (NOT the message/stack) goes through the whitelist.
-    const whitelistedContext = scrubProperties({
-      ...buildBaseProperties(),
-      ...(ctx ?? {}),
-    });
-
-    const additionalProperties: Record<string, unknown> = {
-      ...whitelistedContext,
-      // No person profile for exceptions (anti-pattern guard) — same directive
-      // as high-volume operational events in captureEvent.
-      $process_person_profile: false,
-      // Redacted free-form error fields. These are NOT user-identifying and
-      // bypass the property whitelist by design (error-scrub already redacted
-      // home dir, paths, URLs, emails, keys, tokens).
-      $exception_message: scrubbed.message,
-      $exception_type: scrubbed.type,
-      error_message: scrubbed.message,
-      error_type: scrubbed.type,
-      error_stack: scrubbed.stack,
-      occurrence_count: decision.count,
-      // Private sentinel: tells errorBeforeSend this $exception is ALREADY
-      // redacted + rate-limited here, so before_send must NOT re-run the limiter
-      // (which would double-count occurrence_count and split the keyspace).
-      // before_send deletes it so it never ships to PostHog. (B1 fix.)
-      [RATE_LIMITED_SENTINEL]: true,
-    };
-
-    if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
-      process.stderr.write(
-        '[telemetry] ' + JSON.stringify({ event: '$exception', additionalProperties }) + '\n'
-      );
-      return;
-    }
-
-    if (!getTelemetryApiKey()) {
-      return;
-    }
-
-    // Pass a redacted Error (not the raw one) so the SDK never re-derives an
-    // un-redacted stack/message: the SDK reads .message/.stack/.name off the
-    // object we hand it.
-    const safeError = new Error(scrubbed.message);
-    safeError.name = scrubbed.type;
-    safeError.stack = scrubbed.stack || `${scrubbed.type}: ${scrubbed.message}`;
-
-    getClient().captureException(safeError, getOrCreateInstallId(), additionalProperties);
-  } catch {
-    // Exception capture must NEVER throw into its caller (esp. the logger).
+    captureExceptionInner(err, ctx);
+  } catch (error) {
+    // Exception capture must NEVER propagate to its caller (esp. the logger).
+    // logger.warn is safe here: only logger.error re-enters this module via
+    // the error sink.
+    const failure = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: captureException failed; $exception dropped', undefined, failure);
   }
+}
+
+/**
+ * Scrub → rate-limit → send pipeline for captureException. Only ever called
+ * from captureException's try, which swallows anything this raises.
+ */
+function captureExceptionInner(
+  err: unknown,
+  ctx?: Record<string, unknown>
+): void {
+  if (isShutdown || !hasConsent() || !isErrorTelemetryEnabled(process.env)) {
+    return;
+  }
+
+  const scrubbed = scrubError(err);
+  const fingerprint = fingerprintError(scrubbed.type, scrubbed.message, scrubbed.stack);
+  const decision = applyErrorRateLimit(fingerprint, Date.now());
+  if (!decision.send) {
+    return;
+  }
+
+  // Structured context (NOT the message/stack) goes through the whitelist.
+  const whitelistedContext = scrubProperties({
+    ...buildBaseProperties(),
+    ...(ctx ?? {}),
+  });
+
+  const additionalProperties: Record<string, unknown> = {
+    ...whitelistedContext,
+    // No person profile for exceptions (anti-pattern guard) — same directive
+    // as high-volume operational events in captureEvent.
+    $process_person_profile: false,
+    // Redacted free-form error fields. These are NOT user-identifying and
+    // bypass the property whitelist by design (error-scrub already redacted
+    // home dir, paths, URLs, emails, keys, tokens).
+    $exception_message: scrubbed.message,
+    $exception_type: scrubbed.type,
+    error_message: scrubbed.message,
+    error_type: scrubbed.type,
+    error_stack: scrubbed.stack,
+    occurrence_count: decision.count,
+    // Private sentinel: tells errorBeforeSend this $exception is ALREADY
+    // redacted + rate-limited here, so before_send must NOT re-run the limiter
+    // (which would double-count occurrence_count and split the keyspace).
+    // before_send deletes it so it never ships to PostHog. (B1 fix.)
+    [RATE_LIMITED_SENTINEL]: true,
+  };
+
+  if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
+    process.stderr.write(
+      '[telemetry] ' + JSON.stringify({ event: '$exception', additionalProperties }) + '\n'
+    );
+    return;
+  }
+
+  // Pass a redacted Error (not the raw one) so the SDK never re-derives an
+  // un-redacted stack/message: the SDK reads .message/.stack/.name off the
+  // object we hand it.
+  const safeError = new Error(scrubbed.message);
+  safeError.name = scrubbed.type;
+  safeError.stack = scrubbed.stack || `${scrubbed.type}: ${scrubbed.message}`;
+
+  getClient().captureException(safeError, getOrCreateInstallId(), additionalProperties);
 }
 
 /**
@@ -444,9 +476,7 @@ export function captureException(
  *   2. Whitelist scrub — only allowed primitive properties survive.
  *   3. Debug mode (CLAUDE_MEM_TELEMETRY_DEBUG=1) — print payload to stderr,
  *      send nothing.
- *   4. No API key configured — no-op (telemetry ships dark until the
- *      publishable token lands).
- *   5. posthog.capture() — SDK queues in memory and batches in background.
+ *   4. posthog.capture() — SDK queues in memory and batches in background.
  *
  * Two event classes (opts.person):
  *   - Lifecycle events (worker_started, install_*) pass person: true. They are
@@ -462,45 +492,55 @@ export function captureEvent(
   opts?: { person?: boolean }
 ): void {
   try {
-    // Once shutdown has flushed the client, late events (e.g. a request that
-    // raced graceful stop) are dropped rather than queued in a new client
-    // that would never be flushed.
-    if (isShutdown || !hasConsent()) {
-      return;
-    }
-
-    const properties: Record<string, unknown> = scrubProperties({
-      ...buildBaseProperties(),
-      ...(props ?? {}),
-    });
-    // $-prefixed PostHog directives are not user data and bypass the whitelist;
-    // they are added AFTER scrubbing.
-    if (opts?.person) {
-      properties.$set = buildPersonSet(properties);
-    } else {
-      properties.$process_person_profile = false;
-    }
-
-    if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
-      // Direct stderr write (not console.*): debug mode is a human running the
-      // worker in the foreground; repo logger standards forbid console.* in
-      // background services (tests/logger-usage-standards.test.ts).
-      process.stderr.write('[telemetry] ' + JSON.stringify({ event, properties }) + '\n');
-      return;
-    }
-
-    if (!getTelemetryApiKey()) {
-      return;
-    }
-
-    getClient().capture({
-      distinctId: getOrCreateInstallId(),
-      event,
-      properties,
-    });
-  } catch {
-    // Telemetry must never break the worker. Swallow everything.
+    captureEventInner(event, props, opts);
+  } catch (error) {
+    // Telemetry must never break the worker. Log and swallow everything.
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: captureEvent failed; event dropped', { event }, err);
   }
+}
+
+/**
+ * Scrub → directive-stamp → send pipeline for captureEvent. Only ever called
+ * from captureEvent's try, which swallows anything this raises.
+ */
+function captureEventInner(
+  event: string,
+  props?: Record<string, unknown>,
+  opts?: { person?: boolean }
+): void {
+  // Once shutdown has flushed the client, late events (e.g. a request that
+  // raced graceful stop) are dropped rather than queued in a new client
+  // that would never be flushed.
+  if (isShutdown || !hasConsent()) {
+    return;
+  }
+
+  const properties: Record<string, unknown> = scrubProperties({
+    ...buildBaseProperties(),
+    ...(props ?? {}),
+  });
+  // $-prefixed PostHog directives are not user data and bypass the whitelist;
+  // they are added AFTER scrubbing.
+  if (opts?.person) {
+    properties.$set = buildPersonSet(properties);
+  } else {
+    properties.$process_person_profile = false;
+  }
+
+  if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
+    // Direct stderr write (not console.*): debug mode is a human running the
+    // worker in the foreground; repo logger standards forbid console.* in
+    // background services (tests/logger-usage-standards.test.ts).
+    process.stderr.write('[telemetry] ' + JSON.stringify({ event, properties }) + '\n');
+    return;
+  }
+
+  getClient().capture({
+    distinctId: getOrCreateInstallId(),
+    event,
+    properties,
+  });
 }
 
 /**
@@ -527,12 +567,30 @@ export function __errorBeforeSendForTests(event: EventMessage | null): EventMess
 }
 
 /**
+ * Flush + tear down a captured client, racing a 3s timeout so a
+ * slow/unreachable ingestion host can never hang worker stop. The timer is
+ * always cleared, even when the SDK shutdown wins the race.
+ */
+async function flushClientWithTimeout(current: PostHog): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      current.shutdown(),
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, 3000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Flush queued events on graceful shutdown. Races the SDK shutdown against a
  * 3s timeout so a slow/unreachable ingestion host can never hang worker stop.
  * Never rejects.
  */
 export async function shutdownTelemetry(): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     telemetryBuffer.stop();
     // Drain ALL active per-session accumulators FIRST, while telemetry is
@@ -557,23 +615,14 @@ export async function shutdownTelemetry(): Promise<void> {
     const current = client;
     isShutdown = true;
     client = null;
-    if (!current) {
-      return;
-    }
-    // Flush + tear down the captured client, racing a 3s timeout so a
-    // slow/unreachable ingestion host can never hang worker stop.
-    await Promise.race([
-      current.shutdown(),
-      new Promise<void>(resolve => {
-        timer = setTimeout(resolve, 3000);
-      }),
-    ]);
-  } catch {
+    if (!current) return;
+    await flushClientWithTimeout(current);
+  } catch (error) {
     // Never let telemetry flushing fail a shutdown. Ensure the latch is set
-    // even if a drain threw before we reached it above.
+    // even if a drain failed before we reached it above.
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SHUTDOWN', 'Telemetry shutdown flush failed; latching shutdown anyway', undefined, err);
     isShutdown = true;
     client = null;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }

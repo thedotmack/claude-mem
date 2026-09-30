@@ -190,11 +190,17 @@ describe('worker-json-status', () => {
               message: 'uvx executable not found',
               recordedAtMs: 124,
             },
+            {
+              dependency: 'chroma',
+              kind: 'vector_search_unavailable',
+              message: 'Chroma data dir already has a writer',
+              recordedAtMs: 125,
+            },
           ],
         },
       });
 
-      expect(hint).toBe('  Dependencies: degraded (Claude CLI setup required, uvx unavailable for vector search). Run npx claude-mem doctor or open Settings for remediation.');
+      expect(hint).toBe('  Dependencies: degraded (Claude CLI setup required, uvx unavailable for vector search, Chroma unavailable for vector search). Run npx claude-mem doctor or open Settings for remediation.');
     });
 
     it('returns null when dependencies are healthy or absent', () => {
@@ -244,20 +250,6 @@ describe('worker-json-status', () => {
         } else if (parsed.status === 'error') {
           expect(typeof parsed.message).toBe('string');
         }
-      });
-    });
-
-    describe('error scenarios', () => {
-      it.skip('should output JSON with status: error when port in use but not responding', () => {
-        // Would require: start a non-worker server on the port, then call start
-      });
-
-      it.skip('should output JSON with status: error on spawn failure', () => {
-        // Would require: mock spawnDaemon to fail
-      });
-
-      it.skip('should output JSON with status: error on health check timeout', () => {
-        // Would require: start worker that never becomes healthy
       });
     });
   });

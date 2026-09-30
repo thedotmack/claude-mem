@@ -24,7 +24,7 @@ import type {
 // `start(kind, processor)` once provider generation is ready. Until then,
 // the queues exist as transports for `enqueueOutbox` to publish into.
 
-const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'event-batch', 'summary', 'reindex'];
+const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'summary'];
 
 export class ActiveServerQueueManager implements ServerQueueManager {
   readonly kind = 'queue-manager' as const;
@@ -89,19 +89,15 @@ export class ActiveServerQueueManager implements ServerQueueManager {
       if (!queue) continue;
       const lifecycle = queue.getLifecycleCounters();
       try {
-        const counts = await queue.getCounts();
-        out.push({
-          kind,
-          name: SERVER_JOB_QUEUE_NAMES[kind],
-          waiting: counts.waiting,
-          active: counts.active,
-          completed: counts.completed,
-          failed: counts.failed,
-          delayed: counts.delayed,
-          stalled: lifecycle.stalled,
-          unavailable: false,
-        });
+        out.push(await this.readLaneMetric(kind, queue, lifecycle.stalled));
       } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.warn(
+          'QUEUE',
+          'failed to read lane counts; reporting lane as unavailable',
+          { kind, name: SERVER_JOB_QUEUE_NAMES[kind] },
+          err,
+        );
         out.push({
           kind,
           name: SERVER_JOB_QUEUE_NAMES[kind],
@@ -112,11 +108,30 @@ export class ActiveServerQueueManager implements ServerQueueManager {
           delayed: 0,
           stalled: lifecycle.stalled,
           unavailable: true,
-          unavailableReason: error instanceof Error ? error.message : String(error),
+          unavailableReason: err.message,
         });
       }
     }
     return out;
+  }
+
+  private async readLaneMetric(
+    kind: ServerGenerationJobKind,
+    queue: ServerJobQueue<ServerGenerationJobPayload>,
+    stalled: number,
+  ): Promise<ServerQueueLaneMetric> {
+    const counts = await queue.getCounts();
+    return {
+      kind,
+      name: SERVER_JOB_QUEUE_NAMES[kind],
+      waiting: counts.waiting,
+      active: counts.active,
+      completed: counts.completed,
+      failed: counts.failed,
+      delayed: counts.delayed,
+      stalled,
+      unavailable: false,
+    };
   }
 
   async close(): Promise<void> {
@@ -129,7 +144,9 @@ export class ActiveServerQueueManager implements ServerQueueManager {
       try {
         await queue.close();
       } catch (error) {
-        errors.push(error instanceof Error ? error : new Error(String(error)));
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.warn('QUEUE', 'error closing server job queue', {}, err);
+        errors.push(err);
       }
     }
     if (errors.length > 0) {
