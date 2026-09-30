@@ -108,6 +108,69 @@ describe('sessionInitHandler request timeout', () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it('keeps Codex bounded startup but caps its request at the prompt budget (#3434)', () => {
+    const env = { ...process.env };
+    delete env.CLAUDE_MEM_INTERNAL;
+    const script = `
+      const workerCalls = [];
+      let budgetMs = 500;
+      const { HOOK_TIMEOUTS } = await import('./src/shared/hook-constants.ts');
+      const { sessionInitHandler, setSessionInitDependenciesForTesting } = await import('./src/cli/handlers/session-init.ts');
+      setSessionInitDependenciesForTesting({
+        loadFromFileOnce: () => ({
+          CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+          CLAUDE_MEM_RUNTIME: 'worker',
+          CLAUDE_MEM_SEMANTIC_INJECT: 'false',
+          CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',
+        }),
+        resolveRuntimeContext: () => ({ runtime: 'worker' }),
+        shouldTrackProject: () => true,
+        getSessionInitRequestTimeoutMs: () => budgetMs,
+        executeWithWorkerFallback: async (apiPath, method, body, options) => {
+          workerCalls.push({ apiPath, options });
+          return { sessionDbId: 42, promptNumber: 1 };
+        },
+        isWorkerFallback: () => false,
+      });
+      const runCodexPrompt = async (sessionId) => {
+        await sessionInitHandler.execute({
+          sessionId,
+          cwd: '/tmp/codex-session-init-budget-test',
+          platform: 'codex',
+          prompt: 'Please initialize this Codex session inside the configured budget.',
+        });
+        const initCall = workerCalls.filter(call => call.apiPath === '/api/sessions/init').pop();
+        if (!initCall) throw new Error('codex init call missing');
+        if (initCall.options?.workerStartupTimeoutMs !== HOOK_TIMEOUTS.POST_SPAWN_WAIT) {
+          throw new Error('codex lost its bounded startup: ' + JSON.stringify(initCall.options));
+        }
+        return initCall.options.timeoutMs;
+      };
+
+      const shortBudgetRequestMs = await runCodexPrompt('codex-short-budget');
+      if (typeof shortBudgetRequestMs !== 'number' || shortBudgetRequestMs <= 0 || shortBudgetRequestMs > 500) {
+        throw new Error('codex request outlived a 500 ms budget: ' + shortBudgetRequestMs);
+      }
+      budgetMs = 10000;
+      const defaultBudgetRequestMs = await runCodexPrompt('codex-default-budget');
+      if (defaultBudgetRequestMs !== 2000) {
+        throw new Error('codex default request timeout changed: ' + defaultBudgetRequestMs);
+      }
+    `;
+
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, '--eval', script],
+      cwd: process.cwd(),
+      env,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(new TextDecoder().decode(result.stderr)).toBe('');
+    expect(new TextDecoder().decode(result.stdout)).toBe('');
+    expect(result.exitCode).toBe(0);
+  });
+
   it('does not reset the full timeout budget after server fallback (#3434)', () => {
     const env = { ...process.env };
     delete env.CLAUDE_MEM_INTERNAL;

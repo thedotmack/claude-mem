@@ -270,13 +270,15 @@ function remainingSessionInitTimeoutMs(startedAt: number, timeoutMs: number): nu
 /**
  * Codex keeps main's bounded startup (its 20 s hook timeout in
  * codex-hooks.json already covers the 15 s startup wait plus a 2 s request).
+ * Its request is still capped at what is left of the prompt budget, so a
+ * shorter CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS bounds Codex requests too.
  * Every other host spends the remaining prompt budget on the whole call.
  */
 function workerSessionInitOptions(platformSource: string, budgetLeftMs: number): WorkerFallbackOptions {
   if (platformSource === 'codex') {
     return {
       workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
-      timeoutMs: CODEX_SESSION_INIT_REQUEST_TIMEOUT_MS,
+      timeoutMs: Math.min(CODEX_SESSION_INIT_REQUEST_TIMEOUT_MS, budgetLeftMs),
     };
   }
   return { timeoutMs: budgetLeftMs };
