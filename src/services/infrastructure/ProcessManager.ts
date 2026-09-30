@@ -1,6 +1,6 @@
 
 import path from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, realpathSync } from 'fs';
 import { execFileSync, execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
@@ -9,6 +9,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
+import { buildWorktreeProjectKey } from '../../utils/project-name.js';
 import { paths } from '../../shared/paths.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 
@@ -261,7 +262,7 @@ function classifyCwdForRemap(cwd: string): CwdClassification {
     ? path.dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
   const parent = path.basename(parentRepoDir);
-  return { kind: 'worktree', project: `${parent}/${leaf}` };
+  return { kind: 'worktree', project: buildWorktreeProjectKey(parent, leaf) };
 }
 
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
@@ -405,8 +406,10 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
  * outlives the session that spawned it -- so a project folder became permanently locked
  * with "The process cannot access the file because it is being used by another process"
  * until the user found and killed bun.exe (#3706). POSIX allows the rename but still
- * pins the directory against unmount. claude-mem's own data directory always exists by
- * the time a daemon starts and is never a directory the user is reorganising.
+ * pins the directory against unmount. On Linux an inherited cwd that is later deleted (a
+ * removed git worktree) also makes every child spawn fail with ENOENT, the second
+ * trigger of the #3290 wedge. claude-mem's own data directory always exists by the time
+ * a daemon starts and is never a directory the user is reorganising.
  */
 export function daemonWorkingDirectory(): string {
   const dir = paths.dataDir();
@@ -417,6 +420,36 @@ export function daemonWorkingDirectory(): string {
   // depend on. mkdir -p is idempotent, so the usual case costs one stat.
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * Move the running daemon into daemonWorkingDirectory(), whatever cwd it was
+ * launched with. The spawn sites already pass that cwd, but a manual
+ * `bun worker-service.cjs --daemon` from any shell (or an older launcher) can
+ * still hand the daemon the user's project, a deleted directory, or an
+ * ACL-locked one such as a Store app under WindowsApps. From an ACL-locked cwd,
+ * cross-spawn's post-spawn chdir back throws EPERM on every child spawn. Falls
+ * back to the home directory, then the OS temp directory. Never throws: a
+ * daemon that cannot move is no worse off than before.
+ *
+ * Returns the directory it moved to, or null when every candidate failed.
+ */
+export function pinDaemonWorkingDirectory(
+  candidates: ReadonlyArray<() => string> = [daemonWorkingDirectory, homedir, tmpdir],
+  chdir: (directory: string) => void = (directory) => process.chdir(directory)
+): string | null {
+  for (const candidate of candidates) {
+    try {
+      const directory = candidate();
+      if (!directory) continue;
+      chdir(directory);
+      return directory;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  logger.warn('SYSTEM', 'Could not move the worker daemon into its data, home or temp directory; keeping the inherited cwd');
+  return null;
 }
 
 export function buildWindowsDaemonStartCommand(
