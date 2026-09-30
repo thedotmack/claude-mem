@@ -90,7 +90,9 @@ function makeFakeSession(sessionDbId: number): ActiveSession {
 
 function makeFakeMessageBuffer() {
   return {
-    getPendingCount: mock(() => 0),
+    // One message buffered: a generator only starts (or switches) when there
+    // is queued work — an empty queue is gated before provider selection.
+    getPendingCount: mock(() => 1),
     peekTypes: mock(() => [] as Array<{ message_type: string; tool_name?: string }>),
   };
 }

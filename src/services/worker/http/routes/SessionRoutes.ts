@@ -154,6 +154,20 @@ export class SessionRoutes extends BaseRouteHandler {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
+    // Nothing is buffered, so a generator would only open with its INIT turn
+    // and idle out: one paid request per user prompt, including prompts that
+    // never use a tool (#3454). Gated BEFORE provider selection, so this path
+    // never takes the single cmem-gateway re-probe (or a quota probe) that it
+    // would then have to release. The first observation or summarize enqueues
+    // work and starts the generator, INIT turn included, through this same
+    // method. Resume sources (overflow-recycle, response-stall,
+    // transport-resume) pass the same gate: with nothing buffered there is
+    // nothing to resume.
+    if (this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId) === 0) {
+      logger.debug('SESSION', 'Skipping generator start with an empty queue', { sessionId: sessionDbId, source });
+      return;
+    }
+
     // The claiming variant: this path is about to SEND, so it must take the
     // single gateway re-probe rather than merely reading the clock.
     const selection = selectProviderForGenerator();
