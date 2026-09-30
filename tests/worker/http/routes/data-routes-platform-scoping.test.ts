@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
 
-type Method = 'get' | 'post';
+type Method = 'get' | 'post' | 'delete';
 
 function captureRoute(routes: DataRoutes, method: Method, targetPath: string): (req: Request, res: Response) => void {
   let middleware: ((req: Request, res: Response, next: () => void) => void) | undefined;
@@ -20,6 +20,7 @@ function captureRoute(routes: DataRoutes, method: Method, targetPath: string): (
   const app = {
     get: method === 'get' ? register : mock(() => {}),
     post: method === 'post' ? register : mock(() => {}),
+    delete: method === 'delete' ? register : mock(() => {}),
   };
 
   routes.setupRoutes(app as any);
