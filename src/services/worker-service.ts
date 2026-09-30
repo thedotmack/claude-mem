@@ -47,7 +47,8 @@ import {
   cleanStalePidFile,
   verifyPidFileOwnership,
   spawnDaemon,
-  touchPidFile
+  touchPidFile,
+  pinDaemonWorkingDirectory
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
@@ -1491,6 +1492,7 @@ async function main() {
       console.log(`  Repo:                 ${result.repoPath}`);
       console.log(`  Worktrees scanned:    ${result.scannedWorktrees}`);
       console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
+      console.log(`  Orphaned worktrees:   ${result.orphanedWorktrees.join(', ') || '(none)'}`);
       console.log(`  Observations adopted: ${result.adoptedObservations}`);
       console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
       console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
@@ -1522,6 +1524,12 @@ async function main() {
 
     case '--daemon':
     default: {
+      // Before anything below spawns a child (the reclaim probes, the
+      // supervisor, chroma-mcp), stand in claude-mem's data dir rather than
+      // whatever cwd this daemon was launched with (#3706; EPERM on
+      // cross-spawn's chdir-back from an ACL-locked cwd).
+      pinDaemonWorkingDirectory();
+
       // Duplicate gate, ground truth FIRST (Phase 5): a live worker owns the
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:
       // duplicate suppression is a success, not a failure.
