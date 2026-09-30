@@ -11,6 +11,17 @@ export const SEARCH_CONSTANTS = {
 
 export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';
 
+export const SEARCH_CATEGORIES = ['observations', 'sessions', 'prompts'] as const;
+
+export type SearchCategory = typeof SEARCH_CATEGORIES[number];
+
+export function isCategoryRequested(
+  searchType: 'observations' | 'sessions' | 'prompts' | 'all' | undefined,
+  category: SearchCategory
+): boolean {
+  return !searchType || searchType === 'all' || searchType === category;
+}
+
 export interface ChromaMetadata {
   sqlite_id: number;
   doc_type: ChromaDocType;

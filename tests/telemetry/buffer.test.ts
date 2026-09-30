@@ -181,6 +181,77 @@ describe('flushSession() — observer_turn_rollup', () => {
     expect(p.top_model).toBeUndefined();
   });
 
+  it('carries last-seen ide, provider, observed_model, observed_billing on the rollup', () => {
+    const SID = 10;
+    telemetryBuffer.record('session_compressed', SID, {
+      outcome: 'ok',
+      ide: 'claude-code',
+      provider: 'claude',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+      hook: 'ingest',
+    });
+    telemetryBuffer.record('session_compressed', SID, {
+      outcome: 'ok',
+      ide: 'claude-code',
+      provider: 'claude',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+      hook: 'summarize',
+    });
+    telemetryBuffer.flushSession(SID, 'session_end');
+
+    const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
+    expect(p.ide).toBe('claude-code');
+    expect(p.provider).toBe('claude');
+    expect(p.observed_model).toBe('claude-fable-5-1');
+    expect(p.observed_billing).toBe('max');
+    // hook varies per turn and is intentionally not carried on the rollup
+    expect(p.hook).toBeUndefined();
+  });
+
+  it('defaults observed_* to "unknown" and omits ide/provider when no record had them', () => {
+    const SID = 11;
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'error' });
+    telemetryBuffer.flushSession(SID, 'session_end');
+
+    const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
+    expect(p.observed_model).toBe('unknown');
+    expect(p.observed_billing).toBe('unknown');
+    expect(p.ide).toBeUndefined();
+    expect(p.provider).toBeUndefined();
+  });
+
+  it('uses last-seen semantics: a later record overrides an earlier one, and empty/missing values do not clobber', () => {
+    const SID = 12;
+    telemetryBuffer.record('session_compressed', SID, {
+      outcome: 'ok',
+      ide: 'cursor',
+      provider: 'openrouter',
+      observed_model: 'claude-sonnet-4-5',
+      observed_billing: 'pro',
+    });
+    // Mid-session /model switch: the newest value wins.
+    telemetryBuffer.record('session_compressed', SID, {
+      outcome: 'ok',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+    // A trailing record with no / empty values must NOT reset what was seen.
+    telemetryBuffer.record('session_compressed', SID, {
+      outcome: 'aborted',
+      observed_model: '',
+      observed_billing: undefined,
+    });
+    telemetryBuffer.flushSession(SID, 'session_end');
+
+    const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
+    expect(p.ide).toBe('cursor');
+    expect(p.provider).toBe('openrouter');
+    expect(p.observed_model).toBe('claude-fable-5-1');
+    expect(p.observed_billing).toBe('max');
+  });
+
   it('two sessions accumulate independently and each emits its own rollup', () => {
     const A = 100;
     const B = 200;

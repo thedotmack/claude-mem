@@ -16,14 +16,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
-import { recordRetrieved } from '../../../reinforcement/persist.js';
-import { getFactsByIds, recordFactsRetrieved } from '../../../sqlite/facts/store.js';
-import { getFactProvenance, getFactsAt, parseTemporalTs } from '../../../sqlite/facts/audit.js';
-import { consolidationEnabled, runConsolidation } from '../../../reinforcement/consolidation-judge.js';
-import {
-  readRetentionPolicy, runRetentionSweep, observationChromaDocIds,
-} from '../../../reinforcement/retention.js';
-import { eraseFactCascade, observationErasureChain } from '../../../reinforcement/erasure.js';
+import { getParkedSlotWaiterCount } from '../../../../supervisor/process-registry.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 
@@ -68,20 +61,31 @@ const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
 }).passthrough();
 
-const factsBatchSchema = z.object({
-  ids: integerArrayLike,
+// Layer 4 of progressive disclosure: raw tool bodies, by explicit id only.
+// `ids` accepts numeric tool_uses.id AND opaque tool_use_id strings, because a
+// caller may hold either (search/list hands back the former, a transcript or an
+// observation ref the latter). Required and non-empty on purpose — this route
+// must never be a way to page the whole table of raw payloads.
+const toolUsesBatchSchema = z.object({
+  ids: z.preprocess((value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // not JSON, fall through to comma split
+      }
+      return value.split(',').map((part) => part.trim()).filter(Boolean);
+    }
+    return value;
+  }, z.array(z.union([z.number().int(), z.string()]))),
+  limit: z.number().int().positive().max(200).optional(),
   project: z.string().optional(),
+  contentSessionId: z.string().optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
 }).passthrough();
-
-const factsConsolidateSchema = z.object({
-  project: z.string().min(1),
-  force: z.boolean().optional(),
-}).passthrough();
-
-// Empty body is valid — dryRun defaults to true (report-only).
-const retentionSweepSchema = z.object({
-  dryRun: z.boolean().optional(),
-}).passthrough().default({});
 
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
@@ -118,6 +122,8 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/maintenance/retention-sweep', validateBody(retentionSweepSchema), this.handleRetentionSweep.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
+    app.get('/api/tool-uses', this.handleListToolUses.bind(this));
+    app.post('/api/tool-uses/batch', validateBody(toolUsesBatchSchema), this.handleGetToolUsesByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
     app.delete('/api/observation/:id', this.handleDeleteObservation.bind(this));
     app.delete('/api/facts/:id', this.handleDeleteFact.bind(this));
@@ -219,44 +225,65 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Semantic memory layer — compact listing of active facts for the MCP
-   * `facts` tool (~30 tokens/line). Optional `query` runs the facts FTS
-   * index; `kind` filters by fact kind. MCP-shaped response, like /api/search.
+   * Index/tally listing for `tool_uses` — Receipt's read path and the way a
+   * caller finds ids worth disclosing. Deliberately projects a CHEAP shape:
+   * identity + sizes, never `tool_input` / `tool_response`. Full bodies come
+   * only from POST /api/tool-uses/batch with explicit ids.
    */
-  private handleGetFacts = this.wrapHandler((req: Request, res: Response): void => {
-    const project = DataRoutes.firstString(req.query.project);
-    const query = DataRoutes.firstString(req.query.query) ?? DataRoutes.firstString(req.query.q);
-    const kind = DataRoutes.firstString(req.query.kind);
-    const parsedLimit = parseInt(DataRoutes.firstString(req.query.limit) ?? '', 10);
-    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 50;
+  private handleListToolUses = this.wrapHandler((req: Request, res: Response): void => {
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
-    const search = this.dbManager.getSessionSearch();
-    const facts = search.searchFacts(query, { project, kind, limit });
+    const asString = (value: unknown): string | undefined =>
+      typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+    const asNumber = (value: unknown): number | undefined => {
+      const parsed = Number(asString(value));
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
 
-    const lines: string[] = [];
-    lines.push(facts.length > 0 ? `${facts.length} active fact(s)` : 'No active facts');
-    lines.push('');
-    for (const fact of facts) {
-      lines.push(`#${fact.id} [${fact.kind}] ${fact.fact}`);
-    }
+    const toolName = asString(req.query.tool_name ?? req.query.toolName);
+
+    const rows = store.queryToolUses({
+      project: asString(req.query.project),
+      contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
+      memorySessionId: asString(req.query.memorySessionId),
+      toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
+      agentId: asString(req.query.agentId),
+      platformSource,
+      dateStart: asNumber(req.query.dateStart),
+      dateEnd: asNumber(req.query.dateEnd),
+      limit: asNumber(req.query.limit),
+      offset: asNumber(req.query.offset),
+      orderBy: req.query.orderBy === 'date_asc' ? 'date_asc' : 'date_desc',
+    });
 
     res.json({
-      content: [{
-        type: 'text' as const,
-        text: lines.join('\n')
-      }]
+      count: rows.length,
+      toolUses: rows.map(row => ({
+        id: row.id,
+        tool_use_id: row.tool_use_id,
+        tool_name: row.tool_name,
+        project: row.project,
+        content_session_id: row.content_session_id,
+        memory_session_id: row.memory_session_id,
+        platform_source: row.platform_source,
+        agent_id: row.agent_id,
+        agent_type: row.agent_type,
+        observation_id: row.observation_id,
+        or_generation_id: row.or_generation_id,
+        or_session_id: row.or_session_id,
+        prompt_number: row.prompt_number,
+        created_at: row.created_at,
+        created_at_epoch: row.created_at_epoch,
+        // Size hints so a caller can budget tokens before disclosing a body.
+        tool_input_bytes: row.tool_input ? Buffer.byteLength(row.tool_input, 'utf8') : 0,
+        tool_response_bytes: row.tool_response ? Buffer.byteLength(row.tool_response, 'utf8') : 0,
+      })),
     });
   });
 
-  /**
-   * Semantic memory layer — full fact rows by id for the MCP `get_facts`
-   * tool. Retrieval practice: actively recalling a fact appends a real
-   * reinforcement date (same-day idempotent), mirroring
-   * /api/observations/batch. Best-effort: a missed reinforcement costs a
-   * little ranking accuracy, never a response.
-   */
-  private handleGetFactsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { ids, project } = req.body as z.infer<typeof factsBatchSchema>;
+  private handleGetToolUsesByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, limit, project, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
 
     if (ids.length === 0) {
       res.json([]);
@@ -264,142 +291,8 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    let facts = getFactsByIds(store.db, ids);
-    if (project) {
-      facts = facts.filter(f => f.project === project);
-    }
-
-    try {
-      recordFactsRetrieved(store.db, facts.map(f => f.id));
-    } catch (error) {
-      logger.debug('DB', 'Fact retrieval reinforcement skipped', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    res.json(facts);
-  });
-
-  /**
-   * Provenance audit (audit G6) — "where did this belief come from": the fact
-   * row, its source observations (stale-flagged when superseded), the
-   * supersession chain up to the active head, and the rows it replaced.
-   * Read-only.
-   */
-  private handleGetFactProvenance = this.wrapHandler((req: Request, res: Response): void => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const store = this.dbManager.getSessionStore();
-    const report = getFactProvenance(store.db, id);
-    if (!report) {
-      this.notFound(res, `fact #${id} not found`);
-      return;
-    }
-
-    res.json(report);
-  });
-
-  /**
-   * Temporal belief query (audit G6) — facts that were true at `ts` (epoch ms
-   * or ISO 8601), including rows superseded or invalidated since ("what did
-   * we believe then"). Each row carries its status as of today. Read-only.
-   */
-  private handleGetFactsAt = this.wrapHandler((req: Request, res: Response): void => {
-    const project = DataRoutes.firstString(req.query.project);
-    if (!project) {
-      this.badRequest(res, 'project query parameter is required');
-      return;
-    }
-
-    const ts = parseTemporalTs(DataRoutes.firstString(req.query.ts));
-    if (ts === null) {
-      this.badRequest(res, 'ts query parameter is required and must be epoch ms or an ISO 8601 date');
-      return;
-    }
-
-    const includeActive = DataRoutes.firstString(req.query.includeActive) !== 'false';
-    const parsedLimit = parseInt(DataRoutes.firstString(req.query.limit) ?? '', 10);
-    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
-
-    const store = this.dbManager.getSessionStore();
-    const facts = getFactsAt(store.db, project, ts, { includeActive, limit });
-
-    res.json({
-      project,
-      ts,
-      date: new Date(ts).toISOString(),
-      count: facts.length,
-      facts,
-    });
-  });
-
-  /**
-   * Semantic memory layer — manual consolidation trigger for a project.
-   * Throttled unless `force` is set; still master-gated by
-   * CLAUDE_MEM_CONSOLIDATION_ENABLED. Never throws: a failed pass reports as
-   * a NOOP summary.
-   */
-  private handleConsolidateFacts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { project, force } = req.body as z.infer<typeof factsConsolidateSchema>;
-
-    if (!consolidationEnabled()) {
-      res.json({ ran: false, reason: 'CLAUDE_MEM_CONSOLIDATION_ENABLED is not true', added: 0, updated: 0, deleted: 0, noop: false, rejected: [] });
-      return;
-    }
-
-    const store = this.dbManager.getSessionStore();
-    const summary = await runConsolidation(store.db, project, undefined, new Date(), { force: force === true });
-    res.json(summary);
-  });
-
-  /**
-   * Retention sweep (audit G2) — explicit age/strength-threshold deletion of
-   * stale observations into the deleted_observations audit table. Dry-run by
-   * default: `{"dryRun":true}` (or an empty body) only reports candidates.
-   * Apply is gated on CLAUDE_MEM_RETENTION_ENABLED=true. Never runs on a
-   * timer — explicit invocation only.
-   */
-  private handleRetentionSweep = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { dryRun } = req.body as z.infer<typeof retentionSweepSchema>;
-    const apply = dryRun !== true;
-    const policy = readRetentionPolicy();
-
-    if (apply && !policy.enabled) {
-      res.status(403).json({
-        error: 'retention sweep is disabled — set CLAUDE_MEM_RETENTION_ENABLED=true to apply (dry-run is always allowed)',
-      });
-      return;
-    }
-
-    const store = this.dbManager.getSessionStore();
-    const result = runRetentionSweep(store.db, policy, { dryRun: !apply });
-
-    // Chroma tombstone, fail-soft: SQLite's audit table is the source of
-    // truth, orphaned vectors reconcile on the next full reindex.
-    let chromaRemoved = 0;
-    const chromaSync = this.dbManager.getChromaSync();
-    if (apply && chromaSync && result.snapshots.length > 0) {
-      const docIds = result.snapshots.flatMap(observationChromaDocIds);
-      try {
-        chromaRemoved = await chromaSync.removeDocuments(docIds);
-      } catch (error) {
-        logger.warn('RETENTION', 'Chroma tombstone after retention sweep failed', {
-          batchId: result.batchId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    res.json({
-      dryRun: result.dryRun,
-      policy: result.policy,
-      scanned: result.scanned,
-      candidates: result.candidates,
-      deleted: result.deleted,
-      batchId: result.batchId,
-      chromaRemoved,
-    });
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    res.json(store.getToolUsesByIds(ids, { limit, project, contentSessionId, platformSource }));
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
@@ -536,14 +429,9 @@ export class DataRoutes extends BaseRouteHandler {
       ).run(...chain);
     }
 
-    const cascaded = chain.length - 1;
-    if (cascaded > 0) {
-      logger.info('ERASURE', `Delete of ${kind} #${originLocalId} cascaded to ${cascaded} tombstone(s)`, {
-        chain,
-      });
-    }
-
-    res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev, cascaded });
+    // Only after the delete committed: open viewer tabs drop the row live.
+    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: kind, id: Number(originLocalId) });
+    res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev });
   }
 
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
@@ -607,8 +495,11 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const isProcessing = await this.sessionManager.isAnySessionProcessing();
-    const queueDepth = await this.sessionManager.getTotalActiveWork(); 
-    res.json({ isProcessing, queueDepth });
+    const queueDepth = await this.sessionManager.getTotalActiveWork();
+    // #2756 — additive: sessions currently parked in waitForSlot, never a
+    // breaking change to existing isProcessing/queueDepth consumers.
+    const parkedSessions = getParkedSlotWaiterCount();
+    res.json({ isProcessing, queueDepth, parkedSessions });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {

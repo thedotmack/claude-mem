@@ -15,6 +15,7 @@ export enum LogLevel {
 
 export type Component =
   | 'AGENTS_MD'
+  | 'AWARENESS'
   | 'BRANCH'
   | 'CHROMA'
   | 'CHROMA_MCP'
@@ -31,6 +32,7 @@ export type Component =
   | 'ERASURE'
   | 'FOLDER_INDEX'
   | 'GIT'
+  | 'GROK_INDEX'
   | 'HOOK'
   | 'HTTP'
   | 'IMPORT'
@@ -83,6 +85,7 @@ class Logger {
   private useColor: boolean;
   private logFilePath: string | null = null;
   private logFileInitialized: boolean = false;
+  private logFileDate: string | null = null;
 
   constructor() {
     this.useColor = process.stdout.isTTY ?? false;
@@ -90,8 +93,14 @@ class Logger {
   }
 
   private ensureLogFileInitialized(): void {
-    if (this.logFileInitialized) return;
+    // The date is computed BEFORE the latch is consulted, so a long-lived process rolls onto a new
+    // log file at UTC midnight. Latching on the boolean alone freezes logFilePath at the day the
+    // process started, and the daemon then writes entries stamped with today's date into a file
+    // named for a previous day.
+    const date = new Date().toISOString().split('T')[0];
+    if (this.logFileInitialized && this.logFileDate === date) return;
     this.logFileInitialized = true;
+    this.logFileDate = date;
 
     try {
       const logsDir = paths.logsDir();
@@ -100,7 +109,6 @@ class Logger {
         mkdirSync(logsDir, { recursive: true });
       }
 
-      const date = new Date().toISOString().split('T')[0];
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
     } catch (error: unknown) {
       console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
@@ -272,7 +280,15 @@ class Logger {
     if (context) {
       const { sessionId, memorySessionId, correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
-        const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
+        const pairs = Object.entries(rest).map(([k, v]) => {
+          if (typeof v !== 'object' || v === null || v instanceof Error || v instanceof Date) return `${k}=${v}`;
+          try {
+            return `${k}=${Array.isArray(v) ? JSON.stringify(v) : this.formatData(v)}`;
+          } catch {
+            // [ANTI-PATTERN IGNORED]: JSON.stringify (directly for arrays, via formatData for objects) fails on circular/BigInt payloads, an expected shape for caller-supplied context; recovery is the '[unserializable]' fallback, avoiding an uncaught throw from a logger call.
+            return `${k}=[unserializable]`;
+          }
+        });
         contextStr = ` {${pairs.join(', ')}}`;
       }
     }

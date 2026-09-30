@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as fs from 'fs';
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -82,10 +83,13 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
   it('honors a lock just inside the 90s staleness boundary', async () => {
     const { acquireSpawnLock } = await importGateFresh();
 
-    // The readiness deadline is 60s on Windows. A lock still inside the
-    // boundary must remain fresh so a readiness poll cannot lose ownership.
+    // The readiness deadline is 60s on Windows; staleness window is 90s.
+    // A lock still inside the boundary must remain fresh so a readiness poll
+    // cannot lose ownership. Use THIS process's pid so the holder is
+    // positively alive - a dead foreign pid is broken even inside the mtime
+    // window (#3300).
     const foreignPayload = JSON.stringify({
-      pid: 999_999_999,
+      pid: process.pid,
       startedAt: new Date(Date.now() - 89_000).toISOString(),
     });
     writeFileSync(lockPath, foreignPayload);
@@ -96,6 +100,71 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
 
     // The holder's lock survives untouched.
     expect(readFileSync(lockPath, 'utf-8')).toBe(foreignPayload);
+  });
+
+  it('breaks a fresh-mtime lock whose holder PID is dead (#3300)', async () => {
+    const { acquireSpawnLock } = await importGateFresh();
+
+    // Dead holder + fresh mtime: the old mtime-only breaker would wait out
+    // the cold-boot timeout (and forever if something keeps touching the
+    // file). PID liveness must reclaim it immediately.
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999_999_999, startedAt: new Date().toISOString() })
+    );
+    const recent = new Date();
+    utimesSync(lockPath, recent, recent);
+
+    expect(acquireSpawnLock()).toBe(true);
+
+    const lock = JSON.parse(readFileSync(lockPath, 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
+  });
+
+  it('does not unlink a same-mtimeMs replacement lock (ownership recheck)', async () => {
+    const { acquireSpawnLock } = await importGateFresh();
+
+    // Contender A sees a dead lock, then contender B breaks and recreates
+    // spawn.lock with the SAME mtimeMs tick before A's recheck. An mtime-only
+    // recheck would treat B's fresh lock as still stale and mint two winners.
+    const staleMtime = new Date(Date.now() - 1_000);
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999_999_999, startedAt: staleMtime.toISOString() })
+    );
+    utimesSync(lockPath, staleMtime, staleMtime);
+
+    const replacementPayload = JSON.stringify({
+      pid: process.pid + 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    // Capture the real statSync before spying so the mock can call through.
+    // Inject B's replacement on the SECOND lockPath stat (the recheck), after
+    // A has already captured the dead holder pid and judged it breakable.
+    // Forcing the same mtimeMs reproduces the T-Rex collision race.
+    const realStatSync = fs.statSync.bind(fs);
+    let lockStatCalls = 0;
+    const wrapped = spyOn(fs, 'statSync').mockImplementation(((path, options) => {
+      if (String(path) === lockPath) {
+        lockStatCalls += 1;
+        if (lockStatCalls === 2) {
+          writeFileSync(lockPath, replacementPayload);
+          utimesSync(lockPath, staleMtime, staleMtime);
+        }
+      }
+      return options === undefined
+        ? realStatSync(path)
+        : realStatSync(path, options as never);
+    }) as typeof fs.statSync);
+
+    try {
+      expect(acquireSpawnLock()).toBe(false);
+      expect(readFileSync(lockPath, 'utf-8')).toBe(replacementPayload);
+      expect(lockStatCalls).toBeGreaterThanOrEqual(1);
+    } finally {
+      wrapped.mockRestore();
+    }
   });
 
   it('release is owner-only: a foreign lock survives releaseSpawnLock', async () => {

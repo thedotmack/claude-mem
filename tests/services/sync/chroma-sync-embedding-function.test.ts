@@ -1,25 +1,22 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
-
-// e5 migration (plans/2026-07-29-e5-embedding-migration.md, Change 3):
-// ChromaSync.ensureCollectionExists must request the configured embedding
-// function at chroma_create_collection time, so NEW cm__* collections are
-// born with intfloat/multilingual-e5-small instead of the default MiniLM.
-
+import { afterAll, beforeEach, describe, it, expect, mock } from 'bun:test';
+// Capture the current exports before mock.module mutates the live namespace, and
+// re-register them in afterAll so these mocks do not leak into later files
+// (bun's mock.module is process-global; mock.restore() does NOT undo it).
 import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 
-let embeddingFunctionSetting = 'e5-multilingual';
-const createCollectionCalls: Array<Record<string, unknown>> = [];
+const createCalls: Array<Record<string, unknown>> = [];
+let settingsForTest: Record<string, string> = {};
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
-      callTool: async (toolName: string, args: Record<string, unknown>) => {
-        if (toolName === 'chroma_create_collection') {
-          createCollectionCalls.push(args);
+      callTool: async (tool: string, args: Record<string, unknown>) => {
+        if (tool === 'chroma_create_collection') {
+          createCalls.push(args);
         }
         return {};
       },
@@ -27,61 +24,53 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   },
 }));
 
+// Settings are mocked (not driven through env overrides) because another test
+// file may leave its own SettingsDefaultsManager mock registered.
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
-  SettingsDefaultsManager: {
-    get: (key: string) => (key === 'CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION' ? embeddingFunctionSetting : ''),
-    getInt: () => 0,
-    loadFromFile: () => ({}),
-  },
+  ...realSettingsSnapshot,
+  SettingsDefaultsManager: Object.create(realSettingsSnapshot.SettingsDefaultsManager, {
+    loadFromFile: { value: () => settingsForTest },
+  }),
 }));
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
+
+beforeEach(() => {
+  createCalls.length = 0;
+  settingsForTest = {};
+});
 
 afterAll(() => {
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
 });
 
-describe('ChromaSync.ensureCollectionExists embedding function', () => {
-  beforeEach(() => {
-    createCollectionCalls.length = 0;
-    embeddingFunctionSetting = 'e5-multilingual';
+describe('ChromaSync embedding function setting', () => {
+  it('sends chroma-mcp\'s own default function when the setting is absent or default', async () => {
+    await new ChromaSync('project').ensureCollectionExists();
+    settingsForTest = { CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default' };
+    await new ChromaSync('project').ensureCollectionExists();
+
+    expect(createCalls.map(call => call.embedding_function_name)).toEqual(['default', 'default']);
   });
 
-  it('passes embedding_function_name from CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION', async () => {
-    const sync = new ChromaSync('some-project');
-    await sync.ensureCollectionExists();
+  it('forwards a configured function to collection creation', async () => {
+    settingsForTest = { CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'openai' };
 
-    expect(createCollectionCalls).toHaveLength(1);
-    expect(createCollectionCalls[0]).toEqual({
-      collection_name: 'cm__some-project',
-      embedding_function_name: 'e5-multilingual',
-    });
+    await new ChromaSync('project').ensureCollectionExists();
+
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0]).toMatchObject({ collection_name: 'cm__project', embedding_function_name: 'openai' });
   });
 
-  it('passes the rollback value when the setting is default', async () => {
-    embeddingFunctionSetting = 'default';
+  it('rejects a name the pinned chroma-mcp does not know instead of failing every write', async () => {
+    // chroma-mcp 0.2.6 has no 'multilingual' function: sending it makes every
+    // chroma_create_collection call raise, even for an existing collection.
+    settingsForTest = { CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'multilingual' };
 
-    const sync = new ChromaSync('some-project');
-    await sync.ensureCollectionExists();
-
-    expect(createCollectionCalls[0].embedding_function_name).toBe('default');
-  });
-
-  it('falls back to default when the setting is empty', async () => {
-    embeddingFunctionSetting = '';
-
-    const sync = new ChromaSync('some-project');
-    await sync.ensureCollectionExists();
-
-    expect(createCollectionCalls[0].embedding_function_name).toBe('default');
-  });
-
-  it('creates the collection only once per ChromaSync instance', async () => {
-    const sync = new ChromaSync('some-project');
-    await sync.ensureCollectionExists();
-    await sync.ensureCollectionExists();
-
-    expect(createCollectionCalls).toHaveLength(1);
+    await expect(new ChromaSync('project').ensureCollectionExists()).rejects.toThrow(
+      'is not an embedding function chroma-mcp supports'
+    );
+    expect(createCalls).toHaveLength(0);
   });
 });

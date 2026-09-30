@@ -14,7 +14,17 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
-import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
+import {
+  createToolUsesSchema,
+  upsertToolUse as upsertToolUseRow,
+  linkToolUsesToObservation as linkToolUsesToObservationRows,
+  getToolUsesByIds as getToolUsesByIdsRows,
+  queryToolUses as queryToolUsesRows,
+  countToolUses as countToolUsesRows,
+  type ToolUseRow,
+  type UpsertToolUseInput,
+  type ToolUseQueryFilters,
+} from './tool-uses.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
@@ -25,6 +35,46 @@ import {
   validateCanonicalMutation,
   type CanonicalMutation,
 } from '../sync/CanonicalContent.js';
+
+// A Telegram send normally completes in seconds. A five-minute lease absorbs
+// a slow request while allowing a later SessionEnd delivery to recover work
+// abandoned by a process crash between claiming and marking the row sent.
+export const TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS = 5 * 60_000;
+
+let warnedMissingIterate = false;
+
+/**
+ * Iterate a prepared statement's rows, preferring the streaming `.iterate()`
+ * added in Bun v1.1.31 and falling back to the materializing `.all()` on
+ * older runtimes.
+ *
+ * package.json declares `engines.bun >= 1.1.31`, but engines is advisory —
+ * nothing enforces it when the plugin is installed through the Claude Code
+ * marketplace. On an older Bun the bare `.iterate()` call threw
+ * "…iterate is not a function" from inside schema migration v46, which runs
+ * during background init. That rejection left the worker permanently
+ * `initialized:false` while still serving 200 on /api/health, so every hook
+ * silently skipped until the failure counter began blocking them outright.
+ *
+ * Falling back keeps the migration correct on old runtimes (it only costs
+ * peak memory, and this scan runs once per install) and the one-time warning
+ * names the real cause instead of a cryptic TypeError.
+ */
+function streamRows(statement: {
+  iterate?: () => Iterable<unknown>;
+  all: () => unknown[];
+}): Iterable<unknown> {
+  if (typeof statement.iterate === 'function') return statement.iterate();
+  if (!warnedMissingIterate) {
+    warnedMissingIterate = true;
+    logger.warn('DB', 'bun:sqlite lacks Statement.iterate(); falling back to .all()', {
+      bunVersion: typeof Bun !== 'undefined' ? Bun.version : 'unknown',
+      requiredBunVersion: '>=1.1.31',
+      impact: 'migration rows are materialized in memory; upgrade Bun to restore streaming',
+    });
+  }
+  return statement.all();
+}
 
 interface IndexColumnInfo {
   seqno: number;
@@ -38,6 +88,31 @@ interface RecentSessionStatusRow {
   started_at: string;
   user_prompt: string | null;
   has_summary: boolean;
+}
+
+/** Roll observation file lists into session_summaries.files_read / files_edited. */
+export function rollupObservationFileLists(
+  observations: Array<{ files_read?: string[] | null; files_modified?: string[] | null }>
+): { files_read: string[]; files_edited: string[] } {
+  const filesRead: string[] = [];
+  const filesEdited: string[] = [];
+  const seenRead = new Set<string>();
+  const seenEdited = new Set<string>();
+
+  for (const observation of observations) {
+    for (const filePath of observation.files_read ?? []) {
+      if (!filePath || seenRead.has(filePath)) continue;
+      seenRead.add(filePath);
+      filesRead.push(filePath);
+    }
+    for (const filePath of observation.files_modified ?? []) {
+      if (!filePath || seenEdited.has(filePath)) continue;
+      seenEdited.add(filePath);
+      filesEdited.push(filePath);
+    }
+  }
+
+  return { files_read: filesRead, files_edited: filesEdited };
 }
 
 interface SessionObservationRow {
@@ -61,6 +136,19 @@ interface SummaryDetailRow {
   created_at_epoch: number;
 }
 
+export interface SessionStoreOptions {
+  /**
+   * Whether this store may enqueue mutation ops into sync_outbox. The only
+   * consumer of that queue is CloudSync's drain, and DatabaseManager
+   * constructs CloudSync iff cloud sync is fully credentialed — so the
+   * worker bootstrap passes the same configuration state here, and an
+   * unconfigured install produces no ops it can never drain. Defaults to
+   * true (the pre-flag behavior) for direct constructions that never wire
+   * the flag.
+   */
+  syncOpsEnabled?: boolean;
+}
+
 interface SdkSessionDetailRow {
   id: number;
   content_session_id: string;
@@ -70,12 +158,16 @@ interface SdkSessionDetailRow {
   user_prompt: string;
   custom_title: string | null;
   status: string;
+  observed_model: string | null;
+  observed_billing: string | null;
 }
 
 export class SessionStore {
   public db: Database;
+  private readonly syncOpsEnabled: boolean;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: SessionStoreOptions = {}) {
+    this.syncOpsEnabled = options.syncOpsEnabled ?? true;
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -122,281 +214,9 @@ export class SessionStore {
     this.ensureSyncRevisionTextAffinity();
     this.initializeSyncHubLaunchBaseline();
     this.normalizeConceptTags();
-    this.addObservationReinforcementColumns();
-    this.ensureObservationRelevanceCountColumn();
-    this.ensureObservationSupersededByColumn();
-    this.ensureSemanticFactsTable();
-    this.ensureDeletedObservationsTable();
-    this.ensureObservationEchoColumns();
-    this.ensureWorkingMemoryTable();
-  }
-
-  /**
-   * Phase 1a — reinforcement / ACT-R memory (version 50).
-   *
-   * Adds the columns the strength engine (src/services/reinforcement) needs to
-   * bias context injection by how often the world re-confirms an observation,
-   * instead of recency alone:
-   *   - reinforcement_dates: JSON array of ISO `YYYY-MM-DD` reinforcement events
-   *     (spacing-effect history, FIFO-trimmed to MAX_REINFORCEMENT_HISTORY)
-   *   - last_reinforced: ISO date of the most recent reinforcement
-   *
-   * No backfill: pre-existing observations start with empty history
-   * (effectiveStrength([]) === 0), so they keep their current keyword/recency
-   * ranking and accrue strength going forward. Idempotent — the PRAGMA checks
-   * are the real guard, the version row is bookkeeping.
-   */
-  private addObservationReinforcementColumns(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(50) as SchemaVersion | undefined;
-
-    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasDates = columns.some(col => col.name === 'reinforcement_dates');
-    const hasLastReinforced = columns.some(col => col.name === 'last_reinforced');
-
-    if (applied && hasDates && hasLastReinforced) return;
-
-    if (!hasDates) {
-      this.db.run('ALTER TABLE observations ADD COLUMN reinforcement_dates TEXT');
-      logger.debug('DB', 'Added reinforcement_dates column to observations table');
-    }
-    if (!hasLastReinforced) {
-      this.db.run('ALTER TABLE observations ADD COLUMN last_reinforced TEXT');
-      logger.debug('DB', 'Added last_reinforced column to observations table');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
-  }
-
-  /**
-   * Phase 4 — surfacing observability (version 51).
-   *
-   * Guarantees the `relevance_count` column exists so context injection can
-   * count how often an observation has surfaced and feed that back into ranking
-   * (beta * log1p(relevance_count)). Idempotent.
-   */
-  private ensureObservationRelevanceCountColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(51) as SchemaVersion | undefined;
-    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasColumn = columns.some(col => col.name === 'relevance_count');
-
-    if (applied && hasColumn) return;
-
-    if (!hasColumn) {
-      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
-      logger.debug('DB', 'Added relevance_count column to observations table');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
-  }
-
-  /**
-   * Phase 6 — reconsolidation (version 52).
-   *
-   * Guarantees the `superseded_by` column exists so a new observation that
-   * contradicts an existing one (dedup judge FLAG_CONFLICT) can mark the old row
-   * as superseded. Superseded rows drop out of context injection and dedup
-   * candidacy but stay in the DB as searchable history. Idempotent.
-   */
-  private ensureObservationSupersededByColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(52) as SchemaVersion | undefined;
-    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasColumn = columns.some(col => col.name === 'superseded_by');
-
-    if (applied && hasColumn) return;
-
-    if (!hasColumn) {
-      this.db.run('ALTER TABLE observations ADD COLUMN superseded_by INTEGER');
-      logger.debug('DB', 'Added superseded_by column to observations table');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
-  }
-
-  /**
-   * Semantic memory layer (version 53).
-   *
-   * Episodes melt into durable knowledge: `semantic_facts` holds short,
-   * session-agnostic facts consolidated from observations (see
-   * src/services/reinforcement/consolidation.ts). The ACT-R strength columns
-   * mirror the observations table so the reinforcement engine applies as-is;
-   * `superseded_by` / `invalidated_at` are the UPDATE / DELETE verdict
-   * tombstones (rows are never physically deleted), and the
-   * `valid_from` / `valid_to` pair is the bi-temporal record of when the fact
-   * held true in the world (vs `created_at` / `invalidated_at`, which track
-   * when the system learned it). `content_hash` is UNIQUE per project — free
-   * dedup on insert.
-   *
-   * `semantic_consolidation_state` is the per-project throttle ledger for the
-   * consolidation job (last run time + observation watermark).
-   *
-   * Idempotent — the sqlite_master check is the real guard, the version row is
-   * bookkeeping.
-   */
-  private ensureSemanticFactsTable(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(53) as SchemaVersion | undefined;
-    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'semantic_facts'").all() as TableNameRow[];
-    const hasTable = tables.length > 0;
-
-    if (applied && hasTable) return;
-
-    if (!hasTable) {
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS semantic_facts (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          project TEXT NOT NULL,
-          kind TEXT NOT NULL,
-          fact TEXT NOT NULL,
-          source_observation_ids TEXT NOT NULL DEFAULT '[]',
-          reinforcement_dates TEXT,
-          last_reinforced TEXT,
-          relevance_count INTEGER DEFAULT 0,
-          superseded_by INTEGER,
-          invalidated_at TEXT,
-          valid_from TEXT,
-          valid_to TEXT,
-          content_hash TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          updated_at_epoch INTEGER NOT NULL
-        )
-      `);
-      this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_facts_project_content_hash ON semantic_facts(project, content_hash)');
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS semantic_consolidation_state (
-          project TEXT PRIMARY KEY,
-          last_run_at_epoch INTEGER NOT NULL,
-          last_observation_id INTEGER NOT NULL DEFAULT 0
-        )
-      `);
-      logger.debug('DB', 'Created semantic_facts table (semantic memory layer)');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
-  }
-
-  /**
-   * Retention policy audit trail (version 54).
-   *
-   * Deletion is a SEPARATE explicit policy, never a decay side-effect (memory
-   * review C3/C10 — plans/2026-07-31-memory-review-audit.md G2). The retention
-   * sweep (src/services/reinforcement/retention.ts) never hard-deletes: every
-   * removed observation lands here first as a full row snapshot, so a
-   * retention mistake is auditable and restorable. `reason` names the policy
-   * that deleted the row (currently always 'retention-sweep'); `batch_id`
-   * groups one sweep run. Idempotent — the sqlite_master check is the real
-   * guard, the version row is bookkeeping.
-   */
-  private ensureDeletedObservationsTable(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(54) as SchemaVersion | undefined;
-    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'deleted_observations'").all() as TableNameRow[];
-    const hasTable = tables.length > 0;
-
-    if (applied && hasTable) return;
-
-    if (!hasTable) {
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS deleted_observations (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          observation_id INTEGER NOT NULL,
-          snapshot_json TEXT NOT NULL,
-          deleted_at TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          batch_id TEXT NOT NULL
-        )
-      `);
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_deleted_observations_observation_id ON deleted_observations(observation_id)');
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_deleted_observations_batch_id ON deleted_observations(batch_id)');
-      logger.debug('DB', 'Created deleted_observations table (retention audit trail)');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(54, new Date().toISOString());
-  }
-
-  /**
-   * Memory grounding — echo detection (version 55).
-   *
-   * Breaks the compounding-fiction loop (plans/2026-08-05-memory-grounding.md):
-   * the agent must no longer be able to "confirm" its own memory by retelling
-   * it. Two columns:
-   *   - last_surfaced: ISO `YYYY-MM-DD` of the most recent context injection
-   *     that included the row (written by the existing recordSurfaced path in
-   *     ContextBuilder). Freshness of this stamp is echo condition 2.
-   *   - echo_of: id of the near-duplicate observation this row echoes (set when
-   *     all three echo conditions hold — see detectEcho in
-   *     src/services/reinforcement/dedup.ts). Echo rows are stored for audit
-   *     but carry no reinforcement seed and are excluded from the injection
-   *     pool and dedup candidacy, exactly like superseded rows.
-   *
-   * Idempotent — the PRAGMA checks are the real guard, the version row is
-   * bookkeeping.
-   */
-  private ensureObservationEchoColumns(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(55) as SchemaVersion | undefined;
-    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const hasLastSurfaced = columns.some(col => col.name === 'last_surfaced');
-    const hasEchoOf = columns.some(col => col.name === 'echo_of');
-
-    if (applied && hasLastSurfaced && hasEchoOf) return;
-
-    if (!hasLastSurfaced) {
-      this.db.run('ALTER TABLE observations ADD COLUMN last_surfaced TEXT');
-      logger.debug('DB', 'Added last_surfaced column to observations table');
-    }
-    if (!hasEchoOf) {
-      this.db.run('ALTER TABLE observations ADD COLUMN echo_of INTEGER');
-      logger.debug('DB', 'Added echo_of column to observations table');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(55, new Date().toISOString());
-  }
-
-  /**
-   * Working memory (version 56).
-   *
-   * Task-scoped scratch state, deliberately NOT another kind of observation:
-   * no ACT-R strength, no dedup, no embeddings, no FTS — every entry is
-   * relevant by definition, so none of the ranking machinery applies. Two
-   * non-overlapping writers share the table:
-   *   - intent rows (source 'agent'): the agent's hypotheses/plan, upserted by
-   *     (project, task_key, key) under a hard slot limit — the limit IS the
-   *     mechanism (overflow is an error that forces an explicit drop/merge).
-   *   - journal rows (source 'observer'): a mechanical ring buffer of what
-   *     happened (tool calls), written without any LLM involvement.
-   * Expiry is lazy: expires_at_epoch = updated + TTL, filtered on read, no
-   * timers. Rows never flow into observations automatically — only an
-   * explicit working_promote crosses over (see src/services/working/store.ts).
-   *
-   * Idempotent — the sqlite_master check is the real guard, the version row
-   * is bookkeeping.
-   */
-  private ensureWorkingMemoryTable(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(56) as SchemaVersion | undefined;
-    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'working_memory'").all() as TableNameRow[];
-    const hasTable = tables.length > 0;
-
-    if (applied && hasTable) return;
-
-    if (!hasTable) {
-      this.db.run(`
-        CREATE TABLE IF NOT EXISTS working_memory (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          project TEXT NOT NULL,
-          task_key TEXT NOT NULL DEFAULT 'default',
-          key TEXT NOT NULL,
-          kind TEXT NOT NULL,
-          value TEXT NOT NULL,
-          source TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          updated_at_epoch INTEGER NOT NULL,
-          expires_at_epoch INTEGER NOT NULL,
-          UNIQUE(project, task_key, key)
-        )
-      `);
-      this.db.run('CREATE INDEX IF NOT EXISTS idx_working_memory_project_task ON working_memory(project, task_key)');
-      logger.debug('DB', 'Created working_memory table (task-scoped working memory)');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(56, new Date().toISOString());
+    this.ensureSDKSessionsObservedColumns();
+    this.ensureToolUsesTable();
+    this.ensureTelegramWrapupsTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -888,12 +708,12 @@ export class SessionStore {
           throw new Error(`schema v46: missing ${target.table}.${target.column}`);
         }
 
-        for (const raw of this.db.query(`
+        for (const raw of streamRows(this.db.query(`
           SELECT CAST(id AS TEXT) AS row_id,
                  typeof(${target.column}) AS storage_type,
                  CAST(${target.column} AS TEXT) AS revision
           FROM ${target.table}
-        `).iterate()) {
+        `))) {
           const row = raw as { row_id: string; storage_type: string; revision: string | null };
           if (row.storage_type === 'real') {
             throw new Error(
@@ -1349,6 +1169,48 @@ export class SessionStore {
     logger.warn('DB', `Created ${orphaned} stub sdk_sessions parent(s) for orphaned ${childTable} rows before rebuild (#3378)`);
   }
 
+  /**
+   * Live FK clause, not the schema_versions row: a later table rebuild can
+   * strip ON UPDATE CASCADE after v21 was already stamped (#3849).
+   */
+  private hasMemorySessionIdOnUpdateCascade(table: 'observations' | 'session_summaries'): boolean {
+    const fks = this.db.query(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+      table: string;
+      from: string;
+      on_update: string;
+    }>;
+    return fks.some(fk =>
+      fk.table === 'sdk_sessions' &&
+      fk.from === 'memory_session_id' &&
+      fk.on_update === 'CASCADE'
+    );
+  }
+
+  /**
+   * After CREATE TABLE <newTable> from a fixed historical column list, add
+   * every live source column that list omitted (type and DEFAULT included)
+   * and return the full copy order. Same discipline as the v7 rebuild (#3890)
+   * so a repair of an already-migrated database cannot drop later columns.
+   */
+  private carryLiveColumnsOntoNewTable(
+    sourceTable: string,
+    newTable: string,
+    knownColumns: string[]
+  ): string[] {
+    const liveColumns = this.db.query(`PRAGMA table_info(${sourceTable})`).all() as TableColumnInfo[];
+    const extraColumns = liveColumns.filter(col => !knownColumns.includes(col.name));
+    for (const col of extraColumns) {
+      const type = col.type ? ` ${col.type}` : '';
+      const dflt = col.dflt_value === null || col.dflt_value === undefined ? '' : ` DEFAULT ${col.dflt_value}`;
+      this.db.run(`ALTER TABLE ${newTable} ADD COLUMN "${col.name}"${type}${dflt}`);
+      logger.debug('DB', `Carried ${col.name} over the ${sourceTable} rebuild (#3849)`);
+    }
+    // Copy only columns the source actually has. Known CREATE columns that
+    // the live table never grew (e.g. v8 hierarchical fields) stay at their
+    // new-table defaults instead of failing the SELECT.
+    return liveColumns.map(col => col.name);
+  }
+
   private removeSessionSummariesUniqueConstraint(): void {
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
     // Only table-level UNIQUE constraints (PRAGMA origin 'u' — the v7 target,
@@ -1372,6 +1234,21 @@ export class SessionStore {
     // first or a single orphan aborts the migration chain (#3378).
     this.repairOrphanedSessionParents('session_summaries');
 
+    // The DDL below is the v7 column set. Fresh installs stamp every
+    // migration at once, so a database whose base schema already carried a
+    // later column (v11's discovery_tokens) next to the v7 UNIQUE constraint
+    // lost that column here, and its ADD COLUMN migration never re-ran:
+    // every summary write failed with "no column named discovery_tokens"
+    // from then on (#3890). Carry the live table's extra columns over,
+    // type and default included, so no later column is dropped again.
+    const v7Columns = [
+      'id', 'memory_session_id', 'project', 'request', 'investigated', 'learned',
+      'completed', 'next_steps', 'files_read', 'files_edited', 'notes',
+      'prompt_number', 'created_at', 'created_at_epoch',
+    ];
+    const liveColumns = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    const extraColumns = liveColumns.filter(col => !v7Columns.includes(col.name));
+
     this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
     this.db.run(`
@@ -1390,15 +1267,23 @@ export class SessionStore {
         prompt_number INTEGER,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
     `);
 
+    for (const col of extraColumns) {
+      const type = col.type ? ` ${col.type}` : '';
+      const dflt = col.dflt_value === null || col.dflt_value === undefined ? '' : ` DEFAULT ${col.dflt_value}`;
+      this.db.run(`ALTER TABLE session_summaries_new ADD COLUMN "${col.name}"${type}${dflt}`);
+      logger.debug('DB', `Carried ${col.name} over the session_summaries UNIQUE-constraint rebuild (#3890)`);
+    }
+
+    const copyColumns = [...v7Columns, ...extraColumns.map(col => col.name)]
+      .map(name => `"${name}"`)
+      .join(', ');
     this.db.run(`
-      INSERT INTO session_summaries_new
-      SELECT id, memory_session_id, project, request, investigated, learned,
-             completed, next_steps, files_read, files_edited, notes,
-             prompt_number, created_at, created_at_epoch
+      INSERT INTO session_summaries_new (${copyColumns})
+      SELECT ${copyColumns}
       FROM session_summaries
     `);
 
@@ -1487,7 +1372,7 @@ export class SessionStore {
         prompt_number INTEGER,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
     `);
 
@@ -1600,9 +1485,9 @@ export class SessionStore {
   }
 
   private ensureDiscoveryTokensColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined;
-    if (applied) return;
-
+    // Not gated on the schema_versions row: a table rebuild that ran after
+    // version 11 was stamped could have dropped the column again (#3890),
+    // and the PRAGMA presence checks below are idempotent anyway.
     const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
 
@@ -1725,28 +1610,27 @@ export class SessionStore {
   }
 
   private addOnUpdateCascadeToForeignKeys(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
-    if (applied) return;
+    // Introspection, not the version row: v7 (and v9) can rebuild these
+    // tables after v21 is already stamped and silently drop ON UPDATE
+    // CASCADE. The live FK clause is the only reliable guard (#3849).
+    const observationsNeedsCascade = !this.hasMemorySessionIdOnUpdateCascade('observations');
+    const summariesNeedsCascade = !this.hasMemorySessionIdOnUpdateCascade('session_summaries');
+
+    if (!observationsNeedsCascade && !summariesNeedsCascade) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+      return;
+    }
 
     logger.debug('DB', 'Adding ON UPDATE CASCADE to FK constraints on observations and session_summaries');
 
     this.db.run('PRAGMA foreign_keys = OFF');
     this.db.run('BEGIN TRANSACTION');
 
-    this.db.run('DROP TRIGGER IF EXISTS observations_ai');
-    this.db.run('DROP TRIGGER IF EXISTS observations_ad');
-    this.db.run('DROP TRIGGER IF EXISTS observations_au');
-
-    this.db.run('DROP TABLE IF EXISTS observations_new');
-
-    const observationsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const observationsHasMetadata = observationsCols.some(c => c.name === 'metadata');
-    const observationsHasContentHash = observationsCols.some(c => c.name === 'content_hash');
-    const metadataColumnSQL = observationsHasMetadata ? ',\n        metadata TEXT' : '';
-    const metadataSelectSQL = observationsHasMetadata ? ', metadata' : '';
-    const contentHashColumnSQL = observationsHasContentHash ? ',\n        content_hash TEXT' : '';
-    const contentHashSelectSQL = observationsHasContentHash ? ', content_hash' : '';
-
+    const observationsKnownColumns = [
+      'id', 'memory_session_id', 'project', 'text', 'type', 'title', 'subtitle',
+      'facts', 'narrative', 'concepts', 'files_read', 'files_modified',
+      'prompt_number', 'discovery_tokens', 'created_at', 'created_at_epoch',
+    ];
     const observationsNewSQL = `
       CREATE TABLE observations_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1764,16 +1648,9 @@ export class SessionStore {
         prompt_number INTEGER,
         discovery_tokens INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL${metadataColumnSQL}${contentHashColumnSQL},
+        created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
-    `;
-    const observationsCopySQL = `
-      INSERT INTO observations_new
-      SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
-             narrative, concepts, files_read, files_modified, prompt_number,
-             discovery_tokens, created_at, created_at_epoch${metadataSelectSQL}${contentHashSelectSQL}
-      FROM observations
     `;
     const observationsIndexesSQL = `
       CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id);
@@ -1800,12 +1677,11 @@ export class SessionStore {
       END;
     `;
 
-    this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
-    this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
-    this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
-
-    this.db.run('DROP TABLE IF EXISTS session_summaries_new');
-
+    const summariesKnownColumns = [
+      'id', 'memory_session_id', 'project', 'request', 'investigated', 'learned',
+      'completed', 'next_steps', 'files_read', 'files_edited', 'notes',
+      'prompt_number', 'discovery_tokens', 'created_at', 'created_at_epoch',
+    ];
     const summariesNewSQL = `
       CREATE TABLE session_summaries_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1825,13 +1701,6 @@ export class SessionStore {
         created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
-    `;
-    const summariesCopySQL = `
-      INSERT INTO session_summaries_new
-      SELECT id, memory_session_id, project, request, investigated, learned,
-             completed, next_steps, files_read, files_edited, notes,
-             prompt_number, discovery_tokens, created_at, created_at_epoch
-      FROM session_summaries
     `;
     const summariesIndexesSQL = `
       CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
@@ -1858,8 +1727,30 @@ export class SessionStore {
     `;
 
     try {
-      this.recreateObservationsWithCascade(observationsNewSQL, observationsCopySQL, observationsIndexesSQL, observationsFTSTriggersSQL);
-      this.recreateSessionSummariesWithCascade(summariesNewSQL, summariesCopySQL, summariesIndexesSQL, summariesFTSTriggersSQL);
+      if (observationsNeedsCascade) {
+        this.db.run('DROP TRIGGER IF EXISTS observations_ai');
+        this.db.run('DROP TRIGGER IF EXISTS observations_ad');
+        this.db.run('DROP TRIGGER IF EXISTS observations_au');
+        this.db.run('DROP TABLE IF EXISTS observations_new');
+        this.recreateObservationsWithCascade(
+          observationsNewSQL,
+          observationsKnownColumns,
+          observationsIndexesSQL,
+          observationsFTSTriggersSQL
+        );
+      }
+      if (summariesNeedsCascade) {
+        this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
+        this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
+        this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
+        this.db.run('DROP TABLE IF EXISTS session_summaries_new');
+        this.recreateSessionSummariesWithCascade(
+          summariesNewSQL,
+          summariesKnownColumns,
+          summariesIndexesSQL,
+          summariesFTSTriggersSQL
+        );
+      }
 
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
       this.db.run('COMMIT');
@@ -1875,9 +1766,16 @@ export class SessionStore {
     }
   }
 
-  private recreateObservationsWithCascade(createSQL: string, copySQL: string, indexesSQL: string, ftsTriggersSQL: string): void {
+  private recreateObservationsWithCascade(
+    createSQL: string,
+    knownColumns: string[],
+    indexesSQL: string,
+    ftsTriggersSQL: string
+  ): void {
     this.db.run(createSQL);
-    this.db.run(copySQL);
+    const copyColumns = this.carryLiveColumnsOntoNewTable('observations', 'observations_new', knownColumns);
+    const quoted = copyColumns.map(name => `"${name}"`).join(', ');
+    this.db.run(`INSERT INTO observations_new (${quoted}) SELECT ${quoted} FROM observations`);
     this.db.run('DROP TABLE observations');
     this.db.run('ALTER TABLE observations_new RENAME TO observations');
     this.db.run(indexesSQL);
@@ -1888,9 +1786,16 @@ export class SessionStore {
     }
   }
 
-  private recreateSessionSummariesWithCascade(createSQL: string, copySQL: string, indexesSQL: string, ftsTriggersSQL: string): void {
+  private recreateSessionSummariesWithCascade(
+    createSQL: string,
+    knownColumns: string[],
+    indexesSQL: string,
+    ftsTriggersSQL: string
+  ): void {
     this.db.run(createSQL);
-    this.db.run(copySQL);
+    const copyColumns = this.carryLiveColumnsOntoNewTable('session_summaries', 'session_summaries_new', knownColumns);
+    const quoted = copyColumns.map(name => `"${name}"`).join(', ');
+    this.db.run(`INSERT INTO session_summaries_new (${quoted}) SELECT ${quoted} FROM session_summaries`);
     this.db.run('DROP TABLE session_summaries');
     this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
     this.db.run(indexesSQL);
@@ -1979,19 +1884,62 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
   }
 
-  /**
-   * Monotonic lifetime reinforcement counter. The FIFO-trimmed
-   * reinforcement_dates window (MAX_REINFORCEMENT_HISTORY=10) keeps the ACT-R
-   * spacing-effect math bounded but ERASES the durability signal — "the world
-   * has kept re-confirming this note for a year". reinforcement_total preserves
-   * that signal: it only ever increments (once per real append, never on
-   * same-day no-ops) and deliberately does NOT enter the strength formula.
-   */
-  private ensureReinforcementTotalColumn(): void {
-    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    if (columns.some(col => col.name === 'reinforcement_total')) return;
-    this.db.run('ALTER TABLE observations ADD COLUMN reinforcement_total INTEGER DEFAULT 0');
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(57, new Date().toISOString());
+  // Identity of the OBSERVED IDE session (the model the user ran and its
+  // billing posture), reported by the Stop hook. Distinct from
+  // observations.generated_by_model, which is the observer model.
+  private ensureSDKSessionsObservedColumns(): void {
+    const columns = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasObservedModel = columns.some(col => col.name === 'observed_model');
+    const hasObservedBilling = columns.some(col => col.name === 'observed_billing');
+
+    if (hasObservedModel && hasObservedBilling) return;
+
+    if (!hasObservedModel) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN observed_model TEXT');
+    }
+    if (!hasObservedBilling) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN observed_billing TEXT');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
+  }
+
+  // v51 — durable `tool_uses` backup index for raw tool I/O.
+  //
+  // `pending_messages` stays exactly what it is (the generation queue, drained
+  // and deleted); this table is the side index that survives it, so mem-search
+  // can disclose a tool body by reference and Receipt can COUNT usages without
+  // re-parsing transcripts. Not gated on the version row alone: the DDL is
+  // idempotent, so a DB that was created fresh (table already present) and one
+  // migrating up both converge, and a fixture that deliberately drops the row
+  // re-runs harmlessly.
+  private ensureToolUsesTable(): void {
+    createToolUsesSchema(this.db);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
+  }
+
+  // v52 — durable claim ledger for one Telegram session wrap-up per route.
+  // The DDL is intentionally idempotent so fresh installs and existing DBs
+  // converge even if a fixture has an incomplete schema_versions ledger.
+  private ensureTelegramWrapupsTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS telegram_wrapups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform_source TEXT NOT NULL,
+        content_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        route_key TEXT NOT NULL,
+        summary_created_at_epoch INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('claimed', 'sent')),
+        claimed_at_epoch INTEGER NOT NULL,
+        sent_at_epoch INTEGER,
+        UNIQUE(platform_source, content_session_id, project, route_key)
+      )
+    `);
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_telegram_wrapups_platform_content ON telegram_wrapups(platform_source, content_session_id)'
+    );
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
   }
 
   private ensureMergedIntoProjectColumns(): void {
@@ -2175,6 +2123,14 @@ export class SessionStore {
   }
 
   updateMemorySessionId(sessionDbId: number, memorySessionId: string | null): void {
+    const current = this.db.prepare(`
+      SELECT memory_session_id
+      FROM sdk_sessions
+      WHERE id = ?
+    `).get(sessionDbId) as { memory_session_id: string | null } | undefined;
+
+    if (!current || current.memory_session_id === memorySessionId) return;
+
     this.db.prepare(`
       UPDATE sdk_sessions
       SET memory_session_id = ?
@@ -2191,8 +2147,25 @@ export class SessionStore {
    * RULES, SyncApply.ts). Pure SQL, no notify(): callers on the worker
    * connection nudge CloudSync themselves; the startup drain catches the
    * rest.
+   *
+   * Producer gate: acked ops are DELETEd by CloudSync's drain — the queue's
+   * ONLY retention path — and CloudSync exists iff cloud sync is fully
+   * credentialed. With syncOpsEnabled false (unconfigured install) this
+   * no-ops instead of growing sync_outbox forever.
+   *
+   * Supersede, don't append (set_prompt_session): every session
+   * re-registration re-emits the repair for EVERY prompt in the session
+   * (requeuePromptSync), and the mutation site bumps the prompt's sync_rev
+   * before each enqueue — so per target the newest op always carries the
+   * complete field set at the highest rev, and a still-queued older op is
+   * dead weight. Replicas apply by the op.rev >= row sync_rev guard, so
+   * dropping an unsent superseded op cannot regress them; one already pushed
+   * (ack lost mid-flight) is ordered before the newer op in the hub log and
+   * converges the same way. This bounds the outbox at one
+   * set_prompt_session row per prompt regardless of re-registration count.
    */
   private enqueueMutationOp(rev: string | number, body: CanonicalMutation): void {
+    if (!this.syncOpsEnabled) return;
     // set_prompt_session records NULL as the durable "this device" marker;
     // validate the exact mutation shape/UTF-8 bounds with a temporary valid
     // device id before appending. CloudSync substitutes the resolved device
@@ -2203,6 +2176,22 @@ export class SessionStore {
       if (target?.origin_device_id === null) target.origin_device_id = 'self';
     }
     validateCanonicalMutation(candidate);
+    if (body.op === 'set_prompt_session') {
+      // json_valid guards tampered rows from aborting the enqueue (the v49
+      // precedent); every writer stores JSON.stringify output. No rev guard:
+      // the sync_rev bump above each enqueue makes revs monotonic per
+      // target, so the incoming op always supersedes what is queued.
+      this.db.prepare(`
+        DELETE FROM sync_outbox
+        WHERE json_valid(body)
+          AND json_extract(body, '$.op') = 'set_prompt_session'
+          AND json_extract(body, '$.target.origin_device_id') IS ?
+          AND json_extract(body, '$.target.origin_local_id') = ?
+      `).run(
+        (body.target?.origin_device_id ?? null) as string | null,
+        String(body.target?.origin_local_id ?? ''),
+      );
+    }
     this.db.prepare(`
       INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
       VALUES (?, ?, ?, ?)
@@ -2230,8 +2219,17 @@ export class SessionStore {
    * stampGuard unnecessary: the drain stamps synced_at only where the acked
    * rev still equals the row's sync_rev, so a registration landing while a
    * POST is in flight leaves the row unsynced and it re-pushes corrected.
+   *
+   * With sync ops disabled the whole repair is skipped: the bump + re-null
+   * exist only so already-pushed rows re-push corrected, nothing pushes
+   * without CloudSync, and a prompt that first syncs after a later
+   * enablement resolves its session join fields at snapshot time anyway
+   * (the drain SELECT joins sdk_sessions). Skipping also keeps v47
+   * launch-baseline rows excluded instead of promoting them into sync
+   * eligibility via the rev bump.
    */
   private requeuePromptSync(sessionDbId: number): void {
+    if (!this.syncOpsEnabled) return;
     const session = this.db.prepare(`
       SELECT memory_session_id, project, content_session_id, platform_source
       FROM sdk_sessions WHERE id = ?
@@ -2281,11 +2279,38 @@ export class SessionStore {
     `).run(nowIso, nowEpoch, sessionDbId);
   }
 
+  /**
+   * Put a completed row back to 'active' because the session it labels carried
+   * on (#4080).
+   *
+   * `markSessionCompleted` above is the only writer of `status`, and it only
+   * ever writes 'completed'; `finalizeSession` returns early on every later
+   * end once it reads that. So a session that continues after a finalize — a
+   * `claude --resume`, or one finalized while it was still live — keeps the
+   * FIRST end's `completed_at` for the rest of its life while new prompts land
+   * under the same row. Every reader of `status` is then wrong about it:
+   * SearchManager prints **In Progress** only for 'active', and anything
+   * counting sessions by status counts this one at an end it has already
+   * passed.
+   *
+   * Guarded on `status = 'completed'`, so it is a no-op for a row that is
+   * already active, and it clears BOTH completion stamps — leaving the row
+   * active with a stale `completed_at` would trade one wrong label for
+   * another. sdk_sessions rows do not sync, so there is no op to enqueue.
+   */
+  reopenCompletedSession(sessionDbId: number): void {
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET status = 'active', completed_at = NULL, completed_at_epoch = NULL
+      WHERE id = ? AND status = 'completed'
+    `).run(sessionDbId);
+  }
+
   ensureMemorySessionIdRegistered(
     sessionDbId: number,
     memorySessionId: string,
     workerPort?: number
-  ): void {
+  ): string {
     const session = this.db.prepare(`
       SELECT id, memory_session_id, worker_port FROM sdk_sessions WHERE id = ?
     `).get(sessionDbId) as { id: number; memory_session_id: string | null; worker_port: number | null } | undefined;
@@ -2294,7 +2319,27 @@ export class SessionStore {
       throw new Error(`Session ${sessionDbId} not found in sdk_sessions`);
     }
 
-    if (session.memory_session_id !== memorySessionId) {
+    // REGISTER, DO NOT RE-REGISTER. `memory_session_id` is the FK parent key of
+    // `observations` and `session_summaries` (ON UPDATE CASCADE) and the join
+    // field `requeuePromptSync` pushes to replicas, so overwriting it is not a
+    // field update — it rewrites every memory the session owns and re-enqueues
+    // every prompt it has.
+    //
+    // The caller that made this matter is ClaudeProvider: a fresh SDK process
+    // mints a new session_id every turn, `resetCarriedMemorySessionId` clears the
+    // in-memory copy before each one, and nothing consumes a later turn's id
+    // (`shouldResume` is a hardcoded false, so `resume` never receives it). The
+    // condition below used to be `!==`, so every turn looked like a new identity.
+    //
+    // MEASURED on one store: sync_outbox held 1,100,783 rows for 6,930 distinct
+    // prompts — 158.8x, 393 MB of an 854 MB database — with its worst single
+    // prompt carrying 3,464 rows and 3,464 DISTINCT memory_session_ids. That is
+    // `requeuePromptSync`, whose own docstring describes a one-time repair
+    // ("Once the mapping lands"), running once per turn per prompt instead.
+    //
+    // A deliberate change of identity is still available through
+    // `updateMemorySessionId`. "Ensure registered" means make sure one exists.
+    if (session.memory_session_id === null) {
       this.db.prepare(`
         UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
       `).run(memorySessionId, sessionDbId);
@@ -2302,8 +2347,13 @@ export class SessionStore {
 
       logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
         sessionDbId,
-        oldId: session.memory_session_id,
         newId: memorySessionId
+      });
+    } else if (session.memory_session_id !== memorySessionId) {
+      logger.debug('DB', 'Keeping the registered memory_session_id', {
+        sessionDbId,
+        registered: session.memory_session_id,
+        offered: memorySessionId
       });
     }
 
@@ -2316,6 +2366,8 @@ export class SessionStore {
         UPDATE sdk_sessions SET worker_port = ? WHERE id = ?
       `).run(workerPort, sessionDbId);
     }
+
+    return session.memory_session_id ?? memorySessionId;
   }
 
   getAllProjects(platformSource?: string): string[] {
@@ -2503,6 +2555,39 @@ export class SessionStore {
     return stmt.get(id, normalizePlatformSource(platformSource)) as ObservationRecord | undefined || null;
   }
 
+  // ---------------------------------------------------------------------
+  // tool_uses (v51) — durable raw tool I/O side index. See ./tool-uses.ts for
+  // why this is separate from pending_messages and why no cost column exists.
+  // ---------------------------------------------------------------------
+
+  upsertToolUse(input: UpsertToolUseInput): number | null {
+    return upsertToolUseRow(this.db, input);
+  }
+
+  linkToolUsesToObservation(params: {
+    contentSessionId: string;
+    toolUseIds: string[];
+    observationId: number;
+    memorySessionId?: string | null;
+  }): number {
+    return linkToolUsesToObservationRows(this.db, params);
+  }
+
+  getToolUsesByIds(
+    ids: Array<number | string>,
+    options: { limit?: number; project?: string; platformSource?: string; contentSessionId?: string } = {}
+  ): ToolUseRow[] {
+    return getToolUsesByIdsRows(this.db, ids, options);
+  }
+
+  queryToolUses(filters: ToolUseQueryFilters = {}): ToolUseRow[] {
+    return queryToolUsesRows(this.db, filters);
+  }
+
+  countToolUses(filters: ToolUseQueryFilters = {}): Array<{ tool_name: string; uses: number }> {
+    return countToolUsesRows(this.db, filters);
+  }
+
   getObservationsByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
@@ -2614,13 +2699,154 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-             user_prompt, custom_title, status
+             user_prompt, custom_title, status,
+             observed_model, observed_billing
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
     `);
 
     return (stmt.get(id) as SdkSessionDetailRow | null) || null;
+  }
+
+  findSessionDbIdByContentSessionId(contentSessionId: string, platformSource: string): number | null {
+    const row = this.db.prepare(`
+      SELECT id
+      FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
+        AND content_session_id = ?
+      LIMIT 1
+    `).get(
+      DEFAULT_PLATFORM_SOURCE,
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+    ) as { id: number } | null;
+
+    return row?.id ?? null;
+  }
+
+  claimTelegramWrapup({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+    summaryCreatedAtEpoch,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+    summaryCreatedAtEpoch: number;
+  }): boolean {
+    const claimedAtEpoch = Date.now();
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO telegram_wrapups
+      (platform_source, content_session_id, project, route_key, summary_created_at_epoch, status, claimed_at_epoch, sent_at_epoch)
+      VALUES (?, ?, ?, ?, ?, 'claimed', ?, NULL)
+    `).run(
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+      summaryCreatedAtEpoch,
+      claimedAtEpoch,
+    );
+
+    if (result.changes === 1) return true;
+
+    // A process can die after recording its claim but before it attempts the
+    // Telegram POST (or before it marks the result sent). Treat a long-held
+    // claim as an abandoned lease, while sent rows remain permanent dedupe
+    // records. The compare-and-set predicate lets only one racing recovery
+    // caller reclaim the row.
+    const reclaim = this.db.prepare(`
+      UPDATE telegram_wrapups
+      SET summary_created_at_epoch = ?, claimed_at_epoch = ?, sent_at_epoch = NULL
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+        AND claimed_at_epoch <= ?
+    `).run(
+      summaryCreatedAtEpoch,
+      claimedAtEpoch,
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+      claimedAtEpoch - TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS,
+    );
+
+    return reclaim.changes === 1;
+  }
+
+  markTelegramWrapupSent({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+  }): void {
+    this.db.prepare(`
+      UPDATE telegram_wrapups
+      SET status = 'sent', sent_at_epoch = ?
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+    `).run(
+      Date.now(),
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+    );
+  }
+
+  releaseTelegramWrapupClaim({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+  }): void {
+    this.db.prepare(`
+      DELETE FROM telegram_wrapups
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+    `).run(
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+    );
+  }
+
+  /**
+   * Record the observed IDE session's model id and billing posture (from the
+   * Stop hook). Each field only overwrites when supplied, so a turn that could
+   * not determine one of them keeps the previously stored value.
+   */
+  setSessionObservedMetadata(sessionDbId: number, observedModel?: string, observedBilling?: string): void {
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET observed_model = COALESCE(?, observed_model),
+          observed_billing = COALESCE(?, observed_billing)
+      WHERE id = ?
+    `).run(observedModel || null, observedBilling || null, sessionDbId);
   }
 
   getSdkSessionsBySessionIds(memorySessionIds: string[]): {
@@ -2666,6 +2892,22 @@ export class SessionStore {
       SELECT COUNT(*) as count FROM user_prompts WHERE content_session_id = ?
     `).get(contentSessionId) as { count: number };
     return result.count;
+  }
+
+  getLatestPromptTextFromUserPrompts(contentSessionId: string, sessionDbId?: number): string | null {
+    const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
+    const whereClause = resolvedSessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?';
+    const param = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
+    const result = this.db.prepare(`
+      SELECT prompt_text
+      FROM user_prompts
+      WHERE ${whereClause}
+        AND prompt_text IS NOT NULL
+        AND length(trim(prompt_text)) > 0
+      ORDER BY prompt_number DESC, created_at_epoch DESC
+      LIMIT 1
+    `).get(param) as { prompt_text: string } | undefined;
+    return result?.prompt_text ?? null;
   }
 
   createSDKSession(
@@ -2818,6 +3060,13 @@ export class SessionStore {
     overrideTimestampEpoch?: number,
     generatedByModel?: string
   ): { id: number; createdAtEpoch: number } {
+    // storeObservations skips empty-title rows, which would leave no id to return here.
+    // This wrapper stores exactly one observation, so require a title up front rather than
+    // returning an undefined id.
+    if (!observation.title || observation.title.trim() === '') {
+      throw new Error('storeObservation requires a non-empty title');
+    }
+
     const result = this.storeObservations(
       memorySessionId,
       project,
@@ -2842,6 +3091,8 @@ export class SessionStore {
       completed: string;
       next_steps: string;
       notes: string | null;
+      files_read?: string[];
+      files_edited?: string[];
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
@@ -2853,8 +3104,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
-       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -2865,6 +3116,8 @@ export class SessionStore {
       summary.learned,
       summary.completed,
       summary.next_steps,
+      JSON.stringify(summary.files_read ?? []),
+      JSON.stringify(summary.files_edited ?? []),
       summary.notes,
       promptNumber || null,
       discoveryTokens,
@@ -2908,6 +3161,8 @@ export class SessionStore {
       completed: string;
       next_steps: string;
       notes: string | null;
+      files_read?: string[];
+      files_edited?: string[];
     } | null,
     promptNumber?: number,
     discoveryTokens: number = 0,
@@ -2936,6 +3191,13 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
+        // Skip observations with an empty title. They're malformed, low-signal rows that
+        // just take up space in the recency-based recall window without adding any facts.
+        if (!observation.title || observation.title.trim() === '') {
+          logger.debug('DB', 'Skipping observation with empty title');
+          continue;
+        }
+
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
         // Echo rows (memory grounding, Layer 2) are stored for audit but get no
         // reinforcement seed — an echo must never gain ACT-R strength.
@@ -2982,11 +3244,14 @@ export class SessionStore {
 
       let summaryId: number | null = null;
       if (summary) {
+        const rolledUp = rollupObservationFileLists(observations);
+        const filesRead = summary.files_read ?? rolledUp.files_read;
+        const filesEdited = summary.files_edited ?? rolledUp.files_edited;
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -2997,6 +3262,8 @@ export class SessionStore {
           summary.learned,
           summary.completed,
           summary.next_steps,
+          JSON.stringify(filesRead),
+          JSON.stringify(filesEdited),
           summary.notes,
           promptNumber || null,
           discoveryTokens,
@@ -3201,11 +3468,19 @@ export class SessionStore {
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
+      // Strict comparisons: rows tied exactly at anchorEpoch (routine, since
+      // storeObservations() stamps a turn's observations and its session
+      // summary with one shared timestamp) must not compete with real
+      // before/after rows for depth budget. They're picked up regardless by
+      // the final inclusive [startEpoch, endEpoch] range query below, so
+      // excluding them here at the boundary step is enough to guarantee
+      // exactly depthBefore/depthAfter real neighbors on each side, whether
+      // zero, one, or many rows tie the anchor.
       const beforeQuery = `
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.created_at_epoch <= ? ${observationScope.clause}
+        WHERE o.created_at_epoch < ? ${observationScope.clause}
         ORDER BY o.created_at_epoch DESC
         LIMIT ?
       `;
@@ -3213,19 +3488,19 @@ export class SessionStore {
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.created_at_epoch >= ? ${observationScope.clause}
+        WHERE o.created_at_epoch > ? ${observationScope.clause}
         ORDER BY o.created_at_epoch ASC
         LIMIT ?
       `;
 
       try {
         const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...observationScope.params, depthBefore) as Array<{created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter + 1) as Array<{created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter) as Array<{created_at_epoch: number}>;
 
-        if (beforeRecords.length === 0 && afterRecords.length === 0) {
-          return { observations: [], sessions: [], prompts: [] };
-        }
-
+        // No early return on "both empty" here: unlike the id-anchored branch,
+        // an empty before/after pair does not mean nothing matches, rows
+        // tied exactly at anchorEpoch are excluded from both by design (see
+        // above) and still need the final range query below to surface them.
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err) {
@@ -3238,12 +3513,14 @@ export class SessionStore {
       }
     }
 
+    // `id` breaks created_at_epoch ties so a turn's rows (which share one epoch) render in the
+    // order they were written instead of whatever order the index scan returns them in.
     const obsQuery = `
       SELECT o.*
       FROM observations o
       LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
       WHERE o.created_at_epoch >= ? AND o.created_at_epoch <= ? ${observationScope.clause}
-      ORDER BY o.created_at_epoch ASC
+      ORDER BY o.created_at_epoch ASC, o.id ASC
     `;
 
     const sessQuery = `
@@ -3251,7 +3528,7 @@ export class SessionStore {
       FROM session_summaries ss
       LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id
       WHERE ss.created_at_epoch >= ? AND ss.created_at_epoch <= ? ${summaryScope.clause}
-      ORDER BY ss.created_at_epoch ASC
+      ORDER BY ss.created_at_epoch ASC, ss.id ASC
     `;
 
     const promptQuery = `
@@ -3259,7 +3536,7 @@ export class SessionStore {
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${promptScope.clause}
-      ORDER BY up.created_at_epoch ASC
+      ORDER BY up.created_at_epoch ASC, up.id ASC
     `;
 
     const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...observationScope.params) as ObservationRecord[];
@@ -3291,7 +3568,7 @@ export class SessionStore {
     };
   }
 
-  getOrCreateManualSession(project: string): string {
+  getOrCreateManualSession(project: string, platformSource = DEFAULT_PLATFORM_SOURCE): string {
     const memorySessionId = `manual-${project}`;
     const contentSessionId = `manual-content-${project}`;
 
@@ -3300,6 +3577,11 @@ export class SessionStore {
     ).get(memorySessionId) as { memory_session_id: string } | undefined;
 
     if (existing) {
+      if (platformSource && platformSource !== DEFAULT_PLATFORM_SOURCE) {
+        this.db.prepare(
+          'UPDATE sdk_sessions SET platform_source = ? WHERE memory_session_id = ?'
+        ).run(platformSource, memorySessionId);
+      }
       return memorySessionId;
     }
 
