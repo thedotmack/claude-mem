@@ -23,18 +23,23 @@ export interface ActiveSession {
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  /**
+   * Claude account (config-dir profile key) the latest Claude generator was
+   * spawned under. Its env, and so its billing account, is fixed at spawn, so
+   * a quota refusal it hits is armed under this account even if the setting
+   * changed while it ran.
+   */
+  observerProfile?: string;
   consecutiveRestarts: number;
   /**
-   * Real invalid-output counter (#3606): incremented on a dropped batch
-   * (non-XML output that is not a designed empty skip), reset to 0 on a
-   * valid parse or a designed empty skip (idle output with a non-'length'
-   * finish reason — the prompt allows an empty reply to signal "nothing to
-   * report").
+   * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
+   * observer output is confirmed as a no-op and resets this so benign skip
+   * acknowledgements never accumulate respawn debt.
    *
    * It is deliberately NOT the breaker for repeated hard rejections — counting
-   * skips and rejections on one counter is what produced the respawn storm the
-   * write-only reset this replaces was added to stop. Hard rejections are
-   * counted by `consecutiveContextOverflows` instead.
+   * skips and rejections on one counter is what produced the respawn storm this
+   * reset was added to stop. Hard rejections are counted by
+   * `consecutiveContextOverflows` instead.
    */
   consecutiveInvalidOutputs: number;
   /**
@@ -52,6 +57,29 @@ export interface ActiveSession {
    * tool call spawns a generator that can only abort on the same budget check.
    */
   overflowPausedUntilMs?: number;
+  /**
+   * Consecutive generations that ended because a prompt went unanswered
+   * ('transport:response_stall'). Bounds their automatic resume; reset when a
+   * queued-work turn is answered (#4066).
+   */
+  consecutiveResponseStalls?: number;
+  /**
+   * Consecutive rate-limit pauses this session resumed from on its own, after
+   * the provider's Retry-After. Bounds those resumes before the provider
+   * breaker takes over; reset when a queued-work turn is answered.
+   */
+  consecutiveRateLimitResumes?: number;
+  /**
+   * The delayed resume a response stall scheduled. Any generator start cancels
+   * it, so a stale timer never restarts a session a newer generation paused.
+   */
+  stallResumeTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The resume a pause scheduled for itself: after a rate limit's Retry-After,
+   * or at once after a cmem fallback or a recycle. The periodic sweep leaves
+   * the session to it while it is pending, and any generator start cancels it.
+   */
+  scheduledResumeTimer?: ReturnType<typeof setTimeout>;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
@@ -59,7 +87,9 @@ export interface ActiveSession {
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
-  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
+  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
+  /** Why buffered work was last parked after a generator exit. */
+  pausedReason?: string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;
@@ -76,6 +106,21 @@ export interface ActiveSession {
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
   endpointClass?: 'openrouter' | 'custom';
   /**
+   * The observer model's context window in tokens, resolved once per
+   * generation at generator start (#3625). The generation budget and the
+   * per-field cap scale with it.
+   */
+  observerContextWindowTokens?: number;
+  /**
+   * The context the model actually read on the last answered turn of this
+   * generation, in tokens, as the provider reported it: the Claude result
+   * frame's input + cache writes + cache reads, or an HTTP provider's prompt
+   * tokens. Unlike the character proxy it counts the system prompt and tool
+   * schemas a provider adds. Reset at every generation start; an init turn's
+   * reading is never recorded (#2957).
+   */
+  lastContextTokens?: number;
+  /**
    * session_compressed properties stashed by ResponseProcessor on the claude
    * path: the streamed assistant message's output_tokens is an early-streaming
    * placeholder, so the event waits for the SDK result message's finalized
@@ -84,8 +129,18 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
-  /** finish_reason from the latest OpenAI-compatible provider response — 'length' flags a truncated (not just empty/prose) observer output (#3606). */
-  lastFinishReason?: string | null;
+  /**
+   * Cumulative cache_read_input_tokens across the session. Kept apart from
+   * cumulativeInputTokens because discovery_tokens is the delta of that
+   * counter; on a long observer session this is where most of the context the
+   * model re-reads shows up, so it is the number that makes resend growth
+   * visible.
+   */
+  cumulativeCacheReadTokens?: number;
+  /** SessionEnd requested one Telegram wrap-up after the latest summary lands. */
+  telegramWrapupRequestedAt?: number | null;
+  /** One-shot grace timer for a SessionEnd wrap-up request. */
+  telegramWrapupTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 export interface PendingMessage {
@@ -140,7 +195,8 @@ export interface ViewerSettings {
 
 export interface Observation {
   id: number;
-  memory_session_id: string;  
+  memory_session_id: string;
+  content_session_id: string;
   project: string;
   merged_into_project: string | null;
   platform_source: string;

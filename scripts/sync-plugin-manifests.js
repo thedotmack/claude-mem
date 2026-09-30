@@ -77,8 +77,8 @@ function syncCursorPlugin(plugin, pkg) {
   return {
     ...plugin,
     version: pkg.version,
-    description: pkg.description,
-    homepage: pkg.homepage,
+    description: plugin.description ?? pkg.description,
+    homepage: plugin.homepage ?? pkg.homepage,
     repository: normalizeRepositoryUrl(pkg.repository),
     license: pkg.license,
     author: {

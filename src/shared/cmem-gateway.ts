@@ -6,13 +6,16 @@
  * When the installer's browser login delivers a memory key, the worker talks
  * to the cmem.ai gateway through the generic OpenRouter provider
  * (CLAUDE_MEM_OPENROUTER_BASE_URL points at `${CMEM_PRO_ORIGIN}/api/inference/v1`).
- * Once the free trial ends without a subscription, the gateway answers with a
- * terminal quota/key error — and instead of surfacing an outage, memory falls
- * back to the user's Anthropic plan. The fallback state lives in settings.json
- * as CLAUDE_MEM_PRO_FALLBACK_AT (ISO timestamp; '' = no fallback) and is
- * strictly EVENT-driven: it is written only when the gateway rejects a request,
- * never from trial dates — a subscribed user's key keeps working past
- * `ends_at`, so the date alone must never disable anything.
+ * When the gateway stops serving the account it answers with a terminal code —
+ * `subscription_inactive` for a lapsed, cancelled, or unpaid trial or plan,
+ * `allowance_exhausted` for a spent allowance (paid accounts at their cap
+ * included), `key_invalid` for an unrecognized key — and instead of surfacing
+ * an outage, memory falls back to the user's Anthropic plan. The fallback
+ * state lives in settings.json as CLAUDE_MEM_PRO_FALLBACK_AT (ISO timestamp;
+ * '' = no fallback), with the gateway's own words beside it for the
+ * session-start notice. It is strictly EVENT-driven: written only when the
+ * gateway rejects a request, never from trial dates — a subscribed user's key
+ * keeps working past `ends_at`, so the date alone must never disable anything.
  *
  * Shared (not npx-cli) because the worker, the session-start hook, and the
  * installer all need the same gateway check. The npx-cli endpoint constants in
@@ -24,6 +27,8 @@ import { join } from 'path';
 import { paths, USER_SETTINGS_PATH } from './paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { emitDiagnostic } from './hook-io.js';
+import { proTrialUrl } from './pro-promo.js';
+import { relayedLine, relayedLink } from './relayed-text.js';
 
 /**
  * Origin for the cmem.ai funnel and gateway. Overridable so the whole flow can
@@ -69,6 +74,17 @@ export function isCmemGatewayUrl(url: string | undefined | null): boolean {
 }
 
 /**
+ * Whether an API key is the account-owned cmem.ai memory key. Every key the
+ * gateway has issued is `cm_pro_` + 24 or 32 hex chars (the server-side
+ * validator the installer once mirrored, 9d6742f1a); the prefix alone is the
+ * test, so a future key length is still recognized. Such a key authenticates
+ * only against the gateway and must never be sent anywhere else.
+ */
+export function isCmemMemoryKey(apiKey: string | undefined | null): boolean {
+  return (apiKey ?? '').trim().startsWith('cm_pro_');
+}
+
+/**
  * Read settings.json while retaining both the complete document and the
  * subtree where claude-mem settings live. The legacy `{ env: {...} }` shape
  * may also contain peer root keys such as hooks and permissions; flattening
@@ -94,10 +110,64 @@ function readRawSettingsDocument(settingsPath: string): {
   return { document, target };
 }
 
-/** Persist the fallback timestamp — the OpenRouter dispatch reads it back. */
-export function writeProFallbackAt(isoNow: string, settingsPath: string = USER_SETTINGS_PATH): void {
+/** What the gateway said about the rejection that armed the fallback. */
+export interface ProFallbackNotice {
+  message?: string;
+  action?: string;
+  url?: string;
+}
+
+/** The settings keys that make up a fallback: the marker and the gateway's words. */
+const PRO_FALLBACK_KEYS = [
+  'CLAUDE_MEM_PRO_FALLBACK_AT',
+  'CLAUDE_MEM_PRO_FALLBACK_MESSAGE',
+  'CLAUDE_MEM_PRO_FALLBACK_ACTION',
+  'CLAUDE_MEM_PRO_FALLBACK_URL',
+] as const;
+
+/**
+ * The one-time session-start notice for an active fallback. The gateway's
+ * words enter model context here, so each is relayed as one plain, bounded
+ * line (relayed-text.ts), and its link only when it is a cmem.ai page, where
+ * the plan is managed. Anything else gets the renewal link.
+ *
+ * Plan-neutral: paid accounts at their monthly cap are turned away too, so it
+ * never assumes a trial ended. Without the gateway's words it says only what
+ * is true for every account.
+ */
+export function proFallbackNotice(notice: ProFallbackNotice): string {
+  const message = relayedLine(notice.message) || 'cmem.ai memory is paused for this account.';
+  const action = relayedLine(notice.action);
+  return [
+    message,
+    ...(action ? [action] : []),
+    `Memory is using your Anthropic plan for now. Manage your plan: ${planLink(notice.url)}`,
+  ].join('\n');
+}
+
+function planLink(url: string | undefined): string {
+  const link = relayedLink(url);
+  return link !== null && new URL(link).hostname === 'cmem.ai' ? link : proTrialUrl('fallback');
+}
+
+/**
+ * Persist the fallback timestamp — the OpenRouter dispatch reads it back —
+ * together with the gateway's words, in one write. Passing `notice` replaces
+ * the stored words (missing parts become ''); omitting it re-stamps the time
+ * and keeps the words of the rejection that started the fallback.
+ */
+export function writeProFallbackAt(
+  isoNow: string,
+  settingsPath: string = USER_SETTINGS_PATH,
+  notice?: ProFallbackNotice,
+): void {
   const { document, target } = readRawSettingsDocument(settingsPath);
   target.CLAUDE_MEM_PRO_FALLBACK_AT = isoNow;
+  if (notice) {
+    target.CLAUDE_MEM_PRO_FALLBACK_MESSAGE = notice.message ?? '';
+    target.CLAUDE_MEM_PRO_FALLBACK_ACTION = notice.action ?? '';
+    target.CLAUDE_MEM_PRO_FALLBACK_URL = notice.url ?? '';
+  }
   writeJsonFileAtomic(settingsPath, document);
 }
 
@@ -112,8 +182,13 @@ export function clearProFallback(
 ): void {
   try {
     const { document, target } = readRawSettingsDocument(settingsPath);
-    if (target.CLAUDE_MEM_PRO_FALLBACK_AT) {
-      target.CLAUDE_MEM_PRO_FALLBACK_AT = '';
+    // Every key, not only the marker: a re-pair blanks the marker through the
+    // installer's settings merge before calling this, and the gateway's words
+    // must not outlive the fallback they described. Write only when something
+    // is set — a successful gateway response calls this every time.
+    const keys = PRO_FALLBACK_KEYS.filter((key) => target[key]);
+    if (keys.length > 0) {
+      for (const key of keys) target[key] = '';
       writeJsonFileAtomic(settingsPath, document);
     }
   } catch (error: unknown) {

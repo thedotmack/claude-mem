@@ -10,7 +10,9 @@ import {
   resolveOpenRouterConfig,
 } from '../../src/services/worker/OpenRouterProvider.js';
 import { DEFAULT_OPENROUTER_API_URL } from '../../src/shared/openrouter-base-url.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
+const DEFAULT_MODEL = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
 const CMEM_BASE = 'https://cmem.ai/api/inference/v1';
 const ENV_KEYS = [
   'CLAUDE_MEM_OPENROUTER_API_KEY',
@@ -89,7 +91,7 @@ describe('OpenRouter credential tuple source coherence', () => {
 
     expect(config.apiKey).toBe('sk-or-personal');
     expect(config.apiUrl).toBe(DEFAULT_OPENROUTER_API_URL);
-    expect(config.model).toBe('xiaomi/mimo-v2-flash:free');
+    expect(config.model).toBe(DEFAULT_MODEL);
   });
 
   it('fails closed when the CMEM base is reset without a personal key', () => {
@@ -100,7 +102,7 @@ describe('OpenRouter credential tuple source coherence', () => {
 
     expect(config.apiKey).toBe('');
     expect(config.apiUrl).toBe(DEFAULT_OPENROUTER_API_URL);
-    expect(config.model).toBe('xiaomi/mimo-v2-flash:free');
+    expect(config.model).toBe(DEFAULT_MODEL);
     expect(isOpenRouterAvailable(settingsPath)).toBe(false);
   });
 
@@ -112,7 +114,7 @@ describe('OpenRouter credential tuple source coherence', () => {
     expect(resolveOpenRouterConfig(settingsPath)).toMatchObject({
       apiKey: 'personal-env-file-key',
       apiUrl: 'https://gateway.example/v1/chat/completions',
-      model: 'xiaomi/mimo-v2-flash:free',
+      model: DEFAULT_MODEL,
     });
   });
 
@@ -124,7 +126,7 @@ describe('OpenRouter credential tuple source coherence', () => {
 
     expect(config.apiKey).toBe('');
     expect(config.apiUrl).toBe('https://gateway.example/v1/chat/completions');
-    expect(config.model).toBe('xiaomi/mimo-v2-flash:free');
+    expect(config.model).toBe(DEFAULT_MODEL);
     expect(isOpenRouterAvailable(settingsPath)).toBe(false);
   });
 
@@ -138,6 +140,86 @@ describe('OpenRouter credential tuple source coherence', () => {
       apiKey: 'custom-key',
       apiUrl: 'https://gateway.example/v1/chat/completions',
       model: 'custom-model',
+    });
+  });
+
+  describe('the cmem memory key authenticates only against the cmem gateway', () => {
+    const MEMORY_KEY = 'cm_pro_0123456789abcdef01234567';
+
+    it('withholds the key once the persisted base URL points at another host', () => {
+      // What a settings-API write or a hand edit of settings.json leaves behind.
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://gateway.example/v1',
+      });
+
+      const config = resolveOpenRouterConfig(settingsPath);
+
+      expect(config.apiKey).toBe('');
+      expect(config.apiUrl).toBe('https://gateway.example/v1/chat/completions');
+      expect(isOpenRouterAvailable(settingsPath)).toBe(false);
+    });
+
+    it('withholds the key from openrouter.ai when the persisted base URL is cleared', () => {
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+      });
+
+      const config = resolveOpenRouterConfig(settingsPath);
+
+      expect(config.apiKey).toBe('');
+      expect(config.apiUrl).toBe(DEFAULT_OPENROUTER_API_URL);
+    });
+
+    it('withholds the key from a deceptive gateway lookalike', () => {
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai.evil.example/api/inference/v1',
+      });
+
+      expect(resolveOpenRouterConfig(settingsPath).apiKey).toBe('');
+    });
+
+    it('withholds an exported key from an overridden non-gateway base', () => {
+      writeSettings();
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = MEMORY_KEY;
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://gateway.example/v1';
+
+      expect(resolveOpenRouterConfig(settingsPath).apiKey).toBe('');
+    });
+
+    it('still sends the key to the gateway', () => {
+      writeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY });
+
+      expect(resolveOpenRouterConfig(settingsPath)).toMatchObject({
+        apiKey: MEMORY_KEY,
+        apiUrl: `${CMEM_BASE}/chat/completions`,
+        model: 'cmem-observer',
+      });
+    });
+
+    it('withholds a personal key from the gateway, which only takes a cmem.ai memory key', () => {
+      writeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-personal' });
+
+      const config = resolveOpenRouterConfig(settingsPath);
+
+      expect(config.apiKey).toBe('');
+      expect(config.apiUrl).toBe(`${CMEM_BASE}/chat/completions`);
+      expect(isOpenRouterAvailable(settingsPath)).toBe(false);
+    });
+
+    it('leaves a personal key on its own host alone', () => {
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-deepseek-personal',
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://api.deepseek.com',
+        CLAUDE_MEM_OPENROUTER_MODEL: 'deepseek-chat',
+      });
+
+      expect(resolveOpenRouterConfig(settingsPath)).toMatchObject({
+        apiKey: 'sk-deepseek-personal',
+        apiUrl: 'https://api.deepseek.com/chat/completions',
+      });
     });
   });
 

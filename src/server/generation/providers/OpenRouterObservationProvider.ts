@@ -2,6 +2,8 @@
 
 import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE } from '../../../shared/openrouter-attribution.js';
+import { fetchWithOpenRouterTokenCompatibility } from '../../../shared/openrouter-token-compatibility.js';
+import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
@@ -13,8 +15,6 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
-
-const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
 
 export interface OpenRouterObservationProviderOptions {
   apiKey: string;
@@ -58,7 +58,10 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     }
     this.apiKey = options.apiKey;
     // Model is passed verbatim so arbitrary OpenAI-compatible ids work. #2393.
-    this.model = options.model ?? DEFAULT_MODEL;
+    // Without one, use the worker's OpenRouter default: the old hard-coded
+    // 'anthropic/claude-3.5-sonnet' left OpenRouter's catalog, so every
+    // unconfigured server-runtime request was rejected.
+    this.model = options.model ?? SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
     this.apiUrl = resolveOpenRouterChatCompletionsUrl(options.baseUrl);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.siteUrl = options.siteUrl ?? OPENROUTER_APP_URL;
@@ -70,7 +73,17 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     context: ServerGenerationContext,
     signal?: AbortSignal,
   ): Promise<ServerGenerationResult> {
-    const { prompt, skippedAll } = buildServerGenerationPrompt(context);
+    const { prompt, skippedAll, noEvents } = buildServerGenerationPrompt(context);
+    // Nothing was loaded, so there is nothing to summarise and no question to
+    // ask a model. Answering it anyway bought `<skip_summary />` and recorded
+    // the result as an ordinary completion; the reason below names it instead.
+    if (noEvents) {
+      return {
+        rawText: '<skip_summary reason="no_events_loaded" />',
+        providerLabel: this.providerLabel,
+        modelId: this.model,
+      };
+    }
     if (skippedAll) {
       return {
         rawText: '<skip_summary reason="all_events_private" />',
@@ -141,21 +154,19 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
   }
 
   private postChatCompletion(prompt: string, signal?: AbortSignal): Promise<Response> {
-    return this.fetchImpl(this.apiUrl, {
+    return fetchWithOpenRouterTokenCompatibility(this.fetchImpl, this.apiUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         ...openRouterAttributionHeaders(this.siteUrl, this.appName),
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        max_tokens: this.maxOutputTokens,
-      }),
       signal,
-    });
+    }, {
+      model: this.model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+    }, this.maxOutputTokens);
   }
 }
 

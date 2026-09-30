@@ -240,6 +240,20 @@ describe('scrubProperties', () => {
     expect(result).toEqual({ version: '1.0.0' });
   });
 
+  it('keeps the skill_invoked identity keys with primitive values', () => {
+    const result = scrubProperties({
+      skill_id: 'mem-search',
+      skill_source: 'first_party',
+      skill_trigger: 'tool',
+    });
+
+    expect(result).toEqual({
+      skill_id: 'mem-search',
+      skill_source: 'first_party',
+      skill_trigger: 'tool',
+    });
+  });
+
   it('drops sensitive-looking keys even if present', () => {
     const result = scrubProperties({
       path: '/Users/alice/secret-project/index.ts',
@@ -262,8 +276,30 @@ describe('scrubProperties', () => {
     expect(Object.keys(result)).not.toContain('ip');
   });
 
+  it('drops skill args / raw skill / prompt keys even when skill identity is present', () => {
+    const result = scrubProperties({
+      skill_id: 'other',
+      skill_source: 'third_party',
+      skill_trigger: 'tool',
+      skill: 'someone-else:evil',
+      args: '/Users/alice/secret --pr 42',
+      command: '/foo do the thing',
+      prompt: '/foo leak this body',
+    });
+
+    expect(result).toEqual({
+      skill_id: 'other',
+      skill_source: 'third_party',
+      skill_trigger: 'tool',
+    });
+    expect(Object.keys(result)).not.toContain('skill');
+    expect(Object.keys(result)).not.toContain('args');
+    expect(Object.keys(result)).not.toContain('command');
+    expect(Object.keys(result)).not.toContain('prompt');
+  });
+
   it('whitelist never contains sensitive keys', () => {
-    for (const key of ['path', 'cwd', 'prompt', 'query', 'project_name', 'email', 'ip']) {
+    for (const key of ['path', 'cwd', 'prompt', 'query', 'project_name', 'email', 'ip', 'args', 'skill', 'command']) {
       expect(ALLOWED_PROPERTY_KEYS.has(key)).toBe(false);
     }
   });
@@ -335,6 +371,17 @@ describe('scrubProperties', () => {
 
   it('returns an empty object for empty input', () => {
     expect(scrubProperties({})).toEqual({});
+  });
+
+  it('redacts URL-shaped secrets even on a whitelisted key', () => {
+    const result = scrubProperties({
+      endpoint: 'https://api.example.com/v1/data?token=secret123',
+      outcome: 'success',
+    });
+
+    expect(result.outcome).toBe('success');
+    expect(String(result.endpoint)).not.toContain('secret123');
+    expect(String(result.endpoint)).not.toContain('token=');
   });
 
   it('never throws on hostile input', () => {

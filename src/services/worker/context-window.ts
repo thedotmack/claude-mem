@@ -1,77 +1,239 @@
-
-import type { ConversationMessage } from '../worker-types.js';
-
-/**
- * Bound the OpenAI-compatible message list sent to the model on the
- * OpenRouter path. Root cause of #3606: `session.conversationHistory` was
- * sent in full, with no `system` role, on every call. Against a bounded
- * local context (llama.cpp / Ollama) that either fills the context window
- * (truncation → empty content) or scrolls the observation schema — stated
- * once in the init prompt — out of view (model degrades to bare prose). This
- * module fixes both: the init/continuation prompt is always pinned as
- * `system` so the schema survives regardless of history length, and the rest
- * of the turns are capped by count and total chars.
- */
-
-/** 0 = unbounded for either field. */
-export interface ContextWindowLimits {
-  /** Max history turns kept AFTER the system anchor. */
-  maxMessages: number;
-  /** Max total chars of that windowed history. */
-  maxChars: number;
-}
-
-export interface BoundedMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isOpenRouterApiUrl } from '../../shared/openrouter-base-url.js';
+import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
+import { OBS_PROMPT_FIELD_MAX_CHARS } from '../../sdk/prompts.js';
+import { logger } from '../../utils/logger.js';
+import type { GeminiModel } from './GeminiProvider.js';
 
 /**
- * `history[0]` is always the init or continuation prompt (see
- * OpenAICompatibleProvider.startSession) and carries `system_identity` +
- * `observer_role` + the full `<observation>` skeleton — it is pinned as the
- * `system` message so the schema is never at risk of scrolling out of
- * context. The remaining turns are windowed by count, then by total chars,
- * then leading `assistant` turns are dropped so the first non-system message
- * is a `user` turn (strict OpenAI-compatible gateways reject assistant-first;
- * this also drops the orphaned init acknowledgement a front-trim can leave
- * behind).
+ * Observer context-window resolution.
+ *
+ * The observer's budgets were fixed numbers: a generation retired at 400k
+ * chars and each tool field was capped at 16k chars, whatever the model. A
+ * narrow-window model (a local 16k or 32k server) overflowed long before a
+ * recycle triggered, and a server that truncates silently never reported the
+ * overflow at all. Knowing the window lets every budget scale with it (see
+ * windowAwareConversationMaxChars in shared/observer-recycle.ts and
+ * observationFieldMaxChars below).
+ *
+ * OpenRouter publishes each model's window in its public catalogue; Gemini and
+ * Claude have no catalogue, so their models get a map. Everything else
+ * (custom endpoints, unknown models, offline workers) falls back to a
+ * conservative constant. Resolution never throws: an offline worker still has
+ * to observe normally.
  */
-export function buildBoundedMessages(
-  history: ConversationMessage[],
-  limits: ContextWindowLimits
-): BoundedMessage[] {
-  if (history.length === 0) {
-    return [];
+
+/**
+ * OpenRouter's public model catalogue. No auth required.
+ *
+ * Live shape verified 2026-08-08 (`curl https://openrouter.ai/api/v1/models`):
+ *
+ *   { "data": [ { "id": "inclusionai/ling-3.0-tiny:free",
+ *                 "context_length": 262144,
+ *                 "top_provider": { "context_length": 262144, ... },
+ *                 "pricing": { ... }, ... }, ... ] }
+ *
+ * `context_length` is a top-level number on each model entry (the
+ * `top_provider` copy mirrors it); that top-level field is what we parse.
+ */
+const MODELS_URL = 'https://openrouter.ai/api/v1/models';
+
+/** One generous GET, then fall back. */
+const FETCH_TIMEOUT_MS = 3_000;
+
+/**
+ * Used for custom endpoints, models no lookup knows, and offline workers.
+ * 128k is the floor for current observer-class models, so treating an unknown
+ * window as 131,072 retires generations early rather than overflowing.
+ */
+export const FALLBACK_CONTEXT_WINDOW_TOKENS = 131_072;
+
+/**
+ * Floor for the CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW override. Prompt
+ * scaffolding alone is on the order of 1k tokens, so below this no budget
+ * produces a request that fits (PR #3516 review); a smaller override is a
+ * misconfiguration and is clamped up with a warning.
+ */
+export const MIN_CONTEXT_WINDOW_TOKENS = 8_192;
+
+/**
+ * Gemini has no models catalogue. All five allowlisted models are Flash-family
+ * with Google's documented 1M-token window. Keyed by the GeminiModel union so
+ * an allowlist change breaks this map at compile time.
+ */
+const GEMINI_CONTEXT_WINDOWS: Record<GeminiModel, number> = {
+  'gemini-flash-latest': 1_048_576,
+  'gemini-flash-lite-latest': 1_048_576,
+  'gemini-3.5-flash': 1_048_576,
+  'gemini-3.1-flash-lite': 1_048_576,
+  'gemini-3-flash-preview': 1_048_576,
+};
+
+/** Claude models have a 200k window; a `[1m]` model id opts into the 1M-token window. */
+const CLAUDE_CONTEXT_WINDOW_TOKENS = 200_000;
+const CLAUDE_1M_CONTEXT_WINDOW_TOKENS = 1_000_000;
+const CLAUDE_1M_MODEL_SUFFIX = /\[1m\]$/i;
+
+/** ~4 chars per token, the estimate every observer budget already assumes. */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Share of the window one tool field may take. Two fields per observation plus
+ * scaffolding stays well inside the half of the window a generation may fill.
+ */
+const FIELD_WINDOW_SHARE = 0.1;
+
+export type ContextWindowProvider = 'claude' | 'gemini' | 'openrouter';
+
+/**
+ * The catalogue is fetched at most once per TTL window (idiom:
+ * telemetry.ts consentCache) and cached as the whole id → context_length map,
+ * so one fetch serves every model lookup in the window. A failed fetch is
+ * negative-cached for CATALOGUE_FAILURE_TTL_MS, then retried.
+ */
+const CATALOGUE_CACHE_TTL_MS = 60 * 60 * 1000;
+let catalogueCache: { value: Map<string, number>; expiresAt: number } | null = null;
+
+/**
+ * Negative cache: after a failed fetch, every lookup falls straight back for
+ * this long instead of re-hitting the catalogue. Without it, an outage makes
+ * each generator start wait out its own 3s timeout (PR #3516 review).
+ */
+const CATALOGUE_FAILURE_TTL_MS = 60_000;
+let catalogueFailureUntil = 0;
+
+/**
+ * Concurrent cold lookups share one in-flight request instead of herding —
+ * N generator starts racing an empty cache must issue exactly one GET.
+ */
+let inflightCatalogueFetch: Promise<Map<string, number> | null> | null = null;
+
+/**
+ * Test-only. The catalogue cache is module state shared by the whole bun test
+ * process — without a reset, a TTL test inherits whatever an earlier test
+ * fetched. Never called by production code.
+ */
+export function __resetContextWindowCacheForTests(): void {
+  catalogueCache = null;
+  catalogueFailureUntil = 0;
+  inflightCatalogueFetch = null;
+}
+
+/** Pull the catalogue's id → context_length map, or null when it is unreachable. */
+async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | null> {
+  const now = Date.now();
+  if (catalogueCache && now < catalogueCache.expiresAt) {
+    return catalogueCache.value;
   }
-
-  const system: BoundedMessage = { role: 'system', content: history[0].content };
-  let rest = history.slice(1);
-
-  if (limits.maxMessages > 0 && rest.length > limits.maxMessages) {
-    rest = rest.slice(rest.length - limits.maxMessages);
+  if (now < catalogueFailureUntil) {
+    return null;
   }
+  if (inflightCatalogueFetch) {
+    return inflightCatalogueFetch;
+  }
+  inflightCatalogueFetch = fetchCatalogueOnce().finally(() => {
+    inflightCatalogueFetch = null;
+  });
+  return inflightCatalogueFetch;
+}
 
-  if (limits.maxChars > 0) {
-    let totalChars = rest.reduce((sum, m) => sum + m.content.length, 0);
-    // The final message is always sent even if it alone exceeds the budget —
-    // that's the batch actually being asked about; dropping it would leave
-    // nothing for the model to respond to.
-    while (totalChars > limits.maxChars && rest.length > 1) {
-      totalChars -= rest[0].content.length;
-      rest = rest.slice(1);
+async function fetchCatalogueOnce(): Promise<Map<string, number> | null> {
+  try {
+    const response = await fetch(MODELS_URL, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      logger.debug('WORKER', 'OpenRouter catalogue returned non-OK; using fallback context window', { status: response.status });
+      catalogueFailureUntil = Date.now() + CATALOGUE_FAILURE_TTL_MS;
+      return null;
     }
+
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string; context_length?: number }>;
+    };
+    const byId = new Map<string, number>();
+    for (const m of payload.data ?? []) {
+      if (m?.id && typeof m.context_length === 'number' && m.context_length > 0) {
+        byId.set(m.id, m.context_length);
+      }
+    }
+
+    catalogueCache = { value: byId, expiresAt: Date.now() + CATALOGUE_CACHE_TTL_MS };
+    return byId;
+  } catch (err) {
+    // Offline workers are normal and must not be blocked by a window lookup.
+    logger.debug('WORKER', 'OpenRouter catalogue fetch failed; using fallback context window', { rawError: String(err) });
+    catalogueFailureUntil = Date.now() + CATALOGUE_FAILURE_TTL_MS;
+    return null;
+  }
+}
+
+/**
+ * The CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW override, or null when unset or not a
+ * whole positive number. Complete integers only: parseInt('16k') would read a
+ * typo as a 16-token window.
+ */
+function parseContextWindowOverride(raw: unknown): number | null {
+  const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  if (parsed < MIN_CONTEXT_WINDOW_TOKENS) {
+    logger.warn('WORKER', 'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW below minimum; clamping', {
+      requested: parsed,
+      minimum: MIN_CONTEXT_WINDOW_TOKENS,
+    });
+    return MIN_CONTEXT_WINDOW_TOKENS;
+  }
+  return parsed;
+}
+
+/**
+ * Resolve the observer model's context window in tokens. Never throws.
+ *
+ * Order: CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW override (clamped up to
+ * MIN_CONTEXT_WINDOW_TOKENS) → Claude map → Gemini map → OpenRouter catalogue
+ * → FALLBACK_CONTEXT_WINDOW_TOKENS.
+ *
+ * The catalogue is consulted only for openrouter.ai and the cmem.ai gateway,
+ * which serves OpenRouter model ids. Any other OpenAI-compatible endpoint
+ * serves models the catalogue knows nothing about, so a lookup there would be
+ * a name collision at best; set the override for those.
+ */
+export async function resolveContextWindowTokens(
+  provider: ContextWindowProvider,
+  model: string,
+  apiUrl?: string,
+): Promise<number> {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  const override = parseContextWindowOverride(settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW);
+  if (override !== null) return override;
+
+  if (provider === 'claude') {
+    return CLAUDE_1M_MODEL_SUFFIX.test(model) ? CLAUDE_1M_CONTEXT_WINDOW_TOKENS : CLAUDE_CONTEXT_WINDOW_TOKENS;
   }
 
-  while (rest.length > 0 && rest[0].role === 'assistant') {
-    rest = rest.slice(1);
+  if (provider === 'gemini') {
+    return GEMINI_CONTEXT_WINDOWS[model as GeminiModel] ?? FALLBACK_CONTEXT_WINDOW_TOKENS;
   }
 
-  return [
-    system,
-    ...rest.map(m => ({
-      role: (m.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
-      content: m.content,
-    })),
-  ];
+  if (!apiUrl || !(isOpenRouterApiUrl(apiUrl) || isCmemGatewayUrl(apiUrl))) {
+    return FALLBACK_CONTEXT_WINDOW_TOKENS;
+  }
+
+  const byId = await fetchOpenRouterContextWindows();
+  return byId?.get(model) ?? FALLBACK_CONTEXT_WINDOW_TOKENS;
+}
+
+/**
+ * Per-field character cap for an observation prompt: a tenth of the window,
+ * never above OBS_PROMPT_FIELD_MAX_CHARS. A 16k-token window gets ~6.5k chars
+ * per field instead of 16k, which alone would have been half its window. An
+ * unknown window keeps the fixed cap.
+ */
+export function observationFieldMaxChars(contextWindowTokens: number | undefined): number {
+  if (!contextWindowTokens) return OBS_PROMPT_FIELD_MAX_CHARS;
+  return Math.min(OBS_PROMPT_FIELD_MAX_CHARS, Math.floor(contextWindowTokens * FIELD_WINDOW_SHARE * CHARS_PER_TOKEN));
 }

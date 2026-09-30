@@ -47,6 +47,12 @@ export async function loadSessionStartContext(
       projects: [session.project],
       platformSource: session.platformSource,
       source: 'compact',
+      // This briefing is read by the observer, not by a user. The outage banner
+      // ends with an instruction addressed to the primary assistant, and a
+      // model that reads it here obeys it rather than emitting <observation>
+      // XML, so the batch is confirmed and dropped while the banner keeps
+      // itself up (#4221).
+      includeHealthWarning: false,
     });
     logger.info('SESSION', 'Briefed the observer generation with session-start context', {
       sessionId: session.sessionDbId,
@@ -65,12 +71,41 @@ export async function loadSessionStartContext(
 }
 
 /**
+ * Start a new generation with this init prompt, dropping whatever the previous
+ * generator left in the history (#3479).
+ *
+ * A generator start never continues an earlier conversation: the Claude
+ * observer spawns a fresh, non-resuming SDK process each time, and an HTTP
+ * provider re-sends exactly the history it holds. Appending the init prompt to
+ * the old history therefore re-sent a dead generation over HTTP and inflated
+ * the budget proxy for Claude. After a quota, auth or transport pause every
+ * retry stacked one more init prompt on top, so a retry loop grew the history
+ * without bound. The init prompt already carries the session-start context, so
+ * continuity rides on memory here exactly as it does after a recycle.
+ */
+export function openObserverGeneration(session: ActiveSession, initPrompt: string): void {
+  const discardedMessages = session.conversationHistory.length;
+  session.conversationHistory = [{ role: 'user', content: initPrompt }];
+  // The last generation's measured context says nothing about this one (#2957).
+  session.lastContextTokens = undefined;
+  if (discardedMessages > 0) {
+    logger.debug('SESSION', 'Generator start opened a new observer generation', {
+      sessionId: session.sessionDbId,
+      discardedMessages,
+    });
+  }
+}
+
+/**
  * Consecutive recycles allowed before the observer stops trying.
  *
  * A fresh generation carries only the framing prompt, the session-so-far block
- * and one field-truncated observation, so it fits by construction. Needing
- * several in a row means something else is oversized, and continuing would
- * re-send an over-ceiling prompt on every future tool call.
+ * and one field-truncated observation. That fits only because the Claude feed
+ * is paced to one unanswered prompt at a time: unpaced, a backlog burst pushed
+ * ~138 unanswered prompts into one generation, so every fresh one tripped the
+ * budget on the same batch and never made progress (#4066). Needing several
+ * recycles in a row therefore means a single message is genuinely oversized,
+ * and continuing would re-send an over-ceiling prompt on every future tool call.
  */
 export const MAX_CONSECUTIVE_RECYCLES = 2;
 

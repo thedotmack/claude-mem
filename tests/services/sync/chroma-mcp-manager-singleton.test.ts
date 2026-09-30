@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -27,6 +27,7 @@ const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
 const realProcessPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalPrewarmTimeout = process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
+const originalUvCacheDir = process.env.UV_CACHE_DIR;
 const tempRoots: string[] = [];
 let mockedChromaDir = '';
 let mockedCombinedCertPath = '';
@@ -126,7 +127,10 @@ mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({
 }));
 
 let connectImpl: (transport: FakeTransport) => Promise<void> = async () => {};
-let callToolImpl: (request?: { name: string; arguments?: Record<string, unknown> }) => Promise<unknown> = async () => ({
+let callToolImpl: (
+  request?: { name: string; arguments?: Record<string, unknown> },
+  options?: { timeout?: number }
+) => Promise<unknown> = async () => ({
   content: [{ type: 'text', text: '{}' }],
 });
 
@@ -135,8 +139,12 @@ class FakeClient {
   async connect(transport: FakeTransport): Promise<void> {
     await connectImpl(transport);
   }
-  async callTool(request?: { name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
-    return await callToolImpl(request);
+  async callTool(
+    request?: { name: string; arguments?: Record<string, unknown> },
+    _resultSchema?: unknown,
+    options?: { timeout?: number }
+  ): Promise<unknown> {
+    return await callToolImpl(request, options);
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -153,6 +161,7 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
     getInt: () => 0,
     loadFromFile: () => ({
       CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000',
+      CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: '600000',
       ...mockedSettings,
     }),
   },
@@ -204,9 +213,10 @@ const prewarmSpawnCalls: Array<{
   child: FakeChildProcess;
   env?: Record<string, string>;
 }> = [];
-let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
+let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' | 'pending' = 'success';
 let prewarmStdout = '';
 let prewarmStderr = '';
+let releasePendingPrewarm: (() => void) | null = null;
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
@@ -253,6 +263,8 @@ mock.module('child_process', () => {
           child.finish(0);
         } else if (prewarmSpawnBehavior === 'failure') {
           child.finish(1);
+        } else if (prewarmSpawnBehavior === 'pending') {
+          releasePendingPrewarm = () => child.finish(0);
         }
       });
       return child;
@@ -302,6 +314,8 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
 process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import { ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import {
   getDependencyStatus,
   resetDependencyStatusesForTesting,
@@ -314,6 +328,11 @@ afterAll(() => {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
   } else {
     process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS = originalPrewarmTimeout;
+  }
+  if (originalUvCacheDir === undefined) {
+    delete process.env.UV_CACHE_DIR;
+  } else {
+    process.env.UV_CACHE_DIR = originalUvCacheDir;
   }
   if (realProcessPlatform) {
     Object.defineProperty(process, 'platform', realProcessPlatform);
@@ -348,6 +367,7 @@ function resetState(): void {
   prewarmSpawnBehavior = 'success';
   prewarmStdout = '';
   prewarmStderr = '';
+  releasePendingPrewarm = null;
   prewarmKillEmitsClose = true;
   transportCloseEmitsOnclose = false;
   transportKillEmitsOnclose = false;
@@ -357,6 +377,9 @@ function resetState(): void {
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
   mockedSettings = {};
   resetMockedChromaPaths();
+  // Point uv's build-scratch sweep at a private, empty cache dir so a failed
+  // prewarm never sweeps the real machine's ~/.cache/uv during tests (#4108).
+  process.env.UV_CACHE_DIR = path.join(path.dirname(mockedChromaDir), 'uv-cache');
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
@@ -391,6 +414,23 @@ function writeChromaWriterLock(pid: number, ownerId: string): void {
     dataDir: mockedChromaDir,
     acquiredAt: new Date().toISOString(),
     startToken: null,
+  }, null, 2));
+}
+
+function chromaStoreRecordPath(): string {
+  return path.join(mockedChromaDir, '.claude-mem-chroma-store.json');
+}
+
+function writeChromaStoreRecord(partial: Record<string, unknown>): void {
+  mkdirSync(mockedChromaDir, { recursive: true });
+  writeFileSync(chromaStoreRecordPath(), JSON.stringify({
+    writerEpoch: 1,
+    chromaMcpVersion: '0.2.6',
+    depOverrides: ['onnxruntime>=1.20', 'protobuf<7'],
+    clientType: 'persistent',
+    claudeMemVersion: '0.0.0-dev',
+    updatedAt: new Date().toISOString(),
+    ...partial,
   }, null, 2));
 }
 
@@ -511,6 +551,52 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(maxActiveMutations).toBe(1);
   });
 
+  it('extends only mutation request timeouts and honors the configured bound', async () => {
+    mockedSettings = {
+      CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: '900000',
+    };
+    const mgr = ChromaMcpManager.getInstance();
+    const calls: Array<{ name?: string; timeout?: number }> = [];
+    callToolImpl = async (request, options) => {
+      calls.push({ name: request?.name, timeout: options?.timeout });
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    await mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await mgr.callTool('chroma_query_documents', { query_texts: ['fast read'] });
+
+    expect(calls).toEqual([
+      { name: 'chroma_add_documents', timeout: 900000 },
+      { name: 'chroma_query_documents', timeout: undefined },
+    ]);
+  });
+
+  it('leaves chroma-mcp running when a slow mutation times out instead of tree-killing it mid-commit', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(1);
+    killProcessTreeCalls.length = 0;
+
+    let attempts = 0;
+    callToolImpl = async () => {
+      attempts += 1;
+      throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 600000 });
+    };
+
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['slow'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+
+    // No dispose, no tree-kill, no reconnect, no retry of the same slow write.
+    expect(attempts).toBe(1);
+    expect(killProcessTreeCalls).toEqual([]);
+    expect(transportInstances.length).toBe(1);
+    expect(transportInstances[0].closed).toBe(false);
+
+    // The connection stays usable for the next call.
+    callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(1);
+  });
+
   it('bounds the pending mutation queue and leaves rejected writes for backfill', async () => {
     mockedSettings = {
       CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '2',
@@ -584,6 +670,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(transportInstances.length).toBe(2);
+    expect(mgr.getCrashState()).toMatchObject({ count: 0, lastExit: null });
     expect(logEntries.some(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')).toBe(false);
   });
 
@@ -639,7 +726,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(0);
   });
 
-  it('stop() ignores close-triggered onclose from an intentionally closed transport', async () => {
+  it('stop() ignores close-triggered onclose after shutdown generation changes', async () => {
     transportCloseEmitsOnclose = true;
     const mgr = ChromaMcpManager.getInstance();
 
@@ -649,10 +736,78 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.stop();
 
     expect(transportInstances[0].closed).toBe(true);
+    expect(mgr.getCrashState().count).toBe(0);
     expect(logEntries.some(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')).toBe(false);
 
     await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(mgr.getCrashState().count).toBe(0);
     expect(transportInstances.length).toBe(2);
+  });
+
+  it('records exact active-child exit details and retains them across reconnect', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const firstTransport = transportInstances[0];
+    firstTransport._process.finish(null, 'SIGSEGV');
+    firstTransport.onclose?.();
+
+    const firstState = mgr.getCrashState();
+    expect(firstState.count).toBe(1);
+    expect(firstState.lastExit).toMatchObject({ code: null, signal: 'SIGSEGV' });
+    expect(firstState.chromaMcpVersion).toBe('0.2.6');
+    expect(firstState.dependencyOverrides).toEqual([
+      'onnxruntime>=1.20',
+      'protobuf<7',
+      'chromadb==1.5.9',
+    ]);
+    expect(logEntries.find(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')?.meta)
+      .toMatchObject({ count: 1, exitCode: null, signalCode: 'SIGSEGV' });
+
+    const privateManager = mgr as unknown as { lastConnectionFailureTimestamp: number };
+    privateManager.lastConnectionFailureTimestamp = 0;
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(mgr.getCrashState()).toEqual(firstState);
+
+    const secondTransport = transportInstances[1];
+    secondTransport._process.finish(1);
+    secondTransport.onclose?.();
+    expect(mgr.getCrashState()).toMatchObject({
+      count: 2,
+      lastExit: { code: 1, signal: null },
+    });
+  });
+
+  it('records a clean but unexpected active-child close as code 0', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const transport = transportInstances[0];
+    transport._process.finish(0, null);
+    transport.onclose?.();
+
+    expect(mgr.getCrashState()).toMatchObject({
+      count: 1,
+      lastExit: { code: 0, signal: null },
+    });
+  });
+
+  it('keeps stale closes out of crash state', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const firstTransport = transportInstances[0];
+    await mgr.stop();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    firstTransport._process.finish(null, 'SIGSEGV');
+    firstTransport.onclose?.();
+    expect(mgr.getCrashState().count).toBe(0);
+  });
+
+  it('does not count a prewarm child failure as an active-child exit', async () => {
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('prewarm failed');
+    expect(mgr.getCrashState()).toMatchObject({ count: 0, lastExit: null });
   });
 
   it('stop() during a hanging prewarm does not record uvx unavailable or apply reconnect backoff', async () => {
@@ -675,6 +830,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(0);
     expect(transportCount).toBe(0);
     expect(getDependencyStatus('uvx')).toBeNull();
+    expect(mgr.getCrashState().count).toBe(0);
     expect(logEntries.some(entry => entry.message === 'chroma-mcp uvx prewarm failed')).toBe(false);
 
     prewarmSpawnBehavior = 'success';
@@ -712,6 +868,61 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(transportInstances.length).toBe(2);
+  });
+
+  it('[reproduction] Rechecks newer provenance after prewarm while holding the writer lock', async () => {
+    prewarmSpawnBehavior = 'pending';
+    const mgr = ChromaMcpManager.getInstance();
+
+    const pendingCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForCondition(() => prewarmSpawnCalls.length === 1 && releasePendingPrewarm !== null);
+
+    writeChromaStoreRecord({ writerEpoch: 2, claudeMemVersion: '13.99.0' });
+    releasePendingPrewarm?.();
+
+    await expect(pendingCall).rejects.toThrow(/epoch 2.*epoch 1/);
+    expect(transportInstances.length).toBe(0);
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+      message: expect.stringContaining('epoch 2'),
+    });
+    expect(JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8')).writerEpoch).toBe(2);
+  });
+
+  it('Failed MCP handshake preserves the previous store record', async () => {
+    writeChromaStoreRecord({ writerEpoch: 0, updatedAt: '2026-01-01T00:00:00.000Z' });
+    const before = readFileSync(chromaStoreRecordPath(), 'utf-8');
+    connectImpl = async () => {
+      throw new Error('handshake failed');
+    };
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('handshake failed');
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    expect(readFileSync(chromaStoreRecordPath(), 'utf-8')).toBe(before);
+  });
+
+  it('Cancelled MCP handshake preserves the previous store record byte-for-byte', async () => {
+    writeChromaStoreRecord({ writerEpoch: 0, updatedAt: '2026-01-01T00:00:00.000Z' });
+    const before = readFileSync(chromaStoreRecordPath(), 'utf-8');
+    rejectPendingConnectOnTransportClose = true;
+    let connectStarted = false;
+    connectImpl = async () => new Promise<void>((_resolve, reject) => {
+      connectStarted = true;
+      pendingConnectReject = reject;
+    });
+    const mgr = ChromaMcpManager.getInstance();
+
+    const pendingCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForCondition(() => connectStarted && pendingConnectReject !== null && transportInstances.length === 1);
+    const stopPromise = mgr.stop();
+
+    await expect(pendingCall).rejects.toThrow('connection cancelled during shutdown');
+    await stopPromise;
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    expect(readFileSync(chromaStoreRecordPath(), 'utf-8')).toBe(before);
   });
 
   it('classifies missing uvx before spawning chroma-mcp transport', async () => {
@@ -784,6 +995,161 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('connection in backoff');
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('stops spawning uvx after a burst of consecutive prewarm failures (#4108)', async () => {
+    // A broken host fails the prewarm the same way every time; before the
+    // circuit breaker the only limiter was the reconnect backoff, so the loop
+    // ran roughly once a minute for the worker's whole lifetime. Clear the
+    // backoff each iteration so the breaker is the only thing that can stop it.
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+    const clearBackoff = () => {
+      (mgr as unknown as { lastConnectionFailureTimestamp: number }).lastConnectionFailureTimestamp = 0;
+    };
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      clearBackoff();
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+
+    // Five spawns fail, then the breaker opens and no further uvx is spawned.
+    expect(prewarmSpawnCalls.length).toBe(5);
+    expect(
+      logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker open, skipping spawn')
+    ).toBe(true);
+    expect(getDependencyStatus('uvx')).toMatchObject({ kind: 'vector_search_unavailable' });
+    // doctor reads the breaker from the crash state.
+    expect(mgr.getCrashState().prewarm).toEqual({ consecutiveFailures: 5, state: 'paused' });
+  });
+
+  it('sweeps scratch leaked by earlier failures once a prewarm succeeds (#4108)', async () => {
+    // Once UV_LINK_MODE=copy lets installs finish, prewarm stops failing, so a
+    // sweep that ran only after a failure would never reclaim the backlog.
+    const leaked = path.join(process.env.UV_CACHE_DIR!, 'builds-v0', '.tmpLEAKED');
+    mkdirSync(leaked, { recursive: true });
+    const dayAgo = new Date(Date.now() - 25 * 60 * 60_000);
+    utimesSync(leaked, dayAgo, dayAgo);
+    // A drain started by an earlier test's failed prewarm can still be running
+    // against that test's cache dir; while it runs, a new sweep request is
+    // dropped. Let it finish so the sweep below is this test's own.
+    await ChromaMcpManager.waitForUvBuildsScratchSweepForTesting();
+
+    await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
+    await ChromaMcpManager.waitForUvBuildsScratchSweepForTesting();
+
+    expect(existsSync(leaked)).toBe(false);
+  });
+
+  it('resets the prewarm failure count on a success so transient failures do not trip the breaker (#4108)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    const failureCount = () =>
+      (mgr as unknown as { consecutivePrewarmFailures: number }).consecutivePrewarmFailures;
+    const clearBackoff = () => {
+      (mgr as unknown as { lastConnectionFailureTimestamp: number }).lastConnectionFailureTimestamp = 0;
+    };
+
+    prewarmSpawnBehavior = 'failure';
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      clearBackoff();
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+    expect(failureCount()).toBe(3);
+    expect(prewarmSpawnCalls.length).toBe(3);
+
+    // A single success clears the count, so the next burst starts from zero.
+    prewarmSpawnBehavior = 'success';
+    clearBackoff();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(failureCount()).toBe(0);
+    expect(prewarmSpawnCalls.length).toBe(4);
+  });
+
+  it('recovers once the breaker cooldown elapses and a probe succeeds (#4108)', async () => {
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+    const internals = mgr as unknown as {
+      lastConnectionFailureTimestamp: number;
+      prewarmBreakerOpenedAt: number;
+      consecutivePrewarmFailures: number;
+    };
+    const clearBackoff = () => { internals.lastConnectionFailureTimestamp = 0; };
+
+    // Open the breaker.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      clearBackoff();
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+    expect(prewarmSpawnCalls.length).toBe(5);
+
+    // While still in cooldown, further calls are rejected without a spawn.
+    clearBackoff();
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+      .rejects.toThrow('retrying in');
+    expect(prewarmSpawnCalls.length).toBe(5);
+
+    // Simulate the cooldown having elapsed; the next call is a half-open probe.
+    internals.prewarmBreakerOpenedAt = Date.now() - 11 * 60_000;
+    prewarmSpawnBehavior = 'success';
+    clearBackoff();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(prewarmSpawnCalls.length).toBe(6);
+    expect(internals.consecutivePrewarmFailures).toBe(0);
+    expect(
+      logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker half-open, allowing one probe')
+    ).toBe(true);
+  });
+
+  it('latches after a bounded number of consecutive failures instead of retrying forever (#4108)', async () => {
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+    const internals = mgr as unknown as {
+      lastConnectionFailureTimestamp: number;
+      prewarmBreakerOpenedAt: number;
+    };
+
+    // Force every cooldown to appear elapsed so each call becomes a half-open
+    // probe; the only thing that can stop the loop is the give-up cap (20).
+    for (let attempt = 0; attempt < 23; attempt += 1) {
+      internals.lastConnectionFailureTimestamp = 0;
+      internals.prewarmBreakerOpenedAt = 0;
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+
+    // Twenty spawns fail, then the breaker latches and no further uvx is spawned.
+    expect(prewarmSpawnCalls.length).toBe(20);
+    expect(
+      logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker latched, restart required')
+    ).toBe(true);
+    expect(mgr.getCrashState().prewarm).toEqual({ consecutiveFailures: 20, state: 'stopped' });
+  }, 30_000);
+
+  it('classifies a mid-handshake transport death as ChromaUnavailableError without error-tracking noise', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    // The MCP SDK throws a bare `Error: Not connected` when the subprocess dies
+    // between `initialize` and `notifications/initialized`.
+    connectImpl = async () => {
+      throw new Error('Not connected');
+    };
+
+    const failure = await mgr.callTool('chroma_list_collections', { limit: 1 }).catch(error => error);
+
+    expect(failure).toBeInstanceOf(ChromaUnavailableError);
+    expect((failure as Error).message).toContain('Not connected');
+    // Logged at warn, not error, so the transient failure never reaches the
+    // error sink (captureException).
+    expect(logEntries.some(entry => entry.level === 'error' && entry.message === 'Connection attempt failed')).toBe(false);
+    expect(logEntries.some(entry => entry.level === 'warn' && entry.message === 'Connection attempt failed; Chroma unavailable')).toBe(true);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+    });
   });
 
   it('captures a bounded chroma-mcp stderr tail on MCP connect failure', async () => {
@@ -882,6 +1248,114 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(1);
   });
 
+  it('replaces a null-token Chroma writer lock whose live PID now runs a different program', async () => {
+    // The lock was written without a start token (identity capture failed), and
+    // its PID now belongs to an unrelated program: PID reuse, common on Windows.
+    // Without the process-name check this wedged vector sync until manual cleanup.
+    const reused = process.platform === 'win32'
+      ? realChildProcess.spawn('cmd.exe', ['/c', 'ping -n 30 127.0.0.1 >NUL'], { stdio: 'ignore', windowsHide: true })
+      : realChildProcess.spawn('sleep', ['30'], { stdio: 'ignore' });
+    try {
+      mkdirSync(mockedChromaDir, { recursive: true });
+      writeFileSync(chromaWriterLockPath(), JSON.stringify({
+        pid: reused.pid,
+        ownerId: 'long-gone-worker-owner',
+        dataDir: mockedChromaDir,
+        acquiredAt: new Date().toISOString(),
+        startToken: null,
+      }, null, 2));
+      const mgr = ChromaMcpManager.getInstance();
+
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+      const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+      expect(lock.pid).toBe(process.pid);
+      expect(lock.ownerId).not.toBe('long-gone-worker-owner');
+      expect(transportInstances.length).toBe(1);
+    } finally {
+      reused.kill();
+    }
+  });
+
+  it('keeps a null-token Chroma writer lock whose live PID runs the writer runtime, regardless of timestamps', async () => {
+    // Same runtime as a writer -> cannot prove reuse -> keep the lock. A lock
+    // dated in the future (clock rollback) must not change that.
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaWriterLockPath(), JSON.stringify({
+      pid: process.pid,
+      ownerId: 'other-worker-owner',
+      dataDir: mockedChromaDir,
+      acquiredAt: new Date(Date.now() + 3_600_000).toISOString(),
+      startToken: null,
+    }, null, 2));
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+    expect(transportInstances.length).toBe(0);
+  });
+
+  it('keeps a legacy null-token lock (no processName) whose live PID runs another JS runtime', async () => {
+    // Older locks do not record the writer's runtime. A Node-owned lock checked
+    // from Bun (or the reverse) must not be mistaken for PID reuse.
+    const other = realChildProcess.spawn('node', ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore', windowsHide: true });
+    try {
+      mkdirSync(mockedChromaDir, { recursive: true });
+      writeFileSync(chromaWriterLockPath(), JSON.stringify({
+        pid: other.pid,
+        ownerId: 'node-worker-owner',
+        dataDir: mockedChromaDir,
+        acquiredAt: new Date().toISOString(),
+        startToken: null,
+      }, null, 2));
+      const mgr = ChromaMcpManager.getInstance();
+
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+      expect(transportInstances.length).toBe(0);
+    } finally {
+      other.kill();
+    }
+  });
+
+  it('allows a new manager instance in this process to re-acquire its writer lock', async () => {
+    const firstManager = ChromaMcpManager.getInstance();
+    await firstManager.callTool('chroma_list_collections', { limit: 1 });
+    const firstOwnerId = (firstManager as unknown as { chromaWriterOwnerId: string }).chromaWriterOwnerId;
+
+    await ChromaMcpManager.reset();
+    writeChromaWriterLock(process.pid, firstOwnerId);
+
+    const secondManager = ChromaMcpManager.getInstance();
+    await secondManager.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(2);
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+  });
+
+  it('replaces an unreadable Chroma writer lock once it is past the write grace period (#3916)', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaWriterLockPath(), '');
+    const stale = new Date(Date.now() - 60_000);
+    utimesSync(chromaWriterLockPath(), stale, stale);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
+    expect(transportInstances.length).toBe(1);
+  });
+
+  it('still refuses a freshly written unreadable Chroma writer lock', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaWriterLockPath(), '');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('is unreadable');
+
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+    expect(transportInstances.length).toBe(0);
+  });
+
   it('preserves remote mutation concurrency', async () => {
     mockedSettings = {
       CLAUDE_MEM_CHROMA_MODE: 'remote',
@@ -906,6 +1380,239 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     const connectLog = logEntries.find(entry => entry.message === 'Connecting to chroma-mcp via MCP stdio');
     expect(connectLog?.meta?.args).toContain('--client-type http');
     expect(connectLog?.meta?.args).not.toContain('--data-dir');
+  });
+});
+
+describe('ChromaMcpManager store record (refs #3012)', () => {
+  beforeEach(async () => {
+    await ChromaMcpManager.reset();
+    resetState();
+  });
+
+  it('[reproduction] Newer-epoch store record refuses the local writer', async () => {
+    // Seed a record stamped with epoch 2 (strictly above the shipped CHROMA_WRITER_EPOCH = 1).
+    // Record JSON: {"writerEpoch":2,"claudeMemVersion":"13.99.0",...}
+    writeChromaStoreRecord({ writerEpoch: 2, claudeMemVersion: '13.99.0', chromadbVersion: '1.6.0' });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+      .rejects.toThrow(/epoch 2.*epoch 1/);
+
+    expect(transportInstances.length).toBe(0);
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    const chromaStatus = getDependencyStatus('chroma');
+    expect(chromaStatus).not.toBeNull();
+    expect(chromaStatus?.dependency).toBe('chroma');
+    expect(chromaStatus?.kind).toBe('vector_search_unavailable');
+    // Message must name both epochs and the recorded writer identity.
+    expect(chromaStatus?.message ?? '').toContain('epoch 2');
+    expect(chromaStatus?.message ?? '').toContain('epoch 1');
+    expect(chromaStatus?.message ?? '').toContain('13.99.0');
+    // The engine that wrote the store is named too, so the refusal explains itself.
+    expect(chromaStatus?.message ?? '').toContain('chromadb 1.6.0');
+    // Remediation is attached separately; not concatenated into the message.
+    expect(chromaStatus?.message ?? '').not.toContain('Stop the other');
+  });
+
+  it('Equal-epoch store record connects and refreshes provenance', async () => {
+    const before = new Date(Date.now() - 1000).toISOString();
+    writeChromaStoreRecord({ writerEpoch: 1, updatedAt: before });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+    expect(record.updatedAt > before).toBe(true);
+  });
+
+  it('Missing store record on an existing installation connects and stamps', async () => {
+    expect(existsSync(chromaStoreRecordPath())).toBe(false);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Malformed store record fails open and is rewritten', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaStoreRecordPath(), 'not-json-{{{{');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
+    expect(warn).toBeDefined();
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Store record with non-integer writerEpoch fails open and is rewritten', async () => {
+    writeChromaStoreRecord({ writerEpoch: 'two' });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
+    expect(warn).toBeDefined();
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Oversized store record fails open without parsing', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaStoreRecordPath(), 'x'.repeat(65 * 1024));
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
+    expect(warn).toBeDefined();
+    expect(warn?.meta?.reason).toContain('exceeds');
+  });
+
+  it('Store record at a non-file path fails open (POSIX only)', async () => {
+    // FIFOs don't exist on Windows; statSync().isFile() is the guard being tested.
+    if (process.platform === 'win32') return;
+    mkdirSync(mockedChromaDir, { recursive: true });
+    realChildProcess.execSync(`mkfifo '${chromaStoreRecordPath()}'`);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
+    expect(warn).toBeDefined();
+    expect(warn?.meta?.reason).toContain('not a regular file');
+  });
+
+  it('Record write failure logs and continues without aborting the connection', async () => {
+    // Block the temp-file path so writeFileSync throws EISDIR.
+    mkdirSync(path.join(mockedChromaDir, '.claude-mem-chroma-store.json.tmp'), { recursive: true });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Failed to write Chroma store record; connecting anyway');
+    expect(warn).toBeDefined();
+  });
+
+  it('Older-epoch store record connects and upgrades the epoch', async () => {
+    writeChromaStoreRecord({ writerEpoch: 0 });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('A record from before the engine version was stamped fails open and gains it', async () => {
+    // Stamped by an earlier build of this guard: no chromadbVersion field.
+    writeChromaStoreRecord({ writerEpoch: 1 });
+    const seeded = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(seeded.chromadbVersion).toBeUndefined();
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+    expect(record.chromadbVersion).toBe('1.5.9');
+  });
+
+  it('Remote Chroma mode writes and reads no store record', async () => {
+    mockedSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(existsSync(chromaStoreRecordPath())).toBe(false);
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    const connectLog = logEntries.find(entry => entry.message === 'Connecting to chroma-mcp via MCP stdio');
+    expect(connectLog?.meta?.args).toContain('--client-type http');
+    expect(connectLog?.meta?.args).not.toContain('--data-dir');
+  });
+
+  it('Writer lock live-owner refusal unchanged', async () => {
+    writeChromaWriterLock(process.pid, 'other-worker-owner');
+    writeChromaStoreRecord({ writerEpoch: 1 });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+
+    expect(transportInstances.length).toBe(0);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+      message: expect.stringContaining('already owned by PID'),
+    });
+  });
+
+  it('Writer lock stale reap unchanged', async () => {
+    const stalePid = 999_998_312;
+    deadPids.add(stalePid);
+    writeChromaWriterLock(stalePid, 'dead-worker-owner');
+    // Seed a record with an old updatedAt so we can confirm the record was
+    // refreshed after the reap, not just left at the seeded value.
+    const staleUpdatedAt = new Date(Date.now() - 5000).toISOString();
+    writeChromaStoreRecord({ writerEpoch: 1, updatedAt: staleUpdatedAt });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
+    expect(lock.ownerId).not.toBe('dead-worker-owner');
+    expect(transportInstances.length).toBe(1);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+    // Confirm the record was actually written after the reap, not just left at the seed.
+    expect(record.updatedAt > staleUpdatedAt).toBe(true);
+  });
+
+  it('stop() releases the lock and preserves the store record', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+
+    await mgr.stop();
+
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Store record carries launcher provenance', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.chromaMcpVersion).toBe('0.2.6');
+    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9']);
+    // The engine version is read from the launcher pin, never kept separately.
+    expect(record.chromadbVersion).toBe('1.5.9');
+    expect(record.depOverrides).toContain(`chromadb==${record.chromadbVersion}`);
+    expect(record.clientType).toBe('persistent');
+    expect(typeof record.claudeMemVersion).toBe('string');
+    expect(record.claudeMemVersion.length).toBeGreaterThan(0);
   });
 });
 
