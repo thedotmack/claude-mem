@@ -30,6 +30,7 @@ const {
   shouldRetryWorkerBootProbe,
   buildWindowsDaemonStartCommand,
   daemonWorkingDirectory,
+  pinDaemonWorkingDirectory,
   resolveWorkerRuntimePath,
   captureProcessStartToken,
   verifyPidFileOwnership,
@@ -905,6 +906,30 @@ describe('ProcessManager', () => {
 
       expect(existsSync(dir)).toBe(true);
       expect(statSync(dir).isDirectory()).toBe(true);
+    });
+
+    // A daemon launched by hand (or by an older launcher) can inherit the
+    // user's project, a deleted directory, or an ACL-locked Store-app path;
+    // the daemon boot moves it into the data dir regardless of how it started.
+    it('pins a running daemon into the data directory by default', () => {
+      const moves: string[] = [];
+      expect(pinDaemonWorkingDirectory(undefined, (dir) => { moves.push(dir); })).toBe(DATA_DIR);
+      expect(moves).toEqual([DATA_DIR]);
+    });
+
+    it('falls back to the next candidate when a chdir is refused', () => {
+      const moves: string[] = [];
+      const chdir = (dir: string) => {
+        if (dir === '/locked') throw Object.assign(new Error('EPERM: operation not permitted, chdir'), { code: 'EPERM' });
+        moves.push(dir);
+      };
+      expect(pinDaemonWorkingDirectory([() => '/locked', () => '/home/me', () => '/tmp'], chdir)).toBe('/home/me');
+      expect(moves).toEqual(['/home/me']);
+    });
+
+    it('never throws when every candidate fails', () => {
+      const refuse = () => { throw new Error('EACCES'); };
+      expect(pinDaemonWorkingDirectory([() => '/a', () => { throw new Error('no home'); }], refuse)).toBeNull();
     });
   });
 

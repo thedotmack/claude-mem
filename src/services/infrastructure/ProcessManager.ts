@@ -1,6 +1,6 @@
 
 import path from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, realpathSync } from 'fs';
 import { execFileSync, execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
@@ -413,6 +413,36 @@ export function daemonWorkingDirectory(): string {
   // depend on. mkdir -p is idempotent, so the usual case costs one stat.
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * Move the running daemon into daemonWorkingDirectory(), whatever cwd it was
+ * launched with. The spawn sites already pass that cwd, but a manual
+ * `bun worker-service.cjs --daemon` from any shell (or an older launcher) can
+ * still hand the daemon the user's project, a deleted directory, or an
+ * ACL-locked one such as a Store app under WindowsApps. From an ACL-locked cwd,
+ * cross-spawn's post-spawn chdir back throws EPERM on every child spawn. Falls
+ * back to the home directory, then the OS temp directory. Never throws: a
+ * daemon that cannot move is no worse off than before.
+ *
+ * Returns the directory it moved to, or null when every candidate failed.
+ */
+export function pinDaemonWorkingDirectory(
+  candidates: ReadonlyArray<() => string> = [daemonWorkingDirectory, homedir, tmpdir],
+  chdir: (directory: string) => void = (directory) => process.chdir(directory)
+): string | null {
+  for (const candidate of candidates) {
+    try {
+      const directory = candidate();
+      if (!directory) continue;
+      chdir(directory);
+      return directory;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  logger.warn('SYSTEM', 'Could not move the worker daemon into its data, home or temp directory; keeping the inherited cwd');
+  return null;
 }
 
 export function buildWindowsDaemonStartCommand(
