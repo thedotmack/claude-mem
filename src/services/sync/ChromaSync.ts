@@ -1171,8 +1171,10 @@ export class ChromaSync {
     // project reports 'write_failures' rather than claiming it finished (#4264).
     const writeFailures = observations.writeFailures || summaries.writeFailures || prompts.writeFailures;
 
-    logger.info('CHROMA_SYNC', 'Smart backfill complete', {
+    logger.info('CHROMA_SYNC',
+      writeFailures ? 'Smart backfill finished with write failures' : 'Smart backfill complete', {
       project: backfillProject,
+      writeFailures,
       synced: {
         observationDocs: observations.writtenDocs,
         summaryDocs: summaries.writtenDocs,
