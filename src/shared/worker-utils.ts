@@ -1319,8 +1319,23 @@ export async function executeWithWorkerFallback<T = unknown>(
     return parsed as T;
   }
 
+  // #3161: a worker that dies mid-body rejects text() with a socket error that
+  // no transport pattern may match, and it would escape to hookCommand's
+  // catch-all. Treat it as the unreachable worker it is. The streak is reset
+  // only once the body has actually been read.
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Worker response body could not be read; treating the worker as unreachable', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (!boundedStartup) {
+      await recordWorkerUnreachable();
+    }
+    return { continue: true, reason: 'worker_body_read_failed', [WORKER_FALLBACK_BRAND]: true };
+  }
   await resetWorkerFailureCounter();
-  const text = await response.text();
   if (text.length === 0) return undefined as unknown as T;
   try {
     return JSON.parse(text) as T;
