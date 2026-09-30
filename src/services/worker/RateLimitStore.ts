@@ -79,6 +79,13 @@ const UNIFIED_WINDOWS: readonly RateLimitWindow[] = [
 
 export interface RateLimitEntry extends RateLimitInfo {
   observedAt: number;
+  /**
+   * Not part of the SDK payload: the Claude config-dir profile whose
+   * credentials produced the snapshot (resolveConfigDirProfileKey). Quota is
+   * per account, so a snapshot from one profile must not gate spawns billed to
+   * another after CLAUDE_MEM_CLAUDE_CONFIG_DIR changes. Absent = unscoped.
+   */
+  profile?: string;
 }
 
 export type RateLimitBucketKey = RateLimitWindow | 'default';
@@ -91,9 +98,9 @@ export class RateLimitStore {
   /**
    * Record a rate-limit info snapshot. Last-write-wins per bucket key.
    * Accepts both the literal `rate_limit_info` payload and a wrapping object;
-   * callers should pass the inner info.
+   * callers should pass the inner info, tagged with `profile` when known.
    */
-  set(info: RateLimitInfo | undefined | null): boolean {
+  set(info: Omit<RateLimitEntry, 'observedAt'> | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
     // The raw per-window map is consumed below. Storing it too would leave a
     // nested copy on the entry that goes stale on /api/health.
@@ -108,7 +115,12 @@ export class RateLimitStore {
     // reset-only snapshots preserve an unchanged active rejection.
     for (const [window, snapshot] of unified) {
       if (window === key) continue;
-      const previousWindow = this.entries.get(window);
+      // State carries forward only within one account: another account's
+      // reset time or rejection says nothing about this account's window.
+      const cachedWindow = this.entries.get(window);
+      const previousWindow = cachedWindow && !isOtherProfile(cachedWindow, info.profile)
+        ? cachedWindow
+        : undefined;
       // Carry the cached reset only while it is still ahead: an expired one
       // would make the guard skip this fresh reading as stale.
       const carriedResetsAt = isResetPending(previousWindow?.resetsAt, observedAt)
@@ -125,6 +137,8 @@ export class RateLimitStore {
         ...snapshot,
         resetsAt,
         ...(repeatsRejectedReset ? { status: 'rejected' as const } : {}),
+        // Siblings describe the same account as the event that carried them.
+        ...(info.profile !== undefined ? { profile: info.profile } : {}),
         observedAt,
       });
       const rejectedWindow = this.rejections.get(window);
@@ -316,6 +330,10 @@ const RESET_GRACE_UTILIZATION_FLOOR = 0.85;
  * Decide whether to abort SDK consumption based on the latest rate-limit
  * snapshot and the active auth method.
  *
+ * `profile` is the account the caller is billing. Snapshots tagged with a
+ * different profile are ignored: they describe another account's quota. When
+ * either side is untagged the snapshot applies, as before.
+ *
  * - `api_key` (or any string starting with "API key"): never abort —
  *   per-call billing means the user already authorized the spend.
  * - `cli` / OAuth / subscription: per-window utilization thresholds plus a
@@ -326,6 +344,7 @@ export function shouldAbortForQuota(
   authMethod: string,
   store: RateLimitStore,
   now: number = Date.now(),
+  profile?: string,
 ): { abort: boolean; reason?: string; window?: RateLimitWindow } {
   // API-key users authorized per-call spend; the wall-clock guard is for
   // subscription quota only.
@@ -345,6 +364,7 @@ export function shouldAbortForQuota(
   for (const window of windows) {
     const entry = store.get(window);
     if (!entry) continue;
+    if (isOtherProfile(entry, profile)) continue;
 
     // Ignore expired snapshots without removing them from the store so a
     // repeated stale rejection does not look new to set() telemetry.
@@ -403,6 +423,10 @@ export function shouldAbortForQuota(
   }
 
   return { abort: false };
+}
+
+function isOtherProfile(entry: RateLimitEntry, profile: string | undefined): boolean {
+  return profile !== undefined && entry.profile !== undefined && entry.profile !== profile;
 }
 
 /**
