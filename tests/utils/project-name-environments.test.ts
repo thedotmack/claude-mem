@@ -3,7 +3,7 @@
 // directories were stored under before stay readable.
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { getProjectContext, getProjectName } from '../../src/utils/project-name.js';
@@ -62,6 +62,34 @@ describe('#2737 — named environments', () => {
       expect(getProjectContext(docs).allProjects).toEqual(['docs']);
     } finally {
       process.env[ENVIRONMENTS_ENV] = JSON.stringify([{ name: 'acme', patterns: [`${tmp}/work/acme/**`] }]);
+    }
+  });
+
+  // Resolving a project name runs inside every hook, so it must never write
+  // files: with no settings.json yet, it reads the defaults instead of creating
+  // one (and announcing that on stderr).
+  it('never creates settings.json while resolving a project name', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'cm-2737-settings-'));
+    try {
+      const env: Record<string, string | undefined> = { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir };
+      delete env[ENVIRONMENTS_ENV];
+      delete env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
+      const result = Bun.spawnSync({
+        cmd: [process.execPath, '--eval', `
+          const { getProjectName, getProjectContext } = await import('./src/utils/project-name.ts');
+          if (getProjectName(${JSON.stringify(outside)}) !== 'play') throw new Error('unexpected name');
+          if (getProjectContext(${JSON.stringify(repo)}).primary !== 'api') throw new Error('unexpected context');
+        `],
+        cwd: process.cwd(),
+        env,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(new TextDecoder().decode(result.stderr)).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(join(dataDir, 'settings.json'))).toBe(false);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 

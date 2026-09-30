@@ -165,7 +165,13 @@ function settingsFileMtimeMs(): number {
 
 function readIdentitySettings(): SettingsDefaults {
   const mtimeMs = settingsFileMtimeMs();
-  if (identitySettingsCache && mtimeMs !== -1 && identitySettingsCache.mtimeMs === mtimeMs) {
+  if (mtimeMs === -1) {
+    // No settings file yet: the defaults. Resolving a project name runs inside
+    // every hook and must never write files, and loadFromFile creates a missing
+    // settings.json (announcing it on stderr). Callers read env overrides first.
+    return SettingsDefaultsManager.getAllDefaults();
+  }
+  if (identitySettingsCache && identitySettingsCache.mtimeMs === mtimeMs) {
     return identitySettingsCache.settings;
   }
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
