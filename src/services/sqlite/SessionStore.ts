@@ -15,6 +15,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
+import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
   upsertToolUse as upsertToolUseRow,
@@ -195,6 +196,9 @@ const SESSION_CATALOG_MAX_LIMIT = 1000;
 /** #3038 near-duplicate dedup tables/columns. v50–55 are taken on main (v53: sdk_sessions.cwd, #3525; v54: FTS trigger scoping, #3284; v55: NOCASE project indexes, #3536). */
 const DEDUP_SCHEMA_VERSION = 56;
 
+/** ACT-R reinforcement columns (v56 is the dedup tables above, v58 advisor_calls). */
+const REINFORCEMENT_SCHEMA_VERSION = 57;
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -250,6 +254,7 @@ export class SessionStore {
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
     this.addDedupTables();
+    this.ensureReinforcementColumns();
     this.ensureSessionCwdColumn();
     this.dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers();
     this.ensureProjectNocaseIndexes();
@@ -1945,6 +1950,27 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
   }
 
+  /**
+   * ACT-R reinforcement history for observations (opt-in ranking, see
+   * src/services/reinforcement):
+   *   - reinforcement_dates: JSON array of ISO `YYYY-MM-DD` days the
+   *     observation was (re-)confirmed, seeded with its creation day
+   *   - last_reinforced: the most recent of those days
+   * Device-local, like relevance_count. No backfill: a NULL history ranks on
+   * its creation time alone. The PRAGMA checks are the guard; the version row
+   * is bookkeeping, so a DB that already recorded it still gets the columns.
+   */
+  private ensureReinforcementColumns(): void {
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!columns.some(col => col.name === 'reinforcement_dates')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN reinforcement_dates TEXT');
+    }
+    if (!columns.some(col => col.name === 'last_reinforced')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_reinforced TEXT');
+    }
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(REINFORCEMENT_SCHEMA_VERSION, new Date().toISOString());
+  }
+
   // v54 — stop FTS5 shadow-index bloat at the source (plan-21, #2793).
   //
   // 1. observations_au / session_summaries_au become column-scoped (AFTER UPDATE OF the
@@ -3540,6 +3566,11 @@ export class SessionStore {
   } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+    const reinforcementSeed = seedReinforcement(timestampEpoch);
+    // Every re-confirmation of a stored row (an exact duplicate, or a Tier-0
+    // merge while dedup is on) records this day in its ACT-R history; same-day
+    // repeats and retries are no-ops.
+    const reconfirmedOn = new Date(timestampEpoch);
     const dedup = this.dedupConfig();
     // Context is platform-scoped, so Tier-0 must be too: a Codex observation
     // merged into a Claude row would vanish from Codex context.
@@ -3556,8 +3587,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata, title_norm_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata, title_norm_key, reinforcement_dates, last_reinforced)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -3582,11 +3613,17 @@ export class SessionStore {
           // Retry idempotency: identical (session, content_hash) redelivery returns
           // the existing row without bumping occurrence_count (same as ON CONFLICT).
           const retry = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
-          if (retry) { observationIds.push(retry.id); mergedIntoExisting.push(false); continue; }
+          if (retry) {
+            reinforceObservation(this.db, retry.id, reconfirmedOn);
+            observationIds.push(retry.id);
+            mergedIntoExisting.push(false);
+            continue;
+          }
 
           const canonical = findTier0Canonical(this.db, project, titleNormKey);
           if (canonical) {
             this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
+            reinforceObservation(this.db, canonical.id, reconfirmedOn);
             observationIds.push(canonical.id);
             mergedIntoExisting.push(true);
             continue;
@@ -3613,7 +3650,9 @@ export class SessionStore {
           timestampEpoch,
           generatedByModel || null,
           observation.metadata ?? null,
-          titleNormKey
+          titleNormKey,
+          reinforcementSeed.dates,
+          reinforcementSeed.lastReinforced
         ) as { id: number } | null;
 
         if (inserted) {
@@ -3629,6 +3668,9 @@ export class SessionStore {
             `storeObservations: ON CONFLICT without existing row for content_hash=${contentHash}`
           );
         }
+        // An exact duplicate re-confirms the stored observation instead of being
+        // dropped silently.
+        reinforceObservation(this.db, existing.id, reconfirmedOn);
         observationIds.push(existing.id);
         mergedIntoExisting.push(false);
       }
