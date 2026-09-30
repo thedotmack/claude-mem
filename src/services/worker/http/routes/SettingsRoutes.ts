@@ -37,6 +37,10 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_TV_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
+  // Brainbeat webhook: the shared secret, and the URL (it can carry userinfo
+  // or query tokens). Both are file/env only — never on the POST whitelist.
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
 ]);
 
 function maskSecretValue(value: unknown): unknown {

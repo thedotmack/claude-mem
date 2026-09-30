@@ -12,6 +12,7 @@ import {
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
+import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -663,6 +664,14 @@ export async function processAgentResponse(
     project: context.project,
     memorySessionId: session.memorySessionId,
     agentId: context.pendingAgentId,
+  });
+
+  // Optional brainbeat webhook (off unless CLAUDE_MEM_GROK_BOT_WEBHOOK_URL is set).
+  // Like the alerts above, only newly stored rows fire (a dedup merge re-confirms one that already did).
+  void notifyGrokBotBrainbeat({
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
+    project: context.project,
   });
 
   // Growing Grok Bot INDEX: any new observation (any project) can fill a

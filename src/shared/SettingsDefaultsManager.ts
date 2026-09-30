@@ -195,6 +195,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
+  CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: string;
+  CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: string;
   CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: string;
   CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_INJECT_TIER: string;
@@ -382,6 +384,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '521e962d-2ec3-4488-bfbc-54d5209ce118,95601360-61f7-4fd9-bb3a-2c976b2b85c0',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
+    // Optional brainbeat webhook: awareness-trigger matches are POSTed here
+    // (off while empty). File/env only; both are masked on GET /api/settings.
+    CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: '',
+    CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: '',
     // Live Grok Bot Memory INDEX. Worker writes zz-claude-mem-inject.md as
     // observations land. Default on; no-op when no Grok Bot seats exist.
     CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'true',
