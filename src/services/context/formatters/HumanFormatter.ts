@@ -47,15 +47,22 @@ export function renderHumanColumnKey(): string[] {
 }
 
 export function renderHumanContextIndex(fetchByIdSupported: boolean = true): string[] {
-  const drilldownLine = fetchByIdSupported
-    ? `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`
-    : `${colors.dim}  - Search: observation_search / mem-search skill (by-id fetch is not available in server-beta mode)${colors.reset}`;
+  // Server runtime: ids are UUIDs shown as 8-char display refs, and neither
+  // get_observations nor the mem-search skill's worker tools exist there; the
+  // server's own search tool covers both drill-down and history.
+  const drilldownLines = fetchByIdSupported
+    ? [
+        `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`,
+        `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
+      ]
+    : [
+        `${colors.dim}  - Search: observation_search by title or topic (short refs are display-only; server runtime has no fetch by ID)${colors.reset}`,
+      ];
   return [
     `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`,
     '',
     `${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`,
-    drilldownLine,
-    `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
+    ...drilldownLines,
     `${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`,
     ''
   ];
@@ -147,11 +154,12 @@ export function renderHumanFullObservation(
 
 export function renderHumanSummaryItem(
   summary: { id: number | string; request: string | null },
-  formattedTime: string
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
   return [
-    `${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`,
+    `${colors.yellow}#S${formatContextReferenceId(summary.id, config)}${colors.reset} ${summaryTitle}`,
     ''
   ];
 }

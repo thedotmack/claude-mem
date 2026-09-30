@@ -39,9 +39,9 @@ export interface ContextConfig {
 
   /**
    * Whether observation refs in the inject panel can be fetched by id.
-   * When false (server-beta / Postgres UUID mode), refs are abbreviated to an
-   * 8-char prefix (display-only) and the legend points to title/semantic search.
-   * Defaults to true (full id shown) when omitted — backward compatible.
+   * When false (server runtime, where ids are Postgres UUIDs), refs are
+   * abbreviated to an 8-char prefix (display-only) and the legend points to
+   * observation_search. Defaults to true (full id shown) when omitted.
    */
   fetchByIdSupported?: boolean;
 }

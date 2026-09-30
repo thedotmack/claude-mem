@@ -4,9 +4,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SHORT_UUID_LENGTH = 8;
 
 /**
- * Format an observation id for display in the injected context panel.
+ * Format an observation or summary id for display in the injected context panel.
  *
- * When by-id fetch is unsupported (server-beta / Postgres mode, where ids are
+ * When by-id fetch is unsupported (server runtime, where ids are Postgres
  * UUIDs and the inject ref is not a fetch handle), UUID ids are abbreviated to
  * their 8-char prefix to cut tokenizer cost — full UUIDs fragment badly and are
  * the worst case for the tokenizer. These short refs are display-only; lookups

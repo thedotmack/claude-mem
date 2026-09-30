@@ -29,9 +29,11 @@ export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] 
   const mode = ModeManager.getInstance().getActiveMode();
   const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
 
+  // Server runtime: ids are UUIDs shown as 8-char display refs, and there is no
+  // by-id fetch, so point at the server's search tool instead.
   const fetchLine = fetchByIdSupported
     ? `Fetch details: get_observations([IDs]) | Search: mem-search skill`
-    : `Fetch details: mem-search by title/context (short refs are display-only)`;
+    : `Fetch details: observation_search by title (short refs are display-only)`;
 
   return [
     `Legend: 🎯session ${typeLegendItems}`,
@@ -124,10 +126,11 @@ export function renderAgentFullObservation(
 
 export function renderAgentSummaryItem(
   summary: { id: number | string; request: string | null },
-  formattedTime: string
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   return [
-    `S${summary.id} ${summary.request || 'Session started'} (${formattedTime})`,
+    `S${formatContextReferenceId(summary.id, config)} ${summary.request || 'Session started'} (${formattedTime})`,
   ];
 }
 
@@ -150,11 +153,18 @@ export function renderAgentPreviouslySection(priorMessages: PriorMessages): stri
   ];
 }
 
-export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
+export function renderAgentFooter(
+  totalDiscoveryTokens: number,
+  totalReadTokens: number,
+  fetchByIdSupported: boolean = true
+): string[] {
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
+  const accessPath = fetchByIdSupported
+    ? 'get_observations([IDs]) or mem-search skill'
+    : 'observation_search';
   return [
     '',
-    `Access ${workTokensK}k tokens of past work via get_observations([IDs]) or mem-search skill.`
+    `Access ${workTokensK}k tokens of past work via ${accessPath}.`
   ];
 }
 

@@ -356,6 +356,15 @@ describe('AgentFormatter', () => {
 
       expect(joined).toContain('Session started');
     });
+
+    it('should abbreviate a server summary UUID when fetch-by-id is unsupported', () => {
+      const summary = { id: '3c4b2513-5048-45fa-95e0-e3222ae99671', request: 'Ship it' };
+
+      expect(renderAgentSummaryItem(summary, '10:00', { fetchByIdSupported: false })[0])
+        .toBe('S3c4b2513 Ship it (10:00)');
+      expect(renderAgentSummaryItem(summary, '10:00')[0])
+        .toBe('S3c4b2513-5048-45fa-95e0-e3222ae99671 Ship it (10:00)');
+    });
   });
 
   describe('renderAgentSummaryField', () => {
@@ -435,6 +444,14 @@ describe('AgentFormatter', () => {
       const joined = result.join('\n');
 
       expect(joined).toContain('16k');
+    });
+
+    it('should point at observation_search, not get_observations, when fetch-by-id is unsupported', () => {
+      const joined = renderAgentFooter(5000, 100, false).join('\n');
+
+      expect(joined).toContain('observation_search');
+      expect(joined).not.toContain('get_observations');
+      expect(joined).not.toContain('mem-search skill');
     });
   });
 
