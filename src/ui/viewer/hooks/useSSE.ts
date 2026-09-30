@@ -1,9 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
-import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Observation, Summary, UserPrompt, StreamEvent, FeedItemType } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+import { itemDeletedTarget } from '../utils/feed-deletion';
 
-export function useSSE() {
+/**
+ * @param onItemDeleted called for every `item_deleted` event (a row deleted in
+ * this tab or any other); the caller owns removal so there is one path for it.
+ */
+export function useSSE(onItemDeleted: (itemType: FeedItemType, id: number) => void) {
   const [observations, setObservations] = useState<Observation[]>([]);
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [prompts, setPrompts] = useState<UserPrompt[]>([]);
@@ -12,6 +17,18 @@ export function useSSE() {
   const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const onItemDeletedRef = useRef(onItemDeleted);
+  onItemDeletedRef.current = onItemDeleted;
+
+  const removeLiveItem = useCallback((itemType: FeedItemType, id: number) => {
+    if (itemType === 'observation') {
+      setObservations(prev => prev.filter(o => o.id !== id));
+    } else if (itemType === 'summary') {
+      setSummaries(prev => prev.filter(s => s.id !== id));
+    } else {
+      setPrompts(prev => prev.filter(p => p.id !== id));
+    }
+  }, []);
 
   const addProjectIfNew = (project: string) => {
     setProjects(prev => prev.includes(project) ? prev : [...prev, project]);
@@ -79,6 +96,12 @@ export function useSSE() {
             }
             break;
 
+          case 'item_deleted': {
+            const target = itemDeletedTarget(data);
+            if (target) onItemDeletedRef.current(target.itemType, target.id);
+            break;
+          }
+
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
               console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
@@ -108,6 +131,7 @@ export function useSSE() {
     prompts,
     projects,
     isProcessing,
-    queueDepth
+    queueDepth,
+    removeLiveItem
   };
 }

@@ -11,6 +11,8 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import type * as SqliteFilesModule from '../sqlite/observations/files.js';
 
@@ -136,6 +138,13 @@ function shutdownBegan(): boolean {
   return !ChromaMcpManager.getInstance().acceptsMutations();
 }
 
+// The embedding functions the pinned chroma-mcp (0.2.6) knows. It resolves the
+// name before checking whether the collection exists, so any other value would
+// fail every chroma_create_collection call, and with it every write.
+const CHROMA_MCP_EMBEDDING_FUNCTIONS: ReadonlySet<string> = new Set([
+  'default', 'openai', 'cohere', 'jina', 'voyageai', 'roboflow',
+]);
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
@@ -176,9 +185,19 @@ export class ChromaSync {
 
   private async createCollection(): Promise<void> {
     const chromaMcp = ChromaMcpManager.getInstance();
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const embeddingFunction =
+      settings.CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION || 'default';
+    if (!CHROMA_MCP_EMBEDDING_FUNCTIONS.has(embeddingFunction)) {
+      throw new Error(
+        `CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION="${embeddingFunction}" is not an embedding function chroma-mcp supports ` +
+        `(${[...CHROMA_MCP_EMBEDDING_FUNCTIONS].join(', ')})`
+      );
+    }
     try {
       await chromaMcp.callTool('chroma_create_collection', {
-        collection_name: this.collectionName
+        collection_name: this.collectionName,
+        embedding_function_name: embeddingFunction
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -348,6 +367,28 @@ export class ChromaSync {
       return 0;
     }
 
+    // SQLite FTS5's trigram tokenizer accepts NUL-containing TEXT but builds
+    // an index that subsequently fails PRAGMA quick_check / integrity_check as
+    // "malformed inverted index". Codex transcripts can legitimately contain
+    // NUL bytes copied from terminal or binary output, so sanitize at the last
+    // common boundary before every Chroma add/update path. U+FFFD preserves a
+    // visible boundary without making unrelated text run together.
+    let nulSanitizedDocuments = 0;
+    const safeDocuments = documents.map(document => {
+      if (!document.document.includes('\0')) return document;
+      nulSanitizedDocuments += 1;
+      return {
+        ...document,
+        document: document.document.replaceAll('\0', '�'),
+      };
+    });
+    if (nulSanitizedDocuments > 0) {
+      logger.warn('CHROMA_SYNC', 'Sanitized NUL bytes before Chroma FTS indexing', {
+        collection: this.collectionName,
+        documents: nulSanitizedDocuments,
+      });
+    }
+
     try {
       await this.ensureCollectionExists();
     } catch (error) {
@@ -370,8 +411,8 @@ export class ChromaSync {
     const chromaMcp = ChromaMcpManager.getInstance();
 
     let written = 0;
-    for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
-      const batch = documents.slice(i, i + this.BATCH_SIZE);
+    for (let i = 0; i < safeDocuments.length; i += this.BATCH_SIZE) {
+      const batch = safeDocuments.slice(i, i + this.BATCH_SIZE);
 
       const cleanMetadatas = batch.map(d =>
         Object.fromEntries(
