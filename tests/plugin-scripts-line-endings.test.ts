@@ -9,6 +9,8 @@ const SHEBANG_SCRIPTS = [
   'worker-service.cjs',
   'context-generator.cjs',
   'bun-runner.js',
+  'cmem-build-hook.cjs',
+  'cmem-build-hook.cmd',
 ];
 
 describe('plugin/scripts line endings (#1342)', () => {

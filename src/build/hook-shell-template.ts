@@ -42,6 +42,12 @@ export interface ShellTemplateOptions {
   extraEnv?: Record<string, string>;
   /** Optional trailing JSON echoed after the command (e.g. SessionStart continue marker). */
   trailingJson?: object;
+  /**
+   * Raw existence test substituted for the requireFile check. The Claude
+   * dispatch launcher uses this so `$1 = version-check` accepts
+   * version-check.js and every other event accepts the worker pair.
+   */
+  existsClause?: string;
   /** stderr message when no candidate root resolves. */
   notFoundMessage: string;
   /** Runtime hooks that observe memory should degrade to no-memory, not block the host prompt. */
@@ -86,6 +92,7 @@ function pathPrelude(host: ShellTemplateHost): string {
 }
 
 function fileExistsClause(options: ShellTemplateOptions): string {
+  if (options.existsClause) return options.existsClause;
   const primary = `[ -f "$_Q/scripts/${options.requireFile}" ]`;
   if (options.requireFileSecondary) {
     return `${primary} && [ -f "$_Q/scripts/${options.requireFileSecondary}" ]`;
@@ -342,4 +349,68 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push(command);
 
   return parts.join(' ');
+}
+
+/**
+ * POSIX body of plugin/scripts/cmem-build-hook.cmd.
+ *
+ * Claude Code runs hooks with `shell: bash` and a stripped PATH (#3190), so
+ * this keeps the NVM/Homebrew prelude and the cache fallback (#1215, #1533).
+ * Grok Build on Windows ignores `shell` and `commandWindows` and runs the
+ * command in PowerShell, which cannot parse this body. The .cmd file puts
+ * this body on a cmd label line (`:; ...`) and a `node cmem-build-hook.cjs`
+ * fallback under that, so PowerShell executes the cmd half while bash
+ * executes this half. Commit the .cmd as mode 100755: macOS has no .cmd
+ * association, so bash's ENOEXEC fallback only re-reads an executable file.
+ *
+ * `$1 = version-check` stays fail-loud. Every other argument list is the
+ * worker invocation (`start`, or `hook claude-code <event>`) and fails open.
+ */
+const CLAUDE_DISPATCH_EXISTS =
+  '{ if [ "$1" = "version-check" ]; then [ -f "$_Q/scripts/version-check.js" ]; ' +
+  'else [ -f "$_Q/scripts/bun-runner.js" ] && [ -f "$_Q/scripts/worker-service.cjs" ]; fi; }';
+
+export function buildClaudeDispatchShell(): string {
+  const options: ShellTemplateOptions = {
+    host: 'claude-code',
+    requireFile: 'bun-runner.js',
+    requireFileSecondary: 'worker-service.cjs',
+    existsClause: CLAUDE_DISPATCH_EXISTS,
+    notFoundMessage: 'claude-mem: plugin scripts not found',
+  };
+  const parts = [
+    pathPrelude('claude-code'),
+    '_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";',
+    '_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";',
+    candidateBlock(options),
+    '[ -n "$_P" ] || { echo "claude-mem: plugin scripts not found" >&2; if [ "$1" = "version-check" ]; then exit 1; fi; exit 0; };',
+    CYGPATH_CLAUSE,
+    'if [ "$1" = "version-check" ]; then node "$_P/scripts/version-check.js"; exit $?; fi;',
+    '{ node "$_P/scripts/bun-runner.js" "$_P/scripts/worker-service.cjs" "$@"; } || { _S=$?; echo "claude-mem: hook command failed (exit $_S)" >&2; exit 0; }',
+  ];
+  return parts.join(' ');
+}
+
+/** Hook `command` value. The .cmd file is the PowerShell/cmd entry; bash re-enters the dispatch shell. */
+export function buildClaudeHookInvocation(args: string): string {
+  return `"\${CLAUDE_PLUGIN_ROOT}/scripts/cmem-build-hook.cmd" ${args}`;
+}
+
+export function buildClaudePolyglotCmd(): string {
+  return [
+    `:; ${buildClaudeDispatchShell()}; exit $?`,
+    '@echo off',
+    'setlocal EnableExtensions',
+    'where bash >nul 2>&1',
+    'if errorlevel 1 goto node',
+    'bash "%~f0" %*',
+    'exit /b %ERRORLEVEL%',
+    ':node',
+    'node "%~dp0cmem-build-hook.cjs" %*',
+    'set "EC=%ERRORLEVEL%"',
+    'if "%~1"=="version-check" exit /b %EC%',
+    'if not "%EC%"=="0" exit /b 0',
+    'exit /b 0',
+    '',
+  ].join('\n');
 }

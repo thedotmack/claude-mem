@@ -200,6 +200,8 @@ Cursor uses hooks (`npx claude-mem hook cursor …`) and `platformSource=cursor`
 
 The Grok **Build** CLI marketplace (`xai-org/plugin-marketplace`) is a different catalog. This page is Grok Bot only.
 
+Grok Build loads the Claude plugin's `hooks/hooks.json` (this plugin's skills and `mcp-search` stay on that host). It runs hook commands in PowerShell on Windows, and it does not read Claude's `shell: bash` or Codex's `commandWindows`. The Claude hook command is therefore `plugin/scripts/cmem-build-hook.cmd`: PowerShell runs the cmd half, and Claude Code's bash runs the POSIX half (NVM/Homebrew PATH prelude included). Both hosts set `CLAUDE_PLUGIN_ROOT` for plugin hooks, which is how that short command finds the file. The cache and marketplace fallbacks live inside the launcher, so they apply only after the file has started. The claude-code adapter also accepts Grok Build's camelCase payload (`toolName`, `toolResult`, `lastAssistantMessage`, `target_file`). Grok Build does not inject SessionStart or UserPromptSubmit stdout into the model; capture still runs.
+
 ## Next steps
 
 - [CMEM Pro (manual / headless)](/cmem-pro-headless) — default observer settings
