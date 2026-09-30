@@ -50,12 +50,12 @@ describe('dedup schema migration (#3038)', () => {
     );
   });
 
-  it('starts candidates empty and records schema version 54 (v36 belongs to the community-edge line; v53 is sdk_sessions.cwd)', () => {
+  it('starts candidates empty and records schema version 55 (v36 belongs to the community-edge line; v53/v54 are sdk_sessions.cwd and FTS trigger scoping)', () => {
     expect((store.db.query('SELECT COUNT(*) c FROM observation_dedup_candidates').get() as { c: number }).c).toBe(0);
-    expect(!!store.db.query('SELECT version FROM schema_versions WHERE version = 54').get()).toBe(true);
+    expect(!!store.db.query('SELECT version FROM schema_versions WHERE version = 55').get()).toBe(true);
   });
 
-  it('still adds the dedup columns to a DB that already recorded v54 without them', () => {
+  it('still adds the dedup columns to a DB that already recorded v55 without them', () => {
     const db = store.db;
     db.run('DROP INDEX IF EXISTS idx_observations_title_norm');
     db.run('ALTER TABLE observations DROP COLUMN title_norm_key');
