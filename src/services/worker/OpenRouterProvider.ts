@@ -1,6 +1,6 @@
 
 import { getCredential } from '../../shared/EnvManager.js';
-import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -65,6 +65,27 @@ function parseUpstreamErrorEnvelope(bodyText: string): UpstreamErrorEnvelope | n
   }
   return null;
 }
+
+/**
+ * OpenRouter's answers when the configured model id itself is gone: a retired
+ * model (404 "This model has been deprecated. It is recommended to migrate to
+ * …", #3659), an id that is not in the catalog (400 "… is not a valid model
+ * ID"), or one with no serving endpoint left (404 "No endpoints found for
+ * <id>."). Retrying never helps, and the generic "check the API key, spend
+ * limit and base URL" remedy points at the wrong setting, so these get their
+ * own code and remedy. Phrases only count on a 400/404 or an error envelope
+ * inside a 200; any other 400/404 stays a plain bad request.
+ */
+const MODEL_UNAVAILABLE_MARKERS = [
+  'model has been deprecated',
+  'not a valid model id',
+  'no endpoints found for',
+];
+
+const MODEL_UNAVAILABLE_ACTION =
+  'Set CLAUDE_MEM_OPENROUTER_MODEL in ~/.claude-mem/settings.json to a model your endpoint still serves (on OpenRouter, one from the model list).';
+
+const OPENROUTER_MODEL_LIST_URL = 'https://openrouter.ai/models';
 
 /**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
@@ -147,6 +168,23 @@ export function classifyOpenRouterError(input: {
     );
   }
 
+  if (
+    (status === 400 || status === 404 || (status === 200 && envelope !== null))
+    && MODEL_UNAVAILABLE_MARKERS.some(marker => lower.includes(marker))
+  ) {
+    return new ClassifiedProviderError(
+      describe('model unavailable'),
+      {
+        kind: 'unrecoverable',
+        cause: input.cause,
+        code: 'model_unavailable',
+        action: MODEL_UNAVAILABLE_ACTION,
+        url: OPENROUTER_MODEL_LIST_URL,
+        ...detail,
+      },
+    );
+  }
+
   if (status === 400 || status === 404) {
     return new ClassifiedProviderError(
       describe('bad request'),
@@ -189,8 +227,10 @@ interface OpenRouterResponse {
   choices?: Array<{
     message?: {
       role?: string;
-      content?: string;
+      content?: string | Array<{ type: string; text?: string }> | null;
       reasoning_content?: string;
+      reasoning?: string | null;
+      tool_calls?: unknown[];
     };
     finish_reason?: string;
   }>;
@@ -224,6 +264,8 @@ export interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  /** Per-call output mode for the wrap-up; never a persisted setting. */
+  plainText?: boolean;
 }
 
 function hasProcessEnvOverride(key: string): boolean {
@@ -264,22 +306,6 @@ export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fa
 }
 
 /**
- * True only when the URL hostname is exactly `openrouter.ai`.
- *
- * Path text and lookalike hosts must not inherit OpenRouter-only body fields
- * (`models`, `usage`) — strict OpenAI-compatible gateways 400 on those.
- * Malformed URLs fail closed (treat as non-OpenRouter). Shared by the request
- * body and `session.endpointClass` so the two sites cannot drift.
- */
-export function isOpenRouterApiUrl(apiUrl: string): boolean {
-  try {
-    return new URL(apiUrl).hostname.toLowerCase() === 'openrouter.ai';
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Build the chat-completions request body.
  *
  * Exported so the body shape is testable without a network round trip, which
@@ -298,6 +324,7 @@ export function buildOpenRouterRequestBody(input: {
   fallbackModels: string[];
   messages: OpenAIMessage[];
   apiUrl: string;
+  plainText?: boolean;
 }): Record<string, unknown> {
   const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
@@ -308,6 +335,13 @@ export function buildOpenRouterRequestBody(input: {
     messages: input.messages,
     temperature: 0.3,  // Lower temperature for structured extraction
     max_tokens: 4096,
+    // Keep the same model, but ask for an answer instead of spending this
+    // short rewrite's budget on reasoning. Only known OpenRouter endpoints
+    // accept the vendor-specific reasoning control (cmem forwards it).
+    ...(input.plainText && (isOpenRouter || isCmemGatewayUrl(input.apiUrl)) ? {
+      response_format: { type: 'text' },
+      reasoning: { enabled: false },
+    } : {}),
     // Ask openrouter.ai for usage accounting (token counts + cost).
     // Only sent to openrouter.ai — strict custom gateways may reject
     // unknown body fields.
@@ -468,7 +502,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName, signal);
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName, signal, config.plainText);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -481,9 +515,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     siteUrl: string | undefined,
     appName: string | undefined,
     priorRequestId: string | null,
-    attemptSignal: AbortSignal
+    attemptSignal: AbortSignal,
+    plainText?: boolean,
   ): Promise<Response> {
-    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl });
+    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText });
     const maxOutputTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 4096;
     return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
@@ -505,7 +540,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiUrl: string,
     siteUrl?: string,
     appName?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    plainText?: boolean,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -522,7 +558,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, plainText);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
@@ -569,12 +605,32 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
     const choice = data.choices?.[0];
     const message = choice?.message;
-    if (!message || typeof message.content !== 'string') {
+    // OpenAI-compatible gateways may represent assistant text as content
+    // blocks. Never substitute reasoning or tool arguments for the answer.
+    const content = typeof message?.content === 'string'
+      ? message.content
+      : Array.isArray(message?.content)
+        ? message.content.filter(part => part?.type === 'text' && typeof part.text === 'string')
+          .map(part => part.text).join('\n')
+        : '';
+    if (plainText && !content.trim()) {
+      const error = new Error('OpenRouter returned no assistant text for the Telegram wrap-up');
+      logger.error('TELEGRAM', error.message, {
+        model: data.model ?? model,
+        requestId: priorRequestId,
+        finishReason: choice?.finish_reason,
+        contentType: Array.isArray(message?.content) ? 'array' : typeof message?.content,
+        hasReasoningContent: Boolean(message?.reasoning_content || message?.reasoning),
+        toolCalls: message?.tool_calls?.length ?? 0,
+        completionTokens: data.usage?.completion_tokens,
+      }, error);
+      throw error;
+    }
+    if (!message || (typeof message.content !== 'string' && !content)) {
       logger.error('SDK', 'Empty response from OpenRouter');
       return { content: '' };
     }
 
-    const content = message.content;
     if (content.length === 0) {
       logger.debug('SDK', 'OpenRouter returned an empty message', {
         finishReason: choice.finish_reason,

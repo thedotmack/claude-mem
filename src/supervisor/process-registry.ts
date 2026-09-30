@@ -1,15 +1,16 @@
 import { ChildProcess, spawnSync } from 'child_process';
 import { spawnHidden } from '../shared/spawn.js';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
+import { writeJsonFileAtomic } from '../shared/atomic-json.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
-import { captureProcessStartToken, isSameProcess } from '../shared/process-identity.js';
-export { captureProcessStartToken, isSameProcess };
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName } from '../shared/process-identity.js';
+export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName };
 import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
@@ -31,6 +32,21 @@ export interface ManagedProcessRecord extends ManagedProcessInfo {
 
 interface PersistedRegistry {
   processes: Record<string, ManagedProcessInfo>;
+}
+
+/**
+ * Optional reporter for a supervisor-registry persist failure. process-registry
+ * lives under src/supervisor/, which must not import src/services/ (telemetry) —
+ * so, exactly like logger.setErrorSink, the worker injects a reporter at startup
+ * that forwards to captureEvent. Absent (tests, CLI, telemetry off) it is a
+ * no-op, so a persist failure still degrades cleanly without telemetry.
+ */
+export type RegistryDegradedReporter = (info: { errorCategory: string }) => void;
+let degradedReporter: RegistryDegradedReporter | null = null;
+
+/** Installs (or clears, with null) the persist-failure reporter. Never throws. */
+export function setRegistryDegradedReporter(reporter: RegistryDegradedReporter | null): void {
+  degradedReporter = reporter;
 }
 
 export function isPidAlive(pid: number): boolean {
@@ -96,6 +112,7 @@ export class ProcessRegistry {
   private readonly entries = new Map<string, ManagedProcessInfo>();
   private readonly runtimeProcesses = new Map<string, ChildProcess>();
   private initialized = false;
+  private persistDegraded = false;
 
   constructor(registryPath: string = DEFAULT_REGISTRY_PATH) {
     this.registryPath = registryPath;
@@ -105,7 +122,9 @@ export class ProcessRegistry {
     if (this.initialized) return;
     this.initialized = true;
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
+    // No mkdir here: persist() writes through writeJsonFileAtomic, which
+    // creates the parent directory itself and — unlike a bare mkdirSync — never
+    // propagates an EACCES/EROFS out of initialize() into worker/session start.
 
     if (!existsSync(this.registryPath)) {
       this.persist();
@@ -139,8 +158,50 @@ export class ProcessRegistry {
     this.persist();
   }
 
+  /**
+   * Keep a still-running process that is about to lose its registry id.
+   *
+   * Ids are caller-supplied and some are fixed for the life of the product —
+   * chroma always registers under `chroma-mcp` — so a new generation's
+   * `register()` replaced the previous generation's record while that
+   * process was still running. Nothing signals a pid that is not in the map:
+   * `runShutdownCascade` walks `getAll()` and `pruneDeadEntries` only visits
+   * entries, so the process went unreachable by every reaper at once. That is
+   * the cross-generation orphan of #3301.
+   *
+   * It is re-keyed rather than killed here. `register()` is synchronous and
+   * `killProcessTree()` is not, and a setter is the wrong place to start a
+   * kill nobody awaits. Under an id of its own the process stays visible to
+   * the reapers that already exist: shutdown verifies identity with
+   * `isSameProcess` before it signals anything, and `pruneDeadEntries` drops
+   * the record as soon as it exits.
+   */
+  private retainSupersededEntry(id: string, incomingPid: number): void {
+    const superseded = this.entries.get(id);
+    if (!superseded || superseded.pid === incomingPid || !isPidAlive(superseded.pid)) return;
+
+    // Keyed by pid, so re-registering over the same survivor twice records it
+    // once rather than growing the registry.
+    const supersededId = `${id}#superseded:${superseded.pid}`;
+    this.entries.set(supersededId, superseded);
+
+    const runtimeRef = this.runtimeProcesses.get(id);
+    if (runtimeRef) {
+      this.runtimeProcesses.set(supersededId, runtimeRef);
+      this.runtimeProcesses.delete(id);
+    }
+
+    logger.warn('SYSTEM', 'Registry id reused while the previous process was still alive; kept it for reaping', {
+      id,
+      supersededId,
+      supersededPid: superseded.pid,
+      incomingPid,
+    });
+  }
+
   register(id: string, processInfo: ManagedProcessInfo, processRef?: ChildProcess): void {
     this.initialize();
+    this.retainSupersededEntry(id, processInfo.pid);
     this.entries.set(id, processInfo);
     if (processRef) {
       this.runtimeProcesses.set(id, processRef);
@@ -339,8 +400,38 @@ export class ProcessRegistry {
       processes: Object.fromEntries(this.entries.entries())
     };
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
-    writeFileSync(this.registryPath, JSON.stringify(payload, null, 2));
+    try {
+      writeJsonFileAtomic(this.registryPath, payload);
+      this.persistDegraded = false;
+    } catch (error: unknown) {
+      // An unwritable data directory (EACCES/EROFS/ENOSPC) must degrade, not
+      // crash. this.entries stays the source of truth in memory, so the worker
+      // still starts and the 30s health-check timer keeps pruning. Before this
+      // guard the throw propagated out of persist() into worker/session start
+      // and, every 30s, out of the health-check timer callback.
+      this.reportPersistFailure(error);
+    }
+  }
+
+  private reportPersistFailure(error: unknown): void {
+    // Log and report only on the transition INTO a degraded episode. A
+    // persistent permission failure is hit by every register/unregister/reap
+    // and by the 30s health-check timer, so logging (and rebuilding an Error
+    // for the stack) on each one would storm the warn log while only the first
+    // occurrence is worth surfacing. Reset again on the next successful persist.
+    if (this.persistDegraded) return;
+    this.persistDegraded = true;
+
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to persist supervisor registry; keeping it in memory', {
+      path: this.registryPath,
+    }, err);
+    try {
+      degradedReporter?.({ errorCategory: (err as NodeJS.ErrnoException).code ?? 'unknown' });
+    } catch {
+      // Reporting is best-effort: never let it turn a degraded-but-running
+      // supervisor back into a crash.
+    }
   }
 }
 

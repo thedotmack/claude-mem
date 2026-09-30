@@ -102,6 +102,7 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: true,
+    mainAgentOnly: true,
     ...overrides,
   };
 }

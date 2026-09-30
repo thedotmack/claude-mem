@@ -9,28 +9,24 @@
  *
  *   {
  *     status: "allowed" | "allowed_warning" | "rejected",
- *     resetsAt?: number,                              // epoch ms or s
+ *     resetsAt?: number,                              // epoch ms
  *     rateLimitType?: "five_hour" | "seven_day"
  *                   | "seven_day_opus" | "seven_day_sonnet"
- *                   | "overage",
+ *                   | "seven_day_overage_included" | "overage",
  *     utilization?: number,                           // 0..1
  *     overageStatus?: "allowed" | "allowed_warning" | "rejected",
  *     overageResetsAt?: number,
  *     isUsingOverage?: boolean,
  *     surpassedThreshold?: number,
- *     unifiedWindows?: {                              // every window's live
- *       five_hour?: { utilization?, resetsAt? },       // reading, not just the
- *       seven_day?: { utilization?, resetsAt? },       // binding one
+ *     unifiedWindows?: {                              // not in sdk.d.ts
+ *       [window]: { utilization?: number, resetsAt?: number },
  *     },
  *   }
  *
- * A single event is keyed by its binding `rateLimitType` (almost always
- * `five_hour`), but `unifiedWindows` carries the current reading of every
- * window. set() fans that out to the per-window buckets so a window that is
- * never the binding one still gets refreshed — otherwise a stale reading
- * (e.g. seven_day at 98% from before an account switch) would sit in the
- * store for the life of the process and trip the quota guard on every
- * request. get() additionally drops snapshots whose `resetsAt` has passed.
+ * `rateLimitType` names only the binding window. The CLI reports every other
+ * window's live figure in `unifiedWindows`, so set() refreshes those buckets
+ * too; otherwise a window that stops being the binding one keeps its last
+ * snapshot until the worker restarts (#4076).
  *
  * Pattern adapted from meridian's proxy/rateLimitStore.ts (last-write-wins
  * per `rateLimitType` bucket, in-memory only). State resets on worker
@@ -46,6 +42,12 @@ export type RateLimitWindow =
   | 'seven_day'
   | 'seven_day_opus'
   | 'seven_day_sonnet'
+  /**
+   * Weekly window for the premium model bucket, counted with overage
+   * included. Claude Code reports it only for accounts whose responses carry
+   * that window, both as a `rateLimitType` and in `unifiedWindows`.
+   */
+  | 'seven_day_overage_included'
   | 'overage';
 
 export interface RateLimitInfo {
@@ -57,14 +59,23 @@ export interface RateLimitInfo {
   overageResetsAt?: number;
   isUsingOverage?: boolean;
   surpassedThreshold?: number;
-  unifiedWindows?: Partial<Record<RateLimitWindow, UnifiedWindowInfo>>;
+  unifiedWindows?: Partial<Record<RateLimitWindow, UnifiedWindowSnapshot>>;
 }
 
-export interface UnifiedWindowInfo {
-  status?: 'allowed' | 'allowed_warning' | 'rejected';
+export interface UnifiedWindowSnapshot {
   utilization?: number;
   resetsAt?: number;
 }
+
+// `overage` is left out: its guard also depends on isUsingOverage and
+// overageStatus, which a unified snapshot does not carry.
+const UNIFIED_WINDOWS: readonly RateLimitWindow[] = [
+  'five_hour',
+  'seven_day',
+  'seven_day_opus',
+  'seven_day_sonnet',
+  'seven_day_overage_included',
+];
 
 export interface RateLimitEntry extends RateLimitInfo {
   observedAt: number;
@@ -74,6 +85,8 @@ export type RateLimitBucketKey = RateLimitWindow | 'default';
 
 export class RateLimitStore {
   private entries = new Map<RateLimitBucketKey, RateLimitEntry>();
+  // Telemetry deduplication survives display-only unified-window refreshes.
+  private rejections = new Map<RateLimitBucketKey, RateLimitInfo>();
 
   /**
    * Record a rate-limit info snapshot. Last-write-wins per bucket key.
@@ -82,57 +95,79 @@ export class RateLimitStore {
    */
   set(info: RateLimitInfo | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
+    // The raw per-window map is consumed below. Storing it too would leave a
+    // nested copy on the entry that goes stale on /api/health.
+    const { unifiedWindows, ...reported } = info;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
-    const previous = this.entries.get(key);
+    const previousRejection = this.rejections.get(key);
     const observedAt = Date.now();
-    const unified = isRecord(info.unifiedWindows) ? info.unifiedWindows : undefined;
+    const unified = readUnifiedWindows(unifiedWindows);
 
-    // The binding window's own payload may omit utilization; the same
-    // event's unifiedWindows entry for that window carries it.
-    const own = unified && key !== 'default' ? unified[key] : undefined;
-    const utilization =
-      typeof info.utilization === 'number'
-        ? info.utilization
-        : isRecord(own) && typeof own.utilization === 'number'
-          ? own.utilization
-          : undefined;
-    this.entries.set(key, {
-      ...info,
-      ...(utilization !== undefined ? { utilization } : {}),
-      observedAt,
-    });
-
-    // Refresh every other window the provider reported in this event. These
-    // readings are as current as the binding one, so they replace whatever
-    // the store held for those windows — including a `rejected` snapshot
-    // left over from a different account or an already-reset window.
-    if (unified) {
-      for (const [window, reading] of Object.entries(unified)) {
-        if (window === key || !isRecord(reading)) continue;
-        this.entries.set(window as RateLimitWindow, {
-          rateLimitType: window as RateLimitWindow,
-          ...(isRateLimitStatus(reading.status) ? { status: reading.status } : {}),
-          ...(typeof reading.utilization === 'number' ? { utilization: reading.utilization } : {}),
-          ...(typeof reading.resetsAt === 'number' ? { resetsAt: reading.resetsAt } : {}),
-          observedAt,
-        });
+    // Other windows: refresh fields the unified snapshot actually reports.
+    // Utilization establishes a new display state and drops stale status;
+    // reset-only snapshots preserve an unchanged active rejection.
+    for (const [window, snapshot] of unified) {
+      if (window === key) continue;
+      const previousWindow = this.entries.get(window);
+      // Carry the cached reset only while it is still ahead: an expired one
+      // would make the guard skip this fresh reading as stale.
+      const carriedResetsAt = isResetPending(previousWindow?.resetsAt, observedAt)
+        ? previousWindow?.resetsAt
+        : undefined;
+      const resetsAt = snapshot.resetsAt ?? carriedResetsAt;
+      const repeatsRejectedReset =
+        snapshot.utilization === undefined &&
+        previousWindow?.status === 'rejected' &&
+        sameResetTime(resetsAt, previousWindow.resetsAt) &&
+        isResetPending(resetsAt, observedAt);
+      this.entries.set(window, {
+        rateLimitType: window,
+        ...snapshot,
+        resetsAt,
+        ...(repeatsRejectedReset ? { status: 'rejected' as const } : {}),
+        observedAt,
+      });
+      const rejectedWindow = this.rejections.get(window);
+      if (
+        rejectedWindow &&
+        snapshot.resetsAt !== undefined &&
+        !sameResetTime(snapshot.resetsAt, rejectedWindow.resetsAt)
+      ) {
+        this.rejections.delete(window);
       }
     }
 
-    return isNewRejection(previous, info);
+    const own = info.rateLimitType ? unified.get(info.rateLimitType) : undefined;
+    const merged: RateLimitEntry = {
+      ...reported,
+      utilization: info.utilization ?? own?.utilization,
+      // Stored in epoch ms whatever unit the event used, so the rejection
+      // de-dupe below and /api/health compare like with like.
+      resetsAt: normalizeResetTimeMs(info.resetsAt) ?? own?.resetsAt,
+      overageResetsAt: normalizeResetTimeMs(info.overageResetsAt),
+      observedAt,
+    };
+    this.entries.set(key, merged);
+    // Compare the merged entry, so a resetsAt that only arrives via
+    // unifiedWindows still dedupes repeated rejections.
+    const newRejection = isNewRejection(previousRejection, merged);
+    if (merged.status === 'rejected') {
+      this.rejections.set(key, merged);
+    } else if (
+      info.status !== undefined ||
+      (previousRejection &&
+        merged.resetsAt !== undefined &&
+        !sameResetTime(merged.resetsAt, previousRejection.resetsAt))
+    ) {
+      this.rejections.delete(key);
+    }
+    return newRejection;
   }
 
-  /**
-   * Snapshot a single bucket, or undefined if not yet seen or if its window
-   * has already reset (`resetsAt` in the past) — a reading from before the
-   * reset says nothing about the current window.
-   */
-  get(type: RateLimitWindow | undefined, now: number = Date.now()): RateLimitEntry | undefined {
-    const entry = this.entries.get(type ?? 'default');
-    if (!entry) return undefined;
-    const resetsAtMs = toEpochMs(entry.resetsAt);
-    if (resetsAtMs !== undefined && resetsAtMs <= now) return undefined;
-    return entry;
+  /** Snapshot a single bucket, or undefined if not yet seen. */
+  get(type: RateLimitWindow | undefined): RateLimitEntry | undefined {
+    if (!type) return this.entries.get('default');
+    return this.entries.get(type);
   }
 
   /** Latest snapshot per "interesting" window for health surface. */
@@ -141,20 +176,47 @@ export class RateLimitStore {
     seven_day?: RateLimitEntry;
     seven_day_opus?: RateLimitEntry;
     seven_day_sonnet?: RateLimitEntry;
+    seven_day_overage_included?: RateLimitEntry;
     overage?: RateLimitEntry;
   } {
     return {
-      five_hour: this.get('five_hour'),
-      seven_day: this.get('seven_day'),
-      seven_day_opus: this.get('seven_day_opus'),
-      seven_day_sonnet: this.get('seven_day_sonnet'),
-      overage: this.get('overage'),
+      five_hour: this.entries.get('five_hour'),
+      seven_day: this.entries.get('seven_day'),
+      seven_day_opus: this.entries.get('seven_day_opus'),
+      seven_day_sonnet: this.entries.get('seven_day_sonnet'),
+      seven_day_overage_included: this.entries.get('seven_day_overage_included'),
+      overage: this.entries.get('overage'),
     };
   }
 
   get size(): number {
     return this.entries.size;
   }
+}
+
+function sameResetTime(left: number | undefined, right: number | undefined): boolean {
+  return normalizeResetTimeMs(left) === normalizeResetTimeMs(right);
+}
+
+function isResetPending(resetsAt: number | undefined, now: number): boolean {
+  const resetsAtMs = normalizeResetTimeMs(resetsAt);
+  return resetsAtMs !== undefined && resetsAtMs > now;
+}
+
+/** Windows in UNIFIED_WINDOWS with a well-formed snapshot; anything else is skipped. */
+function readUnifiedWindows(raw: unknown): Map<RateLimitWindow, UnifiedWindowSnapshot> {
+  const out = new Map<RateLimitWindow, UnifiedWindowSnapshot>();
+  if (!raw || typeof raw !== 'object') return out;
+  for (const window of UNIFIED_WINDOWS) {
+    const entry = (raw as Record<string, unknown>)[window];
+    if (!entry || typeof entry !== 'object') continue;
+    const { utilization, resetsAt } = entry as Record<string, unknown>;
+    const snapshot: UnifiedWindowSnapshot = {};
+    if (typeof utilization === 'number' && Number.isFinite(utilization)) snapshot.utilization = utilization;
+    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = normalizeResetTimeMs(resetsAt);
+    if (snapshot.utilization !== undefined || snapshot.resetsAt !== undefined) out.set(window, snapshot);
+  }
+  return out;
 }
 
 /** Process-wide singleton. */
@@ -205,27 +267,14 @@ export function isNewRejection(
  * documents epoch ms, so anything too small to be ms is treated as seconds.
  */
 export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
-  const resetsAtMs = toEpochMs(resetsAt);
+  const resetsAtMs = normalizeResetTimeMs(resetsAt);
   if (resetsAtMs === undefined) return undefined;
   return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
 }
 
-/**
- * Normalize a `resetsAt` value to epoch ms. The SDK documents epoch ms but
- * live `rate_limit_event` payloads carry epoch seconds, so anything too
- * small to be ms is treated as seconds.
- */
-export function toEpochMs(resetsAt: number | undefined): number | undefined {
+function normalizeResetTimeMs(resetsAt: number | undefined): number | undefined {
   if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
   return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isRateLimitStatus(value: unknown): value is NonNullable<RateLimitInfo['status']> {
-  return value === 'allowed' || value === 'allowed_warning' || value === 'rejected';
 }
 
 /**
@@ -254,6 +303,7 @@ const UTILIZATION_THRESHOLDS: Record<RateLimitWindow, number> = {
   seven_day_opus: 0.93,
   seven_day_sonnet: 0.92,
   seven_day: 0.93,
+  seven_day_overage_included: 0.93,
   overage: 0.95,
 };
 
@@ -288,12 +338,18 @@ export function shouldAbortForQuota(
     'seven_day_opus',
     'seven_day_sonnet',
     'seven_day',
+    'seven_day_overage_included',
     'overage',
   ];
 
   for (const window of windows) {
-    const entry = store.get(window, now);
+    const entry = store.get(window);
     if (!entry) continue;
+
+    // Ignore expired snapshots without removing them from the store so a
+    // repeated stale rejection does not look new to set() telemetry.
+    const resetsAtMs = normalizeResetTimeMs(entry.resetsAt);
+    if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
@@ -329,7 +385,6 @@ export function shouldAbortForQuota(
     // Reset-grace buffer: only meaningful for the rolling 5h window where
     // a fresh bucket is imminent. Skip when utilization is low — no point
     // bailing on a window that just reset to ~0%.
-    const resetsAtMs = toEpochMs(entry.resetsAt);
     if (
       window === 'five_hour' &&
       resetsAtMs !== undefined &&

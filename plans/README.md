@@ -22,6 +22,7 @@ when they drift the doc is canonical for design and the issue for status.
 | plan-23 | [#3611](https://github.com/thedotmack/claude-mem/issues/3611) | [23-host-integration-contracts.md](23-host-integration-contracts.md) | Every non-Claude-Code adapter validated by contract tests against the host's actual schema |
 | plan-24 | [#3618](https://github.com/thedotmack/claude-mem/issues/3618) | [24-server-runtime-generation-and-sync-contract.md](24-server-runtime-generation-and-sync-contract.md) | One generation pipeline shared by worker and server; session linkage on every write path |
 | plan-25 | [#3982](https://github.com/thedotmack/claude-mem/issues/3982) | [25-search-read-path-fts-cjk.md](25-search-read-path-fts-cjk.md) | CJK-aware matching when FTS5 unicode61 returns 0 |
+| plan-26 | none yet | [26-telegram-session-wrapups.md](26-telegram-session-wrapups.md) | One Telegram wrap-up per session from the Stop summary, routed per project, ledgered; observation alerts default off |
 
 Earlier plans (01–11, 13) shipped or were folded into the masters above; `02`, `04` and `08` remain
 here as historical design docs.
