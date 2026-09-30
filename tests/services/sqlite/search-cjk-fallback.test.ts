@@ -142,8 +142,8 @@ describe('search in scripts FTS5 cannot segment', () => {
   });
 
   // The tokenizer glues a Latin run to the ideographs touching it, so `payload优先使用LLM`
-  // is one token. An exact phrase match for the leading word cannot reach it; a prefix
-  // match can, and that is the only part of the query the user actually typed.
+  // is one token that no FTS term can reach. When FTS finds nothing at all, the query is
+  // answered by substring, term by term.
   it('finds a Latin word glued to the ideographs that follow it', () => {
     const results = search.searchObservations('payload', { project: 'cjk-project' });
     expect(results.map(r => r.title)).toEqual(['payload解析失败']);
@@ -154,9 +154,24 @@ describe('search in scripts FTS5 cannot segment', () => {
     expect(results.map(r => r.title)).toEqual(['payload解析失败']);
   });
 
-  it('applies the same prefix match to session summaries', () => {
+  it('applies the same fallback to session summaries', () => {
     const results = search.searchSessions('cache', { project: 'cjk-project' });
     expect(results.map(r => r.request)).toEqual(['cache缓存重建流程']);
+  });
+
+  it('finds a Latin word glued to the ideographs before it', () => {
+    seedObservation('glue-3', 'cjk-project', '优先使用LLM', '模型选择');
+    const results = search.searchObservations('LLM', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['优先使用LLM']);
+  });
+
+  it('pages through fallback results', () => {
+    seedObservation('glue-4', 'cjk-project', 'payload重试', '第二条');
+    const firstPage = search.searchObservations('payload', { project: 'cjk-project', limit: 1 });
+    const secondPage = search.searchObservations('payload', { project: 'cjk-project', limit: 1, offset: 1 });
+    expect(firstPage).toHaveLength(1);
+    expect(secondPage).toHaveLength(1);
+    expect(secondPage[0].id).not.toBe(firstPage[0].id);
   });
 
   it('does not widen an English query that FTS5 already answers', () => {
@@ -164,6 +179,26 @@ describe('search in scripts FTS5 cannot segment', () => {
     expect(results.map(r => r.title)).toEqual(['Database Path resolution']);
     expect(search.searchSessions('database path', { project: 'cjk-project' }).map(r => r.request))
       .toEqual(['refactor the database path']);
+  });
+
+  it('does not widen a word to the longer words it prefixes', () => {
+    seedObservation('en-2', 'cjk-project', 'data pipeline stalls', 'the ingest data queue backs up');
+    const results = search.searchObservations('data', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['data pipeline stalls']);
+  });
+
+  // Thai, Lao, Myanmar and Khmer put no spaces between words either, so a run folds into one
+  // token. A query that equals a whole token somewhere must still find it inside longer runs.
+  it('matches Thai and Khmer inside longer runs, not only where the query stands alone', () => {
+    seedObservation('th-1', 'sea-project', 'ภาษาไทย', 'หัวข้อสั้น');
+    seedObservation('th-2', 'sea-project', 'ภาษาไทยเป็นภาษาที่สวยงาม', 'บันทึกยาว');
+    seedObservation('km-1', 'sea-project', 'ខ្មែរ', 'ចំណងជើងខ្លី');
+    seedObservation('km-2', 'sea-project', 'ភាសាខ្មែរស្រស់ស្អាត', 'កំណត់ត្រាវែង');
+
+    expect(search.searchObservations('ภาษาไทย', { project: 'sea-project' }).map(r => r.title).sort())
+      .toEqual(['ภาษาไทย', 'ภาษาไทยเป็นภาษาที่สวยงาม'].sort());
+    expect(search.searchObservations('ខ្មែរ', { project: 'sea-project' }).map(r => r.title).sort())
+      .toEqual(['ខ្មែរ', 'ភាសាខ្មែរស្រស់ស្អាត'].sort());
   });
 
   it('treats multi-word FTS input as ANDed terms instead of one exact phrase', () => {
