@@ -127,6 +127,7 @@ describe('ResponseProcessor', () => {
   let mockChromaSyncSummary: ReturnType<typeof mock>;
   let mockBroadcast: ReturnType<typeof mock>;
   let mockBroadcastProcessingStatus: ReturnType<typeof mock>;
+  let mockRecordAiInteraction: ReturnType<typeof mock>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
@@ -182,12 +183,14 @@ describe('ResponseProcessor', () => {
 
     mockBroadcast = mock(() => {});
     mockBroadcastProcessingStatus = mock(() => {});
+    mockRecordAiInteraction = mock(() => {});
 
     mockWorker = {
       sseBroadcaster: {
         broadcast: mockBroadcast,
       },
       broadcastProcessingStatus: mockBroadcastProcessingStatus,
+      recordAiInteraction: mockRecordAiInteraction,
     };
   });
 
@@ -842,6 +845,72 @@ describe('ResponseProcessor', () => {
       expect(resetProcessingToPending).not.toHaveBeenCalled();
       expect(session.consecutiveContextOverflows).toBe(0);
       expect(session.forceInit).toBeUndefined();
+    });
+  });
+
+  describe('AI interaction health signal', () => {
+    it('records a failed interaction when the observer returns auth-failure prose', async () => {
+      const session = createMockSession();
+      const responseText = 'API Error: 401 Invalid authentication credentials';
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: 'unauthenticated' })
+      );
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it("labels the interaction with the session's provider, not the current settings", async () => {
+      const session = createMockSession();
+      (session as { currentProvider?: string }).currentProvider = 'gemini';
+
+      await processAgentResponse(
+        'API Error: 401 Invalid authentication credentials', session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'SDK'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith({
+        success: false,
+        error: 'unauthenticated',
+        provider: 'gemini',
+      });
+    });
+
+    it('does NOT record an interaction for ordinary non-auth prose', async () => {
+      const session = createMockSession();
+      const responseText = 'Skipping — repeated log scan with no new findings.';
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).not.toHaveBeenCalled();
+    });
+
+    it('records a successful interaction when observations store', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test</title>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
   });
 
