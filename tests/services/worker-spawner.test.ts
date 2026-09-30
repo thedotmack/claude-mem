@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, afterAll, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
@@ -7,6 +7,7 @@ import * as realProcessManager from '../../src/services/infrastructure/ProcessMa
 import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 import * as realWorkerSpawnGate from '../../src/shared/worker-spawn-gate.js';
 import * as realPortReclaim from '../../src/shared/port-reclaim.js';
+import * as realCliTelemetry from '../../src/services/telemetry/cli-telemetry.js';
 
 /**
  * The whole suite runs in one bun process and `mock.module` mutates the shared
@@ -60,11 +61,25 @@ mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMo
 mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
 mock.module('../../src/shared/port-reclaim.js', () => portReclaim);
 
+// The boot-failure path (#3557) emits worker_start_failed; capture it instead
+// of sending it, and keep its durable markers in a throwaway data dir.
+const realCliTelemetrySnapshot = { ...realCliTelemetry };
+const cliTelemetry = {
+  captureCliEvent: mock(async (_event: string, _props?: Record<string, unknown>) => {}),
+};
+mock.module('../../src/services/telemetry/cli-telemetry.js', () => cliTelemetry);
+const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'cmem-spawner-'));
+const ORIGINAL_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+
 afterAll(() => {
   mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
   mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
   mock.module('../../src/shared/worker-spawn-gate.js', () => realWorkerSpawnGateSnapshot);
   mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
+  mock.module('../../src/services/telemetry/cli-telemetry.js', () => realCliTelemetrySnapshot);
+  if (ORIGINAL_DATA_DIR === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+  else process.env.CLAUDE_MEM_DATA_DIR = ORIGINAL_DATA_DIR;
+  rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
 const { ensureWorkerStarted, getLastWorkerBootFailure } = await import('../../src/services/worker-spawner.js');
@@ -112,6 +127,11 @@ function resetMocks(): void {
   spawnGate.acquireSpawnLock.mockReset();
   spawnGate.acquireSpawnLock.mockReturnValue(true);
   spawnGate.releaseSpawnLock.mockReset();
+  cliTelemetry.captureCliEvent.mockClear();
+  // The spawner reads CLAUDE_MEM_DATA_DIR at call time, so point it at the
+  // throwaway tree for every test (another suite file may have changed it).
+  process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
+  rmSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'), { force: true });
 }
 
 describe('ensureWorkerStarted startup readiness', () => {
@@ -190,6 +210,37 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(healthMonitor.waitForHealth).toHaveBeenCalledWith(39004, 1000);
     expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39004, HOOK_TIMEOUTS.READINESS_WAIT);
     expect(processManager.touchPidFile).not.toHaveBeenCalled();
+    // A worker we spawned that died after boot leaves a durable marker and a
+    // boot-failure event (#3557); no reproduced crash → the neutral category.
+    expect(existsSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'))).toBe(true);
+    expect(cliTelemetry.captureCliEvent).toHaveBeenCalledWith(
+      'worker_start_failed',
+      expect.objectContaining({ outcome: 'dead', error_category: 'unreachable_after_boot' }),
+    );
+  });
+
+  it('records a reproduced boot crash in the marker and reports it as boot_crash', async () => {
+    resetMocks();
+    processManager.probeWorkerBootFailure.mockReturnValue('Error: Cannot find module "zod"');
+
+    const result = await ensureWorkerStarted(39014, import.meta.filename);
+
+    expect(result).toBe('dead');
+    const marker = readFileSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'), 'utf-8');
+    expect(marker).toContain('Cannot find module "zod"');
+    expect(cliTelemetry.captureCliEvent).toHaveBeenCalledWith(
+      'worker_start_failed',
+      expect.objectContaining({ outcome: 'dead', error_category: 'boot_crash' }),
+    );
+  });
+
+  it('still returns dead when the boot-failure telemetry rejects', async () => {
+    resetMocks();
+    cliTelemetry.captureCliEvent.mockImplementationOnce(async () => {
+      throw new Error('telemetry offline');
+    });
+
+    expect(await ensureWorkerStarted(39015, import.meta.filename)).toBe('dead');
   });
 
   it('returns dead when the spawn-lock loser never sees a live worker', async () => {
@@ -201,6 +252,10 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(result).toBe('dead');
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
     expect(processManager.touchPidFile).not.toHaveBeenCalled();
+    // The spawn-lock holder owns the failure record; the loser must not
+    // double-write it.
+    expect(cliTelemetry.captureCliEvent).not.toHaveBeenCalled();
+    expect(existsSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'))).toBe(false);
   });
 
   it('keeps unknown occupied ports on the short health path', async () => {

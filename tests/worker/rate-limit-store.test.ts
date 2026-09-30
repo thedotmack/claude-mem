@@ -72,6 +72,21 @@ describe('RateLimitStore', () => {
     expect(snap.seven_day_opus?.utilization).toBe(0.3);
     expect(snap.seven_day).toBeUndefined();
   });
+
+  it('getMostRecentByWindow flags a window whose reset has passed instead of showing it as live', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.93, resetsAt: Math.floor(FIXED_NOW / 1000) - 60 });
+    store.set({ rateLimitType: 'five_hour', utilization: 0.4, resetsAt: FIXED_NOW + 60_000 });
+    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.5 });
+
+    const snap = store.getMostRecentByWindow(FIXED_NOW);
+    expect(snap.seven_day?.expired).toBe(true);
+    expect(snap.seven_day?.utilization).toBe(0.93); // last reading stays visible, marked as dead
+    expect(snap.five_hour?.expired).toBeUndefined();
+    expect(snap.seven_day_opus?.expired).toBeUndefined(); // no reset: cannot tell, not flagged
+    // The stored entry stays raw: set()'s rejection de-dupe still sees it.
+    expect(store.get('seven_day')).not.toHaveProperty('expired');
+  });
 });
 
 describe('isApiKeyAuth', () => {
@@ -368,6 +383,97 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
   it('does not abort with empty store', () => {
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(false);
+  });
+});
+
+// Quota is per Claude account. CLAUDE_MEM_CLAUDE_CONFIG_DIR can move the
+// observer to another account between spawns, so a snapshot recorded while
+// billing one profile must not abort a generator billing another.
+describe('shouldAbortForQuota — per-account profile scoping', () => {
+  const cliAuth = 'Claude Code OAuth token (read from system keychain at spawn) profile=personal';
+
+  it('stores the profile a snapshot was recorded under', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.97, profile: 'work' });
+    expect(store.get('seven_day')?.profile).toBe('work');
+  });
+
+  it('does not abort on a snapshot recorded under another profile', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.97, resetsAt: FIXED_NOW + 86_400_000, profile: 'work' });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal').abort).toBe(false);
+  });
+
+  it('does not abort on another profile\'s provider rejection', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000, profile: 'work' });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal').abort).toBe(false);
+  });
+
+  it('still aborts on a snapshot recorded under the same profile', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.97, resetsAt: FIXED_NOW + 86_400_000, profile: 'work' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'work');
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day');
+  });
+
+  it('still checks the current profile\'s windows when another profile\'s are skipped', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', utilization: 0.99, profile: 'work' });
+    store.set({ rateLimitType: 'seven_day', utilization: 0.95, profile: 'personal' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal');
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day');
+  });
+
+  it('applies an untagged snapshot to every profile, and every snapshot when no profile is given', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.97 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal').abort).toBe(true);
+
+    const tagged = freshStore();
+    tagged.set({ rateLimitType: 'seven_day', utilization: 0.97, profile: 'work' });
+    expect(shouldAbortForQuota(cliAuth, tagged, FIXED_NOW).abort).toBe(true);
+  });
+
+  it('tags unifiedWindows siblings with the profile of the event that carried them', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      profile: 'work',
+      unifiedWindows: { seven_day: { utilization: 0.97, resetsAt: FIXED_NOW + 86_400_000 } },
+    });
+    expect(store.get('seven_day')?.profile).toBe('work');
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal').abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'work').abort).toBe(true);
+  });
+
+  it('does not carry another profile\'s rejection or reset into a sibling refresh', () => {
+    const store = freshStore();
+    const now = Date.now();
+    const workReset = now + 60_000;
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: workReset, profile: 'work' });
+
+    // Account B reports the same reset-only sibling: nothing of A's carries.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      profile: 'personal',
+      unifiedWindows: { seven_day: { resetsAt: workReset } },
+    });
+    expect(store.get('seven_day')?.status).toBeUndefined();
+    expect(store.get('seven_day')?.profile).toBe('personal');
+
+    // Nor does a utilization-only sibling inherit the other account's reset.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      profile: 'work',
+      unifiedWindows: { seven_day: { utilization: 0.2 } },
+    });
+    expect(store.get('seven_day')?.resetsAt).toBeUndefined();
   });
 });
 
