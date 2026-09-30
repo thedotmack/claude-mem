@@ -127,7 +127,7 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 
-  it('prepends the observer-health warning to the welcome hint when the observer is failing', async () => {
+  it('appends the observer-health warning to the welcome hint when the observer is failing', async () => {
     // A user whose observer has failed since install has zero observations, so
     // the welcome-hint early return is the ONLY context they ever see. The
     // health warning must ride along with it, not wait for generateContext.
@@ -159,8 +159,47 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).toContain('What to do: It resets on the 1st. Upgrade or add credits to keep going now.');
     expect(body).toContain('# claude-mem status');
     expect(body).toContain('disappears once the first observation lands');
-    // Warning first, hint second — same order as normal context.
-    expect(body.indexOf('What to do:')).toBeLessThan(body.indexOf('# claude-mem status'));
+    // Hint first, warning second — same order as normal context, so the
+    // warning is the last thing on screen rather than the first thing scrolled off.
+    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('What to do:'));
+    expect(generateContextStub).not.toHaveBeenCalled();
+  });
+
+  it('appends the quota-cooldown pause notice to the welcome hint when the breaker is armed', async () => {
+    mkdirSync(realPaths.paths.dataDir(), { recursive: true });
+    writeFileSync(observerHealthPath, JSON.stringify({
+      consecutiveFailures: 0,
+      failingSinceAt: null,
+      lastErrorAt: null,
+      lastErrorMessage: null,
+      lastErrorProvider: null,
+      lastSuccessAt: Date.now(),
+      quotaCooldown: {
+        active: true,
+        provider: 'claude',
+        armedAt: Date.now() - 60_000,
+        until: Date.now() + 20 * 60_000,
+        window: 'five_hour',
+        message: 'Weekly limit reached',
+      },
+    }));
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('paused while a provider quota cooldown is active');
+    expect(body).toContain('This is not a failure');
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain("can't save memories");
+    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('quota cooldown'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 

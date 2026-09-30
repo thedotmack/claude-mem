@@ -124,6 +124,8 @@ installed client can reach SyncHub.
 | `CLAUDE_MEM_CLOUD_SYNC_WS` | `'true'` | Advisory WebSocket speed layer. `'false'` = HTTP polling only; sync stays fully correct at poll latency. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` | `''` | Stable identity of this machine. A fresh UUID is minted and persisted on first start. Don't edit it: every row is attributed to its origin device. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | machine hostname | Human-readable label for this device. |
+| `CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE` | `'40'` | Ops per content flush page. 200-op pages timed out at 30s under hub `projection_busy`. Max 500. |
+| `CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS` | `'90000'` | Content-push `AbortSignal` timeout. Must exceed the hub's 45s projection fetch; default matches the 90s projection lease. |
 
 A Hub accepts at most 64 distinct device ids per account. Existing devices
 continue to sync normally at the limit; a new device receives

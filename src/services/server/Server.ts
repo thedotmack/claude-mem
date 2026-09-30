@@ -5,7 +5,13 @@ import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
-import { createCorsMiddleware, createMiddleware, requireLocalhost } from '../worker/http/middleware.js';
+import {
+  createCorsMiddleware,
+  createMiddleware,
+  createRemoteReadOnlyGuard,
+  requireLocalhost,
+  type RemoteReadOnlyOptions,
+} from '../worker/http/middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -15,6 +21,7 @@ import { getUptimeSeconds } from '../../shared/uptime.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
+import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -95,6 +102,15 @@ export interface ServerOptions {
   // (the same headers helmet's defaults emit) before any route runs. Opt-in so
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
   securityHeaders?: boolean;
+  /**
+   * Observation TV remote broadcast. When present, a guard runs BEFORE every
+   * other middleware and route: loopback requests are untouched, and non-loopback
+   * requests may reach only /tv, /tv.html, /stream and GET /api/observations, and
+   * only with the shared secret. Absent (the default, and the server runtime's
+   * choice — it has its own API-key auth) ⇒ nothing is mounted and behavior is
+   * unchanged.
+   */
+  remoteReadOnly?: RemoteReadOnlyOptions;
 }
 
 // #2572 — hand-rolled security headers.
@@ -126,6 +142,11 @@ export class Server {
     this.options = options;
     this.app = express();
     this.app.disable('x-powered-by');
+    // Position zero is load-bearing: /api/auth/*splat (setupPreBodyParserRoutes),
+    // the express.static mount (setupMiddleware), /api/admin/* (setupCoreRoutes)
+    // and every route registered later all mount after this point. Anything
+    // mounted afterwards leaves earlier routes uncovered.
+    this.setupRemoteReadOnlyGuard();
     this.setupSecurityHeaders();
     this.setupCors();
     this.setupPreBodyParserRoutes();
@@ -150,6 +171,9 @@ export class Server {
         // failed bind (e.g. EADDRINUSE) must never leave a non-listening
         // handle behind for graceful shutdown to trip on.
         this.server = server;
+        // #3300: stop Windows children from inheriting the listen socket so a
+        // crashed daemon's port frees instead of staying LISTENING under a dead PID.
+        clearWindowsListenSocketInherit(server);
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
       };
@@ -193,6 +217,13 @@ export class Server {
   private setupMiddleware(): void {
     const middlewares = createMiddleware();
     middlewares.forEach(mw => this.app.use(mw));
+  }
+
+  private setupRemoteReadOnlyGuard(): void {
+    if (!this.options.remoteReadOnly) {
+      return;
+    }
+    this.app.use(createRemoteReadOnlyGuard(this.options.remoteReadOnly));
   }
 
   private setupSecurityHeaders(): void {
