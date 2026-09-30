@@ -205,6 +205,34 @@ describe('per-attempt deadline', () => {
     expect((error as Error).message).not.toContain('Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
   });
 
+  // Whenever the env var is set it wins over settings.json (an unusable value
+  // falls back to the default, not to the file), so advice to edit settings.json
+  // would change nothing. Review on #4278.
+  it('points the remedy at the environment when the env var overrides settings.json', async () => {
+    const expire = () => withRetry(
+      signal => new Promise<string>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
+      }),
+      { label: 'probe', perAttemptTimeoutMs: 20, maxRetries: 0 },
+    ).catch((err: unknown) => err);
+    const prior = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+    try {
+      delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+      const fromSettings = await expire();
+      expect(isClassified(fromSettings) && fromSettings.action).toContain('in ~/.claude-mem/settings.json');
+      expect(isClassified(fromSettings) && fromSettings.action).not.toContain('environment');
+
+      process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '120000';
+      const fromEnv = await expire();
+      expect(isClassified(fromEnv) && fromEnv.action).toContain('Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
+      expect(isClassified(fromEnv) && fromEnv.action).toContain('set in your environment, which overrides ~/.claude-mem/settings.json');
+      expect(isClassified(fromEnv) && fromEnv.action).not.toContain('in ~/.claude-mem/settings.json');
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+      else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = prior;
+    }
+  });
+
   it('still retries a genuine transient failure', async () => {
     let attempts = 0;
     const out = await withRetry(

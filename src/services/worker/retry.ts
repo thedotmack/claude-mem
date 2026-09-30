@@ -107,6 +107,19 @@ export function resolveLlmTimeoutMs(
 }
 
 /**
+ * The remedy an expired deadline carries, naming the place the deadline is
+ * actually read from. Whenever the env var is set, resolveLlmTimeoutMs never
+ * reads settings.json (an unusable value falls back to the default, not to the
+ * file), so advising a settings.json edit then would change nothing.
+ */
+function llmTimeoutRemedy(): string {
+  return process.env.CLAUDE_MEM_LLM_TIMEOUT_MS === undefined
+    ? `Raise CLAUDE_MEM_LLM_TIMEOUT_MS in ~/.claude-mem/settings.json (up to ${LLM_TIMEOUT_BOUNDS.max}) if the backend is simply slow.`
+    : `Raise CLAUDE_MEM_LLM_TIMEOUT_MS (up to ${LLM_TIMEOUT_BOUNDS.max}) if the backend is simply slow. `
+      + 'It is set in your environment, which overrides ~/.claude-mem/settings.json, so change it there.';
+}
+
+/**
  * Deadline for one oversized-field condensation pass (field-optimizer.ts).
  *
  * The field pass races a bounded model call against this deadline; on expiry
@@ -197,7 +210,7 @@ export async function withRetry<T>(
           {
             kind: 'transient',
             code: DEADLINE_EXCEEDED_CODE,
-            action: `Raise CLAUDE_MEM_LLM_TIMEOUT_MS in ~/.claude-mem/settings.json (up to ${LLM_TIMEOUT_BOUNDS.max}) if the backend is simply slow.`,
+            action: llmTimeoutRemedy(),
             cause: err,
           },
         );
