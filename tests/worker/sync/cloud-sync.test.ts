@@ -14,8 +14,11 @@ import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import {
   CloudSync,
+  HubHttpError,
+  hubRetryAfterMs,
   parseContentBatchSize,
   parseRequestTimeoutMs,
+  parseRetryAfterMs,
   DEFAULT_CONTENT_BATCH_SIZE,
   DEFAULT_REQUEST_TIMEOUT_MS,
   type CloudSyncSettingKeys,
@@ -129,6 +132,26 @@ function makeFetchMock(handler?: (call: number) => Response | Error | undefined)
   }) as typeof fetch;
   return { impl, calls };
 }
+
+describe('hub retry-after helpers', () => {
+  it('parses delta-seconds and HTTP-date Retry-After values', () => {
+    expect(parseRetryAfterMs('5')).toBe(5_000);
+    expect(parseRetryAfterMs(null)).toBeNull();
+    expect(parseRetryAfterMs('nope')).toBeNull();
+    const now = Date.parse('Wed, 21 Oct 2015 07:28:00 GMT');
+    expect(parseRetryAfterMs('Wed, 21 Oct 2015 07:28:05 GMT', now)).toBe(5_000);
+  });
+
+  it('treats Cloudflare HTML 429 as a 10-minute floor', () => {
+    expect(hubRetryAfterMs(429, '<!DOCTYPE html><p>error 1027</p>', null)).toBe(10 * 60 * 1_000);
+    expect(hubRetryAfterMs(429, '<!DOCTYPE html>', '30')).toBe(10 * 60 * 1_000);
+    expect(hubRetryAfterMs(503, 'busy', '2')).toBe(2_000);
+    const err = new HubHttpError('sync hub push', 429, '<!DOCTYPE html>', 600_000);
+    expect(err.retryable).toBe(true);
+    expect(err.retryAfterMs).toBe(600_000);
+    expect(err.message).toContain('sync hub push 429');
+  });
+});
 
 describe('cloud sync flush knobs', () => {
   it('defaults content batch to 40 and request timeout to 90s', () => {
@@ -1413,9 +1436,9 @@ describe('CloudSync', () => {
         error: /seq exceeds head_seq/,
       },
       {
-        name: 'head beyond projected checkpoint',
-        change: acks => ({ acks, head: '3', projected: '2' }),
-        error: /head_seq <= projected_seq/,
+        name: 'ack seq beyond projected coverage',
+        change: acks => ({ acks: [{ ...acks[0], seq: '3' }, acks[1]], head: '3', projected: '2' }),
+        error: /not covered by projected_seq/,
       },
       {
         name: 'noncanonical head checkpoint',
@@ -1471,6 +1494,30 @@ describe('CloudSync', () => {
       expect(ackDurabilityState()).toEqual(atResponse);
       expect(outboxRows()).toHaveLength(1);
       expect(seenHeads).toEqual([]);
+      sync.stop();
+    });
+
+    it('accepts a 200 whose durable head is ahead of projected when every ack is covered', async () => {
+      seedFrozenAckState();
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body));
+        const acks = parsed.ops.map((op: any, index: number) => canonicalAck(op, index + 1));
+        return canonicalSuccess(acks, '3', undefined, '2');
+      }) as typeof fetch;
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+      expect(sync.status().lastError).toBeNull();
+      expect(pendingCount('observations')).toBe(0);
+      sync.stop();
+    });
+
+    it('accepts an empty-ack push when head is ahead of projected', async () => {
+      const impl = (async () => canonicalSuccess([], '9', undefined, '3')) as typeof fetch;
+      const sync = makeCloudSync(impl);
+      const validate = (sync as unknown as {
+        validatePushResponse: (response: any, pushed: any[]) => void;
+      }).validatePushResponse.bind(sync);
+      expect(() => validate({ acked: [], head_seq: '9', projected_seq: '3' }, [])).not.toThrow();
       sync.stop();
     });
 
@@ -1620,12 +1667,49 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(1);
     expect(sync.status().lastError).toContain('ECONNREFUSED');
 
-    // A later notify() also retries (independent of the backoff timer).
+    // Notify must not bypass backoff (#4231). The retry timer drains instead.
     failing = false;
     sync.notify();
-    await sleep(200);
-    expect(pendingCount('observations')).toBe(0);
+    await sleep(50);
+    expect(pendingCount('observations')).toBe(1);
+    expect(calls.length).toBe(1);
 
+    sync.stop();
+  });
+
+  it('skips notify()-triggered pushes while 5xx backoff is armed', async () => {
+    seedObservation();
+    const { impl, calls } = makeFetchMock(() => new Response('server sad', { status: 500 }));
+    const sync = makeCloudSync(impl, {}, { backoffInitialMs: 600_000, debounceMs: 10 });
+    await sync.flush();
+    const afterFlush = calls.length;
+    expect(afterFlush).toBe(1);
+    sync.notify();
+    await sleep(80);
+    expect(calls.length).toBe(afterFlush);
+    sync.stop();
+  });
+
+  it('honors Retry-After on 429 before the next push', async () => {
+    seedObservation();
+    let call = 0;
+    const impl = (async () => {
+      call += 1;
+      if (call === 1) {
+        return new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '1' },
+        });
+      }
+      return new Response(JSON.stringify({ acked: [], head_seq: '0', projected_seq: '0' }), { status: 200 });
+    }) as typeof fetch;
+    const sync = makeCloudSync(impl, {}, { backoffInitialMs: 20, debounceMs: 10 });
+    await sync.flush();
+    expect(call).toBe(1);
+    await sleep(200);
+    expect(call).toBe(1);
+    await sleep(2_000);
+    expect(call).toBeGreaterThanOrEqual(2);
     sync.stop();
   });
 

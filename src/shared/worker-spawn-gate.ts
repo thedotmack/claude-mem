@@ -21,7 +21,10 @@ import { logger } from '../utils/logger.js';
  * - The lock gates SPAWNING only — never health/readiness checks. A held lock
  *   must never make a hook FAIL, only wait for the holder's worker.
  * - Staleness is judged by the lock file's mtime (statSync().mtimeMs), never
- *   by clock values stored in the file content.
+ *   by clock values stored in the file content. A lock whose holder PID is
+ *   dead is also broken even when mtime is still fresh (claude-mem#3300) —
+ *   a dead holder can never open the port, and Windows file indexers can
+ *   keep refreshing mtime so the 60s breaker alone never fires.
  * - The dying worker's restart handoff (src/services/worker-shutdown.ts) is
  *   deliberately NOT gated: it is the PRIMARY spawner on restart, and hooks
  *   wait for its successor instead of competing with it.
@@ -43,6 +46,39 @@ const SPAWN_LOCK_STALE_MS = 90_000;
  */
 function getSpawnLockPath(): string {
   return join(resolveDataDir(), 'spawn.lock');
+}
+
+/**
+ * Read the lock file's recorded holder pid, or null when the file is
+ * missing/unreadable/has no usable pid.
+ */
+function readLockHolderPid(lockPath: string): number | null {
+  try {
+    const lock = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: unknown };
+    if (typeof lock.pid !== 'number' || !Number.isInteger(lock.pid) || lock.pid <= 0) {
+      return null;
+    }
+    return lock.pid;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when pid is still a live process. False when positively dead.
+ * Null when pid is missing — callers fall back to mtime-only staleness.
+ */
+function isPidAlive(pid: number | null): boolean | null {
+  if (pid === null) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    // EPERM: process exists but we cannot signal it — treat as alive.
+    if (code === 'EPERM') return true;
+    return false;
+  }
 }
 
 /**
@@ -95,18 +131,34 @@ export function acquireSpawnLock(): boolean {
         continue;
       }
 
-      if (Date.now() - mtimeMs <= SPAWN_LOCK_STALE_MS) {
-        // Fresh lock: another launcher is mid-spawn. Caller waits for its
-        // worker instead of spawning a competitor.
+      // Capture the holder identity we are about to judge. Ownership must be
+      // re-checked before unlink: two breakers can race, and the winner's
+      // replacement lock can land on the same mtimeMs tick as the stale one
+      // (filesystem timestamp granularity), so an mtime-only recheck is not
+      // enough to tell "still the dead lock" from "someone else's fresh lock".
+      const breakPid = readLockHolderPid(lockPath);
+      let breakContent: string | null = null;
+      if (breakPid === null) {
+        try {
+          breakContent = readFileSync(lockPath, 'utf-8');
+        } catch {
+          // Lock vanished while we were reading it — retry once.
+          continue;
+        }
+      }
+
+      const mtimeFresh = Date.now() - mtimeMs <= SPAWN_LOCK_STALE_MS;
+      if (mtimeFresh && isPidAlive(breakPid) !== false) {
+        // Fresh lock with a live (or unknown) holder: another launcher is
+        // mid-spawn. Caller waits for its worker instead of spawning a
+        // competitor. Only a positively dead holder falls through to break.
         return false;
       }
 
-      // Stale lock: the holder died mid-spawn. Re-stat immediately before
-      // breaking it — if the mtime changed since we judged it stale, another
-      // launcher already broke it and re-took the lock; unlinking now would
-      // delete THEIR fresh lock and mint two winners. The re-stat narrows
-      // that TOCTOU window from the whole staleness evaluation to a few
-      // microseconds.
+      // Stale by mtime, or holder PID is dead while mtime still looks fresh
+      // (#3300). Re-stat and re-verify ownership immediately before breaking
+      // — if another launcher already broke and re-took the lock, unlinking
+      // now would delete THEIR fresh lock and mint two winners.
       let recheckedMtimeMs: number;
       try {
         recheckedMtimeMs = statSync(lockPath).mtimeMs;
@@ -120,6 +172,22 @@ export function acquireSpawnLock(): boolean {
         // Re-taken (or refreshed) since we judged it stale — its new owner is
         // live; yield to them.
         return false;
+      }
+
+      // Ownership recheck: same mtimeMs is not enough (mtime collision race).
+      // The file must still be the same dead/stale lock we judged breakable.
+      if (breakPid !== null) {
+        if (readLockHolderPid(lockPath) !== breakPid) {
+          return false;
+        }
+      } else {
+        try {
+          if (readFileSync(lockPath, 'utf-8') !== breakContent) {
+            return false;
+          }
+        } catch {
+          continue;
+        }
       }
 
       try {
