@@ -227,6 +227,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SERVER_BETA_API_KEY: string;
   CLAUDE_MEM_SERVER_BETA_PROJECT_ID: string;
   CLAUDE_MEM_WORKER_AUTOSTART: string;
+  CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
 }
 
 export class SettingsDefaultsManager {
@@ -405,6 +406,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SERVER_BETA_API_KEY: '',                     // Legacy local hook API key (read as fallback when CLAUDE_MEM_SERVER_API_KEY unset)
     CLAUDE_MEM_SERVER_BETA_PROJECT_ID: '',                  // Legacy Postgres project_id (read as fallback when CLAUDE_MEM_SERVER_PROJECT_ID unset)
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
+    CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
   };
 
   static getAllDefaults(): SettingsDefaults {
