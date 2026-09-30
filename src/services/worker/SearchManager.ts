@@ -16,9 +16,9 @@ import {
   SearchOrchestrator,
   SEARCH_CONSTANTS
 } from './search/index.js';
+import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
-import { assertSearchHasQueryOrFilter } from './search/search-request.js';
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
