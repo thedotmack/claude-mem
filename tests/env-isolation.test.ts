@@ -288,21 +288,55 @@ describe('#2753: buildIsolatedEnv resolves CLAUDE_CONFIG_DIR for the SDK subproc
     expect(result.CLAUDE_CONFIG_DIR).not.toBe(CLAUDE_CONFIG_DIR);
   });
 
-  it('with the setting empty, the SDK subprocess CLAUDE_CONFIG_DIR mirrors the worker keychain derivation', () => {
+  function withProcessEnvConfigDir(value: string | undefined, run: () => void): void {
+    const originalProcessEnvConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    if (value === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = value;
+    }
+    try {
+      run();
+    } finally {
+      if (originalProcessEnvConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = originalProcessEnvConfigDir;
+      }
+    }
+  }
+
+  it('#4149: with the setting empty and nothing exported, the SDK subprocess gets NO CLAUDE_CONFIG_DIR', () => {
     stubConfigDirSetting('');
 
-    const result = buildIsolatedEnv();
-
-    if (CLAUDE_CONFIG_DIR === DEFAULT_CLAUDE_CONFIG_DIR) {
+    withProcessEnvConfigDir(undefined, () => {
       // Default profile: the variable must be ABSENT so Claude Code reads the
-      // bare 'Claude Code-credentials' keychain entry the worker injects under
-      // (#4149).
-      expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
-    } else {
-      // Non-default profile: stamp the frozen (env-resolved) config dir so the
-      // child and the worker resolve the same suffixed keychain entry.
-      expect(result.CLAUDE_CONFIG_DIR).toBe(CLAUDE_CONFIG_DIR);
-    }
+      // bare 'Claude Code-credentials' keychain entry the worker injects under.
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+  });
+
+  // #4149 — Claude Code keys the keychain name on whether CLAUDE_CONFIG_DIR is
+  // SET. A user who explicitly exports CLAUDE_CONFIG_DIR=~/.claude logged in
+  // under the SUFFIXED entry, so their child must keep the variable (and the
+  // worker must read the suffixed entry — see oauth-token.test.ts).
+  it('#4149: with the setting empty, an explicit CLAUDE_CONFIG_DIR export of the default dir is still stamped', () => {
+    stubConfigDirSetting('');
+
+    withProcessEnvConfigDir(DEFAULT_CLAUDE_CONFIG_DIR, () => {
+      const result = buildIsolatedEnv();
+
+      expect(result.CLAUDE_CONFIG_DIR).toBeDefined();
+      expect(result.CLAUDE_CONFIG_DIR).toBe(oauthToken.resolveEffectiveClaudeConfigDir(''));
+    });
+  });
+
+  it('#4149: an empty CLAUDE_CONFIG_DIR export counts as unset, as it does for Claude Code', () => {
+    stubConfigDirSetting('');
+
+    withProcessEnvConfigDir('', () => {
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
   });
 
   // #4149 — regression: a default-profile config dir (the resolved '~/.claude',
@@ -322,25 +356,16 @@ describe('#2753: buildIsolatedEnv resolves CLAUDE_CONFIG_DIR for the SDK subproc
     expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
   });
 
-  it('#4149: deletes a blanket-copied process.env.CLAUDE_CONFIG_DIR for the default profile', () => {
-    // Even when the worker inherited the default config dir explicitly in its
-    // own env (so the blanket process.env copy carries it), the child must end
-    // up with the variable UNSET.
-    const originalProcessEnvConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    process.env.CLAUDE_CONFIG_DIR = DEFAULT_CLAUDE_CONFIG_DIR;
+  it('#4149: a default-dir SETTING deletes a blanket-copied process.env.CLAUDE_CONFIG_DIR', () => {
+    // The setting names the profile: `~/.claude` in settings means "my normal
+    // profile", so even when the worker inherited CLAUDE_CONFIG_DIR in its own
+    // env (and the blanket process.env copy carries it), the child ends up
+    // with the variable UNSET.
     stubConfigDirSetting(DEFAULT_CLAUDE_CONFIG_DIR);
 
-    try {
-      const result = buildIsolatedEnv();
-
-      expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
-    } finally {
-      if (originalProcessEnvConfigDir === undefined) {
-        delete process.env.CLAUDE_CONFIG_DIR;
-      } else {
-        process.env.CLAUDE_CONFIG_DIR = originalProcessEnvConfigDir;
-      }
-    }
+    withProcessEnvConfigDir(DEFAULT_CLAUDE_CONFIG_DIR, () => {
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
   });
 
   it('never touches the worker\'s own paths.CLAUDE_CONFIG_DIR / MARKETPLACE_ROOT module constants, nor the real process.env.CLAUDE_CONFIG_DIR', () => {

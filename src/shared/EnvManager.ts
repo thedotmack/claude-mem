@@ -3,21 +3,21 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'f
 import { parseEnv } from 'util';
 import { basename } from 'path';
 import { logger } from '../utils/logger.js';
-import { paths, DEFAULT_CLAUDE_CONFIG_DIR } from './paths.js';
+import { paths } from './paths.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import {
   readClaudeOAuthToken,
   writeStaleMarker,
   clearStaleMarker,
-  resolveEffectiveClaudeConfigDir,
+  resolveClaudeCredentialProfile,
   type OAuthTokenResult,
 } from './oauth-token.js';
 
-/** #2753 — the effective config dir's profile label for logging (never the token itself): 'default' for ~/.claude, else its basename. */
+/** #2753 — the credential profile's label for logging (never the token itself): 'default' for the bare keychain entry, else the config dir's basename. */
 function resolveConfigDirProfileLabel(): string {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-  const effectiveConfigDir = resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
-  return effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR ? 'default' : basename(effectiveConfigDir);
+  const { configDir, explicitConfigDir } = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  return explicitConfigDir ? basename(configDir) : 'default';
 }
 
 // Resolved lazily so tests (and any rare runtime path-overrides) can target a
@@ -192,10 +192,10 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
 
   isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
 
-  // #2753 / #4149 — set CLAUDE_CONFIG_DIR on the SDK SUBPROCESS using the SAME
-  // condition deriveMacKeychainServiceName (oauth-token.ts) uses to pick the
-  // keychain service name, so the child and the worker always agree:
-  //   - non-default profile: stamp the effective config dir (the
+  // #2753 / #4149 — set CLAUDE_CONFIG_DIR on the SDK SUBPROCESS from the SAME
+  // credential profile deriveMacKeychainServiceName (oauth-token.ts) uses to
+  // pick the keychain service name, so the child and the worker always agree:
+  //   - explicit profile: stamp the effective config dir (the
   //     CLAUDE_MEM_CLAUDE_CONFIG_DIR setting when set, else
   //     process.env.CLAUDE_CONFIG_DIR), so both resolve the suffixed
   //     'Claude Code-credentials-<hash>' keychain entry.
@@ -211,11 +211,11 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   // MARKETPLACE_ROOT, which stay derived solely from
   // process.env.CLAUDE_CONFIG_DIR at module load.
   const configDirSettings = SettingsDefaultsManager.loadFromFile(paths.settings());
-  const effectiveConfigDir = resolveEffectiveClaudeConfigDir(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
-  if (effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR) {
-    delete isolatedEnv.CLAUDE_CONFIG_DIR;
+  const { configDir, explicitConfigDir } = resolveClaudeCredentialProfile(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  if (explicitConfigDir) {
+    isolatedEnv.CLAUDE_CONFIG_DIR = configDir;
   } else {
-    isolatedEnv.CLAUDE_CONFIG_DIR = effectiveConfigDir;
+    delete isolatedEnv.CLAUDE_CONFIG_DIR;
   }
 
   if (includeCredentials) {
