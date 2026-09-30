@@ -138,6 +138,13 @@ function shutdownBegan(): boolean {
   return !ChromaMcpManager.getInstance().acceptsMutations();
 }
 
+// The embedding functions the pinned chroma-mcp (0.2.6) knows. It resolves the
+// name before checking whether the collection exists, so any other value would
+// fail every chroma_create_collection call, and with it every write.
+const CHROMA_MCP_EMBEDDING_FUNCTIONS: ReadonlySet<string> = new Set([
+  'default', 'openai', 'cohere', 'jina', 'voyageai', 'roboflow',
+]);
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
@@ -181,6 +188,12 @@ export class ChromaSync {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const embeddingFunction =
       settings.CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION || 'default';
+    if (!CHROMA_MCP_EMBEDDING_FUNCTIONS.has(embeddingFunction)) {
+      throw new Error(
+        `CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION="${embeddingFunction}" is not an embedding function chroma-mcp supports ` +
+        `(${[...CHROMA_MCP_EMBEDDING_FUNCTIONS].join(', ')})`
+      );
+    }
     try {
       await chromaMcp.callTool('chroma_create_collection', {
         collection_name: this.collectionName,

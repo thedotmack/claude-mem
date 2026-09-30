@@ -764,3 +764,9 @@ describe('SettingsDefaultsManager', () => {
     });
   });
 });
+
+describe('Chroma embedding function default', () => {
+  it('keeps chroma-mcp\'s own default so existing installs are unchanged', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('default');
+  });
+});

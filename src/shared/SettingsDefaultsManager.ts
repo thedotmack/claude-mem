@@ -261,8 +261,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
     CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
     // Embedding function used when creating the Chroma collection. 'default' is
-    // all-MiniLM-L6-v2 (English-tuned). Non-English users can set 'multilingual'
-    // for markedly better recall at the same 384 dimensions. Applies to new
+    // the local all-MiniLM-L6-v2 (English-tuned). The pinned chroma-mcp also
+    // accepts 'openai', 'cohere', 'jina', 'voyageai' and 'roboflow'; those are
+    // API-backed, need the vendor's API key in the environment, and send your
+    // memory text to that vendor. Any other value is rejected. Applies to new
     // collections only — changing it requires re-indexing.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
