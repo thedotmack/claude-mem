@@ -725,6 +725,32 @@ function copyPluginToMarketplace(): void {
   }
 
   writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
+  writeTrimmedMarketplaceManifest(marketplaceDir);
+}
+
+/**
+ * Keep only the marketplace entries whose local `source` shipped.
+ *
+ * The repo's root .claude-plugin/marketplace.json also lists claude-mem-cowork
+ * (`./cowork`), which the npm package does not ship. Copied verbatim, the
+ * manifest would advertise a plugin whose source is missing from the
+ * marketplace directory, so drop every entry whose relative source path does
+ * not exist there. Non-path sources (a GitHub repo object) are kept as-is.
+ */
+export function writeTrimmedMarketplaceManifest(marketplaceDir: string): void {
+  const manifestPath = join(marketplaceDir, '.claude-plugin', 'marketplace.json');
+  if (!existsSync(manifestPath)) return;
+
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { plugins?: unknown };
+  if (!Array.isArray(manifest.plugins)) return;
+
+  const shipped = manifest.plugins.filter((entry) => {
+    const source = (entry as { source?: unknown } | null)?.source;
+    return typeof source !== 'string' || !source.startsWith('.') || existsSync(join(marketplaceDir, source));
+  });
+  if (shipped.length === manifest.plugins.length) return;
+
+  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, plugins: shipped }, null, 2)}\n`);
 }
 
 /**

@@ -179,6 +179,8 @@ describe('Install Non-TTY Support', () => {
       expect(copyRegion).toContain("'.agents'");
       expect(copyRegion).toContain("'.codex-plugin'");
       expect(copyRegion).toContain("'.claude-plugin'");
+      // The shipped manifest also lists cowork/, which npm does not ship.
+      expect(copyRegion).toContain('writeTrimmedMarketplaceManifest(marketplaceDir);');
       // Root .mcp.json was dropped in #2411; the MCP manifest now ships
       // exclusively as plugin/.mcp.json (bundled inside the 'plugin' entry).
       expect(copyRegion).toContain("'plugin'");
