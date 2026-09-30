@@ -129,7 +129,7 @@ export class SearchManager {
 
   private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
     return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-      this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit: 1, project, platformSource })
+      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, platformSource })
     );
   }
 
@@ -924,7 +924,7 @@ export class SearchManager {
       try {
         const limit = options.limit || 20;
         results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit, project: options.project, platformSource: options.platformSource })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, platformSource: options.platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1103,7 +1103,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
       try {
         results = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit, project, platformSource })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project, platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));

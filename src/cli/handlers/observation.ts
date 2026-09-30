@@ -27,6 +27,7 @@ async function dispatchToWorker(
       cwd: input.cwd,
       agentId: input.agentId,
       agentType: input.agentType,
+      tool_use_id: input.toolUseId,
     },
   );
 
@@ -80,6 +81,7 @@ export const observationHandler: EventHandler = {
           agentId: input.agentId,
           agentType: input.agentType,
           platformSource,
+          tool_use_id: input.toolUseId,
         },
       };
       try {
