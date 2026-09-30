@@ -28,10 +28,17 @@ export const ENV_PROXY_VARS = new Set([
 export const ENV_PRESERVE = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_GIT_BASH_PATH',
+  // The CLI documents CLAUDE_CODE_TMPDIR as the fix for a root-owned per-uid
+  // /tmp/claude-<uid> directory (#4161). Stripping it here sent the SDK child
+  // back to /tmp, so the child hit that directory and exited 1 on every spawn
+  // — the user's only documented escape did nothing.
+  'CLAUDE_CODE_TMPDIR',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
   'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+  'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
   'ANTHROPIC_BEDROCK_BASE_URL',
   'AWS_REGION',
   'AWS_PROFILE',

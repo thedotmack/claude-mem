@@ -8,7 +8,9 @@ const DEFAULT_WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
 const DEFAULT_WORKER_PORT = workerSettings.CLAUDE_MEM_WORKER_PORT;
 
 function resolveWorkerHost(): string {
-  return process.env.CLAUDE_MEM_WORKER_HOST || DEFAULT_WORKER_HOST;
+  // loadFromFile already applies env overrides and normalizes 'localhost'
+  // to 127.0.0.1 (#2992); a raw process.env read here would bypass both.
+  return DEFAULT_WORKER_HOST;
 }
 
 function resolveWorkerPort(): string {
@@ -40,6 +42,7 @@ interface SetProcessingResponse {
   isProcessing: boolean;
   queueDepth: number;
   activeSessions: number;
+  scheduledSessions: number;
 }
 
 async function fetchWithTimeout(
@@ -93,7 +96,7 @@ async function triggerProcessing(): Promise<SetProcessingResponse> {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      body: JSON.stringify({ isProcessing: false })
     },
     'Failed to trigger processing',
   );
@@ -197,6 +200,7 @@ What is this for?
   console.log(`  Is processing:    ${result.isProcessing ? 'yes' : 'no'}`);
   console.log(`  Queue depth:      ${result.queueDepth}`);
   console.log(`  Active sessions:  ${result.activeSessions}`);
+  console.log(`  Resume attempts:  ${result.scheduledSessions}`);
 
   console.log('\nProcessing handled by worker. Check status again in a few minutes.\n');
 }

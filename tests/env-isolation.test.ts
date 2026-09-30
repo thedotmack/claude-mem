@@ -9,6 +9,8 @@ import {
 } from '../src/shared/EnvManager.js';
 import { sanitizeEnv } from '../src/supervisor/env-sanitizer.js';
 import * as oauthToken from '../src/shared/oauth-token.js';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT } from '../src/shared/paths.js';
 // CJS interop: the check is a .cjs module exporting findViolations.
 import { createRequire } from 'module';
 const requireCjs = createRequire(import.meta.url);
@@ -236,5 +238,184 @@ describe('spawn-env discipline (CI guard)', () => {
   it('no spawn site hands raw process.env to a child without sanitizeEnv', () => {
     const violations = findViolations();
     expect(violations).toEqual([]);
+  });
+});
+
+/**
+ * #2753 — buildIsolatedEnv() must stamp the EFFECTIVE CLAUDE_CONFIG_DIR onto
+ * the isolated env it hands to the SDK subprocess (precedence: the
+ * CLAUDE_MEM_CLAUDE_CONFIG_DIR setting > process.env.CLAUDE_CONFIG_DIR >
+ * default), while never touching the WORKER's own module-level
+ * paths.CLAUDE_CONFIG_DIR / MARKETPLACE_ROOT constants.
+ *
+ * paths.ts's own CLAUDE_CONFIG_DIR is frozen at first module evaluation from
+ * process.env.CLAUDE_CONFIG_DIR at THAT time (same convention as DATA_DIR
+ * elsewhere in this codebase) — mutating process.env.CLAUDE_CONFIG_DIR at
+ * test runtime has no effect on it, so these tests exercise the "setting"
+ * side of the precedence (the only side that IS re-read live, via
+ * SettingsDefaultsManager.loadFromFile on every call) against whatever the
+ * frozen CLAUDE_CONFIG_DIR happens to resolve to in this process — the
+ * "process.env > default" half of the fallback is covered separately at the
+ * pure-function level in tests/shared/oauth-token.test.ts
+ * (resolveEffectiveClaudeConfigDir), where it doesn't depend on module-load
+ * timing.
+ *
+ * SettingsDefaultsManager.loadFromFile is a static method — spyOn mutates
+ * the class object every importer (including EnvManager.ts) calls through,
+ * so mocking it here is observed by buildIsolatedEnv() without touching the
+ * real ~/.claude-mem/settings.json. Always restored in afterEach.
+ */
+describe('#2753: buildIsolatedEnv resolves CLAUDE_CONFIG_DIR for the SDK subprocess only', () => {
+  let loadFromFileSpy: ReturnType<typeof spyOn> | undefined;
+
+  function stubConfigDirSetting(value: string): void {
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(
+      () => ({ ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_CLAUDE_CONFIG_DIR: value }) as any
+    );
+  }
+
+  afterEach(() => {
+    loadFromFileSpy?.mockRestore();
+    loadFromFileSpy = undefined;
+  });
+
+  it('the CLAUDE_MEM_CLAUDE_CONFIG_DIR setting wins over the frozen CLAUDE_CONFIG_DIR fallback', () => {
+    stubConfigDirSetting('/tmp/from-setting');
+
+    const result = buildIsolatedEnv();
+
+    expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/from-setting');
+    expect(result.CLAUDE_CONFIG_DIR).not.toBe(CLAUDE_CONFIG_DIR);
+  });
+
+  function withProcessEnvConfigDir(value: string | undefined, run: () => void): void {
+    const originalProcessEnvConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    if (value === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = value;
+    }
+    try {
+      run();
+    } finally {
+      if (originalProcessEnvConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = originalProcessEnvConfigDir;
+      }
+    }
+  }
+
+  it('#4149: with the setting empty and nothing exported, the SDK subprocess gets NO CLAUDE_CONFIG_DIR', () => {
+    stubConfigDirSetting('');
+
+    withProcessEnvConfigDir(undefined, () => {
+      // Default profile: the variable must be ABSENT so Claude Code reads the
+      // bare 'Claude Code-credentials' keychain entry the worker injects under.
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+  });
+
+  // #4149 — Claude Code keys the keychain name on whether CLAUDE_CONFIG_DIR is
+  // SET. A user who explicitly exports CLAUDE_CONFIG_DIR=~/.claude logged in
+  // under the SUFFIXED entry, so their child must keep the variable (and the
+  // worker must read the suffixed entry — see oauth-token.test.ts).
+  it('#4149: with the setting empty, an explicit CLAUDE_CONFIG_DIR export of the default dir is still stamped', () => {
+    stubConfigDirSetting('');
+
+    withProcessEnvConfigDir(DEFAULT_CLAUDE_CONFIG_DIR, () => {
+      const result = buildIsolatedEnv();
+
+      expect(result.CLAUDE_CONFIG_DIR).toBeDefined();
+      expect(result.CLAUDE_CONFIG_DIR).toBe(oauthToken.resolveEffectiveClaudeConfigDir(''));
+    });
+  });
+
+  it('#4149: an empty CLAUDE_CONFIG_DIR export counts as unset, as it does for Claude Code', () => {
+    stubConfigDirSetting('');
+
+    withProcessEnvConfigDir('', () => {
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+  });
+
+  // #4149 — regression: a default-profile config dir (the resolved '~/.claude',
+  // whether typed as '~/.claude' or already expanded) must leave
+  // CLAUDE_CONFIG_DIR ABSENT on the SDK subprocess. Claude Code derives its
+  // macOS keychain service name from whether CLAUDE_CONFIG_DIR is SET, so any
+  // value here — even the default — sent the child to a suffixed
+  // 'Claude Code-credentials-<hash>' entry a normal login never creates, while
+  // the worker injects under the bare name (deriveMacKeychainServiceName). Once
+  // the access token expired the worker stopped injecting and capture silently
+  // stopped for default-profile macOS users.
+  it('#4149: stamps NO CLAUDE_CONFIG_DIR on the SDK subprocess for a default-profile setting', () => {
+    stubConfigDirSetting('~/.claude');
+
+    const result = buildIsolatedEnv();
+
+    expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it('#4149: a default-dir SETTING deletes a blanket-copied process.env.CLAUDE_CONFIG_DIR', () => {
+    // The setting names the profile: `~/.claude` in settings means "my normal
+    // profile", so even when the worker inherited CLAUDE_CONFIG_DIR in its own
+    // env (and the blanket process.env copy carries it), the child ends up
+    // with the variable UNSET.
+    stubConfigDirSetting(DEFAULT_CLAUDE_CONFIG_DIR);
+
+    withProcessEnvConfigDir(DEFAULT_CLAUDE_CONFIG_DIR, () => {
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+  });
+
+  it('never touches the worker\'s own paths.CLAUDE_CONFIG_DIR / MARKETPLACE_ROOT module constants, nor the real process.env.CLAUDE_CONFIG_DIR', () => {
+    const beforeConfigDir = CLAUDE_CONFIG_DIR;
+    const beforeMarketplaceRoot = MARKETPLACE_ROOT;
+    // Captured before the call so a regression that ALSO promotes the
+    // resolved override onto the real process env (which would leak into
+    // every other paths.* consumer in this worker process, not just the
+    // isolated subprocess env) is actually caught — `CLAUDE_CONFIG_DIR` /
+    // `MARKETPLACE_ROOT` above are frozen module constants that TypeScript
+    // `const` semantics make impossible to mutate, so they can't detect that
+    // class of leak on their own.
+    const beforeProcessEnvConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+    stubConfigDirSetting('/tmp/subprocess-only-override');
+    const result = buildIsolatedEnv();
+
+    // The subprocess env got the override...
+    expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/subprocess-only-override');
+    // ...but the worker's own frozen module constants did not move at all...
+    expect(CLAUDE_CONFIG_DIR).toBe(beforeConfigDir);
+    expect(MARKETPLACE_ROOT).toBe(beforeMarketplaceRoot);
+    expect(paths.supervisorRegistry()).toContain(paths.dataDir());
+    // ...and neither did the real process environment.
+    expect(process.env.CLAUDE_CONFIG_DIR).toBe(beforeProcessEnvConfigDir);
+  });
+
+  it('buildIsolatedEnvWithFreshOAuth(false) inherits the same CLAUDE_CONFIG_DIR resolution as buildIsolatedEnv', async () => {
+    stubConfigDirSetting('/tmp/from-setting-via-fresh-oauth');
+
+    // includeCredentials=false short-circuits before any OAuth/keychain
+    // lookup (see buildIsolatedEnvWithFreshOAuth's own early return) — this
+    // isolates the CLAUDE_CONFIG_DIR assertion from platform-dependent
+    // keychain behavior.
+    const result = await buildIsolatedEnvWithFreshOAuth(false);
+
+    expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/from-setting-via-fresh-oauth');
+  });
+
+  // Round 3 fix: resolveEffectiveClaudeConfigDir strips a trailing separator,
+  // and buildIsolatedEnv resolves through it — so the SDK subprocess never
+  // sees a trailing-slash CLAUDE_CONFIG_DIR that would otherwise mismatch the
+  // worker's own no-trailing-slash value elsewhere (and, for the darwin
+  // keychain lookup, fail the default-vs-suffixed comparison in
+  // deriveMacKeychainServiceName).
+  it('strips a trailing separator from a CLAUDE_MEM_CLAUDE_CONFIG_DIR setting before stamping it onto the subprocess env', () => {
+    stubConfigDirSetting('/tmp/from-setting-with-slash/');
+
+    const result = buildIsolatedEnv();
+
+    expect(result.CLAUDE_CONFIG_DIR).toBe('/tmp/from-setting-with-slash');
   });
 });

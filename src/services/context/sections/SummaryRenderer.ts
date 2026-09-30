@@ -24,7 +24,7 @@ export function shouldShowSummary(
     return false;
   }
 
-  if (mostRecentObservation && mostRecentSummary.created_at_epoch <= mostRecentObservation.created_at_epoch) {
+  if (mostRecentObservation && mostRecentSummary.created_at_epoch < mostRecentObservation.created_at_epoch) {
     return false;
   }
 

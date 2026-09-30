@@ -24,7 +24,7 @@
 // logged.
 
 import { createHash, randomBytes } from 'crypto';
-import { chmodSync, existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
 import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
@@ -145,8 +145,13 @@ export function persistServerSettings(
       existing = {};
     }
   }
-  // Settings file format: prefer the flat shape (modern). The migration in
-  // SettingsDefaultsManager.loadFromFile already collapses nested → flat.
+  // Settings file format: support both the flat shape (modern) and the
+  // env-nested shape (Claude-Code-style: { env: {...}, hooks: [...], ... }).
+  // `flat` is a *reference* into `existing` — the env subtree when nested, or
+  // the root document otherwise — so mutating `flat` mutates `existing` in
+  // place. We then write the full `existing` document below (NOT `flat`), so
+  // non-env top-level keys (hooks, permissions, apiKeyHelper, ...) survive.
+  // Writing `flat` back as the whole file silently dropped them (data loss).
   const flat = (existing.env && typeof existing.env === 'object'
     ? existing.env
     : existing) as Record<string, unknown>;
@@ -162,14 +167,9 @@ export function persistServerSettings(
     flat.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
   }
 
-  writeJsonFileAtomic(settingsPath, flat);
-  // Hooks read this file on every invocation; restrict permissions so other
-  // local users cannot read the API key.
-  try {
-    chmodSync(settingsPath, 0o600);
-  } catch {
-    // Non-POSIX filesystems may reject chmod; settings file remains readable.
-  }
+  // The temp file is created as 0600 before the first secret byte is written;
+  // there is no creation-to-chmod window on first install.
+  writeJsonFileAtomic(settingsPath, existing, { mode: 0o600 });
 }
 
 export function createRawApiKey(): string {
