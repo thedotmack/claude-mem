@@ -1,3 +1,8 @@
+import { existsSync, readFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { gzipSync } from 'zlib';
+
 /**
  * hook-shell-template.ts — Rule A: host-managed defensive shell-template
  * generator (single source of truth).
@@ -354,14 +359,11 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
 /**
  * POSIX body of plugin/scripts/cmem-build-hook.cmd.
  *
- * Claude Code runs hooks with `shell: bash` and a stripped PATH (#3190), so
- * this keeps the NVM/Homebrew prelude and the cache fallback (#1215, #1533).
- * Grok Build on Windows ignores `shell` and `commandWindows` and runs the
- * command in PowerShell, which cannot parse this body. The .cmd file puts
- * this body on a cmd label line (`:; ...`) and a `node cmem-build-hook.cjs`
- * fallback under that, so PowerShell executes the cmd half while bash
- * executes this half. Commit the .cmd as mode 100755: macOS has no .cmd
- * association, so bash's ENOEXEC fallback only re-reads an executable file.
+ * hooks.json does not launch this file. Both hosts run
+ * buildClaudeHookInvocation(), which evals cmem-build-hook.cjs. The .cmd
+ * stays so a direct launch still has this body: cmd.exe runs the Node half,
+ * and bash (including macOS ENOEXEC on a mode-100755 file) runs this half.
+ * The NVM/Homebrew PATH prelude here is the byte source for #3190.
  *
  * `$1 = version-check` stays fail-loud. Every other argument list is the
  * worker invocation (`start`, or `hook claude-code <event>`) and fails open.
@@ -391,9 +393,69 @@ export function buildClaudeDispatchShell(): string {
   return parts.join(' ');
 }
 
-/** Hook `command` value. The .cmd file is the PowerShell/cmd entry; bash re-enters the dispatch shell. */
+// node -e script. Char codes spell zlib and base64url so the script has no
+// quotes and no `$`. process.argv[1] is the gzip payload; process.argv[2] is
+// the first hook arg, matching cmem-build-hook.cjs. The payload is embedded
+// twice (bash -c and the PowerShell fallback), so it stays gzip'd to remain
+// under the Windows command-line limit.
+const CLAUDE_HOOK_NODE_EVAL =
+  'eval(require(String.fromCharCode(122,108,105,98)).gunzipSync(Buffer.from(process.argv[1],String.fromCharCode(98,97,115,101,54,52,117,114,108))).toString())';
+
+function claudeHookLauncherSource(): Buffer {
+  const candidates: string[] = [
+    path.join(process.cwd(), 'plugin/scripts/cmem-build-hook.cjs'),
+  ];
+  // bun tests import this file by path. The esbuild bundle loaded from a
+  // data: URL has no file path; build-hooks.js runs from the repo root.
+  if (import.meta.url.startsWith('file:')) {
+    candidates.unshift(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../plugin/scripts/cmem-build-hook.cjs'),
+    );
+  }
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return readFileSync(candidate);
+  }
+  throw new Error(
+    'plugin/scripts/cmem-build-hook.cjs not found for buildClaudeHookInvocation (cwd ' + process.cwd() + ')',
+  );
+}
+
+/**
+ * Hook `command` for Claude Code (bash) and Grok Build (Windows PowerShell).
+ *
+ * One string, because Grok ignores `shell` and `commandWindows` and parses
+ * `command` itself. A leading `&` is a bash syntax error, and a quoted
+ * `${CLAUDE_PLUGIN_ROOT}/...` path is not invoked by PowerShell 5.1, so the
+ * command does not launch a file. It evals cmem-build-hook.cjs, which reads
+ * CLAUDE_PLUGIN_ROOT / PLUGIN_ROOT at runtime and then the version-sorted
+ * cache and the marketplace install (#1215, #1533).
+ *
+ * Bash defines `exec` as `builtin exec` and replaces itself, so the PATH
+ * prelude (#3190) runs once and the trailing `node` does not. PowerShell
+ * has no `builtin`; `command_not_found_handle` plus SilentlyContinue swallows
+ * that, and the same `node -e` runs. The prelude sits in single quotes with
+ * the sed expression in double quotes: PowerShell rejects the sort commas
+ * if it can see them, and the inner bash script cannot contain `'`.
+ */
 export function buildClaudeHookInvocation(args: string): string {
-  return `"\${CLAUDE_PLUGIN_ROOT}/scripts/cmem-build-hook.cmd" ${args}`;
+  if (args.includes("'") || args.includes('"')) {
+    throw new Error('buildClaudeHookInvocation: args must not contain quotes');
+  }
+  const payload = gzipSync(claudeHookLauncherSource()).toString('base64url');
+  const prelude = CLAUDE_CODE_HOOK_PATH_PRELUDE
+    .replace("sed 's/^v//'", 'sed "s/^v//"')
+    .replace(/;\s*$/, '');
+  const bashScript = `${prelude}; exec node -e "${CLAUDE_HOOK_NODE_EVAL}" ${payload} ${args}`;
+  if (bashScript.includes("'")) {
+    throw new Error('buildClaudeHookInvocation: bash script contains a single quote');
+  }
+  return [
+    'function command_not_found_handle { :; }',
+    "$null=$ErrorActionPreference='SilentlyContinue'",
+    'function exec { builtin exec "$@"; }',
+    `exec bash -c '${bashScript}'`,
+    `node -e '${CLAUDE_HOOK_NODE_EVAL}' ${payload} ${args}`,
+  ].join('; ');
 }
 
 export function buildClaudePolyglotCmd(): string {

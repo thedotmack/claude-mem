@@ -1,8 +1,7 @@
 'use strict';
-// Windows half of cmem-build-hook.cmd. PowerShell (Grok Build) and cmd run this
-// when bash is not on PATH. The bash half of the .cmd file is the POSIX
-// dispatch shell from hook-shell-template.ts; keep the root order and the
-// fail-open/fail-loud split aligned with that shell.
+// Resolver eval'd by the Claude/Grok hook command (gzip payload) and run
+// by cmem-build-hook.cmd when bash is not on PATH. Root order and the
+// fail-open/fail-loud split match the POSIX dispatch in hook-shell-template.ts.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -35,7 +34,9 @@ function rootIfComplete(candidate, files) {
 }
 
 function resolveRoot(files) {
-  const home = os.homedir();
+  // $_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}". os.homedir() ignores HOME on
+  // Windows, so a set HOME (Git Bash, or a fixture) has to win.
+  const home = process.env.HOME || os.homedir();
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
   const roots = [];
   if (process.env.CLAUDE_PLUGIN_ROOT) roots.push(process.env.CLAUDE_PLUGIN_ROOT);
