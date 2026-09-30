@@ -1,5 +1,7 @@
-
-import { describe, it, expect, mock, afterAll } from 'bun:test';
+import { describe, it, expect, mock, afterAll, beforeEach, afterEach } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
 import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
@@ -25,6 +27,7 @@ const processManager = {
   getPlatformTimeout: mock((timeout: number) => timeout),
   spawnDaemon: mock(() => 2147483647),
   touchPidFile: mock(() => {}),
+  probeWorkerBootFailure: mock((): string | undefined => undefined),
 };
 
 const healthMonitor = {
@@ -63,7 +66,7 @@ afterAll(() => {
   mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
 });
 
-const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
+const { ensureWorkerStarted, getLastWorkerBootFailure } = await import('../../src/services/worker-spawner.js');
 
 type TimedProbe = (port: number, timeout: number) => Promise<boolean>;
 
@@ -96,6 +99,8 @@ function resetMocks(): void {
   processManager.spawnDaemon.mockReset();
   processManager.spawnDaemon.mockReturnValue(2147483647);
   processManager.touchPidFile.mockClear();
+  processManager.probeWorkerBootFailure.mockReset();
+  processManager.probeWorkerBootFailure.mockReturnValue(undefined);
   healthMonitor.isPortInUse.mockReset();
   healthMonitor.isPortInUse.mockResolvedValue(false);
   healthMonitor.waitForHealth.mockReset();
@@ -266,5 +271,96 @@ describe('ensureWorkerStarted validation guards', () => {
     const bogusPath = '/tmp/__claude-mem-test-nonexistent-worker-script.cjs';
     const result = await ensureWorkerStarted(39002, bogusPath);
     expect(result).toBe('dead');
+  });
+});
+
+/**
+ * plan-15 step 7 (#2996): the Windows spawn cooldown is keyed to evidence, not
+ * time. Only a worker this launcher started that provably crashed on boot (or
+ * a launch that failed outright) cools later launchers down; a port-bound
+ * failure, a lost spawn lock or an unexplained exit leaves the next launcher
+ * free to retry at once. The marker is Windows-only, so the platform is faked.
+ */
+describe('Windows spawn cooldown keyed to a proven boot crash (plan-15 step 7)', () => {
+  const originalPlatform = process.platform;
+  const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  let dataDir: string;
+  const marker = () => join(dataDir, '.worker-start-attempted');
+
+  beforeEach(() => {
+    resetMocks();
+    portReclaim.reclaimGhostListeningPort.mockReset();
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({ reclaimed: false, reason: 'not-supported', killedPids: [] });
+    dataDir = mkdtempSync(join(tmpdir(), 'cmem-spawn-cooldown-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+    if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('cools down after the spawned worker provably crashed, and reports the recorded crash', async () => {
+    processManager.probeWorkerBootFailure.mockReturnValue('SyntaxError: bad bundle');
+
+    expect(await ensureWorkerStarted(39101, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(true);
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+
+    // The next launcher inside the window stands down, and still says why.
+    expect(await ensureWorkerStarted(39101, import.meta.filename)).toBe('dead');
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+    expect(getLastWorkerBootFailure()).toBe('SyntaxError: bad bundle');
+  });
+
+  it('cools down after the daemon launch itself failed', async () => {
+    processManager.spawnDaemon.mockReturnValue(undefined);
+
+    expect(await ensureWorkerStarted(39102, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  it('retries at once when the worker exited without a reproducible crash', async () => {
+    processManager.probeWorkerBootFailure.mockReturnValue(undefined);
+
+    expect(await ensureWorkerStarted(39103, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(false);
+
+    await ensureWorkerStarted(39103, import.meta.filename);
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cool down after a port-bound failure: once the port is free it spawns at once', async () => {
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({ reclaimed: false, reason: 'owner-alive', killedPids: [] });
+
+    expect(await ensureWorkerStarted(39104, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(false);
+
+    healthMonitor.isPortInUse.mockResolvedValue(false);
+    healthMonitor.waitForReadiness.mockResolvedValue(true);
+    expect(await ensureWorkerStarted(39104, import.meta.filename)).toBe('ready');
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cool down when another launcher held the spawn lock', async () => {
+    spawnGate.acquireSpawnLock.mockReturnValue(false);
+
+    expect(await ensureWorkerStarted(39105, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  it('clears a recorded crash once a reclaim frees the port', async () => {
+    writeFileSync(marker(), 'SyntaxError: bad bundle');
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    healthMonitor.waitForReadiness.mockResolvedValue(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({ reclaimed: true, killedPids: [3001] });
+
+    expect(await ensureWorkerStarted(39106, import.meta.filename)).toBe('ready');
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+    expect(existsSync(marker())).toBe(false);
   });
 });

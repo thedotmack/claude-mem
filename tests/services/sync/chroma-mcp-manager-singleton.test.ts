@@ -828,6 +828,10 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     mkdirSync(leaked, { recursive: true });
     const dayAgo = new Date(Date.now() - 25 * 60 * 60_000);
     utimesSync(leaked, dayAgo, dayAgo);
+    // A drain started by an earlier test's failed prewarm can still be running
+    // against that test's cache dir; while it runs, a new sweep request is
+    // dropped. Let it finish so the sweep below is this test's own.
+    await ChromaMcpManager.waitForUvBuildsScratchSweepForTesting();
 
     await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
     await ChromaMcpManager.waitForUvBuildsScratchSweepForTesting();
