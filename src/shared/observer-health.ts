@@ -320,8 +320,12 @@ export function clearObserverQuotaCooldown(
 }
 
 export function isObserverUnhealthy(state: ObserverHealthState | null): state is ObserverHealthState {
+  // The threshold lets a blip self-heal before it warns. A refused credential
+  // is not a blip — the provider said so — and the cooldown armed with it
+  // allows no second attempt for a while, so waiting for the threshold would
+  // hide the one remedy (a new key) for over an hour.
   return state !== null
-    && state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD
+    && (state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD || isAuthFailure(state))
     && (state.lastErrorAt ?? 0) > (state.lastSuccessAt ?? 0);
 }
 
@@ -368,6 +372,11 @@ export function workerRestartUrl(): string {
  */
 export function isQuotaFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'quota_exhausted';
+}
+
+/** True when the current outage is the provider refusing the observer's credential. */
+export function isAuthFailure(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'auth_invalid';
 }
 
 /**
@@ -458,6 +467,33 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       ...(action ? [] : [
         'Switch the observer to another provider in ~/.claude-mem/settings.json if you need',
         'memory capture before the allowance resets.',
+      ]),
+      '',
+      '(Assistant: tell the user about this outage at the very start of your first reply,',
+      'quoting the error above. Do NOT restart the worker and do NOT suggest restarting it.)',
+    ].join('\n');
+  }
+
+  // A refused credential is the other outage a restart cannot clear: the
+  // provider rejected the key (or the account), and nothing is wedged. Relay
+  // the provider's remedy instead of offering a restart that changes nothing.
+  if (isAuthFailure(state)) {
+    return [
+      "⚠️ Heads up: claude-mem can't save memories right now.",
+      '',
+      `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
+      '',
+      `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+      ...(action ? [`What to do: ${action}`] : []),
+      ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+      ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+      '',
+      "Until that's fixed, nothing from this session — or any other — will be remembered.",
+      '',
+      'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
+      ...(action ? [] : [
+        "Check the observer provider's API key in ~/.claude-mem/settings.json, or switch the",
+        'observer to another provider there.',
       ]),
       '',
       '(Assistant: tell the user about this outage at the very start of your first reply,',

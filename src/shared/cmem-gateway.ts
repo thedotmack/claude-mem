@@ -6,13 +6,16 @@
  * When the installer's browser login delivers a memory key, the worker talks
  * to the cmem.ai gateway through the generic OpenRouter provider
  * (CLAUDE_MEM_OPENROUTER_BASE_URL points at `${CMEM_PRO_ORIGIN}/api/inference/v1`).
- * Once the free trial ends without a subscription, the gateway answers with a
- * terminal quota/key error — and instead of surfacing an outage, memory falls
- * back to the user's Anthropic plan. The fallback state lives in settings.json
- * as CLAUDE_MEM_PRO_FALLBACK_AT (ISO timestamp; '' = no fallback) and is
- * strictly EVENT-driven: it is written only when the gateway rejects a request,
- * never from trial dates — a subscribed user's key keeps working past
- * `ends_at`, so the date alone must never disable anything.
+ * When the gateway stops serving the account it answers with a terminal code —
+ * `subscription_inactive` for a lapsed, cancelled, or unpaid trial or plan,
+ * `allowance_exhausted` for a spent allowance (paid accounts at their cap
+ * included), `key_invalid` for an unrecognized key — and instead of surfacing
+ * an outage, memory falls back to the user's Anthropic plan. The fallback
+ * state lives in settings.json as CLAUDE_MEM_PRO_FALLBACK_AT (ISO timestamp;
+ * '' = no fallback), with the gateway's own words beside it for the
+ * session-start notice. It is strictly EVENT-driven: written only when the
+ * gateway rejects a request, never from trial dates — a subscribed user's key
+ * keeps working past `ends_at`, so the date alone must never disable anything.
  *
  * Shared (not npx-cli) because the worker, the session-start hook, and the
  * installer all need the same gateway check. The npx-cli endpoint constants in
@@ -105,10 +108,31 @@ function readRawSettingsDocument(settingsPath: string): {
   return { document, target };
 }
 
-/** Persist the fallback timestamp — the OpenRouter dispatch reads it back. */
-export function writeProFallbackAt(isoNow: string, settingsPath: string = USER_SETTINGS_PATH): void {
+/** What the gateway said about the rejection that armed the fallback. */
+export interface ProFallbackNotice {
+  message?: string;
+  action?: string;
+  url?: string;
+}
+
+/**
+ * Persist the fallback timestamp — the OpenRouter dispatch reads it back —
+ * together with the gateway's words, in one write. Passing `notice` replaces
+ * the stored words (missing parts become ''); omitting it re-stamps the time
+ * and keeps the words of the rejection that started the fallback.
+ */
+export function writeProFallbackAt(
+  isoNow: string,
+  settingsPath: string = USER_SETTINGS_PATH,
+  notice?: ProFallbackNotice,
+): void {
   const { document, target } = readRawSettingsDocument(settingsPath);
   target.CLAUDE_MEM_PRO_FALLBACK_AT = isoNow;
+  if (notice) {
+    target.CLAUDE_MEM_PRO_FALLBACK_MESSAGE = notice.message ?? '';
+    target.CLAUDE_MEM_PRO_FALLBACK_ACTION = notice.action ?? '';
+    target.CLAUDE_MEM_PRO_FALLBACK_URL = notice.url ?? '';
+  }
   writeJsonFileAtomic(settingsPath, document);
 }
 
@@ -125,6 +149,9 @@ export function clearProFallback(
     const { document, target } = readRawSettingsDocument(settingsPath);
     if (target.CLAUDE_MEM_PRO_FALLBACK_AT) {
       target.CLAUDE_MEM_PRO_FALLBACK_AT = '';
+      target.CLAUDE_MEM_PRO_FALLBACK_MESSAGE = '';
+      target.CLAUDE_MEM_PRO_FALLBACK_ACTION = '';
+      target.CLAUDE_MEM_PRO_FALLBACK_URL = '';
       writeJsonFileAtomic(settingsPath, document);
     }
   } catch (error: unknown) {

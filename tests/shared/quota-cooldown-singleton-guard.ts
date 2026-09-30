@@ -1,5 +1,6 @@
 import { afterEach, beforeEach } from 'bun:test';
 import { getQuotaCooldown, type QuotaProvider } from '../../src/shared/quota-cooldown.js';
+import { getCmemGatewayProbeClaim } from '../../src/services/worker/provider-dispatch.js';
 
 const QUOTA_PROVIDERS: QuotaProvider[] = ['claude', 'gemini', 'openrouter', 'cmem-gateway'];
 
@@ -26,9 +27,21 @@ const QUOTA_PROVIDERS: QuotaProvider[] = ['claude', 'gemini', 'openrouter', 'cme
  * only a hook registered outside every describe() block is guaranteed to run
  * its "after" check strictly after that file's own local cleanup, which must
  * stay nested one level in.
+ *
+ * The cmem gateway re-probe claim (provider-dispatch.ts) is the same shape of
+ * process-wide admission state and is checked here too: a claim left held by
+ * one test routes every later gateway dispatch in the process to 'claude'.
  */
 export function guardSharedQuotaCooldownSingleton(label: string): void {
   const assertClean = (when: 'before' | 'after') => {
+    const gatewayProbeClaim = getCmemGatewayProbeClaim();
+    if (gatewayProbeClaim !== null) {
+      throw new Error(
+        `[quota-cooldown-singleton-guard:${label}] the cmem gateway re-probe claim ${gatewayProbeClaim} is still held ${when} a test. ` +
+        `Some test took it through selectProviderForGenerator() and never released it; call ` +
+        `resetCmemGatewayProbeForTesting() in its own afterEach rather than loosening this guard.`
+      );
+    }
     const armed = QUOTA_PROVIDERS
       .map(provider => ({ provider, state: getQuotaCooldown(provider) }))
       .filter(({ state }) => state !== null);

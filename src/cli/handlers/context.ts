@@ -18,7 +18,7 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { proTrialLine, proTrialUrl, PLAN_USAGE_GAIN_PERCENT } from '../../shared/pro-promo.js';
+import { proTrialLine, proTrialUrl } from '../../shared/pro-promo.js';
 import {
   hasShownProFallbackNotice,
   isCmemGatewayUrl,
@@ -105,12 +105,21 @@ export const contextHandler: EventHandler = {
     // delivered key, and dispatch now runs memory on the Anthropic plan. Tell
     // the user exactly once (DATA_DIR marker file, oauth-stale pattern); the
     // marker resets whenever the fallback is cleared.
+    //
+    // Plan-neutral: paid accounts at their monthly cap are rejected too, so
+    // never assume a trial. The gateway's own words, stored with the marker,
+    // say what happened and what to do; without them, say only what is true
+    // for every account, and keep the renewal link.
     const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== ''
       && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
       && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
     if (fallbackActive && !hasShownProFallbackNotice()) {
-      const fallbackNotice = 'Your claude-mem free trial ended — memory now runs on your Anthropic plan.\n'
-        + `Keep it off-plan (up to ${PLAN_USAGE_GAIN_PERCENT}% more usage): ${proTrialUrl('fallback')}`;
+      const fallbackNotice = [
+        settings.CLAUDE_MEM_PRO_FALLBACK_MESSAGE || 'cmem.ai memory is paused for this account.',
+        ...(settings.CLAUDE_MEM_PRO_FALLBACK_ACTION ? [settings.CLAUDE_MEM_PRO_FALLBACK_ACTION] : []),
+        'Memory is using your Anthropic plan for now. '
+          + `Manage your plan: ${settings.CLAUDE_MEM_PRO_FALLBACK_URL || proTrialUrl('fallback')}`,
+      ].join('\n');
       additionalContext = additionalContext
         ? `${fallbackNotice}\n\n${additionalContext}`
         : fallbackNotice;

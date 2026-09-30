@@ -281,6 +281,17 @@ describe('isObserverUnhealthy', () => {
     expect(isObserverUnhealthy(unhealthyState({ lastSuccessAt: null }))).toBe(true);
   });
 
+  it('treats one refused credential as unhealthy, until a success clears it', () => {
+    // A rejected key or an inactive subscription is definitive, and its
+    // cooldown means no second attempt for a while — waiting for the failure
+    // threshold would hide the one remedy (renew, re-link) for over an hour.
+    const refused = unhealthyState({ consecutiveFailures: 1, lastErrorKind: 'auth_invalid' });
+    expect(isObserverUnhealthy(refused)).toBe(true);
+    expect(isObserverUnhealthy({ ...refused, consecutiveFailures: 0, lastSuccessAt: (refused.lastErrorAt ?? 0) + 1 })).toBe(false);
+    // Other kinds keep the threshold: a single blip self-heals.
+    expect(isObserverUnhealthy(unhealthyState({ consecutiveFailures: 1, lastErrorKind: 'transient' }))).toBe(false);
+  });
+
   it('does not treat an armed quota cooldown as unhealthy', () => {
     expect(isObserverUnhealthy(unhealthyState({
       consecutiveFailures: 0,
@@ -408,6 +419,35 @@ describe('renderObserverHealthWarning', () => {
     }));
     expect(warning).toContain('What to do:');
     expect(warning).not.toContain('SUPERSECRETACTION');
+  });
+
+  it('relays a refused credential with the provider\'s remedy, and never offers a restart', () => {
+    const refused = unhealthyState({
+      consecutiveFailures: 1,
+      lastErrorKind: 'auth_invalid',
+      lastErrorProvider: 'gemini',
+      lastErrorMessage: 'API key not valid. Please pass a valid API key.',
+    });
+
+    const withoutAction = renderObserverHealthWarning(refused);
+    expect(withoutAction).toContain('Latest error: API key not valid. Please pass a valid API key.');
+    expect(withoutAction).toContain('~/.claude-mem/settings.json');
+    // A restart cannot fix a refused credential.
+    expect(withoutAction).not.toContain(workerRestartUrl());
+    expect(withoutAction).not.toContain('npx claude-mem restart');
+    expect(withoutAction).toContain('Do NOT restart the worker');
+
+    const withAction = renderObserverHealthWarning({
+      ...refused,
+      lastErrorAction: 'Create a new key in the provider console.',
+      lastErrorUrl: 'https://example.com/keys',
+      lastErrorRequestId: 'req_refused',
+    });
+    expect(withAction).toContain('What to do: Create a new key in the provider console.');
+    expect(withAction).toContain('Link: https://example.com/keys');
+    expect(withAction).toContain('Request id: req_refused');
+    expect(withAction).not.toContain('~/.claude-mem/settings.json');
+    expect(withAction).not.toContain(workerRestartUrl());
   });
 });
 

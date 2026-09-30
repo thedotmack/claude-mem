@@ -119,6 +119,37 @@ describe('cmem-gateway', () => {
       expect(parsed.env.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
     });
 
+    it('writes the gateway\'s own words with the marker, and a bare re-stamp keeps them', () => {
+      writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath, {
+        message: "Your CMEM Pro payment didn't go through, so the observer is paused.",
+        action: 'Update your card in the dashboard and observations resume immediately.',
+        url: 'https://cmem.ai/dashboard',
+      });
+      writeProFallbackAt('2026-08-26T12:20:00.000Z', settingsPath);
+
+      const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:20:00.000Z');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe("Your CMEM Pro payment didn't go through, so the observer is paused.");
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_ACTION).toBe('Update your card in the dashboard and observations resume immediately.');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_URL).toBe('https://cmem.ai/dashboard');
+    });
+
+    it('clearProFallback empties the gateway\'s words along with the marker', () => {
+      writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath, {
+        message: 'words',
+        action: 'do this',
+        url: 'https://cmem.ai/dashboard',
+      });
+
+      clearProFallback(settingsPath, tempDir);
+
+      const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe('');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_ACTION).toBe('');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_URL).toBe('');
+    });
+
     it('clearProFallback empties the value and removes the notice marker', () => {
       writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath);
       markProFallbackNoticeShown(tempDir);

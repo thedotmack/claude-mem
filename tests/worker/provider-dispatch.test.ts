@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdirSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -8,6 +8,7 @@ import {
   getSelectedProvider,
   recordCmemFallbackIfEligible,
   releaseCmemGatewayProbe,
+  resetCmemGatewayProbeForTesting,
   selectProviderForGenerator,
   shouldUseCmemFallback,
   type ProviderSelection,
@@ -115,19 +116,13 @@ describe('provider-dispatch', () => {
   });
 
   describe('selectProviderForGenerator — the single gateway re-probe', () => {
-    // The claim is process-wide state: hand back every one a test takes.
-    const takenClaims: Array<number | null> = [];
-
+    // The claim is process-wide state: never let one test's claim reach the next.
     afterEach(() => {
       setSystemTime();
-      while (takenClaims.length > 0) releaseCmemGatewayProbe(takenClaims.pop() ?? null);
+      resetCmemGatewayProbeForTesting();
     });
 
-    function select(): ProviderSelection {
-      const selection = selectProviderForGenerator();
-      takenClaims.push(selection.gatewayProbeClaimId);
-      return selection;
-    }
+    const select = (): ProviderSelection => selectProviderForGenerator();
 
     function elapsedFallbackAt(): string {
       return new Date(Date.now() - CMEM_FALLBACK_RETRY_MS - 1_000).toISOString();
@@ -243,6 +238,56 @@ describe('provider-dispatch', () => {
       expect(Number.isNaN(Date.parse(persisted.CLAUDE_MEM_PRO_FALLBACK_AT))).toBe(false);
     });
 
+    it('stores the gateway\'s own message and link with the marker, for the session-start notice', () => {
+      pinOpenRouterEnv();
+      const error = classifyOpenRouterError({
+        status: 402,
+        bodyText: JSON.stringify({ error: {
+          code: 'allowance_exhausted',
+          message: "You've used your $30 CMEM Pro inference allowance for this billing cycle.",
+          action: 'It resets at the start of your next billing cycle.',
+          url: 'https://cmem.ai/dashboard',
+          request_id: 'req_1',
+        } }),
+        cause: new Error('upstream 402'),
+      });
+
+      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+
+      const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe("You've used your $30 CMEM Pro inference allowance for this billing cycle.");
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_ACTION).toBe('It resets at the start of your next billing cycle.');
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_URL).toBe('https://cmem.ai/dashboard');
+    });
+
+    it('stores no words for a legacy (no-envelope) 402, so the notice stays plan-neutral', () => {
+      pinOpenRouterEnv();
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_PRO_FALLBACK_MESSAGE: 'stale words from an earlier fallback',
+        CLAUDE_MEM_PRO_FALLBACK_ACTION: 'stale action',
+        CLAUDE_MEM_PRO_FALLBACK_URL: 'https://cmem.ai/stale',
+      }));
+      const error = classifyOpenRouterError({ status: 402, bodyText: 'Payment required', cause: new Error('upstream 402') });
+
+      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+
+      const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe('');
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_ACTION).toBe('');
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_URL).toBe('');
+    });
+
+    it('does not rewrite the marker while the fallback window is already running', () => {
+      const armedAt = new Date(Date.now() - 60_000).toISOString();
+      pinOpenRouterEnv();
+      delete process.env.CLAUDE_MEM_PRO_FALLBACK_AT;
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_PRO_FALLBACK_AT: armedAt }));
+
+      // Consumed as handled — another generator's rejection already switched it.
+      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(true);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).toBe(armedAt);
+    });
+
     it('records the fallback for a key_invalid gateway rejection', () => {
       pinOpenRouterEnv();
       const error = gatewayError(401, 'key_invalid');
@@ -281,11 +326,19 @@ describe('provider-dispatch', () => {
       expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
     });
 
-    it('ignores non-terminal gateway errors (rate limits, transient, inactive subscription)', () => {
+    it('records the fallback for subscription_inactive — a lapsed, cancelled, or unpaid trial', () => {
+      pinOpenRouterEnv();
+      const error = gatewayError(402, 'subscription_inactive');
+      expect(error.kind).toBe('auth_invalid');
+
+      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).not.toBe('');
+    });
+
+    it('ignores non-terminal gateway errors (rate limits, transient upstream failures)', () => {
       pinOpenRouterEnv();
       expect(recordCmemFallbackIfEligible(gatewayError(429, 'rate_limited'), settingsPath)).toBe(false);
       expect(recordCmemFallbackIfEligible(gatewayError(503, 'upstream_unavailable'), settingsPath)).toBe(false);
-      expect(recordCmemFallbackIfEligible(gatewayError(403, 'subscription_inactive'), settingsPath)).toBe(false);
     });
   });
 });
