@@ -55,9 +55,11 @@ describe('search in scripts FTS5 cannot segment', () => {
     seedObservation('ko-1', 'cjk-project', '프로젝트 설정을 변경했습니다', '설정을 바꾼 기록');
     seedObservation('bpmf-1', 'cjk-project', 'ㄓㄨㄛ ㄖㄣ ㄊㄢ', 'ㄓㄨㄛ 的紀錄');
     seedObservation('en-1', 'cjk-project', 'Database Path resolution', 'the database path is resolved at startup');
+    seedObservation('fts-1', 'cjk-project', 'orphaned memory cleanup', 'plugin hooks now track version metadata with ambient-total counters');
     seedObservation('other-1', 'other-project', '用户身份验证流程', '另一个项目里的同名观察');
     seedSummary('sum-cjk', 'cjk-project', '重构用户身份验证的会话');
     seedSummary('sum-en', 'cjk-project', 'refactor the database path');
+    seedSummary('sum-fts', 'cjk-project', 'orphaned plugin migration ambient-total version');
   });
 
   afterEach(() => {
@@ -119,5 +121,24 @@ describe('search in scripts FTS5 cannot segment', () => {
     expect(results.map(r => r.title)).toEqual(['Database Path resolution']);
     expect(search.searchSessions('database path', { project: 'cjk-project' }).map(r => r.request))
       .toEqual(['refactor the database path']);
+  });
+
+  it('treats multi-word FTS input as ANDed terms instead of one exact phrase', () => {
+    const observationResults = search.searchObservations('orphaned plugin version', { project: 'cjk-project' });
+    expect(observationResults.map(r => r.memory_session_id)).toContain('fts-1-mem');
+
+    const sessionResults = search.searchSessions('orphaned plugin version', { project: 'cjk-project' });
+    expect(sessionResults.map(r => r.memory_session_id)).toContain('sum-fts');
+  });
+
+  it('treats FTS metacharacters in tokens literally when combined with other terms', () => {
+    const query = 'ambient-total orphaned plugin version';
+    expect(() => search.searchObservations(query, { project: 'cjk-project' })).not.toThrow();
+    expect(search.searchObservations(query, { project: 'cjk-project' }).map(r => r.memory_session_id))
+      .toContain('fts-1-mem');
+
+    expect(() => search.searchSessions(query, { project: 'cjk-project' })).not.toThrow();
+    expect(search.searchSessions(query, { project: 'cjk-project' }).map(r => r.memory_session_id))
+      .toContain('sum-fts');
   });
 });

@@ -28,7 +28,7 @@ export interface ProviderLabels {
  */
 export function buildProviderLabels(): ProviderLabels {
   return {
-    cmem: 'CMEM Pro (30 Day Free Trial: Tokens for Observations + Real-Time Cloud Sync '
+    cmem: 'CMEM Pro (Free Trial, up to 14 days: Tokens for Observations + Real-Time Cloud Sync '
       + 'for Claude.ai, ChatGPT.com, anything that accepts an MCP Connector)',
     cmemHint: '',
     claude: 'Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)',
