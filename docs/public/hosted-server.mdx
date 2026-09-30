@@ -206,6 +206,18 @@ only when generation was explicitly disabled). The actual provider call happens 
 the separate BullMQ worker (`claude-mem server worker start`) — the HTTP path
 **never blocks** on a provider response.
 
+### Generation concurrency
+
+By default the generation worker processes one job at a time in each of its two
+lanes: `event` (per-event observations) and `summary` (session summaries). If
+events arrive faster than one job at a time can process them, jobs still complete
+but the backlog grows, and observations land hours after the work they describe.
+Set `CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY=N` on the generation worker to run up
+to N jobs in parallel **per lane**. Both lanes use the value, so one worker process
+can have up to 2N provider calls in flight. Size N against your provider's rate
+limit. Values above 64 are clamped to 64, and invalid values are ignored with a
+warning.
+
 ## Endpoint reference
 
 All endpoints are mounted under `/v1`; legacy worker routes remain under `/api`.
