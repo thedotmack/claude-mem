@@ -12,7 +12,7 @@ import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js
 import { logger } from '../../utils/logger.js';
 import { ChromaCorruptCollectionError, ChromaUnavailableError } from '../worker/search/errors.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import type * as SqliteFilesModule from '../sqlite/observations/files.js';
 
@@ -48,11 +48,13 @@ export interface ChromaDocument {
 
 /**
  * Why a backfill run stopped before attempting every row: the worker began
- * shutting down (local Chroma then refuses every write), or Chroma refused
- * writes for MAX_CONSECUTIVE_BATCH_FAILURES rows in a row. Either way the rows
- * stay pending or above the watermark and the next run resumes from them.
+ * shutting down (local Chroma then refuses every write), Chroma refused
+ * writes for MAX_CONSECUTIVE_BATCH_FAILURES rows in a row, or the collection
+ * was dropped as corrupt mid-run (#3202). In the first two cases the rows stay
+ * pending or above the watermark and the next run resumes from them; after a
+ * drop, every project is rebuilt from zero.
  */
-export type BackfillAbortReason = 'shutdown' | 'write_failures';
+export type BackfillAbortReason = 'shutdown' | 'write_failures' | 'collection_dropped';
 
 /** 'completed' when a project's backfill attempted every row, else why it stopped. */
 export type BackfillOutcome = 'completed' | BackfillAbortReason;
@@ -177,6 +179,24 @@ const CHROMA_MCP_EMBEDDING_FUNCTIONS: ReadonlySet<string> = new Set([
   'default', 'openai', 'cohere', 'jina', 'voyageai', 'roboflow',
 ]);
 
+// Chroma's error for an HNSW segment that can no longer apply its write-ahead
+// log (#3202). Only this proves the collection itself is broken: an
+// embedding-runtime failure (onnxruntime INVALID_PROTOBUF, #2371), a protobuf
+// import error or one bad metadata value also come back as a tool error, and
+// dropping every project's vectors for those would be wrong.
+const CORRUPT_SEGMENT_ERROR_SIGNATURE = 'Failed to apply logs to the hnsw segment writer';
+// A stuck segment fails every write, a fluke does not: the signature has to
+// repeat on this many distinct batches, with no successful write in between.
+const CORRUPT_SEGMENT_CONFIRMING_BATCHES = 2;
+
+/** The last corrupt collection this process dropped, for health reporting. */
+export interface ChromaCollectionDrop {
+  collection: string;
+  droppedAt: string;
+  documentCount: number | null;
+  error: string;
+}
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
@@ -188,26 +208,32 @@ export class ChromaSync {
   private readonly MAX_CONSECUTIVE_BATCH_FAILURES = 3;
 
   /**
-   * Bumped when a corrupt collection is dropped so every live ChromaSync
-   * instance's ensureCollectionExists() cache is invalidated at once — a
-   * stale per-instance flag would otherwise write into the deleted
-   * collection.
+   * Bumped when a corrupt collection is dropped. It invalidates every
+   * instance's ensure-collection cache at once, so nothing writes into the
+   * deleted collection, and stops backfill runs that were writing into it.
    */
   private static collectionGeneration = 0;
 
   /**
-   * Registered once at worker startup so a corrupt-collection drop during a
-   * live sync can re-derive the collection immediately through the existing
-   * backfill pipeline instead of waiting for the next worker start.
+   * Registered at worker startup so a drop outside a backfill sweep (a live
+   * write tripping it) can start the rebuild right away.
    */
   private static backfillStore: SessionStore | null = null;
 
   /**
-   * Collections already re-derived once in this process. A second
-   * deterministic write failure on a freshly derived collection means Chroma
-   * itself is broken — surface the error instead of re-deriving in a loop.
+   * First document id of each distinct batch that failed with the corrupt
+   * segment signature since the collection's last successful write.
    */
-  private static rederivedCollections = new Set<string>();
+  private static corruptSegmentBatches = new Map<string, Set<string>>();
+
+  /**
+   * Collections dropped once already in this process. If the rebuilt
+   * collection fails the same way, Chroma itself is broken: report it rather
+   * than drop and rebuild in a loop.
+   */
+  private static droppedCollections = new Set<string>();
+
+  private static lastCollectionDrop: ChromaCollectionDrop | null = null;
 
   constructor(project: string) {
     this.project = project;
@@ -224,6 +250,11 @@ export class ChromaSync {
 
   static registerBackfillStore(store: SessionStore): void {
     ChromaSync.backfillStore = store;
+  }
+
+  /** The last corrupt collection this process dropped, or null. */
+  static getLastCollectionDrop(): ChromaCollectionDrop | null {
+    return ChromaSync.lastCollectionDrop;
   }
 
   // Public: cmem-sdk requires Chroma at construction. Plan §3 line 192.
@@ -271,73 +302,109 @@ export class ChromaSync {
     });
   }
 
-  /**
-   * Deterministic tool-level failures (chroma executed the tool and said no)
-   * mean the collection itself rejects writes. Availability failures
-   * (subprocess down, transport reset, connect backoff) don't — those
-   * already have reconnect handling and resolve without touching the
-   * collection.
-   */
-  private static isDeterministicToolError(error: unknown): boolean {
+  private static isCorruptSegmentError(error: unknown): boolean {
     if (error instanceof ChromaUnavailableError) {
       return false;
     }
     const message = error instanceof Error ? error.message : String(error);
-    return message.includes('returned error:');
+    return message.includes(CORRUPT_SEGMENT_ERROR_SIGNATURE);
   }
 
   /**
-   * A deterministic write failure means the collection's HNSW segment is in
-   * a persistent failed state (issue #3202): every future write to it fails
-   * identically, and each attempt makes the chroma-mcp python subprocess
-   * replay its write-ahead log in memory (observed: ~20 GB physical
-   * footprint within 4 minutes). Retrying is incorrect — the index is fully
-   * derived from SQLite, so the correct operation is to recompute it: drop
-   * the collection, zero every project's watermarks (the collection is
-   * shared across projects) so the backfill pipeline re-derives every row,
-   * and invalidate all cached ensure-collection flags.
+   * A batch failed with the corrupt segment signature. Once that has happened
+   * on CORRUPT_SEGMENT_CONFIRMING_BATCHES distinct batches, drop the
+   * collection and throw ChromaCorruptCollectionError. Until then return, so
+   * the batch counts as an ordinary failed write.
+   */
+  private async handleCorruptSegmentFailure(batch: ChromaDocument[], error: unknown): Promise<void> {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    const failedBatches = ChromaSync.corruptSegmentBatches.get(this.collectionName) ?? new Set<string>();
+    failedBatches.add(batch[0]?.id ?? '');
+    ChromaSync.corruptSegmentBatches.set(this.collectionName, failedBatches);
+
+    if (failedBatches.size < CORRUPT_SEGMENT_CONFIRMING_BATCHES) {
+      logger.warn('CHROMA_SYNC', 'HNSW segment failed to apply its log; the collection is dropped if another batch fails the same way', {
+        collection: this.collectionName
+      });
+      return;
+    }
+    if (ChromaSync.droppedCollections.has(this.collectionName)) {
+      logger.error('CHROMA_SYNC', 'Rebuilt collection still has a corrupt HNSW segment; not dropping it again in this process', {
+        collection: this.collectionName
+      }, cause);
+      return;
+    }
+
+    await this.dropCorruptCollection(cause);
+    throw new ChromaCorruptCollectionError(
+      `Corrupt collection ${this.collectionName} dropped; rebuilding it from SQLite`,
+      cause
+    );
+  }
+
+  /**
+   * Drop a collection whose HNSW segment is stuck (#3202) and rebuild it from
+   * SQLite, the source of truth. Every write to such a segment fails the same
+   * way and makes chroma-mcp replay its write-ahead log in memory (about
+   * 20 GB within 4 minutes on the reporting host), so retrying never helps.
    *
-   * The re-derivation runs immediately through the existing backfill
-   * pipeline when a store was registered at startup and no backfill is
-   * already in flight; otherwise the zeroed watermarks complete it on the
-   * next worker start. At most one re-derivation per collection per process:
-   * a second deterministic failure afterward means Chroma itself is broken,
-   * and that error must surface, not feed a drop/rebuild loop.
+   * The collection is shared by every project, so every project is flagged
+   * for a rebuild from zero (see ChromaSyncState.resetForRebuild). Bumping
+   * the generation stops backfill runs still writing into the old collection;
+   * a running sweep then starts over, otherwise a new sweep starts here. If
+   * the worker stops first, the persisted flags make the next start rebuild.
    */
   private async dropCorruptCollection(cause: Error): Promise<void> {
-    logger.error('CHROMA_SYNC', 'Deterministic write failure — collection is corrupt, dropping and re-deriving from SQLite', {
+    const chromaMcp = ChromaMcpManager.getInstance();
+    let documentCount: number | null = null;
+    try {
+      const count = await chromaMcp.callTool('chroma_get_collection_count', {
+        collection_name: this.collectionName
+      });
+      documentCount = typeof count === 'number' ? count : null;
+    } catch (error) {
+      logger.debug('CHROMA_SYNC', 'Could not count the corrupt collection before dropping it', {
+        collection: this.collectionName,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    logger.error('CHROMA_SYNC', 'Chroma collection has a corrupt HNSW segment; dropping it and rebuilding from SQLite', {
       collection: this.collectionName,
-      project: this.project
+      documentCount,
+      chromaMode: settings.CLAUDE_MEM_CHROMA_MODE || 'local',
+      chromaDataDir: settings.CLAUDE_MEM_CHROMA_MODE === 'remote' ? undefined : paths.chroma()
     }, cause);
 
-    const chromaMcp = ChromaMcpManager.getInstance();
     await chromaMcp.callTool('chroma_delete_collection', {
       collection_name: this.collectionName
     });
 
-    // The collection is shared by every project (all live instances are
-    // constructed with 'claude-mem'), so dropping it invalidates every
-    // project's vectors — zero all watermarks, not just this instance's.
-    ChromaSyncState.resetAll();
+    ChromaSync.droppedCollections.add(this.collectionName);
+    ChromaSync.corruptSegmentBatches.delete(this.collectionName);
+    ChromaSync.lastCollectionDrop = {
+      collection: this.collectionName,
+      droppedAt: new Date().toISOString(),
+      documentCount,
+      error: cause.message
+    };
+    ChromaSyncState.markAllForRebuild();
     ChromaSync.collectionGeneration += 1;
 
-    if (
-      ChromaSync.backfillStore &&
-      !ChromaSync.backfillInProgress &&
-      !ChromaSync.rederivedCollections.has(this.collectionName)
-    ) {
-      ChromaSync.rederivedCollections.add(this.collectionName);
-      const store = ChromaSync.backfillStore;
-      void ChromaSync.backfillAllProjects(store).catch((error) => {
-        logger.error('CHROMA_SYNC', 'Re-derivation backfill failed — collection rebuilds on next worker start', {
-          collection: this.collectionName
-        }, error instanceof Error ? error : new Error(String(error)));
-      });
-    } else {
-      logger.warn('CHROMA_SYNC', 'Collection dropped — re-derivation runs on next worker start', {
+    if (ChromaSync.backfillInProgress) {
+      return;
+    }
+    if (!ChromaSync.backfillStore) {
+      logger.warn('CHROMA_SYNC', 'Collection dropped; it is rebuilt on the next worker start', {
         collection: this.collectionName
       });
+      return;
     }
+    void ChromaSync.backfillAllProjects(ChromaSync.backfillStore).catch((error) => {
+      logger.error('CHROMA_SYNC', 'Rebuild after dropping a corrupt collection failed; the next worker start retries it', {
+        collection: this.collectionName
+      }, error instanceof Error ? error : new Error(String(error)));
+    });
   }
 
   private formatObservationDocs(obs: StoredObservation): ChromaDocument[] {
@@ -492,12 +559,12 @@ export class ChromaSync {
    * Write `documents` to Chroma in BATCH_SIZE-sized batches.
    *
    * Returns the number of documents that were successfully written (or
-   * confirmed via delete+add reconcile). Availability failures are logged and
+   * confirmed via delete+add reconcile). Per-batch failures are logged and
    * the loop continues, so callers must use the returned count to advance
    * their watermark, otherwise an interrupted backfill can mark unsynced
-   * records as synced. A deterministic tool-level failure throws
-   * ChromaCorruptCollectionError after dropping the corrupt collection —
-   * retrying such a write is never correct (issue #3202).
+   * records as synced. The one exception is a confirmed corrupt HNSW segment
+   * (#3202): the collection is dropped for a rebuild and this throws
+   * ChromaCorruptCollectionError, because retrying such a write never helps.
    *
    * Visibility: promoted from `private` to `public` for cmem-sdk Phase 6.
    * The SDK indexes Postgres observations into Chroma using this same
@@ -549,6 +616,8 @@ export class ChromaSync {
           metadatas: cleanMetadatas
         });
         written += batch.length;
+        // A write that lands proves the segment is not stuck.
+        ChromaSync.corruptSegmentBatches.delete(this.collectionName);
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         if (errMsg.includes('already exist')) {
@@ -610,14 +679,10 @@ export class ChromaSync {
               updated: toUpdate.length,
               added: toAdd.length
             });
+            ChromaSync.corruptSegmentBatches.delete(this.collectionName);
           } catch (reconcileError) {
-            if (ChromaSync.isDeterministicToolError(reconcileError)) {
-              const cause = reconcileError instanceof Error ? reconcileError : new Error(String(reconcileError));
-              await this.dropCorruptCollection(cause);
-              throw new ChromaCorruptCollectionError(
-                `Corrupt collection ${this.collectionName} dropped after deterministic reconcile failure; re-deriving from SQLite`,
-                cause
-              );
+            if (ChromaSync.isCorruptSegmentError(reconcileError)) {
+              await this.handleCorruptSegmentFailure(batch, reconcileError);
             }
             logger.error('CHROMA_SYNC', 'Batch reconcile (update+add) failed — watermark will not advance for this batch', {
               collection: this.collectionName,
@@ -625,14 +690,10 @@ export class ChromaSync {
               batchSize: batch.length
             }, reconcileError as Error);
           }
-        } else if (ChromaSync.isDeterministicToolError(error)) {
-          const cause = error instanceof Error ? error : new Error(String(error));
-          await this.dropCorruptCollection(cause);
-          throw new ChromaCorruptCollectionError(
-            `Corrupt collection ${this.collectionName} dropped after deterministic write failure; re-deriving from SQLite`,
-            cause
-          );
         } else {
+          if (ChromaSync.isCorruptSegmentError(error)) {
+            await this.handleCorruptSegmentFailure(batch, error);
+          }
           logger.error('CHROMA_SYNC', 'Batch add failed — watermark will not advance for this batch, continuing with remaining batches', {
             collection: this.collectionName,
             batchStart: i,
@@ -970,10 +1031,22 @@ export class ChromaSync {
       throw error;
     }
 
+    const rebuilding = ChromaSyncState.isRebuildPending(project);
+    if (rebuilding) {
+      // This project's documents went with a dropped corrupt collection
+      // (#3202). Start from zero: live writes may have bumped its watermark
+      // since the drop, and that must not hide older rows from the rebuild.
+      ChromaSyncState.resetForRebuild(project);
+      logger.info('CHROMA_SYNC', 'Rebuilding project from SQLite after a corrupt collection was dropped', { project });
+    }
     const watermarks = ChromaSyncState.get(project);
 
     try {
-      return await this.runBackfillPipeline(store, project, watermarks);
+      const outcome = await this.runBackfillPipeline(store, project, watermarks);
+      if (rebuilding && outcome === 'completed') {
+        ChromaSyncState.finishRebuild(project);
+      }
+      return outcome;
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Backfill failed', { project }, error instanceof Error ? error : new Error(String(error)));
       throw new Error(`Backfill failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1057,9 +1130,26 @@ export class ChromaSync {
     let writtenDocs = 0;
     let emptyRows = 0;
     let consecutiveFailures = 0;
+    // A corrupt collection dropped mid-run (#3202) took this run's writes with
+    // it; nothing may be bumped after that, since every project is rebuilt.
+    const generation = ChromaSync.collectionGeneration;
+    const collectionDropped = (): BackfillKindResult | null => {
+      if (ChromaSync.collectionGeneration === generation) {
+        return null;
+      }
+      logger.info('CHROMA_SYNC', 'Backfill stopped: the collection was dropped for a rebuild', {
+        project: backfillProject,
+        kind
+      });
+      return { writtenDocs, emptyRows, abortReason: 'collection_dropped' };
+    };
 
     for (let rowIndex = 0; rowIndex < rowsWithDocs.length; rowIndex += 1) {
       const { row, docs } = rowsWithDocs[rowIndex];
+      const droppedBeforeRow = collectionDropped();
+      if (droppedBeforeRow) {
+        return droppedBeforeRow;
+      }
       if (docs.length === 0) {
         // Nothing to index at all: no title and no body (a title-only
         // observation still gets its title document). Drain the row so it
@@ -1084,7 +1174,15 @@ export class ChromaSync {
           break;
         }
         const batch = docs.slice(i, i + this.BATCH_SIZE);
-        const writtenInBatch = await this.addDocuments(batch);
+        let writtenInBatch: number;
+        try {
+          writtenInBatch = await this.addDocuments(batch);
+        } catch (error) {
+          if (error instanceof ChromaCorruptCollectionError) {
+            return collectionDropped() ?? { writtenDocs, emptyRows, abortReason: 'collection_dropped' };
+          }
+          throw error;
+        }
         processedDocs += batch.length;
         writtenDocs += writtenInBatch;
         // Only advance the watermark for documents that actually landed in
@@ -1146,6 +1244,10 @@ export class ChromaSync {
         continue;
       }
 
+      const droppedDuringRow = collectionDropped();
+      if (droppedDuringRow) {
+        return droppedDuringRow;
+      }
       ChromaSyncState.clearPending(backfillProject, kind, [row.id]);
       ChromaSyncState.bump(backfillProject, kind, row.id);
     }
@@ -1466,102 +1568,119 @@ export class ChromaSync {
       return false;
     }
 
+    ChromaSync.backfillInProgress = true;
+    try {
+      for (;;) {
+        const generation = ChromaSync.collectionGeneration;
+        const completed = await ChromaSync.sweepAllProjects(store, generation);
+        if (ChromaSync.collectionGeneration === generation) {
+          return completed;
+        }
+        // A corrupt collection was dropped during this sweep (#3202) and took
+        // its work with it, so start over and rebuild every project. Each
+        // collection is dropped at most once per process, so this is bounded.
+        logger.info('CHROMA_SYNC', 'Collection dropped during the backfill sweep; rebuilding every project');
+      }
+    } finally {
+      ChromaSync.backfillInProgress = false;
+    }
+  }
+
+  private static async sweepAllProjects(store: SessionStore, generation: number): Promise<boolean> {
     const sync = new ChromaSync('claude-mem');
     const completed: string[] = [];
     const incomplete: string[] = [];
 
-    ChromaSync.backfillInProgress = true;
-    try {
-      // Enumerate the union of projects across all three indexed tables
-      // (#4069): a project with only summaries or session-joined prompts —
-      // or an empty-string project — never appeared in the old
-      // observations-only list, so its rows were never backfill candidates.
-      const projects = store.db.prepare(`
-        SELECT DISTINCT project FROM (
-          SELECT project FROM observations WHERE project IS NOT NULL
-          UNION
-          SELECT project FROM session_summaries WHERE project IS NOT NULL
-          UNION
-          SELECT s.project FROM user_prompts up
-          JOIN sdk_sessions s ON up.session_db_id = s.id
-          WHERE s.project IS NOT NULL
-        )
-      `).all() as { project: string }[];
+    // Enumerate the union of projects across all three indexed tables
+    // (#4069): a project with only summaries or session-joined prompts —
+    // or an empty-string project — never appeared in the old
+    // observations-only list, so its rows were never backfill candidates.
+    const projects = store.db.prepare(`
+      SELECT DISTINCT project FROM (
+        SELECT project FROM observations WHERE project IS NOT NULL
+        UNION
+        SELECT project FROM session_summaries WHERE project IS NOT NULL
+        UNION
+        SELECT s.project FROM user_prompts up
+        JOIN sdk_sessions s ON up.session_db_id = s.id
+        WHERE s.project IS NOT NULL
+      )
+    `).all() as { project: string }[];
 
-      logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
+    logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
 
-      if (!ChromaSyncState.exists()) {
-        logger.info('CHROMA_SYNC', 'Watermark cache missing — bootstrapping from Chroma (one-time)');
-        for (const { project } of projects) {
+    if (!ChromaSyncState.exists()) {
+      logger.info('CHROMA_SYNC', 'Watermark cache missing — bootstrapping from Chroma (one-time)');
+      for (const { project } of projects) {
+        if (shutdownBegan()) {
+          logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
+          return false;
+        }
+        try {
+          await sync.bootstrapWatermarksFromChroma(project, store);
+        } catch (error) {
           if (shutdownBegan()) {
             logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
             return false;
           }
-          try {
-            await sync.bootstrapWatermarksFromChroma(project, store);
-          } catch (error) {
-            if (shutdownBegan()) {
-              logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
-              return false;
-            }
-            logger.error('CHROMA_SYNC', `Bootstrap failed for project: ${project}`,
-              {}, error instanceof Error ? error : new Error(String(error)));
-          }
-        }
-        logger.info('CHROMA_SYNC', 'Bootstrap complete — incremental backfills will use watermarks');
-      }
-
-      // Process projects in chunks of BACKFILL_CONCURRENCY_LIMIT to bound
-      // CPU/memory pressure from concurrent Chroma embedding operations.
-      // Each chunk runs its projects in parallel; we wait for the entire chunk
-      // before starting the next one. Simple and predictable — no semaphore
-      // overhead, no unbounded fan-out.
-      const concurrency = ChromaSync.BACKFILL_CONCURRENCY_LIMIT;
-      for (let i = 0; i < projects.length; i += concurrency) {
-        if (shutdownBegan()) {
-          logger.info('CHROMA_SYNC', 'Backfill sweep stopped: worker shutdown began', {
-            remainingProjects: projects.length - i
-          });
-          return false;
-        }
-
-        const chunk = projects.slice(i, i + concurrency);
-        const chunkResults = await Promise.allSettled(
-          chunk.map(({ project }) => sync.ensureBackfilled(project, store))
-        );
-
-        for (let j = 0; j < chunkResults.length; j++) {
-          const project = chunk[j].project;
-          const result = chunkResults[j];
-          if (result.status === 'rejected') {
-            incomplete.push(project);
-            const error = result.reason;
-            if (error instanceof Error) {
-              logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error);
-            } else {
-              logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, { error: String(error) });
-            }
-            // Continue to next chunk — don't let one failure stop others
-          } else if (result.value !== 'completed') {
-            // backfillKind already logged why it stopped; record the project
-            // so the sweep does not claim it finished (#4069).
-            incomplete.push(project);
-          } else {
-            completed.push(project);
-          }
+          logger.error('CHROMA_SYNC', `Bootstrap failed for project: ${project}`,
+            {}, error instanceof Error ? error : new Error(String(error)));
         }
       }
-
-      if (incomplete.length > 0) {
-        logger.warn('CHROMA_SYNC', `Backfill sweep finished with ${incomplete.length} incomplete project(s)`, {
-          incomplete,
-          completed: completed.length
-        });
-      }
-      return incomplete.length === 0;
-    } finally {
-      ChromaSync.backfillInProgress = false;
+      logger.info('CHROMA_SYNC', 'Bootstrap complete — incremental backfills will use watermarks');
     }
+
+    // Process projects in chunks of BACKFILL_CONCURRENCY_LIMIT to bound
+    // CPU/memory pressure from concurrent Chroma embedding operations.
+    // Each chunk runs its projects in parallel; we wait for the entire chunk
+    // before starting the next one. Simple and predictable — no semaphore
+    // overhead, no unbounded fan-out.
+    const concurrency = ChromaSync.BACKFILL_CONCURRENCY_LIMIT;
+    for (let i = 0; i < projects.length; i += concurrency) {
+      if (shutdownBegan()) {
+        logger.info('CHROMA_SYNC', 'Backfill sweep stopped: worker shutdown began', {
+          remainingProjects: projects.length - i
+        });
+        return false;
+      }
+      if (ChromaSync.collectionGeneration !== generation) {
+        return false;
+      }
+
+      const chunk = projects.slice(i, i + concurrency);
+      const chunkResults = await Promise.allSettled(
+        chunk.map(({ project }) => sync.ensureBackfilled(project, store))
+      );
+
+      for (let j = 0; j < chunkResults.length; j++) {
+        const project = chunk[j].project;
+        const result = chunkResults[j];
+        if (result.status === 'rejected') {
+          incomplete.push(project);
+          const error = result.reason;
+          if (error instanceof Error) {
+            logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error);
+          } else {
+            logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, { error: String(error) });
+          }
+          // Continue to next chunk — don't let one failure stop others
+        } else if (result.value !== 'completed') {
+          // backfillKind already logged why it stopped; record the project
+          // so the sweep does not claim it finished (#4069).
+          incomplete.push(project);
+        } else {
+          completed.push(project);
+        }
+      }
+    }
+
+    if (incomplete.length > 0) {
+      logger.warn('CHROMA_SYNC', `Backfill sweep finished with ${incomplete.length} incomplete project(s)`, {
+        incomplete,
+        completed: completed.length
+      });
+    }
+    return incomplete.length === 0;
   }
 
   async updateMergedIntoProject(

@@ -18,6 +18,12 @@ export interface ProjectWatermarks {
    * skipped while advancing the watermark, have been requeued (#4069).
    */
   titleOnlyRequeued?: boolean;
+  /**
+   * Set when this project's documents went with a dropped corrupt collection
+   * (#3202). Its next backfill starts from zero and clears the flag only when
+   * it completes, so a restart mid-rebuild simply rebuilds again.
+   */
+  rebuildPending?: boolean;
 }
 
 const ZERO: ProjectWatermarks = { observations: 0, summaries: 0, prompts: 0 };
@@ -60,6 +66,10 @@ function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefine
 
   if (marks?.titleOnlyRequeued === true) {
     normalized.titleOnlyRequeued = true;
+  }
+
+  if (marks?.rebuildPending === true) {
+    normalized.rebuildPending = true;
   }
 
   return normalized;
@@ -125,6 +135,39 @@ export const ChromaSyncState = {
     const current = normalizeProjectWatermarks(all[project] ?? ZERO);
     if (current.titleOnlyRequeued) return;
     current.titleOnlyRequeued = true;
+    all[project] = current;
+    persist();
+  },
+
+  /** Flag every project with recorded progress for a rebuild from zero (#3202). */
+  markAllForRebuild(): void {
+    const all = load();
+    for (const project of Object.keys(all)) {
+      all[project] = { ...normalizeProjectWatermarks(all[project]), rebuildPending: true };
+    }
+    persist();
+  },
+
+  isRebuildPending(project: string): boolean {
+    return this.get(project).rebuildPending === true;
+  },
+
+  /**
+   * Zero a flagged project's progress at the start of its rebuild. This drops
+   * whatever live writes bumped since the collection was dropped, so they
+   * cannot hide older rows; the flag stays until finishRebuild.
+   */
+  resetForRebuild(project: string): void {
+    const all = load();
+    all[project] = { ...ZERO, rebuildPending: true };
+    persist();
+  },
+
+  finishRebuild(project: string): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if (!current.rebuildPending) return;
+    delete current.rebuildPending;
     all[project] = current;
     persist();
   },
@@ -207,17 +250,6 @@ export const ChromaSyncState = {
       delete current.pending;
     }
     all[project] = current;
-    persist();
-  },
-
-  /**
-   * Zero every project's watermarks. The Chroma collection is shared across
-   * projects, so dropping it invalidates all of them at once — a per-project
-   * reset would leave the other projects' rows stranded behind their old
-   * high watermarks.
-   */
-  resetAll(): void {
-    cache = {};
     persist();
   }
 };
