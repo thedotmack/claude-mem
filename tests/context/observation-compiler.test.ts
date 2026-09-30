@@ -156,6 +156,7 @@ describe('context compiler platform scoping', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   function seed(
@@ -310,6 +311,7 @@ describe('concept exact-match injection (#3379)', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   it('excludes a row whose stored concept carries a "keyword: description" prefix', () => {
@@ -350,6 +352,7 @@ describe('queryObservationsNewest house feed', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   it('returns newest rows across projects when no project filter is passed', () => {
@@ -389,6 +392,169 @@ describe('queryObservationsNewest house feed', () => {
 
       const houseFeed = queryObservationsNewest(store, config, { limit: 10 });
       expect(houseFeed.map(obs => obs.title)).toEqual(['HOUSE_NEWEST', 'SEAT_ONLY']);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('context compiler main-agent-only injection filtering', () => {
+  const baseConfig: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['agent-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+    mainAgentOnly: true,
+  };
+
+  function seedObs(
+    store: SessionStore,
+    input: {
+      project: string;
+      contentSessionId: string;
+      memorySessionId: string;
+      title: string;
+      agentId: string | null;
+      agentType: string | null;
+      createdAtEpoch: number;
+    },
+  ): void {
+    const sessionDbId = store.createSDKSession(
+      input.contentSessionId,
+      input.project,
+      'prompt',
+      undefined,
+      'claude',
+    );
+    store.ensureMemorySessionIdRegistered(sessionDbId, input.memorySessionId);
+    store.storeObservation(
+      input.memorySessionId,
+      input.project,
+      {
+        type: 'discovery',
+        title: input.title,
+        subtitle: null,
+        facts: [],
+        narrative: 'agent scope narrative',
+        concepts: ['agent-scope'],
+        files_read: [],
+        files_modified: [],
+        agent_id: input.agentId,
+        agent_type: input.agentType,
+      },
+      1,
+      0,
+      input.createdAtEpoch,
+    );
+  }
+
+  function seedMix(store: SessionStore, project: string): void {
+    seedObs(store, {
+      project,
+      contentSessionId: 'main-session',
+      memorySessionId: 'main-memory',
+      title: 'MAIN_OBS',
+      agentId: null,
+      agentType: null,
+      createdAtEpoch: 1_700_000_000_000,
+    });
+    // A Claude Code subagent: the hook sends both agent_id and agent_type.
+    seedObs(store, {
+      project,
+      contentSessionId: 'sub-session',
+      memorySessionId: 'sub-memory',
+      title: 'SUB_OBS',
+      agentId: 'agent-42',
+      agentType: 'Explore',
+      createdAtEpoch: 1_700_000_001_000,
+    });
+  }
+
+  it('keeps main-agent rows that carry only one agent field', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+      // Transcript-watch ingestion stamps agent_id alone on main-agent rows
+      // (a Grok Bot seat id). Filtering on agent_id alone would make
+      // session_start_context return nothing for those seats.
+      seedObs(store, {
+        project: 'agent-scope-project',
+        contentSessionId: 'grok-seat-session',
+        memorySessionId: 'grok-seat-memory',
+        title: 'GROK_SEAT_OBS',
+        agentId: 'grok-seat-7',
+        agentType: null,
+        createdAtEpoch: 1_700_000_002_000,
+      });
+      // `claude --agent reviewer` runs a main thread that carries agent_type alone.
+      seedObs(store, {
+        project: 'agent-scope-project',
+        contentSessionId: 'agent-main-session',
+        memorySessionId: 'agent-main-memory',
+        title: 'AGENT_MAIN_OBS',
+        agentId: null,
+        agentType: 'reviewer',
+        createdAtEpoch: 1_700_000_003_000,
+      });
+
+      const observations = queryObservationsMulti(store, ['agent-scope-project'], baseConfig);
+      expect(observations.map(obs => obs.title)).toEqual(['AGENT_MAIN_OBS', 'GROK_SEAT_OBS', 'MAIN_OBS']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('excludes subagent observations from the injection window when mainAgentOnly is true (default)', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsMulti(store, ['agent-scope-project'], baseConfig);
+      expect(observations.map(obs => obs.title)).toEqual(['MAIN_OBS']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('keeps subagent observations on a project-scoped newest query', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsNewest(store, baseConfig, {
+        limit: 20,
+        projects: ['agent-scope-project'],
+        includeManualSaves: true,
+      });
+      expect(observations.map(obs => obs.title).sort()).toEqual(['MAIN_OBS', 'SUB_OBS']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('includes subagent observations when mainAgentOnly is false (backward compat) and leaves the count query unfiltered', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsMulti(
+        store,
+        ['agent-scope-project'],
+        { ...baseConfig, mainAgentOnly: false },
+      );
+      expect(observations.map(obs => obs.title).sort()).toEqual(['MAIN_OBS', 'SUB_OBS']);
+
+      // Guard the "don't over-filter" constraint: the count query has no
+      // agent_id filter, so it still sees both main and subagent rows.
+      expect(countObservationsByProjects(store, ['agent-scope-project'])).toBe(2);
     } finally {
       store.close();
     }
