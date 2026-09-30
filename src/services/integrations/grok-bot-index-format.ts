@@ -122,8 +122,14 @@ export function factLine(date: string, body: string, maxChars: number, tier: Gro
 }
 
 /**
- * Seat rows plus house-newest rows, newest first, unique IDs, slide-off at window.
- * A thin seat diary must not starve the INDEX — house fill keeps it useful.
+ * Seat rows first, house rows only fill the remaining slots.
+ *
+ * The seat's own project rows (newest first, unique IDs) claim the window
+ * before any house row, so a busy house can never push a seat's diary —
+ * including manual /api/memory/save self-saves — out of the INDEX. When the
+ * seat diary is thinner than the window, house rows (newest first, skipping
+ * IDs already listed) fill what is left. Seat rows alone reaching the window
+ * means no house rows at all.
  */
 export function mergeIndexObservations(
   seatRows: GrokBotIndexObservation[],
@@ -133,12 +139,13 @@ export function mergeIndexObservations(
   const size = resolveIndexWindow(window);
   const seen = new Set<number>();
   const merged: GrokBotIndexObservation[] = [];
-  const all = [...seatRows, ...houseRows].sort((a, b) => b.created_at_epoch - a.created_at_epoch);
-  for (const row of all) {
+  const newestFirst = (rows: GrokBotIndexObservation[]) =>
+    [...rows].sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+  for (const row of [...newestFirst(seatRows), ...newestFirst(houseRows)]) {
+    if (merged.length >= size) break;
     if (seen.has(row.id)) continue;
     seen.add(row.id);
     merged.push(row);
-    if (merged.length >= size) break;
   }
   return merged;
 }
@@ -152,6 +159,8 @@ export function formatIndexFactLines(
     tier?: GrokBotIndexTier;
     now?: Date;
     houseFilled?: boolean;
+    /** Operator line pinned above the header; survives every worker rewrite. */
+    standingLine?: string;
   },
 ): string[] {
   const now = options.now ?? new Date();
@@ -167,7 +176,10 @@ export function formatIndexFactLines(
     `${observations.length} rows; fetch get_observations by ID`,
   ].join(' — ');
 
-  const lines = [factLine(date, head, headerMax, tier)];
+  const lines: string[] = [];
+  const standingLine = collapseWhitespace(options.standingLine ?? '');
+  if (standingLine) lines.push(factLine(date, standingLine, headerMax, tier));
+  lines.push(factLine(date, head, headerMax, tier));
   for (const obs of observations) {
     lines.push(factLine(date, formatIndexRow(obs), maxLineChars, tier));
   }
