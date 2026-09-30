@@ -17,12 +17,12 @@
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { isCmemGatewayUrl, writeProFallbackAt } from '../../shared/cmem-gateway.js';
+import { isCmemGatewayUrl, writeProFallbackAt, type ProFallbackNotice } from '../../shared/cmem-gateway.js';
 import { scrubErrorMessage } from '../../shared/observer-health.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
-import { QUOTA_PROBE_STALE_MS } from '../../shared/quota-cooldown.js';
+import { releaseQuotaProbe, tryAdmitCmemGatewayProbe } from '../../shared/quota-cooldown.js';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -81,13 +81,14 @@ export function getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
  * those failures does a read-modify-write of the user's whole settings.json to
  * re-arm the marker, so a concurrent settings edit can be clobbered.
  *
- * Claiming makes it what the comment always said it was: exactly one probe.
- * The claim is kept here, not in the quota breaker's map. That map admits
- * every caller claim-free when no breaker is armed, and nothing arms one for
- * the gateway — the marker IS its window — so routing the claim through it
- * admitted the whole herd. Arming a breaker instead would persist it and
- * mirror it into observer-health as "claude-mem is paused", which is false
- * while the fallback keeps memory running on the Anthropic plan.
+ * Claiming makes it what the comment always said it was: exactly one probe,
+ * through the quota breaker's own claim under the DISTINCT 'cmem-gateway' key.
+ * That key never had an entry — the marker IS the gateway's window, so nothing
+ * armed it — and a key with no entry admits every caller without a claim,
+ * which let the whole herd through. `tryAdmitCmemGatewayProbe` creates the
+ * entry for its claim alone: quota-cooldown neither persists nor mirrors it,
+ * because while the fallback stands memory runs on the Anthropic plan, which
+ * is not a pause.
  */
 export function selectProviderForGenerator(): ProviderSelection {
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
@@ -97,13 +98,13 @@ export function selectProviderForGenerator(): ProviderSelection {
         return { provider: 'claude', gatewayProbeClaimId: null };
       }
       // Window elapsed: exactly one caller re-probes the gateway, the rest stay
-      // on the Anthropic plan until that probe resolves — a failure re-arms
+      // on the Anthropic plan until that probe resolves — any failure re-stamps
       // the marker, a success clears it, and every exit releases the claim.
-      const claimId = claimCmemGatewayProbe(Date.now());
-      if (claimId === null) {
+      const admission = tryAdmitCmemGatewayProbe();
+      if (!admission.admitted) {
         return { provider: 'claude', gatewayProbeClaimId: null };
       }
-      return { provider: 'openrouter', gatewayProbeClaimId: claimId };
+      return { provider: 'openrouter', gatewayProbeClaimId: admission.claimId };
     }
     return { provider: 'openrouter', gatewayProbeClaimId: null };
   }
@@ -113,44 +114,9 @@ export function selectProviderForGenerator(): ProviderSelection {
   };
 }
 
-/**
- * The gateway re-probe in flight, or null. In-memory only, like the quota
- * breaker's own claim: a restart kills the generator that held it, and the
- * window it guards is the marker on disk, which survives.
- */
-let gatewayProbe: { claimId: number; claimedAtMs: number } | null = null;
-let nextGatewayProbeClaimId = 1;
-
-/** Claim the single gateway re-probe; null while another is in flight. */
-function claimCmemGatewayProbe(nowMs: number): number | null {
-  // A holder that never released within the stale window is presumed dead, so
-  // a lost claim cannot wedge the gateway shut. The takeover mints a fresh id:
-  // the abandoned owner's late release then finds a claim it does not own.
-  if (gatewayProbe !== null && nowMs - gatewayProbe.claimedAtMs < QUOTA_PROBE_STALE_MS) {
-    return null;
-  }
-  gatewayProbe = { claimId: nextGatewayProbeClaimId++, claimedAtMs: nowMs };
-  return gatewayProbe.claimId;
-}
-
-/**
- * Release a gateway re-probe claim taken by `selectProviderForGenerator`.
- * Scoped to the caller's own claim: null (a claim-free run) or an id that was
- * since taken over releases nothing.
- */
+/** Release a gateway re-probe claim taken by `selectProviderForGenerator`. */
 export function releaseCmemGatewayProbe(claimId: number | null): void {
-  if (claimId !== null && gatewayProbe?.claimId === claimId) {
-    gatewayProbe = null;
-  }
-}
-
-/** The gateway re-probe claim in flight, or null. Read-only, for diagnostics and test guards. */
-export function getCmemGatewayProbeClaim(): number | null {
-  return gatewayProbe?.claimId ?? null;
-}
-
-export function resetCmemGatewayProbeForTesting(): void {
-  gatewayProbe = null;
+  releaseQuotaProbe('cmem-gateway', claimId);
 }
 
 /**
@@ -170,25 +136,38 @@ function isTerminalGatewayRejection(error: ClassifiedProviderError): boolean {
 }
 
 /**
- * Record the trial-expiry fallback when an OpenRouter generator failure is the
- * cmem gateway terminally rejecting the delivered key. Returns true when the
- * failure was consumed as a handled fallback — the caller must then NOT feed
- * the observer-health ledger or arm a breaker (the provider switch is the
- * remedy; there is no outage to warn about).
+ * Settle a failed OpenRouter run against the cmem trial-expiry fallback.
+ * Returns true when memory stays on — or moves to — the Anthropic plan: the
+ * caller must then NOT feed the observer-health ledger or arm a breaker (the
+ * provider switch is the remedy; there is no outage to warn about).
  *
- * Rate limits, transient upstream errors, and every failure on a non-gateway
- * base URL (a personal openrouter.ai key running dry) are not fallbacks; the
- * caller books those like any other classified failure.
+ *  - A terminal gateway rejection records the fallback, with the gateway's own
+ *    words for the session-start notice.
+ *  - Any other failure of the single post-window re-probe (this run holds the
+ *    claim, and no gateway response has cleared the marker since) re-stamps
+ *    it: a rate limit or an upstream outage on the probe would otherwise leave
+ *    memory on neither the gateway nor Claude.
+ *
+ * Anything else — a rate limit or an outage outside a fallback, and every
+ * failure on a non-gateway base URL (a personal openrouter.ai key running dry)
+ * — is not a fallback; the caller books it like any other failure.
  */
 export function recordCmemFallbackIfEligible(
-  error: ClassifiedProviderError,
+  error: unknown,
+  gatewayProbeClaimId: number | null = null,
   settingsPath: string = paths.settings(),
 ): boolean {
-  if (!isTerminalGatewayRejection(error)) {
+  const rejection = isClassified(error) && isTerminalGatewayRejection(error) ? error : null;
+  if (rejection === null && gatewayProbeClaimId === null) {
     return false;
   }
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   if (!isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
+    return false;
+  }
+  if (rejection === null && !settings.CLAUDE_MEM_PRO_FALLBACK_AT) {
+    // The re-probe's claim, but a gateway response already cleared the marker:
+    // an ordinary failure of a gateway that serves the account again.
     return false;
   }
   // Already falling back — another generator's rejection armed the window.
@@ -197,83 +176,43 @@ export function recordCmemFallbackIfEligible(
   if (shouldUseCmemFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
     return true;
   }
+  const detail = isClassified(error) ? { kind: error.kind, ...(error.code ? { code: error.code } : {}) } : {};
   const fallbackAt = new Date().toISOString();
-  // The gateway's own words when it sent the taxonomy envelope; a legacy body
-  // has none, and the session-start notice then stays plan-neutral.
-  const notice = error.code
-    ? {
-        message: scrubErrorMessage(error.message),
-        ...(error.action ? { action: scrubErrorMessage(error.action) } : {}),
-        ...(error.url ? { url: error.url } : {}),
-      }
-    : {};
   try {
-    writeProFallbackAt(fallbackAt, settingsPath, notice);
+    // A rejection brings the gateway's words; a failed re-probe only re-stamps,
+    // keeping the words of the rejection that started the fallback.
+    writeProFallbackAt(fallbackAt, settingsPath, rejection ? gatewayNotice(rejection) : undefined);
   } catch (writeError: unknown) {
     // The marker could not be persisted, so the failure is NOT handled: return
-    // false, and the caller books it like any other classified failure (health
-    // ledger, cooldown) rather than dropping it. This diagnostic explains why
-    // the automatic fallback did not arm.
+    // false, and the caller books it like any other failure rather than
+    // dropping it. This diagnostic explains why the fallback did not arm.
     logger.warn(
       'SESSION',
-      'Could not persist cmem trial-expiry fallback; retaining normal provider failure handling',
-      { kind: error.kind, ...(error.code ? { code: error.code } : {}) },
+      'Could not persist the cmem trial-expiry fallback; retaining normal provider failure handling',
+      detail,
       writeError instanceof Error ? writeError : new Error(String(writeError)),
     );
     return false;
   }
-  logger.info('SESSION', 'Recorded cmem trial-expiry fallback; dispatch switches to the Claude provider', {
-    kind: error.kind,
-    ...(error.code ? { code: error.code } : {}),
-    fallbackAt,
-  });
+  logger.info(
+    'SESSION',
+    rejection
+      ? 'Recorded cmem trial-expiry fallback; dispatch switches to the Claude provider'
+      : 'cmem gateway re-probe failed; memory stays on the Claude provider',
+    { ...detail, fallbackAt },
+  );
   return true;
 }
 
 /**
- * Settle a failed OpenRouter run against the cmem fallback. Returns true when
- * memory stays on — or moves to — the Anthropic plan, so the caller books no
- * outage and arms no breaker for it:
- *  - a terminal gateway rejection records the fallback;
- *  - any other failure of the single post-window re-probe (this run holds the
- *    claim, and no gateway response has cleared the marker since) re-stamps
- *    it. A probe that fails any other way — a rate limit, an upstream outage —
- *    would otherwise leave memory on neither the gateway nor Claude.
+ * The gateway's own words for a rejection, from its taxonomy envelope. A legacy
+ * body carries no code and no words, and the notice then stays plan-neutral.
  */
-export function recordCmemFallbackOnFailure(
-  error: unknown,
-  gatewayProbeClaimId: number | null,
-  settingsPath: string = paths.settings(),
-): boolean {
-  if (isClassified(error) && recordCmemFallbackIfEligible(error, settingsPath)) {
-    return true;
-  }
-  if (gatewayProbeClaimId === null) {
-    return false;
-  }
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  if (!settings.CLAUDE_MEM_PRO_FALLBACK_AT || !isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
-    // A gateway response already cleared the marker: this is an ordinary
-    // failure of a gateway that serves the account again.
-    return false;
-  }
-  if (shouldUseCmemFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
-    return true;
-  }
-  try {
-    // Re-stamp only: the words of the rejection that started the fallback stay.
-    writeProFallbackAt(new Date().toISOString(), settingsPath);
-  } catch (writeError: unknown) {
-    logger.warn(
-      'SESSION',
-      'Could not re-stamp the cmem fallback after a failed gateway re-probe; retaining normal provider failure handling',
-      {},
-      writeError instanceof Error ? writeError : new Error(String(writeError)),
-    );
-    return false;
-  }
-  logger.info('SESSION', 'cmem gateway re-probe failed; memory stays on the Claude provider', {
-    ...(isClassified(error) ? { kind: error.kind, ...(error.code ? { code: error.code } : {}) } : {}),
-  });
-  return true;
+function gatewayNotice(error: ClassifiedProviderError): ProFallbackNotice {
+  if (!error.code) return {};
+  return {
+    message: scrubErrorMessage(error.message),
+    ...(error.action ? { action: scrubErrorMessage(error.action) } : {}),
+    ...(error.url ? { url: error.url } : {}),
+  };
 }

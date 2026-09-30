@@ -36,7 +36,7 @@ function buildDeps() {
 }
 
 describe('handleGeneratorExit — reasons that preserve claimed work', () => {
-  for (const reason of ['transport:observer_text', 'quota:observer_text', 'auth:observer_text', 'overflow:observer_text', 'provider_switch']) {
+  for (const reason of ['transport:observer_text', 'quota:observer_text', 'auth:observer_text', 'overflow:observer_text', 'provider_switch', 'rate_limit:rate_limit']) {
     it(`leaves the session alive for ${reason}`, async () => {
       const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
 

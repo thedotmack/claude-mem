@@ -57,6 +57,12 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Consecutive rate-limit pauses this session resumed from on its own, after
+   * the provider's Retry-After. Bounds those resumes before the provider
+   * breaker takes over; reset when a queued-work turn is answered.
+   */
+  consecutiveRateLimitResumes?: number;
+  /**
    * The delayed resume a response stall scheduled. Any generator start cancels
    * it, so a stale timer never restarts a session a newer generation paused.
    */

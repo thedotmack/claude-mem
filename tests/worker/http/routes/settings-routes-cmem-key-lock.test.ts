@@ -155,6 +155,26 @@ describe('the cmem memory key stays with the cmem gateway', () => {
     expect(requests).toEqual([{ url: `${GATEWAY_BASE_URL}/chat/completions`, authorization: `Bearer ${MEMORY_KEY}` }]);
   });
 
+  it('never sends a personal key to the gateway after a settings-API base-URL change', async () => {
+    writeFileSync(settingsPath, JSON.stringify({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'some/model',
+      CLAUDE_MEM_OPENROUTER_API_KEY: PERSONAL_KEY,
+    }, null, 2), 'utf-8');
+
+    // The viewer pairs the stored personal key (posted back masked) with the
+    // gateway's base URL.
+    postSettings({
+      CLAUDE_MEM_OPENROUTER_BASE_URL: GATEWAY_BASE_URL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: viewerMask(PERSONAL_KEY),
+    });
+
+    const provider = new OpenRouterProvider({} as any, {} as any);
+    await expect(provider.formatTelegramWrapup(wrapupInput)).rejects.toThrow('OpenRouter API key not configured');
+    expect(requests.filter(request => request.authorization?.includes(PERSONAL_KEY))).toEqual([]);
+  });
+
   it('never sends a personal key to the gateway (existing tuple lock)', async () => {
     process.env.CLAUDE_MEM_OPENROUTER_API_KEY = PERSONAL_KEY;
     const provider = new OpenRouterProvider({} as any, {} as any);

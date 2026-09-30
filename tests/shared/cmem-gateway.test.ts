@@ -11,9 +11,11 @@ import {
   clearProFallbackOnGatewaySuccess,
   hasShownProFallbackNotice,
   markProFallbackNoticeShown,
+  proFallbackNotice,
   trialDaysRemaining,
   PRO_FALLBACK_NOTICE_MARKER,
 } from '../../src/shared/cmem-gateway.js';
+import { proTrialUrl } from '../../src/shared/pro-promo.js';
 
 describe('cmem-gateway', () => {
   let tempDir: string;
@@ -150,6 +152,24 @@ describe('cmem-gateway', () => {
       expect(parsed.CLAUDE_MEM_PRO_FALLBACK_URL).toBe('');
     });
 
+    it('clearProFallback empties stale gateway words even when the marker is already blank', () => {
+      // A re-pair blanks CLAUDE_MEM_PRO_FALLBACK_AT through the installer's
+      // settings merge first, then calls clearProFallback.
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_PRO_FALLBACK_AT: '',
+        CLAUDE_MEM_PRO_FALLBACK_MESSAGE: 'stale words',
+        CLAUDE_MEM_PRO_FALLBACK_ACTION: 'stale action',
+        CLAUDE_MEM_PRO_FALLBACK_URL: 'https://cmem.ai/stale',
+      }));
+
+      clearProFallback(settingsPath, tempDir);
+
+      const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe('');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_ACTION).toBe('');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_URL).toBe('');
+    });
+
     it('clearProFallback empties the value and removes the notice marker', () => {
       writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath);
       markProFallbackNoticeShown(tempDir);
@@ -186,6 +206,36 @@ describe('cmem-gateway', () => {
 
       clearProFallbackOnGatewaySuccess('https://cmem.ai/api/inference/v1/chat/completions', settingsPath, tempDir);
       expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+    });
+  });
+
+  describe('proFallbackNotice — the gateway words that enter SessionStart context', () => {
+    it('drops invisible format characters (bidi overrides, zero-width) as well as control characters', () => {
+      const RLO = String.fromCharCode(0x202e);
+      const ZWSP = String.fromCharCode(0x200b);
+      const notice = proFallbackNotice({
+        message: `Pay${ZWSP}ment failed.${RLO}txt.exe`,
+        action: `Update${String.fromCharCode(0)} your card.`,
+      });
+
+      const [message, action] = notice.split('\n');
+      expect(message).toBe('Payment failed.txt.exe');
+      expect(action).toBe('Update your card.');
+    });
+
+    it('caps each relayed line at 300 characters', () => {
+      const notice = proFallbackNotice({ message: 'a'.repeat(301), action: 'b'.repeat(300) });
+
+      const [message, action] = notice.split('\n');
+      expect(message).toBe(`${'a'.repeat(299)}…`);
+      expect(action).toBe('b'.repeat(300));
+    });
+
+    it('is plan-neutral without the gateway\'s words, and keeps the renewal link', () => {
+      expect(proFallbackNotice({ message: ' \n\t ', url: '' })).toBe([
+        'cmem.ai memory is paused for this account.',
+        `Memory is using your Anthropic plan for now. Manage your plan: ${proTrialUrl('fallback')}`,
+      ].join('\n'));
     });
   });
 

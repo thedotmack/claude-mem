@@ -10,7 +10,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
-import { getSelectedProvider, recordCmemFallbackOnFailure, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -22,6 +22,7 @@ import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
+  planRateLimitResume,
   planResponseStallResume,
 } from '../../session/response-pacer.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
@@ -41,6 +42,7 @@ import { recordObserverFailure } from '../../../../shared/observer-health.js';
 import {
   tryAdmitQuotaProbe,
   releaseQuotaProbe,
+  recordAuthCooldown,
   recordQuotaExhausted,
   getQuotaCooldown,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
@@ -52,9 +54,6 @@ import type { TelegramWrapupFormatterInput } from '../../../integrations/Telegra
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
-/** When a rate limit named no Retry-After, resume the paused session after this. */
-const RATE_LIMIT_RESUME_DEFAULT_MS = 60_000;
-
 /**
  * Collapse session.abortReason onto a closed telemetry enum. The raw value can
  * carry free text after a colon (e.g. 'quota:<provider message>') — never emit
@@ -62,13 +61,14 @@ const RATE_LIMIT_RESUME_DEFAULT_MS = 60_000;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'auth' | 'provider_switch' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
+    case 'rate_limit': return 'rate_limit';
     case 'auth': return 'auth';
     case 'provider_switch': return 'provider_switch';
     default: return 'none';
@@ -126,7 +126,7 @@ export class SessionRoutes extends BaseRouteHandler {
       // records the fallback, and when this wrap-up holds the post-window
       // re-probe claim, its failure keeps memory on Claude.
       if (selection.provider === 'openrouter') {
-        recordCmemFallbackOnFailure(error, selection.gatewayProbeClaimId);
+        recordCmemFallbackIfEligible(error, selection.gatewayProbeClaimId);
       }
       throw error;
     } finally {
@@ -322,10 +322,11 @@ export class SessionRoutes extends BaseRouteHandler {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);
-        logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
+        logger.warn('SESSION', 'Skipping generator start while the provider cooldown is active', {
           sessionId: sessionDbId,
           source,
           provider: selectedProvider,
+          ...(cooldown?.cause ? { cause: cooldown.cause } : {}),
           ...(cooldown?.window ? { window: cooldown.window } : {}),
           probeInFlight: cooldown?.probeInFlightSinceMs !== null,
           retryInMs: cooldown
@@ -399,12 +400,10 @@ export class SessionRoutes extends BaseRouteHandler {
     // Set when the catch below settled this run's failure itself. The finally
     // then leaves it alone: one failure is booked once.
     let failureBooked = false;
-    // Set when the failure moved this session onto the Anthropic plan (a cmem
-    // fallback, or a failed gateway re-probe): the finally resumes it there.
-    let resumeOnFallback = false;
-    // Set for a rate limit that outlived the provider's own retries: the
-    // finally resumes the session after this delay (its Retry-After).
-    let rateLimitResumeMs: number | null = null;
+    // Set when the catch decided this paused session resumes on its own: at
+    // once on the Anthropic plan after a cmem fallback, or after a rate limit's
+    // Retry-After. The finally schedules it.
+    let scheduledResume: { afterMs: number; source: string } | null = null;
     let generatorPromise: Promise<void>;
 
     generatorPromise = agent.startSession(session, this.workerService)
@@ -452,13 +451,28 @@ export class SessionRoutes extends BaseRouteHandler {
         // switch, not an outage — so it is neither booked into the health
         // ledger nor given a breaker (a 30-min breaker over the marker's 15-min
         // window would leave memory on neither), and the finally resumes it.
-        if (provider === 'openrouter' && recordCmemFallbackOnFailure(error, gatewayProbeClaimId)) {
-          resumeOnFallback = true;
+        if (provider === 'openrouter' && recordCmemFallbackIfEligible(error, gatewayProbeClaimId)) {
+          scheduledResume = { afterMs: 0, source: 'cmem-fallback' };
+          // The gateway's words and request id, which its copy asks users to
+          // quote to support.
           logger.warn('SESSION', 'cmem gateway is not serving this account; memory runs on the Anthropic plan provider', {
             sessionId: session.sessionDbId,
             ...(classified ? { kind: classified.kind } : {}),
             ...(classified?.code ? { code: classified.code } : {}),
-          });
+            ...(classified?.requestId ? { requestId: classified.requestId } : {}),
+          }, classified ? describeProviderError(classified) : errorMsg);
+        } else if (classified?.kind === 'transient' && myController.signal.aborted) {
+          // The provider PAUSED on a deadline or an upstream fault that outlived
+          // its own retries: the batch is kept for the next generator, and it is
+          // not an observer failure — counting these would raise the outage
+          // banner over blips that clear on their own. A transient error that
+          // did not pause the run (Claude's overloaded or unknown errors) ended
+          // it, and is booked below like any other failure.
+          logger.debug('SESSION', 'Observer paused on a transient provider failure; buffered work kept', {
+            sessionId: session.sessionDbId,
+            provider,
+            ...(classified.requestId ? { requestId: classified.requestId } : {}),
+          }, describeProviderError(classified));
         } else if (classified) {
           // The single error-level line for a classified provider failure:
           // code, message, action, link, and request id — same words the
@@ -472,7 +486,8 @@ export class SessionRoutes extends BaseRouteHandler {
             ...(classified.code ? { code: classified.code } : {}),
             ...(classified.requestId ? { requestId: classified.requestId } : {}),
           }, describeProviderError(classified));
-          rateLimitResumeMs = this.bookClassifiedFailure(provider, classified);
+          const resumeAfterMs = this.bookClassifiedFailure(session, provider, classified);
+          if (resumeAfterMs !== null) scheduledResume = { afterMs: resumeAfterMs, source: 'rate-limit' };
         } else {
           logger.error('SESSION', 'Generator failed', {
             sessionId: session.sessionDbId,
@@ -563,37 +578,23 @@ export class SessionRoutes extends BaseRouteHandler {
           completionHandler: this.completionHandler,
         });
 
-        // A recorded cmem fallback (or a failed gateway re-probe) moves this
-        // session's buffered work to the Anthropic plan at once. Like a
-        // recycle, nothing else is guaranteed to pick it up: a session's last
-        // event (a summarize) would otherwise stay in RAM.
-        if (resumeOnFallback) {
-          this.resumeGeneratorLater(session.sessionDbId, 0, 'cmem-fallback');
+        // Paused work that nothing else is guaranteed to pick up resumes on its
+        // own — without it, a session's last event (a summarize) stays in RAM:
+        //  - a cmem fallback (or a failed gateway re-probe) moves to the
+        //    Anthropic plan at once;
+        //  - a rate limit that named a Retry-After resumes after it, a bounded
+        //    number of times in a row (the catch decided which);
+        //  - a recycle reset its batch to pending and dropped the conversation.
+        // Other quota and auth pauses deliberately do NOT resume — those wait
+        // on the user. A zero delay still defers a tick: `session.generatorPromise`
+        // is assigned after this chain is built, so resuming inline could be
+        // overwritten by that assignment and leave a settled promise blocking
+        // every later start.
+        if (scheduledResume) {
+          this.resumeGeneratorLater(session.sessionDbId, scheduledResume.afterMs, scheduledResume.source);
         }
-        // A rate limit is retryable: resume once its Retry-After has passed —
-        // the gateway's own copy promises exactly that.
-        if (rateLimitResumeMs !== null) {
-          this.resumeGeneratorLater(session.sessionDbId, rateLimitResumeMs, 'rate-limit');
-        }
-
-        // A recycle resumes on its own too. The batch was reset to pending and
-        // the conversation dropped; without this the work waits for the next
-        // captured tool call, so the final observation of a session is
-        // stranded when none arrives. Other quota and auth pauses deliberately
-        // do NOT resume — those wait on the user.
         if (reason === 'overflow:recycle') {
-          // Deferred a tick: `session.generatorPromise` is assigned after this
-          // chain is built, so resuming inline could be overwritten by that
-          // assignment and leave a settled promise blocking every later start.
-          const resume = setTimeout(() => {
-            void this.ensureGeneratorRunning(session.sessionDbId, 'overflow-recycle')
-              .catch(error => {
-                logger.error('SESSION', 'Failed to resume the observer after recycling its conversation', {
-                  sessionId: session.sessionDbId,
-                }, error instanceof Error ? error : new Error(String(error)));
-              });
-          }, 0);
-          resume.unref?.();
+          this.resumeGeneratorLater(session.sessionDbId, 0, 'overflow-recycle');
         }
 
         // A response stall preserved its claimed batch but, like a recycle, has
@@ -634,6 +635,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * next captured event (or the user).
    */
   private bookClassifiedFailure(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
     provider: 'claude' | 'gemini' | 'openrouter',
     error: ClassifiedProviderError,
   ): number | null {
@@ -645,18 +647,25 @@ export class SessionRoutes extends BaseRouteHandler {
         recordQuotaExhausted(provider, error.message);
         break;
       case 'auth_invalid':
-        // A refused credential fails every request until the user acts, so the
-        // same cooldown stops one wasted request per captured event.
-        recordQuotaExhausted(provider, error.message, 'auth');
+        // A refused credential fails every request until the user acts; the
+        // cooldown stops one wasted request per captured event.
+        recordAuthCooldown(provider, error.message);
         break;
-      case 'rate_limit':
-        // Retryable, never a spent allowance: no 30-minute breaker. The
-        // provider already retried in place; resume once Retry-After passes.
-        resumeAfterMs = Math.min(
-          Math.max(error.retryAfterMs ?? RATE_LIMIT_RESUME_DEFAULT_MS, 0),
-          QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
-        );
+      case 'rate_limit': {
+        // Never a spent allowance. The provider already retried in place, and
+        // when it said how long to wait (the gateway envelope always does), the
+        // session resumes after that — a bounded number of times in a row.
+        // With no Retry-After (OpenRouter's daily free-model limit is such a
+        // 429) or once the resumes run out, the limit may last hours: withhold
+        // requests behind the breaker instead of resuming into it.
+        const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
+        if (plan?.resume && error.retryAfterMs !== undefined) {
+          resumeAfterMs = Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+        } else {
+          recordQuotaExhausted(provider, error.message, 'rate_limit');
+        }
         break;
+      }
     }
     recordObserverFailure(provider, {
       message: error.message,

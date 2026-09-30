@@ -44,6 +44,9 @@ Credentials are **staged**, then **activated**. File: `~/.claude-mem/settings.js
 | `CLAUDE_MEM_PRO_MEMORY_BASE_URL` | `memory_base_url`, or `https://cmem.ai/api/inference/v1` |
 | `CLAUDE_MEM_PRO_MEMORY_MODEL` | `memory_model`, or `cmem-observer` |
 | `CLAUDE_MEM_PRO_FALLBACK_AT` | `""` |
+| `CLAUDE_MEM_PRO_FALLBACK_MESSAGE` | `""` (the worker stores the gateway's message here when a fallback starts) |
+| `CLAUDE_MEM_PRO_FALLBACK_ACTION` | `""` (the gateway's "what to do" for that fallback) |
+| `CLAUDE_MEM_PRO_FALLBACK_URL` | `""` (the gateway's link for that fallback; the notice shows only an `https://cmem.ai` link) |
 
 Cloud sync is on only when the token, user id, **and** hub URL are all non-empty. See [Cloud Sync](/cloud-sync).
 

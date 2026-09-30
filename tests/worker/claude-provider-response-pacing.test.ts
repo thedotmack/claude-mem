@@ -507,11 +507,12 @@ describe('Claude observer feed pacing (#4066)', () => {
     expect(h.pending()).toBe(5);
   });
 
-  it('only a reply to queued work clears the overflow and stall debts', async () => {
+  it('only a reply to queued work clears the overflow, stall, and rate-limit debts', async () => {
     const h = createHarness(3);
     liveSessions.push(h.session);
     h.session.consecutiveContextOverflows = 1;
     h.session.consecutiveResponseStalls = 2;
+    h.session.consecutiveRateLimitResumes = 3;
 
     const run = h.provider.startSession(h.session);
     await sdkStarted();
@@ -520,11 +521,13 @@ describe('Claude observer feed pacing (#4066)', () => {
     await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
     expect(h.session.consecutiveContextOverflows).toBe(1);
     expect(h.session.consecutiveResponseStalls).toBe(2);
+    expect(h.session.consecutiveRateLimitResumes).toBe(3);
 
     sdk().answer(SKIP_REPLY);
     await sdk().until(() => sdk().prompts.length >= 3, 'second observation');
     expect(h.session.consecutiveContextOverflows).toBe(0);
     expect(h.session.consecutiveResponseStalls).toBe(0);
+    expect(h.session.consecutiveRateLimitResumes).toBe(0);
 
     h.session.abortController.abort();
     await withTimeout(run, 'startSession after abort');

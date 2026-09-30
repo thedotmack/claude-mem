@@ -8,15 +8,17 @@ import {
   getSelectedProvider,
   recordCmemFallbackIfEligible,
   releaseCmemGatewayProbe,
-  resetCmemGatewayProbeForTesting,
   selectProviderForGenerator,
   shouldUseCmemFallback,
   type ProviderSelection,
 } from '../../src/services/worker/provider-dispatch.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
-import { QUOTA_PROBE_STALE_MS } from '../../src/shared/quota-cooldown.js';
+import { QUOTA_PROBE_STALE_MS, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
+import { isCmemGatewayUrl } from '../../src/shared/cmem-gateway.js';
 
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
+const CMEM_MEMORY_KEY = 'cm_pro_0123456789abcdef01234567';
+const PERSONAL_KEY = 'sk-or-test-key';
 
 /**
  * The dispatch predicates read settings via SettingsDefaultsManager, which
@@ -54,11 +56,17 @@ describe('provider-dispatch', () => {
 
   function pinOpenRouterEnv(overrides: Record<string, string> = {}): void {
     process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
-    process.env.CLAUDE_MEM_OPENROUTER_API_KEY = 'sk-or-test-key';
     process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = CMEM_GATEWAY_BASE;
     process.env.CLAUDE_MEM_PRO_FALLBACK_AT = '';
     for (const [key, value] of Object.entries(overrides)) {
       process.env[key] = value;
+    }
+    // Each endpoint with its own kind of key: the cmem memory key only goes to
+    // the gateway, and the gateway only takes a cmem memory key.
+    if (!('CLAUDE_MEM_OPENROUTER_API_KEY' in overrides)) {
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = isCmemGatewayUrl(process.env.CLAUDE_MEM_OPENROUTER_BASE_URL)
+        ? CMEM_MEMORY_KEY
+        : PERSONAL_KEY;
     }
   }
 
@@ -119,7 +127,7 @@ describe('provider-dispatch', () => {
     // The claim is process-wide state: never let one test's claim reach the next.
     afterEach(() => {
       setSystemTime();
-      resetCmemGatewayProbeForTesting();
+      resetQuotaCooldownsForTesting();
     });
 
     const select = (): ProviderSelection => selectProviderForGenerator();
@@ -231,7 +239,7 @@ describe('provider-dispatch', () => {
       const error = gatewayError(402, 'allowance_exhausted');
       expect(error.kind).toBe('quota_exhausted');
 
-      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+      expect(recordCmemFallbackIfEligible(error, null, settingsPath)).toBe(true);
 
       const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).not.toBe('');
@@ -252,7 +260,7 @@ describe('provider-dispatch', () => {
         cause: new Error('upstream 402'),
       });
 
-      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+      expect(recordCmemFallbackIfEligible(error, null, settingsPath)).toBe(true);
 
       const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(persisted.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe("You've used your $30 CMEM Pro inference allowance for this billing cycle.");
@@ -269,7 +277,7 @@ describe('provider-dispatch', () => {
       }));
       const error = classifyOpenRouterError({ status: 402, bodyText: 'Payment required', cause: new Error('upstream 402') });
 
-      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+      expect(recordCmemFallbackIfEligible(error, null, settingsPath)).toBe(true);
 
       const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(persisted.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe('');
@@ -284,7 +292,7 @@ describe('provider-dispatch', () => {
       writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_PRO_FALLBACK_AT: armedAt }));
 
       // Consumed as handled — another generator's rejection already switched it.
-      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(true);
+      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), null, settingsPath)).toBe(true);
       expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).toBe(armedAt);
     });
 
@@ -294,7 +302,7 @@ describe('provider-dispatch', () => {
       expect(error.kind).toBe('auth_invalid');
       expect(error.code).toBe('key_invalid');
 
-      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+      expect(recordCmemFallbackIfEligible(error, null, settingsPath)).toBe(true);
     });
 
     it('records the fallback for a legacy (no-envelope) 402 on the gateway config', () => {
@@ -306,22 +314,22 @@ describe('provider-dispatch', () => {
       });
       expect(error.kind).toBe('quota_exhausted');
 
-      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+      expect(recordCmemFallbackIfEligible(error, null, settingsPath)).toBe(true);
     });
 
     it('never triggers for a user-owned openrouter.ai key running dry', () => {
       pinOpenRouterEnv({ CLAUDE_MEM_OPENROUTER_BASE_URL: '' });
-      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(false);
+      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), null, settingsPath)).toBe(false);
 
       pinOpenRouterEnv({ CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1' });
-      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(false);
+      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), null, settingsPath)).toBe(false);
     });
 
     it('never triggers for deceptive cmem.ai hostname prefixes', () => {
       pinOpenRouterEnv({
         CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai.evil.example/api/inference/v1',
       });
-      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(false);
+      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), null, settingsPath)).toBe(false);
       const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
     });
@@ -331,14 +339,14 @@ describe('provider-dispatch', () => {
       const error = gatewayError(402, 'subscription_inactive');
       expect(error.kind).toBe('auth_invalid');
 
-      expect(recordCmemFallbackIfEligible(error, settingsPath)).toBe(true);
+      expect(recordCmemFallbackIfEligible(error, null, settingsPath)).toBe(true);
       expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).not.toBe('');
     });
 
     it('ignores non-terminal gateway errors (rate limits, transient upstream failures)', () => {
       pinOpenRouterEnv();
-      expect(recordCmemFallbackIfEligible(gatewayError(429, 'rate_limited'), settingsPath)).toBe(false);
-      expect(recordCmemFallbackIfEligible(gatewayError(503, 'upstream_unavailable'), settingsPath)).toBe(false);
+      expect(recordCmemFallbackIfEligible(gatewayError(429, 'rate_limited'), null, settingsPath)).toBe(false);
+      expect(recordCmemFallbackIfEligible(gatewayError(503, 'upstream_unavailable'), null, settingsPath)).toBe(false);
     });
   });
 });

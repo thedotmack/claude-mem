@@ -198,6 +198,16 @@ describe('OpenRouter credential tuple source coherence', () => {
       });
     });
 
+    it('withholds a personal key from the gateway, which only takes a cmem.ai memory key', () => {
+      writeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-personal' });
+
+      const config = resolveOpenRouterConfig(settingsPath);
+
+      expect(config.apiKey).toBe('');
+      expect(config.apiUrl).toBe(`${CMEM_BASE}/chat/completions`);
+      expect(isOpenRouterAvailable(settingsPath)).toBe(false);
+    });
+
     it('leaves a personal key on its own host alone', () => {
       writeSettings({
         CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-deepseek-personal',

@@ -27,6 +27,7 @@ import { join } from 'path';
 import { paths, USER_SETTINGS_PATH } from './paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { emitDiagnostic } from './hook-io.js';
+import { proTrialUrl } from './pro-promo.js';
 
 /**
  * Origin for the cmem.ai funnel and gateway. Overridable so the whole flow can
@@ -115,6 +116,61 @@ export interface ProFallbackNotice {
   url?: string;
 }
 
+/** The settings keys that make up a fallback: the marker and the gateway's words. */
+const PRO_FALLBACK_KEYS = [
+  'CLAUDE_MEM_PRO_FALLBACK_AT',
+  'CLAUDE_MEM_PRO_FALLBACK_MESSAGE',
+  'CLAUDE_MEM_PRO_FALLBACK_ACTION',
+  'CLAUDE_MEM_PRO_FALLBACK_URL',
+] as const;
+
+/** Longest gateway message or action the session-start notice relays. */
+const NOTICE_TEXT_MAX_CHARS = 300;
+
+/**
+ * The one-time session-start notice for an active fallback. The gateway's
+ * words enter model context here, so each is reduced to one plain line — no
+ * control, format, or line-separator characters, whitespace collapsed, length
+ * capped — and its link is relayed only when it is https on cmem.ai (plan
+ * 2026-08-16 §1.1). Anything else gets the renewal link.
+ *
+ * Plan-neutral: paid accounts at their monthly cap are turned away too, so it
+ * never assumes a trial ended. Without the gateway's words it says only what
+ * is true for every account.
+ */
+export function proFallbackNotice(notice: ProFallbackNotice): string {
+  const message = noticeLine(notice.message) || 'cmem.ai memory is paused for this account.';
+  const action = noticeLine(notice.action);
+  return [
+    message,
+    ...(action ? [action] : []),
+    `Memory is using your Anthropic plan for now. Manage your plan: ${noticeLink(notice.url)}`,
+  ].join('\n');
+}
+
+function noticeLine(text: string | undefined): string {
+  const line = (text ?? '')
+    .replace(/\s+/g, ' ') // newlines, tabs, and line/paragraph separators
+    .replace(/[\p{Cc}\p{Cf}]/gu, '') // the remaining control and format characters
+    .replace(/ {2,}/g, ' ')
+    .trim();
+  return line.length > NOTICE_TEXT_MAX_CHARS
+    ? `${line.slice(0, NOTICE_TEXT_MAX_CHARS - 1).trimEnd()}…`
+    : line;
+}
+
+function noticeLink(url: string | undefined): string {
+  try {
+    const parsed = new URL((url ?? '').trim());
+    if (parsed.protocol === 'https:' && parsed.hostname === 'cmem.ai' && !parsed.username && !parsed.password) {
+      return parsed.href;
+    }
+  } catch {
+    // Not a URL at all.
+  }
+  return proTrialUrl('fallback');
+}
+
 /**
  * Persist the fallback timestamp — the OpenRouter dispatch reads it back —
  * together with the gateway's words, in one write. Passing `notice` replaces
@@ -147,11 +203,13 @@ export function clearProFallback(
 ): void {
   try {
     const { document, target } = readRawSettingsDocument(settingsPath);
-    if (target.CLAUDE_MEM_PRO_FALLBACK_AT) {
-      target.CLAUDE_MEM_PRO_FALLBACK_AT = '';
-      target.CLAUDE_MEM_PRO_FALLBACK_MESSAGE = '';
-      target.CLAUDE_MEM_PRO_FALLBACK_ACTION = '';
-      target.CLAUDE_MEM_PRO_FALLBACK_URL = '';
+    // Every key, not only the marker: a re-pair blanks the marker through the
+    // installer's settings merge before calling this, and the gateway's words
+    // must not outlive the fallback they described. Write only when something
+    // is set — a successful gateway response calls this every time.
+    const keys = PRO_FALLBACK_KEYS.filter((key) => target[key]);
+    if (keys.length > 0) {
+      for (const key of keys) target[key] = '';
       writeJsonFileAtomic(settingsPath, document);
     }
   } catch (error: unknown) {

@@ -349,14 +349,15 @@ export function buildOpenRouterRequestBody(input: {
   };
 }
 
-/** Endpoint the cmem key was last withheld from, so dispatch logs it once, not per call. */
+/** Endpoint a mismatched key was last withheld from, so dispatch logs it once, not per call. */
 let lastWithheldCmemKeyUrl: string | null = null;
 
 /**
  * Resolve key/base/model as a source-coherent tuple. In particular, a
  * key-only environment override must never inherit a persisted cmem.ai base
- * URL and send a personal OpenRouter credential to the cmem gateway, and the
- * cmem memory key is never returned with a URL that is not the gateway. To
+ * URL and send a personal OpenRouter credential to the cmem gateway, and a key
+ * is never returned with a URL it does not belong to (a cmem memory key only
+ * with the gateway, any other key only elsewhere). To
  * replace a stored cmem tuple at runtime, explicitly override the base URL too
  * (an empty CLAUDE_MEM_OPENROUTER_BASE_URL selects normal OpenRouter).
  */
@@ -420,15 +421,17 @@ export function resolveOpenRouterConfig(
   const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
   const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-  // The account-owned cmem key authenticates only against the cmem gateway.
-  // The tuple lock above covers environment overrides, but a base URL changed
-  // in settings.json itself (the settings API / viewer, a hand edit) leaves the
-  // cm_pro key paired with another host. Every request resolves its key and URL
+  // The cmem gateway and its keys go together, both ways: the account-owned
+  // cm_pro_ key authenticates only against the gateway, and the gateway only
+  // takes a cm_pro_ key, so a personal key must never be sent there. The tuple
+  // lock above covers environment overrides, but a base URL changed in
+  // settings.json itself (the settings API / viewer, a hand edit) can pair
+  // either key with the wrong host. Every request resolves its key and URL
   // here, together, so the pair is checked here — and fails closed.
-  if (isCmemMemoryKey(apiKey) && !isCmemGatewayUrl(apiUrl)) {
+  if (apiKey && isCmemGatewayUrl(apiUrl) !== isCmemMemoryKey(apiKey)) {
     if (lastWithheldCmemKeyUrl !== apiUrl) {
       lastWithheldCmemKeyUrl = apiUrl;
-      logger.warn('SDK', 'Withholding the cmem.ai memory key from a non-gateway OpenRouter base URL; point CLAUDE_MEM_OPENROUTER_BASE_URL back at the cmem gateway, or set a key for the new endpoint');
+      logger.warn('SDK', 'Withholding the OpenRouter key: a cmem.ai memory key only goes to the cmem gateway, and the gateway only takes a cmem.ai memory key. Pair CLAUDE_MEM_OPENROUTER_BASE_URL with a key for that endpoint.');
     }
     return { apiKey: '', model, fallbackModels, apiUrl, siteUrl, appName };
   }
