@@ -16,6 +16,7 @@ export const FIRST_PARTY_SKILL_IDS = [
   'cloud-sync',
   'design-is',
   'do',
+  'handoff',
   'how-it-works',
   'knowledge-agent',
   'learn-codebase',

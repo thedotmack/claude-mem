@@ -9,7 +9,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFi
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
@@ -20,7 +20,9 @@ import {
   installPluginDependencies,
   writeInstallMarker,
   isInstallCurrent,
+  getBunPath,
 } from '../install/setup-runtime.js';
+import { formatUsageSummaryLines, readUsageSummary, type UsageSummary } from '../install/usage-summary.js';
 import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag } from './server-runtime-setup.js';
 import { ErrorSeverity } from '../install/error-taxonomy.js';
@@ -1491,6 +1493,33 @@ export function lastOAuthStartFailure(): OAuthStartFailure | null {
   return lastStartFailure;
 }
 
+export type InstallState = 'fresh' | 'update';
+
+/**
+ * What this install tells cmem.ai alongside the sign-in start request: whether
+ * it ran over an existing install, and the numbers-only local usage summary
+ * (see install/usage-summary.ts). Set once by the install command before any
+ * pairing starts; both are optional on the wire and omitted when unknown.
+ */
+let signupContext: { installState?: InstallState; usageSummary?: UsageSummary | null } = {};
+export function setInstallerSignupContext(ctx: { installState?: InstallState; usageSummary?: UsageSummary | null }): void {
+  signupContext = { ...ctx };
+}
+
+/** Pure: the JSON body for POST /api/installer/oauth/start. */
+export function buildInstallerOAuthStartBody(
+  source: string,
+  deviceName: string,
+  ctx: { installState?: InstallState; usageSummary?: UsageSummary | null } = {},
+): Record<string, unknown> {
+  return {
+    source,
+    device_name: deviceName,
+    ...(ctx.installState ? { install_state: ctx.installState } : {}),
+    ...(ctx.usageSummary ? { usage_summary: ctx.usageSummary } : {}),
+  };
+}
+
 /** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
 export async function startInstallerOAuthPairing(
   opts: { source?: string; timeoutMs?: number } = {},
@@ -1503,7 +1532,7 @@ export async function startInstallerOAuthPairing(
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source, device_name: hostname() }),
+      body: JSON.stringify(buildInstallerOAuthStartBody(source, hostname(), signupContext)),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -2176,6 +2205,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
   log.info(segments.join(` ${dot} `));
 
+  // Numbers-only local usage summary for the sign-in start request (and the
+  // block below). Read before the worker is restarted; any failure omits it.
+  const usageSummary = await readUsageSummary({ dbPath: resolveDbPath(), bunPath: getBunPath() })
+    .catch(() => null);
+  setInstallerSignupContext({ installState: alreadyInstalled ? 'update' : 'fresh', usageSummary });
+  const usageLines = formatUsageSummaryLines(usageSummary);
+  if (usageLines.length > 0) log.info(usageLines.join('\n'));
+
   // All claude-mem hooks run via `"shell": "bash"`; on Windows, Claude Code
   // resolves that through Git for Windows with no WSL fallback. Surfacing it
   // here — rather than letting the first hook throw an unbranded error — is
@@ -2593,7 +2630,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link; nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
     ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
