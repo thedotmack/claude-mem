@@ -8,6 +8,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
+import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
 import { DEADLINE_EXCEEDED_CODE, isClassified, type ClassifiedProviderError } from './provider-errors.js';
 import {
   shouldRecycleConversation,
@@ -227,7 +228,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     logger.success('SDK', `${this.providerName} agent completed`, {
       sessionId: session.sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-      historyLength: session.conversationHistory.length
+      historyLength: session.conversationHistory.length,
+      ...observerUsageLogFields(session)
     });
   }
 
@@ -261,6 +263,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session: ActiveSession,
     model: string
   ): void {
+    // The init turn is billed whether or not its reply carried any text.
+    accumulateObserverUsage(session, initResponse);
+
     if (!initResponse.content && !this.forwardEmptyMessageResponse) {
       logger.error('SDK', `Empty ${this.providerName} init response - session may lack context`, {
         sessionId: session.sessionDbId, model
@@ -268,9 +273,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       return;
     }
 
-    const tokensUsed = initResponse.tokensUsed || 0;
-    session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-    session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
     // The init prompt carries the user's request and no tool call, so nothing in
     // its reply can be an observation of this session — an <observation> here was
     // invented from <user_request> alone and would be stored as memory for work
@@ -335,19 +337,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.lastGeneratorSource = 'ingest';
     const obsResponse = await this.query(session.conversationHistory, config);
 
-    let tokensUsed = 0;
-    if (obsResponse.content) {
-      // The assistant turn is appended once, by processAgentResponse below.
-      // Appending it here too stored every reply twice (#3619), inflating the
-      // window — and therefore every subsequent request — by ~50%.
-      tokensUsed = obsResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      // Both sides or nothing: a backend reporting only one of the two counts
-      // must not produce a half-real event (input=0 → compression_ratio 0.0).
-      session.lastUsage = this.buildLastUsage(obsResponse);
-    }
+    // Billed usage counts even when the reply came back empty.
+    accumulateObserverUsage(session, obsResponse);
+    // Both sides or nothing: a backend reporting only one of the two counts
+    // must not produce a half-real event (input=0 → compression_ratio 0.0).
+    session.lastUsage = this.buildLastUsage(obsResponse);
+    const tokensUsed = obsResponse.tokensUsed || 0;
 
+    // The assistant turn is appended once, by processAgentResponse below.
+    // Appending it here too stored every reply twice (#3619), inflating the
+    // window — and therefore every subsequent request — by ~50%.
     if (obsResponse.content || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
         obsResponse.content || '', session, this.dbManager, this.sessionManager,
@@ -395,15 +394,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
     const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
 
-    let tokensUsed = 0;
-    if (summaryResponse.content) {
-      // Appended once, by processAgentResponse below — see processObservationMessage.
-      tokensUsed = summaryResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      session.lastUsage = this.buildLastUsage(summaryResponse);
-    }
+    accumulateObserverUsage(session, summaryResponse);
+    session.lastUsage = this.buildLastUsage(summaryResponse);
+    const tokensUsed = summaryResponse.tokensUsed || 0;
 
+    // Appended once, by processAgentResponse below — see processObservationMessage.
     if (summaryResponse.content || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
         summaryResponse.content || '', session, this.dbManager, this.sessionManager,
@@ -453,7 +448,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
     if (isAbortError(error)) {
-      logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
+      logger.warn('SDK', `${this.providerName} agent aborted`, {
+        sessionId: session.sessionDbId,
+        ...observerUsageLogFields(session)
+      });
       throw error;
     }
 
@@ -479,13 +477,21 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
           sessionId: session.sessionDbId,
           kind: error.kind,
           ...(error.code ? { code: error.code } : {}),
+          ...observerUsageLogFields(session)
         });
       }
 
       // Logged once at SessionRoutes' `Observer failed` line.
-      logger.debug('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId, kind: error.kind }, error);
+      logger.debug('SDK', `${this.providerName} agent error`, {
+        sessionDbId: session.sessionDbId,
+        kind: error.kind,
+        ...observerUsageLogFields(session)
+      }, error);
     } else {
-      logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+      logger.failure('SDK', `${this.providerName} agent error`, {
+        sessionDbId: session.sessionDbId,
+        ...observerUsageLogFields(session)
+      }, error instanceof Error ? error : new Error(String(error)));
     }
     throw error;
   }

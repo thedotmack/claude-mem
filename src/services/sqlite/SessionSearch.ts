@@ -178,8 +178,13 @@ export class SessionSearch {
     const conditions: string[] = [];
 
     if (filters.project) {
-      conditions.push(`${tableAlias}.project = ?`);
-      params.push(filters.project);
+      // #3641 — match the OR disjunction used by every other read path
+      // (SessionStore, PaginationHelper, ObservationCompiler). Without it the
+      // FTS/filter path ignores merged_into_project, so adopted worktree
+      // observations stay invisible to search even after adoption.
+      // #3531 — compared case-insensitively, like every other read path.
+      conditions.push(`(${tableAlias}.project COLLATE NOCASE = ? OR ${tableAlias}.merged_into_project COLLATE NOCASE = ?)`);
+      params.push(filters.project, filters.project);
     }
 
     // Source-scoping (#2389): when a platformSource is supplied, restrict to
@@ -662,7 +667,7 @@ export class SessionSearch {
 
     const baseConditions: string[] = [];
     if (sessionFilters.project) {
-      baseConditions.push('s.project = ?');
+      baseConditions.push('s.project COLLATE NOCASE = ?');
       sessionParams.push(sessionFilters.project);
     }
 
@@ -737,7 +742,7 @@ export class SessionSearch {
 
     const baseConditions: string[] = [];
     if (filters.project) {
-      baseConditions.push('s.project = ?');
+      baseConditions.push('s.project COLLATE NOCASE = ?');
       params.push(filters.project);
     }
 

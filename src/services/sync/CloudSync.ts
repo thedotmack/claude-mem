@@ -2051,6 +2051,6 @@ export class CloudSync {
       ? settings.env as Record<string, unknown>
       : settings;
     target.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID = deviceId;
-    writeJsonFileAtomic(this.settingsPath, settings);
+    writeJsonFileAtomic(this.settingsPath, settings, { mode: 0o600 });
   }
 }

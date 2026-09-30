@@ -5,7 +5,7 @@ import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
@@ -179,6 +179,7 @@ import {
   readPluginVersion,
   writeJsonFileAtomic,
 } from '../utils/paths.js';
+import { prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
@@ -747,13 +748,35 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
-function copyPluginToCache(version: string): void {
+async function copyPluginToCache(version: string): Promise<void> {
   const sourcePluginDirectory = npmPackagePluginDirectory();
   const cachePath = pluginCacheDirectory(version);
 
   rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
+
+  // Prune superseded versions now that the new one has landed. Without this the
+  // cache grew one directory per release forever, and every retained directory
+  // stayed a runnable old-version worker source (#4105). The safe prune keeps
+  // the just-written version plus N-1 and protects any live worker's version —
+  // the repair path reaches here without stopping the worker, so a running
+  // older worker must never lose its source directory.
+  // Pruning is housekeeping: it runs inside runTasks, before the sign-in/trial
+  // step, so any failure (a corrupt installed_plugins.json, say) only warns.
+  try {
+    const pruned = await prunePluginCacheSafely({ additionalProtectedVersions: [version] });
+    if (pruned.retainedForLiveWorker) {
+      log.info('Skipped cache prune: a worker is running but its version could not be read; retaining all versions.');
+    } else if (pruned.removed.length > 0) {
+      log.info(`Pruned ${pruned.removed.length} stale plugin cache version(s): ${pruned.removed.join(', ')}`);
+    }
+    for (const failure of pruned.failed) {
+      log.warn(`Could not prune cache version ${failure.version}: ${failure.reason}`);
+    }
+  } catch (error: unknown) {
+    log.warn(`Skipped cache prune: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function writeMarketplaceInstallMarkers(
@@ -870,16 +893,10 @@ function mergeSettings(updates: Record<string, string>): boolean {
       target[key] = value;
     }
 
-    writeSettingsJsonAtomic(path, document);
     // settings.json can carry tokens (CMEM Pro setup token, provider API
-    // keys); a fresh file inherits the umask (usually 0644), leaving them
-    // world-readable. Tighten to owner-only. Fail-soft: a chmod failure must
-    // never fail the settings write itself, but it is not silent.
-    try {
-      chmodSync(path, 0o600);
-    } catch (chmodError: unknown) {
-      log.warn(`Could not restrict permissions on ${path} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
-    }
+    // keys). The temp file is created owner-only before the first byte is
+    // written, so there is no window in which a fresh file is world-readable.
+    writeSettingsJsonAtomic(path, document, { mode: 0o600 });
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -2275,7 +2292,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         title: 'Caching plugin version',
         task: async (message) => {
           message(`Caching v${version}...`);
-          copyPluginToCache(version);
+          await copyPluginToCache(version);
           return `Plugin cached (v${version}) ${styleText('green', 'OK')}`;
         },
       },
@@ -2713,7 +2730,7 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         // fail immediately with no package.json to install against.
         if (!existsSync(join(cacheDir, 'package.json'))) {
           message('Cache missing — repopulating from npm package…');
-          copyPluginToCache(version);
+          await copyPluginToCache(version);
         }
         message('Reinstalling plugin dependencies…');
         const { bunPath } = bun;
