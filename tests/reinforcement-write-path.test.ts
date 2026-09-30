@@ -121,3 +121,38 @@ describe('reinforcement on the write path', () => {
   });
 
 });
+
+// With near-duplicate dedup on (#3063), re-confirmations go through its merge
+// site; reinforcement reuses that site rather than adding a duplicate path.
+describe('reinforcement at the near-duplicate dedup merge site', () => {
+  let store: SessionStore;
+  const savedDedupEnabled = process.env.CLAUDE_MEM_DEDUP_ENABLED;
+  const day1 = Date.parse('2026-06-10T12:00:00Z');
+  const day2 = Date.parse('2026-06-12T12:00:00Z');
+
+  beforeEach(() => {
+    process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
+    store = new SessionStore(':memory:');
+    makeSession(store, 's1', 'c1');
+    makeSession(store, 's2', 'c2');
+  });
+  afterEach(() => {
+    store.db.close();
+    if (savedDedupEnabled === undefined) delete process.env.CLAUDE_MEM_DEDUP_ENABLED;
+    else process.env.CLAUDE_MEM_DEDUP_ENABLED = savedDedupEnabled;
+  });
+
+  it('a Tier-0 merge from another session on a later day re-confirms the canonical row', () => {
+    const first = store.storeObservation('s1', 'proj', obs({ title: 'On-Demand Checkpoint.' }), 1, 0, day1);
+    const merged = store.storeObservation('s2', 'proj', obs({ title: 'on demand checkpoint', narrative: 'reworded' }), 1, 0, day2);
+    expect(merged.id).toBe(first.id);
+    expect(datesOf(store, first.id)).toEqual(['2026-06-10', '2026-06-12']);
+  });
+
+  it('an exact duplicate re-confirms its row with dedup on, as it does with dedup off', () => {
+    const first = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
+    const again = store.storeObservation('s1', 'proj', obs(), 2, 0, day2);
+    expect(again.id).toBe(first.id);
+    expect(datesOf(store, first.id)).toEqual(['2026-06-10', '2026-06-12']);
+  });
+});

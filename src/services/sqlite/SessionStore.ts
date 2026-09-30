@@ -3508,7 +3508,8 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
     const reinforcementSeed = seedReinforcement(timestampEpoch);
-    // A re-confirmed stored row records this day in its ACT-R history; same-day
+    // Every re-confirmation of a stored row (an exact duplicate, or a Tier-0
+    // merge while dedup is on) records this day in its ACT-R history; same-day
     // repeats and retries are no-ops.
     const reconfirmedOn = new Date(timestampEpoch);
     const dedup = this.dedupConfig();
@@ -3553,11 +3554,17 @@ export class SessionStore {
           // Retry idempotency: identical (session, content_hash) redelivery returns
           // the existing row without bumping occurrence_count (same as ON CONFLICT).
           const retry = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
-          if (retry) { observationIds.push(retry.id); mergedIntoExisting.push(false); continue; }
+          if (retry) {
+            reinforceObservation(this.db, retry.id, reconfirmedOn);
+            observationIds.push(retry.id);
+            mergedIntoExisting.push(false);
+            continue;
+          }
 
           const canonical = findTier0Canonical(this.db, project, titleNormKey);
           if (canonical) {
             this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
+            reinforceObservation(this.db, canonical.id, reconfirmedOn);
             observationIds.push(canonical.id);
             mergedIntoExisting.push(true);
             continue;
