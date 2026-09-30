@@ -12,6 +12,7 @@ import {
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
+import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -658,6 +659,13 @@ export async function processAgentResponse(
     project: context.project,
     memorySessionId: session.memorySessionId,
     agentId: context.pendingAgentId,
+  });
+
+  // Optional brainbeat webhook (off unless CLAUDE_MEM_GROK_BOT_WEBHOOK_URL is set).
+  void notifyGrokBotBrainbeat({
+    observations: labeledObservations,
+    observationIds: result.observationIds,
+    project: context.project,
   });
 
   // Growing Grok Bot INDEX: any new observation (any project) can fill a

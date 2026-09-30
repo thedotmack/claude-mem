@@ -113,21 +113,16 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
 
-### Observation Trigger Notifications
+### Grok Bot Brainbeat Webhook
 
-Use the existing Telegram trigger filters (`CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES` and `CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS`) to control both Telegram pushes and optional Grok Bot brainbeat webhooks.
+Optional. Set `CLAUDE_MEM_GROK_BOT_WEBHOOK_URL` and claude-mem POSTs every observation that matches the Grok Bot awareness triggers (`CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES` / `CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS`, default types `decision,bugfix,security_alert,sensitive`) to that URL. It is independent of every Telegram setting.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_TELEGRAM_ENABLED` | `true` | Enables Telegram delivery when bot token + chat ID are configured |
-| `CLAUDE_MEM_TELEGRAM_BOT_TOKEN` | — | Telegram Bot API token |
-| `CLAUDE_MEM_TELEGRAM_CHAT_ID` | — | Telegram chat ID |
-| `CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES` | `security_alert,sensitive` | Comma-separated observation types that trigger notifications |
-| `CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS` | — | Comma-separated concepts that trigger notifications |
-| `CLAUDE_MEM_GROK_BOT_WEBHOOK_URL` | — | Optional URL for Grok Bot brainbeat webhook POSTs |
-| `CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET` | — | Optional shared secret sent as `x-claude-mem-shared-secret` |
+| `CLAUDE_MEM_GROK_BOT_WEBHOOK_URL` | — | Receiver for brainbeat POSTs; empty = off. File/env only, masked by `GET /api/settings` |
+| `CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET` | — | Optional shared secret sent as `x-claude-mem-shared-secret`. File/env only, masked by `GET /api/settings` |
 
-When an observation matches the trigger filters, claude-mem sends a fire-and-forget JSON POST to `CLAUDE_MEM_GROK_BOT_WEBHOOK_URL` (if set):
+Each matching observation is sent as one JSON POST:
 
 ```json
 {
@@ -146,7 +141,7 @@ When an observation matches the trigger filters, claude-mem sends a fire-and-for
 }
 ```
 
-Webhook failures are logged and never block observation ingest.
+POSTs are sent concurrently and each times out after 5 seconds. A failure is logged with the receiver's origin only (never the full URL) and never blocks observation storage or other notifications.
 
 ## Model Configuration
 
