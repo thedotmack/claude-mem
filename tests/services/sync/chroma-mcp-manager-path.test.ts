@@ -218,9 +218,13 @@ describe('ChromaMcpManager uv link mode on Windows (#4108)', () => {
 
 describe('ChromaMcpManager uv build scratch sweep (#4108)', () => {
   const nodeFs = require('node:fs');
-  const sweepUvBuildsScratch = (ChromaMcpManager as unknown as {
-    sweepUvBuildsScratch: (env: Record<string, string>) => void;
-  }).sweepUvBuildsScratch;
+  const internals = ChromaMcpManager as unknown as {
+    sweepUvBuildsScratch: (env: Record<string, string>, maxDirs?: number) => Promise<number>;
+    drainUvBuildsScratch: (env: Record<string, string>, pauseMs?: number) => Promise<void>;
+  };
+  const sweepUvBuildsScratch = internals.sweepUvBuildsScratch;
+  const drainUvBuildsScratch = internals.drainUvBuildsScratch;
+  const DAY_PLUS_MS = 25 * 60 * 60_000;
   let cacheRoot = '';
   let buildsDir = '';
 
@@ -257,12 +261,12 @@ describe('ChromaMcpManager uv build scratch sweep (#4108)', () => {
     ).toBe(path.join('C:\\Users\\u\\AppData\\Local', 'uv', 'cache', 'builds-v0'));
   });
 
-  it('removes abandoned .tmp scratch but keeps cached builds and any recent scratch', () => {
-    makeScratch('.tmpABANDONED', 25 * 60 * 60_000); // > 24h: no live build lasts a day
+  it('removes abandoned .tmp scratch but keeps cached builds and any recent scratch', async () => {
+    makeScratch('.tmpABANDONED', DAY_PLUS_MS); // > 24h: no live build lasts a day
     makeScratch('.tmpBUILDING', 10 * 60_000); // minutes old: could be a live build
-    makeScratch('wheels-v1', 25 * 60 * 60_000); // real cached build, not scratch
+    makeScratch('wheels-v1', DAY_PLUS_MS); // real cached build, not scratch
 
-    sweepUvBuildsScratch({ UV_CACHE_DIR: cacheRoot });
+    expect(await sweepUvBuildsScratch({ UV_CACHE_DIR: cacheRoot })).toBe(1);
 
     const left = remaining();
     expect(left).not.toContain('.tmpABANDONED');
@@ -270,9 +274,27 @@ describe('ChromaMcpManager uv build scratch sweep (#4108)', () => {
     expect(left).toContain('wheels-v1');
   });
 
-  it('is a no-op when the builds dir does not exist', () => {
-    expect(() =>
-      sweepUvBuildsScratch({ UV_CACHE_DIR: path.join(cacheRoot, 'does-not-exist') })
-    ).not.toThrow();
+  it('is a no-op when the builds dir does not exist', async () => {
+    expect(await sweepUvBuildsScratch({ UV_CACHE_DIR: path.join(cacheRoot, 'does-not-exist') })).toBe(0);
+  });
+
+  it('removes at most one batch per pass so a large backlog never runs as one long delete', async () => {
+    for (let i = 0; i < 30; i += 1) {
+      makeScratch(`.tmp${String(i).padStart(2, '0')}`, DAY_PLUS_MS);
+    }
+
+    expect(await sweepUvBuildsScratch({ UV_CACHE_DIR: cacheRoot })).toBe(25);
+    expect(remaining()).toHaveLength(5);
+  });
+
+  it('drains a backlog larger than one batch across passes', async () => {
+    for (let i = 0; i < 60; i += 1) {
+      makeScratch(`.tmp${String(i).padStart(2, '0')}`, DAY_PLUS_MS);
+    }
+    makeScratch('.tmpBUILDING', 10 * 60_000);
+
+    await drainUvBuildsScratch({ UV_CACHE_DIR: cacheRoot }, 0);
+
+    expect(remaining()).toEqual(['.tmpBUILDING']);
   });
 });

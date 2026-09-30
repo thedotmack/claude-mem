@@ -54,6 +54,12 @@ const CHROMA_PREWARM_GIVE_UP_FAILURES = 20;
 // and a concurrent build elsewhere on the machine is never disturbed. Our own
 // fresh leftover is reclaimed by a later sweep once it ages past this bound.
 const CHROMA_UV_BUILDS_SCRATCH_ABANDONED_MS = 24 * 60 * 60_000;
+// A host hit by #4108 can carry ~10k leaked scratch dirs (18.5M files), so the
+// sweep never removes them in one go: each pass deletes at most this many dirs,
+// asynchronously and one at a time, then pauses before the next pass. The event
+// loop keeps serving health checks throughout, and disk I/O stays bounded.
+const CHROMA_UV_BUILDS_SCRATCH_SWEEP_BATCH = 25;
+const CHROMA_UV_BUILDS_SCRATCH_SWEEP_PAUSE_MS = 5_000;
 // Bounded wait for the child's 'exit' after close() resolves. close() can
 // return before Node processes the event, and treating that gap as "still
 // alive" escalates to a hard kill against a process that already exited —
@@ -160,6 +166,10 @@ export class ChromaMcpManager {
   private prewarmBreakerOpenedAt: number = 0;
   /** Monotonic prewarm-attempt counter, so the retry cap is observable in logs. */
   private prewarmAttempts: number = 0;
+  /** Whether the first successful prewarm has already started a scratch sweep. */
+  private sweptUvBuildsScratchAfterSuccess = false;
+  /** The in-flight background scratch sweep; at most one runs per process. */
+  private static uvBuildsScratchSweep: Promise<void> | null = null;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
   private readonly chromaWriterOwnerId = CHROMA_WRITER_OWNER_ID;
@@ -770,27 +780,36 @@ export class ChromaMcpManager {
    * names and are left untouched — and only ones past the abandoned age are
    * removed, so a build in progress elsewhere (which can take minutes) is never
    * disturbed. Best-effort: every failure is logged at debug and swallowed.
+   *
+   * One pass removes at most `maxDirs` dirs and returns how many it removed.
+   * Everything is async: a synchronous recursive delete of a large backlog
+   * would block the worker's event loop for minutes.
    */
-  private static sweepUvBuildsScratch(env: Record<string, string>): void {
+  private static async sweepUvBuildsScratch(
+    env: Record<string, string>,
+    maxDirs: number = CHROMA_UV_BUILDS_SCRATCH_SWEEP_BATCH,
+  ): Promise<number> {
     const buildsDir = ChromaMcpManager.resolveUvBuildsScratchDir(env);
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(buildsDir, { withFileTypes: true });
+      entries = await fs.promises.readdir(buildsDir, { withFileTypes: true });
     } catch {
       // No cache dir yet, or unreadable — nothing to sweep.
-      return;
+      return 0;
     }
 
     const now = Date.now();
     let removed = 0;
     for (const entry of entries) {
+      if (removed >= maxDirs) break;
       if (!entry.name.startsWith('.tmp')) continue;
       const scratchPath = path.join(buildsDir, entry.name);
       try {
-        if (now - fs.statSync(scratchPath).mtimeMs < CHROMA_UV_BUILDS_SCRATCH_ABANDONED_MS) {
+        const { mtimeMs } = await fs.promises.stat(scratchPath);
+        if (now - mtimeMs < CHROMA_UV_BUILDS_SCRATCH_ABANDONED_MS) {
           continue;
         }
-        fs.rmSync(scratchPath, { recursive: true, force: true });
+        await fs.promises.rm(scratchPath, { recursive: true, force: true });
         removed += 1;
       } catch (error) {
         logger.debug('CHROMA_MCP', 'Failed to remove uv build scratch dir (best-effort)', {
@@ -801,11 +820,50 @@ export class ChromaMcpManager {
     }
 
     if (removed > 0) {
-      logger.info('CHROMA_MCP', 'Swept abandoned uv build scratch dirs after failed prewarm', {
-        buildsDir,
-        removed,
+      logger.info('CHROMA_MCP', 'Swept abandoned uv build scratch dirs', { buildsDir, removed });
+    }
+    return removed;
+  }
+
+  /**
+   * Run sweep passes until one removes less than a full batch, pausing between
+   * passes so a large backlog is reclaimed without monopolising the disk.
+   */
+  private static async drainUvBuildsScratch(
+    env: Record<string, string>,
+    pauseMs: number = CHROMA_UV_BUILDS_SCRATCH_SWEEP_PAUSE_MS,
+  ): Promise<void> {
+    while (await ChromaMcpManager.sweepUvBuildsScratch(env) >= CHROMA_UV_BUILDS_SCRATCH_SWEEP_BATCH) {
+      await new Promise<void>(resolve => {
+        // unref: a pending pause must never keep a shutting-down worker alive.
+        setTimeout(resolve, pauseMs).unref?.();
       });
     }
+  }
+
+  /**
+   * Start a background drain of abandoned uv build scratch and return at once
+   * (fire-and-forget). A request while a drain is running is dropped: the
+   * running drain already removes everything past the age bound.
+   */
+  private static startUvBuildsScratchSweep(env: Record<string, string>): void {
+    if (ChromaMcpManager.uvBuildsScratchSweep) {
+      return;
+    }
+    ChromaMcpManager.uvBuildsScratchSweep = ChromaMcpManager.drainUvBuildsScratch(env)
+      .catch(error => {
+        logger.debug('CHROMA_MCP', 'uv build scratch sweep stopped (best-effort)', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        ChromaMcpManager.uvBuildsScratchSweep = null;
+      });
+  }
+
+  /** Test hook: resolves once the in-flight background scratch sweep, if any, ends. */
+  static async waitForUvBuildsScratchSweepForTesting(): Promise<void> {
+    await ChromaMcpManager.uvBuildsScratchSweep;
   }
 
   private async prewarmChromaMcp(
@@ -912,13 +970,20 @@ export class ChromaMcpManager {
       this.assertConnectionNotCancelled(connectionGeneration);
       this.consecutivePrewarmFailures = 0;
       logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm completed');
+      if (!this.sweptUvBuildsScratchAfterSuccess) {
+        // A host that recovered (e.g. once UV_LINK_MODE=copy lets installs
+        // finish) still carries every scratch dir its failed attempts leaked,
+        // and a sweep that ran only on failure would never reclaim them.
+        this.sweptUvBuildsScratchAfterSuccess = true;
+        ChromaMcpManager.startUvBuildsScratchSweep(env);
+      }
     } catch (error) {
       if (error instanceof ChromaMcpConnectionCancelledError) {
         logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm cancelled during shutdown');
         // A cancelled build is killed but not cleaned up by uv, so its scratch
         // dir leaks too. Sweep here as well so repeated shutdowns/reconnects
         // cannot accumulate abandoned builds (#4108).
-        ChromaMcpManager.sweepUvBuildsScratch(env);
+        ChromaMcpManager.startUvBuildsScratchSweep(env);
         throw error;
       }
       this.assertConnectionNotCancelled(connectionGeneration);
@@ -963,7 +1028,7 @@ export class ChromaMcpManager {
       // Reclaim the half-built env this failed attempt may have leaked, so a
       // retry loop cannot fill the disk on NTFS (#4108). Runs after the kill so
       // our own scratch dir is no longer held open.
-      ChromaMcpManager.sweepUvBuildsScratch(env);
+      ChromaMcpManager.startUvBuildsScratchSweep(env);
 
       const unavailableMessage = `chroma-mcp prewarm failed: ${errorMessage}`;
       recordUvxVectorSearchUnavailable(unavailableMessage);

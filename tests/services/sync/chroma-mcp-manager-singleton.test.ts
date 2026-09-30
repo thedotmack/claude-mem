@@ -821,6 +821,20 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(getDependencyStatus('uvx')).toMatchObject({ kind: 'vector_search_unavailable' });
   });
 
+  it('sweeps scratch leaked by earlier failures once a prewarm succeeds (#4108)', async () => {
+    // Once UV_LINK_MODE=copy lets installs finish, prewarm stops failing, so a
+    // sweep that ran only after a failure would never reclaim the backlog.
+    const leaked = path.join(process.env.UV_CACHE_DIR!, 'builds-v0', '.tmpLEAKED');
+    mkdirSync(leaked, { recursive: true });
+    const dayAgo = new Date(Date.now() - 25 * 60 * 60_000);
+    utimesSync(leaked, dayAgo, dayAgo);
+
+    await ChromaMcpManager.getInstance().callTool('chroma_list_collections', { limit: 1 });
+    await ChromaMcpManager.waitForUvBuildsScratchSweepForTesting();
+
+    expect(existsSync(leaked)).toBe(false);
+  });
+
   it('resets the prewarm failure count on a success so transient failures do not trip the breaker (#4108)', async () => {
     const mgr = ChromaMcpManager.getInstance();
     const failureCount = () =>
