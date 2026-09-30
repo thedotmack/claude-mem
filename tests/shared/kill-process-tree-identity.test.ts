@@ -5,6 +5,7 @@ import { collectDescendantIdentities } from '../../src/shared/kill-process-tree.
 import {
   captureProcessStartToken,
   isSameProcess,
+  isSameProcessName,
   __identityProbeCountForTesting,
 } from '../../src/shared/process-identity.js';
 
@@ -178,5 +179,19 @@ describe('identity revalidation never trusts the cache', () => {
     } finally {
       Date.now = realNow;
     }
+  });
+});
+
+describe('isSameProcessName (Chroma writer lock, #4239)', () => {
+  it('matches a Linux comm name truncated to 15 characters', () => {
+    // `ps -o comm=` on Linux never reports more than 15 characters, so a live
+    // writer with a longer executable name must still match its lock.
+    expect(isSameProcessName('claude-mem-work', 'claude-mem-worker', 'linux')).toBe(true);
+    expect(isSameProcessName('python3', 'bun', 'linux')).toBe(false);
+  });
+
+  it('requires an exact match off Linux', () => {
+    expect(isSameProcessName('claude-mem-work', 'claude-mem-worker', 'darwin')).toBe(false);
+    expect(isSameProcessName('bun', 'bun', 'win32')).toBe(true);
   });
 });

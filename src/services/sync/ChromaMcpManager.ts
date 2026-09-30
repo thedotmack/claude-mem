@@ -14,7 +14,7 @@ import { killProcessTree, collectDescendantIdentities } from '../../shared/kill-
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessName, captureProcessStartToken, isSameProcess, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -625,8 +625,8 @@ export class ChromaMcpManager {
       // under either JS runtime, so any of them keeps such a lock.
       const currentName = captureProcessName(lock.pid);
       if (currentName === null) return true;
-      if (lock.processName) return currentName === lock.processName;
-      return currentName === normalizeProcessName(process.execPath) || CHROMA_WRITER_RUNTIMES.has(currentName);
+      if (lock.processName) return isSameProcessName(currentName, lock.processName);
+      return isSameProcessName(currentName, normalizeProcessName(process.execPath)) || CHROMA_WRITER_RUNTIMES.has(currentName);
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
     return currentStartToken === null || currentStartToken === lock.startToken;

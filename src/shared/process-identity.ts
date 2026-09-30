@@ -211,6 +211,23 @@ export function normalizeProcessName(nameOrPath: string): string {
   return base.replace(/\.exe$/i, '').toLowerCase();
 }
 
+// Linux `ps -o comm=` reports at most TASK_COMM_LEN - 1 = 15 characters.
+const LINUX_COMM_MAX_CHARS = 15;
+
+/**
+ * Compare a name read by captureProcessName with one recorded from an
+ * executable path. On Linux the live name is truncated to 15 characters, so a
+ * longer recorded name would never match and a live owner would look reused.
+ */
+export function isSameProcessName(
+  currentName: string,
+  recordedName: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== 'linux') return currentName === recordedName;
+  return currentName.slice(0, LINUX_COMM_MAX_CHARS) === recordedName.slice(0, LINUX_COMM_MAX_CHARS);
+}
+
 export function isSameProcess(pid: number, snapshotToken: string | null): boolean {
   if (snapshotToken === null) return true;
   // DELIBERATELY BYPASSES THE CACHE.
