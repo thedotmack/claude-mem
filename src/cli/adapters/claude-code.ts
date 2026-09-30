@@ -28,6 +28,9 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolResponse: r.tool_response,
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
+      // #3161: feeds summarize.ts's re-entry loop breaker (codex.ts already
+      // maps this; without it the breaker never fires on Claude Code).
+      stopHookActive: typeof r.stop_hook_active === 'boolean' ? r.stop_hook_active : undefined,
       reason: pickStringField(r.reason),
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),

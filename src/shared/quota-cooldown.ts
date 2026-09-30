@@ -40,6 +40,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
+import { resolveConfigDirProfileKey } from './EnvManager.js';
 import {
   clearObserverQuotaCooldown,
   recordObserverQuotaCooldown,
@@ -56,7 +57,20 @@ interface PersistedQuotaCooldown {
   provider: QuotaProvider;
   message: string;
   window?: string;
+  profile?: string;
   armedAtMs: number;
+}
+
+/**
+ * The Claude account (config-dir profile) that 'claude' requests bill right
+ * now. Quota is per account and CLAUDE_MEM_CLAUDE_CONFIG_DIR is re-read on
+ * every spawn, so a 'claude' breaker belongs to the profile that armed it and
+ * must not withhold requests from a different one.
+ */
+let resolveClaudeProfile: () => string = resolveConfigDirProfileKey;
+
+export function setClaudeProfileResolverForTesting(resolver: (() => string) | null): void {
+  resolveClaudeProfile = resolver ?? resolveConfigDirProfileKey;
 }
 
 function defaultCooldownFilePath(): string {
@@ -79,6 +93,7 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         provider: entry.provider,
         message: entry.message ?? 'Provider reported the inference allowance exhausted',
         ...(entry.window ? { window: entry.window } : {}),
+        ...(entry.profile ? { profile: entry.profile } : {}),
         armedAtMs: entry.armedAtMs,
         // Never restored: the process that could have held this is gone.
         probeInFlightSinceMs: null,
@@ -103,6 +118,7 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
       provider: state.provider,
       message: state.message,
       ...(state.window ? { window: state.window } : {}),
+      ...(state.profile ? { profile: state.profile } : {}),
       armedAtMs: state.armedAtMs,
     }));
     const tmp = `${filePath}.${process.pid}.tmp`;
@@ -135,6 +151,8 @@ export interface QuotaCooldownState {
   message: string;
   /** Window the provider named, when it named one (e.g. 'weekly'). */
   window?: string;
+  /** 'claude' only: the config-dir profile whose quota was exhausted. */
+  profile?: string;
   armedAtMs: number;
   /**
    * When the single post-expiry probe was claimed, or null when none is in
@@ -187,12 +205,19 @@ export function recordQuotaExhausted(
    * cooldown on every restart.
    */
   armedAtMs: number = Date.now(),
+  /**
+   * 'claude' only: the account the refused generator was spawned under. A
+   * late refusal from a generator started before an account switch belongs
+   * to that account, not the one selected now. Defaults to the current one.
+   */
+  profile?: string,
 ): QuotaCooldownState {
   hydrateFromDisk();
   const state: QuotaCooldownState = {
     provider,
     message,
     ...(window ? { window } : {}),
+    ...(provider === 'claude' ? { profile: profile ?? resolveClaudeProfile() } : {}),
     armedAtMs,
     // Re-arming ends whatever probe was in flight: this IS that probe failing.
     probeInFlightSinceMs: null,
@@ -259,7 +284,16 @@ export function tryAdmitQuotaProbe(
   // call in a fresh process finds an empty Map, admits, and takes no claim —
   // the herd returns at exactly the moment the breaker should be strongest.
   hydrateFromDisk();
-  const state = cooldowns.get(provider);
+  let state = cooldowns.get(provider);
+  // A 'claude' breaker armed under another account (or before breakers carried
+  // one) says nothing about the account now selected: drop it and let this
+  // request through, instead of pausing capture until that account resets.
+  // Switching back re-probes the first account once; one request is cheaper
+  // than keeping a breaker per account.
+  if (state && provider === 'claude' && state.profile !== resolveClaudeProfile()) {
+    clearQuotaCooldown(provider);
+    state = undefined;
+  }
   if (!state) return { admitted: true, claimId: null };
 
   if (nowMs - state.armedAtMs < cooldownMs) {
@@ -307,6 +341,7 @@ export function releaseQuotaProbe(provider: QuotaProvider, claimId: number | nul
 
 export function resetQuotaCooldownsForTesting(): void {
   cooldowns.clear();
+  resolveClaudeProfile = resolveConfigDirProfileKey;
   // The latch must drop too, or a test that wrote a ledger would leak its
   // armed windows into the next test through a stale "already hydrated".
   hydrated = false;
@@ -327,13 +362,36 @@ export function resetQuotaCooldownsForTesting(): void {
  * Mirror the in-memory breaker into observer-health.json so session-start
  * and external monitors can see an intentional pause. Best-effort: a health
  * write failure must not change admission or drain-on-clear.
+ *
+ * Only a LIVE window is mirrored. An elapsed window withholds nothing right now
+ * — `tryAdmitQuotaProbe` already admits the single recovery probe past it — so
+ * reporting it `active: true` would keep the session-start banner up on a
+ * cooldown that no longer holds, the exact stale-report failure
+ * `observer-health.ts` warns about (`until` is authoritative). Skipping elapsed
+ * entries here also stops a breaker for a provider the user stopped using from
+ * resurfacing once the live entries clear.
+ *
+ * The elapsed entry is NOT removed from the map: it stays as admission state.
+ * It gates the single post-cooldown recovery probe (`tryAdmitQuotaProbe` admits
+ * one caller and withholds the rest) and a failed probe re-arms it in place;
+ * deleting it would let `tryAdmitQuotaProbe` find no state and admit every
+ * concurrent caller at once — the request burst the breaker exists to prevent.
+ * It leaves the map only on a successful generation (`clearQuotaCooldown`).
+ *
+ * Exported for tests: the elapsed-window paths need a controllable clock, which
+ * the internal callers (always "now") cannot supply.
  */
-function syncObserverHealthQuotaCooldown(): void {
+export function syncObserverHealthQuotaCooldown(
+  nowMs: number = Date.now(),
+  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+): void {
   try {
     let latest: QuotaCooldownState | null = null;
     for (const state of cooldowns.values()) {
+      if (nowMs - state.armedAtMs >= cooldownMs) continue;
       if (!latest || state.armedAtMs > latest.armedAtMs) latest = state;
     }
+
     if (!latest) {
       clearObserverQuotaCooldown();
       return;
@@ -342,7 +400,7 @@ function syncObserverHealthQuotaCooldown(): void {
       active: true,
       provider: latest.provider,
       armedAt: latest.armedAtMs,
-      until: latest.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+      until: latest.armedAtMs + cooldownMs,
       ...(latest.window ? { window: latest.window } : {}),
       message: latest.message,
     });

@@ -14,6 +14,7 @@ describe('DataRoutes synchronized delete APIs', () => {
   let store: SessionStore;
   let sync: CloudSync;
   let handlers: Map<string, (req: Request, res: Response) => void>;
+  let broadcasts: Array<Record<string, unknown>>;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'cmem-delete-routes-'));
@@ -55,11 +56,12 @@ describe('DataRoutes synchronized delete APIs', () => {
               '2026-07-20T00:00:00.000Z', 1752969600000)
     `).run();
 
+    broadcasts = [];
     const routes = new DataRoutes(
       {} as any,
       { getSessionStore: () => store, getCloudSync: () => sync } as any,
       {} as any,
-      {} as any,
+      { broadcast: (event: Record<string, unknown>) => { broadcasts.push(event); } } as any,
       {} as any,
       Date.now(),
     );
@@ -111,5 +113,29 @@ describe('DataRoutes synchronized delete APIs', () => {
     for (const row of outbox) {
       expect(JSON.parse(row.body)).toMatchObject({ kind: row.kind, deleted: true, payload: null });
     }
+    // Open viewer tabs are told after each committed delete.
+    expect(broadcasts).toEqual([
+      { type: 'item_deleted', itemType: 'observation', id: 1 },
+      { type: 'item_deleted', itemType: 'summary', id: 1 },
+      { type: 'item_deleted', itemType: 'prompt', id: 1 },
+    ]);
+  });
+
+  it('broadcasts nothing when the delete is refused', () => {
+    const call = (path: string, id: string) => {
+      let status = 200;
+      const response = {
+        status(code: number) { status = code; return this; },
+        json() { return this; },
+      } as unknown as Response;
+      handlers.get(path)!({ params: { id }, path } as unknown as Request, response);
+      return status;
+    };
+
+    // A row synced from another device is not deletable here.
+    db.prepare(`UPDATE observations SET origin_device_id = 'other-device' WHERE id = 1`).run();
+    expect(call('/api/observation/:id', '1')).toBe(404);
+    expect(call('/api/summary/:id', '999')).toBe(404);
+    expect(broadcasts).toEqual([]);
   });
 });

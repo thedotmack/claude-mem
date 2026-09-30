@@ -23,6 +23,13 @@ export interface ActiveSession {
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  /**
+   * Claude account (config-dir profile key) the latest Claude generator was
+   * spawned under. Its env, and so its billing account, is fixed at spawn, so
+   * a quota refusal it hits is armed under this account even if the setting
+   * changed while it ran.
+   */
+  observerProfile?: string;
   consecutiveRestarts: number;
   /**
    * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
@@ -50,6 +57,17 @@ export interface ActiveSession {
    * tool call spawns a generator that can only abort on the same budget check.
    */
   overflowPausedUntilMs?: number;
+  /**
+   * Consecutive generations that ended because a prompt went unanswered
+   * ('transport:response_stall'). Bounds their automatic resume; reset when a
+   * queued-work turn is answered (#4066).
+   */
+  consecutiveResponseStalls?: number;
+  /**
+   * The delayed resume a response stall scheduled. Any generator start cancels
+   * it, so a stale timer never restarts a session a newer generation paused.
+   */
+  stallResumeTimer?: ReturnType<typeof setTimeout>;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
@@ -58,6 +76,8 @@ export interface ActiveSession {
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
+  /** Why buffered work was last parked after a generator exit. */
+  pausedReason?: string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;

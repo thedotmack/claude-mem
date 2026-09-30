@@ -47,3 +47,45 @@ test('field deadline cancels real OpenRouter fetch and prevents retries', async 
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 }, 5000);
+
+// #4134: CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS only helps if the OpenAI-compatible
+// request path uses it too. Scaled down: a 3s field deadline must outlast a 600ms
+// CLAUDE_MEM_LLM_TIMEOUT_MS when the backend answers in 1.2s.
+test('a field deadline longer than CLAUDE_MEM_LLM_TIMEOUT_MS governs the OpenRouter request (#4134)', async () => {
+  const server = createServer((req, res) => {
+    req.resume();
+    const reply = setTimeout(() => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'condensed by the model' } }] }));
+    }, 1200);
+    res.on('close', () => clearTimeout(reply));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as { port: number };
+  const originalLlmTimeout = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+  process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '600';
+  const provider = new OpenRouterProvider({} as any, {} as any);
+  const config = {
+    apiKey: 'fixture-not-a-secret', model: 'fixture',
+    apiUrl: `http://127.0.0.1:${address.port}/v1/chat/completions`,
+  };
+  const raw = JSON.stringify({ content: 'x'.repeat(20_000) });
+  const context = { sessionDbId: 0, field: 'outcome' };
+  try {
+    // Wired the way OpenAICompatibleProvider wires it: the deadline is forwarded.
+    const condensed = await optimizeField(raw, (text, budget, signal, deadlineMs) =>
+      (provider as any).compressField(text, budget, config, signal, deadlineMs), context, undefined, 3000);
+    expect(String(condensed)).toContain('condensed by the model');
+
+    // The old wiring dropped it: the 600ms LLM default cuts the pass off first,
+    // so the field falls back to truncation despite the 3s knob.
+    const truncated = await optimizeField(raw, (text, budget, signal) =>
+      (provider as any).compressField(text, budget, config, signal), context, undefined, 3000);
+    expect(truncated).toBe(raw);
+  } finally {
+    if (originalLlmTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+    else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = originalLlmTimeout;
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}, 10_000);

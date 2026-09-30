@@ -180,6 +180,58 @@ describe('before_send autocapture rate-limit', () => {
   });
 });
 
+describe('before_send drops OS working-directory permission faults (chdir EPERM/EACCES)', () => {
+  it('drops a manual-path EPERM chdir $exception (returns null)', () => {
+    const ev = {
+      event: '$exception',
+      properties: {
+        $exception_type: 'Error',
+        $exception_message:
+          "EPERM: operation not permitted, chdir '~\\' -> 'Program Files\\WindowsApps\\OpenAI.Codex_...\\app'",
+        // Manual-path marker present: the drop must run ahead of the sentinel branch.
+        __cm_rate_limited: true,
+      },
+    };
+    expect(__errorBeforeSendForTests(ev)).toBeNull();
+  });
+
+  it('drops an EACCES chdir surfaced via $exception_list', () => {
+    const ev = {
+      event: '$exception',
+      properties: {
+        $exception_list: [
+          { type: 'Error', value: 'EACCES: permission denied, chdir /some/locked/dir' },
+        ],
+      } as Record<string, unknown>,
+    };
+    expect(__errorBeforeSendForTests(ev)).toBeNull();
+  });
+
+  it('does NOT drop unrelated errors that merely mention a permission code', () => {
+    const ev = {
+      event: '$exception',
+      properties: {
+        $exception_type: 'Error',
+        $exception_message: 'EPERM: operation not permitted, open /var/log/app.log',
+      },
+    };
+    // No chdir syscall ⇒ a real error, must pass through (not null).
+    expect(__errorBeforeSendForTests(ev)).not.toBeNull();
+  });
+
+  it('does NOT drop a genuine error whose message happens to contain "chdir"', () => {
+    const ev = {
+      event: '$exception',
+      properties: {
+        $exception_type: 'TypeError',
+        $exception_message: 'Cannot read property chdir of undefined',
+      },
+    };
+    // chdir present but no permission signal ⇒ pass through.
+    expect(__errorBeforeSendForTests(ev)).not.toBeNull();
+  });
+});
+
 describe('before_send FULLY REDACTS SDK-autocaptured $exception (one-way-door)', () => {
   // posthog-node's addSourceContext reads the user's real source off disk and
   // attaches raw context_line/pre_context/post_context + abs filename + the RAW
