@@ -3496,12 +3496,14 @@ export class SessionStore {
       }
     }
 
+    // `id` breaks created_at_epoch ties so a turn's rows (which share one epoch) render in the
+    // order they were written instead of whatever order the index scan returns them in.
     const obsQuery = `
       SELECT o.*
       FROM observations o
       LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
       WHERE o.created_at_epoch >= ? AND o.created_at_epoch <= ? ${observationScope.clause}
-      ORDER BY o.created_at_epoch ASC
+      ORDER BY o.created_at_epoch ASC, o.id ASC
     `;
 
     const sessQuery = `
@@ -3509,7 +3511,7 @@ export class SessionStore {
       FROM session_summaries ss
       LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id
       WHERE ss.created_at_epoch >= ? AND ss.created_at_epoch <= ? ${summaryScope.clause}
-      ORDER BY ss.created_at_epoch ASC
+      ORDER BY ss.created_at_epoch ASC, ss.id ASC
     `;
 
     const promptQuery = `
@@ -3517,7 +3519,7 @@ export class SessionStore {
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${promptScope.clause}
-      ORDER BY up.created_at_epoch ASC
+      ORDER BY up.created_at_epoch ASC, up.id ASC
     `;
 
     const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...observationScope.params) as ObservationRecord[];
