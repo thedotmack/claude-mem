@@ -2529,6 +2529,56 @@
       background: var(--color-bg-card-hover);
     }
 
+    .session-card--deleting {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    .session-card .card-delete-error {
+      display: block;
+      margin-top: 8px;
+      max-width: none;
+      cursor: default;
+    }
+
+    .session-list-empty {
+      text-align: center;
+      padding: 40px;
+      color: #8b949e;
+    }
+
+    .view-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 4px;
+      margin-bottom: 20px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      background: var(--color-bg-card);
+      width: fit-content;
+    }
+
+    .view-tab {
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .view-tab:hover {
+      color: var(--color-text-primary);
+    }
+
+    .view-tab.active {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+    }
+
     .session-card-header {
       display: flex;
       align-items: center;
@@ -2643,12 +2693,33 @@
       color: var(--color-text-muted);
     }
 
+    .session-card-platform {
+      text-transform: capitalize;
+    }
+
     .session-detail-header {
       display: flex;
       align-items: center;
       gap: 16px;
-      padding: 16px 24px;
+      padding-bottom: 16px;
+      margin-bottom: 12px;
       border-bottom: 1px solid var(--color-border-primary);
+    }
+
+    .session-detail-title-group {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .session-detail-title {
+      font-weight: 600;
+      font-size: 15px;
+      color: var(--color-text-title);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .session-detail-back {
@@ -2673,6 +2744,9 @@
       font-family: 'Monaspace Radon', 'Monaco', 'Menlo', monospace;
       font-size: 12px;
       color: var(--color-text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .category-filter-bar {
@@ -2680,8 +2754,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 10px 24px;
-      border-bottom: 1px solid var(--color-border-primary);
+      margin-bottom: 20px;
       flex-wrap: wrap;
     }
 

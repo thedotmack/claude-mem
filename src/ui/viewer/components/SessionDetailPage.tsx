@@ -1,62 +1,42 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Feed } from './Feed';
 import { CategoryFilter } from './CategoryFilter';
-import { usePagination } from '../hooks/usePagination';
-import { Observation, Summary, UserPrompt } from '../types';
-import { mergeAndDeduplicateByProject, buildFeedItems } from '../utils/data';
+import { FeedItem } from '../types';
+import type { DeletableItemType } from '../utils/feed-deletion';
 import { categoryOf, countByCategory } from '../utils/category';
+import { sessionKey, type SessionRef } from '../utils/sessions';
 
 interface SessionDetailPageProps {
-  contentSessionId: string;
-  observations: Observation[];
-  summaries: Summary[];
-  prompts: UserPrompt[];
+  /** View tabs, rendered at the top of the scrolling column. */
+  tabs: React.ReactNode;
+  session: SessionRef;
+  /** The session's custom title when the catalog knows it. */
+  title: string | null;
+  /** This session's rows, newest first (App owns loading and deletes). */
+  items: FeedItem[];
+  isLoading: boolean;
+  hasMore: boolean;
+  onLoadMore: () => void;
+  onDeleted: (itemType: DeletableItemType, id: number) => void;
   onBack: () => void;
 }
 
-export function SessionDetailPage({ contentSessionId, observations, summaries, prompts, onBack }: SessionDetailPageProps) {
-  const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
-  const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
-  const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
-
-  const pagination = usePagination('', contentSessionId);
-
-  const matchesSession = useCallback((item: { content_session_id?: string; session_id?: string }) => {
-    const itemSessionId = item.content_session_id ?? item.session_id;
-    return itemSessionId === contentSessionId;
-  }, [contentSessionId]);
-
-  const allObservations = useMemo(() => {
-    const live = observations.filter(matchesSession);
-    const paginated = paginatedObservations.filter(matchesSession);
-    return mergeAndDeduplicateByProject(live, paginated);
-  }, [observations, paginatedObservations, matchesSession]);
-
-  const allSummaries = useMemo(() => {
-    const live = summaries.filter(matchesSession);
-    const paginated = paginatedSummaries.filter(matchesSession);
-    return mergeAndDeduplicateByProject(live, paginated);
-  }, [summaries, paginatedSummaries, matchesSession]);
-
-  const allPrompts = useMemo(() => {
-    const live = prompts.filter(matchesSession);
-    const paginated = paginatedPrompts.filter(matchesSession);
-    return mergeAndDeduplicateByProject(live, paginated);
-  }, [prompts, paginatedPrompts, matchesSession]);
-
-  const allItems = useMemo(
-    () => buildFeedItems(allObservations, allSummaries, allPrompts),
-    [allObservations, allSummaries, allPrompts]
-  );
-
+export function SessionDetailPage({
+  tabs, session, title, items, isLoading, hasMore, onLoadMore, onDeleted, onBack,
+}: SessionDetailPageProps) {
   const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
+  const currentSessionKey = sessionKey(session);
 
-  const categoryCounts = useMemo(() => countByCategory(allItems), [allItems]);
+  useEffect(() => {
+    setActiveCategories(new Set());
+  }, [currentSessionKey]);
+
+  const categoryCounts = useMemo(() => countByCategory(items), [items]);
 
   const filteredItems = useMemo(() => {
-    if (activeCategories.size === 0) return allItems;
-    return allItems.filter(item => activeCategories.has(categoryOf(item)));
-  }, [allItems, activeCategories]);
+    if (activeCategories.size === 0) return items;
+    return items.filter(item => activeCategories.has(categoryOf(item)));
+  }, [items, activeCategories]);
 
   const toggleCategory = useCallback((category: string) => {
     setActiveCategories(prev => {
@@ -70,61 +50,39 @@ export function SessionDetailPage({ contentSessionId, observations, summaries, p
     });
   }, []);
 
-  const handleLoadMore = useCallback(async () => {
-    try {
-      const [newObservations, newSummaries, newPrompts] = await Promise.all([
-        pagination.observations.loadMore(),
-        pagination.summaries.loadMore(),
-        pagination.prompts.loadMore()
-      ]);
-
-      if (newObservations.length > 0) {
-        setPaginatedObservations(prev => [...prev, ...newObservations]);
-      }
-      if (newSummaries.length > 0) {
-        setPaginatedSummaries(prev => [...prev, ...newSummaries]);
-      }
-      if (newPrompts.length > 0) {
-        setPaginatedPrompts(prev => [...prev, ...newPrompts]);
-      }
-    } catch (error) {
-      console.error('Failed to load more data:', error);
-    }
-  }, [pagination.observations, pagination.summaries, pagination.prompts]);
-
-  useEffect(() => {
-    setPaginatedObservations([]);
-    setPaginatedSummaries([]);
-    setPaginatedPrompts([]);
-    setActiveCategories(new Set());
-    handleLoadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentSessionId]);
-
-  const anyHasMore = pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore;
-
-  return (
+  const header = (
     <>
+      {tabs}
       <div className="session-detail-header">
         <button className="session-detail-back" onClick={onBack}>
           ← Back to sessions
         </button>
-        <span className="session-detail-id" title={contentSessionId}>{contentSessionId}</span>
+        <div className="session-detail-title-group">
+          {title && <span className="session-detail-title">{title}</span>}
+          <span className="session-detail-id" title={session.contentSessionId}>
+            {session.platformSource} · {session.contentSessionId}
+          </span>
+        </div>
       </div>
       <CategoryFilter
         categoryCounts={categoryCounts}
         activeCategories={activeCategories}
         onToggle={toggleCategory}
         filteredCount={filteredItems.length}
-        totalCount={allItems.length}
-        totalIsPartial={anyHasMore}
-      />
-      <Feed
-        items={filteredItems}
-        onLoadMore={handleLoadMore}
-        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
-        hasMore={anyHasMore}
+        totalCount={items.length}
+        totalIsPartial={hasMore}
       />
     </>
+  );
+
+  return (
+    <Feed
+      header={header}
+      items={filteredItems}
+      onLoadMore={onLoadMore}
+      onDeleted={onDeleted}
+      isLoading={isLoading}
+      hasMore={hasMore}
+    />
   );
 }

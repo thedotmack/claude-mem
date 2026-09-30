@@ -81,4 +81,22 @@ describe('PaginationHelper.getObservations content_session_id', () => {
     expect(prompts.items).toHaveLength(1);
     expect(prompts.items[0].prompt_text).toBe('prompt-a');
   });
+
+  it('pairs contentSessionId with platformSource: the same id under another platform is a different session', () => {
+    const claudeSession = store.createSDKSession('shared-id', 'proj', 'a', undefined, 'claude');
+    const codexSession = store.createSDKSession('shared-id', 'proj', 'b', undefined, 'codex');
+    store.ensureMemorySessionIdRegistered(claudeSession, 'mem-claude');
+    store.ensureMemorySessionIdRegistered(codexSession, 'mem-codex');
+    for (const [sessionDbId, title] of [[claudeSession, 'from-claude'], [codexSession, 'from-codex']] as const) {
+      store.db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+        SELECT memory_session_id, 'proj', 'discovery', ?, '2026-07-20T00:00:00.000Z', 1752969600000
+        FROM sdk_sessions WHERE id = ?
+      `).run(title, sessionDbId);
+    }
+
+    const codexOnly = helper.getObservations(0, 20, undefined, 'codex', 'shared-id');
+    expect(codexOnly.items.map(item => item.title)).toEqual(['from-codex']);
+    expect(codexOnly.items[0].platform_source).toBe('codex');
+  });
 });

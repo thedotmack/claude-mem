@@ -162,6 +162,18 @@ interface SdkSessionDetailRow {
   observed_billing: string | null;
 }
 
+export interface SessionCatalogRow {
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  custom_title: string | null;
+  started_at_epoch: number;
+  item_count: number;
+}
+
+const SESSION_CATALOG_DEFAULT_LIMIT = 200;
+const SESSION_CATALOG_MAX_LIMIT = 1000;
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -2439,15 +2451,14 @@ export class SessionStore {
     };
   }
 
-  getAllSessions(platformSource?: string): Array<{
-    content_session_id: string;
-    project: string;
-    platform_source: string;
-    custom_title: string | null;
-    started_at_epoch: number;
-    item_count: number;
-  }> {
-    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+  /**
+   * Session catalog for the viewer's Sessions view: newest first, one row per
+   * (platform_source, content_session_id), with the session's combined
+   * observation + summary + prompt count. Bounded by `limit` and filterable by
+   * project and platform so the payload stays small on large databases.
+   */
+  getSessionCatalog(options: { project?: string; platformSource?: string; limit?: number } = {}): SessionCatalogRow[] {
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? SESSION_CATALOG_DEFAULT_LIMIT), 1), SESSION_CATALOG_MAX_LIMIT);
     let query = `
       SELECT
         s.content_session_id,
@@ -2466,21 +2477,19 @@ export class SessionStore {
     `;
     const params: SQLQueryBindings[] = [OBSERVER_SESSIONS_PROJECT];
 
-    if (normalizedPlatformSource) {
-      query += ' AND COALESCE(s.platform_source, ?) = ?';
-      params.push(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource);
+    if (options.project) {
+      query += ' AND s.project = ?';
+      params.push(options.project);
+    }
+    if (options.platformSource) {
+      query += ` AND COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') = ?`;
+      params.push(normalizePlatformSource(options.platformSource));
     }
 
-    query += ' ORDER BY s.started_at_epoch DESC';
+    query += ' ORDER BY s.started_at_epoch DESC, s.id DESC LIMIT ?';
+    params.push(limit);
 
-    return this.db.prepare(query).all(...params) as Array<{
-      content_session_id: string;
-      project: string;
-      platform_source: string;
-      custom_title: string | null;
-      started_at_epoch: number;
-      item_count: number;
-    }>;
+    return this.db.prepare(query).all(...params) as SessionCatalogRow[];
   }
 
   getLatestUserPrompt(contentSessionId: string, sessionDbId?: number): LatestPromptResult | undefined {

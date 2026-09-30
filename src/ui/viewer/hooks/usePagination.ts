@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
+import { sessionKey, type SessionRef } from '../utils/sessions';
 
 interface PaginationState {
   isLoading: boolean;
@@ -15,19 +16,19 @@ function usePaginationFor<TItem extends DataItem>(
   endpoint: string,
   dataType: DataType,
   currentFilter: string,
-  currentSessionFilter: string
+  currentSession: SessionRef | null
 ) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
   });
 
+  const selectionKey = `${currentFilter}|${currentSession ? sessionKey(currentSession) : ''}`;
   const offsetRef = useRef(0);
-  const lastSelectionKeyRef = useRef(`${currentFilter} ${currentSessionFilter}`);
+  const lastSelectionKeyRef = useRef(selectionKey);
   const stateRef = useRef(state);
 
   const loadMore = useCallback(async (): Promise<TItem[]> => {
-    const selectionKey = `${currentFilter} ${currentSessionFilter}`;
     const filterChanged = lastSelectionKeyRef.current !== selectionKey;
 
     if (filterChanged) {
@@ -54,8 +55,11 @@ function usePaginationFor<TItem extends DataItem>(
     if (currentFilter) {
       params.append('project', currentFilter);
     }
-    if (currentSessionFilter) {
-      params.append('contentSessionId', currentSessionFilter);
+    if (currentSession) {
+      // Both halves of the session identity: the same content session id can
+      // exist under two platforms.
+      params.append('contentSessionId', currentSession.contentSessionId);
+      params.append('platformSource', currentSession.platformSource);
     }
 
     const response = await fetch(`${endpoint}?${params}`);
@@ -82,12 +86,14 @@ function usePaginationFor<TItem extends DataItem>(
     offsetRef.current += UI.PAGINATION_PAGE_SIZE;
 
     return data.items;
-  }, [currentFilter, currentSessionFilter, endpoint, dataType]);
+    // selectionKey covers currentFilter and currentSession.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionKey, endpoint, dataType]);
 
-  // A row from a loaded page was deleted: the server's list moved up by one,
-  // so the next page starts one earlier or it would skip a row.
-  const noteRemoved = useCallback(() => {
-    offsetRef.current = Math.max(0, offsetRef.current - 1);
+  // Rows from a loaded page were deleted: the server's list moved up by that
+  // many, so the next page starts that much earlier or it would skip rows.
+  const noteRemoved = useCallback((count: number = 1) => {
+    offsetRef.current = Math.max(0, offsetRef.current - count);
   }, []);
 
   return {
@@ -97,10 +103,10 @@ function usePaginationFor<TItem extends DataItem>(
   };
 }
 
-export function usePagination(currentFilter: string, currentSessionFilter: string) {
-  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, currentSessionFilter);
-  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter, currentSessionFilter);
-  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter, currentSessionFilter);
+export function usePagination(currentFilter: string, currentSession: SessionRef | null = null) {
+  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, currentSession);
+  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter, currentSession);
+  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter, currentSession);
 
   return {
     observations,

@@ -13,6 +13,7 @@ describe('GET /api/sessions', () => {
     db = new Database(':memory:');
     store = new SessionStore(db);
     store.createSDKSession('content-catalog', 'proj-catalog', 'hi');
+    store.createSDKSession('content-other', 'proj-other', 'hi', undefined, 'codex');
 
     const routes = new DataRoutes(
       {} as any,
@@ -36,13 +37,23 @@ describe('GET /api/sessions', () => {
     db.close();
   });
 
-  it('returns the session catalog', () => {
+  function callCatalog(query: Record<string, string>) {
     let responseBody: any;
     const response = { json(value: unknown) { responseBody = value; return this; } } as unknown as Response;
+    handlers.get('/api/sessions')!({ query, get: () => undefined } as unknown as Request, response);
+    return responseBody.sessions as Array<{ content_session_id: string; project: string; platform_source: string }>;
+  }
 
-    handlers.get('/api/sessions')!({ query: {}, get: () => undefined } as unknown as Request, response);
+  it('returns the session catalog with each session\'s platform', () => {
+    const sessions = callCatalog({});
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find(s => s.content_session_id === 'content-catalog')).toMatchObject({ project: 'proj-catalog', platform_source: 'claude' });
+    expect(sessions.find(s => s.content_session_id === 'content-other')).toMatchObject({ platform_source: 'codex' });
+  });
 
-    expect(responseBody.sessions).toHaveLength(1);
-    expect(responseBody.sessions[0]).toMatchObject({ content_session_id: 'content-catalog', project: 'proj-catalog' });
+  it('filters by project and platform server-side, and honors a limit', () => {
+    expect(callCatalog({ project: 'proj-catalog' }).map(s => s.content_session_id)).toEqual(['content-catalog']);
+    expect(callCatalog({ platformSource: 'codex' }).map(s => s.content_session_id)).toEqual(['content-other']);
+    expect(callCatalog({ limit: '1' })).toHaveLength(1);
   });
 });

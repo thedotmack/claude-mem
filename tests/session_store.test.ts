@@ -222,7 +222,7 @@ describe('SessionStore', () => {
     store.createSDKSession('content-new', 'proj-b', 'second');
     store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 2000 WHERE content_session_id = 'content-new'`).run();
 
-    const sessions = store.getAllSessions();
+    const sessions = store.getSessionCatalog();
 
     expect(sessions.map(s => s.content_session_id)).toEqual(['content-new', 'content-old']);
     expect(sessions[0]).toMatchObject({ project: 'proj-b', platform_source: 'claude', started_at_epoch: 2000 });
@@ -232,7 +232,7 @@ describe('SessionStore', () => {
     store.createSDKSession('content-claude', 'proj-a', 'a', undefined, 'claude');
     store.createSDKSession('content-codex', 'proj-a', 'b', undefined, 'codex');
 
-    const claudeSessions = store.getAllSessions('claude');
+    const claudeSessions = store.getSessionCatalog({ platformSource: 'claude' });
 
     expect(claudeSessions.map(s => s.content_session_id)).toEqual(['content-claude']);
   });
@@ -257,7 +257,7 @@ describe('SessionStore', () => {
       VALUES (?, 'content-counts', 1, 'a prompt', '2026-07-20T00:00:00.000Z', 1752969600000)
     `).run(sessionDbId);
 
-    const sessions = store.getAllSessions();
+    const sessions = store.getSessionCatalog();
     const row = sessions.find(s => s.content_session_id === 'content-counts');
 
     expect(row).toBeDefined();
@@ -265,10 +265,21 @@ describe('SessionStore', () => {
     expect(row!.item_count).toBe(4);
   });
 
+  it('filters the session catalog by project and caps it with a limit', () => {
+    store.createSDKSession('content-a1', 'proj-a', 'x');
+    store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 1000 WHERE content_session_id = 'content-a1'`).run();
+    store.createSDKSession('content-a2', 'proj-a', 'y');
+    store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 2000 WHERE content_session_id = 'content-a2'`).run();
+    store.createSDKSession('content-b1', 'proj-b', 'z');
+
+    expect(store.getSessionCatalog({ project: 'proj-a' }).map(s => s.content_session_id)).toEqual(['content-a2', 'content-a1']);
+    expect(store.getSessionCatalog({ project: 'proj-a', limit: 1 }).map(s => s.content_session_id)).toEqual(['content-a2']);
+  });
+
   it('reports item_count 0 and custom_title null for a session with no content and no title', () => {
     store.createSDKSession('content-empty', 'proj-empty', 'first');
 
-    const sessions = store.getAllSessions();
+    const sessions = store.getSessionCatalog();
     const row = sessions.find(s => s.content_session_id === 'content-empty');
 
     expect(row).toBeDefined();

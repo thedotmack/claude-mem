@@ -59,12 +59,11 @@ export type FeedItem =
 export type FeedItemType = 'observation' | 'summary' | 'prompt';
 
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
   projects?: string[];
-  sessions?: SessionCatalogEntry[];
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;
@@ -72,6 +71,9 @@ export interface StreamEvent {
   queueDepth?: number;
   itemType?: FeedItemType;
   id?: number;
+  /** session_deleted */
+  platformSource?: string;
+  contentSessionId?: string;
 }
 
 export interface ProjectCatalog {

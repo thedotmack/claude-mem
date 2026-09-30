@@ -127,7 +127,7 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
     app.get('/api/sessions', this.handleGetSessions.bind(this));
-    app.delete('/api/sessions/:contentSessionId', this.handleDeleteSession.bind(this));
+    app.delete('/api/sessions/:platformSource/:contentSessionId', this.handleDeleteSession.bind(this));
 
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
 
@@ -475,30 +475,65 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetSessions = this.wrapHandler((req: Request, res: Response): void => {
     const store = this.dbManager.getSessionStore();
-    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
-    res.json({ sessions: store.getAllSessions(platformSource) });
+    const project = BaseRouteHandler.firstString(req.query.project)?.trim() || undefined;
+    const requestedLimit = Number(BaseRouteHandler.firstString(req.query.limit));
+    res.json({
+      sessions: store.getSessionCatalog({
+        project,
+        platformSource: this.getOptionalPlatformSourceFromRequest(req),
+        limit: Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : undefined,
+      }),
+    });
   });
 
+  /**
+   * Delete one session and everything captured in it. A session is identified
+   * by (platform_source, content_session_id): the same content id can exist
+   * under two hosts. Sync-safe like the per-row deletes: every local child row
+   * is tombstoned for cloud sync, and the session row is removed only after its
+   * children are gone, so the FK cascade never drops a replicated row.
+   */
   private handleDeleteSession = this.wrapHandler((req: Request, res: Response): void => {
+    const rawPlatformSource = this.toStringParam(req.params.platformSource);
     const contentSessionId = this.toStringParam(req.params.contentSessionId);
-    if (!contentSessionId) {
-      this.badRequest(res, 'contentSessionId is required');
+    if (!rawPlatformSource || !contentSessionId) {
+      this.badRequest(res, 'platformSource and contentSessionId are required');
       return;
     }
+    const platformSource = normalizePlatformSource(rawPlatformSource);
 
     const store = this.dbManager.getSessionStore();
-    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
-
     const sessionRow = store.db.prepare(`
       SELECT id, memory_session_id
       FROM sdk_sessions
-      WHERE content_session_id = ?
-        AND (? IS NULL OR COALESCE(platform_source, 'claude') = ?)
-    `).get(contentSessionId, platformSource ?? null, platformSource ?? null) as
-      { id: number; memory_session_id: string | null } | undefined;
+      WHERE content_session_id = ? AND COALESCE(platform_source, 'claude') = ?
+    `).get(contentSessionId, platformSource) as { id: number; memory_session_id: string | null } | undefined;
 
     if (!sessionRow) {
-      this.notFound(res, `Session ${contentSessionId} not found`);
+      this.notFound(res, `Session ${platformSource}/${contentSessionId} not found`);
+      return;
+    }
+
+    // Deleting a live session would cascade its pending work out from under
+    // the running generator.
+    if (this.sessionManager.getSession(sessionRow.id)) {
+      res.status(409).json({ error: 'session is still active; delete it after it ends' });
+      return;
+    }
+
+    // Rows synced from another device belong to that device: the FK cascade
+    // would drop them here without a tombstone. Refuse instead.
+    const remoteChildren = store.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM observations WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
+        + (SELECT COUNT(*) FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NOT NULL)
+        + (SELECT COUNT(*) FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NOT NULL) AS n
+    `).get(sessionRow.memory_session_id, sessionRow.memory_session_id, sessionRow.id) as { n: number };
+    if (remoteChildren.n > 0) {
+      res.status(409).json({
+        error: 'session holds memories synced from another device; delete those on that device first',
+        remoteItemCount: remoteChildren.n,
+      });
       return;
     }
 
@@ -533,42 +568,28 @@ export class DataRoutes extends BaseRouteHandler {
       }
     }
 
-    const deletedCounts = { observations: 0, summaries: 0, prompts: 0 };
-    const countRow = (row: ChildRow) => {
-      if (row.kind === 'observation') deletedCounts.observations++;
-      else if (row.kind === 'summary') deletedCounts.summaries++;
-      else deletedCounts.prompts++;
-    };
-
-    if (cloudSync?.isConfigured()) {
-      // Each row's tombstone-enqueue + delete is already atomic on its own
-      // (CloudSync.queueDelete wraps itself in a transaction). A failure
-      // partway through this loop fails loud via wrapHandler's error
-      // response rather than reporting false success, and the operation is
-      // safely retriable: re-issuing DELETE on the same contentSessionId
-      // re-queries the remaining un-deleted rows and finishes the job,
-      // since childRows is recomputed fresh on every call.
+    const deletedCounts = { observations: 0, summaries: 0, prompts: 0, toolUses: 0 };
+    // One transaction for the whole session: queueDelete's own transaction
+    // nests as a savepoint, so a failure part-way rolls back every tombstone
+    // and row delete instead of leaving a half-deleted session.
+    store.db.transaction(() => {
       for (const row of childRows) {
         this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
-        countRow(row);
+        if (row.kind === 'observation') deletedCounts.observations++;
+        else if (row.kind === 'summary') deletedCounts.summaries++;
+        else deletedCounts.prompts++;
       }
+      // The raw tool I/O backup is device-local (never synced); a deleted
+      // session must not leave its captured tool inputs and outputs behind.
+      deletedCounts.toolUses = store.db.prepare(
+        `DELETE FROM tool_uses WHERE session_db_id = ? OR (content_session_id = ? AND platform_source = ?)`
+      ).run(sessionRow.id, contentSessionId, platformSource).changes;
       store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
-    } else {
-      // No cloud sync in play here, so nothing in this branch needs its own
-      // inner transaction — wrap the whole batch in one so a mid-loop
-      // failure rolls back everything instead of leaving a partially
-      // deleted session.
-      const deleteAll = store.db.transaction(() => {
-        for (const row of childRows) {
-          this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
-          countRow(row);
-        }
-        store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
-      });
-      deleteAll();
-    }
+    })();
 
-    res.json({ success: true, contentSessionId, deletedCounts });
+    // Only after the delete committed: open viewer tabs drop the session live.
+    this.sseBroadcaster.broadcast({ type: 'session_deleted', platformSource, contentSessionId });
+    res.json({ success: true, platformSource, contentSessionId, deletedCounts });
   });
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
