@@ -145,7 +145,13 @@ class Logger {
    */
   private safeStringify(data: unknown, indent?: number, maxDepth = 6): string {
     const seen = new WeakSet<object>();
-    const prune = (value: unknown, depth: number): unknown => {
+    const prune = (rawValue: unknown, depth: number): unknown => {
+      if (typeof rawValue === 'bigint') return `${rawValue}n`;
+      if (rawValue === null || typeof rawValue !== 'object') return rawValue;
+      // Date, URL, Buffer … define toJSON. Call it once, as JSON.stringify does,
+      // so they log as their JSON form rather than as an empty `{}`.
+      const toJSON = (rawValue as { toJSON?: unknown }).toJSON;
+      const value: unknown = typeof toJSON === 'function' ? toJSON.call(rawValue) : rawValue;
       if (typeof value === 'bigint') return `${value}n`;
       if (value === null || typeof value !== 'object') return value;
       if (seen.has(value)) return '[Circular]';
@@ -321,12 +327,8 @@ class Logger {
       if (Object.keys(rest).length > 0) {
         const pairs = Object.entries(rest).map(([k, v]) => {
           if (typeof v !== 'object' || v === null || v instanceof Error || v instanceof Date) return `${k}=${v}`;
-          try {
-            return `${k}=${Array.isArray(v) ? JSON.stringify(v) : this.formatData(v)}`;
-          } catch {
-            // [ANTI-PATTERN IGNORED]: JSON.stringify (directly for arrays, via formatData for objects) fails on circular/BigInt payloads, an expected shape for caller-supplied context; recovery is the '[unserializable]' fallback, avoiding an uncaught throw from a logger call.
-            return `${k}=[unserializable]`;
-          }
+          // safeStringify never throws: cycles, BigInt and deep nesting render as markers.
+          return `${k}=${Array.isArray(v) ? this.safeStringify(v) : this.formatData(v)}`;
         });
         contextStr = ` {${pairs.join(', ')}}`;
       }

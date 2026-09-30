@@ -437,6 +437,11 @@ describe('logger.safeStringify()', () => {
     expect(out).toContain('10n');
   });
 
+  it('serializes toJSON values (Date, URL) the way JSON.stringify does, not as {}', () => {
+    const payload = { at: new Date(0), url: new URL('https://example.com/a?b=1') };
+    expect(safeStringify(payload)).toBe(JSON.stringify(payload));
+  });
+
   it('survives a throwing getter', () => {
     const obj = {
       get boom(): string { throw new Error('nope'); },
