@@ -274,9 +274,61 @@ export class PostgresServerSessionsRepository {
   }
 
   /**
-   * List events tied to this server_session that do NOT yet have a completed
-   * observation_generation_jobs row. Tenant-scoped: rows are filtered by
-   * (project_id, team_id) before any join.
+   * Every event of the session, in order — the input a SESSION SUMMARY needs.
+   * Tenant-scoped: rows are filtered by (project_id, team_id).
+   *
+   * `listUnprocessedEvents` below deliberately hides the events the per-event
+   * lane has already collapsed. That is the right set for "what still needs an
+   * observation" and the WRONG set for "describe the arc of this session": the
+   * per-event lane normally finishes first, so the summary arrives at an empty
+   * list and the model is asked to summarise nothing.
+   *
+   * Bounded by count at BOTH ends, never only at the head: a session longer
+   * than 2 x `eventsPerEnd` returns its first and last `eventsPerEnd` events,
+   * so the summary always sees the opening (the goal) and the close (the
+   * outcome and what was left pending). The count bound only caps memory; the
+   * caller's byte budget (`capSummaryInput`) does the real sizing.
+   */
+  async listSessionEvents(input: {
+    serverSessionId: string;
+    projectId: string;
+    teamId: string;
+    eventsPerEnd?: number;
+  }): Promise<PostgresAgentEvent[]> {
+    const eventsPerEnd = input.eventsPerEnd ?? 500;
+    const result = await this.client.query<UnprocessedEventRow>(
+      `
+        SELECT e.*
+        FROM agent_events e
+        WHERE e.project_id = $2
+          AND e.team_id = $3
+          AND e.id IN (
+            (SELECT head.id FROM agent_events head
+              WHERE head.server_session_id = $1 AND head.project_id = $2 AND head.team_id = $3
+              ORDER BY head.occurred_at ASC, head.id ASC
+              LIMIT $4)
+            UNION
+            (SELECT tail.id FROM agent_events tail
+              WHERE tail.server_session_id = $1 AND tail.project_id = $2 AND tail.team_id = $3
+              ORDER BY tail.occurred_at DESC, tail.id DESC
+              LIMIT $4)
+          )
+        ORDER BY e.occurred_at ASC, e.id ASC
+      `,
+      [input.serverSessionId, input.projectId, input.teamId, eventsPerEnd]
+    );
+    return result.rows.map(mapUnprocessedEventRow);
+  }
+
+  /**
+   * The events that still need a per-event observation: those tied to this
+   * server_session that do NOT yet have a completed observation_generation_jobs
+   * row. Tenant-scoped: rows are filtered by (project_id, team_id) before any
+   * join.
+   *
+   * NOT the input for a session summary — see `listSessionEvents` above. Using
+   * this one there is what fed the summary an empty list once the per-event lane
+   * had caught up, which is normally before the session even ends.
    */
   async listUnprocessedEvents(input: {
     serverSessionId: string;
