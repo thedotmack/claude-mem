@@ -8,10 +8,14 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
-import { isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
+import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
+import { paths } from '../../shared/paths.js';
+import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
+import { isPidAlive } from '../../supervisor/process-registry.js';
+import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
 
@@ -42,6 +46,44 @@ async function probeWorkerHealth(workerHost: string, workerPort: string): Promis
     return { status: 'ok', detail: `healthy at ${workerUrl}` };
   }
   return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) at ${workerUrl}` };
+}
+
+async function probeChromaCensus(): Promise<CheckResult> {
+  const name = 'Chroma processes';
+  if (IS_WINDOWS) {
+    return { name, status: 'ok', detail: 'not checked on Windows', required: false };
+  }
+  let registered = 0;
+  try {
+    const registryPath = paths.supervisorRegistry();
+    if (existsSync(registryPath)) {
+      const raw = JSON.parse(readFileSync(registryPath, 'utf-8')) as { processes?: Record<string, { type?: string }> };
+      registered = Object.values(raw.processes ?? {}).filter((p) => p.type === 'chroma').length;
+    }
+  } catch {
+    // unreadable registry: report from the process table alone
+  }
+  try {
+    const rows = await readProcessTablePosix();
+    const { roots, orphans } = findOrphanedChromaRoots(rows, { isAlive: isPidAlive, selfPid: process.pid });
+    const detail = `${roots.length} live chroma-mcp tree(s), ${registered} registered, ${orphans.length} orphaned`;
+    if (orphans.length > 0) {
+      return {
+        name,
+        status: 'warn',
+        detail: `${detail} — orphans are reaped at the next worker start (claude-mem worker restart)`,
+        required: false,
+      };
+    }
+    return { name, status: 'ok', detail, required: false };
+  } catch (error) {
+    return {
+      name,
+      status: 'warn',
+      detail: `could not read the process table: ${error instanceof Error ? error.message : String(error)}`,
+      required: false,
+    };
+  }
 }
 
 export async function runDoctorCommand(): Promise<void> {
@@ -75,7 +117,10 @@ export async function runDoctorCommand(): Promise<void> {
     required: true,
   });
 
-  // 4. Marketplace runtime root materialized.
+  // 4. Marketplace runtime root materialized. The .install-version marker is
+  // written only by the npx installer; installs via Claude Code's own plugin
+  // marketplace flow and dev `build-and-sync` never write one, so a missing
+  // marker with node_modules present is informational, not a failure (#3661).
   const marketplaceDir = marketplaceDirectory();
   const marketplaceNodeModules = join(marketplaceDir, 'node_modules');
   const marketplaceMarker = join(marketplaceDir, '.install-version');
@@ -87,11 +132,18 @@ export async function runDoctorCommand(): Promise<void> {
     : !depsPresent
       ? 'node_modules missing — run `npx claude-mem repair`'
       : !markerPresent
-        ? 'install marker missing — run `npx claude-mem repair`'
+        ? 'node_modules present; no npx install marker (normal for marketplace/dev installs)'
         : 'install marker stale — run `npx claude-mem repair`';
+  const marketplaceStatus: CheckStatus = !installed
+    ? 'warn'
+    : marketplaceCurrent
+      ? 'ok'
+      : depsPresent && !markerPresent
+        ? 'warn'
+        : 'fail';
   checks.push({
     name: 'Marketplace runtime',
-    status: installed ? (marketplaceCurrent ? 'ok' : 'fail') : 'warn',
+    status: marketplaceStatus,
     detail: marketplaceDetail,
     required: installed,
   });
@@ -115,7 +167,20 @@ export async function runDoctorCommand(): Promise<void> {
     required: false, // worker can be intentionally stopped; don't hard-fail
   });
 
-  // 6. Last recorded install error (surface remediation if present).
+  // 6. Windows Git Bash reachability. All claude-mem hooks run via
+  // `"shell": "bash"`; on Windows, Claude Code resolves that through Git for
+  // Windows with no WSL fallback. No-op on macOS/Linux.
+  if (IS_WINDOWS) {
+    const gitBash = checkWindowsGitBash();
+    checks.push({
+      name: 'Git Bash (Windows)',
+      status: gitBash.ok ? 'ok' : 'fail',
+      detail: gitBash.detail,
+      required: true,
+    });
+  }
+
+  // 7. Last recorded install error (surface remediation if present).
   const lastErrorPath = join(dataDir, 'last-install-error.json');
   if (existsSync(lastErrorPath)) {
     let detail = `present at ${lastErrorPath}`;
@@ -137,6 +202,11 @@ export async function runDoctorCommand(): Promise<void> {
 
   const icon = (s: CheckStatus): string =>
     s === 'ok' ? styleText('green', '✓') : s === 'warn' ? styleText('yellow', '!') : styleText('red', '✗');
+
+  // Chroma process census (#3905): live chroma-mcp trees against supervisor registry rows.
+  // Anything other than one tree per row is the orphan leak. Read-only: the registry file is
+  // parsed directly rather than through ProcessRegistry, whose initialize() prunes and persists.
+  checks.push(await probeChromaCensus());
 
   console.log(styleText('bold', '\nclaude-mem doctor\n'));
   for (const c of checks) {

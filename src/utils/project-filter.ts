@@ -1,13 +1,18 @@
 
-import { homedir } from 'os';
 import { basename } from 'path';
+import { expandHome } from '../shared/expand-home.js';
 import { logger } from './logger.js';
 
 function globToRegex(pattern: string): RegExp {
-  let expanded = pattern.startsWith('~')
-    ? homedir() + pattern.slice(1)
-    : pattern;
+  // Separators first, then home expansion. A pattern written on Windows as `~\projects\secret`
+  // is home-relative, but `expandHome` only recognises `~` and `~/` on POSIX — resolving
+  // another user's home is deliberately out of its scope. Expanding before normalising left
+  // that pattern as a literal `~/projects/secret`, which matches no absolute path, so a
+  // configured exclusion silently stopped excluding.
+  let expanded = expandHome(pattern.replace(/\\/g, '/'));
 
+  // Again on the way out: on Windows `homedir()` itself returns backslashes, so the
+  // expanded path needs normalising even when the pattern arrived POSIX-form.
   expanded = expanded.replace(/\\/g, '/');
 
   let regex = expanded.replace(/[.+^${}()|[\]\\]/g, '\\$&');
