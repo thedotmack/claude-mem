@@ -77,4 +77,14 @@ describe('search FTS query semantics', () => {
     const results = search.searchSessions('orphaned plugin version', { project: 'fts-project' });
     expect(results.map(result => result.request)).toEqual(['Trace orphaned plugin version mismatch during startup']);
   });
+
+  // unicode61 indexes nothing for a token with no letter or digit, so a lone "-" or "&"
+  // quoted as its own term is an empty phrase that matches no row — ANDed in, it would
+  // zero out a query the old exact-phrase search still answered.
+  it('ignores standalone punctuation between terms', () => {
+    expect(search.searchObservations('orphaned - plugin & version', { project: 'fts-project' }).map(r => r.title))
+      .toEqual(['Plugin version cleanup']);
+    expect(search.searchSessions('orphaned — plugin version', { project: 'fts-project' }).map(r => r.request))
+      .toEqual(['Trace orphaned plugin version mismatch during startup']);
+  });
 });

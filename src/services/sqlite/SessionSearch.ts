@@ -267,9 +267,13 @@ export class SessionSearch {
   /**
    * Build an FTS5 query that preserves literal-token safety while allowing multi-word
    * input to behave as an AND of terms instead of an exact phrase.
+   *
+   * Tokens with no letter or digit (a lone `-`, `&`, `—`) are dropped: unicode61 indexes
+   * nothing for them, so each would become an empty phrase that matches no row and, ANDed
+   * in, would zero out the whole query.
    */
   private static buildFTSMatchQuery(query: string): string {
-    const tokens = query.match(/\S+/g) ?? [];
+    const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
     if (tokens.length === 0) {
       return `"${query.replace(/"/g, '""')}"`;
     }
