@@ -1,8 +1,9 @@
 // #2737 — a named environment spans several folders, so the SessionStart header
 // says so. The name only: the glob patterns would cost tokens on every session.
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { renderHeader } from '../../../src/services/context/sections/HeaderRenderer.js';
 import type { ContextConfig, TokenEconomics } from '../../../src/services/context/types.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 
 const ENVIRONMENTS_ENV = 'CLAUDE_MEM_PROJECT_ENVIRONMENTS';
 const savedEnvironments = process.env[ENVIRONMENTS_ENV];
@@ -22,6 +23,11 @@ const config = {
   showSavingsAmount: false,
   showSavingsPercent: false,
 } as ContextConfig;
+
+// The header names the active mode.
+beforeAll(() => {
+  ModeManager.getInstance().loadMode('code');
+});
 
 afterEach(() => {
   if (savedEnvironments === undefined) delete process.env[ENVIRONMENTS_ENV];
