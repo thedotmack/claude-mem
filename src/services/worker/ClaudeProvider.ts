@@ -4,7 +4,7 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX, paths } from '../../shared/paths.js';
 import {
   buildIsolatedEnvWithFreshOAuth,
   getAuthMethodDescription,
@@ -82,6 +82,17 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     message.includes('ENOENT') ||
     message.startsWith('spawn ')
   ) {
+    return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
+  }
+
+  // The observer working directory cannot be created: the data dir is a file,
+  // sits under one, or is not writable (ensureObserverSessionsDir). Retrying
+  // cannot fix that, so it is a setup problem. The CLI's own
+  // `Path "..." does not exist` result is deliberately NOT matched here:
+  // telemetry shows it once per install and never again (occurrence_count 1
+  // across 13.10-13.25), so parking Claude starts behind the setup cooldown
+  // for it would cost more than the retry.
+  if (message.startsWith(`${OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX}: `)) {
     return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
@@ -316,10 +327,9 @@ export class ClaudeProvider {
         }
       }
 
-      ensureDir(OBSERVER_SESSIONS_DIR);
-      const queryResult = query({
-        prompt: messageGenerator,
-        options: buildHardenedSdkOptions({
+      let observerOptions: ReturnType<typeof buildHardenedSdkOptions>;
+      try {
+        observerOptions = buildHardenedSdkOptions({
           source: 'Observer',
           sessionDbId: session.sessionDbId,
           contentSessionId: session.contentSessionId,
@@ -330,8 +340,14 @@ export class ClaudeProvider {
           abortController: session.abortController,
           ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
           spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, slotReservation, observerExtraArgs),
-        }),
-      });
+        });
+      } catch (error) {
+        // Building the options creates the working directory. An unusable data
+        // dir classifies as setup_required, so the generator-start catch records
+        // it for the SessionStart notice instead of retrying every ingest.
+        throw classifyClaudeError(error);
+      }
+      const queryResult = query({ prompt: messageGenerator, options: observerOptions });
 
       // Baseline for the next dispatched response's discovery-token delta.
       // Textless frames are not dispatched (see below), so their usage rolls
