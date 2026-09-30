@@ -7,18 +7,15 @@ import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervis
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
-  conversationHistoryCheckpoint: number;
 }
 
 /**
  * Post-generator-exit handler.
  *
  * The generator's message iterator only ends on abort (idle / shutdown) or when
- * the SDK stream throws, so most exits mean this session is done. Quota/auth
- * exits are different: claimed work has already been reset to pending, so
- * leave the session and in-RAM buffer alive for a later generator start. A
- * fresh Claude generator replays that buffer, so discard history appended by
- * the failed attempt before it can accumulate across retries.
+ * the SDK stream throws, so most exits mean this session is done. Quota exits
+ * are different: claimed work has already been reset to pending, so leave the
+ * session and in-RAM buffer alive for a later generator start.
  *
  * For non-quota exits we do NOT respawn on remaining buffered work: the old
  * respawn-on-pending loop, driven by the durable pending_messages queue, was the
@@ -33,7 +30,7 @@ export async function handleGeneratorExit(
   reason: ActiveSession['abortReason'],
   deps: GeneratorExitDependencies
 ): Promise<void> {
-  const { sessionManager, completionHandler, conversationHistoryCheckpoint } = deps;
+  const { sessionManager, completionHandler } = deps;
   const sessionDbId = session.sessionDbId;
 
   const tracked = getSdkProcessForSession(sessionDbId);
@@ -42,7 +39,6 @@ export async function handleGeneratorExit(
   }
 
   session.generatorPromise = null;
-  const exitedProvider = session.currentProvider;
   session.currentProvider = null;
 
   // 'overflow' joins quota/auth as a pause-and-preserve exit: ResponseProcessor
@@ -55,7 +51,9 @@ export async function handleGeneratorExit(
   // start a fresh generator for the newly-selected provider on this same
   // session — finalizeSession + removeSessionImmediate would dispose the
   // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
-  // wiping the very queue/conversationHistory the switch is meant to preserve.
+  // wiping the very queue the switch is meant to preserve. The transcript is
+  // not carried over: every generator start opens a new generation seeded from
+  // the session's memory (#3800, #3479), so the queue is what must survive.
   const abortCategory = (reason ?? '').split(':')[0];
   // Every category listed here has ALREADY called resetProcessingToPending
   // (except provider_switch, which parks a live buffer for a provider change).
@@ -64,20 +62,9 @@ export async function handleGeneratorExit(
   const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
   if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
     session.pausedReason = abortCategory;
-    let rolledBackHistoryCount = 0;
-    if (
-      (abortCategory === 'quota' || abortCategory === 'auth')
-      && exitedProvider === 'claude'
-      && conversationHistoryCheckpoint < session.conversationHistory.length
-    ) {
-      rolledBackHistoryCount = session.conversationHistory.length - conversationHistoryCheckpoint;
-      session.conversationHistory.length = conversationHistoryCheckpoint;
-    }
-
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
-      rolledBackHistoryCount,
     });
     return;
   }

@@ -366,8 +366,9 @@ export class SessionRoutes extends BaseRouteHandler {
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider
-      // The shared conversationHistory ensures context is preserved
+      // Let current generator finish naturally, next one will use new provider.
+      // The buffered queue carries over; the next generator opens a new
+      // generation seeded from this session's memory (#3800, #3479).
     }
   }
 
@@ -465,7 +466,6 @@ export class SessionRoutes extends BaseRouteHandler {
     session.lastGeneratorSource = source;
 
     const myController = session.abortController;
-    const conversationHistoryCheckpoint = session.conversationHistory.length;
 
     let skipGeneratorExitFinalization = false;
     let generatorPromise: Promise<void>;
@@ -631,7 +631,6 @@ export class SessionRoutes extends BaseRouteHandler {
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
-          conversationHistoryCheckpoint,
         });
 
         // A recycle is the one abort that should resume on its own. The batch

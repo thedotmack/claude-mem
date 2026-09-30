@@ -38,7 +38,7 @@ import {
   conversationChars,
   resolveConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
 import { ObserverResponsePacer } from './session/response-pacer.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
@@ -778,7 +778,8 @@ export class ClaudeProvider {
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
     activeResponseContext.current = snapshotResponseContext(session);
 
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    // This SDK process never resumes, so the proxy history starts over with it.
+    openObserverGeneration(session, initPrompt);
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'init';
