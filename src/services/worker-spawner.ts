@@ -1,6 +1,6 @@
 
 import path from 'path';
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -20,35 +20,52 @@ import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.
 import { isPidAlive } from '../supervisor/process-registry.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 
+/**
+ * Windows spawn cooldown, keyed to evidence rather than time (plan-15 step 7,
+ * #2996). The marker is written ONLY when a worker this launcher started
+ * provably crashed during boot (probeWorkerBootFailure returned its error):
+ * respawning an install that crashes on start just repeats the crash (and a
+ * console flash) on every hook, so launchers stand down for the cooldown.
+ * Every other failure (port held by something else, a reclaimed ghost, a lost
+ * spawn lock, a readiness timeout with no proven crash) writes nothing, so the
+ * next launcher that finds the port free retries immediately. The marker is
+ * cleared whenever a worker is seen healthy.
+ */
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
 function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
 }
 
-function shouldSkipSpawnOnWindows(): boolean {
-  if (process.platform !== 'win32') return false;
+/**
+ * The boot failure recorded by a provable crash inside the cooldown window, or
+ * null when a spawn is allowed. An empty string means a crash was recorded
+ * without readable detail.
+ */
+function readSpawnCooldownOnWindows(): string | null {
+  if (process.platform !== 'win32') return null;
   const lockPath = getWorkerSpawnLockPath();
-  if (!existsSync(lockPath)) return false;
+  if (!existsSync(lockPath)) return null;
   try {
     const modifiedTimeMs = statSync(lockPath).mtimeMs;
-    return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
+    if (Date.now() - modifiedTimeMs >= WINDOWS_SPAWN_COOLDOWN_MS) return null;
+    return readFileSync(lockPath, 'utf-8');
   } catch (error) {
     if (error instanceof Error) {
-      logger.debug('SYSTEM', 'Could not stat worker spawn lock file', {}, error);
+      logger.debug('SYSTEM', 'Could not read worker spawn cooldown marker', {}, error);
     } else {
-      logger.debug('SYSTEM', 'Could not stat worker spawn lock file', { error: String(error) });
+      logger.debug('SYSTEM', 'Could not read worker spawn cooldown marker', { error: String(error) });
     }
-    return false;
+    return null;
   }
 }
 
-function markWorkerSpawnAttempted(): void {
+function markWorkerBootCrashed(bootFailure: string): void {
   if (process.platform !== 'win32') return;
   try {
     const lockPath = getWorkerSpawnLockPath();
     mkdirSync(path.dirname(lockPath), { recursive: true });
-    writeFileSync(lockPath, '', 'utf-8');
+    writeFileSync(lockPath, bootFailure, 'utf-8');
   } catch {
     // APPROVED OVERRIDE: best-effort cooldown marker. If we can't even create
     // the data dir or write the marker, the worker spawn itself is almost
@@ -182,8 +199,15 @@ export async function ensureWorkerStarted(
     }
   }
 
-  if (shouldSkipSpawnOnWindows()) {
-    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
+  const recentBootCrash = readSpawnCooldownOnWindows();
+  if (recentBootCrash !== null) {
+    // Report the recorded crash, not a generic "dead": the caller surfaces
+    // getLastWorkerBootFailure() to the user.
+    lastWorkerBootFailure = recentBootCrash || undefined;
+    logger.warn('SYSTEM', 'Worker crashed on boot within the cooldown window — skipping spawn on Windows', {
+      cooldownMs: WINDOWS_SPAWN_COOLDOWN_MS,
+      ...(lastWorkerBootFailure ? { bootFailure: lastWorkerBootFailure } : {}),
+    });
     return 'dead';
   }
 
@@ -199,10 +223,12 @@ export async function ensureWorkerStarted(
   try {
     if (spawnLockHeld) {
       logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
-      markWorkerSpawnAttempted();
       spawnedPid = spawnDaemon(workerScriptPath, port);
       if (spawnedPid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
+        // The launch itself failed (no Bun runtime, Start-Process refused):
+        // as deterministic as a boot crash, so it also starts the cooldown.
+        markWorkerBootCrashed('The worker daemon could not be launched (see the claude-mem log for the spawn error).');
         return 'dead';
       }
     } else {
@@ -228,6 +254,9 @@ export async function ensureWorkerStarted(
           'Worker exited before readiness endpoint became available',
           lastWorkerBootFailure ? { bootFailure: lastWorkerBootFailure } : {}
         );
+        // Only a crash the probe reproduced starts the cooldown; an unexplained
+        // exit leaves the next launcher free to retry right away.
+        if (lastWorkerBootFailure) markWorkerBootCrashed(lastWorkerBootFailure);
         return 'dead';
       }
       logger.warn('SYSTEM', spawnLockHeld

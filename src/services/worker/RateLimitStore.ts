@@ -12,7 +12,7 @@
  *     resetsAt?: number,                              // epoch ms
  *     rateLimitType?: "five_hour" | "seven_day"
  *                   | "seven_day_opus" | "seven_day_sonnet"
- *                   | "overage",
+ *                   | "seven_day_overage_included" | "overage",
  *     utilization?: number,                           // 0..1
  *     overageStatus?: "allowed" | "allowed_warning" | "rejected",
  *     overageResetsAt?: number,
@@ -42,6 +42,12 @@ export type RateLimitWindow =
   | 'seven_day'
   | 'seven_day_opus'
   | 'seven_day_sonnet'
+  /**
+   * Weekly window for the premium model bucket, counted with overage
+   * included. Claude Code reports it only for accounts whose responses carry
+   * that window, both as a `rateLimitType` and in `unifiedWindows`.
+   */
+  | 'seven_day_overage_included'
   | 'overage';
 
 export interface RateLimitInfo {
@@ -68,6 +74,7 @@ const UNIFIED_WINDOWS: readonly RateLimitWindow[] = [
   'seven_day',
   'seven_day_opus',
   'seven_day_sonnet',
+  'seven_day_overage_included',
 ];
 
 export interface RateLimitEntry extends RateLimitInfo {
@@ -88,10 +95,13 @@ export class RateLimitStore {
    */
   set(info: RateLimitInfo | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
+    // The raw per-window map is consumed below. Storing it too would leave a
+    // nested copy on the entry that goes stale on /api/health.
+    const { unifiedWindows, ...reported } = info;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
     const previousRejection = this.rejections.get(key);
     const observedAt = Date.now();
-    const unified = readUnifiedWindows(info.unifiedWindows);
+    const unified = readUnifiedWindows(unifiedWindows);
 
     // Other windows: refresh fields the unified snapshot actually reports.
     // Utilization establishes a new display state and drops stale status;
@@ -129,9 +139,12 @@ export class RateLimitStore {
 
     const own = info.rateLimitType ? unified.get(info.rateLimitType) : undefined;
     const merged: RateLimitEntry = {
-      ...info,
+      ...reported,
       utilization: info.utilization ?? own?.utilization,
-      resetsAt: info.resetsAt ?? own?.resetsAt,
+      // Stored in epoch ms whatever unit the event used, so the rejection
+      // de-dupe below and /api/health compare like with like.
+      resetsAt: normalizeResetTimeMs(info.resetsAt) ?? own?.resetsAt,
+      overageResetsAt: normalizeResetTimeMs(info.overageResetsAt),
       observedAt,
     };
     this.entries.set(key, merged);
@@ -163,6 +176,7 @@ export class RateLimitStore {
     seven_day?: RateLimitEntry;
     seven_day_opus?: RateLimitEntry;
     seven_day_sonnet?: RateLimitEntry;
+    seven_day_overage_included?: RateLimitEntry;
     overage?: RateLimitEntry;
   } {
     return {
@@ -170,6 +184,7 @@ export class RateLimitStore {
       seven_day: this.entries.get('seven_day'),
       seven_day_opus: this.entries.get('seven_day_opus'),
       seven_day_sonnet: this.entries.get('seven_day_sonnet'),
+      seven_day_overage_included: this.entries.get('seven_day_overage_included'),
       overage: this.entries.get('overage'),
     };
   }
@@ -198,7 +213,7 @@ function readUnifiedWindows(raw: unknown): Map<RateLimitWindow, UnifiedWindowSna
     const { utilization, resetsAt } = entry as Record<string, unknown>;
     const snapshot: UnifiedWindowSnapshot = {};
     if (typeof utilization === 'number' && Number.isFinite(utilization)) snapshot.utilization = utilization;
-    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = resetsAt;
+    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = normalizeResetTimeMs(resetsAt);
     if (snapshot.utilization !== undefined || snapshot.resetsAt !== undefined) out.set(window, snapshot);
   }
   return out;
@@ -288,6 +303,7 @@ const UTILIZATION_THRESHOLDS: Record<RateLimitWindow, number> = {
   seven_day_opus: 0.93,
   seven_day_sonnet: 0.92,
   seven_day: 0.93,
+  seven_day_overage_included: 0.93,
   overage: 0.95,
 };
 
@@ -322,6 +338,7 @@ export function shouldAbortForQuota(
     'seven_day_opus',
     'seven_day_sonnet',
     'seven_day',
+    'seven_day_overage_included',
     'overage',
   ];
 

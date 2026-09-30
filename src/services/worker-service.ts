@@ -47,7 +47,8 @@ import {
   cleanStalePidFile,
   verifyPidFileOwnership,
   spawnDaemon,
-  touchPidFile
+  touchPidFile,
+  pinDaemonWorkingDirectory
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
@@ -961,6 +962,20 @@ export class WorkerService implements WorkerRef {
       });
     })();
   }
+
+  /**
+   * Record the outcome of the latest observer response for /api/health's
+   * ai.lastInteraction. `provider` is the one that produced the response (the
+   * session's), passed by the caller; it is only a label, never a routing input.
+   */
+  recordAiInteraction(result: { success: boolean; error?: string; provider: string }): void {
+    this.lastAiInteraction = {
+      timestamp: Date.now(),
+      success: result.success,
+      provider: result.provider,
+      ...(result.error ? { error: result.error } : {}),
+    };
+  }
 }
 
 export async function ensureWorkerStarted(port: number): Promise<WorkerStartResult> {
@@ -1167,6 +1182,15 @@ async function main() {
 
   const hookInitiatedCommands = ['start', 'hook', 'restart', '--daemon'];
   if ((command === undefined || hookInitiatedCommands.includes(command)) && isPluginDisabledInClaudeSettings()) {
+    // Log the reason instead of exiting silently. Without this line, a disabled
+    // plugin makes the worker refuse every start/hook/--daemon with a bare
+    // exit(0) and no trace — indistinguishable from a crash, and only
+    // discoverable by reverse-engineering the bundle. One INFO line turns
+    // "memory mysteriously stopped" into an obvious cause.
+    logger.info('SYSTEM', 'Worker not starting: claude-mem is disabled in Claude settings (enabledPlugins["claude-mem@thedotmack"] === false). Re-enable the plugin to resume memory capture.', {
+      command: command ?? '(none)',
+      configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude',
+    });
     process.exit(0);
   }
 
@@ -1493,6 +1517,7 @@ async function main() {
       console.log(`  Repo:                 ${result.repoPath}`);
       console.log(`  Worktrees scanned:    ${result.scannedWorktrees}`);
       console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
+      console.log(`  Orphaned worktrees:   ${result.orphanedWorktrees.join(', ') || '(none)'}`);
       console.log(`  Observations adopted: ${result.adoptedObservations}`);
       console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
       console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
@@ -1524,6 +1549,12 @@ async function main() {
 
     case '--daemon':
     default: {
+      // Before anything below spawns a child (the reclaim probes, the
+      // supervisor, chroma-mcp), stand in claude-mem's data dir rather than
+      // whatever cwd this daemon was launched with (#3706; EPERM on
+      // cross-spawn's chdir-back from an ACL-locked cwd).
+      pinDaemonWorkingDirectory();
+
       // Duplicate gate, ground truth FIRST (Phase 5): a live worker owns the
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:
       // duplicate suppression is a success, not a failure.

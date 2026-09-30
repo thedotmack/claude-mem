@@ -10,8 +10,11 @@ import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 import type {
   StrategySearchOptions,
   StrategySearchResult,
-  ObservationSearchResult
+  ObservationSearchResult,
+  SearchResults,
+  SearchCategory
 } from './types.js';
+import { SEARCH_CATEGORIES, isCategoryRequested } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
 import { AppError } from '../../server/ErrorHandler.js';
 import { logger } from '../../../utils/logger.js';
@@ -21,6 +24,14 @@ interface NormalizedParams extends StrategySearchOptions {
   concepts?: string[];
   files?: string[];
   obsType?: string[];
+}
+
+function copyCategory<K extends SearchCategory>(
+  target: SearchResults,
+  source: SearchResults,
+  category: K
+): void {
+  target[category] = source[category];
 }
 
 interface SearchRequestInput {
@@ -90,13 +101,9 @@ export class SearchOrchestrator {
 
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
+      let chromaResult: StrategySearchResult;
       try {
-        const chromaResult = await this.chromaStrategy.search(options);
-        if (this.isEmptyResult(chromaResult)) {
-          logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches; falling back to SQLite', {});
-          return await this.sqliteStrategy.search(options);
-        }
-        return chromaResult;
+        chromaResult = await this.chromaStrategy.search(options);
       } catch (error) {
         const errorObj = error instanceof Error ? error : new Error(String(error));
         throw new ChromaUnavailableError(
@@ -104,6 +111,7 @@ export class SearchOrchestrator {
           errorObj
         );
       }
+      return await this.supplementEmptyCategories(options, chromaResult);
     }
 
     logger.debug('SEARCH', 'Orchestrator: Chroma not configured', {});
@@ -114,10 +122,51 @@ export class SearchOrchestrator {
     };
   }
 
-  private isEmptyResult(result: StrategySearchResult): boolean {
-    return result.results.observations.length === 0
-      && result.results.sessions.length === 0
-      && result.results.prompts.length === 0;
+  /**
+   * The one Chroma-empty fallback policy, shared by this pipeline and SearchManager.search().
+   * Chroma answers with a single top-N query across every document type, so a requested
+   * category can come back empty even though SQLite would find rows: for a CJK query the
+   * prompts crowd out the observations, and a date window or an obs_type filter can drop
+   * every hit. When every requested category is empty, fall back to SQLite entirely;
+   * otherwise refill each empty category from SQLite and keep Chroma's results for the rest.
+   * No recency window is applied on the SQLite side: an exact keyword hit older than 90 days
+   * is the row this exists to surface, and the no-Chroma path applies none either.
+   */
+  async supplementEmptyCategories(
+    options: StrategySearchOptions,
+    chromaResult: StrategySearchResult
+  ): Promise<StrategySearchResult> {
+    const requestedCategories = SEARCH_CATEGORIES
+      .filter(category => isCategoryRequested(options.searchType, category));
+    const emptyCategories = requestedCategories
+      .filter(category => chromaResult.results[category].length === 0);
+
+    if (emptyCategories.length === 0) {
+      return chromaResult;
+    }
+
+    if (emptyCategories.length === requestedCategories.length) {
+      logger.debug('SEARCH', 'Orchestrator: Chroma returned zero matches for every requested category; falling back to SQLite', {});
+      return await this.sqliteStrategy.search(options);
+    }
+
+    logger.debug('SEARCH', 'Orchestrator: Chroma returned zero matches for some categories; supplementing from SQLite', {
+      categories: emptyCategories.join(',')
+    });
+
+    const mergedResults: SearchResults = { ...chromaResult.results };
+    let supplemented = false;
+    for (const category of emptyCategories) {
+      const sqliteResult = await this.sqliteStrategy.search({ ...options, searchType: category });
+      if (sqliteResult.results[category].length > 0) {
+        copyCategory(mergedResults, sqliteResult.results, category);
+        supplemented = true;
+      }
+    }
+
+    return supplemented
+      ? { results: mergedResults, usedChroma: true, strategy: 'hybrid' }
+      : chromaResult;
   }
 
   async findByFile(filePath: string, args: any): Promise<{
