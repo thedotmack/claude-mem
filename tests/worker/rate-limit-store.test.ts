@@ -72,6 +72,21 @@ describe('RateLimitStore', () => {
     expect(snap.seven_day_opus?.utilization).toBe(0.3);
     expect(snap.seven_day).toBeUndefined();
   });
+
+  it('getMostRecentByWindow flags a window whose reset has passed instead of showing it as live', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', utilization: 0.93, resetsAt: Math.floor(FIXED_NOW / 1000) - 60 });
+    store.set({ rateLimitType: 'five_hour', utilization: 0.4, resetsAt: FIXED_NOW + 60_000 });
+    store.set({ rateLimitType: 'seven_day_opus', utilization: 0.5 });
+
+    const snap = store.getMostRecentByWindow(FIXED_NOW);
+    expect(snap.seven_day?.expired).toBe(true);
+    expect(snap.seven_day?.utilization).toBe(0.93); // last reading stays visible, marked as dead
+    expect(snap.five_hour?.expired).toBeUndefined();
+    expect(snap.seven_day_opus?.expired).toBeUndefined(); // no reset: cannot tell, not flagged
+    // The stored entry stays raw: set()'s rejection de-dupe still sees it.
+    expect(store.get('seven_day')).not.toHaveProperty('expired');
+  });
 });
 
 describe('isApiKeyAuth', () => {
