@@ -5,7 +5,7 @@ import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
@@ -870,16 +870,10 @@ function mergeSettings(updates: Record<string, string>): boolean {
       target[key] = value;
     }
 
-    writeSettingsJsonAtomic(path, document);
     // settings.json can carry tokens (CMEM Pro setup token, provider API
-    // keys); a fresh file inherits the umask (usually 0644), leaving them
-    // world-readable. Tighten to owner-only. Fail-soft: a chmod failure must
-    // never fail the settings write itself, but it is not silent.
-    try {
-      chmodSync(path, 0o600);
-    } catch (chmodError: unknown) {
-      log.warn(`Could not restrict permissions on ${path} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
-    }
+    // keys). The temp file is created owner-only before the first byte is
+    // written, so there is no window in which a fresh file is world-readable.
+    writeSettingsJsonAtomic(path, document, { mode: 0o600 });
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
