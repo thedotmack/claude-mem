@@ -2,6 +2,8 @@ import { z } from "zod";
 import { join } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
+// Dependency-free, so it stays bundle-safe for the plugin (no worker-only imports).
+import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 
 /**
  * OpenCode plugin event contract.
@@ -110,20 +112,9 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
-// A refused connection (worker simply not running) must stay quiet, but its
-// shape is runtime-dependent: Bun's fetch throws code 'ConnectionRefused'
-// ("Unable to connect..."), Node's undici throws TypeError 'fetch failed'
-// with ECONNREFUSED only on error.cause — a message.includes('ECONNREFUSED')
-// check matches neither. Local copy (not imported from HealthMonitor) to keep
-// worker-only modules out of the plugin bundle. Exported for the contract test.
-export function isConnectionRefusedError(error: unknown): boolean {
-  const err = error as { code?: unknown; cause?: { code?: unknown } };
-  if (err?.code === "ECONNREFUSED" || err?.code === "ConnectionRefused") return true;
-  if (err?.cause?.code === "ECONNREFUSED") return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("ECONNREFUSED");
-}
-
+// A refused connection means the worker is simply not running and must stay
+// quiet. isConnectionRefusedError recognizes Bun's and undici's shapes, which a
+// message.includes('ECONNREFUSED') check misses (OpenCode hosts plugins under Bun).
 function workerPostFireAndForget(
   path: string,
   body: Record<string, unknown>,

@@ -1,3 +1,4 @@
+import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
 export interface ShutdownResult {
   workerWasRunning: boolean;
@@ -5,23 +6,9 @@ export interface ShutdownResult {
   stopped: boolean;
 }
 
-function hasErrorCode(error: unknown, code: string, seen = new Set<unknown>()): boolean {
-  if (!error || typeof error !== 'object' || seen.has(error)) return false;
-  seen.add(error);
-  const candidate = error as { code?: unknown; cause?: unknown; errors?: unknown };
-  if (candidate.code === code) return true;
-  if (hasErrorCode(candidate.cause, code, seen)) return true;
-  return Array.isArray(candidate.errors)
-    && candidate.errors.some((nested) => hasErrorCode(nested, code, seen));
-}
-
 function isTimeoutError(error: unknown): boolean {
   return error instanceof Error
     && (error.name === 'AbortError' || error.name === 'TimeoutError');
-}
-
-function isConnectionRefused(error: unknown): boolean {
-  return hasErrorCode(error, 'ECONNREFUSED');
 }
 
 async function healthProbeConfirmsStopped(baseUrl: string): Promise<boolean> {
@@ -33,7 +20,7 @@ async function healthProbeConfirmsStopped(baseUrl: string): Promise<boolean> {
   } catch (error) {
     // Only an explicit refusal proves that nothing owns the loopback port.
     // Resets, timeouts, and protocol failures are ambiguous and fail closed.
-    return isConnectionRefused(error);
+    return isConnectionRefusedError(error);
   }
 }
 
@@ -73,7 +60,7 @@ export async function shutdownWorkerAndWait(
         signal: AbortSignal.timeout(1000),
       });
     } catch (err) {
-      if (isConnectionRefused(err)) return { workerWasRunning, stopped: true };
+      if (isConnectionRefusedError(err)) return { workerWasRunning, stopped: true };
       // A reset can happen while shutdown is still in progress. Keep polling;
       // if the port never reaches an explicit refusal, return stopped:false.
       continue;

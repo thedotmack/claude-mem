@@ -3,6 +3,7 @@ import net from 'net';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -21,18 +22,6 @@ function formatHostForUrl(host: string): string {
 // forever, so every HTTP probe is aborted after this budget. 5s is above a
 // healthy worker's sub-100ms response and below every caller's retry budget.
 const HEALTH_PROBE_TIMEOUT_MS = 5_000;
-
-// A refused connection surfaces differently per runtime: Bun's fetch throws
-// code 'ConnectionRefused' ("Unable to connect..."), Node's undici throws
-// TypeError 'fetch failed' with the ECONNREFUSED only on error.cause — so a
-// message.includes('ECONNREFUSED') check matches neither.
-export function isConnectionRefusedError(error: unknown): boolean {
-  const err = error as { code?: unknown; cause?: { code?: unknown } };
-  if (err?.code === 'ECONNREFUSED' || err?.code === 'ConnectionRefused') return true;
-  if (err?.cause?.code === 'ECONNREFUSED') return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes('ECONNREFUSED');
-}
 
 async function httpRequestToWorker(
   port: number,
