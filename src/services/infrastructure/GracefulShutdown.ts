@@ -65,7 +65,25 @@ async function closeHttpServer(server: http.Server): Promise<void> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    server.close(err => err ? reject(err) : resolve());
+    server.close(err => {
+      if (!err) {
+        resolve();
+        return;
+      }
+      // #3380 — Node's http.Server.close(cb) reports ERR_SERVER_NOT_RUNNING
+      // when the handle is not listening (e.g. the bind failed or the server
+      // already closed). Closing an already-closed server is the desired end
+      // state, not a failure: rejecting here aborted ALL remaining teardown
+      // (session drain, MCP close, chroma stop, db close, supervisor stop).
+      // Same tolerance as ServerService.stop() in
+      // src/server/runtime/ServerService.ts.
+      if ((err as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') {
+        logger.warn('SYSTEM', 'Server was already stopped when close was requested', {}, err);
+        resolve();
+        return;
+      }
+      reject(err);
+    });
   });
 
   if (process.platform === 'win32') {
