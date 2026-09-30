@@ -33,7 +33,7 @@ import {
   InstallAbortError,
   type InstallSummary,
 } from '../install/error-reporter.js';
-import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
+import { extractEresolveBlock, isEresolve, npmErrorCode, runNpmStrict } from '../install/npm-install-helper.js';
 import {
   buildProviderLabels,
   CMEM_INSTALLER_OAUTH_POLL_URL,
@@ -822,10 +822,12 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 
   if (!isEresolve(strictResult.stderr)) {
     // A strict failure with no ERESOLVE is a real bug — never retry, ABORT.
+    // npm's own error code goes in the cause so the taxonomy can name the fix.
+    const npmCode = npmErrorCode(strictResult.stderr);
     installerError(ErrorSeverity.ABORT, {
       component: 'marketplace-npm-install',
       phase: 'marketplace-deps',
-      cause: new Error(`npm install failed (exit ${strictResult.code})`),
+      cause: new Error(`npm install failed (exit ${strictResult.code})${npmCode ? `: ${npmCode}` : ''}`),
       details: strictResult.stderr.slice(0, 4000),
     }, summary);
   }
