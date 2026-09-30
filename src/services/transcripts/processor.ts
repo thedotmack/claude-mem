@@ -12,6 +12,17 @@ import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { ingestObservation } from '../worker/http/shared.js';
 
+const AGENT_ID_IN_PATH =
+  /agent-transcripts[/\\]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/\\]|$)/i;
+
+/** Prefer the explicit watch field; fall back to `agent-transcripts/<uuid>/` in the path. */
+export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
+  const explicit = typeof watch.agentId === 'string' ? watch.agentId.trim() : '';
+  if (explicit && explicit !== '*') return explicit;
+  const match = watch.path.match(AGENT_ID_IN_PATH);
+  return match?.[1];
+}
+
 interface SessionState {
   sessionId: string;
   platformSource: string;
@@ -140,13 +151,13 @@ export class TranscriptEventProcessor {
         if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
         break;
       case 'tool_use':
-        await this.handleToolUse(session, fields);
+        await this.handleToolUse(session, watch, fields);
         break;
       case 'tool_result':
-        await this.handleToolResult(session, fields);
+        await this.handleToolResult(session, watch, fields);
         break;
       case 'observation':
-        await this.sendObservation(session, fields);
+        await this.sendObservation(session, watch, fields);
         break;
       case 'file_edit':
         await this.sendFileEdit(session, fields);
@@ -181,7 +192,7 @@ export class TranscriptEventProcessor {
     });
   }
 
-  private async handleToolUse(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
@@ -198,7 +209,7 @@ export class TranscriptEventProcessor {
     }
 
     if (toolName && toolResponse !== undefined) {
-      await this.sendObservation(session, {
+      await this.sendObservation(session, watch, {
         toolName,
         toolInput,
         toolResponse,
@@ -210,7 +221,7 @@ export class TranscriptEventProcessor {
     }
   }
 
-  private async handleToolResult(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     let toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
@@ -226,7 +237,7 @@ export class TranscriptEventProcessor {
     }
 
     if (toolName) {
-      await this.sendObservation(session, {
+      await this.sendObservation(session, watch, {
         toolName,
         toolInput,
         toolResponse,
@@ -240,7 +251,7 @@ export class TranscriptEventProcessor {
     }
   }
 
-  private async sendObservation(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async sendObservation(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
@@ -252,6 +263,7 @@ export class TranscriptEventProcessor {
       toolResponse: this.maybeParseJson(fields.toolResponse),
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
+      agentId: resolveWatchAgentId(watch),
     });
 
     if (!result.ok) {
