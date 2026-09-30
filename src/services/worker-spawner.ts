@@ -101,7 +101,11 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
-  const pidFileStatus = cleanStalePidFile();
+  // I-4 (bwrap --unshare-pid): don't delete the pid file on a 'stale'
+  // verdict until we know whether the port is actually unhealthy — under a
+  // PID namespace a perfectly healthy host worker's pid reads back as
+  // invisible (ESRCH), not dead. removeStale:false defers the rmSync.
+  let pidFileStatus = cleanStalePidFile({ removeStale: false });
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -121,6 +125,9 @@ export async function ensureWorkerStarted(
   }
 
   if (await waitForHealth(port, 1000)) {
+    if (pidFileStatus === 'stale') {
+      logger.debug('SYSTEM', 'pid not visible (likely pid namespace); keeping pid file');
+    }
     clearWorkerSpawnAttempted();
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
@@ -128,6 +135,13 @@ export async function ensureWorkerStarted(
     }
     logger.info('SYSTEM', 'Worker already running and healthy');
     return ready ? 'ready' : 'warming';
+  }
+
+  if (pidFileStatus === 'stale') {
+    // Health genuinely failed above, so the pid file was not shielding a
+    // healthy-but-invisible worker after all — remove it now (this is the
+    // deferred rmSync from the removeStale:false call above).
+    pidFileStatus = cleanStalePidFile();
   }
 
   const portInUse = await isPortInUse(port);
