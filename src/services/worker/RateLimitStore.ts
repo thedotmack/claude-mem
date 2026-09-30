@@ -18,24 +18,19 @@
  *     overageResetsAt?: number,
  *     isUsingOverage?: boolean,
  *     surpassedThreshold?: number,
+ *     unifiedWindows?: {                              // not in sdk.d.ts
+ *       [window]: { utilization?: number, resetsAt?: number },
+ *     },
  *   }
  *
- * Claude Code additionally attaches an undocumented `unifiedWindows` map
- * (`{ five_hour: { utilization, resetsAt }, seven_day: {...} }`) carrying the
- * live state of EVERY window, not just the one named by `rateLimitType`. The
- * SDK passes it through untouched; it is optional here and only used when
- * present.
+ * `rateLimitType` names only the binding window. The CLI reports every other
+ * window's live figure in `unifiedWindows`, so set() refreshes those buckets
+ * too; otherwise a window that stops being the binding one keeps its last
+ * snapshot until the worker restarts (#4076).
  *
  * Pattern adapted from meridian's proxy/rateLimitStore.ts (last-write-wins
  * per `rateLimitType` bucket, in-memory only). State resets on worker
  * restart — that's fine, the SDK pushes a fresh event on the next request.
- *
- * Two rules keep a bucket from going stale (#4068): every snapshot also
- * refreshes the other windows from `unifiedWindows`, and the guard ignores
- * any bucket whose `resetsAt` is already in the past. Without them a
- * `seven_day` snapshot taken while that window was the binding one is never
- * overwritten (later events are `five_hour`-typed) and keeps aborting the
- * observer for days after the window has actually reset.
  *
  * Quota-aware abort logic gates the worker from continuing to consume a
  * subscription bucket once it crosses a per-window threshold. API-key
@@ -49,12 +44,6 @@ export type RateLimitWindow =
   | 'seven_day_sonnet'
   | 'overage';
 
-/** Per-window slice of the undocumented `unifiedWindows` map. */
-export interface RateLimitWindowSnapshot {
-  utilization?: number;
-  resetsAt?: number;
-}
-
 export interface RateLimitInfo {
   status?: 'allowed' | 'allowed_warning' | 'rejected';
   resetsAt?: number;
@@ -64,21 +53,22 @@ export interface RateLimitInfo {
   overageResetsAt?: number;
   isUsingOverage?: boolean;
   surpassedThreshold?: number;
-  /** Live state of every window, when the CLI attaches it. Not in the SDK type. */
-  unifiedWindows?: Partial<Record<string, RateLimitWindowSnapshot | null | undefined>>;
+  unifiedWindows?: Partial<Record<RateLimitWindow, UnifiedWindowSnapshot>>;
 }
 
-const KNOWN_WINDOWS: readonly RateLimitWindow[] = [
+export interface UnifiedWindowSnapshot {
+  utilization?: number;
+  resetsAt?: number;
+}
+
+// `overage` is left out: its guard also depends on isUsingOverage and
+// overageStatus, which a unified snapshot does not carry.
+const UNIFIED_WINDOWS: readonly RateLimitWindow[] = [
   'five_hour',
   'seven_day',
   'seven_day_opus',
   'seven_day_sonnet',
-  'overage',
 ];
-
-function isKnownWindow(key: string): key is RateLimitWindow {
-  return (KNOWN_WINDOWS as readonly string[]).includes(key);
-}
 
 export interface RateLimitEntry extends RateLimitInfo {
   observedAt: number;
@@ -88,6 +78,8 @@ export type RateLimitBucketKey = RateLimitWindow | 'default';
 
 export class RateLimitStore {
   private entries = new Map<RateLimitBucketKey, RateLimitEntry>();
+  // Telemetry deduplication survives display-only unified-window refreshes.
+  private rejections = new Map<RateLimitBucketKey, RateLimitInfo>();
 
   /**
    * Record a rate-limit info snapshot. Last-write-wins per bucket key.
@@ -96,35 +88,67 @@ export class RateLimitStore {
    */
   set(info: RateLimitInfo | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
-    const { unifiedWindows, ...top } = info;
-    const key: RateLimitBucketKey = top.rateLimitType ?? 'default';
-    const previous = this.entries.get(key);
+    const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
+    const previousRejection = this.rejections.get(key);
     const observedAt = Date.now();
+    const unified = readUnifiedWindows(info.unifiedWindows);
 
-    // Every event carries the live state of all windows in `unifiedWindows`.
-    // Refresh the other buckets from it so a window that stopped being the
-    // binding one still gets its utilization/resetsAt updated (#4068). The
-    // primary bucket is written last so its explicit top-level fields win.
-    const unified = unifiedWindows && typeof unifiedWindows === 'object' ? unifiedWindows : undefined;
-    if (unified) {
-      for (const [window, snapshot] of Object.entries(unified)) {
-        if (!isKnownWindow(window) || window === key) continue;
-        if (!snapshot || typeof snapshot !== 'object') continue;
-        this.entries.set(window, {
-          rateLimitType: window,
-          ...pickSnapshot(snapshot),
-          observedAt,
-        });
+    // Other windows: refresh fields the unified snapshot actually reports.
+    // Utilization establishes a new display state and drops stale status;
+    // reset-only snapshots preserve an unchanged active rejection.
+    for (const [window, snapshot] of unified) {
+      if (window === key) continue;
+      const previousWindow = this.entries.get(window);
+      // Carry the cached reset only while it is still ahead: an expired one
+      // would make the guard skip this fresh reading as stale.
+      const carriedResetsAt = isResetPending(previousWindow?.resetsAt, observedAt)
+        ? previousWindow?.resetsAt
+        : undefined;
+      const resetsAt = snapshot.resetsAt ?? carriedResetsAt;
+      const repeatsRejectedReset =
+        snapshot.utilization === undefined &&
+        previousWindow?.status === 'rejected' &&
+        sameResetTime(resetsAt, previousWindow.resetsAt) &&
+        isResetPending(resetsAt, observedAt);
+      this.entries.set(window, {
+        rateLimitType: window,
+        ...snapshot,
+        resetsAt,
+        ...(repeatsRejectedReset ? { status: 'rejected' as const } : {}),
+        observedAt,
+      });
+      const rejectedWindow = this.rejections.get(window);
+      if (
+        rejectedWindow &&
+        snapshot.resetsAt !== undefined &&
+        !sameResetTime(snapshot.resetsAt, rejectedWindow.resetsAt)
+      ) {
+        this.rejections.delete(window);
       }
     }
 
-    const primarySnapshot = unified && key !== 'default' ? unified[key] : undefined;
-    this.entries.set(key, {
-      ...(primarySnapshot && typeof primarySnapshot === 'object' ? pickSnapshot(primarySnapshot) : {}),
-      ...top,
+    const own = info.rateLimitType ? unified.get(info.rateLimitType) : undefined;
+    const merged: RateLimitEntry = {
+      ...info,
+      utilization: info.utilization ?? own?.utilization,
+      resetsAt: info.resetsAt ?? own?.resetsAt,
       observedAt,
-    });
-    return isNewRejection(previous, top);
+    };
+    this.entries.set(key, merged);
+    // Compare the merged entry, so a resetsAt that only arrives via
+    // unifiedWindows still dedupes repeated rejections.
+    const newRejection = isNewRejection(previousRejection, merged);
+    if (merged.status === 'rejected') {
+      this.rejections.set(key, merged);
+    } else if (
+      info.status !== undefined ||
+      (previousRejection &&
+        merged.resetsAt !== undefined &&
+        !sameResetTime(merged.resetsAt, previousRejection.resetsAt))
+    ) {
+      this.rejections.delete(key);
+    }
+    return newRejection;
   }
 
   /** Snapshot a single bucket, or undefined if not yet seen. */
@@ -153,6 +177,31 @@ export class RateLimitStore {
   get size(): number {
     return this.entries.size;
   }
+}
+
+function sameResetTime(left: number | undefined, right: number | undefined): boolean {
+  return normalizeResetTimeMs(left) === normalizeResetTimeMs(right);
+}
+
+function isResetPending(resetsAt: number | undefined, now: number): boolean {
+  const resetsAtMs = normalizeResetTimeMs(resetsAt);
+  return resetsAtMs !== undefined && resetsAtMs > now;
+}
+
+/** Windows in UNIFIED_WINDOWS with a well-formed snapshot; anything else is skipped. */
+function readUnifiedWindows(raw: unknown): Map<RateLimitWindow, UnifiedWindowSnapshot> {
+  const out = new Map<RateLimitWindow, UnifiedWindowSnapshot>();
+  if (!raw || typeof raw !== 'object') return out;
+  for (const window of UNIFIED_WINDOWS) {
+    const entry = (raw as Record<string, unknown>)[window];
+    if (!entry || typeof entry !== 'object') continue;
+    const { utilization, resetsAt } = entry as Record<string, unknown>;
+    const snapshot: UnifiedWindowSnapshot = {};
+    if (typeof utilization === 'number' && Number.isFinite(utilization)) snapshot.utilization = utilization;
+    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = resetsAt;
+    if (snapshot.utilization !== undefined || snapshot.resetsAt !== undefined) out.set(window, snapshot);
+  }
+  return out;
 }
 
 /** Process-wide singleton. */
@@ -203,33 +252,14 @@ export function isNewRejection(
  * documents epoch ms, so anything too small to be ms is treated as seconds.
  */
 export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
-  const resetsAtMs = toEpochMs(resetsAt);
+  const resetsAtMs = normalizeResetTimeMs(resetsAt);
   if (resetsAtMs === undefined) return undefined;
   return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
 }
 
-/** Normalize a `resetsAt` that may be epoch seconds or epoch ms to epoch ms. */
-export function toEpochMs(resetsAt: number | undefined): number | undefined {
+function normalizeResetTimeMs(resetsAt: number | undefined): number | undefined {
   if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
   return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
-}
-
-/**
- * A bucket whose window has already reset says nothing about the current
- * window. The guard must skip it rather than abort on a number that was
- * true days ago (#4068).
- */
-export function isStaleEntry(entry: RateLimitInfo, now: number = Date.now()): boolean {
-  const resetsAtMs = toEpochMs(entry.resetsAt);
-  return resetsAtMs !== undefined && resetsAtMs <= now;
-}
-
-/** Copy only the numeric fields of a `unifiedWindows` slice. */
-function pickSnapshot(snapshot: RateLimitWindowSnapshot): RateLimitWindowSnapshot {
-  const out: RateLimitWindowSnapshot = {};
-  if (typeof snapshot.utilization === 'number') out.utilization = snapshot.utilization;
-  if (typeof snapshot.resetsAt === 'number') out.resetsAt = snapshot.resetsAt;
-  return out;
 }
 
 /**
@@ -298,9 +328,11 @@ export function shouldAbortForQuota(
   for (const window of windows) {
     const entry = store.get(window);
     if (!entry) continue;
-    // The snapshot describes a window that has since reset; it no longer
-    // says anything about current usage. Wait for a fresh event instead.
-    if (isStaleEntry(entry, now)) continue;
+
+    // Ignore expired snapshots without removing them from the store so a
+    // repeated stale rejection does not look new to set() telemetry.
+    const resetsAtMs = normalizeResetTimeMs(entry.resetsAt);
+    if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
@@ -338,12 +370,11 @@ export function shouldAbortForQuota(
     // bailing on a window that just reset to ~0%.
     if (
       window === 'five_hour' &&
-      typeof entry.resetsAt === 'number' &&
+      resetsAtMs !== undefined &&
       typeof util === 'number' &&
       util >= RESET_GRACE_UTILIZATION_FLOOR
     ) {
-      // resetsAt arrives as epoch seconds from Claude Code; normalize.
-      const msUntilReset = (toEpochMs(entry.resetsAt) as number) - now;
+      const msUntilReset = resetsAtMs - now;
       if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
         return {
           abort: true,

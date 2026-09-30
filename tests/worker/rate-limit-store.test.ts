@@ -7,8 +7,6 @@ import {
   extractRateLimitInfo,
   minutesUntilReset,
   buildUsageLimitHitProps,
-  toEpochMs,
-  isStaleEntry,
   type RateLimitInfo,
 } from '../../src/services/worker/RateLimitStore.js';
 
@@ -184,6 +182,56 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.window).toBe('overage');
   });
 
+  it('does not abort on a five_hour rejection after its reset time', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      utilization: 1,
+      resetsAt: Math.floor(FIXED_NOW / 1000) - 60, // epoch seconds, already reset
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
+  it('still aborts on a five_hour rejection before its reset time', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision).toEqual({
+      abort: true,
+      window: 'five_hour',
+      reason: 'quota:five_hour rejected by provider',
+    });
+  });
+
+  it('still aborts on a rejected entry with no reset time', () => {
+    store.set({ rateLimitType: 'five_hour', status: 'rejected' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision).toEqual({
+      abort: true,
+      window: 'five_hour',
+      reason: 'quota:five_hour rejected by provider',
+    });
+  });
+
+  it('does not re-abort a later allowed window because an earlier rejection expired', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW - 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.79,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
   it('aborts on five_hour at 0.96 with reason mentioning "five_hour"', () => {
     store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
@@ -323,6 +371,213 @@ describe('RateLimitStore.set → new-rejection signal', () => {
   });
 });
 
+// The CLI names only the binding window in `rateLimitType`; every other
+// window's live figure arrives in `unifiedWindows` (#4076).
+describe('RateLimitStore.set → unifiedWindows', () => {
+  const cliAuth = 'Claude Code OAuth token (read from system keychain at spawn)';
+  const sevenDayResetsAt = Math.floor(FIXED_NOW / 1000) + 3 * 86_400; // epoch seconds, still ahead
+
+  // Shape observed from Claude Code 2.1.281 on the wire.
+  const fiveHourEvent: RateLimitInfo = {
+    status: 'allowed',
+    resetsAt: Math.floor(FIXED_NOW / 1000) + 3_600,
+    rateLimitType: 'five_hour',
+    overageStatus: 'rejected',
+    isUsingOverage: false,
+    unifiedWindows: {
+      five_hour: { utilization: 0.61, resetsAt: Math.floor(FIXED_NOW / 1000) + 3_600 },
+      seven_day: { utilization: 0.24, resetsAt: sevenDayResetsAt },
+    },
+  };
+
+  it('replaces a stale window whose reset is still ahead', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.98,
+      resetsAt: sevenDayResetsAt,
+    });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
+
+    store.set(fiveHourEvent);
+
+    const sevenDay = store.get('seven_day');
+    expect(sevenDay?.utilization).toBe(0.24);
+    expect(sevenDay?.status).toBeUndefined();
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('clears a stale rejection when the fresh figure is under threshold', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: sevenDayResetsAt });
+    store.set(fiveHourEvent);
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('preserves an active rejection when a sibling snapshot only repeats its reset time', () => {
+    const store = freshStore();
+    const now = Date.now();
+    const resetsAt = now + 60_000;
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt });
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: { seven_day: { resetsAt } },
+    });
+
+    expect(store.get('seven_day')?.status).toBe('rejected');
+    expect(shouldAbortForQuota(cliAuth, store, now)).toEqual({
+      abort: true,
+      window: 'seven_day',
+      reason: 'quota:seven_day rejected by provider',
+    });
+  });
+
+  it('preserves the cached reset when a sibling snapshot only refreshes utilization', () => {
+    const store = freshStore();
+    // set() stamps real time, so the cached reset must be ahead of it.
+    const now = Date.now();
+    const resetsAt = now + 10 * 60_000;
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.96,
+      resetsAt,
+    });
+
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.9 } },
+    });
+
+    const fiveHour = store.get('five_hour');
+    expect(fiveHour?.utilization).toBe(0.9);
+    expect(fiveHour?.resetsAt).toBe(resetsAt);
+    expect(fiveHour?.status).toBeUndefined();
+    expect(shouldAbortForQuota(cliAuth, store, now).abort).toBe(true);
+    expect(shouldAbortForQuota(cliAuth, store, resetsAt + 1).abort).toBe(false);
+  });
+
+  it('does not carry an expired cached reset into a utilization-only refresh', () => {
+    const store = freshStore();
+    const now = Date.now();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.98,
+      resetsAt: now - 60_000, // last week's window, already reset
+    });
+
+    // A sibling figure with no reset time, as seen on the wire in #3606.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: { seven_day: { utilization: 0.96 } },
+    });
+
+    expect(store.get('seven_day')?.resetsAt).toBeUndefined();
+    expect(shouldAbortForQuota(cliAuth, store, now)).toEqual({
+      abort: true,
+      window: 'seven_day',
+      reason: 'quota:seven_day utilization 96.0% >= 93%',
+    });
+  });
+
+  it('still aborts when the fresh unified figure is over threshold', () => {
+    const store = freshStore();
+    store.set({
+      ...fiveHourEvent,
+      unifiedWindows: { seven_day: { utilization: 0.97, resetsAt: sevenDayResetsAt } },
+    });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({
+      abort: true,
+      window: 'seven_day',
+      reason: 'quota:seven_day utilization 97.0% >= 93%',
+    });
+  });
+
+  it('fills utilization on the binding window from its unified entry', () => {
+    const store = freshStore();
+    store.set(fiveHourEvent);
+    const fiveHour = store.get('five_hour');
+    expect(fiveHour?.utilization).toBe(0.61);
+    expect(fiveHour?.status).toBe('allowed');
+    expect(fiveHour?.overageStatus).toBe('rejected');
+  });
+
+  it('keeps a top-level utilization over the unified one for the binding window', () => {
+    const store = freshStore();
+    store.set({ ...fiveHourEvent, utilization: 0.7 });
+    expect(store.get('five_hour')?.utilization).toBe(0.7);
+  });
+
+  it('ignores unknown and malformed unified entries', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: {
+        mystery_window: { utilization: 1 },
+        seven_day: null,
+        seven_day_opus: 'nope',
+      } as unknown as RateLimitInfo['unifiedWindows'],
+    });
+    expect(store.size).toBe(1);
+    expect(store.get('seven_day')).toBeUndefined();
+  });
+
+  it('dedupes a repeated rejection whose resetsAt only arrives via unifiedWindows', () => {
+    const store = freshStore();
+    const rejected: RateLimitInfo = {
+      status: 'rejected',
+      rateLimitType: 'five_hour',
+      unifiedWindows: { five_hour: { utilization: 1, resetsAt: Math.floor(FIXED_NOW / 1000) + 3_600 } },
+    };
+    expect(store.set(rejected)).toBe(true);
+    expect(store.set(rejected)).toBe(false);
+    expect(store.set(rejected)).toBe(false);
+  });
+
+  it('leaves the overage bucket to top-level events', () => {
+    const store = freshStore();
+    store.set({
+      status: 'allowed',
+      rateLimitType: 'five_hour',
+      isUsingOverage: false,
+      unifiedWindows: { overage: { utilization: 1, resetsAt: sevenDayResetsAt } },
+    });
+    expect(store.get('overage')).toBeUndefined();
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('does not report a rejection for windows refreshed from unifiedWindows', () => {
+    const store = freshStore();
+    expect(store.set(fiveHourEvent)).toBe(false);
+  });
+
+  it('dedupes a rejection after its display snapshot is refreshed by another window', () => {
+    const store = freshStore();
+    const rejected: RateLimitInfo = {
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+    };
+    expect(store.set(rejected)).toBe(true);
+
+    expect(store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.4 } },
+    })).toBe(false);
+    expect(store.get('five_hour')?.status).toBeUndefined();
+
+    expect(store.set(rejected)).toBe(false);
+  });
+});
+
 describe('minutesUntilReset', () => {
   it('handles epoch-ms and epoch-seconds resetsAt', () => {
     expect(minutesUntilReset(FIXED_NOW + 30 * 60_000, FIXED_NOW)).toBe(30);
@@ -394,175 +649,5 @@ describe('extractRateLimitInfo', () => {
   it('ignores a rate_limit_event with no payload', () => {
     expect(extractRateLimitInfo({ type: 'rate_limit_event' })).toBeUndefined();
     expect(extractRateLimitInfo({ type: 'rate_limit_event', rate_limit_info: null })).toBeUndefined();
-  });
-});
-
-// #4068: a bucket is written only when its window is the binding one
-// (`rateLimitType`), so a seven_day snapshot taken at 98% is never overwritten
-// by the five_hour-typed events that follow, and the guard keeps aborting on it
-// for days after the window has actually reset. Two fixes: refresh every
-// bucket from `unifiedWindows`, and never abort on a bucket whose `resetsAt`
-// is in the past.
-describe('shouldAbortForQuota — stale snapshots (#4068)', () => {
-  const cliAuth = 'Claude Code OAuth token (read from system keychain at spawn)';
-  let store: RateLimitStore;
-  beforeEach(() => {
-    store = freshStore();
-  });
-
-  it('skips a seven_day bucket whose resetsAt (epoch ms) has passed', () => {
-    store.set({ rateLimitType: 'seven_day', utilization: 0.98, resetsAt: FIXED_NOW - 60_000 });
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
-  });
-
-  it('skips a seven_day bucket whose resetsAt (epoch seconds) has passed', () => {
-    store.set({
-      rateLimitType: 'seven_day',
-      utilization: 0.98,
-      resetsAt: Math.floor(FIXED_NOW / 1000) - 60,
-    });
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
-  });
-
-  it('skips a stale rejected bucket too', () => {
-    store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW - 1 });
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
-  });
-
-  it('still aborts while the window is live', () => {
-    store.set({ rateLimitType: 'seven_day', utilization: 0.98, resetsAt: FIXED_NOW + 60_000 });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('seven_day');
-  });
-
-  it('still aborts on a snapshot with no resetsAt (cannot tell it is stale)', () => {
-    store.set({ rateLimitType: 'seven_day', utilization: 0.98 });
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
-  });
-
-  it('a later five_hour event refreshes the seven_day bucket via unifiedWindows', () => {
-    // Window was binding at 98% ...
-    store.set({
-      rateLimitType: 'seven_day',
-      status: 'allowed_warning',
-      utilization: 0.98,
-      resetsAt: FIXED_NOW + 60_000,
-    });
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
-    // ... then the next request reports five_hour as binding, with seven_day at 8%.
-    store.set({
-      status: 'allowed',
-      rateLimitType: 'five_hour',
-      resetsAt: FIXED_NOW + 3_600_000,
-      unifiedWindows: {
-        five_hour: { utilization: 0.11, resetsAt: FIXED_NOW + 3_600_000 },
-        seven_day: { utilization: 0.08, resetsAt: FIXED_NOW + 6 * 86_400_000 },
-      },
-    });
-    expect(store.get('seven_day')?.utilization).toBe(0.08);
-    expect(store.get('seven_day')?.status).toBeUndefined();
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
-  });
-
-  it('applies the grace buffer when resetsAt is epoch seconds', () => {
-    store.set({
-      rateLimitType: 'five_hour',
-      utilization: 0.9,
-      resetsAt: Math.floor(FIXED_NOW / 1000) + 10 * 60,
-    });
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.reason).toContain('resets in 10m');
-  });
-});
-
-describe('RateLimitStore.set → unifiedWindows', () => {
-  it('fills the other buckets from unifiedWindows', () => {
-    const store = freshStore();
-    store.set({
-      status: 'allowed',
-      rateLimitType: 'five_hour',
-      resetsAt: FIXED_NOW + 1_000,
-      unifiedWindows: {
-        five_hour: { utilization: 0.11, resetsAt: FIXED_NOW + 1_000 },
-        seven_day: { utilization: 0.08, resetsAt: FIXED_NOW + 2_000 },
-      },
-    });
-    expect(store.size).toBe(2);
-    expect(store.get('seven_day')).toMatchObject({
-      rateLimitType: 'seven_day',
-      utilization: 0.08,
-      resetsAt: FIXED_NOW + 2_000,
-    });
-  });
-
-  it('merges the primary window slice under the explicit top-level fields', () => {
-    const store = freshStore();
-    store.set({
-      status: 'allowed_warning',
-      rateLimitType: 'five_hour',
-      utilization: 0.96,
-      unifiedWindows: { five_hour: { utilization: 0.5, resetsAt: FIXED_NOW + 1_000 } },
-    });
-    const entry = store.get('five_hour');
-    expect(entry?.utilization).toBe(0.96); // top-level wins
-    expect(entry?.resetsAt).toBe(FIXED_NOW + 1_000); // filled from the slice
-    expect(entry?.status).toBe('allowed_warning');
-  });
-
-  it('does not persist unifiedWindows on the stored entry', () => {
-    const store = freshStore();
-    store.set({ rateLimitType: 'five_hour', unifiedWindows: { seven_day: { utilization: 0.1 } } });
-    expect((store.get('five_hour') as any).unifiedWindows).toBeUndefined();
-    expect((store.get('seven_day') as any).unifiedWindows).toBeUndefined();
-  });
-
-  it('ignores unknown windows and malformed slices', () => {
-    const store = freshStore();
-    store.set({
-      rateLimitType: 'five_hour',
-      unifiedWindows: {
-        seven_day_overage_included: { utilization: 0.3 },
-        seven_day: null,
-        overage: 'nope' as any,
-        seven_day_opus: { utilization: 'high' as any, resetsAt: 'soon' as any },
-      },
-    });
-    expect(store.get('seven_day')).toBeUndefined();
-    expect(store.get('overage')).toBeUndefined();
-    expect(store.get('seven_day_opus')).toEqual({
-      rateLimitType: 'seven_day_opus',
-      observedAt: expect.any(Number),
-    });
-    expect(store.size).toBe(2);
-  });
-
-  it('still reports new rejections based on the top-level fields', () => {
-    const store = freshStore();
-    expect(
-      store.set({
-        status: 'rejected',
-        rateLimitType: 'five_hour',
-        resetsAt: FIXED_NOW + 1_000,
-        unifiedWindows: { five_hour: { utilization: 1 } },
-      }),
-    ).toBe(true);
-  });
-});
-
-describe('toEpochMs / isStaleEntry', () => {
-  it('normalizes seconds and passes ms through', () => {
-    expect(toEpochMs(FIXED_NOW)).toBe(FIXED_NOW);
-    expect(toEpochMs(Math.floor(FIXED_NOW / 1000))).toBe(Math.floor(FIXED_NOW / 1000) * 1000);
-    expect(toEpochMs(undefined)).toBeUndefined();
-    expect(toEpochMs(Number.NaN)).toBeUndefined();
-  });
-
-  it('is stale only when resetsAt is known and not in the future', () => {
-    expect(isStaleEntry({ resetsAt: FIXED_NOW - 1 }, FIXED_NOW)).toBe(true);
-    expect(isStaleEntry({ resetsAt: FIXED_NOW }, FIXED_NOW)).toBe(true);
-    expect(isStaleEntry({ resetsAt: FIXED_NOW + 1 }, FIXED_NOW)).toBe(false);
-    expect(isStaleEntry({}, FIXED_NOW)).toBe(false);
   });
 });
