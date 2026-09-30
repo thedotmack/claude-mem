@@ -654,6 +654,15 @@ describe('#2827 — git-remote project names', () => {
     expect(ctx.allProjects).toEqual(['widgets-checkout', 'widgets-checkout/widgets-feature', 'acme/widgets']);
   });
 
+  // Gate P1-2: worktree adoption only trusts a deleted checkout for a
+  // folder-derived key, so every context says how its key was derived.
+  it('reports how each key was derived', () => {
+    expect(getProjectContext(repo).keySource).toBe('git-remote');
+    expect(getProjectContext(worktree).keySource).toBe('git-remote');
+    expect(getProjectContext(noRemoteWorktree).keySource).toBe('path');
+    expect(getPathModeProjectContext(repo).keySource).toBe('path');
+  });
+
   it('still exposes the folder-based identity that worktree adoption works on', () => {
     expect(getPathModeProjectContext(repo).primary).toBe('widgets-checkout');
     const ctx = getPathModeProjectContext(worktree);
