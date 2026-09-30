@@ -3,7 +3,6 @@ import {
   paths,
   DATA_DIR,
   resolveDataDir,
-  resolveObserverSessionsDir,
   ensureObserverSessionsDir,
   expandHome,
 } from '../../src/shared/paths.js';
@@ -113,39 +112,43 @@ describe('resolveDataDir tilde expansion', () => {
   });
 });
 
-describe('observer sessions directory resolution', () => {
-  const origEnv = process.env.CLAUDE_MEM_DATA_DIR;
+describe('ensureObserverSessionsDir', () => {
   const created: string[] = [];
 
   afterEach(() => {
-    if (origEnv === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
-    else process.env.CLAUDE_MEM_DATA_DIR = origEnv;
     for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  it('resolveObserverSessionsDir expands a literal ~ to an absolute path', () => {
-    process.env.CLAUDE_MEM_DATA_DIR = '~/.claude-mem';
-    const dir = resolveObserverSessionsDir();
-    expect(dir).toBe(join(homedir(), '.claude-mem', 'observer-sessions'));
-    expect(dir.startsWith('~')).toBe(false);
-  });
-
-  it('ensureObserverSessionsDir creates the directory and returns it', () => {
+  function makeTempBase(): string {
     const base = mkdtempSync(join(tmpdir(), 'cmem-obs-'));
     created.push(base);
-    process.env.CLAUDE_MEM_DATA_DIR = base;
-    const dir = ensureObserverSessionsDir();
-    expect(dir).toBe(join(base, 'observer-sessions'));
+    return base;
+  }
+
+  it('creates the directory and returns it', () => {
+    const dir = join(makeTempBase(), 'observer-sessions');
+    expect(ensureObserverSessionsDir(dir)).toBe(dir);
     expect(existsSync(dir)).toBe(true);
   });
 
-  it('ensureObserverSessionsDir throws a classifiable error when the data dir is a file', () => {
-    const base = mkdtempSync(join(tmpdir(), 'cmem-obs-'));
-    created.push(base);
-    const asFile = join(base, 'data-is-a-file');
+  it('turns a permanent mkdir failure (data dir is a file) into the setup message', () => {
+    const asFile = join(makeTempBase(), 'data-is-a-file');
     writeFileSync(asFile, 'x');
-    // observer-sessions would sit under a file — mkdir throws ENOTDIR.
-    process.env.CLAUDE_MEM_DATA_DIR = asFile;
-    expect(() => ensureObserverSessionsDir()).toThrow(/could not be prepared/i);
+    // observer-sessions would sit under a file, so mkdir throws ENOTDIR.
+    expect(() => ensureObserverSessionsDir(join(asFile, 'observer-sessions')))
+      .toThrow(/^Observer working directory could not be prepared: .* \(ENOTDIR\)/);
+  });
+
+  it('rethrows a transient mkdir failure unchanged so it is retried, not parked', () => {
+    for (const code of ['EMFILE', 'ENFILE', 'EIO', 'ENOSPC']) {
+      const transient = Object.assign(new Error(`${code}: simulated`), { code });
+      let caught: unknown;
+      try {
+        ensureObserverSessionsDir('/unused', () => { throw transient; });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(transient);
+    }
   });
 });

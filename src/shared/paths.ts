@@ -73,41 +73,31 @@ export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
 
-/**
- * Observer working directory resolved at CALL time. `OBSERVER_SESSIONS_DIR`
- * freezes `DATA_DIR` at import, so a `CLAUDE_MEM_DATA_DIR` that changes after
- * this module loaded — or arrives home-relative — is not reflected. Mirrors
- * `resolveDbPath()`, which exists for the same staleness reason.
- */
-export function resolveObserverSessionsDir(): string {
-  return join(resolveDataDir(), 'observer-sessions');
-}
+/** mkdir failures that retrying can never fix: the data dir is a file, sits under one, or is not writable. */
+const PERMANENT_DIRECTORY_ERROR_CODES = new Set(['ENOTDIR', 'EEXIST', 'EACCES', 'EPERM', 'EROFS']);
+
+export const OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX = 'Observer working directory could not be prepared';
 
 /**
- * Resolve, create, and confirm the Observer/KnowledgeAgent working directory
- * before an SDK spawn. The SDK refuses to spawn when its `cwd` is missing and
- * reports a bare `Path "<dir>" does not exist`; creating and verifying the
- * directory here turns a broken data-directory setting into an actionable
- * setup error (classifyClaudeError maps the message to `setup_required`)
- * instead of a silent crash that retries forever.
+ * Create the Observer/KnowledgeAgent working directory before an SDK spawn.
+ *
+ * A permanent mkdir failure is rethrown as a message that classifyClaudeError
+ * maps to `setup_required`, so it is recorded once instead of retried on every
+ * ingest. Anything else (EMFILE, ENFILE, EIO, ENOSPC …) is rethrown unchanged:
+ * a passing file-system hiccup must not park Claude starts behind the setup
+ * cooldown. `makeDirectory` is a test seam; production callers omit it.
  */
-export function ensureObserverSessionsDir(): string {
-  const dir = resolveObserverSessionsDir();
+export function ensureObserverSessionsDir(
+  dir: string = OBSERVER_SESSIONS_DIR,
+  makeDirectory: (dirPath: string) => void = ensureDir,
+): string {
   try {
-    ensureDir(dir);
+    makeDirectory(dir);
   } catch (error) {
-    // A data dir that is a file, has a non-directory parent, or is unwritable
-    // makes mkdir throw ENOTDIR / EEXIST / EACCES — a permanent setup problem,
-    // not a transient one. Rethrow with a message classifyClaudeError maps to
-    // `setup_required` so it is recorded, not retried on every later ingest.
-    const code = (error as { code?: string }).code;
+    const code = (error as { code?: unknown }).code;
+    if (typeof code !== 'string' || !PERMANENT_DIRECTORY_ERROR_CODES.has(code)) throw error;
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Observer working directory could not be prepared: ${dir}${code ? ` (${code})` : ''}: ${detail}`,
-    );
-  }
-  if (!existsSync(dir)) {
-    throw new Error(`Observer working directory does not exist: ${dir}`);
+    throw new Error(`${OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX}: ${dir} (${code}): ${detail}`);
   }
   return dir;
 }

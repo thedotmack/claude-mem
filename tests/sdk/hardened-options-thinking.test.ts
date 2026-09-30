@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { buildHardenedSdkOptions, OBSERVER_DISALLOWED_TOOLS } from '../../src/sdk/hardened-options.js';
-import { resolveObserverSessionsDir } from '../../src/shared/paths.js';
+import { existsSync } from 'fs';
+import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
 
 describe('buildHardenedSdkOptions thinking policy', () => {
   const build = (source: 'Observer' | 'KnowledgeAgent') =>
@@ -23,8 +24,9 @@ describe('buildHardenedSdkOptions thinking policy', () => {
     expect(opts.thinkingConfig).toBeUndefined();
   });
 
-  it('defaults cwd to the resolved observer sessions dir, and honors an explicit cwd', () => {
-    expect(build('Observer').cwd).toBe(resolveObserverSessionsDir());
+  it('defaults cwd to OBSERVER_SESSIONS_DIR, creates it, and honors an explicit cwd', () => {
+    expect(build('Observer').cwd).toBe(OBSERVER_SESSIONS_DIR);
+    expect(existsSync(OBSERVER_SESSIONS_DIR)).toBe(true);
     const explicit = buildHardenedSdkOptions({
       source: 'Observer',
       model: 'claude-haiku-4-5',

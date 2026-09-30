@@ -4,7 +4,7 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, ensureObserverSessionsDir, paths } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX, paths } from '../../shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
@@ -79,17 +79,14 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
-  // Observer/KnowledgeAgent working directory problems — the SDK refuses to
-  // spawn when its cwd does not exist (an unexpanded ~ in CLAUDE_MEM_DATA_DIR,
-  // or a deleted data dir) and reports a bare `Path "<dir>" does not exist`,
-  // and ensureObserverSessionsDir raises "could not be prepared" when a data
-  // dir that is a file / unwritable makes mkdir throw ENOTDIR / EEXIST / EACCES.
-  // All are actionable setup problems, not transient crashes to retry forever.
-  if (
-    /working directory does not exist/i.test(message) ||
-    /working directory could not be prepared/i.test(message) ||
-    /Path ".*" does not exist/i.test(message)
-  ) {
+  // The observer working directory cannot be created: the data dir is a file,
+  // sits under one, or is not writable (ensureObserverSessionsDir). Retrying
+  // cannot fix that, so it is a setup problem. The CLI's own
+  // `Path "..." does not exist` result is deliberately NOT matched here:
+  // telemetry shows it once per install and never again (occurrence_count 1
+  // across 13.10-13.25), so parking Claude starts behind the setup cooldown
+  // for it would cost more than the retry.
+  if (message.startsWith(`${OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX}: `)) {
     return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
@@ -317,17 +314,9 @@ export class ClaudeProvider {
         }
       }
 
+      let observerOptions: ReturnType<typeof buildHardenedSdkOptions>;
       try {
-        ensureObserverSessionsDir();
-      } catch (error) {
-        // A missing working directory is a setup problem, not a transient
-        // crash. Throwing the classified error lets the generator-start catch
-        // skip retries and record it for the session-start warning.
-        throw classifyClaudeError(error);
-      }
-      const queryResult = query({
-        prompt: messageGenerator,
-        options: buildHardenedSdkOptions({
+        observerOptions = buildHardenedSdkOptions({
           source: 'Observer',
           sessionDbId: session.sessionDbId,
           contentSessionId: session.contentSessionId,
@@ -338,8 +327,14 @@ export class ClaudeProvider {
           abortController: session.abortController,
           ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
           spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, slotReservation, observerExtraArgs),
-        }),
-      });
+        });
+      } catch (error) {
+        // Building the options creates the working directory. An unusable data
+        // dir classifies as setup_required, so the generator-start catch records
+        // it for the SessionStart notice instead of retrying every ingest.
+        throw classifyClaudeError(error);
+      }
+      const queryResult = query({ prompt: messageGenerator, options: observerOptions });
 
       // Baseline for the next dispatched response's discovery-token delta.
       // Textless frames are not dispatched (see below), so their usage rolls
@@ -678,7 +673,6 @@ export class ClaudeProvider {
     }
     try {
       if (controller.signal.aborted) return null;
-      ensureObserverSessionsDir();
       const result = query({
         prompt,
         options: {

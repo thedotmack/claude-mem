@@ -193,26 +193,25 @@ describe('classifyClaudeError — model identifier rejections without .status (#
 });
 
 /**
- * The SDK refuses to spawn when its `cwd` does not exist (an unexpanded ~ in
- * CLAUDE_MEM_DATA_DIR, or a deleted data dir) and reports a bare
- * `Path "<dir>" does not exist`. Without this branch the error fell through to
- * the default `transient` case and the worker retried the broken setup forever
- * while memory capture stayed silently dead.
+ * An observer working directory that cannot be created (the data dir is a file
+ * or unwritable) is a setup problem: retrying cannot fix it. The CLI's own
+ * `Path "..." does not exist` result is not: telemetry shows it once per install
+ * and never again, so it stays transient.
  */
-describe('classifyClaudeError — missing observer working directory', () => {
-  it('classifies the SDK "Path ... does not exist" cwd error as setup_required', () => {
-    const sdkErr = new Error('Path "~/.claude-mem/observer-sessions" does not exist');
-    expect(classifyClaudeError(sdkErr).kind).toBe('setup_required');
-  });
-
-  it('classifies the pre-spawn "working directory does not exist" check as setup_required', () => {
-    const err = new Error('Observer working directory does not exist: /home/u/.claude-mem/observer-sessions');
-    expect(classifyClaudeError(err).kind).toBe('setup_required');
-  });
-
-  it('classifies a "could not be prepared" mkdir failure (ENOTDIR/EEXIST/EACCES) as setup_required', () => {
+describe('classifyClaudeError — observer working directory', () => {
+  it('classifies the ensureObserverSessionsDir setup message as setup_required', () => {
     const err = new Error('Observer working directory could not be prepared: /home/u/data/observer-sessions (ENOTDIR): not a directory');
     expect(classifyClaudeError(err).kind).toBe('setup_required');
+  });
+
+  it('keeps the CLI "Path ... does not exist" result transient', () => {
+    const err = new Error('Claude Code returned an error result: Path "/home/u/.claude-mem/observer-sessions/1" does not exist');
+    expect(classifyClaudeError(err).kind).toBe('transient');
+  });
+
+  it('only matches the message at its start', () => {
+    const err = new Error('upstream said: Observer working directory could not be prepared: /x (EACCES): denied');
+    expect(classifyClaudeError(err).kind).toBe('transient');
   });
 
   it('does not treat an unrelated "does not exist" message as setup_required', () => {

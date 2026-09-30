@@ -46,7 +46,7 @@
  */
 
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
-import { resolveObserverSessionsDir } from '../shared/paths.js';
+import { ensureObserverSessionsDir } from '../shared/paths.js';
 import { recordObserverToolAttempt } from '../utils/observer-audit.js';
 import { logger } from '../utils/logger.js';
 
@@ -110,7 +110,10 @@ export interface HardenedSdkOptionsInput {
   model: string;
   env: NodeJS.ProcessEnv;
   pathToClaudeCodeExecutable: string;
-  /** Defaults to the resolved observer sessions dir. Never falls back to process.cwd(). */
+  /**
+   * Defaults to OBSERVER_SESSIONS_DIR, created here so every query path (Observer,
+   * standalone prompt, KnowledgeAgent) gets it. Never falls back to process.cwd().
+   */
   cwd?: string;
   abortController?: AbortController;
   resume?: string;
@@ -150,7 +153,7 @@ export function buildHardenedSdkOptions(input: HardenedSdkOptionsInput): Options
 
   return {
     model: input.model,
-    cwd: input.cwd ?? resolveObserverSessionsDir(),
+    cwd: input.cwd ?? ensureObserverSessionsDir(),
     env: input.env,
     pathToClaudeCodeExecutable: input.pathToClaudeCodeExecutable,
     ...(input.abortController ? { abortController: input.abortController } : {}),
