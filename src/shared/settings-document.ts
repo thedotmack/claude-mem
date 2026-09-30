@@ -15,6 +15,12 @@ const isRecord = (value: unknown): value is SettingsDocument =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /**
+ * settings.json carries secrets (API keys, the CMEM Pro setup token, sync
+ * tokens), so every write creates it owner-only from the first byte.
+ */
+const SETTINGS_FILE_MODE = 0o600;
+
+/**
  * Where claude-mem's keys live. Root `CLAUDE_MEM_*` keys mean a flat document
  * (any `env` block beside them belongs to Claude Code); otherwise an `env`
  * block holding `CLAUDE_*` keys is a Claude-Code-style wrapped document. This
@@ -96,7 +102,7 @@ export function updateSettingsDocument(
     return { status: 'unchanged', document };
   }
   try {
-    writeJsonFileAtomic(path, document);
+    writeJsonFileAtomic(path, document, { mode: SETTINGS_FILE_MODE });
     return { status: loaded.exists ? 'updated' : 'created', document, quarantinedTo };
   } catch (error) {
     if (quarantinedTo && restoreQuarantined(quarantinedTo, path)) quarantinedTo = undefined;
@@ -128,7 +134,7 @@ export function ensureSettingsDocument(path: string, seed: object): SettingsDocu
   if (loaded.exists) return { status: 'unchanged', document: loaded.document };
   const document = cloneDocument(seed as SettingsDocument);
   try {
-    writeJsonFileAtomic(path, document);
+    writeJsonFileAtomic(path, document, { mode: SETTINGS_FILE_MODE });
     return { status: 'created', document };
   } catch (error) {
     return { status: 'refused', error };

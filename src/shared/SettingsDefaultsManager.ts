@@ -70,6 +70,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_ALLOWED_ORIGINS: string;
   CLAUDE_MEM_PUBLIC_URL: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
@@ -234,6 +235,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_ALLOWED_ORIGINS: '',  // Comma-separated browser origins allowed to call the worker
+                                     // cross-origin besides http://localhost:* / http://127.0.0.1:*.
+                                     // Their host names also pass the DNS-rebinding Host check.
     CLAUDE_MEM_PUBLIC_URL: '',  // Browser-reachable base for the live-view URL when the
                                 // worker runs behind a port-forward (e.g.
                                 // https://37700.host.<user>.<domain>). Empty => localhost.
@@ -446,7 +450,7 @@ export class SettingsDefaultsManager {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
         try {
-          writeJsonFileAtomic(settingsPath, defaults);
+          writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
@@ -471,7 +475,7 @@ export class SettingsDefaultsManager {
         // theme, etc.), retain the wrapper: flattening would destroy user data.
         if (!hasPeerRootKeys) {
           try {
-            writeJsonFileAtomic(settingsPath, flatSettings);
+            writeJsonFileAtomic(settingsPath, flatSettings, { mode: 0o600 });
             // stderr, never stdout — same JSON-on-stdout contract as above.
             console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
           } catch (error: unknown) {
@@ -491,6 +495,7 @@ export class SettingsDefaultsManager {
           writeJsonFileAtomic(
             settingsPath,
             hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+            { mode: 0o600 },
           );
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
@@ -511,6 +516,7 @@ export class SettingsDefaultsManager {
           writeJsonFileAtomic(
             settingsPath,
             hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+            { mode: 0o600 },
           );
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn(
@@ -534,6 +540,7 @@ export class SettingsDefaultsManager {
           writeJsonFileAtomic(
             settingsPath,
             hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+            { mode: 0o600 },
           );
           console.warn('[SETTINGS] Migrated cloud sync hub URL off the legacy workers.dev host:', settingsPath);
         } catch (error: unknown) {

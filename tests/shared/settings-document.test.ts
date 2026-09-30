@@ -1,5 +1,5 @@
 import { describe, expect, it, setSystemTime } from 'bun:test';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import {
@@ -65,6 +65,18 @@ describe('settings document boundary', () => {
     } finally {
       setSystemTime();
     }
+  });
+
+  it('writes settings.json owner-only, including a previously world-readable file', () => {
+    if (process.platform === 'win32') return;
+    const created = tempFile();
+    ensureSettingsDocument(created, { CLAUDE_MEM_MODEL: 'seed' });
+    expect(statSync(created).mode & 0o777).toBe(0o600);
+
+    const existing = tempFile(JSON.stringify({ CLAUDE_MEM_MODEL: 'old' }));
+    chmodSync(existing, 0o644);
+    updateSettingsDocument(existing, { CLAUDE_MEM_MODEL: 'new' });
+    expect(statSync(existing).mode & 0o777).toBe(0o600);
   });
 
   it('moves the quarantined bytes back when the fresh write fails, so readers still find the file', () => {

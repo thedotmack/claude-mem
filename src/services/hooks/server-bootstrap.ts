@@ -24,8 +24,6 @@
 // logged.
 
 import { createHash, randomBytes } from 'crypto';
-import { chmodSync, existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
@@ -175,13 +173,8 @@ export function persistServerSettings(
     logger.warn('HOOK', 'Could not persist server settings; leaving existing credentials unchanged.', { settingsPath }, result.error instanceof Error ? result.error : undefined);
     return false;
   }
-  // Hooks read this file on every invocation; restrict permissions so other
-  // local users cannot read the API key.
-  try {
-    chmodSync(settingsPath, 0o600);
-  } catch {
-    // Non-POSIX filesystems may reject chmod; settings file remains readable.
-  }
+  // The boundary writes settings.json owner-only from the first byte, so the
+  // API key hooks read on every invocation is never readable by other users.
   return true;
 }
 

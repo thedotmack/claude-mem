@@ -5,7 +5,7 @@ import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
@@ -836,7 +836,9 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
  * to `{}`: it is moved aside to `settings.json.corrupt-<epoch-ms>` (the user's
  * bytes are kept) and a fresh document is written, so a corrupt file can never
  * stop setup or drop the sign-in's memory key. Returns false only when the
- * write itself fails; the worker and hooks refuse-and-report instead.
+ * write itself fails; the worker and hooks refuse-and-report instead. The
+ * boundary writes settings.json owner-only from the first byte (it can carry
+ * the CMEM Pro setup token and provider API keys).
  */
 export function mergeSettings(
   updates: Record<string, string>,
@@ -854,15 +856,6 @@ export function mergeSettings(
   }
   if (result.quarantinedTo) {
     log.warn(`${settingsPath} could not be read, so it was moved to ${result.quarantinedTo} and a fresh settings file was started. Copy back any settings you still need from it.`);
-  }
-  // settings.json can carry tokens (CMEM Pro setup token, provider API
-  // keys); a fresh file inherits the umask (usually 0644), leaving them
-  // world-readable. Tighten to owner-only. Fail-soft: a chmod failure must
-  // never fail the settings write itself, but it is not silent.
-  try {
-    chmodSync(settingsPath, 0o600);
-  } catch (chmodError: unknown) {
-    log.warn(`Could not restrict permissions on ${settingsPath} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
   }
   return true;
 }

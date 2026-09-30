@@ -41,7 +41,6 @@
 // before acknowledgment state changes and enters the normal backoff path.
 
 import type { Database } from 'bun:sqlite';
-import { existsSync, readFileSync } from 'fs';
 import { hostname } from 'os';
 import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
