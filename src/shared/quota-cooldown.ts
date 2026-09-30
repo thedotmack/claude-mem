@@ -59,6 +59,18 @@ interface PersistedQuotaCooldown {
   window?: string;
   profile?: string;
   armedAtMs: number;
+  cause?: 'auth';
+}
+
+/**
+ * The 'cmem-gateway' entry only carries the single post-window re-probe claim
+ * (tryAdmitCmemGatewayProbe). Its window is the fallback marker in
+ * settings.json, which already survives restarts, and while it stands memory
+ * runs on the Anthropic plan — nothing is paused. So it is never persisted
+ * here, and never mirrored into observer-health as a cooldown.
+ */
+function isClaimOnly(state: QuotaCooldownState): boolean {
+  return state.provider === 'cmem-gateway';
 }
 
 /**
@@ -94,6 +106,7 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         message: entry.message ?? 'Provider reported the inference allowance exhausted',
         ...(entry.window ? { window: entry.window } : {}),
         ...(entry.profile ? { profile: entry.profile } : {}),
+        ...(entry.cause === 'auth' ? { cause: 'auth' as const } : {}),
         armedAtMs: entry.armedAtMs,
         // Never restored: the process that could have held this is gone.
         probeInFlightSinceMs: null,
@@ -110,17 +123,20 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
 function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
   try {
     mkdirSync(dirname(filePath), { recursive: true });
-    if (cooldowns.size === 0) {
+    const rows: PersistedQuotaCooldown[] = [...cooldowns.values()]
+      .filter((state) => !isClaimOnly(state))
+      .map((state) => ({
+        provider: state.provider,
+        message: state.message,
+        ...(state.window ? { window: state.window } : {}),
+        ...(state.profile ? { profile: state.profile } : {}),
+        armedAtMs: state.armedAtMs,
+        ...(state.cause ? { cause: state.cause } : {}),
+      }));
+    if (rows.length === 0) {
       if (existsSync(filePath)) unlinkSync(filePath);
       return;
     }
-    const rows: PersistedQuotaCooldown[] = [...cooldowns.values()].map((state) => ({
-      provider: state.provider,
-      message: state.message,
-      ...(state.window ? { window: state.window } : {}),
-      ...(state.profile ? { profile: state.profile } : {}),
-      armedAtMs: state.armedAtMs,
-    }));
     const tmp = `${filePath}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(rows, null, 2), 'utf-8');
     // Atomic swap, so a reader never sees a half-written ledger.
@@ -154,6 +170,13 @@ export interface QuotaCooldownState {
   /** 'claude' only: the config-dir profile whose quota was exhausted. */
   profile?: string;
   armedAtMs: number;
+  /**
+   * 'auth' for a refused credential (recordAuthCooldown). It withholds requests
+   * exactly like a spent allowance, but it is not a quota pause, so it is never
+   * mirrored into observer-health as one; the health ledger's refused-credential
+   * warning is what the user sees.
+   */
+  cause?: 'auth';
   /**
    * When the single post-expiry probe was claimed, or null when none is in
    * flight. Without this the expiry check is a bare read: every concurrent
@@ -212,18 +235,36 @@ export function recordQuotaExhausted(
    */
   profile?: string,
 ): QuotaCooldownState {
+  return armCooldown({ provider, message, ...(window ? { window } : {}), armedAtMs, profile });
+}
+
+/**
+ * Withhold requests to `provider` after it refused the credential (a revoked
+ * key, a bad key). Every request fails until the user acts, so this stops one
+ * wasted request per captured event, with the same single re-probe per window.
+ * `profile` is as for recordQuotaExhausted: 'claude' only, the spawn-time account.
+ */
+export function recordAuthCooldown(
+  provider: QuotaProvider,
+  message: string,
+  profile?: string,
+): QuotaCooldownState {
+  return armCooldown({ provider, message, armedAtMs: Date.now(), profile, cause: 'auth' });
+}
+
+function armCooldown(
+  armed: Pick<QuotaCooldownState, 'provider' | 'message' | 'window' | 'armedAtMs' | 'profile' | 'cause'>,
+): QuotaCooldownState {
   hydrateFromDisk();
+  const { profile, ...rest } = armed;
   const state: QuotaCooldownState = {
-    provider,
-    message,
-    ...(window ? { window } : {}),
-    ...(provider === 'claude' ? { profile: profile ?? resolveClaudeProfile() } : {}),
-    armedAtMs,
+    ...rest,
+    ...(armed.provider === 'claude' ? { profile: profile ?? resolveClaudeProfile() } : {}),
     // Re-arming ends whatever probe was in flight: this IS that probe failing.
     probeInFlightSinceMs: null,
     probeClaimId: null,
   };
-  cooldowns.set(provider, state);
+  cooldowns.set(armed.provider, state);
   persistToDisk();
   syncObserverHealthQuotaCooldown();
   return state;
@@ -278,7 +319,6 @@ export function isQuotaCooldownActive(
 export function tryAdmitQuotaProbe(
   provider: QuotaProvider,
   nowMs: number = Date.now(),
-  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 ): QuotaProbeAdmission {
   // A breaker armed before a restart is still armed. Without this the first
   // call in a fresh process finds an empty Map, admits, and takes no claim —
@@ -296,7 +336,7 @@ export function tryAdmitQuotaProbe(
   }
   if (!state) return { admitted: true, claimId: null };
 
-  if (nowMs - state.armedAtMs < cooldownMs) {
+  if (nowMs - state.armedAtMs < QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS) {
     return { admitted: false, claimId: null };
   }
 
@@ -311,6 +351,31 @@ export function tryAdmitQuotaProbe(
   state.probeInFlightSinceMs = nowMs;
   state.probeClaimId = claimId;
   return { admitted: true, claimId };
+}
+
+/**
+ * Claim the cmem gateway's single post-window re-probe (provider-dispatch.ts)
+ * with the same claim every breaker hands out: one holder at a time, a stale
+ * takeover, and releases scoped to the claim id (`releaseQuotaProbe`).
+ *
+ * The gateway has no breaker window of its own — the fallback marker in
+ * settings.json is its window, and the caller has already found it elapsed —
+ * so its entry is armed at the epoch (always elapsed) and exists only for the
+ * claim. It is created on first use, never persisted, and never mirrored as a
+ * pause (isClaimOnly).
+ */
+export function tryAdmitCmemGatewayProbe(nowMs: number = Date.now()): QuotaProbeAdmission {
+  hydrateFromDisk();
+  if (!cooldowns.has('cmem-gateway')) {
+    cooldowns.set('cmem-gateway', {
+      provider: 'cmem-gateway',
+      message: 'cmem.ai gateway re-probe',
+      armedAtMs: 0,
+      probeInFlightSinceMs: null,
+      probeClaimId: null,
+    });
+  }
+  return tryAdmitQuotaProbe('cmem-gateway', nowMs);
 }
 
 /**
@@ -388,6 +453,9 @@ export function syncObserverHealthQuotaCooldown(
   try {
     let latest: QuotaCooldownState | null = null;
     for (const state of cooldowns.values()) {
+      // Neither the gateway's claim holder nor a refused credential is a quota
+      // pause to announce (see isClaimOnly and QuotaCooldownState.cause).
+      if (isClaimOnly(state) || state.cause === 'auth') continue;
       if (nowMs - state.armedAtMs >= cooldownMs) continue;
       if (!latest || state.armedAtMs > latest.armedAtMs) latest = state;
     }

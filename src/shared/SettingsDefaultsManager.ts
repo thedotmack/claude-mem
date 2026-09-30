@@ -178,6 +178,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_TRIAL_ENDS_AT: string;
   CLAUDE_MEM_PRO_PLAN: string;
   CLAUDE_MEM_PRO_FALLBACK_AT: string;
+  // The gateway's own words for the rejection that set CLAUDE_MEM_PRO_FALLBACK_AT,
+  // written and cleared with it, so the session-start notice relays them.
+  CLAUDE_MEM_PRO_FALLBACK_MESSAGE: string;
+  CLAUDE_MEM_PRO_FALLBACK_ACTION: string;
+  CLAUDE_MEM_PRO_FALLBACK_URL: string;
   // One-shot memory credentials delivered by browser pairing. These staging
   // fields keep the key recoverable until the user chooses a provider; when
   // claude-mem is selected the installer atomically moves them into the
@@ -372,6 +377,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free trial ends (from poll trial.ends_at); '' when absent
     CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
     CLAUDE_MEM_PRO_FALLBACK_AT: '',     // ISO timestamp when the cmem gateway terminally rejected the delivered key and memory fell back to the Anthropic plan; '' = no fallback. Event-driven only (never set from trial dates); cleared by a successful gateway response or fresh installer key material.
+    CLAUDE_MEM_PRO_FALLBACK_MESSAGE: '', // The gateway's message for that rejection ('' = plan-neutral notice copy)
+    CLAUDE_MEM_PRO_FALLBACK_ACTION: '',  // The gateway's "what to do" for that rejection
+    CLAUDE_MEM_PRO_FALLBACK_URL: '',     // The gateway's link for that rejection ('' = the cmem.ai/pro renewal link)
     CLAUDE_MEM_PRO_MEMORY_KEY: '',       // One-shot browser-pairing memory key, staged until provider selection (settings.json is chmod 0600 by the installer)
     CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY

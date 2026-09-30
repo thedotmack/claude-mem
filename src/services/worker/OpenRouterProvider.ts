@@ -5,7 +5,7 @@ import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared
 import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
+import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl, isCmemMemoryKey } from '../../shared/cmem-gateway.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -49,6 +49,23 @@ interface UpstreamErrorEnvelope {
   action?: unknown;
   url?: unknown;
   request_id?: unknown;
+  metadata?: unknown;
+}
+
+/**
+ * Whether a 403 is OpenRouter refusing a moderated model's flagged input
+ * rather than the key: its envelope carries the flagged reasons or input in
+ * `metadata`, or its message says the input was flagged.
+ */
+function isModerationRefusal(envelope: UpstreamErrorEnvelope | null, lowerBody: string): boolean {
+  const metadata = envelope?.metadata;
+  if (
+    metadata !== null && typeof metadata === 'object'
+    && ('flagged_input' in metadata || Array.isArray((metadata as { reasons?: unknown }).reasons))
+  ) {
+    return true;
+  }
+  return lowerBody.includes('requires moderation') || lowerBody.includes('input was flagged');
 }
 
 /** Best-effort parse of `{ error: {...} }` from an upstream body. */
@@ -188,6 +205,18 @@ export function classifyOpenRouterError(input: {
     return new ClassifiedProviderError(
       describe('rate limit'),
       { kind: 'rate_limit', cause: input.cause, ...detail, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
+
+  // OpenRouter's moderation refusal names the INPUT, not the key: "<model>
+  // requires moderation on <provider>. Your input was flagged for …", with the
+  // flagged reasons in `metadata`. The next observation is a different input,
+  // so this is unrecoverable for this batch only — as auth_invalid it would
+  // pause all memory behind a cooldown under "credentials refused".
+  if (status === 403 && isModerationRefusal(envelope, lower)) {
+    return new ClassifiedProviderError(
+      describe('moderation refusal'),
+      { kind: 'unrecoverable', cause: input.cause, ...detail },
     );
   }
 
@@ -385,10 +414,15 @@ export function buildOpenRouterRequestBody(input: {
   };
 }
 
+/** Endpoint a mismatched key was last withheld from, so dispatch logs it once, not per call. */
+let lastWithheldCmemKeyUrl: string | null = null;
+
 /**
  * Resolve key/base/model as a source-coherent tuple. In particular, a
  * key-only environment override must never inherit a persisted cmem.ai base
- * URL and send a personal OpenRouter credential to the cmem gateway. To
+ * URL and send a personal OpenRouter credential to the cmem gateway, and a key
+ * is never returned with a URL it does not belong to (a cmem memory key only
+ * with the gateway, any other key only elsewhere). To
  * replace a stored cmem tuple at runtime, explicitly override the base URL too
  * (an empty CLAUDE_MEM_OPENROUTER_BASE_URL selects normal OpenRouter).
  */
@@ -451,6 +485,21 @@ export function resolveOpenRouterConfig(
   const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
   const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
   const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
+
+  // The cmem gateway and its keys go together, both ways: the account-owned
+  // cm_pro_ key authenticates only against the gateway, and the gateway only
+  // takes a cm_pro_ key, so a personal key must never be sent there. The tuple
+  // lock above covers environment overrides, but a base URL changed in
+  // settings.json itself (the settings API / viewer, a hand edit) can pair
+  // either key with the wrong host. Every request resolves its key and URL
+  // here, together, so the pair is checked here — and fails closed.
+  if (apiKey && isCmemGatewayUrl(apiUrl) !== isCmemMemoryKey(apiKey)) {
+    if (lastWithheldCmemKeyUrl !== apiUrl) {
+      lastWithheldCmemKeyUrl = apiUrl;
+      logger.warn('SDK', 'Withholding the OpenRouter key: a cmem.ai memory key only goes to the cmem gateway, and the gateway only takes a cmem.ai memory key. Pair CLAUDE_MEM_OPENROUTER_BASE_URL with a key for that endpoint.');
+    }
+    return { apiKey: '', model, fallbackModels, apiUrl, siteUrl, appName };
+  }
 
   return { apiKey, model, fallbackModels, apiUrl, siteUrl, appName };
 }
