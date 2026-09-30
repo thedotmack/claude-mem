@@ -437,7 +437,9 @@ describe('RateLimitStore.set → unifiedWindows', () => {
 
   it('preserves the cached reset when a sibling snapshot only refreshes utilization', () => {
     const store = freshStore();
-    const resetsAt = FIXED_NOW + 10 * 60_000;
+    // set() stamps real time, so the cached reset must be ahead of it.
+    const now = Date.now();
+    const resetsAt = now + 10 * 60_000;
     store.set({
       rateLimitType: 'five_hour',
       status: 'allowed_warning',
@@ -455,8 +457,33 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     expect(fiveHour?.utilization).toBe(0.9);
     expect(fiveHour?.resetsAt).toBe(resetsAt);
     expect(fiveHour?.status).toBeUndefined();
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
+    expect(shouldAbortForQuota(cliAuth, store, now).abort).toBe(true);
     expect(shouldAbortForQuota(cliAuth, store, resetsAt + 1).abort).toBe(false);
+  });
+
+  it('does not carry an expired cached reset into a utilization-only refresh', () => {
+    const store = freshStore();
+    const now = Date.now();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.98,
+      resetsAt: now - 60_000, // last week's window, already reset
+    });
+
+    // A sibling figure with no reset time, as seen on the wire in #3606.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: { seven_day: { utilization: 0.96 } },
+    });
+
+    expect(store.get('seven_day')?.resetsAt).toBeUndefined();
+    expect(shouldAbortForQuota(cliAuth, store, now)).toEqual({
+      abort: true,
+      window: 'seven_day',
+      reason: 'quota:seven_day utilization 96.0% >= 93%',
+    });
   });
 
   it('still aborts when the fresh unified figure is over threshold', () => {

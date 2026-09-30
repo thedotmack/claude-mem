@@ -99,7 +99,12 @@ export class RateLimitStore {
     for (const [window, snapshot] of unified) {
       if (window === key) continue;
       const previousWindow = this.entries.get(window);
-      const resetsAt = snapshot.resetsAt ?? previousWindow?.resetsAt;
+      // Carry the cached reset only while it is still ahead: an expired one
+      // would make the guard skip this fresh reading as stale.
+      const carriedResetsAt = isResetPending(previousWindow?.resetsAt, observedAt)
+        ? previousWindow?.resetsAt
+        : undefined;
+      const resetsAt = snapshot.resetsAt ?? carriedResetsAt;
       const repeatsRejectedReset =
         snapshot.utilization === undefined &&
         previousWindow?.status === 'rejected' &&
