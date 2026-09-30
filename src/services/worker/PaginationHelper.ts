@@ -80,7 +80,7 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      conditions.push('(o.project COLLATE NOCASE = ? OR o.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     } else {
       conditions.push('o.project != ?');
@@ -135,7 +135,7 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      conditions.push('(ss.project COLLATE NOCASE = ? OR ss.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     } else {
       conditions.push('ss.project != ?');
@@ -186,7 +186,7 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('s.project = ?');
+      conditions.push('s.project COLLATE NOCASE = ?');
       params.push(project);
     } else {
       conditions.push('s.project != ?');
@@ -225,37 +225,6 @@ export class PaginationHelper {
 
     const stmt = db.prepare(query);
     const results = stmt.all(...params) as UserPrompt[];
-
-    return {
-      items: results.slice(0, limit),
-      hasMore: results.length > limit,
-      offset,
-      limit
-    };
-  }
-
-  private paginate<T>(
-    table: string,
-    columns: string,
-    offset: number,
-    limit: number,
-    project?: string
-  ): PaginatedResult<T> {
-    const db = this.dbManager.getSessionStore().db;
-
-    let query = `SELECT ${columns} FROM ${table}`;
-    const params: any[] = [];
-
-    if (project) {
-      query += ' WHERE project = ?';
-      params.push(project);
-    }
-
-    query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
-    params.push(limit + 1, offset); 
-
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as T[];
 
     return {
       items: results.slice(0, limit),

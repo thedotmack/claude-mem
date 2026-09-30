@@ -8,6 +8,14 @@ export interface ContextInput {
   projects?: string[];
   platformSource?: string;
   full?: boolean;
+  /**
+   * Set false to build the context without the observer-health outage banner.
+   *
+   * The banner is written for the primary assistant and ends with an
+   * instruction addressed to it. Builds that are consumed by the observer
+   * itself must opt out (#4221).
+   */
+  includeHealthWarning?: boolean;
   [key: string]: any;
 }
 
@@ -27,10 +35,20 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+  mainAgentOnly: boolean;
+
+  /**
+   * Whether observation refs in the inject panel can be fetched by id.
+   * When false (server runtime, where ids are Postgres UUIDs), refs are
+   * abbreviated to an 8-char prefix (display-only) and the legend points to
+   * observation_search. Defaults to true (full id shown) when omitted.
+   */
+  fetchByIdSupported?: boolean;
 }
 
 export interface Observation {
-  id: number;
+  // A numeric SQLite id, or the server's string id in server runtime.
+  id: number | string;
   memory_session_id: string;
   platform_source?: string;
   type: string;
@@ -48,7 +66,8 @@ export interface Observation {
 }
 
 export interface SessionSummary {
-  id: number;
+  // A numeric SQLite id, or the server's string id in server runtime.
+  id: number | string;
   memory_session_id: string;
   platform_source?: string;
   request: string | null;
@@ -60,6 +79,10 @@ export interface SessionSummary {
   created_at_epoch: number;
   project?: string;
 }
+
+/** Rows read from the local SQLite database always carry numeric ids. */
+export type LocalObservation = Observation & { id: number };
+export type LocalSessionSummary = SessionSummary & { id: number };
 
 export interface SummaryTimelineItem extends SessionSummary {
   displayEpoch: number;

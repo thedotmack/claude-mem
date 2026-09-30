@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { PostgresPool, PostgresStorageRepositories } from '../../storage/postgres/index.js';
+import type { PostgresPool } from '../../storage/postgres/index.js';
 
 export type ServerRuntimeName = 'server-beta';
 export type ServerAuthMode = 'api-key' | 'local-dev' | 'disabled';
@@ -59,7 +59,6 @@ export interface ServerServiceGraph {
   authMode: ServerAuthMode;
   queueManager: ServerQueueManager;
   generationWorkerManager: ServerGenerationWorkerManager;
-  storage: PostgresStorageRepositories;
 }
 
 abstract class DisabledServerBoundary {

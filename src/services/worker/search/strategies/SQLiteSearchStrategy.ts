@@ -3,6 +3,7 @@ import {
   StrategySearchOptions,
   StrategySearchResult,
   SEARCH_CONSTANTS,
+  isCategoryRequested,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
@@ -36,9 +37,9 @@ export class SQLiteSearchStrategy {
       orderBy = 'date_desc'
     } = options;
 
-    const searchObservations = searchType === 'all' || searchType === 'observations';
-    const searchSessions = searchType === 'all' || searchType === 'sessions';
-    const searchPrompts = searchType === 'all' || searchType === 'prompts';
+    const searchObservations = isCategoryRequested(searchType, 'observations');
+    const searchSessions = isCategoryRequested(searchType, 'sessions');
+    const searchPrompts = isCategoryRequested(searchType, 'prompts');
 
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
@@ -92,21 +93,11 @@ export class SQLiteSearchStrategy {
     };
   }
 
-  findByConcept(concept: string, options: StrategySearchOptions): ObservationSearchResult[] {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByConcept(concept, { limit, project, platformSource, dateRange, orderBy });
-  }
-
-  findByType(type: string | string[], options: StrategySearchOptions): ObservationSearchResult[] {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByType(type as any, { limit, project, platformSource, dateRange, orderBy });
-  }
-
   findByFile(filePath: string, options: StrategySearchOptions): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByFile(filePath, { limit, project, platformSource, dateRange, orderBy });
+    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy = 'date_desc', isFolder } = options;
+    return this.sessionSearch.findByFile(filePath, { limit, project, platformSource, dateRange, orderBy, isFolder });
   }
 }

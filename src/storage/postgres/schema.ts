@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { logger } from '../../utils/logger.js';
 import type { PostgresQueryable } from './utils.js';
 
 export const SERVER_POSTGRES_SCHEMA_VERSION = 1;
@@ -37,20 +38,26 @@ export async function bootstrapServerPostgresSchema(client: PostgresQueryable): 
 
   await client.query('BEGIN');
   try {
-    await client.query(PHASE_1_SCHEMA_SQL);
-    await client.query(
-      `
-        INSERT INTO server_beta_schema_migrations (version, description)
-        VALUES ($1, $2)
-        ON CONFLICT (version) DO NOTHING
-      `,
-      [SERVER_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
-    );
+    await applyPhase1Migration(client);
     await client.query('COMMIT');
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.error('SYSTEM', 'postgres schema bootstrap failed, rolling back', {}, err);
     await client.query('ROLLBACK');
     throw error;
   }
+}
+
+async function applyPhase1Migration(client: PostgresQueryable): Promise<void> {
+  await client.query(PHASE_1_SCHEMA_SQL);
+  await client.query(
+    `
+      INSERT INTO server_beta_schema_migrations (version, description)
+      VALUES ($1, $2)
+      ON CONFLICT (version) DO NOTHING
+    `,
+    [SERVER_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
+  );
 }
 
 interface PostgresPoolLike extends PostgresQueryable {

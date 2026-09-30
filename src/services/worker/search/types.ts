@@ -4,13 +4,23 @@ import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 export type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult, SearchOptions, DateRange };
 
 export const SEARCH_CONSTANTS = {
-  RECENCY_WINDOW_DAYS: 90,
   RECENCY_WINDOW_MS: 90 * 24 * 60 * 60 * 1000,
   DEFAULT_LIMIT: 20,
   CHROMA_BATCH_SIZE: 100
 } as const;
 
 export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';
+
+export const SEARCH_CATEGORIES = ['observations', 'sessions', 'prompts'] as const;
+
+export type SearchCategory = typeof SEARCH_CATEGORIES[number];
+
+export function isCategoryRequested(
+  searchType: 'observations' | 'sessions' | 'prompts' | 'all' | undefined,
+  category: SearchCategory
+): boolean {
+  return !searchType || searchType === 'all' || searchType === category;
+}
 
 export interface ChromaMetadata {
   sqlite_id: number;
@@ -43,6 +53,12 @@ export interface ExtendedSearchOptions extends SearchOptions {
   concepts?: string | string[];
   files?: string | string[];
   format?: 'text' | 'json';
+  /**
+   * Skip the implicit 90-day window Chroma results get when no dateRange is given. Corpus
+   * builds set it: a corpus is defined by its stored filter, so a date-less corpus must not
+   * lose everything older than 90 days each time it is rebuilt.
+   */
+  ignoreDefaultRecencyWindow?: boolean;
 }
 
 export type SearchStrategyHint = 'chroma' | 'sqlite' | 'hybrid' | 'auto';

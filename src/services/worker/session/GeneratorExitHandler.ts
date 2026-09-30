@@ -41,8 +41,28 @@ export async function handleGeneratorExit(
   session.generatorPromise = null;
   session.currentProvider = null;
 
-  if ((reason ?? '').split(':')[0] === 'quota') {
-    logger.warn('SESSION', 'Generator paused for quota; preserving buffered work', {
+  // 'overflow' joins quota/auth as a pause-and-preserve exit: ResponseProcessor
+  // has already reset the claimed batch to pending and (on a recycle) cleared
+  // the conversation, so the session must survive for the next ingest to open a
+  // fresh generator and drain it. Finalizing here would drop that work (#3800).
+  // 'provider_switch' (#2756) is the same shape for a different reason:
+  // SessionRoutes aborted a generator that was PARKED in waitForSlot (never
+  // acquired a slot / never spawned) to switch providers, and is about to
+  // start a fresh generator for the newly-selected provider on this same
+  // session — finalizeSession + removeSessionImmediate would dispose the
+  // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
+  // wiping the very queue the switch is meant to preserve. The transcript is
+  // not carried over: every generator start opens a new generation seeded from
+  // the session's memory (#3800, #3479), so the queue is what must survive.
+  const abortCategory = (reason ?? '').split(':')[0];
+  // Every category listed here has ALREADY called resetProcessingToPending
+  // (except provider_switch, which parks a live buffer for a provider change).
+  // Falling through to finalizeSession would remove the session and undo that
+  // preservation — the second half of #3752.
+  const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
+  if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
+    session.pausedReason = abortCategory;
+    logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });

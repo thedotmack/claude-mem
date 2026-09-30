@@ -2,6 +2,7 @@
 
 import pg, { type Pool as PgPool, type PoolClient as PgPoolClient } from 'pg';
 import { parsePostgresConfig, type PostgresConfig } from './config.js';
+import { logger } from '../../utils/logger.js';
 
 const { Pool } = pg;
 
@@ -33,15 +34,6 @@ export function getSharedPostgresPool(options: { requireDatabaseUrl?: boolean } 
   return sharedPool;
 }
 
-export async function checkPostgresHealth(pool: PostgresPool): Promise<boolean> {
-  try {
-    await pool.query('SELECT 1');
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function withPostgresTransaction<T>(
   pool: PostgresPool,
   fn: (client: PostgresPoolClient) => Promise<T>
@@ -53,6 +45,8 @@ export async function withPostgresTransaction<T>(
     await client.query('COMMIT');
     return result;
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('DB', 'Postgres transaction rolled back', {}, err);
     await client.query('ROLLBACK');
     throw error;
   } finally {

@@ -13,7 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Server } from '../../../src/services/server/Server.js';
@@ -26,18 +26,9 @@ import {
 } from '../../../src/storage/postgres/index.js';
 import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
 import { logger } from '../../../src/utils/logger.js';
+import { quoteIdentifier, newApiKey } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
-
-function newApiKey(): { raw: string; hash: string } {
-  const raw = `cm_${randomBytes(24).toString('hex')}`;
-  const hash = createHash('sha256').update(raw).digest('hex');
-  return { raw, hash };
-}
 
 describe('POST /v1/mcp — remote authenticated MCP recall (streamable HTTP)', () => {
   if (!testDatabaseUrl) {
@@ -113,8 +104,6 @@ describe('POST /v1/mcp — remote authenticated MCP recall (streamable HTTP)', (
       pool: pool as never,
       queueManager: new DisabledServerQueueManager('disabled in tests'),
       authMode: 'api-key',
-      runtime: 'server-beta',
-      sessionPolicy: 'per-event',
     }));
     server.finalizeRoutes();
     await server.listen(0, '127.0.0.1');

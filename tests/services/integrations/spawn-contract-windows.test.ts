@@ -1,10 +1,15 @@
 import { describe, it, expect } from 'bun:test';
+import { spawnSync } from 'child_process';
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import {
   codexSpawn,
+  isExecutableFile,
+  isUsableCodexBundle,
+  lookupCodexOnMacOS,
   resolveCodexCommand,
   resolveCodexSpawnInvocation,
 } from '../../../src/services/integrations/CodexCliInstaller.js';
+import { buildSpawnSyncInvocation } from '../../../src/shared/spawn.js';
 
 // Windows spawn-contract fixes:
 //   #2696 — ChromaDB MCP subprocess: spawn uvx.exe DIRECTLY, never `cmd.exe /c uvx`.
@@ -43,6 +48,26 @@ describe('Windows #2696 - chroma-mcp spawns uvx directly', () => {
 });
 
 describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', () => {
+  it('shared spawn wrapper wraps .cmd shims with cmd.exe and windowsHide', () => {
+    const invocation = buildSpawnSyncInvocation(
+      'C:\\Tools\\bin\\tool.cmd',
+      ['run', 'C:\\Path With Spaces'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+      'win32',
+    );
+
+    expect(invocation.command).toBe('cmd.exe');
+    expect(invocation.args).toEqual([
+      '/d',
+      '/s',
+      '/c',
+      '""C:\\Tools\\bin\\tool.cmd" "run" "C:\\Path With Spaces""',
+    ]);
+    expect(invocation.options.windowsHide).toBe(true);
+    expect(invocation.options.windowsVerbatimArguments).toBe(true);
+    expect('shell' in invocation.options).toBe(false);
+  });
+
   it('resolves a where-discovered codex.cmd path on Windows', () => {
     expect(resolveCodexCommand('win32', () => 'C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd'))
       .toBe('C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd');
@@ -64,9 +89,10 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
       '/d',
       '/s',
       '/c',
-      '"C:\\Program Files\\nodejs\\codex.cmd" "plugin" "marketplace" "add" "C:\\Users\\tester\\Market Place"',
+      '""C:\\Program Files\\nodejs\\codex.cmd" "plugin" "marketplace" "add" "C:\\Users\\tester\\Market Place""',
     ]);
     expect(invocation.options.windowsHide).toBe(true);
+    expect(invocation.options.windowsVerbatimArguments).toBe(true);
     expect('shell' in invocation.options).toBe(false);
   });
 
@@ -74,7 +100,8 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
     const invocation = resolveCodexSpawnInvocation(['--version'], 'win32', () => null);
 
     expect(invocation.command).toBe('cmd.exe');
-    expect(invocation.args).toEqual(['/d', '/s', '/c', '"codex.cmd" "--version"']);
+    expect(invocation.args).toEqual(['/d', '/s', '/c', '""codex.cmd" "--version""']);
+    expect(invocation.options.windowsVerbatimArguments).toBe(true);
     expect('shell' in invocation.options).toBe(false);
   });
 
@@ -92,7 +119,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
 
   it('uses bare codex on non-Windows platforms', () => {
     expect(resolveCodexCommand('linux')).toBe('codex');
-    expect(resolveCodexCommand('darwin')).toBe('codex');
+    expect(resolveCodexCommand('darwin', () => null, () => null)).toBe('codex');
   });
 
   it('codexSpawn is exported and invokable (no crash on a bogus codex)', () => {
@@ -105,5 +132,88 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
     expect(result).toBeDefined();
     // status is a number when the binary ran; error is set when not found.
     expect(result.status !== undefined || result.error !== undefined).toBe(true);
+  });
+});
+
+describe('macOS Codex Desktop bundle resolution', () => {
+  const chatGptBundledCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
+  const legacyBundledCodex = '/Applications/Codex.app/Contents/Resources/codex';
+
+  it('rejects bundle files that are not executable', () => {
+    expect(isExecutableFile(chatGptBundledCodex, () => {
+      throw new Error('EACCES');
+    })).toBe(false);
+    expect(isExecutableFile(chatGptBundledCodex, () => {})).toBe(true);
+  });
+
+  it('keeps a standalone codex from PATH as the first choice', () => {
+    expect(lookupCodexOnMacOS(() => true, () => true)).toBe('codex');
+  });
+
+  it('prefers the current ChatGPT app bundle when both app bundles exist', () => {
+    expect(lookupCodexOnMacOS(
+      () => false,
+      () => true,
+    )).toBe(chatGptBundledCodex);
+  });
+
+  it('supports the legacy Codex app bundle when ChatGPT is absent', () => {
+    expect(lookupCodexOnMacOS(
+      () => false,
+      (candidate) => candidate === legacyBundledCodex,
+    )).toBe(legacyBundledCodex);
+  });
+
+  it('falls back to the legacy bundle when the ChatGPT bundled CLI probe fails', () => {
+    const probed: string[] = [];
+    expect(lookupCodexOnMacOS(
+      () => false,
+      (candidate) => {
+        probed.push(candidate);
+        return candidate === legacyBundledCodex;
+      },
+    )).toBe(legacyBundledCodex);
+    expect(probed).toEqual([chatGptBundledCodex, legacyBundledCodex]);
+  });
+
+  it('bounds the bundled CLI probe and force-kills a hung candidate', () => {
+    const probe = ((_command: string, _args: string[], options: { timeout?: number; killSignal?: string }) => {
+      expect(options.timeout).toBe(5_000);
+      expect(options.killSignal).toBe('SIGKILL');
+      return { error: new Error('ETIMEDOUT'), status: null };
+    }) as typeof import('child_process').spawnSync;
+
+    expect(isUsableCodexBundle(chatGptBundledCodex, probe)).toBe(false);
+  });
+
+  it('returns after the deadline when the bundled CLI ignores SIGTERM', () => {
+    if (process.platform === 'win32') return;
+
+    const probe = ((_command: string, _args: string[], options: Parameters<typeof spawnSync>[2]) => (
+      spawnSync(process.execPath, ['-e', [
+        "process.on('SIGTERM', () => {});",
+        'setTimeout(() => process.exit(17), 3_000);',
+        'setInterval(() => {}, 1_000);',
+      ].join('')], {
+        ...options,
+        timeout: 200,
+      })
+    )) as typeof spawnSync;
+
+    const startedAt = Date.now();
+    expect(isUsableCodexBundle(chatGptBundledCodex, probe)).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it('passes the bundled CLI path through the shared spawn resolver', () => {
+    const invocation = resolveCodexSpawnInvocation(
+      ['--version'],
+      'darwin',
+      () => null,
+      () => chatGptBundledCodex,
+    );
+
+    expect(invocation.command).toBe(chatGptBundledCodex);
+    expect(invocation.args).toEqual(['--version']);
   });
 });

@@ -25,7 +25,6 @@ worker runtime remains the default for now.
 | `POST /api/sessions/init`         | `POST /v1/sessions/start`                   | _(no adapter — clients should call `/v1/sessions/start` directly)_ | native\* |
 | `POST /api/sessions/observations` | `POST /v1/events`                           | `src/server/compat/SessionsObservationsAdapter.ts`   | adapter  |
 | `POST /api/sessions/summarize`    | `POST /v1/sessions/:id/end`                 | `src/server/compat/SessionsSummarizeAdapter.ts`      | adapter  |
-| `GET  /api/sessions/status`       | `GET /v1/sessions/:id`                      | _(no adapter)_                                       | native\* |
 
 \* `native` rows above mark routes whose canonical replacement exists under
 `/v1/*` but no automatic translation is provided. The legacy hook layer is
@@ -53,23 +52,14 @@ replaced by `/v1/info` for Server beta clients.
 | ---------------------------------- | ------------------------------ | ------- | ------------------------------------- |
 | `GET  /api/search`                 | `POST /v1/search`              | _(none)_ | unsupported (legacy GET — see note 1) |
 | `GET  /api/timeline`               | _(none yet)_                   | _(none)_ | unsupported                           |
-| `GET  /api/decisions`              | _(none yet)_                   | _(none)_ | unsupported                           |
-| `GET  /api/changes`                | _(none yet)_                   | _(none)_ | unsupported                           |
-| `GET  /api/how-it-works`           | _(none yet)_                   | _(none)_ | unsupported                           |
 | `GET  /api/search/observations`    | `POST /v1/search`              | _(none)_ | unsupported (legacy shape; new clients use `/v1/search`) |
-| `GET  /api/search/sessions`        | _(none yet)_                   | _(none)_ | unsupported                           |
-| `GET  /api/search/prompts`         | _(none yet)_                   | _(none)_ | unsupported                           |
-| `GET  /api/search/by-concept`      | _(none yet)_                   | _(none)_ | unsupported                           |
 | `GET  /api/search/by-file`         | _(none yet)_                   | _(none)_ | unsupported                           |
-| `GET  /api/search/by-type`         | _(none yet)_                   | _(none)_ | unsupported                           |
 | `GET  /api/context/recent`         | `POST /v1/context`             | _(none)_ | unsupported (legacy GET shape)        |
-| `GET  /api/context/timeline`       | _(none yet)_                   | _(none)_ | unsupported                           |
 | `GET  /api/context/preview`        | _(none yet)_                   | _(none)_ | unsupported                           |
 | `GET  /api/context/inject`         | _(none yet)_                   | _(none)_ | unsupported                           |
 | `POST /api/context/semantic`       | `POST /v1/context`             | _(none)_ | unsupported                           |
 | `GET  /api/onboarding/explainer`   | _(none yet)_                   | _(none)_ | unsupported                           |
 | `GET  /api/timeline/by-query`      | _(none yet)_                   | _(none)_ | unsupported                           |
-| `GET  /api/search/help`            | _(none yet)_                   | _(none)_ | unsupported                           |
 
 > Note 1: legacy `GET /api/search` accepts query-string parameters and
 > returns a denormalized SQLite-shaped result. The Server beta `/v1/search`
@@ -94,13 +84,9 @@ replaced by `/v1/info` for Server beta clients.
 | `POST /api/settings`         | _(none — settings are env vars in server-beta)_ | _(none)_ | unsupported |
 | `GET  /api/mcp/status`       | `GET /v1/info`                 | _(none)_ | unsupported (legacy shape) |
 | `POST /api/mcp/toggle`       | _(none — server-beta MCP is always on)_ | _(none)_ | unsupported |
-| `GET  /api/branch/status`    | _(none yet)_                   | _(none)_ | unsupported |
-| `POST /api/branch/switch`    | _(none yet)_                   | _(none)_ | unsupported |
-| `POST /api/branch/update`    | _(none yet)_                   | _(none)_ | unsupported |
 
 Settings in Server beta are environment variables and the API key surface in
-`api_keys`; there is no mutable user-settings JSON file. The branch routes
-were a worker-specific feature and are not exposed by Server beta.
+`api_keys`; there is no mutable user-settings JSON file.
 
 ## Logs
 

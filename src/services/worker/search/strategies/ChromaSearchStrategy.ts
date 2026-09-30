@@ -3,7 +3,9 @@ import {
   StrategySearchOptions,
   StrategySearchResult,
   SEARCH_CONSTANTS,
+  isCategoryRequested,
   ChromaMetadata,
+  DateRange,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
@@ -12,6 +14,7 @@ import { ChromaSync } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { resolveDateBound } from '../../../../shared/date-bounds.js';
 
 export class ChromaSearchStrategy {
   constructor(
@@ -37,16 +40,18 @@ export class ChromaSearchStrategy {
       limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
       project,
       platformSource,
-      orderBy = 'date_desc'
+      dateRange,
+      orderBy = 'date_desc',
+      ignoreDefaultRecencyWindow = false
     } = options;
 
     if (!query) {
       return this.emptyResult('chroma');
     }
 
-    const searchObservations = searchType === 'all' || searchType === 'observations';
-    const searchSessions = searchType === 'all' || searchType === 'sessions';
-    const searchPrompts = searchType === 'all' || searchType === 'prompts';
+    const searchObservations = isCategoryRequested(searchType, 'observations');
+    const searchSessions = isCategoryRequested(searchType, 'sessions');
+    const searchPrompts = isCategoryRequested(searchType, 'prompts');
 
     const whereFilter = this.buildWhereFilter(searchType, project, platformSource);
 
@@ -54,7 +59,7 @@ export class ChromaSearchStrategy {
 
     return await this.executeChromaSearch(query, whereFilter, {
       searchObservations, searchSessions, searchPrompts,
-      obsType, concepts, files, orderBy, limit, project, platformSource
+      obsType, concepts, files, orderBy, limit, project, platformSource, dateRange, ignoreDefaultRecencyWindow
     });
   }
 
@@ -72,6 +77,8 @@ export class ChromaSearchStrategy {
       limit: number;
       project?: string;
       platformSource?: string;
+      dateRange?: DateRange;
+      ignoreDefaultRecencyWindow: boolean;
     }
   ): Promise<StrategySearchResult> {
     const chromaResults = await this.chromaSync.queryChroma(
@@ -88,7 +95,7 @@ export class ChromaSearchStrategy {
       };
     }
 
-    const recentItems = this.filterByRecency(chromaResults);
+    const recentItems = this.filterByRecency(chromaResults, options.dateRange, options.ignoreDefaultRecencyWindow);
     const categorized = this.categorizeByDocType(recentItems, options);
 
     let observations: ObservationSearchResult[] = [];
@@ -153,7 +160,12 @@ export class ChromaSearchStrategy {
     }
 
     if (project) {
-      filters.push({ project });
+      filters.push({
+        $or: [
+          { project },
+          { merged_into_project: project }
+        ]
+      });
     }
 
     if (platformSource) {
@@ -172,8 +184,20 @@ export class ChromaSearchStrategy {
   private filterByRecency(chromaResults: {
     ids: number[];
     metadatas: ChromaMetadata[];
-  }): Array<{ id: number; meta: ChromaMetadata }> {
-    const cutoff = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+  }, dateRange: DateRange | undefined, ignoreDefaultRecencyWindow: boolean): Array<{ id: number; meta: ChromaMetadata }> {
+    let startEpoch: number | undefined;
+    let endEpoch: number | undefined;
+
+    if (dateRange) {
+      if (dateRange.start) {
+        startEpoch = resolveDateBound(dateRange.start, 'start');
+      }
+      if (dateRange.end) {
+        endEpoch = resolveDateBound(dateRange.end, 'end');
+      }
+    } else if (!ignoreDefaultRecencyWindow) {
+      startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+    }
 
     const metadataByIdMap = new Map<number, ChromaMetadata>();
     for (const meta of chromaResults.metadatas) {
@@ -187,7 +211,9 @@ export class ChromaSearchStrategy {
         id,
         meta: metadataByIdMap.get(id) as ChromaMetadata
       }))
-      .filter(item => item.meta && item.meta.created_at_epoch > cutoff);
+      .filter(item => item.meta && item.meta.created_at_epoch != null
+        && (!startEpoch || item.meta.created_at_epoch >= startEpoch)
+        && (!endEpoch || item.meta.created_at_epoch <= endEpoch));
   }
 
   private categorizeByDocType(

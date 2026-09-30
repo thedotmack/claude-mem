@@ -1,34 +1,44 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
+import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
 
 describe('SettingsDefaultsManager', () => {
   let tempDir: string;
   let settingsPath: string;
-  let prevDataDirEnv: string | undefined;
+  let savedDefaultKeyEnv: Record<string, string | undefined>;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `settings-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     settingsPath = join(tempDir, 'settings.json');
 
-    // The preload tripwire (tests/preload.ts) pins CLAUDE_MEM_DATA_DIR for
-    // the whole run, and loadFromFile applies env overrides on top of file
-    // values — which would make every loadFromFile result diverge from
-    // getAllDefaults()'s hardcoded ~/.claude-mem default. These tests are
-    // about file > defaults behavior on an EXPLICIT settingsPath (no real
-    // data-dir I/O happens here), so drop the env override for their
-    // duration and restore it after.
-    prevDataDirEnv = process.env.CLAUDE_MEM_DATA_DIR;
-    delete process.env.CLAUDE_MEM_DATA_DIR;
+    // loadFromFile applies env overrides on top of file/defaults, so ANY
+    // settings-default key present in process.env makes its result diverge
+    // from getAllDefaults(). On a dev machine this is not just the
+    // CLAUDE_MEM_DATA_DIR pinned by the preload tripwire (tests/preload.ts) —
+    // a running claude-mem install also exports e.g. CLAUDE_MEM_API_TIMEOUT_MS,
+    // which silently broke these tests on contributor boxes while passing in a
+    // clean CI env. These tests cover file > defaults behavior on an EXPLICIT
+    // settingsPath (no real data-dir I/O), so strip EVERY default key from the
+    // env for their duration and restore after — robust to whichever
+    // CLAUDE_MEM_* vars the host happens to export.
+    savedDefaultKeyEnv = {};
+    for (const key of Object.keys(SettingsDefaultsManager.getAllDefaults())) {
+      savedDefaultKeyEnv[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
-    if (prevDataDirEnv === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
-    else process.env.CLAUDE_MEM_DATA_DIR = prevDataDirEnv;
+    for (const [key, value] of Object.entries(savedDefaultKeyEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -52,6 +62,12 @@ describe('SettingsDefaultsManager', () => {
 
         const content = readFileSync(settingsPath, 'utf-8');
         expect(() => JSON.parse(content)).not.toThrow();
+      });
+
+      it('should create the settings file as owner-readable only', () => {
+        if (process.platform === 'win32') return;
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
 
       it('should write pretty-printed JSON (2-space indent)', () => {
@@ -234,6 +250,354 @@ describe('SettingsDefaultsManager', () => {
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
       });
+
+      it('should preserve peer root keys instead of flattening a mixed nested document', () => {
+        const nestedSettings = {
+          theme: 'dark',
+          permissions: { defaultMode: 'auto' },
+          env: {
+            CLAUDE_MEM_MODEL: 'nested-model',
+          },
+        };
+        writeFileSync(settingsPath, JSON.stringify(nestedSettings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.theme).toBe('dark');
+        expect(parsed.permissions).toEqual({ defaultMode: 'auto' });
+        expect(parsed.env.CLAUDE_MEM_MODEL).toBe('nested-model');
+      });
+    });
+
+    // A fresh settings.json is seeded with every default, so installs created
+    // while 'security_alert' was the default have it frozen on disk. Without
+    // this migration a newly-added trigger type never reaches them.
+    describe('Telegram trigger types migration', () => {
+      it('should migrate the exact legacy default to the current default', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe(
+          SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES
+        );
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES.split(',')).toContain('sensitive');
+      });
+
+      it('should persist the migrated trigger types back to the file', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+          CLAUDE_MEM_TELEGRAM_CHAT_ID: '12345',
+        }));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES.split(',')).toContain('sensitive');
+        // Unrelated persisted keys survive the rewrite.
+        expect(parsed.CLAUDE_MEM_TELEGRAM_CHAT_ID).toBe('12345');
+      });
+
+      it('should preserve a customized trigger list', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'bugfix,decision',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('bugfix,decision');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('bugfix,decision');
+      });
+
+      it('should preserve a customized list that merely contains the legacy value', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,security_note',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('security_alert,security_note');
+      });
+
+      it('should leave an empty opt-out list alone', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: '',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('');
+      });
+
+      it('should be idempotent across repeated loads', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+        }));
+
+        const first = SettingsDefaultsManager.loadFromFile(settingsPath);
+        const second = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(second.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe(first.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES);
+      });
+    });
+
+    describe('legacy cloud sync hub URL migration', () => {
+      it('rewrites the pinned workers.dev host to sync.cmem.ai and persists', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync-hub.black-pond-afbb.workers.dev',
+          CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'tok',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.cmem.ai');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.cmem.ai');
+        expect(parsed.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe('tok');
+      });
+
+      it('rewrites even when the stored URL has a trailing slash or http scheme', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'http://sync-hub.black-pond-afbb.workers.dev/',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.cmem.ai');
+      });
+
+      it('leaves a different hub host untouched', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.example.test',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.example.test');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.example.test');
+      });
+    });
+
+    // Every settings.json was seeded with xiaomi/mimo-v2-flash:free, which
+    // OpenRouter has since retired: each observer call 404s and nothing is
+    // remembered (#3659). Only the openrouter.ai tuple is rewritten.
+    describe('retired OpenRouter default model migration', () => {
+      const RETIRED = 'xiaomi/mimo-v2-flash:free';
+      const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+      const CMEM_GATEWAY = 'https://cmem.ai/api/inference/v1';
+
+      function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
+        const warnings: string[] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+        try {
+          return { value: run(), warnings };
+        } finally {
+          console.warn = originalWarn;
+        }
+      }
+
+      function migrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes('retired default'));
+      }
+
+      it('ships a default that is not itself retired', () => {
+        expect(CURRENT).toBe('cohere/north-mini-code:free');
+        expect(CURRENT).not.toBe(RETIRED);
+      });
+
+      // The retired id shipped in all three copies at once; a default changed in
+      // one place only would leave the viewer or openclaw installs on a dead id.
+      it('keeps the viewer and openclaw installer copies of the default in sync', () => {
+        expect(VIEWER_DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+
+        const installer = readFileSync(new URL('../../openclaw/install.sh', import.meta.url), 'utf-8');
+        const installerModels = [
+          // settings defaults and the openrouter provider override
+          ...installer.matchAll(/CLAUDE_MEM_OPENROUTER_MODEL(?::| =) '([^']+)'/g),
+          // completion summary
+          ...installer.matchAll(/provider_display="OpenRouter \(([^)]+)\)"/g),
+        ].map((match) => match[1]);
+        expect(installerModels).toEqual([CURRENT, CURRENT, CURRENT]);
+      });
+
+      it.each([
+        ['blank', { CLAUDE_MEM_OPENROUTER_BASE_URL: '' }],
+        ['missing', {}],
+        ['openrouter.ai', { CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1' }],
+      ])('moves the retired default to the current one once when the base URL is %s', (_label, baseUrl) => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-personal',
+          CLAUDE_MEM_OPENROUTER_MODEL: RETIRED,
+          ...baseUrl,
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+
+        expect(first.value.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        // The rest of the tuple survives the rewrite.
+        expect(parsed.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('sk-or-personal');
+        expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
+        const [logLine, ...extra] = migrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`${RETIRED} to ${CURRENT}`);
+        expect(logLine).toContain(settingsPath);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath));
+        expect(second.value.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        expect(migrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it('never touches a cmem gateway tuple', () => {
+        // A real gateway tuple (cmem-observer) and the retired id behind the
+        // gateway URL: the base-URL gate alone must keep both unwritten.
+        for (const model of ['cmem-observer', RETIRED]) {
+          const raw = JSON.stringify({
+            CLAUDE_MEM_PROVIDER: 'openrouter',
+            CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_test_key_value',
+            CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_GATEWAY,
+            CLAUDE_MEM_OPENROUTER_MODEL: model,
+          });
+          writeFileSync(settingsPath, raw);
+
+          const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+          expect(value.CLAUDE_MEM_OPENROUTER_MODEL).toBe(model);
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+          expect(migrationWarnings(warnings)).toEqual([]);
+        }
+      });
+
+      it('never rewrites the staged CLAUDE_MEM_PRO_MEMORY_MODEL', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_MODEL: RETIRED,
+          CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+          CLAUDE_MEM_PRO_MEMORY_KEY: 'cm_pro_staged_key_value',
+          CLAUDE_MEM_PRO_MEMORY_BASE_URL: CMEM_GATEWAY,
+          CLAUDE_MEM_PRO_MEMORY_MODEL: RETIRED,
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        expect(result.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe(RETIRED);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe(RETIRED);
+        expect(parsed.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe(CMEM_GATEWAY);
+      });
+
+      it.each([
+        'https://api.deepseek.com',
+        'http://localhost:1234/v1',
+        'https://openrouter.ai.evil.example/v1',
+        'https://gateway.example.com/proxy/openrouter.ai/v1',
+      ])('leaves the model alone on the custom endpoint %s', (baseUrl) => {
+        const raw = JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_BASE_URL: baseUrl,
+          CLAUDE_MEM_OPENROUTER_MODEL: RETIRED,
+        });
+        writeFileSync(settingsPath, raw);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe(RETIRED);
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+      });
+
+      it.each([
+        ['a different model', 'anthropic/claude-haiku-4.5'],
+        ['a fallback list led by the retired id', [RETIRED, 'vendor/backup-model:free']],
+        ['a comma list led by the retired id', `${RETIRED},vendor/backup-model:free`],
+      ])('leaves %s chosen by the user untouched', (_label, model) => {
+        const raw = JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+          CLAUDE_MEM_OPENROUTER_MODEL: model,
+        });
+        writeFileSync(settingsPath, raw);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toEqual(model as string);
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+      });
+
+      it('keeps the peer root keys of a nested settings file', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          env: { CLAUDE_MEM_OPENROUTER_MODEL: RETIRED },
+          hooks: { SessionStart: [] },
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.env.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
+        expect(parsed.hooks).toEqual({ SessionStart: [] });
+      });
+    });
+
+    // loadFromFile only carries keys declared in DEFAULTS, so before the Pro
+    // sign-in keys were declared, an installer-written settings.json lost
+    // them on every load (the round-trip-loss gap fixed by the install-first
+    // login flow plan, Phase 4).
+    describe('CMEM Pro sign-in keys round-trip', () => {
+      const proKeys = {
+        CLAUDE_MEM_PRO_TRIAL_EMAIL: 'dev@example.com',
+        CLAUDE_MEM_PRO_TRIAL_AT: '2026-08-26T12:00:00.000Z',
+        CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
+        CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '2026-09-02T12:00:00.000Z',
+        CLAUDE_MEM_PRO_PLAN: 'trial',
+        CLAUDE_MEM_PRO_MEMORY_KEY: 'cm_pro_staged_test_key',
+        CLAUDE_MEM_PRO_MEMORY_BASE_URL: 'https://cmem.ai/api/inference/v1',
+        CLAUDE_MEM_PRO_MEMORY_MODEL: 'cmem-observer',
+      };
+
+      it('should surface all Pro account and staged-memory keys from settings.json', () => {
+        writeFileSync(settingsPath, JSON.stringify(proKeys));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('dev@example.com');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_AT).toBe('2026-08-26T12:00:00.000Z');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_ENDS_AT).toBe('2026-09-02T12:00:00.000Z');
+        expect(result.CLAUDE_MEM_PRO_PLAN).toBe('trial');
+        expect(result.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('cm_pro_staged_test_key');
+        expect(result.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe('https://cmem.ai/api/inference/v1');
+        expect(result.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe('cmem-observer');
+      });
+
+      it('should default all Pro account and staged-memory keys to empty strings', () => {
+        const defaults = SettingsDefaultsManager.getAllDefaults();
+
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_AT).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_ENDS_AT).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_PLAN).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe('');
+      });
+
+      it('should keep the Pro keys on disk when loading rewrites the file (nested-schema migration)', () => {
+        writeFileSync(settingsPath, JSON.stringify({ env: proKeys }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('dev@example.com');
+        expect(parsed.CLAUDE_MEM_PRO_PLAN).toBe('trial');
+        expect(parsed.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('cm_pro_staged_test_key');
+      });
     });
 
     describe('edge cases', () => {
@@ -267,6 +631,27 @@ describe('SettingsDefaultsManager', () => {
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(result).toBeDefined();
+      });
+
+      it('should read BOM-prefixed flat settings through install helpers', () => {
+        writeFileSync(settingsPath, '\uFEFF' + JSON.stringify({
+          env: {
+            CLAUDE_MEM_PROVIDER: 'gemini',
+          },
+        }));
+
+        const result = readFlatSettings(settingsPath);
+
+        expect(result?.CLAUDE_MEM_PROVIDER).toBe('gemini');
+      });
+
+      it('should create defaults without leaving atomic temp files behind', () => {
+        expect(existsSync(settingsPath)).toBe(false);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(existsSync(settingsPath)).toBe(true);
+        expect(readdirSync(tempDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
       });
     });
   });
@@ -328,6 +713,21 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
     });
+
+    // #2753 — new key: empty by default (fall through to
+    // process.env.CLAUDE_CONFIG_DIR/default in oauth-token.ts's
+    // resolveEffectiveClaudeConfigDir), overridable via file or env like any
+    // other setting (the generic per-key loops in loadFromFile/
+    // applyEnvOverrides need no key-specific code).
+    it('CLAUDE_MEM_CLAUDE_CONFIG_DIR defaults to empty string', () => {
+      expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('');
+    });
+
+    it('cloud sync content flush knobs default to 40 ops / 90s', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE).toBe('40');
+      expect(defaults.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS).toBe('90000');
+    });
   });
 
   describe('get', () => {
@@ -343,16 +743,6 @@ describe('SettingsDefaultsManager', () => {
       const expectedPort = 37700 + ((process.getuid?.() ?? 77) % 100);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_CONTEXT_OBSERVATIONS')).toBe(50);
-    });
-  });
-
-  describe('getBool', () => {
-    it('should return true for "true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')).toBe(true);
-    });
-
-    it('should return false for non-"true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')).toBe(false);
     });
   });
 
@@ -401,6 +791,28 @@ describe('SettingsDefaultsManager', () => {
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('99999');
+    });
+
+    // #2753 — CLAUDE_MEM_CLAUDE_CONFIG_DIR is overridable via the file and
+    // via CLAUDE_MEM_CLAUDE_CONFIG_DIR env, same as any other key (no
+    // key-specific code was added — the generic loops already handle it).
+    it('CLAUDE_MEM_CLAUDE_CONFIG_DIR: file value is honored, and env overrides the file', () => {
+      const originalConfigDirEnv = process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
+      try {
+        delete process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CLAUDE_CONFIG_DIR: '/from/file' }));
+
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('/from/file');
+
+        process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = '/from/env';
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('/from/env');
+      } finally {
+        if (originalConfigDirEnv === undefined) {
+          delete process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
+        } else {
+          process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = originalConfigDirEnv;
+        }
+      }
     });
 
     it('should use file setting when env var is not set', () => {
@@ -458,5 +870,79 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_WORKER_PORT).toBe(expectedDefault); 
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('33333'); 
     });
+  });
+
+  describe('CLAUDE_MEM_WORKER_HOST localhost normalization (#2992)', () => {
+    // On modern Windows resolvers 'localhost' resolves IPv6-first while
+    // server.listen(port, 'localhost') binds ::1 only, so a 'localhost'
+    // host value can put the hook client and the worker on different
+    // loopback families. The manager pins it to the IPv4 loopback.
+    let originalHostEnv: string | undefined;
+
+    beforeEach(() => {
+      originalHostEnv = process.env.CLAUDE_MEM_WORKER_HOST;
+      delete process.env.CLAUDE_MEM_WORKER_HOST;
+    });
+
+    afterEach(() => {
+      if (originalHostEnv === undefined) {
+        delete process.env.CLAUDE_MEM_WORKER_HOST;
+      } else {
+        process.env.CLAUDE_MEM_WORKER_HOST = originalHostEnv;
+      }
+    });
+
+    it('should normalize a file value of localhost to 127.0.0.1', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_HOST: 'localhost' }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_HOST).toBe('127.0.0.1');
+    });
+
+    it('should normalize an env override of localhost to 127.0.0.1', () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = 'localhost';
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_HOST).toBe('127.0.0.1');
+    });
+
+    it('should normalize localhost through get() when set via env', () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = 'localhost';
+
+      expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST')).toBe('127.0.0.1');
+    });
+
+    it('should normalize when env overrides are skipped', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_HOST: 'localhost' }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+      expect(result.CLAUDE_MEM_WORKER_HOST).toBe('127.0.0.1');
+    });
+
+    it('should pass through non-localhost hosts unchanged', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_HOST: '0.0.0.0' }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_HOST).toBe('0.0.0.0');
+    });
+
+    it('should not rewrite the settings file when normalizing', () => {
+      const content = JSON.stringify({ CLAUDE_MEM_WORKER_HOST: 'localhost' }, null, 2);
+      writeFileSync(settingsPath, content);
+
+      SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(readFileSync(settingsPath, 'utf-8')).toBe(content);
+    });
+  });
+});
+
+describe('Chroma embedding function default', () => {
+  it('keeps chroma-mcp\'s own default so existing installs are unchanged', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('default');
   });
 });

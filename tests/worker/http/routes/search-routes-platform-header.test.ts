@@ -69,31 +69,17 @@ describe('SearchRoutes platform-source headers', () => {
     const search = mock(async () => ({ route: 'search' }));
     const timeline = mock(async () => ({ route: 'timeline' }));
     const searchObservations = mock(async () => ({ route: 'observations' }));
-    const searchSessions = mock(async () => ({ route: 'sessions' }));
-    const searchUserPrompts = mock(async () => ({ route: 'prompts' }));
-    const decisions = mock(async () => ({ route: 'decisions' }));
-    const changes = mock(async () => ({ route: 'changes' }));
-    const howItWorks = mock(async () => ({ route: 'how-it-works' }));
     const getRecentContext = mock(async () => ({ route: 'recent-context' }));
-    const getContextTimeline = mock(async () => ({ route: 'context-timeline' }));
     const getTimelineByQuery = mock(async () => ({ route: 'timeline-by-query' }));
-    const findByConcept = mock(async () => ({ results: { observations: [], sessions: [], prompts: [] } }));
     const findByFile = mock(async () => ({ observations: [], sessions: [], usedChroma: false }));
-    const findByType = mock(async () => ({ results: { observations: [], sessions: [], prompts: [] } }));
 
     const routes = new SearchRoutes({
       search,
       timeline,
       searchObservations,
-      searchSessions,
-      searchUserPrompts,
-      decisions,
-      changes,
-      howItWorks,
       getRecentContext,
-      getContextTimeline,
       getTimelineByQuery,
-      getOrchestrator: () => ({ findByConcept, findByFile, findByType }),
+      getOrchestrator: () => ({ findByFile }),
       getFormatter: () => ({}),
     } as any);
     const handlers = captureGetHandlers(routes);
@@ -102,13 +88,7 @@ describe('SearchRoutes platform-source headers', () => {
       ['/api/search', search, { query: 'needle' }],
       ['/api/timeline', timeline, { query: 'needle' }],
       ['/api/search/observations', searchObservations, { query: 'needle' }],
-      ['/api/search/sessions', searchSessions, { query: 'needle' }],
-      ['/api/search/prompts', searchUserPrompts, { query: 'needle' }],
-      ['/api/decisions', decisions, { project: 'worktree' }],
-      ['/api/changes', changes, { project: 'worktree' }],
-      ['/api/how-it-works', howItWorks, { project: 'worktree' }],
       ['/api/context/recent', getRecentContext, { project: 'worktree', limit: '3' }],
-      ['/api/context/timeline', getContextTimeline, { anchor: '42' }],
       ['/api/timeline/by-query', getTimelineByQuery, { query: 'needle' }],
     ];
 
@@ -138,32 +118,6 @@ describe('SearchRoutes platform-source headers', () => {
     expect(findByFile).toHaveBeenCalledWith(
       'src/search.ts',
       expect.objectContaining({ filePath: 'src/search.ts', platformSource: 'cursor' })
-    );
-
-    const byConceptResponse = makeResponse();
-    callHandler(handlers, '/api/search/by-concept', makeRequest({
-      path: '/api/search/by-concept',
-      query: { concept: 'auth' },
-      headers: { 'x-platform-source': 'Cursor' },
-    }), byConceptResponse.res);
-    await flushAsyncHandlers();
-
-    expect(findByConcept).toHaveBeenCalledWith(
-      'auth',
-      expect.objectContaining({ concept: 'auth', platformSource: 'cursor' })
-    );
-
-    const byTypeResponse = makeResponse();
-    callHandler(handlers, '/api/search/by-type', makeRequest({
-      path: '/api/search/by-type',
-      query: { type: 'decision' },
-      headers: { 'x-platform-source': 'Cursor' },
-    }), byTypeResponse.res);
-    await flushAsyncHandlers();
-
-    expect(findByType).toHaveBeenCalledWith(
-      'decision',
-      expect.objectContaining({ type: 'decision', platformSource: 'cursor' })
     );
   });
 
@@ -259,5 +213,36 @@ describe('SearchRoutes platform-source headers', () => {
     } finally {
       store.close();
     }
+  });
+
+  it('does not crash on a hostile deeply-nested or self-referential platformSource', async () => {
+    const search = mock(async () => ({ route: 'search' }));
+    const routes = new SearchRoutes({ search } as any);
+    const handlers = captureGetHandlers(routes);
+
+    // Untrusted query input: a nested array past the coercion depth cap and a
+    // self-referential one. The old recursive platform-source coercion
+    // (BaseRouteHandler.firstString) recursed on value[0] with no bound — the
+    // cyclic case looped forever and overflowed the stack ("RangeError: Maximum
+    // call stack size exceeded"). The request must instead coerce to the default
+    // source and reach the handler, never throwing.
+    let nested: unknown = 'cursor';
+    for (let i = 0; i < 12; i++) nested = [nested];
+    const cyclic: unknown[] = [];
+    cyclic[0] = cyclic;
+
+    for (const platformSource of [nested, cyclic]) {
+      const response = makeResponse();
+      expect(() => callHandler(handlers, '/api/search', makeRequest({
+        path: '/api/search',
+        query: { query: 'needle', platformSource },
+      }), response.res)).not.toThrow();
+      await flushAsyncHandlers();
+    }
+
+    // Both requests reached the search handler. With the old recursive
+    // coercion the cyclic input overflowed the stack inside platform-source
+    // parsing — before search() was ever called — so this would be 1, not 2.
+    expect(search).toHaveBeenCalledTimes(2);
   });
 });

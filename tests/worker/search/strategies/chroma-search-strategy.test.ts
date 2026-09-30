@@ -104,6 +104,26 @@ describe('ChromaSearchStrategy', () => {
       expect(result.strategy).toBe('chroma');
     });
 
+    it('should preserve requested date ordering in SQLite hydration', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        orderBy: 'date_asc',
+        limit: 10
+      };
+
+      await strategy.search(options);
+
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+      expect(mockSessionStore.getSessionSummariesByIds).toHaveBeenCalledWith([2], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+      expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalledWith([3], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+    });
+
     it('should hydrate observations from SQLite', async () => {
       const options: StrategySearchOptions = {
         query: 'test query',
@@ -214,7 +234,7 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { project: 'my-project' }
+        { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
       );
     });
 
@@ -230,7 +250,7 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $and: [{ doc_type: 'observation' }, { project: 'my-project' }] }
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] }
       );
     });
 
@@ -262,7 +282,7 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $and: [{ doc_type: 'observation' }, { project: 'my-project' }, { platform_source: 'cursor' }] }
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] }
       );
     });
 
