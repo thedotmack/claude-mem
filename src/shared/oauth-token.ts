@@ -436,7 +436,9 @@ function parseKeychainPayload(raw: string): OAuthTokenResult {
   if (isExpired(effectiveExpiresAt)) {
     return {
       kind: 'expired',
-      reason: 'Claude Desktop OAuth token has expired — re-login via Claude Desktop to refresh',
+      // The Claude Code CLI writes and refreshes this entry (`claude auth
+      // login`, /login); re-logging into Claude Desktop never repairs it (#4150).
+      reason: 'The Claude Code login in the credential store has expired',
       expiresAt: effectiveExpiresAt,
     };
   }
@@ -524,7 +526,7 @@ export async function readClaudeOAuthToken(
     if (isExpired(effectiveExpiresAt)) {
       return {
         kind: 'expired',
-        reason: 'CLAUDE_CODE_OAUTH_TOKEN env var expired (per sidecar/JWT) — re-login via Claude Desktop',
+        reason: 'CLAUDE_CODE_OAUTH_TOKEN env var expired (per sidecar/JWT)',
         expiresAt: effectiveExpiresAt,
       };
     }
@@ -543,7 +545,7 @@ export async function readClaudeOAuthToken(
 /**
  * Marker file pattern: when a recent spawn returned `expired`, write a marker
  * at `${DATA_DIR}/oauth-stale.marker` so the session-start hook can surface a
- * clear "re-login via Claude Desktop" message to the user. The marker is
+ * clear "run /login in Claude Code" message to the user. The marker is
  * cleared once the token is refreshed and a `present` result is observed.
  */
 export function writeStaleMarker(reason: string): void {

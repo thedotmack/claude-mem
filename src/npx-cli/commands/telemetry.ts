@@ -72,6 +72,7 @@ const COLLECTED_FIELDS = [
   'consecutive_invalid_outputs   legacy unusable-output counter',
   'respawn_triggered      legacy recovery flag for old invalid-output restarts',
   'abort_reason     idle / shutdown / overflow / restart_guard / quota / auth / provider_switch / none',
+  'top_abort_reason the most common abort_reason in a session rollup (same enum)',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',
   '                 worker uptime in whole seconds (previous run / at stop)',

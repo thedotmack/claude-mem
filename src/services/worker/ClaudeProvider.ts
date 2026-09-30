@@ -347,10 +347,12 @@ export class ClaudeProvider {
       // monitors, but the id arrives on the SDK's first system frame — before
       // any output is classified — so a spawn that only ever returns auth or
       // quota prose logged "captured" and looked healthy (#4150). Hold the line
-      // here and emit it once real output has been handed to the parser.
+      // here and emit it once the parser has accepted real output. Signed-out,
+      // quota and transport prose return normally from the parser but pause
+      // the generator (session.abortReason), so they keep it held.
       let pendingMemoryIdLog: { message: string; memorySessionId: string; previousId: string | null } | null = null;
       const flushPendingMemoryIdLog = (): void => {
-        if (!pendingMemoryIdLog) return;
+        if (!pendingMemoryIdLog || session.abortReason) return;
         const { message, memorySessionId, previousId } = pendingMemoryIdLog;
         pendingMemoryIdLog = null;
         logger.info('SESSION', message, {

@@ -606,19 +606,20 @@ export class SessionRoutes extends BaseRouteHandler {
           // the user is told nothing.
           recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
         }
-        // An auth failure surfaces the same way quota does: the SDK child comes
-        // back signed out, ResponseProcessor resets the batch to pending and
-        // aborts with 'auth:…' rather than throwing, so it reaches neither
-        // recordObserverFailure call site in the .catch above. Without this the
-        // observer-health ledger stays green through a full auth outage — every
-        // observation is dropped, yet /api/health and the session-start warning
-        // report healthy (#4150). Record it here, where the reason is consumed.
-        if (normalizedReason === 'auth') {
-          const authMessage = 'Provider rejected the observer credentials (signed out)';
+        // A signed-out Claude observer answers with the CLI's own prose ("Not
+        // logged in · Please run /login"). ResponseProcessor resets the batch to
+        // pending and aborts with 'auth:observer_text' rather than throwing, so
+        // it never reaches the .catch above. Without this the observer-health
+        // ledger stays green through a full auth outage — every observation is
+        // dropped, yet /api/health and the session-start warning report healthy
+        // (#4150). Only that Claude prose path is booked here: a classified auth
+        // error is booked by the .catch with the provider's own words, and the
+        // cmem gateway's key_invalid is the trial-expiry fallback, not an outage.
+        if (reason === 'auth:observer_text' && provider === 'claude') {
           recordObserverFailure(provider, {
-            message: authMessage,
+            message: 'Claude Code reported the observer as signed out',
             kind: 'auth',
-            action: 'Re-login to Claude Code with /login to refresh the observer credentials',
+            action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
           });
         }
         if (reason !== null) {

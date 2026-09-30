@@ -102,7 +102,7 @@ export const contextHandler: EventHandler = {
       // (keychain service "Claude Code-credentials", see oauth-token.ts), not
       // Claude Desktop. Point the remedy at the CLI so the user runs the right
       // login (#4150).
-      const hint = `[claude-mem] Claude Code OAuth token is stale: ${staleReason}\nPlease re-login to Claude Code with /login to refresh the token.`;
+      const hint = `[claude-mem] Claude Code OAuth token is stale: ${staleReason}\nRun /login in Claude Code (or \`claude auth login\` in a terminal) to refresh it.`;
       additionalContext = additionalContext
         ? `${hint}\n\n${additionalContext}`
         : hint;
