@@ -58,8 +58,8 @@ export type BackfillOutcome = 'completed' | BackfillAbortReason;
 /**
  * Outcome of one backfillKind() pass (#4069). `writtenDocs` counts documents
  * that actually landed in Chroma — not rows planned — and `emptyRows` counts
- * rows that produced no indexable content and were drained instead of being
- * reported missing on every sweep.
+ * rows with nothing to index (no title and no body), which are drained instead
+ * of being reported missing on every sweep.
  */
 export interface BackfillKindResult {
   writtenDocs: number;
@@ -157,6 +157,15 @@ function parseStringListField(
  */
 function shutdownBegan(): boolean {
   return !ChromaMcpManager.getInstance().acceptsMutations();
+}
+
+/**
+ * Title and subtitle as one searchable text, or '' when the row has neither.
+ * 'Untitled' is only the metadata placeholder for a missing title.
+ */
+function observationTitleText(obs: Pick<StoredObservation, 'title' | 'subtitle'>): string {
+  const title = obs.title?.trim() === 'Untitled' ? '' : obs.title?.trim() ?? '';
+  return [title, obs.subtitle?.trim() ?? ''].filter(part => part.length > 0).join('\n');
 }
 
 export class ChromaSync {
@@ -279,6 +288,21 @@ export class ChromaSync {
         metadata: { ...baseMetadata, field_type: 'fact', fact_index: index }
       });
     });
+
+    // An observation with no narrative, text or facts still has a title. It
+    // used to produce no document at all, so it was never searchable while the
+    // watermark moved past it (#4069: over a third of one host's gap). Index
+    // its title and subtitle as one document instead.
+    if (documents.length === 0) {
+      const titleText = observationTitleText(obs);
+      if (titleText) {
+        documents.push({
+          id: `obs_${obs.id}_title`,
+          document: titleText,
+          metadata: { ...baseMetadata, field_type: 'title' }
+        });
+      }
+    }
 
     return documents;
   }
@@ -906,9 +930,10 @@ export class ChromaSync {
     for (let rowIndex = 0; rowIndex < rowsWithDocs.length; rowIndex += 1) {
       const { row, docs } = rowsWithDocs[rowIndex];
       if (docs.length === 0) {
-        // Nothing indexable in this row (e.g. a title-only observation):
-        // drain it so it stops being reported missing on every sweep and
-        // advance the watermark past it. It is vacuously synced (#4069).
+        // Nothing to index at all: no title and no body (a title-only
+        // observation still gets its title document). Drain the row so it
+        // stops being reported missing on every sweep; it is vacuously synced
+        // and counted in the completion log (#4069).
         ChromaSyncState.clearPending(backfillProject, kind, [row.id]);
         ChromaSyncState.bump(backfillProject, kind, row.id);
         emptyRows += 1;
@@ -997,11 +1022,43 @@ export class ChromaSync {
     return { writtenDocs, emptyRows, abortReason: null };
   }
 
+  /**
+   * One-time recovery (#4069). Before title documents existed, an observation
+   * with no narrative, text or facts produced no document while the watermark
+   * still moved past it, so it is neither indexed nor pending. Mark every such
+   * row at or below the watermark pending, once per project, so this backfill
+   * indexes its title. Rows above the watermark are picked up anyway.
+   */
+  private requeueTitleOnlyObservationsOnce(db: SessionStore, project: string, watermark: number): void {
+    if (ChromaSyncState.isTitleOnlyRequeued(project)) {
+      return;
+    }
+    const candidates = db.db.prepare(`
+      SELECT id, title, subtitle, facts
+      FROM observations
+      WHERE project = ? AND id <= ?
+        AND COALESCE(narrative, '') = '' AND COALESCE(text, '') = ''
+    `).all(project, watermark) as Array<Pick<StoredObservation, 'id' | 'title' | 'subtitle' | 'facts'>>;
+    const titleOnlyIds = candidates
+      .filter(row => observationTitleText(row) && parseStringListField(row.facts, 'facts', row.id).length === 0)
+      .map(row => row.id);
+
+    ChromaSyncState.markPending(project, 'observations', titleOnlyIds);
+    ChromaSyncState.markTitleOnlyRequeued(project);
+    if (titleOnlyIds.length > 0) {
+      logger.info('CHROMA_SYNC', 'Requeued title-only observations that earlier versions never indexed', {
+        project,
+        count: titleOnlyIds.length
+      });
+    }
+  }
+
   private async backfillObservations(
     db: SessionStore,
     backfillProject: string,
     watermark: number
   ): Promise<BackfillKindResult> {
+    this.requeueTitleOnlyObservationsOnce(db, backfillProject, watermark);
     const pendingIds = ChromaSyncState.getPending(backfillProject, 'observations');
     const observations = db.db.prepare(`
       SELECT

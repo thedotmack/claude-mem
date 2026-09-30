@@ -57,6 +57,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { logger } from '../../../src/utils/logger.js';
 
 afterAll(() => {
@@ -96,6 +97,12 @@ function makeStoreFromRows(project: string, observationRows: ReturnType<typeof m
       prepare(query: string) {
         return {
           all: (...params: Array<string | number>) => {
+            // The one-time title-only requeue: bodiless rows at or below the watermark.
+            if (query.includes("COALESCE(narrative, '') = ''")) {
+              const watermark = Number(params[1] ?? 0);
+              return observationRows.filter(row => row.id <= watermark && !row.narrative && !row.text);
+            }
+
             if (query.includes('SELECT id') && query.includes('FROM observations') && !query.includes('LEFT JOIN')) {
               return observationRows.map(row => ({ id: row.id }));
             }
@@ -658,11 +665,11 @@ describe('ChromaSync watermark gap persistence', () => {
   });
 });
 
-describe('ChromaSync empty-row drain and truthful backfill outcomes (#4069)', () => {
-  const project = `empty-row-${Date.now()}`;
+describe('ChromaSync title-only rows and truthful backfill outcomes (#4069)', () => {
+  const project = `title-only-${Date.now()}`;
 
   beforeEach(() => {
-    process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-emptyrow-'));
+    process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-title-only-'));
     existingObservationIds = new Set<number>();
     acceptingMutations = true;
     createCollectionCalls = 0;
@@ -672,25 +679,81 @@ describe('ChromaSync empty-row drain and truthful backfill outcomes (#4069)', ()
     ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
   });
 
-  function emptyRow(id: number) {
-    // Title-only observation: title lives in metadata, formats to zero documents.
-    return { ...makeObservationRow(id, project), narrative: null, text: null, facts: '[]' };
+  function titleOnlyRow(id: number, subtitle: string | null = null) {
+    return { ...makeObservationRow(id, project), narrative: null, text: null, facts: '[]', subtitle };
   }
 
-  it('drains rows with no indexable content instead of reporting them missing forever', async () => {
-    const store = makeStoreFromRows(project, [emptyRow(1), emptyRow(2)]);
+  function emptyRow(id: number) {
+    return { ...titleOnlyRow(id), title: null as unknown as string };
+  }
+
+  it('indexes a title-only observation as one title document and advances the watermark', async () => {
+    const sync = new ChromaSync(project);
+
+    expect(await sync.ensureBackfilled(project, makeStoreFromRows(project, [titleOnlyRow(1, 'the subtitle')])))
+      .toBe('completed');
+
+    expect(addDocumentPayloads).toHaveLength(1);
+    expect(addDocumentPayloads[0].ids).toEqual(['obs_1_title']);
+    expect(addDocumentPayloads[0].documents).toEqual(['Observation 1\nthe subtitle']);
+    expect(addDocumentPayloads[0].metadatas[0]).toMatchObject({ field_type: 'title', sqlite_id: 1 });
+    expect(ChromaSyncState.get(project).observations).toBe(1);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('indexes a title-only observation on the live path too', async () => {
+    const sync = new ChromaSync(project);
+
+    await sync.syncObservation(5, 'mem-5', project, {
+      type: 'discovery',
+      title: 'Only a title',
+      subtitle: null,
+      facts: [],
+      narrative: null,
+      concepts: [],
+      files_read: [],
+      files_modified: [],
+    } as any, 5, 1_700_000_000_005, 'claude');
+
+    expect(addDocumentCalls.flat()).toEqual(['obs_5_title']);
+    expect(ChromaSyncState.get(project).observations).toBe(5);
+  });
+
+  it('drains rows with no title and no body, and counts them', async () => {
+    const infoSpy = spyOn(logger, 'info');
+    try {
+      const sync = new ChromaSync(project);
+
+      expect(await sync.ensureBackfilled(project, makeStoreFromRows(project, [emptyRow(1), emptyRow(2)])))
+        .toBe('completed');
+
+      expect(addDocumentCalls).toEqual([]);
+      expect(ChromaSyncState.get(project).observations).toBe(2);
+      expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+      const completion = infoSpy.mock.calls.find(([, message]) => message === 'Smart backfill complete');
+      expect(completion?.[2]).toMatchObject({ emptyRows: 2 });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('requeues title-only rows an older version skipped below the watermark, once', async () => {
+    // An older version advanced the watermark to 3 while writing nothing for
+    // title-only row 2: it is neither indexed nor pending.
+    ChromaSyncState.replace(project, { observations: 3, summaries: 0, prompts: 0, pending: {} });
+    const rows = [makeObservationRow(1, project), titleOnlyRow(2), makeObservationRow(3, project)];
+    const store = makeStoreFromRows(project, rows);
     const sync = new ChromaSync(project);
 
     expect(await sync.ensureBackfilled(project, store)).toBe('completed');
-    // Nothing written — but the rows are drained, not left pending.
-    expect(addDocumentCalls.length).toBe(0);
-    expect(ChromaSyncState.get(project).observations).toBe(2);
-    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
 
-    // A second sweep finds nothing to do and reports nothing missing.
+    expect(addDocumentCalls).toEqual([['obs_2_title']]);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+    expect(ChromaSyncState.isTitleOnlyRequeued(project)).toBe(true);
+
+    // The requeue runs once per project, not on every sweep.
     expect(await sync.ensureBackfilled(project, store)).toBe('completed');
-    expect(addDocumentCalls.length).toBe(0);
-    expect(ChromaSyncState.get(project).observations).toBe(2);
+    expect(addDocumentCalls).toEqual([['obs_2_title']]);
   });
 
   it('reports write_failures on repeated write failures without advancing the watermark', async () => {
@@ -704,5 +767,72 @@ describe('ChromaSync empty-row drain and truthful backfill outcomes (#4069)', ()
     // Nothing landed: the watermark must not advance past unwritten rows.
     expect(ChromaSyncState.get(project).observations).toBe(0);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 3]);
+  });
+
+  it('keeps one project\'s write failures from stopping another project running alongside it', async () => {
+    // Several projects share one ChromaSync instance during a sweep, so the
+    // abort must not live on the instance.
+    const failing = `${project}-failing`;
+    ChromaSyncState.replace(failing, { observations: 0, summaries: 0, prompts: 0, pending: {} });
+    const sync = new ChromaSync('claude-mem') as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string; metadata: { project?: unknown } }>) => Promise<number>;
+    };
+    sync.addDocuments = async (documents) => (documents[0]?.metadata.project === failing ? 0 : documents.length);
+
+    // The healthy project has more rows than the failing one needs to give up,
+    // so it is still running when the other project aborts.
+    const [failed, completed] = await Promise.all([
+      sync.ensureBackfilled(failing, makeStoreFromRows(failing, [1, 2, 3].map(id => makeObservationRow(id, failing)))),
+      sync.ensureBackfilled(project, makeStoreFromRows(project, [1, 2, 3, 4, 5, 6].map(id => makeObservationRow(id, project)))),
+    ]);
+
+    expect(failed).toBe('write_failures');
+    expect(completed).toBe('completed');
+    expect(ChromaSyncState.get(project).observations).toBe(6);
+  });
+});
+
+describe('ChromaSync backfill project enumeration (#4069)', () => {
+  it('backfills projects that only have summaries, only prompts, or an empty project name', async () => {
+    process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-enumeration-'));
+    // An existing state file skips the one-time bootstrap from Chroma.
+    ChromaSyncState.replace('enumeration-seed', { observations: 0, summaries: 0, prompts: 0 });
+    acceptingMutations = true;
+
+    const store = new SessionStore(':memory:');
+    const seen: string[] = [];
+    const ensureSpy = spyOn(ChromaSync.prototype, 'ensureBackfilled').mockImplementation(async (project: string) => {
+      seen.push(project);
+      return 'completed';
+    });
+    const observation = {
+      type: 'discovery', title: 'A title', subtitle: null, facts: [], narrative: 'A narrative',
+      concepts: [], files_read: [], files_modified: [],
+    };
+    function session(contentSessionId: string, project: string, memorySessionId: string): void {
+      store.updateMemorySessionId(store.createSDKSession(contentSessionId, project, 'first prompt'), memorySessionId);
+    }
+
+    try {
+      session('content-obs', 'obs-only', 'mem-obs');
+      store.storeObservation('mem-obs', 'obs-only', observation);
+      // The summary's project differs from its session's, so only session_summaries names it.
+      session('content-sum', 'summary-session', 'mem-sum');
+      store.storeSummary('mem-sum', 'summary-only', {
+        request: 'r', investigated: 'i', learned: 'l', completed: 'c', next_steps: 'n', notes: null,
+      });
+      // Only a session-joined prompt names this project.
+      session('content-prompt', 'prompt-only', 'mem-prompt');
+      store.saveUserPrompt('content-prompt', 1, 'a prompt');
+      session('content-empty', 'empty-session', 'mem-empty');
+      store.storeObservation('mem-empty', '', observation);
+
+      expect(await ChromaSync.backfillAllProjects(store)).toBe(true);
+
+      expect(seen).toEqual(expect.arrayContaining(['obs-only', 'summary-only', 'prompt-only', '']));
+    } finally {
+      ensureSpy.mockRestore();
+      store.close();
+    }
   });
 });
