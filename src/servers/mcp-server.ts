@@ -324,8 +324,7 @@ const handleObservationSearch = wrapHandler('observation_search', async (args: O
 interface ObservationContextArgs {
   projectId?: string;
   // Optional: omit for "recent" (recency-ordered) context instead of a
-  // relevance-ranked search. See plans/2026-07-13-session-start-context-
-  // injection-server-mode.md / #2991.
+  // relevance-ranked search (plan-24 step 4, #2991).
   query?: string;
   limit?: number;
   platformSource?: string | null;
@@ -678,7 +677,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         projectId: { type: 'string' },
         query: { type: 'string', description: 'Optional search query. Omit for recency-ordered recent context.' },
         platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
-        limit: { type: 'number', description: 'Max observations (default 10, max 50)' },
+        limit: { type: 'number', description: 'Max observations (default 10 with a query, 50 without; max 200)' },
       },
       additionalProperties: false,
     },

@@ -95,9 +95,8 @@ describe('MCP tool inputSchema declarations', () => {
 
   it('observation_context declares query as optional (recency mode when omitted) and exposes a limit cap', async () => {
     // query became optional alongside SessionStart server-runtime support
-    // (plans/2026-07-13-session-start-context-injection-server-mode.md,
-    // closes #2991): omitting it falls back to recency-ordered context
-    // instead of a relevance-ranked search.
+    // (plan-24 step 4, #2991): omitting it asks /v1/context for the most
+    // recent observations instead of a relevance-ranked search.
     const src = await Bun.file(mcpServerPath).text();
     const section = src.slice(
       src.indexOf("name: 'observation_context'"),
