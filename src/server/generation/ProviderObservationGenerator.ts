@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Job } from 'bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 import { logger } from '../../utils/logger.js';
 import { PostgresAgentEventsRepository } from '../../storage/postgres/agent-events.js';
+import type { PostgresAgentEvent } from '../../storage/postgres/agent-events.js';
+import { eventBlockBytes } from './providers/shared/prompt-builder.js';
 import { PostgresObservationGenerationJobRepository } from '../../storage/postgres/generation-jobs.js';
 import { PostgresProjectsRepository } from '../../storage/postgres/projects.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -14,7 +16,7 @@ import {
   type ServerGenerationJobPayload,
 } from '../jobs/types.js';
 import { ServerClassifiedProviderError } from './providers/shared/error-classification.js';
-import type { ServerGenerationProvider } from './providers/shared/types.js';
+import type { ServerGenerationProvider, ServerGenerationResult } from './providers/shared/types.js';
 import {
   markGenerationFailed,
   processGeneratedResponse,
@@ -32,6 +34,24 @@ export class ServerGenerationScopeViolationError extends Error {
   constructor(reason: 'scope_mismatch' | 'revoked_key', message: string) {
     super(message);
     this.reason = reason;
+  }
+}
+
+// Terminal generation outcomes (empty provider response, unparseable XML)
+// already move the outbox row to `failed` before throwing. Extending
+// UnrecoverableError makes BullMQ fail the job immediately instead of
+// burning its remaining retry attempts re-running a job whose outbox row is
+// already terminal. The name must stay 'UnrecoverableError' — BullMQ
+// identifies these by name, so the subclass must not override it.
+export class ServerGenerationTerminalOutcomeError extends UnrecoverableError {
+  readonly classification: 'parse_error' | 'empty_response';
+  constructor(classification: 'parse_error' | 'empty_response', message: string) {
+    super(message);
+    this.classification = classification;
+    // BullMQ also detects unrecoverable errors by name (job.js checks
+    // `err.name == 'UnrecoverableError'`), and instanceof breaks across
+    // duplicated bullmq installs — keep the parent name.
+    this.name = 'UnrecoverableError';
   }
 }
 
@@ -56,6 +76,85 @@ export interface ProviderObservationGeneratorOptions {
   pool: PostgresPool;
   provider: ServerGenerationProvider;
   workerId?: string;
+  // Upper bound on one provider.generate() call. Defaults to
+  // DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS; tests pass a small value.
+  providerTimeoutMs?: number;
+}
+
+// #4100: nothing bounded the provider call, so one hung request held the
+// generation lane (concurrency 1) indefinitely. Well above the ~325s longest
+// job observed in production. A timeout is rethrown as a transient
+// ServerClassifiedProviderError so it takes the normal retry path.
+const DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS = 600_000;
+
+
+// The `limit` on listUnprocessedEvents caps the event COUNT, not the payload
+// volume, and event size varies by orders of magnitude. Long sessions therefore
+// still blow the provider context window: measured on a production deployment,
+// sessions that failed with "context overflow" carried up to 34 MB of event
+// payload (~9M tokens), and even truncated to the 500-event default they still
+// averaged ~634k tokens with a 1.55M worst case — against a ~200k window. No
+// model currently on offer absorbs that, so the input has to be bounded by size.
+//
+// Keep the head and the tail of the session: the opening carries the goal, the
+// close carries the outcome and what was left pending. Dropping the middle
+// yields a partial summary, which is strictly better than the current outcome
+// for these sessions — an unrecoverable failure and no summary at all.
+// Bounds the SESSION INPUT, not the finished prompt: buildServerGenerationPrompt
+// wraps the selected event blocks in request/project/job tags, the instructions and
+// the observation schema. That envelope is a fixed cost — 1,244 bytes with the mode
+// active here, independent of event count and payload size — so it is left out of
+// the budget rather than reserved from it. At the default that is 0.2%; only a
+// budget small enough to be unusable anyway (~1 KB buys one truncated tool call)
+// would be decided by it.
+const SUMMARY_INPUT_BUDGET_BYTES = Number.parseInt(
+  process.env.CLAUDE_MEM_SUMMARY_INPUT_BUDGET_BYTES ?? '',
+  10,
+) || 600_000;
+
+/**
+ * Bytes this event will actually contribute to the prompt.
+ *
+ * Delegates to the prompt builder instead of estimating: the builder
+ * pretty-prints, privacy-strips, truncates, XML-escapes and wraps every payload,
+ * and an estimate that skips any of those steps under-counts the request it is
+ * supposed to bound. Measuring the raw row would also count UTF-16 units rather
+ * than bytes, and would charge full price for a payload the builder truncates.
+ *
+ * Not defensive on purpose: an event that cannot be turned into a block here
+ * cannot be turned into one during prompt construction either, so swallowing the
+ * error would only trade a loud failure for the context overflow this budget
+ * exists to prevent.
+ */
+function promptFootprint(event: unknown): number {
+  return eventBlockBytes(event as PostgresAgentEvent);
+}
+
+export function capSummaryInput<T>(events: T[]): T[] {
+  const size = (e: T): number => promptFootprint(e);
+  let total = 0;
+  for (const e of events) total += size(e);
+  if (total <= SUMMARY_INPUT_BUDGET_BYTES) return events;
+
+  const half = SUMMARY_INPUT_BUDGET_BYTES / 2;
+  const head: T[] = [];
+  let headBytes = 0;
+  for (const e of events) {
+    const s = size(e);
+    if (headBytes + s > half) break;
+    head.push(e);
+    headBytes += s;
+  }
+  const tail: T[] = [];
+  let tailBytes = 0;
+  for (let i = events.length - 1; i >= head.length; i -= 1) {
+    const e = events[i] as T;
+    const s = size(e);
+    if (tailBytes + s > SUMMARY_INPUT_BUDGET_BYTES - headBytes) break;
+    tail.unshift(e);
+    tailBytes += s;
+  }
+  return [...head, ...tail];
 }
 
 export class ProviderObservationGenerator {
@@ -191,18 +290,23 @@ export class ProviderObservationGenerator {
     try {
       return await this.generateAndPersist(job, payload, fresh, correlationId, payloadRequestId);
     } catch (error) {
-      const classified = error instanceof ServerClassifiedProviderError ? error : null;
-      const retryable = classified
-        ? classified.kind === 'transient' || classified.kind === 'rate_limit'
-        : false;
-      await markGenerationFailed({
-        pool: this.options.pool,
-        job: fresh,
-        reason: error instanceof Error ? error.message : String(error),
-        classification: classified?.kind ?? 'unknown',
-        retryable,
-        ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
-      });
+      // Terminal outcomes already moved the outbox to `failed` before
+      // throwing; re-marking here would append a duplicate lifecycle event
+      // under a bogus 'unknown' classification.
+      if (!(error instanceof ServerGenerationTerminalOutcomeError)) {
+        const classified = error instanceof ServerClassifiedProviderError ? error : null;
+        const retryable = classified
+          ? classified.kind === 'transient' || classified.kind === 'rate_limit'
+          : false;
+        await markGenerationFailed({
+          pool: this.options.pool,
+          job: fresh,
+          reason: error instanceof Error ? error.message : String(error),
+          classification: classified?.kind ?? 'unknown',
+          retryable,
+          ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
+        });
+      }
       throw error;
     }
   }
@@ -220,16 +324,32 @@ export class ProviderObservationGenerator {
     const events = await this.loadEvents(fresh, payload);
     const project = await this.loadProject(fresh);
 
-    const result = await this.options.provider.generate({
-      job: fresh,
-      events,
-      project: {
-        projectId: fresh.projectId,
-        teamId: fresh.teamId,
-        serverSessionId: fresh.serverSessionId,
-        projectName: project?.name ?? null,
-      },
-    });
+    const timeoutMs = this.options.providerTimeoutMs ?? DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS;
+    const signal = AbortSignal.timeout(timeoutMs);
+    let result: ServerGenerationResult;
+    try {
+      result = await this.options.provider.generate({
+        job: fresh,
+        events,
+        project: {
+          projectId: fresh.projectId,
+          teamId: fresh.teamId,
+          serverSessionId: fresh.serverSessionId,
+          projectName: project?.name ?? null,
+        },
+      }, signal);
+    } catch (error) {
+      // An abort can surface from fetch (already transient) or from reading the
+      // response body (classified parse_error, non-retryable). Either way the
+      // cause is the timeout, so report it as transient.
+      if (signal.aborted) {
+        throw new ServerClassifiedProviderError(
+          `${this.options.provider.providerLabel} request timed out after ${timeoutMs}ms`,
+          { kind: 'transient', cause: error },
+        );
+      }
+      throw error;
+    }
 
     const persistInput = {
       pool: this.options.pool,
@@ -250,16 +370,21 @@ export class ProviderObservationGenerator {
       ? await processSessionSummaryResponse(persistInput)
       : await processGeneratedResponse(persistInput);
 
-    if (outcome.kind === 'parse_error') {
+    if (outcome.kind === 'parse_error' || outcome.kind === 'empty_response') {
       await markGenerationFailed({
         pool: this.options.pool,
         job: fresh,
         reason: outcome.reason,
-        classification: 'parse_error',
+        classification: outcome.kind,
         retryable: false,
         ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
       });
-      throw new Error(`generation parse error: ${outcome.reason}`);
+      throw new ServerGenerationTerminalOutcomeError(
+        outcome.kind,
+        outcome.kind === 'empty_response'
+          ? `generation empty response: ${outcome.reason}`
+          : `generation parse error: ${outcome.reason}`,
+      );
     }
 
     logger.info('SYSTEM', 'generation completed', {
@@ -518,7 +643,7 @@ export class ProviderObservationGenerator {
         projectId: job.projectId,
         teamId: job.teamId,
       });
-      return events;
+      return capSummaryInput(events);
     }
 
     if (job.sourceType !== 'agent_event') {
