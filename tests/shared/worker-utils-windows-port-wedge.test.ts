@@ -1,101 +1,77 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
-import * as realSpawn from '../../src/shared/spawn.js';
-
-const realInfrastructureSnapshot = { ...realInfrastructure };
-const realSupervisorSnapshot = { ...realSupervisor };
-const realSpawnSnapshot = { ...realSpawn };
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realKillProcessTree from '../../src/shared/kill-process-tree.js';
+import { logger } from '../../src/utils/logger.js';
 
 // Windows orphaned-listener wedge (incident 2026-07-26, 13.12.1 -> 13.12.4).
 //
-// After the version-mismatch SIGKILL, Windows kept port 37777 in LISTENING
-// state attributed to the now-dead PID 28296. That produces a state the code
-// did not model: the port REFUSES connections (so every HTTP probe fails) yet
-// still cannot be BOUND (bind returns EADDRINUSE).
+// After the version-mismatch kill, Windows kept the worker port LISTENING
+// under the now-dead PID. That port REFUSES connections (every HTTP probe
+// fails) yet still cannot be BOUND (bind returns EADDRINUSE). The release
+// check used an HTTP connect, so it read "refused" as "released", lazy-spawned
+// a successor that could never listen, and repeated that on every hook.
 //
-// The two port oracles disagreed forever:
-//   waitForWorkerPortClosed()  - HTTP connect; any failure => "port is free"
-//   isPortInUse()              - falls through to a real bind probe => "in use"
-//
-// so the hook believed the port was released, lazy-spawned, and the successor
-// could never bind. Nothing mutated state, so it repeated on every hook: 70
-// consecutive failures, each one exiting 2 and blocking the user's prompt.
-//
-// Required behavior:
-//   1. "Released" must mean BINDABLE, not merely unreachable.
-//   2. A port that never becomes bindable is a wedge: pick a free loopback
-//      port and persist it atomically so worker, hooks and MCP agree.
-//   3. Worker unavailability must never block the user's prompt.
+// Required: "released" means BINDABLE. A port that stays unbindable after the
+// kill is an orphaned socket: never spawn onto it, and name the fix.
 
 const PLUGIN_VERSION = '13.12.4';
 const STALE_VERSION = '13.12.1';
 const STALE_PID = 28296;
 
-const spawnCalls: Array<{ command: string; args: string[] }> = [];
-let versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION as string | null };
+const spawnCalls: string[] = [];
+const killCalls: number[] = [];
+let versionMatch = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION as string | null };
 let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null;
-
-// Simulated OS state.
 let staleWorkerAlive = true;
 let successorUp = false;
-// The wedge: the set of ports that cannot be bound even though nothing answers
-// on them. Mirrors Windows reporting LISTENING under a dead PID.
-let unbindablePorts = new Set<number>();
+// What a bind probe on the worker port reports after the kill.
+let portAfterKill: 'free' | 'occupied' = 'occupied';
+
+const realInfrastructureSnapshot = { ...realInfrastructure };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
+const realSupervisorSnapshot = { ...realSupervisor };
+const realProcessManagerSnapshot = { ...realProcessManager };
+const realKillProcessTreeSnapshot = { ...realKillProcessTree };
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
-  checkVersionMatch: () => Promise.resolve(versionMatchResult),
+  ...realInfrastructureSnapshot,
+  checkVersionMatch: () => Promise.resolve(versionMatch),
+  isPortInUse: () => Promise.resolve(true),
 }));
-
+// The barrel re-exports HealthMonitor's bindings, so its stubs repeat here.
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+  ...realHealthMonitorSnapshot,
+  checkVersionMatch: () => Promise.resolve(versionMatch),
+  isPortInUse: () => Promise.resolve(true),
+  classifyPortOccupancy: () => Promise.resolve(staleWorkerAlive ? 'occupied' : portAfterKill),
+}));
 mock.module('../../src/supervisor/index.js', () => ({
+  ...realSupervisorSnapshot,
   validateWorkerPidFile: () => 'alive',
   readOwnedWorkerPidInfo: () => ownedPidInfo,
 }));
-
-mock.module('../../src/shared/spawn.js', () => ({
-  spawnHidden: (command: string, args: string[]) => {
-    spawnCalls.push({ command, args });
-    // The successor only comes up if the port it was told to use is bindable.
-    // This is the whole point: spawning onto a wedged port achieves nothing.
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
+  ...realProcessManagerSnapshot,
+  spawnDetachedWorkerDaemon: (runtimePath: string) => {
+    spawnCalls.push(runtimePath);
     successorUp = true;
-    return { pid: 50984, unref: () => {} };
+    return 4343;
   },
 }));
-
-// A net.createServer() stand-in whose listen() fails with EADDRINUSE for any
-// port in `unbindablePorts`, and otherwise succeeds. Port 0 always succeeds
-// and reports a concrete free port (this is how a wedge escape finds one).
-mock.module('net', () => ({
-  default: {
-    createServer: () => {
-      const handlers: Record<string, ((arg?: unknown) => void)[]> = {};
-      const on = (ev: string, fn: (arg?: unknown) => void) => {
-        (handlers[ev] ??= []).push(fn);
-        return api;
-      };
-      const emit = (ev: string, arg?: unknown) =>
-        setTimeout(() => (handlers[ev] ?? []).forEach(f => f(arg)), 0);
-      const api = {
-        once: on,
-        on,
-        address: () => ({ port: 41999 }),
-        close: (cb?: () => void) => { if (cb) setTimeout(cb, 0); return api; },
-        listen: (port: number) => {
-          if (port !== 0 && unbindablePorts.has(port)) {
-            const err = new Error('listen EADDRINUSE') as NodeJS.ErrnoException;
-            err.code = 'EADDRINUSE';
-            emit('error', err);
-          } else {
-            emit('listening');
-          }
-          return api;
-        },
-      };
-      return api;
-    },
+mock.module('../../src/shared/kill-process-tree.js', () => ({
+  ...realKillProcessTreeSnapshot,
+  // TerminateProcess: the worker dies; whether its socket comes back is the
+  // test's portAfterKill.
+  killProcessTree: (pid: number) => {
+    killCalls.push(pid);
+    staleWorkerAlive = false;
+    return Promise.resolve();
   },
 }));
 
@@ -112,123 +88,75 @@ function okResponse(body: Record<string, unknown>): Promise<Response> {
   } as unknown as Response);
 }
 
-function installFetchMock(): void {
-  global.fetch = mock((url: string | URL | Request) => {
-    const u = typeof url === 'string' ? url : url.toString();
-    if (!(staleWorkerAlive || successorUp)) {
-      // The wedged port refuses connections — exactly what was observed.
-      return Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1'));
-    }
-    if (u.includes('/api/health')) {
-      return okResponse({
-        version: staleWorkerAlive ? versionMatchResult.workerVersion : PLUGIN_VERSION,
-      });
-    }
-    return okResponse({});
-  }) as unknown as typeof fetch;
-}
-
-function readSettings(dir: string): Record<string, string> {
-  const p = join(dir, 'settings.json');
-  if (!existsSync(p)) return {};
-  try { return JSON.parse(readFileSync(p, 'utf-8')) as Record<string, string>; }
-  catch { return {}; }
-}
-
-describe('Windows orphaned-listener wedge', () => {
+describe('Windows orphaned-listener wedge after the version recycle (#3416)', () => {
   const originalFetch = global.fetch;
-  const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
-  let tempDataDir: string;
-  let killSpy: ReturnType<typeof spyOn>;
+  const originalScript = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+  let scriptDir: string;
 
   beforeEach(() => {
-    tempDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-port-wedge-'));
-    process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
-    installFetchMock();
     spawnCalls.length = 0;
+    killCalls.length = 0;
     staleWorkerAlive = true;
     successorUp = false;
-    unbindablePorts = new Set<number>();
-    ownedPidInfo = null;
-    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
-    killSpy = spyOn(process, 'kill').mockImplementation(((pid: number) => {
-      // TerminateProcess: the process dies, but the socket does NOT come back.
-      staleWorkerAlive = false;
-      void pid;
-      return true;
-    }) as typeof process.kill);
+    portAfterKill = 'occupied';
+    versionMatch = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+    scriptDir = mkdtempSync(join(tmpdir(), 'claude-mem-port-wedge-'));
+    const scriptPath = join(scriptDir, 'worker-service.cjs');
+    writeFileSync(scriptPath, '');
+    process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = scriptPath;
+    global.fetch = mock((url: string | URL | Request) => {
+      // The wedged port refuses connections once the stale worker is gone —
+      // exactly what was observed.
+      if (!(staleWorkerAlive || successorUp)) {
+        return Promise.reject(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1'), { code: 'ECONNREFUSED' }));
+      }
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/api/health')) {
+        return okResponse({ version: staleWorkerAlive ? STALE_VERSION : PLUGIN_VERSION });
+      }
+      return okResponse({});
+    }) as unknown as typeof fetch;
   });
 
   afterEach(() => {
-    killSpy.mockRestore();
     global.fetch = originalFetch;
-    if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
-    else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
-    rmSync(tempDataDir, { recursive: true, force: true });
-    mock.restore();
+    if (originalScript === undefined) delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+    else process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = originalScript;
+    rmSync(scriptDir, { recursive: true, force: true });
   });
 
   afterAll(() => {
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
+    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
-    mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
+    mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+    mock.module('../../src/shared/kill-process-tree.js', () => realKillProcessTreeSnapshot);
   });
 
-  it('treats an unreachable-but-unbindable port as still occupied, not as free', async () => {
+  it('treats an unreachable-but-unbindable port as still held: no successor spawn, and the fix is named', async () => {
     const workerUtils = await importWorkerUtilsFresh();
-    const port = workerUtils.getWorkerPort();
-    unbindablePorts.add(port);
-    ownedPidInfo = { pid: STALE_PID, port, startedAt: new Date().toISOString() };
-
-    // Pre-fix this returns true after the first refused HTTP probe, because
-    // "connection refused" was taken as proof the port was released.
-    const released = await workerUtils.isWorkerPortReleased(port);
-    expect(released).toBe(false);
-  });
-
-  it('escapes the wedge by persisting a new free port that hooks and MCP will read', async () => {
-    const workerUtils = await importWorkerUtilsFresh();
-    const wedged = workerUtils.getWorkerPort();
-    unbindablePorts.add(wedged);
-    ownedPidInfo = { pid: STALE_PID, port: wedged, startedAt: new Date().toISOString() };
-
-    await workerUtils.ensureWorkerRunning();
-
-    const persisted = readSettings(tempDataDir).CLAUDE_MEM_WORKER_PORT;
-    expect(persisted).toBeDefined();
-    expect(Number(persisted)).not.toBe(wedged);
-    // and the successor must have been spawned, not skipped
-    expect(spawnCalls.length).toBe(1);
-    // Generous budget: this path deliberately spends the full port-release
-    // wait (5s) proving the port is wedged before it relocates.
-  }, 30000);
-
-  it('never blocks the user prompt when the worker is unreachable', async () => {
-    const workerUtils = await importWorkerUtilsFresh();
-    const exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
-      throw new Error(`process.exit(${code}) called — the hook blocked the prompt`);
-    }) as never);
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+    const errorSpy = spyOn(logger, 'error');
     try {
-      // Well past the fail-loud threshold (the incident reached 70).
-      for (let i = 0; i < 5; i++) {
-        await workerUtils.recordWorkerUnreachable();
-      }
-      expect(exitSpy).not.toHaveBeenCalled();
+      // Pre-fix, the first refused HTTP probe counted as "released" and the
+      // successor was spawned onto a port it could never bind.
+      expect(await workerUtils.ensureWorkerRunning()).toBe(false);
+      expect(killCalls).toEqual([STALE_PID]);
+      expect(spawnCalls).toHaveLength(0);
+      const stillOpen = errorSpy.mock.calls.find(([, message]) => String(message).includes('still open after SIGKILL'));
+      expect(stillOpen?.[2]).toMatchObject({ fix: expect.any(String) });
     } finally {
-      exitSpy.mockRestore();
+      errorSpy.mockRestore();
     }
-  });
+  }, 15000);
 
-  // Asserted through behavior rather than by reading the state file: DATA_DIR
-  // is resolved once per process (paths.js), so it does not follow the
-  // per-test temp dir the way a fresh worker-utils import does.
-  it('resets the failure counter once the worker is reachable again', async () => {
+  it('spawns the successor once the killed worker\'s port is bindable again', async () => {
+    portAfterKill = 'free';
     const workerUtils = await importWorkerUtilsFresh();
-    await workerUtils.recordWorkerUnreachable();
-    await workerUtils.recordWorkerUnreachable();
-    workerUtils.resetWorkerFailureCounter();
-    // A reset counter means the next failure is streak position 1 again.
-    const afterReset = await workerUtils.recordWorkerUnreachable();
-    expect(afterReset).toBe(1);
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+
+    expect(await workerUtils.ensureWorkerRunning()).toBe(true);
+    expect(killCalls).toEqual([STALE_PID]);
+    expect(spawnCalls).toHaveLength(1);
   });
 });

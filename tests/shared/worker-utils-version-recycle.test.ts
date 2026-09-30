@@ -5,10 +5,12 @@ import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realProcessManagerSnapshot = { ...realProcessManager };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
 
 // On version mismatch the hook must NOT delegate the recycle to the running
 // worker (the old design POSTed /api/admin/restart and the dying worker
@@ -62,32 +64,18 @@ mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
   },
 }));
 
-// Port release is now decided by a real bind attempt (isWorkerPortReleased),
-// not by a refused HTTP connect — a connect probe cannot distinguish "free"
-// from "orphaned listener still holding the port", which is what wedged
-// Windows on 2026-07-26. Without this seam these tests would bind the real
-// worker port on the developer's machine and block for the full release wait.
-mock.module('net', () => ({
-  default: {
-    createServer: () => {
-      const handlers: Record<string, ((arg?: unknown) => void)[]> = {};
-      const on = (ev: string, fn: (arg?: unknown) => void) => {
-        (handlers[ev] ??= []).push(fn);
-        return api;
-      };
-      const api = {
-        once: on,
-        on,
-        address: () => ({ port: 41999 }),
-        close: (cb?: () => void) => { if (cb) setTimeout(cb, 0); return api; },
-        listen: () => {
-          setTimeout(() => (handlers['listening'] ?? []).forEach(f => f()), 0);
-          return api;
-        },
-      };
-      return api;
-    },
-  },
+// Port release is decided by a bind probe (classifyPortOccupancy), not by a
+// refused HTTP connect — a connect probe cannot tell "free" from "orphaned
+// listener still holding the port", which is what wedged Windows on
+// 2026-07-26 (#3416). Stubbed so these tests never bind the real worker port;
+// the killed stale worker's port reports free.
+// The infrastructure barrel re-exports HealthMonitor's bindings, so the
+// barrel's stubs are repeated here or this mock would put the real ones back.
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+  ...realHealthMonitorSnapshot,
+  checkVersionMatch: () => Promise.resolve(versionMatchResult),
+  isPortInUse: () => Promise.resolve(false),
+  classifyPortOccupancy: () => Promise.resolve('free'),
 }));
 
 async function importWorkerUtilsFresh() {
@@ -177,6 +165,7 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
     mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
   });
 
   it('SIGKILLs the stale worker and lazy-spawns the resolved script — never POSTs /api/admin/restart', async () => {
