@@ -396,6 +396,16 @@ export function isAuthFailure(state: ObserverHealthState): boolean {
  */
 export const OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS = 30 * 60_000;
 
+/** True once the recorded failure is at least one recheck window old. */
+function hasOutlivedRecheckWindow(state: ObserverHealthState, nowMs: number): boolean {
+  const lastErrorAt = state.lastErrorAt;
+  // `>=`, not `>`: `isObserverQuotaCooldownActive` calls the cooldown expired
+  // at `until > nowMs`, so at exactly the recheck interval the breaker has
+  // already released. A strict `>` left one instant where the breaker was
+  // open and the banner still called the outage current.
+  return lastErrorAt !== null && nowMs - lastErrorAt >= OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
+}
+
 /**
  * True when a quota outage is old enough that it may well be over.
  *
@@ -406,21 +416,35 @@ export const OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS = 30 * 60_000;
  * allowance reset (#4083: a 63-hour-old error rendered as a live outage while
  * the worker stored observations four minutes later in the same session).
  *
- * Only the quota shape ages out. Every other failure — a bad key, a missing
- * base URL — stays true until someone fixes it, so its banner should keep
- * saying so.
+ * Only failures that clear on their own age out: this one and a deadline
+ * expiry (isDeadlineFailureStale). A bad key or a missing base URL stays true
+ * until someone fixes it, so its banner should keep saying so.
  */
 export function isQuotaFailureStale(
   state: ObserverHealthState,
   nowMs: number = Date.now(),
 ): boolean {
-  if (!isQuotaFailure(state)) return false;
-  const lastErrorAt = state.lastErrorAt;
-  // `>=`, not `>`: `isObserverQuotaCooldownActive` calls the cooldown expired
-  // at `until > nowMs`, so at exactly the recheck interval the breaker has
-  // already released. A strict `>` left one instant where the breaker was
-  // open and the banner still called the outage current.
-  return lastErrorAt !== null && nowMs - lastErrorAt >= OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
+  return isQuotaFailure(state) && hasOutlivedRecheckWindow(state, nowMs);
+}
+
+/**
+ * True when a deadline outage — requests running past CLAUDE_MEM_LLM_TIMEOUT_MS
+ * with nothing stored — is old enough that it may well be over.
+ *
+ * The #4083 trap again: a slow or stalled backend recovers on its own, but the
+ * ledger only heals on the next save, which comes after SessionStart has read
+ * it. The window is the quota one: once nothing has re-tested the backend for
+ * that long, the expiry is the last thing we know, not the current state; if it
+ * is still slow, the next expiry restores the full warning. The code is
+ * provider-errors' DEADLINE_EXCEEDED_CODE, compared as a literal like
+ * 'model_unavailable' below so this module stays free of worker imports. Any
+ * other transient failure never reaches the ledger.
+ */
+export function isDeadlineFailureStale(
+  state: ObserverHealthState,
+  nowMs: number = Date.now(),
+): boolean {
+  return state.lastErrorCode === 'deadline_exceeded' && hasOutlivedRecheckWindow(state, nowMs);
 }
 
 /**
@@ -496,6 +520,41 @@ function renderFailureDetailLines(state: ObserverHealthState, action: string | n
   ];
 }
 
+/**
+ * The note for a failure that clears on its own, once nothing has re-tested it
+ * (isQuotaFailureStale, isDeadlineFailureStale). Same facts, stated as what
+ * they are: the last thing we know, not the current state. No "nothing will be
+ * remembered", because that would be a claim about right now that nothing has
+ * checked; and no instruction to lead the reply with an outage report, because
+ * the likeliest case by far is that the condition cleared and capture is
+ * working.
+ */
+function renderLastKnownFailureNote(
+  state: ObserverHealthState,
+  nowMs: number,
+  action: string | null,
+  shape: { failedWith: string; remedyLabel: string; recovery: string },
+): string {
+  const provider = state.lastErrorProvider ?? 'unknown provider';
+  const age = state.lastErrorAt ? describeDuration(nowMs - state.lastErrorAt) : 'an unknown time';
+  const link = relayedLink(state.lastErrorUrl);
+  return [
+    `ℹ️ claude-mem: the memory observer last failed with ${shape.failedWith} on`,
+    `${provider}, ${age} ago. Nothing has re-tested it since — the health ledger only`,
+    'updates on the next successful save, which happens after this message is written.',
+    '',
+    `Last error: ${relayedProviderText(state.lastErrorMessage) || 'unknown'}`,
+    ...(action ? [`${shape.remedyLabel}: ${action}`] : []),
+    ...(link ? [`Link: ${link}`] : []),
+    '',
+    `${shape.recovery}, so memory capture may already be working. If it is`,
+    'not, the next failed save brings the full warning back.',
+    '',
+    '(Assistant: do not open your reply with this. Mention it only if the user asks why',
+    'something was not remembered, or if a later message reports a save failing.)',
+  ].join('\n');
+}
+
 export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: number = Date.now()): string {
   const since = state.failingSinceAt ?? state.lastErrorAt;
   const sinceText = since
@@ -506,28 +565,18 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   const action = relayedProviderText(state.lastErrorAction) || null;
 
   if (isQuotaFailureStale(state, nowMs)) {
-    // Same facts, stated as what they are: the last thing we know, not the
-    // current state. No "nothing will be remembered", because that would be a
-    // claim about right now that nothing has checked; and no instruction to
-    // lead the reply with an outage report, because the likeliest case by far
-    // is that the allowance reset hours ago and capture is working.
-    const age = state.lastErrorAt ? describeDuration(nowMs - state.lastErrorAt) : 'an unknown time';
-    const link = relayedLink(state.lastErrorUrl);
-    return [
-      'ℹ️ claude-mem: the memory observer last failed with a spent allowance on',
-      `${provider}, ${age} ago. Nothing has re-tested it since — the health ledger only`,
-      'updates on the next successful save, which happens after this message is written.',
-      '',
-      `Last error: ${relayedProviderText(state.lastErrorMessage) || 'unknown'}`,
-      ...(action ? [`If it is still spent: ${action}`] : []),
-      ...(link ? [`Link: ${link}`] : []),
-      '',
-      'Allowances reset on their own, so memory capture may already be working. If it is',
-      'not, the next failed save brings the full warning back.',
-      '',
-      '(Assistant: do not open your reply with this. Mention it only if the user asks why',
-      'something was not remembered, or if a later message reports a save failing.)',
-    ].join('\n');
+    return renderLastKnownFailureNote(state, nowMs, action, {
+      failedWith: 'a spent allowance',
+      remedyLabel: 'If it is still spent',
+      recovery: 'Allowances reset on their own',
+    });
+  }
+  if (isDeadlineFailureStale(state, nowMs)) {
+    return renderLastKnownFailureNote(state, nowMs, action, {
+      failedWith: 'requests running past their deadline',
+      remedyLabel: 'If it is still slow',
+      recovery: 'A slow backend usually recovers on its own',
+    });
   }
 
   // A spent allowance is the one outage a restart cannot clear. Worse, the

@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { createServer } from 'node:http';
-import { optimizeField } from '../../src/services/worker/field-optimizer.js';
+import { FIELD_OPTIMIZE_TIMEOUT_MS, optimizeField } from '../../src/services/worker/field-optimizer.js';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
 
 test('field deadline cancels real OpenRouter fetch and prevents retries', async () => {
@@ -20,11 +20,14 @@ test('field deadline cancels real OpenRouter fetch and prevents retries', async 
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as { port: number };
   const nativeTimeout = globalThis.setTimeout;
-  let budgetTimers = 0;
-  // query() arms its attempt timeout before optimizeField arms the field deadline.
-  // Keep the attempt alive longer so this test exercises field cancellation, not a timer tie.
+  const priorLlmTimeout = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+  // Keep the per-attempt deadline alive well past the field deadline so this test
+  // exercises field cancellation, not the attempt deadline or a timer tie. Pinned
+  // here rather than inferred from the default, which no longer equals the
+  // field budget.
+  process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '1000';
   globalThis.setTimeout = ((fn: any, ms: number, ...args: any[]) =>
-    nativeTimeout(fn, ms === 30_000 ? (++budgetTimers === 1 ? 1000 : 100) : ms, ...args)) as typeof setTimeout;
+    nativeTimeout(fn, ms === FIELD_OPTIMIZE_TIMEOUT_MS ? 100 : ms, ...args)) as typeof setTimeout;
   const provider = new OpenRouterProvider({} as any, {} as any);
   const raw = JSON.stringify({ oldString: 'a', newString: 'b', content: 'x'.repeat(20_000) });
   let signal: AbortSignal | undefined;
@@ -43,6 +46,8 @@ test('field deadline cancels real OpenRouter fetch and prevents retries', async 
     expect(disconnected).toBe(true);
   } finally {
     globalThis.setTimeout = nativeTimeout;
+    if (priorLlmTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+    else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = priorLlmTimeout;
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
   }

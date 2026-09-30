@@ -14,6 +14,7 @@ import {
   renderObserverHealthWarning,
   renderObserverQuotaCooldownNotice,
   isQuotaFailureStale,
+  isDeadlineFailureStale,
   OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS,
   describeDuration,
   scrubErrorMessage,
@@ -401,7 +402,7 @@ describe('a quota banner that has gone stale (#4083)', () => {
     ).toBe(false);
   });
 
-  it('only the quota shape ages out', () => {
+  it('a failure that does not clear on its own never ages out', () => {
     // A bad key or a missing base URL stays true until someone fixes it, so its
     // banner must keep saying so however old it is.
     const warning = renderObserverHealthWarning(
@@ -422,6 +423,55 @@ describe('a quota banner that has gone stale (#4083)', () => {
     // observer-health, so the other direction would be a cycle). This is what
     // stops the copy drifting.
     expect(OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS).toBe(QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+  });
+});
+
+describe('a deadline banner', () => {
+  // Requests that keep running past CLAUDE_MEM_LLM_TIMEOUT_MS store nothing, so
+  // the streak must warn. But a slow or stalled backend recovers on its own, and
+  // the ledger only heals on the next save — the #4083 trap the quota note
+  // already avoids.
+  const ERROR_AT = 1_754_700_100_000;
+
+  function deadlineState(overrides: Partial<ObserverHealthState> = {}): ObserverHealthState {
+    return unhealthyState({
+      lastErrorKind: 'transient',
+      lastErrorCode: 'deadline_exceeded',
+      lastErrorProvider: 'openrouter',
+      lastErrorMessage: 'OpenRouter cmem-observer exceeded the 180000ms per-attempt deadline.',
+      lastErrorAction: 'Raise CLAUDE_MEM_LLM_TIMEOUT_MS in ~/.claude-mem/settings.json (up to 300000) if the backend is simply slow.',
+      lastErrorAt: ERROR_AT,
+      ...overrides,
+    });
+  }
+
+  it('warns in full while the streak is fresh, with the raise-the-deadline remedy', () => {
+    const warning = renderObserverHealthWarning(deadlineState(), ERROR_AT + 60_000);
+
+    expect(warning).toContain("can't save memories right now");
+    expect(warning).toContain('exceeded the 180000ms per-attempt deadline');
+    expect(warning).toContain('What to do: Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
+    // The remedy is specific, so the generic key / spend-limit checklist goes.
+    expect(warning).not.toContain('spend limit');
+  });
+
+  it('reports a last-known state once nothing has re-tested it', () => {
+    const warning = renderObserverHealthWarning(deadlineState(), ERROR_AT + 63 * 60 * 60_000);
+
+    expect(warning).toContain('last failed with requests running past their deadline');
+    expect(warning).toContain('may already be working');
+    expect(warning).toContain('If it is still slow: Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
+    expect(warning).toContain('about 3 days ago');
+    expect(warning).not.toContain('will be remembered');
+    expect(warning).not.toContain('at the very start of your first reply');
+  });
+
+  it('ages out on the same boundary as the quota note', () => {
+    const boundary = ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
+    expect(isDeadlineFailureStale(deadlineState(), boundary - 1)).toBe(false);
+    expect(isDeadlineFailureStale(deadlineState(), boundary)).toBe(true);
+    // Only the deadline code ages this way: another transient failure does not.
+    expect(isDeadlineFailureStale(deadlineState({ lastErrorCode: 'upstream_unavailable' }), boundary)).toBe(false);
   });
 });
 
