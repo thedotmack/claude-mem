@@ -7,6 +7,7 @@ import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
+import { viewerBaseUrl } from "./viewer-url.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
@@ -246,11 +247,7 @@ export function getWorkerHost(): string {
  * preserves the historical `http://localhost:<port>` output for local users.
  */
 export function getViewerBaseUrl(port: number | string): string {
-  const pub = process.env.CLAUDE_MEM_PUBLIC_URL ?? getWorkerSettings().CLAUDE_MEM_PUBLIC_URL;
-  if (pub && pub.trim()) {
-    return pub.trim().replace(/\/+$/, '');
-  }
-  return `http://localhost:${port}`;
+  return viewerBaseUrl(port, getWorkerSettings().CLAUDE_MEM_PUBLIC_URL);
 }
 
 export function getWorkerApiRequestTimeoutMs(): number {
