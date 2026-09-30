@@ -63,12 +63,16 @@ export type BackfillOutcome = 'completed' | BackfillAbortReason;
  * Outcome of one backfillKind() pass (#4069). `writtenDocs` counts documents
  * that actually landed in Chroma — not rows planned — and `emptyRows` counts
  * rows with nothing to index (no title and no body), which are drained instead
- * of being reported missing on every sweep.
+ * of being reported missing on every sweep. `writeFailures` is true when some
+ * row's write failed even though the pass walked every row: unlike
+ * `abortReason`, it does not stop the pipeline, so the remaining kinds still
+ * run and the project reports 'write_failures' instead of 'completed' (#4264).
  */
 export interface BackfillKindResult {
   writtenDocs: number;
   emptyRows: number;
   abortReason: BackfillAbortReason | null;
+  writeFailures: boolean;
 }
 
 export interface MergedIntoProjectTarget {
@@ -1162,6 +1166,11 @@ export class ChromaSync {
       return prompts.abortReason;
     }
 
+    // An isolated write failure stops neither its own kind's run nor the kinds
+    // after it: the failed rows stay pending for the next sweep, and the
+    // project reports 'write_failures' rather than claiming it finished (#4264).
+    const writeFailures = observations.writeFailures || summaries.writeFailures || prompts.writeFailures;
+
     logger.info('CHROMA_SYNC', 'Smart backfill complete', {
       project: backfillProject,
       synced: {
@@ -1172,16 +1181,18 @@ export class ChromaSync {
       emptyRows: observations.emptyRows + summaries.emptyRows + prompts.emptyRows,
       watermarks: ChromaSyncState.get(backfillProject)
     });
-    return 'completed';
+    return writeFailures ? 'write_failures' : 'completed';
   }
 
   /**
    * Shared batch/watermark loop for all three backfill kinds. Returns how
    * many documents actually landed, how many rows were drained as empty,
-   * and why the run stopped early, if it did (worker shutdown, or the
-   * consecutive-failure guard). Isolated write failures do not stop the run,
-   * but they are still reported as 'write_failures' so the project is not
-   * claimed complete while a document is missing.
+   * whether any row's write failed, and why the run stopped early, if it did
+   * (worker shutdown, the consecutive-failure guard, or a dropped collection).
+   * Isolated write failures do not stop the run: the kind reports them via
+   * `writeFailures` instead of `abortReason`, so the pipeline keeps going and
+   * the project is reported as 'write_failures' rather than claimed complete
+   * while a document is missing.
    *
    * Watermark durability is row-atomic, not batch-atomic: one observation or
    * summary can expand into several Chroma documents and span multiple
@@ -1235,7 +1246,7 @@ export class ChromaSync {
         project: backfillProject,
         kind
       });
-      return { writtenDocs, emptyRows, abortReason: 'collection_dropped' };
+      return { writtenDocs, emptyRows, abortReason: 'collection_dropped', writeFailures: false };
     };
 
     for (let rowIndex = 0; rowIndex < rowsWithDocs.length; rowIndex += 1) {
@@ -1273,7 +1284,7 @@ export class ChromaSync {
           writtenInBatch = await this.addDocuments(batch);
         } catch (error) {
           if (error instanceof ChromaCorruptCollectionError) {
-            return collectionDropped() ?? { writtenDocs, emptyRows, abortReason: 'collection_dropped' };
+            return collectionDropped() ?? { writtenDocs, emptyRows, abortReason: 'collection_dropped', writeFailures: false };
           }
           throw error;
         }
@@ -1315,7 +1326,7 @@ export class ChromaSync {
             lastRowId: row.id,
             remainingRows: rowsWithDocs.length - rowIndex - 1
           });
-          return { writtenDocs, emptyRows, abortReason: 'shutdown' };
+          return { writtenDocs, emptyRows, abortReason: 'shutdown', writeFailures: false };
         }
 
         consecutiveFailures += 1;
@@ -1334,7 +1345,7 @@ export class ChromaSync {
             lastRowId: row.id,
             remainingRows: rowsWithDocs.length - rowIndex - 1
           });
-          return { writtenDocs, emptyRows, abortReason: 'write_failures' };
+          return { writtenDocs, emptyRows, abortReason: 'write_failures', writeFailures: hadWriteFailures };
         }
         continue;
       }
@@ -1349,12 +1360,12 @@ export class ChromaSync {
 
     // A run that walked every row but lost some to isolated write failures is
     // not a completed backfill: the failed rows stay pending for the next run,
-    // but a document is still missing now. Say so, so the sweep does not claim
-    // the project finished (#4264).
+    // but a document is still missing now. Report that without aborting the
+    // pipeline, so the remaining kinds still run (#4264).
     if (hadWriteFailures) {
-      return { writtenDocs, emptyRows, abortReason: 'write_failures' };
+      return { writtenDocs, emptyRows, abortReason: null, writeFailures: true };
     }
-    return { writtenDocs, emptyRows, abortReason: null };
+    return { writtenDocs, emptyRows, abortReason: null, writeFailures: false };
   }
 
   /**
@@ -1425,7 +1436,7 @@ export class ChromaSync {
     const rows = this.mergeRowsById(observations, pendingRows);
 
     if (rows.length === 0) {
-      return { writtenDocs: 0, emptyRows: 0, abortReason: null };
+      return { writtenDocs: 0, emptyRows: 0, abortReason: null, writeFailures: false };
     }
 
     const totalObsCount = db.db.prepare(`
@@ -1479,7 +1490,7 @@ export class ChromaSync {
     const rows = this.mergeRowsById(summaries, pendingRows);
 
     if (rows.length === 0) {
-      return { writtenDocs: 0, emptyRows: 0, abortReason: null };
+      return { writtenDocs: 0, emptyRows: 0, abortReason: null, writeFailures: false };
     }
 
     const totalSummaryCount = db.db.prepare(`
@@ -1537,7 +1548,7 @@ export class ChromaSync {
     const rows = this.mergeRowsById(prompts, pendingRows);
 
     if (rows.length === 0) {
-      return { writtenDocs: 0, emptyRows: 0, abortReason: null };
+      return { writtenDocs: 0, emptyRows: 0, abortReason: null, writeFailures: false };
     }
 
     const totalPromptCount = db.db.prepare(`
