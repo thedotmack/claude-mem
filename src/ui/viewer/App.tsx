@@ -1,40 +1,34 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from './components/Header';
-import { SessionCard } from './components/SessionCard';
-import { SessionDetailPage } from './components/SessionDetailPage';
+import { Feed } from './components/Feed';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
 import { WelcomeCard, getStoredWelcomeDismissed, setStoredWelcomeDismissed } from './components/WelcomeCard';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
+import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
-import { SessionCatalogEntry } from './types';
-import { API_ENDPOINTS } from './constants/api';
-
-type Route = { view: 'list' } | { view: 'session'; contentSessionId: string };
-
-function routeFromLocation(): Route {
-  const params = new URLSearchParams(window.location.search);
-  const sessionId = params.get('session');
-  return sessionId ? { view: 'session', contentSessionId: sessionId } : { view: 'list' };
-}
+import { Observation, Summary, UserPrompt, FeedItemType } from './types';
+import { mergeAndDeduplicateByProject } from './utils/data';
+import { removeLoadedRow } from './utils/feed-deletion';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [welcomeDismissed, setWelcomeDismissed] = useState<boolean>(getStoredWelcomeDismissed);
-  const [route, setRoute] = useState<Route>(routeFromLocation);
+  const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
+  const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
+  const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, sessions, removeSession, isProcessing, queueDepth } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem } = useSSE(removeDeletedItem);
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { preference, setThemePreference } = useTheme();
+  const pagination = usePagination(currentFilter);
 
-  useEffect(() => {
-    const onPopState = () => setRoute(routeFromLocation());
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  const matchesSelection = useCallback((item: { project: string }) => {
+    return !currentFilter || item.project === currentFilter;
+  }, [currentFilter]);
 
   useEffect(() => {
     if (currentFilter && !projects.includes(currentFilter)) {
@@ -42,34 +36,23 @@ export function App() {
     }
   }, [projects, currentFilter]);
 
-  const navigateToSession = useCallback((contentSessionId: string) => {
-    const url = `${window.location.pathname}?session=${encodeURIComponent(contentSessionId)}`;
-    window.history.pushState({}, '', url);
-    setRoute({ view: 'session', contentSessionId });
-  }, []);
+  const allObservations = useMemo(() => {
+    const live = observations.filter(matchesSelection);
+    const paginated = paginatedObservations.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [observations, paginatedObservations, matchesSelection]);
 
-  const navigateToList = useCallback(() => {
-    window.history.pushState({}, '', window.location.pathname);
-    setRoute({ view: 'list' });
-  }, []);
+  const allSummaries = useMemo(() => {
+    const live = summaries.filter(matchesSelection);
+    const paginated = paginatedSummaries.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [summaries, paginatedSummaries, matchesSelection]);
 
-  const handleDeleteSession = useCallback(async (session: SessionCatalogEntry) => {
-    const confirmed = window.confirm(
-      `Delete all content for session ${session.content_session_id}? This removes every observation, summary, and prompt from this session and cannot be undone.`
-    );
-    if (!confirmed) return;
-
-    const params = `?platformSource=${encodeURIComponent(session.platform_source)}`;
-    const response = await fetch(`${API_ENDPOINTS.SESSIONS}/${encodeURIComponent(session.content_session_id)}${params}`, {
-      method: 'DELETE'
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      console.error('[Session Delete] Failed:', body);
-      return;
-    }
-    removeSession(session.content_session_id);
-  }, [removeSession]);
+  const allPrompts = useMemo(() => {
+    const live = prompts.filter(matchesSelection);
+    const paginated = paginatedPrompts.filter(matchesSelection);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [prompts, paginatedPrompts, matchesSelection]);
 
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
@@ -79,11 +62,61 @@ export function App() {
     setLogsModalOpen(prev => !prev);
   }, []);
 
-  const visibleSessions = useMemo(() => {
-    return sessions
-      .filter(s => !currentFilter || s.project === currentFilter)
-      .sort((a, b) => b.started_at_epoch - a.started_at_epoch);
-  }, [sessions, currentFilter]);
+  const handleLoadMore = useCallback(async () => {
+    try {
+      const [newObservations, newSummaries, newPrompts] = await Promise.all([
+        pagination.observations.loadMore(),
+        pagination.summaries.loadMore(),
+        pagination.prompts.loadMore()
+      ]);
+
+      if (newObservations.length > 0) {
+        setPaginatedObservations(prev => [...prev, ...newObservations]);
+      }
+      if (newSummaries.length > 0) {
+        setPaginatedSummaries(prev => [...prev, ...newSummaries]);
+      }
+      if (newPrompts.length > 0) {
+        setPaginatedPrompts(prev => [...prev, ...newPrompts]);
+      }
+    } catch (error) {
+      console.error('Failed to load more data:', error);
+    }
+  }, [pagination.observations, pagination.summaries, pagination.prompts]);
+
+  // One removal path for a deleted row, whether this tab deleted it or another
+  // tab did (item_deleted SSE, which also reaches this tab): drop it from the
+  // live and loaded lists once, and move a loaded page's offset back by one so
+  // the next page does not skip a row.
+  const handledDeletionsRef = useRef(new Set<string>());
+  const loadedRowsRef = useRef({ observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts });
+  loadedRowsRef.current = { observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts };
+
+  function removeDeletedItem(itemType: FeedItemType, id: number): void {
+    const key = `${itemType}:${id}`;
+    if (handledDeletionsRef.current.has(key)) return;
+    handledDeletionsRef.current.add(key);
+
+    removeLiveItem(itemType, id);
+    if (itemType === 'observation') {
+      if (removeLoadedRow(loadedRowsRef.current.observation, id).wasLoaded) pagination.observations.noteRemoved();
+      setPaginatedObservations(prev => removeLoadedRow(prev, id).rows);
+    } else if (itemType === 'summary') {
+      if (removeLoadedRow(loadedRowsRef.current.summary, id).wasLoaded) pagination.summaries.noteRemoved();
+      setPaginatedSummaries(prev => removeLoadedRow(prev, id).rows);
+    } else {
+      if (removeLoadedRow(loadedRowsRef.current.prompt, id).wasLoaded) pagination.prompts.noteRemoved();
+      setPaginatedPrompts(prev => removeLoadedRow(prev, id).rows);
+    }
+  }
+
+  useEffect(() => {
+    setPaginatedObservations([]);
+    setPaginatedSummaries([]);
+    setPaginatedPrompts([]);
+    handleLoadMore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFilter]);
 
   return (
     <>
@@ -102,33 +135,15 @@ export function App() {
         }}
       />
 
-      {route.view === 'list' ? (
-        <div className="session-list">
-          <div className="session-list-content">
-            {visibleSessions.map(session => (
-              <SessionCard
-                key={session.content_session_id}
-                session={session}
-                onOpen={() => navigateToSession(session.content_session_id)}
-                onDelete={() => handleDeleteSession(session)}
-              />
-            ))}
-            {visibleSessions.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
-                No sessions to display
-              </div>
-            )}
-          </div>
-        </div>
-      ) : (
-        <SessionDetailPage
-          contentSessionId={route.contentSessionId}
-          observations={observations}
-          summaries={summaries}
-          prompts={prompts}
-          onBack={navigateToList}
-        />
-      )}
+      <Feed
+        observations={allObservations}
+        summaries={allSummaries}
+        prompts={allPrompts}
+        onLoadMore={handleLoadMore}
+        onDeleted={removeDeletedItem}
+        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
+        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+      />
 
       {!welcomeDismissed && (
         <WelcomeCard onDismiss={() => setWelcomeDismissed(true)} />

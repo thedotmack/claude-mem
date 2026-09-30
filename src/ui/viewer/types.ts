@@ -56,8 +56,10 @@ export type FeedItem =
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
+export type FeedItemType = 'observation' | 'summary' | 'prompt';
+
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -68,6 +70,8 @@ export interface StreamEvent {
   prompt?: UserPrompt;
   isProcessing?: boolean;
   queueDepth?: number;
+  itemType?: FeedItemType;
+  id?: number;
 }
 
 export interface ProjectCatalog {
@@ -79,6 +83,7 @@ export interface ProjectCatalog {
 export interface Settings {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES?: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
 
@@ -102,4 +107,7 @@ export interface Settings {
 
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+
+  /** File/env only — shown read-only. Not written via POST /api/settings. */
+  CLAUDE_CODE_PATH?: string;
 }

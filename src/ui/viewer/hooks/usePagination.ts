@@ -84,9 +84,16 @@ function usePaginationFor<TItem extends DataItem>(
     return data.items;
   }, [currentFilter, currentSessionFilter, endpoint, dataType]);
 
+  // A row from a loaded page was deleted: the server's list moved up by one,
+  // so the next page starts one earlier or it would skip a row.
+  const noteRemoved = useCallback(() => {
+    offsetRef.current = Math.max(0, offsetRef.current - 1);
+  }, []);
+
   return {
     ...state,
-    loadMore
+    loadMore,
+    noteRemoved
   };
 }
 

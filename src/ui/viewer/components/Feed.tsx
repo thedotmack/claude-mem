@@ -1,5 +1,6 @@
-import React, { useRef, useEffect } from 'react';
-import { FeedItem } from '../types';
+import React, { useMemo, useRef, useEffect } from 'react';
+import { Observation, Summary, UserPrompt, FeedItem } from '../types';
+import type { DeletableItemType } from '../utils/feed-deletion';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
@@ -7,13 +8,16 @@ import { ScrollToTop } from './ScrollToTop';
 import { UI } from '../constants/ui';
 
 interface FeedProps {
-  items: FeedItem[];
+  observations: Observation[];
+  summaries: Summary[];
+  prompts: UserPrompt[];
   onLoadMore: () => void;
+  onDeleted: (itemType: DeletableItemType, id: number) => void;
   isLoading: boolean;
   hasMore: boolean;
 }
 
-export function Feed({ items, onLoadMore, isLoading, hasMore }: FeedProps) {
+export function Feed({ observations, summaries, prompts, onLoadMore, onDeleted, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -46,6 +50,16 @@ export function Feed({ items, onLoadMore, isLoading, hasMore }: FeedProps) {
     };
   }, [hasMore, isLoading]);
 
+  const items = useMemo<FeedItem[]>(() => {
+    const combined = [
+      ...observations.map(o => ({ ...o, itemType: 'observation' as const })),
+      ...summaries.map(s => ({ ...s, itemType: 'summary' as const })),
+      ...prompts.map(p => ({ ...p, itemType: 'prompt' as const }))
+    ];
+
+    return combined.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+  }, [observations, summaries, prompts]);
+
   return (
     <div className="feed" ref={feedRef}>
       <ScrollToTop targetRef={feedRef} />
@@ -53,9 +67,9 @@ export function Feed({ items, onLoadMore, isLoading, hasMore }: FeedProps) {
         {items.map(item => {
           const key = `${item.itemType}-${item.id}`;
           if (item.itemType === 'observation') {
-            return <ObservationCard key={key} observation={item} />;
+            return <ObservationCard key={key} observation={item} onDeleted={onDeleted} />;
           } else if (item.itemType === 'summary') {
-            return <SummaryCard key={key} summary={item} />;
+            return <SummaryCard key={key} summary={item} onDeleted={onDeleted} />;
           } else {
             return <PromptCard key={key} prompt={item} />;
           }

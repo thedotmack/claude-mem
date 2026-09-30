@@ -1,55 +1,37 @@
-import { useState, useEffect, useRef } from 'react';
-import { Observation, Summary, UserPrompt, SessionCatalogEntry, StreamEvent } from '../types';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Observation, Summary, UserPrompt, StreamEvent, FeedItemType } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+import { itemDeletedTarget } from '../utils/feed-deletion';
 
-export function useSSE() {
+/**
+ * @param onItemDeleted called for every `item_deleted` event (a row deleted in
+ * this tab or any other); the caller owns removal so there is one path for it.
+ */
+export function useSSE(onItemDeleted: (itemType: FeedItemType, id: number) => void) {
   const [observations, setObservations] = useState<Observation[]>([]);
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [prompts, setPrompts] = useState<UserPrompt[]>([]);
   const [projects, setProjects] = useState<string[]>([]);
-  const [sessions, setSessions] = useState<SessionCatalogEntry[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const onItemDeletedRef = useRef(onItemDeleted);
+  onItemDeletedRef.current = onItemDeleted;
+
+  const removeLiveItem = useCallback((itemType: FeedItemType, id: number) => {
+    if (itemType === 'observation') {
+      setObservations(prev => prev.filter(o => o.id !== id));
+    } else if (itemType === 'summary') {
+      setSummaries(prev => prev.filter(s => s.id !== id));
+    } else {
+      setPrompts(prev => prev.filter(p => p.id !== id));
+    }
+  }, []);
 
   const addProjectIfNew = (project: string) => {
     setProjects(prev => prev.includes(project) ? prev : [...prev, project]);
-  };
-
-  const touchSession = (item: {
-    content_session_id: string;
-    project: string;
-    platform_source: string;
-    created_at_epoch: number;
-  }) => {
-    setSessions(prev => {
-      const existingIndex = prev.findIndex(s => s.content_session_id === item.content_session_id);
-      if (existingIndex === -1) {
-        return [
-          ...prev,
-          {
-            content_session_id: item.content_session_id,
-            project: item.project,
-            platform_source: item.platform_source,
-            // Live SSE payloads don't carry custom_title; a session discovered this way shows its
-            // project name until the next full catalog load (initial_load), which does carry it.
-            // Acceptable — narrow, self-correcting gap.
-            custom_title: null,
-            started_at_epoch: item.created_at_epoch,
-            item_count: 1
-          }
-        ];
-      }
-      const next = [...prev];
-      next[existingIndex] = { ...next[existingIndex], item_count: next[existingIndex].item_count + 1 };
-      return next;
-    });
-  };
-
-  const removeSession = (contentSessionId: string) => {
-    setSessions(prev => prev.filter(s => s.content_session_id !== contentSessionId));
   };
 
   useEffect(() => {
@@ -85,23 +67,15 @@ export function useSSE() {
         switch (data.type) {
           case 'initial_load':
             console.log('[SSE] Initial load:', {
-              projects: data.projects?.length || 0,
-              sessions: data.sessions?.length || 0
+              projects: data.projects?.length || 0
             });
             setProjects(data.projects || []);
-            setSessions(data.sessions || []);
             break;
 
           case 'new_observation':
             if (data.observation) {
               console.log('[SSE] New observation:', data.observation.id);
               addProjectIfNew(data.observation.project);
-              touchSession({
-                content_session_id: data.observation.content_session_id,
-                project: data.observation.project,
-                platform_source: data.observation.platform_source || 'claude',
-                created_at_epoch: data.observation.created_at_epoch
-              });
               setObservations(prev => [data.observation!, ...prev]);
             }
             break;
@@ -110,12 +84,6 @@ export function useSSE() {
             if (data.summary) {
               console.log('[SSE] New summary:', data.summary.id);
               addProjectIfNew(data.summary.project);
-              touchSession({
-                content_session_id: data.summary.session_id,
-                project: data.summary.project,
-                platform_source: data.summary.platform_source || 'claude',
-                created_at_epoch: data.summary.created_at_epoch
-              });
               setSummaries(prev => [data.summary!, ...prev]);
             }
             break;
@@ -124,15 +92,15 @@ export function useSSE() {
             if (data.prompt) {
               console.log('[SSE] New prompt:', data.prompt.id);
               addProjectIfNew(data.prompt.project);
-              touchSession({
-                content_session_id: data.prompt.content_session_id,
-                project: data.prompt.project,
-                platform_source: data.prompt.platform_source || 'claude',
-                created_at_epoch: data.prompt.created_at_epoch
-              });
               setPrompts(prev => [data.prompt!, ...prev]);
             }
             break;
+
+          case 'item_deleted': {
+            const target = itemDeletedTarget(data);
+            if (target) onItemDeletedRef.current(target.itemType, target.id);
+            break;
+          }
 
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
@@ -162,9 +130,8 @@ export function useSSE() {
     summaries,
     prompts,
     projects,
-    sessions,
-    removeSession,
     isProcessing,
-    queueDepth
+    queueDepth,
+    removeLiveItem
   };
 }
