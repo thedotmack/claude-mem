@@ -670,6 +670,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(transportInstances.length).toBe(2);
+    expect(mgr.getCrashState()).toMatchObject({ count: 0, lastExit: null });
     expect(logEntries.some(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')).toBe(false);
   });
 
@@ -725,7 +726,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(0);
   });
 
-  it('stop() ignores close-triggered onclose from an intentionally closed transport', async () => {
+  it('stop() ignores close-triggered onclose after shutdown generation changes', async () => {
     transportCloseEmitsOnclose = true;
     const mgr = ChromaMcpManager.getInstance();
 
@@ -735,10 +736,78 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.stop();
 
     expect(transportInstances[0].closed).toBe(true);
+    expect(mgr.getCrashState().count).toBe(0);
     expect(logEntries.some(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')).toBe(false);
 
     await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(mgr.getCrashState().count).toBe(0);
     expect(transportInstances.length).toBe(2);
+  });
+
+  it('records exact active-child exit details and retains them across reconnect', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const firstTransport = transportInstances[0];
+    firstTransport._process.finish(null, 'SIGSEGV');
+    firstTransport.onclose?.();
+
+    const firstState = mgr.getCrashState();
+    expect(firstState.count).toBe(1);
+    expect(firstState.lastExit).toMatchObject({ code: null, signal: 'SIGSEGV' });
+    expect(firstState.chromaMcpVersion).toBe('0.2.6');
+    expect(firstState.dependencyOverrides).toEqual([
+      'onnxruntime>=1.20',
+      'protobuf<7',
+      'chromadb==1.5.9',
+    ]);
+    expect(logEntries.find(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')?.meta)
+      .toMatchObject({ count: 1, exitCode: null, signalCode: 'SIGSEGV' });
+
+    const privateManager = mgr as unknown as { lastConnectionFailureTimestamp: number };
+    privateManager.lastConnectionFailureTimestamp = 0;
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(mgr.getCrashState()).toEqual(firstState);
+
+    const secondTransport = transportInstances[1];
+    secondTransport._process.finish(1);
+    secondTransport.onclose?.();
+    expect(mgr.getCrashState()).toMatchObject({
+      count: 2,
+      lastExit: { code: 1, signal: null },
+    });
+  });
+
+  it('records a clean but unexpected active-child close as code 0', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const transport = transportInstances[0];
+    transport._process.finish(0, null);
+    transport.onclose?.();
+
+    expect(mgr.getCrashState()).toMatchObject({
+      count: 1,
+      lastExit: { code: 0, signal: null },
+    });
+  });
+
+  it('keeps stale closes out of crash state', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const firstTransport = transportInstances[0];
+    await mgr.stop();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    firstTransport._process.finish(null, 'SIGSEGV');
+    firstTransport.onclose?.();
+    expect(mgr.getCrashState().count).toBe(0);
+  });
+
+  it('does not count a prewarm child failure as an active-child exit', async () => {
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('prewarm failed');
+    expect(mgr.getCrashState()).toMatchObject({ count: 0, lastExit: null });
   });
 
   it('stop() during a hanging prewarm does not record uvx unavailable or apply reconnect backoff', async () => {
@@ -761,6 +830,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(0);
     expect(transportCount).toBe(0);
     expect(getDependencyStatus('uvx')).toBeNull();
+    expect(mgr.getCrashState().count).toBe(0);
     expect(logEntries.some(entry => entry.message === 'chroma-mcp uvx prewarm failed')).toBe(false);
 
     prewarmSpawnBehavior = 'success';
@@ -950,6 +1020,8 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker open, skipping spawn')
     ).toBe(true);
     expect(getDependencyStatus('uvx')).toMatchObject({ kind: 'vector_search_unavailable' });
+    // doctor reads the breaker from the crash state.
+    expect(mgr.getCrashState().prewarm).toEqual({ consecutiveFailures: 5, state: 'paused' });
   });
 
   it('sweeps scratch leaked by earlier failures once a prewarm succeeds (#4108)', async () => {
@@ -1055,6 +1127,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(
       logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker latched, restart required')
     ).toBe(true);
+    expect(mgr.getCrashState().prewarm).toEqual({ consecutiveFailures: 20, state: 'stopped' });
   }, 30_000);
 
   it('classifies a mid-handshake transport death as ChromaUnavailableError without error-tracking noise', async () => {
