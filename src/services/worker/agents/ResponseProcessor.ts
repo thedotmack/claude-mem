@@ -472,6 +472,16 @@ export async function processAgentResponse(
   clearDebtForAnsweredWork(session);
 
   if (!session.memorySessionId) {
+    // A valid <skip_summary/> stores nothing, so it does not wait for the
+    // memory session id: confirm it now. Resetting it to pending re-asked the
+    // same batch, for the same final answer, until the id appeared.
+    if (parsed.summary?.skipped) {
+      session.lastSummaryStored = false;
+      await sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
     });

@@ -1508,4 +1508,50 @@ describe('ResponseProcessor', () => {
       expect(session.lastSummaryStored).toBe(false);
     });
   });
+
+  describe('a valid reply that arrives before the memory session id is captured', () => {
+    function sessionManagerWithSpies() {
+      const confirmClaimedMessages = mock(() => Promise.resolve(1));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        getClaimedMessages: mock(() => []),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      return { confirmClaimedMessages, resetProcessingToPending };
+    }
+
+    it('confirms a skip at once: it stores nothing, so it needs no memory session id', async () => {
+      const { confirmClaimedMessages, resetProcessingToPending } = sessionManagerWithSpies();
+      const session = createMockSession({ memorySessionId: null });
+
+      await processAgentResponse('<skip_summary reason="noise" />', session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.lastSummaryStored).toBe(false);
+      expect(session.earliestPendingTimestamp).toBeNull();
+    });
+
+    it('still defers an observation until the id arrives', async () => {
+      const { confirmClaimedMessages, resetProcessingToPending } = sessionManagerWithSpies();
+      const session = createMockSession({ memorySessionId: null });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Found the retry loop</title>
+          <narrative>The worker re-queued the same batch.</narrative>
+        </observation>
+      `;
+
+      await processAgentResponse(responseText, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+  });
 });

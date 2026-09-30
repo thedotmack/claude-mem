@@ -259,9 +259,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // never takes the single cmem-gateway re-probe (or a quota probe) that it
     // would then have to release. The first observation or summarize enqueues
     // work and starts the generator, INIT turn included, through this same
-    // method. Resume sources (overflow-recycle, response-stall,
-    // transport-resume) pass the same gate: with nothing buffered there is
-    // nothing to resume.
+    // method. Resume sources (overflow-recycle, response-stall, rate-limit,
+    // cmem-fallback, the periodic sweep) pass the same gate: with nothing
+    // buffered there is nothing to resume.
     if (this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId) === 0) {
       logger.debug('SESSION', 'Skipping generator start with an empty queue', { sessionId: sessionDbId, source });
       return;
