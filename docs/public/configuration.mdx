@@ -84,7 +84,7 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and rate
 | Setting                                      | Default                     | Description                           |
 |----------------------------------------------|-----------------------------|---------------------------------------|
 | `CLAUDE_MEM_OPENROUTER_API_KEY`              | —                           | OpenRouter API key ([get key](https://openrouter.ai/keys)) |
-| `CLAUDE_MEM_OPENROUTER_MODEL`                | `xiaomi/mimo-v2-flash:free` | Model identifier (supports 100+ models) |
+| `CLAUDE_MEM_OPENROUTER_MODEL`                | `cohere/north-mini-code:free` | Model identifier (supports 100+ models) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL`             | —                           | Optional: URL for analytics           |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
@@ -225,6 +225,18 @@ Hooks are registered in `plugin/hooks/hooks.json`. The current shape uses a sing
 - `Stop` → `hook claude-code summarize`
 
 The exact `hooks.json` entries are written by the installer; do not hand-edit them in the marketplace copy unless you know what you're doing.
+
+#### Turning off the tool hooks
+
+These switches are read from the hook's environment only, not from `~/.claude-mem/settings.json`. Set them under the `env` block in `~/.claude/settings.json` (Claude Code passes that block to every hook) or export them in your shell:
+
+| Variable | Effect when set to `1` |
+|----------|------------------------|
+| `CLAUDE_MEM_DISABLE_TOOL_HOOKS` | PreToolUse (`file-context`) and PostToolUse (`observation`) return a no-op right away. SessionStart, UserPromptSubmit and Stop keep working. |
+| `CLAUDE_MEM_DISABLE_OBSERVATION` | Only PostToolUse `observation` returns a no-op (tool calls are no longer captured). |
+| `CLAUDE_MEM_DISABLE_FILE_CONTEXT` | Only PreToolUse `file-context` returns a no-op (no file history is injected before `Read`). |
+
+Claude Code still launches each hook, so these switches turn off claude-mem's per-tool work, not the hook process itself.
 
 ### Search Configuration
 

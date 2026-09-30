@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   parseNetstatListeningPids,
+  parsePidLines,
   isChromaSidecarName,
   chromaCmdlineMatchesDataDir,
   reclaimGhostListeningPort,
@@ -161,6 +162,9 @@ function ghostDeps(overrides: {
     killed,
     deps: {
       isWin32: () => true,
+      // No wedged worker in the ghost-listener scenarios: keep the reclaim on
+      // the dead-owner path and never touch the real PID file / port probe.
+      readOwnedWorker: () => null,
       listOwners: async () => {
         probeCount += 1;
         return probeCount === 1 ? firstOwners : verifyOwners;
@@ -179,6 +183,7 @@ describe('reclaimGhostListeningPort decision branches', () => {
   it('resolves to not-supported off Windows (never touches a process)', async () => {
     const result = await reclaimGhostListeningPort(37777, {
       isWin32: () => false,
+      readOwnedWorker: () => null,
       listOwners: async () => {
         throw new Error('must not be called');
       },
@@ -205,7 +210,9 @@ describe('reclaimGhostListeningPort decision branches', () => {
     expect((result as { reason: string }).reason).toBe('table-unreadable');
   });
 
-  it('never kills when a live owner holds the port (wedged worker / foreign process)', async () => {
+  it('never kills when a live FOREIGN owner holds the port (not our PID file)', async () => {
+    // readOwnedWorker returns null (ghostDeps default), so a live owner our PID
+    // file does not claim keeps the owner-alive refusal.
     const { deps: testDeps, killed } = ghostDeps({ owners: [LIVE_OWNER] });
     const result = await reclaimGhostListeningPort(37777, testDeps);
     expect(result).toEqual({ reclaimed: false, reason: 'owner-alive', killedPids: [] });
@@ -335,5 +342,217 @@ describe('reclaimGhostListeningPort decision branches', () => {
     const result = await reclaimGhostListeningPort(37777, testDeps);
     expect(result.reclaimed).toBe(true);
     expect(killed.map(entry => entry.pid).sort((a, b) => a - b)).toEqual([3001, 3101]);
+  });
+});
+
+
+/**
+ * Wedged-worker reclaim: our PID file names a LIVE worker that holds the port
+ * but no longer answers /health (#4127). Unlike the ghost-listener path this is
+ * not Windows-specific and the owner is alive, so it runs before the netstat /
+ * sidecar logic and on every platform — and it kills only on evidence: past its
+ * boot grace, silent on two spaced health probes, the LISTEN owner of the port,
+ * the recorded start token, and a claude-mem worker command line.
+ */
+const NOW_MS = Date.parse('2026-09-30T12:00:00.000Z');
+const WEDGED_WORKER_PID = 51000;
+const WEDGED_WORKER_TOKEN = 'Wed Sep 30 11:00:00 2026';
+
+interface WedgedOverrides {
+  isWin32?: boolean;
+  owned?: { pid: number; port: number; startedAt: string; startToken?: string } | null;
+  ageSeconds?: number;
+  healthAnswers?: boolean[];
+  listenersBefore?: number[] | null;
+  listenersAfter?: number[] | null;
+  identity?: { startToken: string | null; cmdline: string | null };
+  killFails?: boolean;
+}
+
+function wedgedDeps(overrides: WedgedOverrides = {}): {
+  deps: GhostPortReclaimDeps;
+  killed: Array<{ pid: number; signalMode: string; expectedStartToken?: string | null }>;
+  healthProbes: () => number;
+  sleeps: number[];
+} {
+  const killed: Array<{ pid: number; signalMode: string; expectedStartToken?: string | null }> = [];
+  const sleeps: number[] = [];
+  const healthAnswers = [...(overrides.healthAnswers ?? [false, false])];
+  let healthProbes = 0;
+  let listOwnersCalls = 0;
+  const startedAt = new Date(NOW_MS - (overrides.ageSeconds ?? 3_600) * 1000).toISOString();
+  return {
+    killed,
+    sleeps,
+    healthProbes: () => healthProbes,
+    deps: {
+      isWin32: () => overrides.isWin32 ?? false,
+      readOwnedWorker: () => (overrides.owned === undefined
+        ? { pid: WEDGED_WORKER_PID, port: 37777, startedAt, startToken: WEDGED_WORKER_TOKEN }
+        : overrides.owned),
+      now: () => NOW_MS,
+      sleep: async (ms: number) => { sleeps.push(ms); },
+      minOwnerAgeSeconds: 300,
+      probeHealth: async () => {
+        healthProbes += 1;
+        return healthAnswers.shift() ?? false;
+      },
+      // First call: who LISTENs before the kill; second call: after it.
+      listOwners: async () => {
+        listOwnersCalls += 1;
+        if (listOwnersCalls === 1) {
+          return overrides.listenersBefore === undefined ? [WEDGED_WORKER_PID] : overrides.listenersBefore;
+        }
+        return overrides.listenersAfter === undefined ? [] : overrides.listenersAfter;
+      },
+      readIdentity: async () => overrides.identity ?? {
+        startToken: WEDGED_WORKER_TOKEN,
+        cmdline: '/Users/me/.bun/bin/bun /Users/me/.claude/plugins/claude-mem/scripts/worker-service.cjs --daemon',
+      },
+      // The ghost path must never be reached when the wedged path applies.
+      readTable: async () => {
+        throw new Error('ghost path must not run when the wedged path applies');
+      },
+      killTree: async (pid, options) => {
+        if (overrides.killFails) throw new Error('kill failed');
+        killed.push({ pid, signalMode: options.signalMode, expectedStartToken: options.expectedStartToken });
+      },
+    },
+  };
+}
+
+describe('reclaimWedgedOwnedWorker (via reclaimGhostListeningPort)', () => {
+  it('reclaims a wedged worker we own on POSIX: graceful tree-kill pinned to the recorded start token', async () => {
+    const { deps: testDeps, killed, healthProbes, sleeps } = wedgedDeps({ isWin32: false });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: true, killedPids: [WEDGED_WORKER_PID] });
+    expect(killed).toEqual([
+      { pid: WEDGED_WORKER_PID, signalMode: 'graceful', expectedStartToken: WEDGED_WORKER_TOKEN },
+    ]);
+    // Two health re-probes, spaced apart, before any signal.
+    expect(healthProbes()).toBe(2);
+    expect(sleeps).toHaveLength(1);
+  });
+
+  it('reclaims a wedged worker we own on Windows too', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: true });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+
+  it('never kills a young worker (boot / migration grace) and does not even probe it', async () => {
+    const { deps: testDeps, killed, healthProbes } = wedgedDeps({ ageSeconds: 30 });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-booting', killedPids: [] });
+    expect(killed).toEqual([]);
+    expect(healthProbes()).toBe(0);
+  });
+
+  it('never kills when the PID file has no parseable startedAt', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({
+      owned: { pid: WEDGED_WORKER_PID, port: 37777, startedAt: 'not-a-date', startToken: WEDGED_WORKER_TOKEN },
+    });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect((result as { reason: string }).reason).toBe('owner-booting');
+    expect(killed).toEqual([]);
+  });
+
+  it('stands down when the worker answers the second health re-probe', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ healthAnswers: [false, true] });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-responding', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('never kills on a start-token mismatch (PID reused since the PID file was written)', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({
+      identity: { startToken: 'Thu Oct  1 09:00:00 2026', cmdline: 'bun worker-service.cjs --daemon' },
+    });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-identity-mismatch', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('never kills a process whose command line is not a claude-mem worker', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({
+      identity: { startToken: WEDGED_WORKER_TOKEN, cmdline: '/usr/bin/python3 -m http.server 37777' },
+    });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect((result as { reason: string }).reason).toBe('owner-identity-mismatch');
+    expect(killed).toEqual([]);
+  });
+
+  it('never kills when the identity read came back empty (PID reissued mid-read)', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ identity: { startToken: null, cmdline: null } });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect((result as { reason: string }).reason).toBe('owner-identity-mismatch');
+    expect(killed).toEqual([]);
+  });
+
+  it('leaves a foreign listener untouched: our worker is alive but does not own the port', async () => {
+    // The wedged path defers to the ghost-listener logic, which on POSIX has
+    // nothing to reclaim — the live foreign owner is never signalled.
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: false, listenersBefore: [4242] });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'not-supported', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('on Windows, a live foreign listener still gets the owner-alive refusal', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: true, listenersBefore: [process.pid] });
+    // After the wedged path defers, the ghost path re-reads owners (still the
+    // live foreign pid) and needs the process table.
+    testDeps.listOwners = async () => [process.pid];
+    testDeps.readTable = async () => [];
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-alive', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('refuses to kill when the port owner cannot be read (lsof / netstat unavailable)', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ listenersBefore: null });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'netstat-unreadable', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('reports kill-failed when the wedged worker cannot be killed', async () => {
+    const { deps: testDeps } = wedgedDeps({ killFails: true });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'kill-failed', killedPids: [] });
+  });
+
+  it('reports still-bound when the port survives the kill', async () => {
+    const { deps: testDeps } = wedgedDeps({ listenersAfter: [WEDGED_WORKER_PID] });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'still-bound', killedPids: [WEDGED_WORKER_PID] });
+  });
+
+  it('does not apply when our PID file claims a DIFFERENT port (falls through)', async () => {
+    // owned.port !== target: the wedged path declines, so POSIX resolves to
+    // not-supported instead of killing a worker bound to another port.
+    const { deps: testDeps, killed, healthProbes } = wedgedDeps({
+      isWin32: false,
+      owned: { pid: WEDGED_WORKER_PID, port: 40000, startedAt: '2026-09-30T00:00:00.000Z' },
+    });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect((result as { reason: string }).reason).toBe('not-supported');
+    expect(killed).toEqual([]);
+    expect(healthProbes()).toBe(0);
+  });
+
+  it('does not apply when no worker PID file is ours (falls through)', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: false, owned: null });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect((result as { reason: string }).reason).toBe('not-supported');
+    expect(killed).toEqual([]);
+  });
+});
+
+describe('parsePidLines', () => {
+  it('parses lsof -t output into unique PIDs', () => {
+    expect(parsePidLines('51000\n51000\n4242\n\n')).toEqual([51000, 4242]);
+    expect(parsePidLines('')).toEqual([]);
   });
 });
