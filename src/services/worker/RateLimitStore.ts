@@ -88,10 +88,13 @@ export class RateLimitStore {
    */
   set(info: RateLimitInfo | undefined | null): boolean {
     if (!info || typeof info !== 'object') return false;
+    // The raw per-window map is consumed below. Storing it too would leave a
+    // nested copy on the entry that goes stale on /api/health.
+    const { unifiedWindows, ...reported } = info;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
     const previousRejection = this.rejections.get(key);
     const observedAt = Date.now();
-    const unified = readUnifiedWindows(info.unifiedWindows);
+    const unified = readUnifiedWindows(unifiedWindows);
 
     // Other windows: refresh fields the unified snapshot actually reports.
     // Utilization establishes a new display state and drops stale status;
@@ -129,9 +132,12 @@ export class RateLimitStore {
 
     const own = info.rateLimitType ? unified.get(info.rateLimitType) : undefined;
     const merged: RateLimitEntry = {
-      ...info,
+      ...reported,
       utilization: info.utilization ?? own?.utilization,
-      resetsAt: info.resetsAt ?? own?.resetsAt,
+      // Stored in epoch ms whatever unit the event used, so the rejection
+      // de-dupe below and /api/health compare like with like.
+      resetsAt: normalizeResetTimeMs(info.resetsAt) ?? own?.resetsAt,
+      overageResetsAt: normalizeResetTimeMs(info.overageResetsAt),
       observedAt,
     };
     this.entries.set(key, merged);
@@ -198,7 +204,7 @@ function readUnifiedWindows(raw: unknown): Map<RateLimitWindow, UnifiedWindowSna
     const { utilization, resetsAt } = entry as Record<string, unknown>;
     const snapshot: UnifiedWindowSnapshot = {};
     if (typeof utilization === 'number' && Number.isFinite(utilization)) snapshot.utilization = utilization;
-    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = resetsAt;
+    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = normalizeResetTimeMs(resetsAt);
     if (snapshot.utilization !== undefined || snapshot.resetsAt !== undefined) out.set(window, snapshot);
   }
   return out;

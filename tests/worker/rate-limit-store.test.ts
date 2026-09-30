@@ -217,6 +217,11 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     });
   });
 
+  it('still aborts on a snapshot with no resetsAt (cannot tell it is stale)', () => {
+    store.set({ rateLimitType: 'seven_day', utilization: 0.98 });
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
+  });
+
   it('does not re-abort a later allowed window because an earlier rejection expired', () => {
     store.set({
       rateLimitType: 'five_hour',
@@ -356,6 +361,31 @@ describe('RateLimitStore.set → new-rejection signal', () => {
     const store = freshStore();
     expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: 1 })).toBe(true);
     expect(store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: 1 })).toBe(true);
+  });
+
+  it('dedupes rejection telemetry when the same exhaustion arrives in different reset units', () => {
+    const store = freshStore();
+    const resetSec = Math.floor(FIXED_NOW / 1000) + 3_600;
+    // Claude Code writes epoch seconds; the SDK documents epoch ms. One
+    // exhaustion must stay one usage_limit_hit whichever unit arrives.
+    expect(store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: resetSec })).toBe(true);
+    expect(store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: resetSec * 1000 })).toBe(false);
+    expect(store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: resetSec })).toBe(false);
+  });
+
+  it('stores reset times in epoch ms whatever unit the event used', () => {
+    const store = freshStore();
+    const resetSec = Math.floor(FIXED_NOW / 1000) + 3_600;
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      resetsAt: resetSec,
+      overageResetsAt: resetSec + 60,
+      unifiedWindows: { seven_day: { utilization: 0.2, resetsAt: resetSec + 86_400 } },
+    });
+    expect(store.get('five_hour')?.resetsAt).toBe(resetSec * 1000);
+    expect(store.get('five_hour')?.overageResetsAt).toBe((resetSec + 60) * 1000);
+    expect(store.get('seven_day')?.resetsAt).toBe((resetSec + 86_400) * 1000);
   });
 
   it('never reports allowed or warning snapshots', () => {
@@ -575,6 +605,13 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     expect(store.get('five_hour')?.status).toBeUndefined();
 
     expect(store.set(rejected)).toBe(false);
+  });
+
+  it('does not persist unifiedWindows on the stored entry', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', unifiedWindows: { seven_day: { utilization: 0.1 } } });
+    expect((store.get('five_hour') as any).unifiedWindows).toBeUndefined();
+    expect((store.get('seven_day') as any).unifiedWindows).toBeUndefined();
   });
 });
 
