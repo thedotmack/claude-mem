@@ -9,6 +9,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { resolveDateBound } from '../../shared/date-bounds.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
@@ -389,14 +390,10 @@ export class SearchManager {
 
       if (dateRange) {
         if (dateRange.start) {
-          startEpoch = typeof dateRange.start === 'number'
-            ? dateRange.start
-            : new Date(dateRange.start).getTime();
+          startEpoch = resolveDateBound(dateRange.start, 'start');
         }
         if (dateRange.end) {
-          endEpoch = typeof dateRange.end === 'number'
-            ? dateRange.end
-            : new Date(dateRange.end).getTime();
+          endEpoch = resolveDateBound(dateRange.end, 'end');
         }
       } else {
         startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
