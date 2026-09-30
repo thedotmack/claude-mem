@@ -5,6 +5,7 @@ import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import type {
   ContextConfig,
   Observation,
@@ -45,6 +46,7 @@ export function queryObservationsMulti(
     limit: config.totalObservationCount,
     platformSource,
     projects,
+    excludeSubagents: config.mainAgentOnly,
   });
 }
 
@@ -69,6 +71,7 @@ export function queryObservationsNewest(
     platformSource?: string;
     projects?: string[];
     includeManualSaves?: boolean;
+    excludeSubagents?: boolean;
   }
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
@@ -85,6 +88,12 @@ export function queryObservationsNewest(
     ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
     : '';
 
+  // #3274: SessionStart injection opts in. The seat INDEX passes `projects`
+  // too, and must keep agent-tagged rows. A subagent row carries BOTH agent_id
+  // and agent_type: transcript-watch rows (Grok Bot seats) carry agent_id alone
+  // and must stay injected, or `session_start_context` returns nothing for them.
+  const agentFilter = options.excludeSubagents ? `AND ${mainAgentRowSql('o')}` : '';
+
   return db.db.prepare(`
     SELECT
       ${OBSERVATION_SELECT}
@@ -92,6 +101,7 @@ export function queryObservationsNewest(
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (? IS NULL OR s.platform_source = ?)
       ${projectClause}
+      ${agentFilter}
       AND (${manualClause} (
         type IN (${typePlaceholders})
         AND EXISTS (

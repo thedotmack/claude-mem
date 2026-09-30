@@ -497,19 +497,24 @@ export class ClaudeProvider {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
-          await processAgentResponse(
-            textContent,
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            discoveryTokens,
-            originalTimestamp,
-            'SDK',
-            cwdTracker.lastCwd,
-            modelId,
-            activeResponseContext.current
-          );
+          pacer.processingStarted();
+          try {
+            await processAgentResponse(
+              textContent,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              discoveryTokens,
+              originalTimestamp,
+              'SDK',
+              cwdTracker.lastCwd,
+              modelId,
+              activeResponseContext.current
+            );
+          } finally {
+            pacer.processingFinished();
+          }
 
           discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
           turnDispatchedText = true;
@@ -579,19 +584,24 @@ export class ClaudeProvider {
               });
               await this.sessionManager.resetProcessingToPending(session.sessionDbId);
             } else {
-              await processAgentResponse(
-                '',
-                session,
-                this.dbManager,
-                this.sessionManager,
-                worker,
-                (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
-                session.earliestPendingTimestamp,
-                'SDK',
-                cwdTracker.lastCwd,
-                modelId,
-                activeResponseContext.current
-              );
+              pacer.processingStarted();
+              try {
+                await processAgentResponse(
+                  '',
+                  session,
+                  this.dbManager,
+                  this.sessionManager,
+                  worker,
+                  (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
+                  session.earliestPendingTimestamp,
+                  'SDK',
+                  cwdTracker.lastCwd,
+                  modelId,
+                  activeResponseContext.current
+                );
+              } finally {
+                pacer.processingFinished();
+              }
               discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
             }
           }

@@ -87,9 +87,9 @@ EOF
 
 **Get your API key**: https://openrouter.ai/keys
 
-**Free models available**:
-- `google/gemini-2.0-flash-exp:free`
-- `xiaomi/mimo-v2-flash:free`
+**Free models available** (ids change; check https://openrouter.ai/models):
+- `cohere/north-mini-code:free` (claude-mem's default)
+- `poolside/laguna-xs-2.1:free`
 
 ### Option C: Claude API (If You Have API Access)
 
