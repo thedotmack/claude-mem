@@ -1,8 +1,11 @@
 
 import { getCredential } from '../../shared/EnvManager.js';
-import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
+import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -62,6 +65,27 @@ function parseUpstreamErrorEnvelope(bodyText: string): UpstreamErrorEnvelope | n
   }
   return null;
 }
+
+/**
+ * OpenRouter's answers when the configured model id itself is gone: a retired
+ * model (404 "This model has been deprecated. It is recommended to migrate to
+ * …", #3659), an id that is not in the catalog (400 "… is not a valid model
+ * ID"), or one with no serving endpoint left (404 "No endpoints found for
+ * <id>."). Retrying never helps, and the generic "check the API key, spend
+ * limit and base URL" remedy points at the wrong setting, so these get their
+ * own code and remedy. Phrases only count on a 400/404 or an error envelope
+ * inside a 200; any other 400/404 stays a plain bad request.
+ */
+const MODEL_UNAVAILABLE_MARKERS = [
+  'model has been deprecated',
+  'not a valid model id',
+  'no endpoints found for',
+];
+
+const MODEL_UNAVAILABLE_ACTION =
+  'Set CLAUDE_MEM_OPENROUTER_MODEL in ~/.claude-mem/settings.json to a model your endpoint still serves (on OpenRouter, one from the model list).';
+
+const OPENROUTER_MODEL_LIST_URL = 'https://openrouter.ai/models';
 
 /**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
@@ -144,6 +168,23 @@ export function classifyOpenRouterError(input: {
     );
   }
 
+  if (
+    (status === 400 || status === 404 || (status === 200 && envelope !== null))
+    && MODEL_UNAVAILABLE_MARKERS.some(marker => lower.includes(marker))
+  ) {
+    return new ClassifiedProviderError(
+      describe('model unavailable'),
+      {
+        kind: 'unrecoverable',
+        cause: input.cause,
+        code: 'model_unavailable',
+        action: MODEL_UNAVAILABLE_ACTION,
+        url: OPENROUTER_MODEL_LIST_URL,
+        ...detail,
+      },
+    );
+  }
+
   if (status === 400 || status === 404) {
     return new ClassifiedProviderError(
       describe('bad request'),
@@ -173,6 +214,13 @@ export function classifyOpenRouterError(input: {
 }
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
+const OPENROUTER_EMPTY_HISTORY_FALLBACK = '(context unavailable)';
+
+/**
+ * Output-token cap sent on every chat-completions request (as `max_tokens`, or
+ * `max_completion_tokens` on the compatibility retry).
+ */
+const OPENROUTER_MAX_OUTPUT_TOKENS = 4096;
 
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -185,7 +233,10 @@ interface OpenRouterResponse {
   choices?: Array<{
     message?: {
       role?: string;
-      content?: string;
+      content?: string | Array<{ type: string; text?: string }> | null;
+      reasoning_content?: string;
+      reasoning?: string | null;
+      tool_calls?: unknown[];
     };
     finish_reason?: string;
   }>;
@@ -206,12 +257,172 @@ interface OpenRouterResponse {
   };
 }
 
-interface OpenRouterConfig {
+export interface OpenRouterConfig {
   apiKey: string;
+  /** First entry of the configured list; the one named in logs and sessions. */
   model: string;
+  /**
+   * The rest of the configured list, in priority order, sent as OpenRouter's
+   * native `models` fallback array. Empty for the ordinary single-model
+   * configuration, which is every install that has not opted in.
+   */
+  fallbackModels: string[];
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  /** Per-call output mode for the wrap-up; never a persisted setting. */
+  plainText?: boolean;
+}
+
+function hasProcessEnvOverride(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(process.env, key);
+}
+
+/**
+ * Split CLAUDE_MEM_OPENROUTER_MODEL into a primary model and its fallbacks.
+ *
+ * The setting has always accepted an array, and the array has always been
+ * comma-joined into a single `model` string that OpenRouter rejects outright —
+ * #3829 item 3. No model id contains a comma, so the joined form is never
+ * anything a user wanted; a comma- or whitespace-separated STRING is the same
+ * mistake typed a different way, and is split here too.
+ *
+ * The first entry becomes `model`, which keeps every single-model install
+ * byte-identical, and the rest become OpenRouter's native `models` fallback
+ * array. Blanks and repeats are dropped: a repeat would spend a fallback slot
+ * re-trying the model that just failed.
+ */
+export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fallbackModels: string[] } {
+  const parts = (Array.isArray(rawModel) ? rawModel : [rawModel])
+    // Strings only: a non-string scalar resolved to the default before this
+    // change, and no model id is a bare number.
+    .filter((entry): entry is string => typeof entry === 'string')
+    .flatMap(entry => entry.split(/[\s,]+/))
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0);
+
+  const unique = [...new Set(parts)];
+  if (unique.length === 0) {
+    return {
+      model: SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
+      fallbackModels: [],
+    };
+  }
+  return { model: unique[0], fallbackModels: unique.slice(1) };
+}
+
+/**
+ * Build the chat-completions request body.
+ *
+ * Exported so the body shape is testable without a network round trip, which
+ * matters here: in OpenRouter's documented fallback shape `models` REPLACES
+ * `model` rather than accompanying it, and that is not a thing to get wrong
+ * silently.
+ *
+ * `models` is only sent to openrouter.ai. A custom gateway reached through
+ * CLAUDE_MEM_OPENROUTER_BASE_URL speaks plain OpenAI, where an unknown body
+ * field is a 400 — the same reason `usage` is already gated. Such a gateway
+ * gets the first model, still strictly better than today's rejected
+ * comma-joined string.
+ */
+export function buildOpenRouterRequestBody(input: {
+  model: string;
+  fallbackModels: string[];
+  messages: OpenAIMessage[];
+  apiUrl: string;
+  plainText?: boolean;
+}): Record<string, unknown> {
+  const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
+  const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
+  return {
+    ...(useFallbacks
+      ? { models: [input.model, ...input.fallbackModels] }
+      : { model: input.model }),
+    messages: input.messages,
+    temperature: 0.3,  // Lower temperature for structured extraction
+    max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+    // Keep the same model, but ask for an answer instead of spending this
+    // short rewrite's budget on reasoning. Only known OpenRouter endpoints
+    // accept the vendor-specific reasoning control (cmem forwards it).
+    ...(input.plainText && (isOpenRouter || isCmemGatewayUrl(input.apiUrl)) ? {
+      response_format: { type: 'text' },
+      reasoning: { enabled: false },
+    } : {}),
+    // Ask openrouter.ai for usage accounting (token counts + cost).
+    // Only sent to openrouter.ai — strict custom gateways may reject
+    // unknown body fields.
+    ...(isOpenRouter ? { usage: { include: true } } : {}),
+  };
+}
+
+/**
+ * Resolve key/base/model as a source-coherent tuple. In particular, a
+ * key-only environment override must never inherit a persisted cmem.ai base
+ * URL and send a personal OpenRouter credential to the cmem gateway. To
+ * replace a stored cmem tuple at runtime, explicitly override the base URL too
+ * (an empty CLAUDE_MEM_OPENROUTER_BASE_URL selects normal OpenRouter).
+ */
+export function resolveOpenRouterConfig(
+  settingsPath: string = USER_SETTINGS_PATH,
+): OpenRouterConfig {
+  const persisted = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const persistedBaseUrl = typeof persisted.CLAUDE_MEM_OPENROUTER_BASE_URL === 'string'
+    ? persisted.CLAUDE_MEM_OPENROUTER_BASE_URL.trim()
+    : '';
+  const hasBaseOverride = hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_BASE_URL');
+  const lockPersistedCmemTuple = isCmemGatewayUrl(persistedBaseUrl) && !hasBaseOverride;
+
+  const configuredBaseUrl = typeof settings.CLAUDE_MEM_OPENROUTER_BASE_URL === 'string'
+    ? settings.CLAUDE_MEM_OPENROUTER_BASE_URL.trim()
+    : '';
+  const baseUrl = lockPersistedCmemTuple
+    ? persistedBaseUrl
+    : configuredBaseUrl || process.env.OPENROUTER_BASE_URL?.trim() || '';
+
+  const detachPersistedCmemTuple = isCmemGatewayUrl(persistedBaseUrl)
+    && hasBaseOverride
+    && !isCmemGatewayUrl(baseUrl);
+
+  const persistedKey = typeof persisted.CLAUDE_MEM_OPENROUTER_API_KEY === 'string'
+    ? persisted.CLAUDE_MEM_OPENROUTER_API_KEY.trim()
+    : '';
+  const configuredKey = typeof settings.CLAUDE_MEM_OPENROUTER_API_KEY === 'string'
+    ? settings.CLAUDE_MEM_OPENROUTER_API_KEY.trim()
+    : '';
+  const explicitKey = hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_API_KEY')
+    ? process.env.CLAUDE_MEM_OPENROUTER_API_KEY?.trim() ?? ''
+    : '';
+  const apiKey = lockPersistedCmemTuple
+    ? persistedKey
+    : detachPersistedCmemTuple
+      // A base-only override must not carry the account-owned cmem key to a
+      // different host. Accept only a key supplied as part of this runtime
+      // tuple or the user's personal key from ~/.claude-mem/.env.
+      ? explicitKey || getCredential('OPENROUTER_API_KEY') || ''
+      : configuredKey || getCredential('OPENROUTER_API_KEY') || '';
+
+  let rawModel: unknown = lockPersistedCmemTuple
+    ? persisted.CLAUDE_MEM_OPENROUTER_MODEL
+    : settings.CLAUDE_MEM_OPENROUTER_MODEL;
+  if (
+    isCmemGatewayUrl(persistedBaseUrl)
+    && hasBaseOverride
+    && !isCmemGatewayUrl(baseUrl)
+    && !hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_MODEL')
+  ) {
+    // A base override that moves away from cmem must not retain the gateway's
+    // cmem-observer model. Restore the ordinary OpenRouter default unless the
+    // operator supplied a model override as part of the new tuple.
+    rawModel = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+  }
+  const { model, fallbackModels } = normalizeOpenRouterModel(rawModel);
+
+  const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
+  const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
+  const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
+
+  return { apiKey, model, fallbackModels, apiUrl, siteUrl, appName };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -224,7 +435,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected getConfig(): OpenRouterConfig {
-    return this.getOpenRouterConfig();
+    return resolveOpenRouterConfig();
   }
 
   protected missingApiKeyError(): Error {
@@ -234,7 +445,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   protected prepareSessionExtras(session: ActiveSession, config: OpenRouterConfig): void {
     // openrouter.ai responses carry real usage/cost; custom OpenAI-compatible
     // gateways often fabricate or omit usage — let telemetry segment the two.
-    session.endpointClass = config.apiUrl.includes('openrouter.ai') ? 'openrouter' : 'custom';
+    session.endpointClass = isOpenRouterApiUrl(config.apiUrl) ? 'openrouter' : 'custom';
   }
 
   protected estimateTokens(text: string): number {
@@ -258,14 +469,54 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.content
-    }));
+    let newestNonEmptyContent: string | null = null;
+    for (const msg of history) {
+      const trimmed = msg.content.trim();
+      if (trimmed.length > 0) {
+        newestNonEmptyContent = trimmed;
+      }
+    }
+
+    const messages: OpenAIMessage[] = [];
+    for (const msg of history) {
+      const trimmed = msg.content.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const role = msg.role === 'assistant' ? 'assistant' : 'user';
+      if (messages.length === 0 && role === 'assistant') {
+        continue;
+      }
+
+      const previous = messages[messages.length - 1];
+      if (previous?.role === role) {
+        previous.content = `${previous.content}\n\n${msg.content}`;
+      } else {
+        messages.push({ role, content: msg.content });
+      }
+    }
+
+    if (messages.length === 0) {
+      return [{
+        role: 'user',
+        content: newestNonEmptyContent ?? OPENROUTER_EMPTY_HISTORY_FALLBACK,
+      }];
+    }
+
+    return messages;
   }
 
-  protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+  protected async query(
+    history: ConversationMessage[],
+    config: OpenRouterConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult> {
+    return this.queryOpenRouterMultiTurn(
+      history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
+      signal, config.plainText, perAttemptTimeoutMs,
+    );
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -273,46 +524,43 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiUrl: string,
     apiKey: string,
     model: string,
+    fallbackModels: string[],
     messages: OpenAIMessage[],
     siteUrl: string | undefined,
     appName: string | undefined,
     priorRequestId: string | null,
-    attemptSignal: AbortSignal
+    attemptSignal: AbortSignal,
+    plainText?: boolean,
   ): Promise<Response> {
-    return fetch(apiUrl, {
+    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText });
+    const maxOutputTokens = typeof body.max_tokens === 'number' ? body.max_tokens : OPENROUTER_MAX_OUTPUT_TOKENS;
+    return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-        'X-Title': appName || 'claude-mem',
+        ...openRouterAttributionHeaders(siteUrl, appName),
         'Content-Type': 'application/json',
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-        // Ask openrouter.ai for usage accounting (token counts + cost).
-        // Only sent to openrouter.ai — strict custom gateways may reject
-        // unknown body fields.
-        ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-      }),
       signal: attemptSignal,
-    });
+    }, body, maxOutputTokens);
   }
 
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
     model: string,
+    fallbackModels: string[],
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    signal?: AbortSignal,
+    plainText?: boolean,
+    perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(history.map(m => m.content).join(''));
+    const estimatedTokens = this.estimateTokens(messages.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: history.length,
@@ -321,17 +569,22 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     });
 
     let priorRequestId: string | null = null;
+    // The id of the response actually returned. priorRequestId keeps an earlier
+    // failed attempt's id for the retry-dedup header, so it would name the wrong
+    // request when the final response carries no id header.
+    let finalRequestId: string | undefined;
 
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, plainText);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
       }
 
       const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
+      finalRequestId = requestId ?? undefined;
       if (requestId) {
         priorRequestId = requestId;
       } else {
@@ -363,14 +616,61 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }, { label: `OpenRouter ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}) });
 
-    if (!data.choices?.[0]?.message?.content) {
+    // A successful cmem-gateway response proves the delivered key is funded
+    // again (resubscribed) — clear the trial-expiry fallback marker so
+    // dispatch returns to the gateway. No-op for every other endpoint.
+    clearProFallbackOnGatewaySuccess(apiUrl);
+
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    // OpenAI-compatible gateways may represent assistant text as content
+    // blocks. Never substitute reasoning or tool arguments for the answer.
+    const content = typeof message?.content === 'string'
+      ? message.content
+      : Array.isArray(message?.content)
+        ? message.content.filter(part => part?.type === 'text' && typeof part.text === 'string')
+          .map(part => part.text).join('\n')
+        : '';
+    // `length`: generation stopped at the output-token limit. A block cut off
+    // mid-tag never closes, so the parser drops it: silently when earlier blocks
+    // parsed, taking the whole batch when none did. Logged before the plain-text
+    // and empty-reply exits so a reply cut off before any text is named too.
+    if (choice?.finish_reason === 'length') {
+      logger.warn('SDK', 'OpenRouter reply was cut off at the output-token limit', {
+        model: data.model ?? model,
+        requestId: finalRequestId,
+        maxTokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+        outputTokens: data.usage?.completion_tokens,
+        contentChars: content.length,
+        messagesInContext: history.length,
+      });
+    }
+    if (plainText && !content.trim()) {
+      const error = new Error('OpenRouter returned no assistant text for the Telegram wrap-up');
+      logger.error('TELEGRAM', error.message, {
+        model: data.model ?? model,
+        requestId: priorRequestId,
+        finishReason: choice?.finish_reason,
+        contentType: Array.isArray(message?.content) ? 'array' : typeof message?.content,
+        hasReasoningContent: Boolean(message?.reasoning_content || message?.reasoning),
+        toolCalls: message?.tool_calls?.length ?? 0,
+        completionTokens: data.usage?.completion_tokens,
+      }, error);
+      throw error;
+    }
+    if (!message || (typeof message.content !== 'string' && !content)) {
       logger.error('SDK', 'Empty response from OpenRouter');
       return { content: '' };
     }
 
-    const content = data.choices[0].message.content;
+    if (content.length === 0) {
+      logger.debug('SDK', 'OpenRouter returned an empty message', {
+        finishReason: choice.finish_reason,
+        hasReasoningContent: Boolean(message.reasoning_content),
+      });
+    }
     const tokensUsed = data.usage?.total_tokens;
     const realInputTokens = data.usage?.prompt_tokens;
     const realOutputTokens = data.usage?.completion_tokens;
@@ -400,40 +700,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel };
   }
 
-  private getOpenRouterConfig(): OpenRouterConfig {
-    const settingsPath = USER_SETTINGS_PATH;
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-    const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '';
-
-    // Model is passed verbatim — any OpenAI-compatible model id is accepted
-    // (e.g. deepseek-chat, an LM Studio local model). #2393. Settings are raw
-    // JSON passthrough, so coerce non-string spellings (e.g. a JSON-array
-    // fallback list) to a string instead of leaking them downstream, where
-    // the telemetry scrubber drops non-string model values silently.
-    const rawModel: unknown = settings.CLAUDE_MEM_OPENROUTER_MODEL;
-    const model = typeof rawModel === 'string' && rawModel.trim()
-      ? rawModel
-      : Array.isArray(rawModel) && rawModel.length > 0
-        ? rawModel.map(String).join(',')
-        : 'xiaomi/mimo-v2-flash:free';
-
-    // Base URL: settings value wins, then OPENROUTER_BASE_URL env var, else
-    // the default OpenRouter endpoint (unchanged behavior). #2382/#2590/#2622/#2393.
-    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || process.env.OPENROUTER_BASE_URL || '';
-    const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
-
-    const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
-    const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
-
-    return { apiKey, model, apiUrl, siteUrl, appName };
-  }
 }
 
-export function isOpenRouterAvailable(): boolean {
-  const settingsPath = USER_SETTINGS_PATH;
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY'));
+export function isOpenRouterAvailable(settingsPath: string = USER_SETTINGS_PATH): boolean {
+  return Boolean(resolveOpenRouterConfig(settingsPath).apiKey);
 }
 
 export function isOpenRouterSelected(): boolean {

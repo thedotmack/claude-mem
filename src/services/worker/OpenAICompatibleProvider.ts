@@ -8,22 +8,24 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
-import { isClassified } from './provider-errors.js';
-import { resolveContextWindowTokens, FALLBACK_CONTEXT_WINDOW_TOKENS } from './context-window.js';
-import { buildCompactionTimeline } from './observer-compaction.js';
+import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
+import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
+import {
+  shouldRecycleConversation,
+  conversationChars,
+  resolveConversationMaxChars,
+} from '../../shared/observer-recycle.js';
+import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
+import { resolveFieldOptimizeTimeoutMs } from './retry.js';
+import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
+
 import {
   processAgentResponse,
   snapshotResponseContext,
   isAbortError,
   type WorkerRef
 } from './agents/index.js';
-
-const COMPACT_TRIGGER_RATIO = 0.7;
-const REINJECT_BUDGET_RATIO = 0.3;
-const PAYLOAD_WINDOW_RATIO = 0.25;
-const PROMPT_WINDOW_RATIO = 0.5;
-const PAYLOAD_CHARS_PER_TOKEN = 4;
-const PAYLOAD_MIN_CHARS = 256;
 
 /**
  * Normalized result returned by a concrete provider's `query()`.
@@ -45,13 +47,12 @@ export interface ProviderQueryResult {
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
  * (Gemini, OpenRouter). The session lifecycle — synthetic memory-session-id
  * generation, init/continuation prompt, the observation/summary message loop,
- * cumulative token accounting, abort-aware error handling, and context
- * compaction — is identical between them. Per-provider differences (config
+ * cumulative token accounting, abort-aware error handling, and history
+ * truncation — is identical between them. Per-provider differences (config
  * resolution, request shape, token estimation, usage/cost reporting) are
- * supplied by abstract members. User prompts are pushed here; accepted
- * assistant responses are pushed by processAgentResponse.
+ * supplied by abstract members.
  */
-export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string }> {
+export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string; plainText?: boolean }> {
   protected dbManager: DatabaseManager;
   protected sessionManager: SessionManager;
 
@@ -78,8 +79,67 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Throw a provider-specific "API key not configured" error. */
   protected abstract missingApiKeyError(): Error;
 
-  /** Issue the actual HTTP request and normalize its response. */
-  protected abstract query(history: ConversationMessage[], config: TConfig): Promise<ProviderQueryResult>;
+  /**
+   * Issue the actual HTTP request and normalize its response.
+   * `perAttemptTimeoutMs` overrides the CLAUDE_MEM_LLM_TIMEOUT_MS per-attempt
+   * deadline for callers racing their own, longer deadline (the field pass).
+   */
+  protected abstract query(
+    history: ConversationMessage[],
+    config: TConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult>;
+
+  /**
+   * One bounded, standalone call that condenses an oversized tool payload.
+   *
+   * Issued off to the side with its own single-message history: adding it to
+   * `session.conversationHistory` would grow the very conversation the recycle
+   * logic exists to bound.
+   */
+  private async compressField(
+    text: string,
+    budgetChars: number,
+    config: TConfig,
+    signal: AbortSignal,
+    deadlineMs?: number,
+  ): Promise<string | null> {
+    // The field pass races `deadlineMs` (CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).
+    // Without it the request keeps the LLM per-attempt default, and a longer
+    // field knob would never take effect on this path (#4134).
+    const result = await this.query(
+      [{ role: 'user', content: buildFieldCompressionPrompt(text, budgetChars) }],
+      config,
+      signal,
+      deadlineMs,
+    );
+    return result.content || null;
+  }
+
+  /** Format a stored summary through this provider's normal summary-model query path. */
+  async formatTelegramWrapup(
+    input: TelegramWrapupFormatterInput,
+    activeModelId?: string,
+  ): Promise<string> {
+    const config = this.getConfig();
+    if (!config.apiKey) {
+      throw this.missingApiKeyError();
+    }
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const model = resolveSummaryTierModel(activeModelId ?? config.model, settings);
+    const summaryConfig = { ...config, model, plainText: true };
+    const result = await this.query(
+      [{ role: 'user', content: buildTelegramWrapupPrompt(input.summaryText) }],
+      summaryConfig,
+    );
+    if (!result.content?.trim()) {
+      const error = new Error(`${this.providerName} returned no text for the Telegram wrap-up`);
+      logger.error('TELEGRAM', error.message, { sessionId: input.sessionDbId, model }, error);
+      throw error;
+    }
+    return result.content;
+  }
 
   /** Estimate token count for a single message body. */
   protected abstract estimateTokens(text: string): number;
@@ -89,6 +149,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   /** Hook for per-session setup that runs once config is resolved (e.g. endpointClass). */
   protected prepareSessionExtras(_session: ActiveSession, _config: TConfig): void {}
+
+  /** Character budget for one observer generation, operator-overridable (#3800). */
+  protected conversationMaxChars(): number {
+    return resolveConversationMaxChars(
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+    );
+  }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const config = this.getConfig();
@@ -100,23 +167,29 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw this.missingApiKeyError();
     }
 
-    const startupSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const contextWindowTokens = startupSettings.CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED === 'false'
-      ? FALLBACK_CONTEXT_WINDOW_TOKENS
-      : await resolveContextWindowTokens(this.syntheticIdPrefix, config.model, session.endpointClass);
-
     if (!session.memorySessionId) {
-      const syntheticMemorySessionId = `${this.syntheticIdPrefix}-${session.contentSessionId}-${Date.now()}`;
-      session.memorySessionId = syntheticMemorySessionId;
-      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
-      logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
+      const persistedMemorySessionId = this.dbManager.getSessionById(session.sessionDbId).memory_session_id;
+      const syntheticIdPrefix = `${this.syntheticIdPrefix}-${session.contentSessionId}-`;
+
+      if (persistedMemorySessionId?.startsWith(syntheticIdPrefix)) {
+        session.memorySessionId = persistedMemorySessionId;
+        logger.info('SESSION', `MEMORY_ID_REUSED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
+      } else {
+        const syntheticMemorySessionId = `${syntheticIdPrefix}${Date.now()}`;
+        session.memorySessionId = syntheticMemorySessionId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
+        logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
+      }
     }
 
     const mode = ModeManager.getInstance().getActiveMode();
+    // Seed the generation with what this session already observed, so a
+    // conversation that starts partway through (a recycle, or a resume after a
+    // quota pause) continues from the memory rather than from nothing (#3800).
+    const priorContext = await loadSessionStartContext(session);
     const initPrompt = session.lastPromptNumber === 1
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
-    const initContext = snapshotResponseContext(session);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
@@ -124,7 +197,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
       const initResponse = await this.query(session.conversationHistory, config);
-      await this.handleInitResponse(initResponse, session, worker, model, initContext);
+      this.handleInitResponse(initResponse, session, model);
     } catch (error: unknown) {
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
       // line; here they're debug-level so one failure isn't five error lines.
@@ -139,7 +212,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     try {
-      await this.runMessageLoop(session, worker, config, mode, contextWindowTokens);
+      await this.runMessageLoop(session, worker, config, mode);
     } catch (error: unknown) {
       if (isClassified(error)) {
         logger.debug('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model, kind: error.kind }, error);
@@ -155,7 +228,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     logger.success('SDK', `${this.providerName} agent completed`, {
       sessionId: session.sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-      historyLength: session.conversationHistory.length
+      historyLength: session.conversationHistory.length,
+      ...observerUsageLogFields(session)
     });
   }
 
@@ -163,8 +237,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session: ActiveSession,
     worker: WorkerRef | undefined,
     config: TConfig,
-    mode: ModeConfig,
-    contextWindowTokens: number
+    mode: ModeConfig
   ): Promise<void> {
     let lastCwd: string | undefined;
 
@@ -177,64 +250,35 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       }
       const originalTimestamp = session.earliestPendingTimestamp;
 
-      const pendingPrompt = this.buildPendingPrompt(
-        session,
-        message,
-        mode,
-        contextWindowTokens,
-        originalTimestamp
-      );
-      this.maybeCompactHistory(
-        session,
-        mode,
-        contextWindowTokens,
-        lastCwd,
-        pendingPrompt === null ? 0 : this.estimateTokens(pendingPrompt)
-      );
-
       if (message.type === 'observation') {
-        await this.processObservationMessage(
-          session,
-          message,
-          worker,
-          config,
-          originalTimestamp,
-          lastCwd,
-          pendingPrompt!
-        );
+        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
       } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(
-          session,
-          worker,
-          config,
-          originalTimestamp,
-          lastCwd,
-          pendingPrompt!
-        );
+        await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
       }
     }
   }
 
-  private async handleInitResponse(
+  private handleInitResponse(
     initResponse: ProviderQueryResult,
     session: ActiveSession,
-    worker: WorkerRef | undefined,
-    model: string,
-    responseContext: ReturnType<typeof snapshotResponseContext>
-  ): Promise<void> {
-    if (initResponse.content) {
-      const tokensUsed = initResponse.tokensUsed || 0;
-      this.accumulateUsage(session, initResponse);
-      session.lastUsage = this.buildLastUsage(initResponse);
-      await processAgentResponse(
-        initResponse.content, session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, null, this.providerName, undefined, initResponse.servedModel ?? model, responseContext
-      );
-    } else {
+    model: string
+  ): void {
+    // The init turn is billed whether or not its reply carried any text.
+    accumulateObserverUsage(session, initResponse);
+
+    if (!initResponse.content && !this.forwardEmptyMessageResponse) {
       logger.error('SDK', `Empty ${this.providerName} init response - session may lack context`, {
         sessionId: session.sessionDbId, model
       });
+      return;
     }
+
+    // The init prompt carries the user's request and no tool call, so nothing in
+    // its reply can be an observation of this session — an <observation> here was
+    // invented from <user_request> alone and would be stored as memory for work
+    // that never happened. Keep the turn so role alternation holds, but never
+    // hand it to the storage path.
+    session.conversationHistory.push({ role: 'assistant', content: initResponse.content || '' });
   }
 
   private async processObservationMessage(
@@ -243,8 +287,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     worker: WorkerRef | undefined,
     config: TConfig,
     originalTimestamp: number | null,
-    lastCwd: string | undefined,
-    obsPrompt: string
+    lastCwd: string | undefined
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
@@ -254,6 +297,39 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
+    // Retire a full generation BEFORE sending, so the request that would cross
+    // the ceiling is never paid for. The batch is preserved and drained by the
+    // fresh generation the next ingest starts (#3800).
+    if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars())) {
+      await recycleObserverConversation(
+        session,
+        this.sessionManager,
+        worker,
+        'budget',
+        `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+      );
+      return;
+    }
+
+    // An oversized payload is condensed by a bounded model pass before the
+    // prompt is built, so the observation carries a summary of the whole field
+    // rather than a head/tail slice with the middle cut out (#3800).
+    const optimized = await optimizeObservationFields(
+      { toolInput: message.tool_input, toolOutput: message.tool_response },
+      (text, budgetChars, signal, deadlineMs) => this.compressField(text, budgetChars, config, signal, deadlineMs),
+      { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+      undefined,
+      resolveFieldOptimizeTimeoutMs,
+    );
+
+    const obsPrompt = buildObservationPrompt({
+      id: 0,
+      tool_name: message.tool_name!,
+      tool_input: JSON.stringify(optimized.toolInput),
+      tool_output: JSON.stringify(optimized.toolOutput),
+      created_at_epoch: originalTimestamp ?? Date.now(),
+      cwd: message.cwd
+    });
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
@@ -261,15 +337,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.lastGeneratorSource = 'ingest';
     const obsResponse = await this.query(session.conversationHistory, config);
 
-    let tokensUsed = 0;
-    if (obsResponse.content) {
-      tokensUsed = obsResponse.tokensUsed || 0;
-      this.accumulateUsage(session, obsResponse);
-      // Both sides or nothing: a backend reporting only one of the two counts
-      // must not produce a half-real event (input=0 → compression_ratio 0.0).
-      session.lastUsage = this.buildLastUsage(obsResponse);
-    }
+    // Billed usage counts even when the reply came back empty.
+    accumulateObserverUsage(session, obsResponse);
+    // Both sides or nothing: a backend reporting only one of the two counts
+    // must not produce a half-real event (input=0 → compression_ratio 0.0).
+    session.lastUsage = this.buildLastUsage(obsResponse);
+    const tokensUsed = obsResponse.tokensUsed || 0;
 
+    // The assistant turn is appended once, by processAgentResponse below.
+    // Appending it here too stored every reply twice (#3619), inflating the
+    // window — and therefore every subsequent request — by ~50%.
     if (obsResponse.content || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
         obsResponse.content || '', session, this.dbManager, this.sessionManager,
@@ -284,16 +361,24 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processSummaryMessage(
     session: ActiveSession,
+    message: { last_assistant_message?: string },
     worker: WorkerRef | undefined,
     config: TConfig,
+    mode: ModeConfig,
     originalTimestamp: number | null,
-    lastCwd: string | undefined,
-    summaryPrompt: string
+    lastCwd: string | undefined
   ): Promise<void> {
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
+    const summaryPrompt = buildSummaryPrompt({
+      id: session.sessionDbId,
+      memory_session_id: session.memorySessionId,
+      project: session.project,
+      user_prompt: session.userPrompt,
+      last_assistant_message: message.last_assistant_message || ''
+    }, mode);
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
@@ -309,13 +394,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
     const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
 
-    let tokensUsed = 0;
-    if (summaryResponse.content) {
-      tokensUsed = summaryResponse.tokensUsed || 0;
-      this.accumulateUsage(session, summaryResponse);
-      session.lastUsage = this.buildLastUsage(summaryResponse);
-    }
+    accumulateObserverUsage(session, summaryResponse);
+    session.lastUsage = this.buildLastUsage(summaryResponse);
+    const tokensUsed = summaryResponse.tokensUsed || 0;
 
+    // Appended once, by processAgentResponse below — see processObservationMessage.
     if (summaryResponse.content || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
         summaryResponse.content || '', session, this.dbManager, this.sessionManager,
@@ -328,173 +411,82 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
-  private boundText(text: string, maxChars: number): string {
-    if (text.length <= maxChars) return text;
-    return `${text.slice(0, maxChars)} …[truncated ${text.length - maxChars} chars]`;
-  }
-
-  private boundPayloadJson(value: unknown, maxChars: number): string {
-    return this.boundText(JSON.stringify(value) ?? String(value), maxChars);
-  }
-
   /**
-   * Build the exact prompt that will be dispatched. Measuring the rendered
-   * prompt, rather than only its raw payload, accounts for JSON escaping and
-   * template scaffolding before the context-budget decision is made.
+   * Map a classified provider failure onto the abortReason category that keeps
+   * buffered work alive.
+   *
+   * handleGeneratorExit finalizes the session — dropping whatever is buffered —
+   * for every category outside its preserve list. Quota was only ever set by
+   * the two PROACTIVE sites (the pre-request rate-limit guard and the
+   * observer-text heuristic), so a real 429 coming back from the provider left
+   * abortReason null and the session was torn down as if the failure were
+   * fatal (#3700). These conditions clear on their own; the work should still
+   * be there when they do.
    */
-  private buildPendingPrompt(
-    session: ActiveSession,
-    message: {
-      type?: string;
-      tool_name?: string;
-      tool_input?: unknown;
-      tool_response?: unknown;
-      cwd?: string;
-      last_assistant_message?: string;
-    },
-    mode: ModeConfig,
-    contextWindowTokens: number,
-    originalTimestamp: number | null
-  ): string | null {
-    if (message.type !== 'observation' && message.type !== 'summarize') {
-      return null;
+  private preservingAbortReason(error: ClassifiedProviderError): string | null {
+    switch (error.kind) {
+      case 'quota_exhausted':
+      case 'rate_limit':
+        return `quota:${error.kind}`;
+      // Same shape, same list: handleGeneratorExit already honours 'auth', and
+      // credentials that are fixed by /login are no more fatal than a 429.
+      case 'auth_invalid':
+        return `auth:${error.kind}`;
+      // A timeout or network fault that outlived the retry policy. Finalizing
+      // would turn it into permanent data loss — the same reasoning as the
+      // observer-text transport path in ResponseProcessor (#3752).
+      case 'transient':
+        return `transport:${error.kind}`;
+      default:
+        return null;
     }
-
-    const promptCapTokens = contextWindowTokens * PROMPT_WINDOW_RATIO;
-    let maxChars = Math.floor(contextWindowTokens * PAYLOAD_WINDOW_RATIO) * PAYLOAD_CHARS_PER_TOKEN;
-
-    for (;;) {
-      const prompt = message.type === 'observation'
-        ? buildObservationPrompt({
-            id: 0,
-            tool_name: message.tool_name!,
-            tool_input: this.boundPayloadJson(message.tool_input, maxChars),
-            tool_output: this.boundPayloadJson(message.tool_response, maxChars),
-            created_at_epoch: originalTimestamp ?? Date.now(),
-            cwd: message.cwd
-          })
-        : buildSummaryPrompt({
-            id: session.sessionDbId,
-            memory_session_id: session.memorySessionId ?? '',
-            project: session.project,
-            user_prompt: session.userPrompt,
-            last_assistant_message: this.boundText(message.last_assistant_message || '', maxChars)
-          }, mode);
-
-      if (this.estimateTokens(prompt) <= promptCapTokens || maxChars <= PAYLOAD_MIN_CHARS) {
-        return prompt;
-      }
-      maxChars = Math.floor(maxChars / 2);
-    }
-  }
-
-  /**
-   * Replace oversized provider history with a bounded continuation context.
-   * The replacement is built first and assigned atomically. If timeline
-   * construction fails, the original history is preserved and the provider
-   * can still process the turn using its existing context.
-   */
-  private maybeCompactHistory(
-    session: ActiveSession,
-    mode: ModeConfig,
-    contextWindowTokens: number,
-    lastCwd: string | undefined,
-    pendingMessageTokens = 0
-  ): void {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    if (settings.CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED === 'false') {
-      return;
-    }
-
-    const estimatedHistoryTokens = this.estimateTokens(
-      session.conversationHistory.map(message => message.content).join('')
-    );
-    if (estimatedHistoryTokens + pendingMessageTokens <= contextWindowTokens * COMPACT_TRIGGER_RATIO) {
-      return;
-    }
-
-    const continuationPrompt = buildContinuationPrompt(
-      session.userPrompt,
-      session.lastPromptNumber,
-      session.contentSessionId,
-      mode
-    );
-    const tokenBudget = Math.max(
-      0,
-      Math.floor(contextWindowTokens * REINJECT_BUDGET_RATIO)
-        - this.estimateTokens(continuationPrompt)
-        - pendingMessageTokens
-    );
-
-    let timeline: string;
-    try {
-      timeline = buildCompactionTimeline(
-        this.dbManager.getSessionStore(),
-        session.project,
-        lastCwd ?? session.project,
-        tokenBudget
-      );
-    } catch (error: unknown) {
-      logger.warn('SDK', 'Observer history compaction failed; preserving existing history', {
-        sessionId: session.sessionDbId,
-        beforeMessages: session.conversationHistory.length,
-        beforeTokens: estimatedHistoryTokens,
-        contextWindowTokens,
-        rawError: error instanceof Error ? error.message : String(error)
-      });
-      return;
-    }
-
-    const content = timeline
-      ? `${continuationPrompt}\n\n<recent_project_timeline>\n${timeline}\n</recent_project_timeline>`
-      : continuationPrompt;
-    const beforeMessages = session.conversationHistory.length;
-    session.conversationHistory.splice(
-      0,
-      session.conversationHistory.length,
-      { role: 'user', content }
-    );
-
-    const afterTokens = this.estimateTokens(content);
-    logger.info('SDK', 'Observer history compacted', {
-      sessionId: session.sessionDbId,
-      beforeMessages,
-      beforeTokens: estimatedHistoryTokens,
-      afterTokens,
-      contextWindowTokens
-    });
-    if (afterTokens > contextWindowTokens * COMPACT_TRIGGER_RATIO) {
-      logger.warn('SDK', 'Compacted context alone exceeds the compaction trigger — context window too small; the next message will re-compact', {
-        sessionId: session.sessionDbId,
-        afterTokens,
-        contextWindowTokens
-      });
-    }
-  }
-
-  private accumulateUsage(session: ActiveSession, result: ProviderQueryResult): void {
-    if (typeof result.inputTokens === 'number' && typeof result.outputTokens === 'number') {
-      session.cumulativeInputTokens += result.inputTokens;
-      session.cumulativeOutputTokens += result.outputTokens;
-      return;
-    }
-
-    const tokensUsed = result.tokensUsed || 0;
-    session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-    session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
   }
 
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
     if (isAbortError(error)) {
-      logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
+      logger.warn('SDK', `${this.providerName} agent aborted`, {
+        sessionId: session.sessionDbId,
+        ...observerUsageLogFields(session)
+      });
       throw error;
     }
 
     if (isClassified(error)) {
+      // Set BEFORE the rethrow: the .finally() in SessionRoutes reads
+      // session.abortReason to decide whether to finalize the session, so a
+      // reason recorded after unwinding would arrive too late to matter.
+      const preserving = this.preservingAbortReason(error);
+      if (preserving !== null) {
+        session.abortReason = preserving;
+        // Abort as well as label. Without it the controller stays live while
+        // the error unwinds, and the session route books the failure twice —
+        // an observer failure and an error outcome on the way out, then the
+        // aborted outcome at finalization — leaving observer-health marked
+        // failed for a pause that is not a failure. This is what the two
+        // observer-text paths already do for the same conditions.
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
+        logger.warn('SDK', `${this.providerName} paused on ${error.kind}; preserving buffered work`, {
+          sessionId: session.sessionDbId,
+          kind: error.kind,
+          ...observerUsageLogFields(session)
+        });
+      }
+
       // Logged once at SessionRoutes' `Observer failed` line.
-      logger.debug('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId, kind: error.kind }, error);
+      logger.debug('SDK', `${this.providerName} agent error`, {
+        sessionDbId: session.sessionDbId,
+        kind: error.kind,
+        ...observerUsageLogFields(session)
+      }, error);
     } else {
-      logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+      logger.failure('SDK', `${this.providerName} agent error`, {
+        sessionDbId: session.sessionDbId,
+        ...observerUsageLogFields(session)
+      }, error instanceof Error ? error : new Error(String(error)));
     }
     throw error;
   }
