@@ -31,6 +31,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
+  ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
   ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
   ${styleText('cyan', 'npx claude-mem version')}              Print version
@@ -183,6 +184,12 @@ async function main(): Promise<void> {
     case 'doctor': {
       const { runDoctorCommand } = await import('./commands/doctor.js');
       await runDoctorCommand();
+      break;
+    }
+
+    case 'prune': {
+      const { runPruneCommand } = await import('./commands/prune.js');
+      await runPruneCommand(args.slice(1));
       break;
     }
 

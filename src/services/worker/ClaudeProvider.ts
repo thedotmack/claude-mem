@@ -33,6 +33,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveSummaryTierModel, resolveTierAlias } from './model-aliases.js';
+import { accumulateClaudeUsage, observerUsageLogFields } from './observer-usage.js';
 import {
   shouldRecycleConversation,
   conversationChars,
@@ -462,12 +463,7 @@ export class ClaudeProvider {
 
           const usage = message.message.usage;
           if (usage) {
-            session.cumulativeInputTokens += usage.input_tokens || 0;
-            session.cumulativeOutputTokens += usage.output_tokens || 0;
-
-            if (usage.cache_creation_input_tokens) {
-              session.cumulativeInputTokens += usage.cache_creation_input_tokens;
-            }
+            accumulateClaudeUsage(session, usage);
 
             // Real per-response usage for telemetry (tokens_input includes the
             // full context the model read: fresh + cache writes + cache reads).
@@ -660,7 +656,8 @@ export class ClaudeProvider {
     const sessionDuration = Date.now() - session.startTime;
     logger.success('SDK', 'Agent completed', {
       sessionId: session.sessionDbId,
-      duration: `${(sessionDuration / 1000).toFixed(1)}s`
+      duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+      ...observerUsageLogFields(session)
     });
   }
 
