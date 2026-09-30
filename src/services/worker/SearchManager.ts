@@ -9,6 +9,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { resolveDateBound } from '../../shared/date-bounds.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
@@ -110,7 +111,7 @@ export class SearchManager {
     hydrate: (ids: number[]) => T[]
   ): Promise<T[]> {
     const whereFilter = this.buildDocTypeWhereFilter(docType, project, platformSource);
-    const chromaResults = await this.queryChroma(query, 100, whereFilter);
+    const chromaResults = await this.queryChroma(query, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, whereFilter);
     logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
 
     if (chromaResults?.ids && chromaResults.ids.length > 0) {
@@ -375,7 +376,11 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
 
-    const chromaResults = await this.queryChroma(query, 100, whereFilter);
+    // Hydration applies `limit`, so a requested date order has to reach it; otherwise the wrong
+    // end of the candidates is kept (date_asc hydrated newest-first keeps the newest rows).
+    const requestedDateOrder: 'date_desc' | 'date_asc' | undefined =
+      options.orderBy === 'date_desc' || options.orderBy === 'date_asc' ? options.orderBy : undefined;
+    const chromaResults = await this.queryChroma(query, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, whereFilter);
     logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
     if (chromaResults.ids.length > 0) {
@@ -385,14 +390,10 @@ export class SearchManager {
 
       if (dateRange) {
         if (dateRange.start) {
-          startEpoch = typeof dateRange.start === 'number'
-            ? dateRange.start
-            : new Date(dateRange.start).getTime();
+          startEpoch = resolveDateBound(dateRange.start, 'start');
         }
         if (dateRange.end) {
-          endEpoch = typeof dateRange.end === 'number'
-            ? dateRange.end
-            : new Date(dateRange.end).getTime();
+          endEpoch = resolveDateBound(dateRange.end, 'end');
         }
       } else {
         startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
@@ -424,13 +425,15 @@ export class SearchManager {
       }
 
       if (obsIds.length > 0) {
-        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: 'relevance' };
+        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: requestedDateOrder ?? 'relevance' };
         observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
-        observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
+        if (!requestedDateOrder) {
+          observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
+        }
       }
       if (sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
-          orderBy: 'date_desc',
+          orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
           platformSource: options.platformSource
@@ -438,7 +441,7 @@ export class SearchManager {
       }
       if (promptIds.length > 0) {
         prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
-          orderBy: 'date_desc',
+          orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
           platformSource: options.platformSource
@@ -447,6 +450,44 @@ export class SearchManager {
     }
 
     return { observations, sessions, prompts };
+  }
+
+  /**
+   * Exact selection for a date-ordered search on the Chroma path (#4135). Chroma picks its
+   * top-N candidates by relevance, so re-sorting only those by date misses the newest (or
+   * oldest) matches outside them. Each requested category is unioned with its FTS5 keyword
+   * matches, which SQL selects by date, then deduped by id, sorted by date and cut to `limit`.
+   */
+  private mergeKeywordMatchesByDate(
+    query: string,
+    dateOrder: 'date_desc' | 'date_asc',
+    chromaResults: SearchResults,
+    observationOptions: any,
+    options: any,
+    scope: { searchObservations: boolean; searchSessions: boolean; searchPrompts: boolean }
+  ): SearchResults {
+    const limit = options.limit || SEARCH_CONSTANTS.DEFAULT_LIMIT;
+    const byDate = (a: { created_at_epoch: number }, b: { created_at_epoch: number }) =>
+      dateOrder === 'date_desc' ? b.created_at_epoch - a.created_at_epoch : a.created_at_epoch - b.created_at_epoch;
+    const mergeByDate = <T extends { id: number; created_at_epoch: number }>(chromaRows: T[], keywordRows: T[]): T[] => {
+      const rowsById = new Map<number, T>();
+      for (const row of [...chromaRows, ...keywordRows]) {
+        if (!rowsById.has(row.id)) rowsById.set(row.id, row);
+      }
+      return Array.from(rowsById.values()).sort(byDate).slice(0, limit);
+    };
+
+    return {
+      observations: scope.searchObservations
+        ? mergeByDate(chromaResults.observations, this.sessionSearch.searchObservations(query, { ...observationOptions, orderBy: dateOrder, limit }))
+        : chromaResults.observations,
+      sessions: scope.searchSessions
+        ? mergeByDate(chromaResults.sessions, this.sessionSearch.searchSessions(query, { ...options, orderBy: dateOrder, limit }))
+        : chromaResults.sessions,
+      prompts: scope.searchPrompts
+        ? mergeByDate(chromaResults.prompts, this.sessionSearch.searchUserPrompts(query, { ...options, orderBy: dateOrder, limit }))
+        : chromaResults.prompts,
+    };
   }
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
@@ -565,6 +606,17 @@ export class SearchManager {
         if (searchPrompts) {
           prompts = this.sessionSearch.searchUserPrompts(query, options);
         }
+      }
+
+      if (!chromaFailed && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
+        ({ observations, sessions, prompts } = this.mergeKeywordMatchesByDate(
+          query,
+          options.orderBy,
+          { observations, sessions, prompts },
+          { ...options, type: effectiveObsType, concepts, files },
+          options,
+          { searchObservations, searchSessions, searchPrompts }
+        ));
       }
     }
     // PATH 3: FTS5 KEYWORD SEARCH (Chroma not initialized)
@@ -691,7 +743,13 @@ export class SearchManager {
     const limitedResults = allResults.slice(0, options.limit || 20);
 
     const cwd = process.cwd();
-    const resultsByDate = groupByDate(limitedResults, item => item.created_at);
+    const resultsByDate = groupByDate(
+      limitedResults,
+      item => item.created_at,
+      // Date orders render their day groups in that order; relevance-ordered results keep the
+      // order in which each day's first (most relevant) result appears.
+      { order: options.orderBy === 'date_desc' ? 'desc' : options.orderBy === 'date_asc' ? 'asc' : 'first-seen' }
+    );
 
     const lines: string[] = [];
     lines.push(`Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts)`);
@@ -966,7 +1024,7 @@ export class SearchManager {
     // Relevance-ordered results (FTS/Chroma): only add day headers, never
     // reorder into chronological groups, or the most relevant match could
     // print below a less relevant but more recent one.
-    const resultsByDate = groupByDate(results, obs => obs.created_at, { sort: false });
+    const resultsByDate = groupByDate(results, obs => obs.created_at, { order: 'first-seen' });
 
     const lines: string[] = [];
     lines.push(`Found ${results.length} observation(s) matching "${query}"`);
