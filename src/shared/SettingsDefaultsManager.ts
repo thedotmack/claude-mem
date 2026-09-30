@@ -5,6 +5,7 @@ import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
+import { settingsTarget } from './settings-document.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -133,6 +134,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
+  CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
@@ -302,6 +304,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
+    CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: '600000', // Chroma embedding/index writes can exceed the MCP SDK's 60s default
     CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
     // Embedding function used when creating the Chroma collection. 'default' is
     // the local all-MiniLM-L6-v2 (English-tuned). The pinned chroma-mcp also
@@ -447,12 +450,12 @@ export class SettingsDefaultsManager {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
-      let flatSettings = settings;
-      const hasNestedEnv = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env);
+      // Where claude-mem's keys live: the same rule every settings writer uses
+      // (settings-document.ts), so a value written anywhere is read back here.
+      let flatSettings: Record<string, any> = settingsTarget(settings);
+      const hasNestedEnv = flatSettings !== settings;
       const hasPeerRootKeys = hasNestedEnv && Object.keys(settings).some((key) => key !== 'env');
       if (hasNestedEnv) {
-        flatSettings = settings.env;
-
         // A legacy file containing only `{ env: {...} }` can be flattened
         // safely. If it also contains peer root keys (hooks, permissions,
         // theme, etc.), retain the wrapper: flattening would destroy user data.

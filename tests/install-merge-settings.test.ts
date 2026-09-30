@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mergeSettings } from '../src/npx-cli/commands/install.js';
+import { buildTrialReadySettings, mergeSettings } from '../src/npx-cli/commands/install.js';
 
 let tempDir: string;
 let settingsPath: string;
@@ -16,94 +16,72 @@ afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-describe('mergeSettings: corrupt-document write refusal', () => {
-  it('returns false and leaves the truncated bytes exact (reproduction of #3080)', () => {
-    const corruptBytes = '{"CLAUDE_MEM_MODEL":"claude-opus-4-8"';
-    writeFileSync(settingsPath, corruptBytes, 'utf-8');
+/**
+ * #3080: the installer used to reset an unreadable settings.json to `{}` and
+ * write it back, destroying the user's settings. It now moves the unreadable
+ * file aside (bytes kept exactly) and writes a fresh document, so a corrupt
+ * file never stops setup or drops the sign-in's memory key.
+ */
+function quarantinedFiles(): string[] {
+  return readdirSync(tempDir).filter(name => name.startsWith('settings.json.corrupt-'));
+}
 
-    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
+function expectQuarantinedThenSaved(originalBytes: string): void {
+  writeFileSync(settingsPath, originalBytes, 'utf-8');
 
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(corruptBytes);
+  expect(mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath)).toBe(true);
+
+  const quarantined = quarantinedFiles();
+  expect(quarantined).toHaveLength(1);
+  expect(readFileSync(join(tempDir, quarantined[0]), 'utf-8')).toBe(originalBytes);
+  expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual({ CLAUDE_MEM_WORKER_PORT: '37779' });
+}
+
+describe('mergeSettings: unreadable settings.json is quarantined, never reset', () => {
+  it('keeps the truncated bytes exactly and saves the update (reproduction of #3080)', () => {
+    expectQuarantinedThenSaved('{"CLAUDE_MEM_MODEL":"claude-opus-4-8"');
   });
 
-  it('does not collapse a multi-key partial document into the requested key', () => {
-    const corruptBytes = '{"CLAUDE_MEM_MODEL":"claude-opus-4-8","CLAUDE_MEM_PROVIDER":"gemini"';
-    writeFileSync(settingsPath, corruptBytes, 'utf-8');
-
-    expect(mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath)).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(corruptBytes);
+  it('keeps a multi-key partial document intact in the quarantine copy', () => {
+    expectQuarantinedThenSaved('{"CLAUDE_MEM_MODEL":"claude-opus-4-8","CLAUDE_MEM_PROVIDER":"gemini"');
   });
 
-  it('returns false and leaves bytes exact for an empty file (parse failure)', () => {
-    writeFileSync(settingsPath, '', 'utf-8');
-
-    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe('');
+  it('handles an empty file (parse failure)', () => {
+    expectQuarantinedThenSaved('');
   });
 
-  it('returns false and leaves bytes exact for a whitespace-only file (parse failure)', () => {
-    const original = '   \n\t  ';
-    writeFileSync(settingsPath, original, 'utf-8');
-
-    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
-  });
-});
-
-describe('mergeSettings: non-record write refusal', () => {
-  it('returns false and leaves bytes exact for null', () => {
-    const original = 'null';
-    writeFileSync(settingsPath, original, 'utf-8');
-
-    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
+  it('handles a whitespace-only file (parse failure)', () => {
+    expectQuarantinedThenSaved('   \n\t  ');
   });
 
-  it('returns false and leaves bytes exact for a boolean', () => {
-    const original = 'true';
-    writeFileSync(settingsPath, original, 'utf-8');
-
-    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
+  it('handles non-object JSON documents (null, boolean, number, string, root array)', () => {
+    for (const original of ['null', 'true', '42', '"just a string"', '["sentinel"]']) {
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-merge-settings-'));
+      settingsPath = join(tempDir, 'settings.json');
+      expectQuarantinedThenSaved(original);
+    }
   });
 
-  it('returns false and leaves bytes exact for a number', () => {
-    const original = '42';
-    writeFileSync(settingsPath, original, 'utf-8');
+  it('never stops the sign-in memory key from saving over a corrupt file', () => {
+    writeFileSync(settingsPath, '{"CLAUDE_MEM_PROVIDER":', 'utf-8');
+    const trialSettings = buildTrialReadySettings({
+      setupToken: 'setup-token',
+      userId: 'user-1',
+      hubUrl: 'https://hub.example.test',
+      memoryKey: 'cm_pro_trial_memory_key',
+      memoryBaseUrl: 'https://gateway.example.test/v1',
+      memoryModel: 'gateway-model',
+      plan: 'pro',
+      trialEndsAt: null,
+    } as Parameters<typeof buildTrialReadySettings>[0], 'test-device');
 
-    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
+    expect(mergeSettings(trialSettings, settingsPath)).toBe(true);
 
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
-  });
-
-  it('returns false and leaves bytes exact for a string', () => {
-    const original = '"just a string"';
-    writeFileSync(settingsPath, original, 'utf-8');
-
-    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
-  });
-
-  it('returns false and leaves bytes exact for a root array containing ["sentinel"]', () => {
-    const original = '["sentinel"]';
-    writeFileSync(settingsPath, original, 'utf-8');
-
-    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(written.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('cm_pro_trial_memory_key');
+    expect(written.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+    expect(quarantinedFiles()).toHaveLength(1);
   });
 });
 

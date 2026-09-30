@@ -1,27 +1,31 @@
-import { existsSync } from 'fs';
+import { existsSync, renameSync } from 'fs';
 import { readJsonFileWithBom, writeJsonFileAtomic } from './atomic-json.js';
 
 export type SettingsDocument = Record<string, unknown>;
-export type SettingsDocumentLayout = 'flat' | 'nested';
 
 export type SettingsDocumentResult = {
-  status: 'created' | 'updated' | 'unchanged' | 'refused' | 'missing';
+  status: 'created' | 'updated' | 'unchanged' | 'refused';
   document?: SettingsDocument;
   error?: unknown;
+  /** Where an unreadable settings.json was moved (quarantineCorrupt only). */
+  quarantinedTo?: string;
 };
 
 const isRecord = (value: unknown): value is SettingsDocument =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
-export function classifySettingsDocument(document: SettingsDocument): SettingsDocumentLayout {
-  const rootKeys = Object.keys(document);
-  if (rootKeys.some(key => key.startsWith('CLAUDE_MEM_'))) {
-    return 'flat';
-  }
+/**
+ * Where claude-mem's keys live. Root `CLAUDE_MEM_*` keys mean a flat document
+ * (any `env` block beside them belongs to Claude Code); otherwise an `env`
+ * block holding `CLAUDE_*` keys is a Claude-Code-style wrapped document. This
+ * is the ONE rule every settings reader and writer uses, including
+ * SettingsDefaultsManager.loadFromFile, so a write always lands where the next
+ * read looks. A wrapped document keeps its wrapper and root peers.
+ */
+export function classifySettingsDocument(document: SettingsDocument): 'flat' | 'nested' {
+  if (Object.keys(document).some(key => key.startsWith('CLAUDE_MEM_'))) return 'flat';
   const env = document.env;
-  if (isRecord(env) && Object.keys(env).some(key => key.startsWith('CLAUDE_'))) {
-    return 'nested';
-  }
+  if (isRecord(env) && Object.keys(env).some(key => key.startsWith('CLAUDE_'))) return 'nested';
   return 'flat';
 }
 
@@ -44,14 +48,32 @@ function loadDocument(path: string): { exists: boolean; document?: SettingsDocum
   }
 }
 
+/**
+ * Apply `updates` (then `mutate`) to the settings target and write atomically.
+ * An unreadable existing file is never overwritten: by default the write is
+ * refused and reported. `quarantineCorrupt` (the installer only) instead moves
+ * the unreadable file aside to `<path>.corrupt-<epoch-ms>`, keeping the user's
+ * bytes, and writes a fresh document — so a corrupt file cannot stop setup.
+ */
 export function updateSettingsDocument(
   path: string,
   updates: SettingsDocument,
   seed: object = {},
   mutate?: (target: SettingsDocument) => void,
+  options: { quarantineCorrupt?: boolean } = {},
 ): SettingsDocumentResult {
-  const loaded = loadDocument(path);
-  if (loaded.error) return { status: 'refused', error: loaded.error };
+  let loaded = loadDocument(path);
+  let quarantinedTo: string | undefined;
+  if (loaded.error) {
+    if (!options.quarantineCorrupt) return { status: 'refused', error: loaded.error };
+    quarantinedTo = `${path}.corrupt-${Date.now()}`;
+    try {
+      renameSync(path, quarantinedTo);
+    } catch (error) {
+      return { status: 'refused', error };
+    }
+    loaded = { exists: false };
+  }
   const document = cloneDocument((loaded.document ?? seed) as SettingsDocument);
   if (!isRecord(document)) return { status: 'refused', error: new Error('settings seed must be an object') };
   const target = settingsTarget(document);
@@ -62,9 +84,9 @@ export function updateSettingsDocument(
   }
   try {
     writeJsonFileAtomic(path, document);
-    return { status: loaded.exists ? 'updated' : 'created', document };
+    return { status: loaded.exists ? 'updated' : 'created', document, quarantinedTo };
   } catch (error) {
-    return { status: 'refused', document: loaded.document, error };
+    return { status: 'refused', document: loaded.document, error, quarantinedTo };
   }
 }
 
@@ -78,33 +100,5 @@ export function ensureSettingsDocument(path: string, seed: object): SettingsDocu
     return { status: 'created', document };
   } catch (error) {
     return { status: 'refused', error };
-  }
-}
-
-export function migrateSettingsDocumentToFlat(
-  path: string,
-  mutate?: (flat: SettingsDocument) => void,
-): SettingsDocumentResult {
-  const loaded = loadDocument(path);
-  if (loaded.error) return { status: 'refused', error: loaded.error };
-  if (!loaded.document) return { status: 'unchanged' };
-  const isNested = classifySettingsDocument(loaded.document) === 'nested';
-  let flat: SettingsDocument;
-  if (isNested) {
-    const nested = loaded.document.env as SettingsDocument;
-    const { env: _wrapper, ...rootPeers } = loaded.document;
-    flat = { ...rootPeers, ...nested };
-  } else {
-    flat = cloneDocument(loaded.document);
-  }
-  mutate?.(flat);
-  if (!isNested && JSON.stringify(flat) === JSON.stringify(loaded.document)) {
-    return { status: 'unchanged', document: flat };
-  }
-  try {
-    writeJsonFileAtomic(path, flat);
-    return { status: 'updated', document: flat };
-  } catch (error) {
-    return { status: 'refused', document: flat, error };
   }
 }

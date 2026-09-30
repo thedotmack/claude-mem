@@ -94,6 +94,65 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain("selectedIDEs = ['claude-code']");
     });
 
+    it('resolves a missing provider before the OAuth gate instead of aborting', () => {
+      const validationIndex = installSource.indexOf('validateNonInteractiveProvider(options, summary)');
+      const oauthIndex = installSource.indexOf('await requireInstallerOAuthLogin(version)');
+      expect(validationIndex).toBeGreaterThan(-1);
+      expect(validationIndex).toBeLessThan(oauthIndex);
+      expect(installSource).not.toContain('A provider must be explicit when stdin is not interactive.');
+      expect(installSource).toContain("providerSource = 'default'");
+      expect(installSource).toContain("providerSource = 'persisted'");
+    });
+
+    it('refuses to keep a persisted personal provider whose key is blank', () => {
+      const fnStart = installSource.indexOf('export function validateNonInteractiveProvider(');
+      const persistedAssign = installSource.indexOf("options.providerSource = 'persisted'", fnStart);
+      const branch = installSource.slice(fnStart, persistedAssign);
+      expect(branch).toContain("component: 'provider-credentials'");
+      // An env-only key is a working configuration (the worker reads the same
+      // env var ahead of settings.json), so it must satisfy the check without
+      // ever being copied to disk.
+      expect(branch).toContain('const persistedKey = String(persisted[persistedKeyName] ?? \'\').trim();');
+      expect(branch).toContain("const envKey = persistedCmemGateway ? '' : String(process.env[persistedKeyName] ?? '').trim();");
+      expect(branch).toContain('if (!persistedKey && !envKey) {');
+      expect(branch).not.toContain('mergeSettings');
+      // A persisted cmem gateway tuple is locked to its saved key by the
+      // worker, so an exported key must not satisfy the check for it.
+      expect(branch).toContain("const persistedCmemGateway = persistedProvider === 'openrouter'");
+      expect(branch).toContain("isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))");
+      // ...unless a base-URL override is exported: the worker then detaches
+      // from the gateway and runs on the exported URL and key, so the exported
+      // key counts again (mirrors lockPersistedCmemTuple in OpenRouterProvider).
+      expect(branch).toContain("&& !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');");
+      // The cmem gateway rejection stays on the explicit-flag path only.
+      expect(branch).not.toContain('configuredCmemKey');
+    });
+
+    it('offers a deferred login-only sign-in link at the end of a non-interactive install', () => {
+      expect(installSource).toContain("'npx-installer-deferred'");
+      expect(installSource).toContain('AGENT: show this link to the user so they can finish signing in.');
+      const helperStart = installSource.indexOf('export async function offerDeferredLogin(');
+      const helperEnd = installSource.indexOf('\n}\n', helperStart);
+      const helper = installSource.slice(helperStart, helperEnd);
+      expect(helper).not.toContain('checkoutUrl');
+      expect(helper).not.toContain('userCode');
+      expect(helper).not.toContain('process.exit');
+      expect(helper).not.toContain('DO_NOT_TRACK');
+      expect(helper).not.toContain('await requireInstallerOAuthLogin(version)');
+      // The offer runs after the success line and before install_completed.
+      const callIndex = installSource.indexOf('await offerDeferredLogin(options, version)');
+      expect(callIndex).toBeGreaterThan(installSource.indexOf("'\\nclaude-mem installed successfully!'"));
+      expect(callIndex).toBeLessThan(installSource.indexOf("captureCliEvent('install_completed'"));
+    });
+
+    it('never opens an API-key prompt on non-interactive stdin', () => {
+      const passwordIndex = installSource.indexOf('const apiKeyResult = await p.password');
+      const guardIndex = installSource.lastIndexOf('if (!isInteractive)', passwordIndex);
+      expect(guardIndex).toBeGreaterThan(-1);
+      expect(guardIndex).toBeLessThan(passwordIndex);
+      expect(installSource.slice(guardIndex, passwordIndex)).toContain('missing a personal API key');
+    });
+
     it('parses the explicit --disable-auto-memory flag for non-interactive installs', () => {
       expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
         .toContain("disableAutoMemory: values['disable-auto-memory'] === true");
@@ -185,6 +244,11 @@ describe('Install Non-TTY Support', () => {
       expect(codexInstallerSource).toContain("const CODEX_PLUGIN_ID = `claude-mem@${MARKETPLACE_NAME}`");
       expect(installRegion).toContain('enableCodexPluginConfig()');
       expect(installRegion).not.toContain('plugin_hooks');
+    });
+
+    it('tells Codex users to trust the native hooks before restarting sessions', () => {
+      expect(codexInstallerSource).toContain('Review and trust the five claude-mem hooks when Codex prompts you');
+      expect(codexInstallerSource).toContain('Restart sessions opened before trusting the hooks');
     });
 
     it('captures Codex CLI output for install failure reporting', () => {
@@ -334,20 +398,24 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');
     });
 
-    it('aborts before reporting a runtime whose settings write was refused', () => {
-      const runtimeRegion = installSource.slice(
-        installSource.indexOf('function persistRuntimeOrAbort'),
-        installSource.indexOf('async function promptProvider'),
+    it('never aborts setup over an unreadable settings.json: the installer writer quarantines it', () => {
+      // Nothing may stop the installer before the sign-in/trial step; a corrupt
+      // file is moved aside and a fresh one written (#3080), never reset to {}.
+      const mergeRegion = installSource.slice(
+        installSource.indexOf('export function mergeSettings'),
+        installSource.indexOf('type ProviderId'),
       );
-      expect(runtimeRegion).toContain("component: 'runtime-settings'");
-      expect(runtimeRegion).toContain('ErrorSeverity.ABORT');
-      expect(runtimeRegion).toContain('persistRuntimeOrAbort(selected, summary)');
+      expect(mergeRegion).toContain('quarantineCorrupt: true');
+      expect(mergeRegion).not.toContain('ErrorSeverity.ABORT');
     });
   });
 
   describe('post-install Next Steps copy', () => {
-    it('frames the choice as two paths', () => {
-      expect(installSource).toContain('Two paths from here:');
+    it('opens with a plain instruction, not a menu of paths', () => {
+      // The A/B framing dressed up "just start working" as a decision the user
+      // had to make on the last screen of the funnel.
+      expect(installSource).toContain("styleText('bold', 'Start working.')");
+      expect(installSource).not.toContain('Two paths from here:');
     });
 
     it('sets timing honesty about second-session memory injection', () => {
@@ -363,8 +431,16 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('/learn-codebase');
     });
 
-    it('demotes the uninstall caveat into a dim footer', () => {
-      expect(installSource).toContain('close all Claude Code sessions before uninstalling');
+    it('keeps uninstall trivia and env-var opt-outs off the install screen', () => {
+      // Uninstall instructions do not belong on the screen that just finished
+      // installing, and opting out of the first-session hint is meaningless to
+      // someone who has not seen it yet.
+      const nextStepsRegion = installSource.slice(
+        installSource.indexOf('const nextSteps = '),
+        installSource.indexOf("p.note(nextSteps.join"),
+      );
+      expect(nextStepsRegion).not.toContain('before uninstalling');
+      expect(nextStepsRegion).not.toContain('CLAUDE_MEM_WELCOME_HINT_ENABLED');
     });
 
     it('does not advertise /mem-search in the post-install Next Steps', () => {

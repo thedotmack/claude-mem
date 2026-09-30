@@ -5,7 +5,6 @@ import { join } from 'path';
 import {
   classifySettingsDocument,
   ensureSettingsDocument,
-  migrateSettingsDocumentToFlat,
   updateSettingsDocument,
 } from '../../src/shared/settings-document.js';
 
@@ -41,19 +40,18 @@ describe('settings document boundary', () => {
     expect(JSON.parse(readFileSync(missing, 'utf8'))).toEqual({ callerSeed: true });
   });
 
-  it('composes nested flattening and Telegram migration in one final document', () => {
-    const path = tempFile(JSON.stringify({
-      env: { CLAUDE_MEM_MODEL: 'old', CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert' },
-      hooks: ['keep'],
-    }));
-    const result = migrateSettingsDocumentToFlat(path, flat => {
-      flat.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES = 'security_alert,sensitive';
-    });
-    expect(result.status).toBe('updated');
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
-      CLAUDE_MEM_MODEL: 'old',
-      CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
-      hooks: ['keep'],
-    });
+  it('quarantines an unreadable file only when asked (installer), keeping its bytes', () => {
+    const path = tempFile('{"CLAUDE_MEM_MODEL":"old"');
+    const result = updateSettingsDocument(path, { CLAUDE_MEM_MODEL: 'new' }, {}, undefined, { quarantineCorrupt: true });
+    expect(result.status).toBe('created');
+    expect(result.quarantinedTo).toMatch(/settings\.json\.corrupt-\d+$/);
+    expect(readFileSync(result.quarantinedTo!, 'utf8')).toBe('{"CLAUDE_MEM_MODEL":"old"');
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ CLAUDE_MEM_MODEL: 'new' });
+  });
+
+  it('writes into the env block of a wrapped document and keeps its root peers', () => {
+    const path = tempFile(JSON.stringify({ theme: 'dark', env: { CLAUDE_MEM_MODEL: 'old', KEEP: 'yes' } }));
+    updateSettingsDocument(path, {}, {}, target => { target.CLAUDE_MEM_MODEL = 'new'; });
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ theme: 'dark', env: { CLAUDE_MEM_MODEL: 'new', KEEP: 'yes' } });
   });
 });

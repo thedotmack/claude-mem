@@ -62,7 +62,53 @@ describe('SettingsRoutes settings document writes', () => {
       expect(written.env.CLAUDE_MEM_MODEL).toBe('new-model');
       expect(written.env.KEEP_ME).toBe('yes');
       expect(written.CLAUDE_MEM_MODEL).toBeUndefined();
-      expect(written.env.CLAUDE_CODE_PATH).toBe(join(homedir(), 'bin', 'claude'));
+      // CLAUDE_CODE_PATH is file/env only (#4166): an HTTP write never lands.
+      expect(written.env.CLAUDE_CODE_PATH).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('keeps a stored secret when the viewer posts back its mask, and accepts a real replacement', async () => {
+    const storedKey = 'or-secret-key-1234';
+    writeFileSync(settingsPath, JSON.stringify({ theme: 'dark', env: { CLAUDE_MEM_OPENROUTER_API_KEY: storedKey } }));
+    const { server, url } = await startServer();
+
+    try {
+      const masked = `${'*'.repeat(storedKey.length - 4)}${storedKey.slice(-4)}`;
+      let response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ CLAUDE_MEM_OPENROUTER_API_KEY: masked }),
+      });
+      expect(response.status).toBe(200);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env.CLAUDE_MEM_OPENROUTER_API_KEY).toBe(storedKey);
+
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ CLAUDE_MEM_OPENROUTER_API_KEY: 'or-new-key-5678' }),
+      });
+      expect(response.status).toBe(200);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('or-new-key-5678');
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('refuses and reports a corrupt settings.json without touching its bytes (worker path never quarantines)', async () => {
+    const corrupt = '{"CLAUDE_MEM_MODEL":"keep-me"';
+    writeFileSync(settingsPath, corrupt);
+    const { server, url } = await startServer();
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ CLAUDE_MEM_MODEL: 'new-model' }),
+      });
+      expect(response.status).toBe(500);
+      expect(readFileSync(settingsPath, 'utf-8')).toBe(corrupt);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
