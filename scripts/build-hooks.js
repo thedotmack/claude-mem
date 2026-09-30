@@ -96,6 +96,11 @@ const TRANSCRIPT_WATCHER = {
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
  * "Spawn-Contract Resolution".
  */
+// Claude Code's UserPromptSubmit timeout (seconds). It must stay above the
+// session-init budget (HOOK_TIMEOUTS.SESSION_INIT_REQUEST, 10 s by default;
+// CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS allows up to 14 s) plus hook startup (#3434).
+const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
+
 function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
@@ -131,7 +136,10 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         // the top of every session. Let `start` speak for itself.
         'SessionStart.0.0': claudeHook(['start']),
         'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
-        'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
+        'UserPromptSubmit.0.0': {
+          command: claudeHook(['hook', 'claude-code', 'session-init']),
+          timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
+        },
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
@@ -225,7 +233,7 @@ async function verifyShellTemplateCanonical() {
           entry.command = expectedCommand;
           dirty = true;
         }
-        if (typeof expected !== 'string') {
+        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'commandWindows')) {
           const actualWindows = entry?.commandWindows ?? null;
           if (actualWindows !== expected.commandWindows) {
             if (!writeMode || !entry) {
@@ -237,6 +245,17 @@ async function verifyShellTemplateCanonical() {
             entry.commandWindows = expected.commandWindows;
             dirty = true;
           }
+        }
+        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'timeout')
+          && entry?.timeout !== expected.timeout) {
+          if (!writeMode || !entry) {
+            throw new Error(
+              `Hand-edited timeout detected in ${filePath} (${dottedPath}). It no longer matches scripts/build-hooks.js. ` +
+              `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+            );
+          }
+          entry.timeout = expected.timeout;
+          dirty = true;
         }
       }
     }

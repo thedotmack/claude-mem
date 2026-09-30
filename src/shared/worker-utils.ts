@@ -78,6 +78,12 @@ const WEDGED_WORKER_UPTIME_S = readTimeoutEnv(
 );
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
+const SESSION_INIT_REQUEST_TIMEOUT_BOUNDS = {
+  min: 500,
+  max: HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX,
+} as const;
+/** Below this much budget, a hook-side worker step is skipped rather than started. */
+const MIN_WORKER_BUDGET_MS = 100;
 
 /**
  * Node/undici RequestInit extension. Passing `{ verbose: true }` is the
@@ -167,6 +173,7 @@ let cachedPort: number | null = null;
 let cachedHost: string | null = null;
 let cachedSettings: SettingsDefaults | null = null;
 let cachedApiRequestTimeoutMs: number | null = null;
+let cachedSessionInitRequestTimeoutMs: number | null = null;
 
 function getWorkerSettingsPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
@@ -266,11 +273,49 @@ export function getWorkerApiRequestTimeoutMs(): number {
   return cachedApiRequestTimeoutMs;
 }
 
+/**
+ * The UserPromptSubmit session-init budget (#3434, plan-17 step 3): one
+ * deadline for the whole worker round-trip, kept inside the 15 s host timeout.
+ * Never Windows-scaled — the cap it has to fit under is not scaled either.
+ */
+export function getSessionInitRequestTimeoutMs(): number {
+  if (cachedSessionInitRequestTimeoutMs !== null) {
+    return cachedSessionInitRequestTimeoutMs;
+  }
+
+  cachedSessionInitRequestTimeoutMs = readSettingsBackedTimeout(
+    'CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS',
+    HOOK_TIMEOUTS.SESSION_INIT_REQUEST,
+    SESSION_INIT_REQUEST_TIMEOUT_BOUNDS
+  );
+  return cachedSessionInitRequestTimeoutMs;
+}
+
 export function clearPortCache(): void {
   cachedPort = null;
   cachedHost = null;
   cachedSettings = null;
   cachedApiRequestTimeoutMs = null;
+  cachedSessionInitRequestTimeoutMs = null;
+}
+
+/** Milliseconds left before `deadlineAt`, or null when the caller set no deadline. */
+function remainingBudgetMs(deadlineAt: number | null): number | null {
+  return deadlineAt === null ? null : Math.max(0, deadlineAt - Date.now());
+}
+
+function isBudgetExhausted(deadlineAt: number | null): boolean {
+  const remainingMs = remainingBudgetMs(deadlineAt);
+  return remainingMs !== null && remainingMs < MIN_WORKER_BUDGET_MS;
+}
+
+/**
+ * A step's own timeout, cut down to what is left of the caller's budget. Never
+ * below 1 ms: workerHttpRequest treats a 0 timeout as "no timeout at all".
+ */
+function boundedByBudget(stepTimeoutMs: number, deadlineAt: number | null): number {
+  const remainingMs = remainingBudgetMs(deadlineAt);
+  return remainingMs === null ? stepTimeoutMs : Math.max(1, Math.min(stepTimeoutMs, remainingMs));
 }
 
 export function formatHostForUrl(host: string): string {
@@ -309,8 +354,8 @@ export function workerHttpRequest(
   return workerFetch(url, init);
 }
 
-async function isWorkerHealthy(): Promise<boolean> {
-  const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+async function isWorkerHealthy(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
+  const response = await workerHttpRequest('/api/health', { timeoutMs });
   return response.ok;
 }
 
@@ -448,12 +493,16 @@ export function resolveWorkerScriptPath(): string | null {
   return resolveWorkerScript()?.scriptPath ?? null;
 }
 
-async function waitForWorkerPort(options: { attempts: number; backoffMs: number }): Promise<boolean> {
+async function waitForWorkerPort(
+  options: { attempts: number; backoffMs: number; deadlineAt?: number | null },
+): Promise<boolean> {
+  const deadlineAt = options.deadlineAt ?? null;
   let delayMs = options.backoffMs;
   for (let attempt = 1; attempt <= options.attempts; attempt++) {
-    if (await isWorkerPortAlive()) return true;
+    if (isBudgetExhausted(deadlineAt)) return false;
+    if (await isWorkerPortAlive(boundedByBudget(HEALTH_CHECK_TIMEOUT_MS, deadlineAt))) return true;
     if (attempt < options.attempts) {
-      await new Promise<void>(resolve => setTimeout(resolve, delayMs));
+      await new Promise<void>(resolve => setTimeout(resolve, boundedByBudget(delayMs, deadlineAt)));
       delayMs *= 2;
     }
   }
@@ -474,7 +523,8 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      if (await isWorkerReady()) return true;
+      const waitLeftMs = timeoutMs - (Date.now() - start);
+      if (await isWorkerReady(Math.max(1, Math.min(HEALTH_CHECK_TIMEOUT_MS, waitLeftMs)))) return true;
     } catch (error: unknown) {
       logger.debug('SYSTEM', 'Worker readiness check threw', {
         error: error instanceof Error ? error.message : String(error),
@@ -494,9 +544,9 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
  * parsed regardless of status — same contract as restart-verify.ts. Returns
  * null when the worker is unreachable or the payload is malformed.
  */
-async function fetchWorkerHealthVersion(): Promise<string | null> {
+async function fetchWorkerHealthVersion(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<string | null> {
   try {
-    const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+    const response = await workerHttpRequest('/api/health', { timeoutMs });
     const body = await response.json() as { version?: unknown };
     return typeof body.version === 'string' ? body.version : null;
   } catch (error: unknown) {
@@ -514,9 +564,9 @@ async function fetchWorkerHealthVersion(): Promise<string | null> {
  * MUST treat null as "not wedged" — an unreadable uptime is never grounds to
  * kill a process.
  */
-async function fetchWorkerHealthUptimeSeconds(): Promise<number | null> {
+async function fetchWorkerHealthUptimeSeconds(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<number | null> {
   try {
-    const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+    const response = await workerHttpRequest('/api/health', { timeoutMs });
     const body = await response.json() as { uptime?: unknown };
     return typeof body.uptime === 'number' && Number.isFinite(body.uptime) ? body.uptime : null;
   } catch (error: unknown) {
@@ -534,15 +584,19 @@ async function fetchWorkerHealthUptimeSeconds(): Promise<number | null> {
  * rejection here cannot be a live-but-stalled worker.
  */
 async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
-  const start = Date.now();
+  // Each probe is cut to the time left, and an exhausted wait returns before
+  // probing: a spent hook budget used to still pay one full health timeout
+  // here (#3434).
+  const deadlineAt = Date.now() + timeoutMs;
   for (;;) {
+    const waitLeftMs = deadlineAt - Date.now();
+    if (waitLeftMs < MIN_WORKER_BUDGET_MS) return false;
     try {
-      await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+      await workerHttpRequest('/api/health', { timeoutMs: Math.min(HEALTH_CHECK_TIMEOUT_MS, waitLeftMs) });
     } catch {
       return true;
     }
-    if (Date.now() - start >= timeoutMs) return false;
-    await new Promise<void>(resolve => setTimeout(resolve, 200));
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(200, Math.max(0, deadlineAt - Date.now()))));
   }
 }
 
@@ -576,8 +630,9 @@ function alreadyRecycledBundle(buildKey: string | null, workerVersion: string | 
 async function warnIfVersionStillMismatched(
   expectedPluginVersion: string,
   buildKey: string | null = null,
+  timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS,
 ): Promise<void> {
-  const observedVersion = await fetchWorkerHealthVersion();
+  const observedVersion = await fetchWorkerHealthVersion(timeoutMs);
   if (observedVersion !== null && observedVersion !== expectedPluginVersion) {
     if (buildKey !== null) {
       try {
@@ -595,10 +650,10 @@ async function warnIfVersionStillMismatched(
   }
 }
 
-async function isWorkerPortAlive(): Promise<boolean> {
+async function isWorkerPortAlive(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
   let healthy: boolean;
   try {
-    healthy = await isWorkerHealthy();
+    healthy = await isWorkerHealthy(timeoutMs);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'Worker health check threw', {
       error: error instanceof Error ? error.message : String(error),
@@ -621,7 +676,25 @@ async function isWorkerPortAlive(): Promise<boolean> {
   return false;
 }
 
-export async function ensureWorkerRunning(): Promise<boolean> {
+export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> {
+  // #3434 / plan-17 step 3: a caller spending a hook deadline (UserPromptSubmit
+  // session-init) passes its budget. Every probe, wait and spawn step below is
+  // cut to what is left of it, and a spent budget skips the remaining steps,
+  // so the hook returns its fallback before the host kills it. Callers without
+  // a deadline keep the standalone per-step timeouts.
+  const deadlineAt = timeoutMs === undefined ? null : Date.now() + timeoutMs;
+  const outOfBudget = (step: string): boolean => {
+    if (!isBudgetExhausted(deadlineAt)) return false;
+    logger.warn('SYSTEM', 'Worker check ran out of the hook budget; skipping the rest this hook event', {
+      step,
+      budgetMs: timeoutMs,
+    });
+    return true;
+  };
+  // Budgeted probe timeouts; undefined keeps each callee's own default.
+  const probeTimeoutMs = (): number | undefined =>
+    deadlineAt === null ? undefined : boundedByBudget(HEALTH_CHECK_TIMEOUT_MS, deadlineAt);
+
   // Resolve ONCE and use the result for both the staleness check and the
   // (re)spawn script below. Detection and spawn sharing this single oracle
   // is what guarantees a mismatch clears in one recycle instead of
@@ -638,21 +711,28 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   let expectedPluginVersion: string | null = null;
   let recycleBuildKey: string | null = null;
 
-  if (await isWorkerPortAlive()) {
+  if (outOfBudget('health probe')) return false;
+  if (await isWorkerPortAlive(probeTimeoutMs())) {
     // A worker is already alive. If it is a DIFFERENT version than the one
     // this resolution would spawn (e.g. the user upgraded but the previous
     // worker is still squatting the port), recycle it so the resolved
     // version takes over — otherwise the stale worker keeps serving
     // indefinitely.
-    const { matches, pluginVersion, workerVersion } = await checkVersionMatch(getWorkerPort(), resolvedScript?.version ?? null);
+    if (outOfBudget('version probe')) return false;
+    const { matches, pluginVersion, workerVersion } = await checkVersionMatch(
+      getWorkerPort(),
+      resolvedScript?.version ?? null,
+      probeTimeoutMs(),
+    );
     if (pluginVersion !== 'unknown') {
       expectedPluginVersion = pluginVersion;
     }
     if (matches) {
-      const ready = await waitForWorkerReadiness();
+      if (outOfBudget('readiness wait')) return false;
+      const ready = await waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
       if (ready) {
-        if (expectedPluginVersion !== null) {
-          await warnIfVersionStillMismatched(expectedPluginVersion);
+        if (expectedPluginVersion !== null && !isBudgetExhausted(deadlineAt)) {
+          await warnIfVersionStillMismatched(expectedPluginVersion, null, probeTimeoutMs());
         }
         return true;
       }
@@ -661,7 +741,8 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       // alone) or its background init died and it will NEVER become ready
       // (recycle it — nothing else will, because the version matches). The
       // worker's own uptime is the discriminator; see WEDGED_WORKER_UPTIME_S.
-      const uptimeSeconds = await fetchWorkerHealthUptimeSeconds();
+      if (outOfBudget('wedged-worker check')) return false;
+      const uptimeSeconds = await fetchWorkerHealthUptimeSeconds(probeTimeoutMs());
       if (uptimeSeconds === null || uptimeSeconds < WEDGED_WORKER_UPTIME_S) {
         logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call', {
           uptimeSeconds,
@@ -687,7 +768,8 @@ export async function ensureWorkerRunning(): Promise<boolean> {
           workerVersion,
           scriptPath: resolvedScript?.scriptPath,
         });
-        return waitForWorkerReadiness();
+        if (outOfBudget('readiness wait')) return false;
+        return waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
       }
 
       logger.info('SYSTEM', 'Worker version mismatch — killing stale worker', {
@@ -727,6 +809,10 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // shutdown code runs anywhere in the tree. A graceful tree-kill would let
     // the stale worker execute the dying install's handoff logic, which is the
     // restart storm that invariant exists to prevent.
+    //
+    // With the budget spent, leave the recycle to the next hook event rather
+    // than kill a worker this hook could not wait to replace.
+    if (outOfBudget('stale-worker recycle')) return false;
     try {
       await killProcessTree(stalePidInfo.pid, { signalMode: 'immediate' });
     } catch (error: unknown) {
@@ -736,7 +822,8 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       }, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
-    if (!(await waitForWorkerPortClosed())) {
+    if (!(await waitForWorkerPortClosed(boundedByBudget(5000, deadlineAt)))) {
+      if (outOfBudget('stale port release')) return false;
       logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
         pid: stalePidInfo.pid,
         port: getWorkerPort(),
@@ -770,6 +857,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   // winner holds the lock through the port-open wait (the spawn isn't "done"
   // until the worker owns the port) and releases in finally on every exit
   // path.
+  if (outOfBudget('lazy spawn')) return false;
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
@@ -816,8 +904,11 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // soft-failed to empty — dropping memory injection and the user_prompts row
     // (the upstream trigger for #2794). Wait up to ~15.5s (≈ POST_SPAWN_WAIT) so
     // whichever worker wins the port is seen before we give up.
-    const alive = await waitForWorkerPort({ attempts: 6, backoffMs: 500 });
+    const alive = await waitForWorkerPort({ attempts: 6, backoffMs: 500, deadlineAt });
     if (!alive) {
+      // A budget cut the cold-boot wait short, so the zombie diagnosis below
+      // (which needs the full wait) cannot tell a late bind from an orphan.
+      if (outOfBudget('cold-boot port wait')) return false;
       logger.warn('SYSTEM', spawnLockHeld
         ? 'Worker port did not open after lazy-spawn within the cold-boot wait (~15s)'
         : 'Spawn-lock holder\'s worker port did not open within the cold-boot wait (~15s)');
@@ -832,7 +923,10 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       // duplicate-gate sees the occupied port and exit(0)s without binding —
       // so name the actual fix instead of letting the generic "unreachable"
       // counter climb forever.
-      if (readOwnedWorkerPidInfo() === null && (await isPortInUse(getWorkerPort()))) {
+      if (
+        readOwnedWorkerPidInfo() === null
+        && (await isPortInUse(getWorkerPort(), deadlineAt === null ? undefined : boundedByBudget(5000, deadlineAt)))
+      ) {
         orphanedPortDiagnosis = getWorkerPort();
         logger.error('SYSTEM', 'Worker port is occupied by an unreachable process that no PID file claims (likely an orphaned OS socket); every lazy-spawn on this port will be silently refused', {
           port: orphanedPortDiagnosis,
@@ -844,15 +938,16 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   } finally {
     if (spawnLockHeld) releaseSpawnLock();
   }
-  const ready = await waitForWorkerReadiness();
+  if (outOfBudget('readiness wait')) return false;
+  const ready = await waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
   if (!ready) {
     logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout');
     return false;
   }
   // Remember a failed version change across hook invocations, so a stale
   // bundled artifact cannot trigger a restart on every tool call.
-  if (expectedPluginVersion !== null) {
-    await warnIfVersionStillMismatched(expectedPluginVersion, recycleBuildKey);
+  if (expectedPluginVersion !== null && !isBudgetExhausted(deadlineAt)) {
+    await warnIfVersionStillMismatched(expectedPluginVersion, recycleBuildKey, probeTimeoutMs());
   }
   return true;
 }
@@ -872,9 +967,9 @@ let orphanedPortDiagnosis: number | null = null;
 
 let aliveCache: boolean | null = null;
 
-export async function ensureWorkerAliveOnce(): Promise<boolean> {
+export async function ensureWorkerAliveOnce(timeoutMs?: number): Promise<boolean> {
   if (aliveCache !== null) return aliveCache;
-  aliveCache = await ensureWorkerRunning();
+  aliveCache = await ensureWorkerRunning(timeoutMs);
   return aliveCache;
 }
 
@@ -1260,7 +1355,13 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 }
 
 export interface WorkerFallbackOptions {
+  /**
+   * With workerStartupTimeoutMs: the request timeout alone. Without it: ONE
+   * budget for the whole call, spent by the worker check first and then by
+   * the request (#3434), so a synchronous hook stays inside its host timeout.
+   */
   timeoutMs?: number;
+  /** Bounded worker startup (Codex, SessionEnd): its own wait, separate from timeoutMs. */
   workerStartupTimeoutMs?: number;
 }
 
@@ -1270,10 +1371,11 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
+  const startedAt = Date.now();
   const boundedStartup = options.workerStartupTimeoutMs !== undefined;
   const alive = boundedStartup
     ? await ensureWorkerReadyWithin(options.workerStartupTimeoutMs!)
-    : await ensureWorkerAliveOnce();
+    : await ensureWorkerAliveOnce(options.timeoutMs);
   if (!alive) {
     if (!boundedStartup) {
       await recordWorkerUnreachable();
@@ -1287,7 +1389,17 @@ export async function executeWithWorkerFallback<T = unknown>(
     init.body = JSON.stringify(body);
   }
   if (options.timeoutMs !== undefined) {
-    init.timeoutMs = options.timeoutMs;
+    const requestTimeoutMs = boundedStartup
+      ? options.timeoutMs
+      : options.timeoutMs - (Date.now() - startedAt);
+    if (requestTimeoutMs < MIN_WORKER_BUDGET_MS) {
+      logger.debug('SYSTEM', 'Hook budget spent before the worker request; skipping it', { url });
+      if (!boundedStartup) {
+        await recordWorkerUnreachable();
+      }
+      return { continue: true, reason: 'worker_budget_exhausted', [WORKER_FALLBACK_BRAND]: true };
+    }
+    init.timeoutMs = requestTimeoutMs;
   }
 
   let response: Response;

@@ -5,6 +5,7 @@ import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildCodexWindowsCommand, buildShellCommand } from '../../src/build/hook-shell-template.js';
+import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -519,10 +520,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
   },
   'plugin/hooks/codex-hooks.json': {
     'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
-    'UserPromptSubmit.0.0': {
-      ...codexHookPair(['hook', 'codex', 'session-init']),
-      timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
-    },
+    'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
     'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
     'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
@@ -570,13 +568,17 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     expect(parsed.mcpServers['mcp-search'].args[1]).toBe(MCP_EXPECTED);
   });
 
-  it('bounds UserPromptSubmit session-init hooks below the legacy 60 second stall (#3434)', () => {
-    for (const filePath of ['plugin/hooks/hooks.json', 'plugin/hooks/codex-hooks.json']) {
-      const parsed = readJson(filePath);
-      expect(hookEntryByPath(parsed, SESSION_INIT_HOOK_PATH)?.timeout).toBe(
-        SESSION_INIT_HOOK_TIMEOUT_SECONDS
-      );
-    }
+  it('bounds the Claude Code UserPromptSubmit hook below the legacy 60 second stall (#3434)', () => {
+    const parsed = readJson('plugin/hooks/hooks.json');
+    expect(hookEntryByPath(parsed, SESSION_INIT_HOOK_PATH)?.timeout).toBe(SESSION_INIT_HOOK_TIMEOUT_SECONDS);
+    // The session-init budget must fit inside the host timeout with room for
+    // shell, node and bun startup.
+    expect(HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX).toBeLessThan(SESSION_INIT_HOOK_TIMEOUT_SECONDS * 1000);
+    // Codex keeps its bounded startup (15 s wait + 2 s request) under 20 s.
+    const codex = readJson('plugin/hooks/codex-hooks.json');
+    expect(hookEntryByPath(codex, SESSION_INIT_HOOK_PATH)?.timeout).toBeGreaterThan(
+      (HOOK_TIMEOUTS.POST_SPAWN_WAIT + 2_000) / 1000,
+    );
   });
 
   it('never leaks a raw ${CLAUDE_PLUGIN_ROOT} into the resolved trailing command', () => {
