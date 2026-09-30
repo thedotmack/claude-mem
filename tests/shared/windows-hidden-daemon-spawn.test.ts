@@ -70,4 +70,20 @@ describe('Windows #3521 — hidden daemon spawn contract', () => {
     );
     expect(source).toContain('timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS');
   });
+
+  it('keeps the daemon cwd pinned: the encoded Start-Process carries -WorkingDirectory (#3706)', () => {
+    const args = buildWindowsHiddenDaemonPowerShellArgs(
+      String.raw`C:\bun\bun.exe`,
+      String.raw`C:\plugin\worker-service.cjs`,
+      String.raw`C:\Users\Test\.claude-mem`,
+    );
+    const decoded = Buffer.from(args[4], 'base64').toString('utf16le');
+    expect(decoded).toContain(String.raw`-WorkingDirectory 'C:\Users\Test\.claude-mem'`);
+  });
+
+  it('routes the hook lazy-spawn paths through spawnDetachedWorkerDaemon, never a raw detached spawn', () => {
+    const source = readFileSync(join(import.meta.dir, '../../src/shared/worker-utils.ts'), 'utf8');
+    expect(source).not.toContain('spawnHidden(');
+    expect(source).toContain('spawnDetachedWorkerDaemon(');
+  });
 });
