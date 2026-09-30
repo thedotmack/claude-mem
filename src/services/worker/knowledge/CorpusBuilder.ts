@@ -51,6 +51,9 @@ export class CorpusBuilder {
     if (filter.date_start) searchArgs.dateStart = filter.date_start;
     if (filter.date_end) searchArgs.dateEnd = filter.date_end;
     if (filter.limit) searchArgs.limit = filter.limit;
+    // The stored filter is the whole definition of a corpus; the 90-day window interactive
+    // search applies to date-less Chroma queries would shrink it on every rebuild.
+    searchArgs.ignoreDefaultRecencyWindow = true;
 
     const searchResult = await this.searchOrchestrator.search(searchArgs);
 

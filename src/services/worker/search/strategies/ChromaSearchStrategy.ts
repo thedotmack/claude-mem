@@ -40,7 +40,8 @@ export class ChromaSearchStrategy {
       project,
       platformSource,
       dateRange,
-      orderBy = 'date_desc'
+      orderBy = 'date_desc',
+      ignoreDefaultRecencyWindow = false
     } = options;
 
     if (!query) {
@@ -57,7 +58,7 @@ export class ChromaSearchStrategy {
 
     return await this.executeChromaSearch(query, whereFilter, {
       searchObservations, searchSessions, searchPrompts,
-      obsType, concepts, files, orderBy, limit, project, platformSource, dateRange
+      obsType, concepts, files, orderBy, limit, project, platformSource, dateRange, ignoreDefaultRecencyWindow
     });
   }
 
@@ -76,6 +77,7 @@ export class ChromaSearchStrategy {
       project?: string;
       platformSource?: string;
       dateRange?: DateRange;
+      ignoreDefaultRecencyWindow: boolean;
     }
   ): Promise<StrategySearchResult> {
     const chromaResults = await this.chromaSync.queryChroma(
@@ -92,7 +94,7 @@ export class ChromaSearchStrategy {
       };
     }
 
-    const recentItems = this.filterByRecency(chromaResults, options.dateRange);
+    const recentItems = this.filterByRecency(chromaResults, options.dateRange, options.ignoreDefaultRecencyWindow);
     const categorized = this.categorizeByDocType(recentItems, options);
 
     let observations: ObservationSearchResult[] = [];
@@ -181,7 +183,7 @@ export class ChromaSearchStrategy {
   private filterByRecency(chromaResults: {
     ids: number[];
     metadatas: ChromaMetadata[];
-  }, dateRange?: DateRange): Array<{ id: number; meta: ChromaMetadata }> {
+  }, dateRange: DateRange | undefined, ignoreDefaultRecencyWindow: boolean): Array<{ id: number; meta: ChromaMetadata }> {
     let startEpoch: number | undefined;
     let endEpoch: number | undefined;
 
@@ -192,7 +194,7 @@ export class ChromaSearchStrategy {
       if (dateRange.end) {
         endEpoch = resolveDateBound(dateRange.end, 'end');
       }
-    } else {
+    } else if (!ignoreDefaultRecencyWindow) {
       startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
     }
 
