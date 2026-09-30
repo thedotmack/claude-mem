@@ -20,6 +20,7 @@ import {
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 
 function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null; sourceType: 'agent_event' | 'session_summary' }> = {}): ServerGenerationContext {
   return {
@@ -507,5 +508,20 @@ describe('OpenRouterObservationProvider', () => {
     await provider.generate(makeContext());
     const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
     expect(body.model).toBe('deepseek-chat');
+  });
+
+  it('defaults to the worker OpenRouter model, not the retired anthropic/claude-3.5-sonnet', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+
+    const result = await provider.generate(makeContext());
+
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
+    const workerDefault = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+    expect(body.model).toBe(workerDefault);
+    expect(body.model).not.toBe('anthropic/claude-3.5-sonnet');
+    expect(result.modelId).toBe(workerDefault);
   });
 });
