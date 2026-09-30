@@ -81,7 +81,7 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      conditions.push('(o.project COLLATE NOCASE = ? OR o.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     } else {
       conditions.push('o.project != ?');
@@ -140,7 +140,7 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      conditions.push('(ss.project COLLATE NOCASE = ? OR ss.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     } else {
       conditions.push('ss.project != ?');
@@ -196,7 +196,7 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('s.project = ?');
+      conditions.push('s.project COLLATE NOCASE = ?');
       params.push(project);
     } else {
       conditions.push('s.project != ?');
