@@ -61,6 +61,8 @@ interface SessionCompressedRecord {
   obs_type_decision?: number;
   obs_type_refactor?: number;
   obs_type_other?: number;
+  // Closed enum from SessionRoutes.normalizeAbortReason, on aborted turns.
+  abort_reason?: string;
   [key: string]: unknown;
 }
 
@@ -144,6 +146,7 @@ function computeSessionCompressedRollup(
   let outcomesOk = 0;
   let outcomesError = 0;
   let outcomesAborted = 0;
+  let outcomesAbortedDeadlineExceeded = 0;
   let outcomesInvalidOutput = 0;
   let observationsCreated = 0;
   let obsTypeBugfix = 0;
@@ -185,8 +188,10 @@ function computeSessionCompressedRollup(
     }
     if (r.outcome === 'ok') outcomesOk++;
     else if (r.outcome === 'error') outcomesError++;
-    else if (r.outcome === 'aborted') outcomesAborted++;
-    else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
+    else if (r.outcome === 'aborted') {
+      outcomesAborted++;
+      if (r.abort_reason === 'deadline_exceeded') outcomesAbortedDeadlineExceeded++;
+    } else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
 
     if (typeof r.model === 'string' && r.model) {
       modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
@@ -228,6 +233,10 @@ function computeSessionCompressedRollup(
     outcomes_ok: outcomesOk,
     outcomes_error: outcomesError,
     outcomes_aborted: outcomesAborted,
+    // Subset of outcomes_aborted: requests abandoned at the LLM deadline
+    // (CLAUDE_MEM_LLM_TIMEOUT_MS). Per-turn abort_reason does not survive the
+    // rollup, and these are the aborts a backend may still have billed.
+    outcomes_aborted_deadline_exceeded: outcomesAbortedDeadlineExceeded,
     outcomes_invalid_output: outcomesInvalidOutput,
     // Generation-side observation volume + type mix for the session. Lets
     // PostHog derive cost-per-observation (total_cost_usd / observations_created)

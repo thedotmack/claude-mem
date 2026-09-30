@@ -13,6 +13,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
+import type { ActiveSession } from '../../../worker-types.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
@@ -50,7 +51,7 @@ import {
   isQuotaCooldownActive,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
-import { isClassified, describeProviderError, type ClassifiedProviderError } from '../../provider-errors.js';
+import { DEADLINE_EXCEEDED_CODE, isClassified, describeProviderError, type ClassifiedProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
 import {
@@ -71,7 +72,11 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | typeof DEADLINE_EXCEEDED_CODE | 'none' {
+  // The one transport pause that is ours: a request abandoned at the LLM
+  // deadline, possibly already billed upstream. Every other transport pause
+  // stays 'none', as before.
+  if (reason === `transport:${DEADLINE_EXCEEDED_CODE}`) return DEADLINE_EXCEEDED_CODE;
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
@@ -449,6 +454,38 @@ export class SessionRoutes extends BaseRouteHandler {
     }
   }
 
+  /**
+   * Book a deadline expiry in the observer-health ledger.
+   *
+   * The provider pauses on it: it aborts the controller, so the finally books
+   * the turn once as aborted and the buffered work survives, and the catch
+   * keeps transient pauses out of the ledger. But nothing was stored. A
+   * backend that is always slower than CLAUDE_MEM_LLM_TIMEOUT_MS would store
+   * nothing and never raise the session-start warning. The error's own code
+   * and remedy (raise the deadline) let the warning say what to do, and age it
+   * into a last-known note once nothing has re-tested it
+   * (isDeadlineFailureStale). Every other transient pause stays out of the
+   * ledger: a network blip is not an outage.
+   *
+   * Only while this session is still the registered one. OpenAI-compatible
+   * queries do not take the session's abort signal, so a deleted session's
+   * request runs on to its deadline with nobody waiting for the answer.
+   */
+  private recordDeadlineExpiry(
+    provider: 'claude' | 'gemini' | 'openrouter',
+    session: ActiveSession,
+    error: unknown,
+  ): void {
+    if (!isClassified(error) || error.code !== DEADLINE_EXCEEDED_CODE) return;
+    if (this.sessionManager.getSession(session.sessionDbId) !== session) return;
+    recordObserverFailure(provider, {
+      message: error.message,
+      kind: error.kind,
+      code: error.code,
+      action: error.action,
+    });
+  }
+
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
     provider: 'claude' | 'gemini' | 'openrouter',
@@ -568,12 +605,14 @@ export class SessionRoutes extends BaseRouteHandler {
             ...(classified?.requestId ? { requestId: classified.requestId } : {}),
           }, classified ? describeProviderError(classified) : errorMsg);
         } else if (classified?.kind === 'transient' && myController.signal.aborted) {
+          this.recordDeadlineExpiry(provider, session, classified);
           // The provider PAUSED on a deadline or an upstream fault that outlived
-          // its own retries: the batch is kept for the next generator, and it is
-          // not an observer failure — counting these would raise the outage
-          // banner over blips that clear on their own. A transient error that
-          // did not pause the run (Claude's overloaded or unknown errors) ended
-          // it, and is booked below like any other failure.
+          // its own retries: the batch is kept for the next generator. A fault
+          // is not an observer failure — counting these would raise the outage
+          // banner over blips that clear on their own. Our own deadline is the
+          // exception, booked just above with its own remedy and aging. A
+          // transient error that did not pause the run (Claude's overloaded or
+          // unknown errors) ended it, and is booked below like any other failure.
           logger.debug('SESSION', 'Observer paused on a transient provider failure; buffered work kept', {
             sessionId: session.sessionDbId,
             provider,

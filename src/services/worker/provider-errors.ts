@@ -12,6 +12,17 @@ export type ProviderErrorClass =
   | (string & {}); // open union: providers may emit custom kinds
 
 /**
+ * Code on the `transient` error withRetry throws when a request outlives its
+ * per-attempt deadline (CLAUDE_MEM_LLM_TIMEOUT_MS). The request was abandoned by
+ * us, not failed by the backend — which may still have completed and billed it —
+ * so it is kept countable apart from network faults: as the
+ * `transport:deadline_exceeded` abort reason, the `deadline_exceeded` telemetry
+ * abort_reason, and the observer-health ledger's lastErrorCode (observer-health
+ * compares the same string as a literal, to stay free of worker imports).
+ */
+export const DEADLINE_EXCEEDED_CODE = 'deadline_exceeded';
+
+/**
  * Optional structured detail carried alongside a classified error. Populated
  * when the upstream (e.g. the cmem.ai gateway) returns a taxonomy envelope
  * `{ code, message, action, url, request_id }`; the worker carries these

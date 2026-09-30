@@ -1,11 +1,23 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
+
+/** Run `run` and collect every console.warn line it printed (the migration log channel). */
+function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  try {
+    return { value: run(), warnings };
+  } finally {
+    console.warn = originalWarn;
+  }
+}
 
 describe('SettingsDefaultsManager', () => {
   let tempDir: string;
@@ -445,17 +457,6 @@ describe('SettingsDefaultsManager', () => {
       const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
       const CMEM_GATEWAY = 'https://cmem.ai/api/inference/v1';
 
-      function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
-        const warnings: string[] = [];
-        const originalWarn = console.warn;
-        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-        try {
-          return { value: run(), warnings };
-        } finally {
-          console.warn = originalWarn;
-        }
-      }
-
       function migrationWarnings(warnings: string[]): string[] {
         return warnings.filter((line) => line.includes('retired default'));
       }
@@ -595,6 +596,141 @@ describe('SettingsDefaultsManager', () => {
         const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
         expect(parsed.env.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
         expect(parsed.hooks).toEqual({ SessionStart: [] });
+      });
+    });
+
+    // Every settings.json seeded since #4125 carries the then-default 30000ms
+    // observer deadline, and a persisted value wins over DEFAULTS — so a raised
+    // default would never reach those installs. The cmem.ai gateway's normal
+    // tail runs past 30s, and an abandoned request can still be billed upstream.
+    describe('legacy LLM deadline default migration', () => {
+      const LEGACY = '30000';
+      const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_LLM_TIMEOUT_MS;
+
+      function deadlineMigrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes('CLAUDE_MEM_LLM_TIMEOUT_MS'));
+      }
+
+      it('ships the raised 180s default', () => {
+        expect(CURRENT).toBe('180000');
+      });
+
+      it('moves the seeded 30000 to the current default once, with one log line', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY,
+          // Seeded beside it with the same string, and still its own default.
+          CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '30000',
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(first.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(first.value.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('30000');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        // The rest of the file survives the rewrite, the field budget included.
+        expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
+        expect(parsed.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('30000');
+        const [logLine, ...extra] = deadlineMigrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`30000ms default to ${CURRENT}ms`);
+        expect(logLine).toContain(settingsPath);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+        expect(second.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(deadlineMigrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it.each([
+        ['a raised deadline', '120000'],
+        ['a lowered deadline', '15000'],
+        ['a deadline written as a JSON number', 90000],
+        // Every writer persists the string; a bare number is a hand edit.
+        ['the legacy value hand-written as a JSON number', 30000],
+      ])('leaves %s chosen by the user untouched', (_label, value) => {
+        const raw = JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: value });
+        writeFileSync(settingsPath, raw);
+
+        const { value: result, warnings } = captureWarnings(
+          () => SettingsDefaultsManager.loadFromFile(settingsPath, false),
+        );
+
+        expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toEqual(value as string);
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+      });
+
+      // Like every other settings.json writer since #3498: the file holds API
+      // keys and sync tokens, so the rewrite leaves it owner-only even when an
+      // older build had left it readable.
+      it('rewrites the file owner-only', () => {
+        if (process.platform === 'win32') return;
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY }));
+        chmodSync(settingsPath, 0o644);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+      });
+
+      it('keeps the peer root keys of a nested settings file', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          env: { CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY },
+          hooks: { SessionStart: [] },
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.env.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(parsed.hooks).toEqual({ SessionStart: [] });
+      });
+
+      // The move runs once per settings file. Without a marker it ran on every
+      // load, so a 30000 the user chose later was silently moved back to the
+      // new default.
+      it.each([
+        ['after the seeded value was moved', JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY })],
+        ['on an install that never held the old default', JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' })],
+        ['on a settings file created fresh', null],
+      ])('keeps a 30000 the user sets %s', (_label, initial) => {
+        if (initial !== null) writeFileSync(settingsPath, initial);
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY }));
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(LEGACY);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(LEGACY);
+        expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+      });
+
+      // settings.json can be a symlink into a read-only store (Nix home-manager).
+      // The move still applies in memory, but saving it fails on every load, and
+      // every observer request loads settings (retry.ts), so it is said once.
+      it('warns once per process when the move cannot be saved, and still uses the new default', () => {
+        if (process.platform === 'win32' || process.getuid?.() === 0) return;
+        const storeDir = join(tempDir, 'read-only-store');
+        mkdirSync(storeDir);
+        const storedSettings = join(storeDir, 'settings.json');
+        const raw = JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY });
+        writeFileSync(storedSettings, raw);
+        symlinkSync(storedSettings, settingsPath);
+        chmodSync(storeDir, 0o555);
+        try {
+          const loads = [1, 2, 3].map(() => captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false)));
+
+          for (const { value } of loads) expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+          const failures = loads.flatMap(({ warnings }) => deadlineMigrationWarnings(warnings));
+          expect(failures).toHaveLength(1);
+          expect(failures[0]).toContain('Failed to migrate');
+          expect(readFileSync(storedSettings, 'utf-8')).toBe(raw);
+        } finally {
+          chmodSync(storeDir, 0o755);
+        }
       });
     });
 
