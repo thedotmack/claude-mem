@@ -44,6 +44,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_PUBLIC_URL: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   CLAUDE_MEM_PROVIDER: string;  
@@ -196,6 +197,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_PUBLIC_URL: '',  // Browser-reachable base for the live-view URL when the
+                                // worker runs behind a port-forward (e.g.
+                                // https://37700.host.<user>.<domain>). Empty => localhost.
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     // Deliberate divergence from the installer prompt: the interactive
