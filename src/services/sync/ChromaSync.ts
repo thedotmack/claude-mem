@@ -158,46 +158,50 @@ const CHROMA_MCP_EMBEDDING_FUNCTIONS: ReadonlySet<string> = new Set([
 const CHROMA_OVERFETCH_FACTOR = 20;
 const CHROMA_OVERFETCH_CAP = 2000;
 
+type MetadataPredicate = (metadata: Record<string, unknown>) => boolean;
+
 /**
  * Build a client-side equivalent of a chroma `where` clause, or null if the
  * clause uses anything we do not evaluate identically to chroma.
  *
- * Deliberately narrow: literal equality and $eq, combined with $and. Any
- * operator we are not certain we match exactly ($in, $or, $ne, ranges) returns
- * null so the query goes to chroma unchanged. A wrong client-side filter would
- * silently drop results, which is far worse than a slow query.
+ * Deliberately narrow: equality (a literal or `$eq`) on a string, number or
+ * boolean, combined with `$and` / `$or`. That covers every clause the search
+ * paths build, including the dual-project scoping
+ * `{ $or: [{ project }, { merged_into_project: project }] }` that scopes nearly
+ * every project search. Everything else returns null so the query goes to
+ * chroma unchanged: other operators ($in, $ne, ranges), and the shapes chroma
+ * itself rejects (a clause with more than one key, an `$and` / `$or` with fewer
+ * than two clauses), so an invalid filter still fails the way it did. A wrong
+ * client-side filter would silently drop results, which is far worse than a
+ * slow query.
  */
-function buildClientSidePredicate(
-  where: Record<string, any>
-): ((metadata: Record<string, any>) => boolean) | null {
+function buildClientSidePredicate(where: unknown): MetadataPredicate | null {
   if (!where || typeof where !== 'object' || Array.isArray(where)) return null;
 
   const entries = Object.entries(where);
-  if (entries.length === 0) return null;
+  if (entries.length !== 1) return null;
+  const [key, value] = entries[0];
 
-  const predicates: ((metadata: Record<string, any>) => boolean)[] = [];
-
-  for (const [key, value] of entries) {
-    if (key === '$and') {
-      if (!Array.isArray(value)) return null;
-      const inner = value.map(clause => buildClientSidePredicate(clause));
-      if (inner.some(p => p === null)) return null;
-      predicates.push(metadata => inner.every(p => p!(metadata)));
-      continue;
-    }
-    if (key.startsWith('$')) return null;
-
-    if (value !== null && typeof value === 'object') {
-      const operators = Object.keys(value);
-      if (operators.length !== 1 || operators[0] !== '$eq') return null;
-      const expected = (value as any).$eq;
-      predicates.push(metadata => metadata?.[key] === expected);
-      continue;
-    }
-    predicates.push(metadata => metadata?.[key] === value);
+  if (key === '$and' || key === '$or') {
+    if (!Array.isArray(value) || value.length < 2) return null;
+    const clauses = value.map(clause => buildClientSidePredicate(clause));
+    if (clauses.some(clause => clause === null)) return null;
+    const predicates = clauses as MetadataPredicate[];
+    return key === '$and'
+      ? metadata => predicates.every(predicate => predicate(metadata))
+      : metadata => predicates.some(predicate => predicate(metadata));
   }
+  if (key.startsWith('$')) return null;
 
-  return metadata => predicates.every(p => p(metadata));
+  const isOperatorObject = value !== null && typeof value === 'object' && !Array.isArray(value);
+  const expected = isOperatorObject && Object.keys(value).length === 1 && '$eq' in value
+    ? (value as { $eq: unknown }).$eq
+    : value;
+  if (typeof expected !== 'string' && typeof expected !== 'number' && typeof expected !== 'boolean') {
+    return null;
+  }
+  // A document without the key never matches, exactly as in chroma.
+  return metadata => metadata[key] === expected;
 }
 
 export class ChromaSync {
@@ -1217,21 +1221,21 @@ export class ChromaSync {
     await this.ensureCollectionExists();
 
     let results: any;
-    const runQuery = async (nResults: number, where?: Record<string, any>) => {
+    const runQuery = async (nResults: number, where: Record<string, any> | undefined, include: string[]) => {
       const chromaMcp = ChromaMcpManager.getInstance();
       return await chromaMcp.callTool('chroma_query_documents', {
         collection_name: this.collectionName,
         query_texts: [query],
         n_results: nResults,
         ...(where && { where }),
-        include: ['documents', 'metadatas', 'distances']
+        include
       });
     };
 
     try {
       // Fast path: keep a non-selective filter out of chroma by over-fetching
       // unfiltered and applying the clause here (see CHROMA_OVERFETCH_FACTOR).
-      const predicate = whereFilter ? buildClientSidePredicate(whereFilter) : null;
+      const predicate = whereFilter && limit > 0 ? buildClientSidePredicate(whereFilter) : null;
       const filterKey = whereFilter ? JSON.stringify(whereFilter) : '';
       const knownSurvivors = this.selectiveFilters.get(filterKey);
       if (predicate && (knownSurvivors === undefined || knownSurvivors >= limit)) {
@@ -1239,7 +1243,9 @@ export class ChromaSync {
           Math.max(limit * CHROMA_OVERFETCH_FACTOR, limit),
           CHROMA_OVERFETCH_CAP
         );
-        const raw: any = await runQuery(overfetch);
+        // Only ids, metadatas and distances are read below, so the (up to
+        // CHROMA_OVERFETCH_CAP) document texts are not worth shipping over MCP.
+        const raw: any = await runQuery(overfetch, undefined, ['metadatas', 'distances']);
         const rawIds = raw?.ids?.[0] || [];
         const rawMetadatas = raw?.metadatas?.[0] || [];
         const rawDistances = raw?.distances?.[0] || [];
@@ -1277,7 +1283,7 @@ export class ChromaSync {
         this.selectiveFilters.set(filterKey, filtered.ids.length);
       }
 
-      results = await runQuery(limit, whereFilter);
+      results = await runQuery(limit, whereFilter, ['documents', 'metadatas', 'distances']);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
