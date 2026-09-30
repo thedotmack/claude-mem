@@ -1,6 +1,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { execFile, execSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -26,6 +27,8 @@ const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
+const DEFAULT_CHROMA_MUTATION_TIMEOUT_MS = 600_000;
+const CHROMA_MUTATION_TIMEOUT_BOUNDS = { min: 60_000, max: 3_600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 // Circuit breaker for a doomed prewarm (#4108). A broken host (missing uv, an
 // unresolvable dep, an NTFS hardlink ceiling) fails the same way every time, so
@@ -70,6 +73,21 @@ const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 // An unparseable lock (typically a 0-byte file left by a crash mid-write) has no
 // owner to probe; once it is this old no concurrent writer is still filling it in.
 const CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS = 10_000;
+const CHROMA_STORE_RECORD_FILENAME = '.claude-mem-chroma-store.json';
+// Writer epoch — monotonic integer, bumped only when an older writer can no
+// longer safely follow a newer one's store layout. Deliberately not tied to
+// the package version so routine releases do not trigger spurious refusals.
+//
+// Bump it whenever the chromadb pin in CHROMA_MCP_DEP_OVERRIDES crosses a
+// store-format boundary. chromadb migrations are forward-only, and an older
+// engine can crash on a newer store: chromadb 1.0.16 panics opening a store
+// that 1.5.9 wrote ("range start index 10 out of range", #3384). After the
+// bump, an older claude-mem refuses such a store up front instead of handing
+// it to an engine that cannot read it.
+const CHROMA_WRITER_EPOCH = 1;
+// Size cap for the store record. A legitimate record is a small JSON envelope;
+// anything larger is damaged or adversarially written and must fail open.
+const CHROMA_STORE_RECORD_MAX_BYTES = 64 * 1024;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -90,12 +108,26 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // `TypeError: Descriptors cannot be created directly` at chromadb import.
 // Capping below 7 lands on protobuf 6.x which opentelemetry tolerates.
 //
+// Why chromadb==1.5.9: chroma-mcp 0.2.6 only declares chromadb>=1.0.16, so
+// the storage engine floated under persisted stores and an unannounced
+// upgrade segfaulted existing ones (#3362). The pin must be the version
+// installs already run, never lower: chromadb migrations are forward-only,
+// and 1.0.16 panics opening a store 1.5.9 wrote. 1.5.9 is the newest release
+// and what an unpinned env resolves today; it opens stores written by 1.0.16
+// and by 1.5.9. Raise it only after the same check on both.
+//
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'onnxruntime>=1.20',
   'protobuf<7',
+  'chromadb==1.5.9',
 ];
+
+// The chromadb version the launcher pins, read from the override list itself
+// so the store record can never disagree with what uvx actually runs.
+const CHROMADB_PINNED_VERSION: string | null =
+  CHROMA_MCP_DEP_OVERRIDES.find(spec => spec.startsWith('chromadb=='))?.slice('chromadb=='.length) ?? null;
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
 // every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
@@ -149,6 +181,21 @@ interface ChromaWriterLockPayload {
   processName?: string | null;
 }
 
+interface ChromaStoreRecord {
+  writerEpoch: number;
+  chromaMcpVersion: string;
+  /** The chromadb engine version that last wrote the store ('' when unknown). */
+  chromadbVersion: string;
+  // depOverrides is written for diagnostic provenance but not parsed back —
+  // element types are unchecked and the field never participates in any predicate.
+  clientType: string;
+  claudeMemVersion: string;
+  updatedAt: string;
+}
+
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const claudeMemVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
 // Keep one writer identity for the lifetime of this process. Multiple manager
 // instances can be created during reconnects/tests, and they must be able to
 // re-acquire a lock that this process already owns.
@@ -182,6 +229,7 @@ export class ChromaMcpManager {
   private mutationTail: Promise<void> = Promise.resolve();
   private pendingMutationCalls = 0;
   private readonly maxPendingMutationCalls: number;
+  private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
@@ -192,6 +240,13 @@ export class ChromaMcpManager {
     this.maxPendingMutationCalls = Number.isInteger(configuredLimit) && configuredLimit > 0
       ? configuredLimit
       : DEFAULT_MAX_PENDING_MUTATIONS;
+    const configuredMutationTimeout = Number.parseInt(settings.CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS, 10);
+    this.mutationTimeoutMs = Number.isInteger(configuredMutationTimeout)
+      ? Math.min(
+          CHROMA_MUTATION_TIMEOUT_BOUNDS.max,
+          Math.max(CHROMA_MUTATION_TIMEOUT_BOUNDS.min, configuredMutationTimeout)
+        )
+      : DEFAULT_CHROMA_MUTATION_TIMEOUT_MS;
     this.serializeMutations = (settings.CLAUDE_MEM_CHROMA_MODE || 'local') !== 'remote';
   }
 
@@ -259,6 +314,15 @@ export class ChromaMcpManager {
     this.assertConnectionNotCancelled(connectionGeneration);
 
     const localChromaDataDir = this.getLocalPersistentChromaDataDir();
+
+    // Pre-spawn compatibility check (refs #3012): refuse before prewarm and
+    // before lock acquisition when the on-disk record proves this store was
+    // last written by a newer epoch than this runtime.  The reader never
+    // creates the data dir — acquireChromaWriterLock() retains that right.
+    if (localChromaDataDir) {
+      ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
+    }
+
     const commandArgs = this.buildCommandArgs(localChromaDataDir);
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
@@ -292,6 +356,7 @@ export class ChromaMcpManager {
     try {
       if (localChromaDataDir) {
         this.acquireChromaWriterLock(localChromaDataDir);
+        ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
       }
 
       this.transport = new StdioClientTransport({
@@ -361,6 +426,10 @@ export class ChromaMcpManager {
       throw new ChromaUnavailableError(unavailableMessage, connectionError instanceof Error ? connectionError : undefined);
     }
     clearTimeout(timeoutId!);
+
+    if (localChromaDataDir) {
+      ChromaMcpManager.writeChromaStoreRecord(localChromaDataDir);
+    }
 
     this.connected = true;
     this.registerManagedProcess();
@@ -623,6 +692,7 @@ export class ChromaMcpManager {
 
   private static readChromaWriterLock(lockPath: string): ChromaWriterLockPayload | null {
     try {
+      if (!fs.statSync(lockPath).isFile()) return null;
       const raw = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as Partial<ChromaWriterLockPayload>;
       if (
         typeof raw.pid !== 'number' ||
@@ -673,6 +743,113 @@ export class ChromaMcpManager {
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
     return currentStartToken === null || currentStartToken === lock.startToken;
+  }
+
+  private static readChromaStoreRecord(
+    dataDir: string,
+  ): { kind: 'absent' } | { kind: 'damaged'; reason: string } | { kind: 'valid'; record: ChromaStoreRecord } {
+    const recordPath = path.join(path.resolve(dataDir), CHROMA_STORE_RECORD_FILENAME);
+    let raw: string;
+    try {
+      const stat = fs.statSync(recordPath);
+      if (!stat.isFile()) {
+        return { kind: 'damaged', reason: 'record path is not a regular file' };
+      }
+      if (stat.size > CHROMA_STORE_RECORD_MAX_BYTES) {
+        return { kind: 'damaged', reason: `record size ${stat.size} exceeds limit ${CHROMA_STORE_RECORD_MAX_BYTES}` };
+      }
+      raw = fs.readFileSync(recordPath, 'utf-8');
+    } catch (error) {
+      const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (errno === 'ENOENT') {
+        return { kind: 'absent' };
+      }
+      return { kind: 'damaged', reason: error instanceof Error ? error.message : String(error) };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { kind: 'damaged', reason: 'JSON parse error' };
+    }
+    if (typeof parsed !== 'object' || parsed === null) {
+      return { kind: 'damaged', reason: 'record is not an object' };
+    }
+    const candidate = parsed as Record<string, unknown>;
+    if (!Number.isInteger(candidate.writerEpoch)) {
+      return { kind: 'damaged', reason: `writerEpoch is ${typeof candidate.writerEpoch}, expected integer` };
+    }
+    return {
+      kind: 'valid',
+      record: {
+        writerEpoch: candidate.writerEpoch as number,
+        chromaMcpVersion: typeof candidate.chromaMcpVersion === 'string' ? candidate.chromaMcpVersion : '',
+        chromadbVersion: typeof candidate.chromadbVersion === 'string' ? candidate.chromadbVersion : '',
+        clientType: typeof candidate.clientType === 'string' ? candidate.clientType : '',
+        claudeMemVersion: typeof candidate.claudeMemVersion === 'string' ? candidate.claudeMemVersion : '',
+        updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : '',
+      },
+    };
+  }
+
+  private static assertChromaStoreCompatible(dataDir: string): void {
+    const stored = ChromaMcpManager.readChromaStoreRecord(dataDir);
+    if (stored.kind === 'damaged') {
+      logger.warn('CHROMA_MCP', 'Chroma store record is damaged; connecting anyway', {
+        dataDir,
+        reason: stored.reason,
+      });
+      return;
+    }
+    if (stored.kind !== 'valid' || stored.record.writerEpoch <= CHROMA_WRITER_EPOCH) {
+      return;
+    }
+
+    // Strip non-printables and cap each field so injected control characters
+    // or outsized strings cannot propagate through the health map to API responses.
+    const sanitizeField = (s: string) => s.replace(/[^\x20-\x7E]/g, '').slice(0, 80);
+    const version = sanitizeField(stored.record.claudeMemVersion);
+    const ts = sanitizeField(stored.record.updatedAt);
+    const engine = sanitizeField(stored.record.chromadbVersion);
+    const writerDesc = [
+      version
+        ? `claude-mem ${version}${ts ? ` at ${ts}` : ''}`
+        : ts || 'an unknown version',
+      ...(engine ? [`chromadb ${engine}`] : []),
+    ].join(', ');
+    const message =
+      `Chroma data dir ${path.resolve(dataDir)} was last written by epoch ` +
+      `${stored.record.writerEpoch} (${writerDesc}); this writer is epoch ${CHROMA_WRITER_EPOCH}. ` +
+      `Upgrade claude-mem to match the version that last wrote this store, ` +
+      `or configure a distinct CLAUDE_MEM_DATA_DIR.`;
+    recordChromaVectorSearchUnavailable(message);
+    throw new ChromaUnavailableError(message);
+  }
+
+  private static writeChromaStoreRecord(dataDir: string): void {
+    const normalizedDataDir = path.resolve(dataDir);
+    const recordPath = path.join(normalizedDataDir, CHROMA_STORE_RECORD_FILENAME);
+    const tmp = `${recordPath}.tmp`;
+    // depOverrides is written for diagnostic provenance but not typed on ChromaStoreRecord
+    // (see interface comment) — the write payload intentionally extends beyond the read type.
+    const record = {
+      writerEpoch: CHROMA_WRITER_EPOCH,
+      chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      chromadbVersion: CHROMADB_PINNED_VERSION ?? '',
+      depOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      clientType: 'persistent',
+      claudeMemVersion,
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(record, null, 2), 'utf-8');
+      fs.renameSync(tmp, recordPath);
+    } catch (error) {
+      logger.warn('CHROMA_MCP', 'Failed to write Chroma store record; connecting anyway', {
+        recordPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private static buildLauncherPrefix(pythonVersion: string): string[] {
@@ -1083,8 +1260,20 @@ export class ChromaMcpManager {
     const callGeneration = this.connectionGeneration;
     await this.ensureConnected();
 
+    // Chroma embedding/index mutations routinely exceed the MCP SDK's
+    // 60-second default once a persistent collection grows. The SDK treats
+    // that deadline as a request failure, and tearing chroma-mcp down while
+    // SQLite/FTS5 may still be committing can leave the persistent index
+    // malformed (a timeout is therefore never handled as a transport error,
+    // see below). Give mutations a bounded, configurable deadline while
+    // keeping read/query latency at the SDK default.
+    const requestOptions = ChromaMcpManager.isMutationTool(toolName)
+      ? { timeout: this.mutationTimeoutMs }
+      : undefined;
+
     logger.debug('CHROMA_MCP', `Calling tool: ${toolName}`, {
-      arguments: JSON.stringify(toolArguments).slice(0, 200)
+      arguments: JSON.stringify(toolArguments).slice(0, 200),
+      ...(requestOptions ? { timeoutMs: requestOptions.timeout } : {})
     });
 
     let result;
@@ -1092,8 +1281,22 @@ export class ChromaMcpManager {
       result = await this.client!.callTool({
         name: toolName,
         arguments: toolArguments
-      });
+      }, undefined, requestOptions);
     } catch (transportError) {
+      if (ChromaMcpManager.isRequestTimeout(transportError)) {
+        // A request that outlived its deadline means chroma-mcp is slow, not
+        // gone: the SDK has already sent notifications/cancelled, and a write
+        // may still be committing. Tree-killing it here is what leaves a
+        // persistent index malformed, and a retry would repeat the same slow
+        // work, so neither happens. The caller keeps the row pending.
+        const message = `chroma-mcp "${toolName}" timed out; the subprocess was left running`;
+        logger.warn('CHROMA_MCP', message, {
+          timeoutMs: requestOptions?.timeout,
+          error: transportError instanceof Error ? transportError.message : String(transportError)
+        });
+        throw new ChromaUnavailableError(message, transportError instanceof Error ? transportError : undefined);
+      }
+
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
@@ -1115,7 +1318,7 @@ export class ChromaMcpManager {
         result = await this.client!.callTool({
           name: toolName,
           arguments: toolArguments
-        });
+        }, undefined, requestOptions);
       } catch (retryError) {
         this.connected = false;
         throw new Error(`chroma-mcp transport error during "${toolName}" (retry failed): ${retryError instanceof Error ? retryError.message : String(retryError)}`);
@@ -1184,6 +1387,10 @@ export class ChromaMcpManager {
 
   private static isMutationTool(toolName: string): boolean {
     return CHROMA_MUTATION_TOOL_PATTERN.test(toolName);
+  }
+
+  private static isRequestTimeout(error: unknown): boolean {
+    return error instanceof McpError && error.code === ErrorCode.RequestTimeout;
   }
 
   async isHealthy(): Promise<boolean> {

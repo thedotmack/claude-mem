@@ -1,5 +1,8 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 
 describe('SearchManager platform-scoped Chroma hydration', () => {
   it('normalizes date_from/date_to filters into dateRange for worker search', async () => {
@@ -100,6 +103,217 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       project: 'search-project',
     }));
     expect(result.observations).toEqual([observation]);
+  });
+
+  it('renders date_desc search results newest day first', async () => {
+    const jan4 = {
+      id: 4,
+      memory_session_id: 'session-4',
+      project: 'search-project',
+      text: null,
+      type: 'discovery',
+      title: 'Older observation',
+      subtitle: null,
+      facts: '[]',
+      narrative: 'older',
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: '2025-01-04T10:00:00.000Z',
+      created_at_epoch: Date.parse('2025-01-04T10:00:00.000Z'),
+    };
+    const jan6 = {
+      ...jan4,
+      id: 6,
+      title: 'Newer observation',
+      created_at: '2025-01-06T10:00:00.000Z',
+      created_at_epoch: Date.parse('2025-01-06T10:00:00.000Z'),
+    };
+
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => [jan4, jan6]),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+      {
+        formatSearchTableHeader: mock(() => '| h |'),
+        formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
+      } as any,
+      {} as any,
+    );
+
+    const result = await manager.search({
+      project: 'search-project',
+      orderBy: 'date_desc',
+      format: 'text',
+      limit: 5,
+    });
+
+    const text = result.content[0].text as string;
+    expect(text.indexOf('### Jan 6')).toBeLessThan(text.indexOf('### Jan 4'));
+  });
+
+  it('keeps Chroma at its candidate batch, hydrates in the requested date order, and adds FTS matches selected by date', async () => {
+    const getObservationsByIds = mock(() => []);
+    const getSessionSummariesByIds = mock(() => []);
+    const getUserPromptsByIds = mock(() => []);
+    const searchObservations = mock(() => []);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [11, 22, 33],
+      distances: [0.1, 0.2, 0.3],
+      metadatas: [
+        { sqlite_id: 11, doc_type: 'observation', created_at_epoch: Date.now() },
+        { sqlite_id: 22, doc_type: 'session_summary', created_at_epoch: Date.now() },
+        { sqlite_id: 33, doc_type: 'user_prompt', created_at_epoch: Date.now() },
+      ],
+    }));
+
+    const manager = new SearchManager(
+      {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      } as any,
+      {
+        getObservationsByIds,
+        getSessionSummariesByIds,
+        getUserPromptsByIds,
+      } as any,
+      { queryChroma } as any,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.search({
+      query: 'trading',
+      orderBy: 'date_asc',
+      format: 'json',
+      limit: 5,
+    });
+
+    expect(queryChroma).toHaveBeenCalledWith('trading', 100, undefined);
+    expect(getObservationsByIds).toHaveBeenCalledWith([11], expect.objectContaining({ orderBy: 'date_asc' }));
+    expect(getSessionSummariesByIds).toHaveBeenCalledWith([22], expect.objectContaining({ orderBy: 'date_asc' }));
+    expect(getUserPromptsByIds).toHaveBeenCalledWith([33], expect.objectContaining({ orderBy: 'date_asc' }));
+    expect(searchObservations).toHaveBeenCalledWith('trading', expect.objectContaining({ orderBy: 'date_asc', limit: 5 }));
+    expect(searchSessions).toHaveBeenCalledWith('trading', expect.objectContaining({ orderBy: 'date_asc', limit: 5 }));
+    expect(searchUserPrompts).toHaveBeenCalledWith('trading', expect.objectContaining({ orderBy: 'date_asc', limit: 5 }));
+  });
+
+  // #4135: Chroma picks its candidates by relevance, so the newest match can sit outside them.
+  it('returns and renders first the newest keyword match that is outside the Chroma candidates (date_desc)', async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const makeRow = (id: number, title: string, epoch: number) => ({
+      id,
+      memory_session_id: `session-${id}`,
+      project: 'search-project',
+      text: null,
+      type: 'discovery',
+      title,
+      subtitle: null,
+      facts: '[]',
+      narrative: title,
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(epoch).toISOString(),
+      created_at_epoch: epoch,
+    });
+    const olderChromaCandidate = makeRow(11, 'Older semantic match', Date.now() - 10 * dayMs);
+    const newestKeywordMatch = makeRow(99, 'Newest keyword match', Date.now() - dayMs);
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [olderChromaCandidate.id],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: olderChromaCandidate.id, doc_type: 'observation', created_at_epoch: olderChromaCandidate.created_at_epoch }],
+    }));
+
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => [newestKeywordMatch]),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => [olderChromaCandidate]),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      { queryChroma } as any,
+      {
+        formatSearchTableHeader: mock(() => '| h |'),
+        formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
+      } as any,
+      {} as any,
+    );
+
+    const newestOnly = await manager.search({ query: 'trading', type: 'observations', orderBy: 'date_desc', format: 'json', limit: 1 });
+    expect(newestOnly.observations.map((o: { id: number }) => o.id)).toEqual([newestKeywordMatch.id]);
+
+    const rendered = await manager.search({ query: 'trading', type: 'observations', orderBy: 'date_desc', format: 'text', limit: 2 });
+    const text = rendered.content[0].text as string;
+    expect(text.indexOf('Newest keyword match')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('Newest keyword match')).toBeLessThan(text.indexOf('Older semantic match'));
+  });
+
+  it('renders relevance-ordered unified results with the most relevant day first, not oldest first', async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const makeRow = (id: number, title: string, epoch: number) => ({
+      id,
+      memory_session_id: `session-${id}`,
+      project: 'search-project',
+      text: null,
+      type: 'discovery',
+      title,
+      subtitle: null,
+      facts: '[]',
+      narrative: title,
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(epoch).toISOString(),
+      created_at_epoch: epoch,
+    });
+    const mostRelevantNewer = makeRow(1, 'Most relevant match', Date.now() - dayMs);
+    const lessRelevantOlder = makeRow(2, 'Less relevant match', Date.now() - 10 * dayMs);
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [1, 2],
+      distances: [0.1, 0.4],
+      metadatas: [
+        { sqlite_id: 1, doc_type: 'observation', created_at_epoch: mostRelevantNewer.created_at_epoch },
+        { sqlite_id: 2, doc_type: 'observation', created_at_epoch: lessRelevantOlder.created_at_epoch },
+      ],
+    }));
+
+    const manager = new SearchManager(
+      { searchObservations: mock(() => []), searchSessions: mock(() => []), searchUserPrompts: mock(() => []) } as any,
+      {
+        getObservationsByIds: mock(() => [lessRelevantOlder, mostRelevantNewer]),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      { queryChroma } as any,
+      {
+        formatSearchTableHeader: mock(() => '| h |'),
+        formatObservationSearchRow: mock((obs: any) => ({ row: obs.title, time: '' })),
+      } as any,
+      {} as any,
+    );
+
+    const rendered = await manager.search({ query: 'trading', type: 'observations', format: 'text', limit: 5 });
+    const text = rendered.content[0].text as string;
+    expect(text.indexOf('Most relevant match')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('Most relevant match')).toBeLessThan(text.indexOf('Less relevant match'));
   });
 
   it('hydrates Chroma observation matches in relevance order, not by date', async () => {
@@ -460,7 +674,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       result_count: 3,
       search_strategy: 'fts',
       chroma_available: true,
-      fallback_reason: 'chroma_error',
+      fallback_reason: 'chroma_zero_results',
     }));
   });
 
@@ -523,7 +737,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       result_count: 1,
       search_strategy: 'fts',
       chroma_available: true,
-      fallback_reason: 'chroma_error',
+      fallback_reason: 'chroma_zero_results',
     }));
   });
 
@@ -675,5 +889,174 @@ describe('SearchManager searchObservations date grouping', () => {
     const aprilHeaderIndex = text.indexOf('### Apr 10, 2026');
     expect(augustHeaderIndex).toBeGreaterThanOrEqual(0);
     expect(aprilHeaderIndex).toBeGreaterThan(augustHeaderIndex);
+  });
+});
+
+describe('SearchManager per-category SQLite supplement (unified /api/search path)', () => {
+  const observation = {
+    id: 21,
+    memory_session_id: 'memory-21',
+    project: 'supplement-project',
+    text: null,
+    type: 'discovery',
+    title: 'fts supplement observation',
+    subtitle: null,
+    facts: '[]',
+    narrative: 'found via fts supplement',
+    concepts: '[]',
+    files_read: '[]',
+    files_modified: '[]',
+    prompt_number: 1,
+    discovery_tokens: 0,
+    created_at: new Date().toISOString(),
+    created_at_epoch: Date.now(),
+  };
+  const userPrompt = {
+    id: 7,
+    content_session_id: 'session-7',
+    prompt_number: 1,
+    prompt_text: 'テストを実行して',
+    created_at: new Date().toISOString(),
+    created_at_epoch: Date.now(),
+  };
+
+  function chromaReturningOnlyPrompt(promptId: number) {
+    return mock(() => Promise.resolve({
+      ids: [promptId],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: promptId, doc_type: 'user_prompt', project: 'supplement-project', created_at_epoch: Date.now() }],
+    }));
+  }
+
+  it('supplements empty observations from SQLite FTS when Chroma only surfaces prompts (CJK query)', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+
+    const manager = new SearchManager(
+      { searchObservations, searchSessions, searchUserPrompts } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds,
+      } as any,
+      { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const telemetry = {};
+    const result = await manager.search({ query: 'テスト', format: 'json', limit: 10 }, telemetry);
+
+    expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({ limit: 10 }));
+    expect(result.observations).toEqual([observation]);
+    expect(result.prompts).toEqual([userPrompt]);
+    expect(result.totalResults).toBe(2);
+    expect(telemetry).toEqual(expect.objectContaining({
+      result_count: 2,
+      search_strategy: 'hybrid',
+      chroma_available: true,
+      fallback_reason: 'chroma_zero_results',
+    }));
+  });
+
+  it('does not touch SQLite when every requested category already has Chroma matches', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+
+    const manager = new SearchManager(
+      { searchObservations, searchSessions, searchUserPrompts } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds,
+      } as any,
+      { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await manager.search({ query: 'テスト', type: 'prompts', format: 'json', limit: 10 });
+
+    expect(searchObservations).not.toHaveBeenCalled();
+    expect(searchUserPrompts).not.toHaveBeenCalled();
+    expect(result.prompts).toEqual([userPrompt]);
+    expect(result.totalResults).toBe(1);
+  });
+
+  describe('against a real database', () => {
+    let db: Database;
+    let store: SessionStore;
+    let sdkSessionId: number;
+
+    function storeObservation(title: string, type: string): number {
+      return store.storeObservation('supplement-mem', 'supplement-project', {
+        type,
+        title,
+        subtitle: null,
+        facts: [],
+        narrative: `${title} narrative`,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      }, 1).id;
+    }
+
+    function managerWithChroma(queryChroma: ReturnType<typeof mock>): SearchManager {
+      return new SearchManager(new SessionSearch(db), store, { queryChroma } as any, {} as any, {} as any);
+    }
+
+    beforeEach(() => {
+      db = new Database(':memory:');
+      store = new SessionStore(db);
+      sdkSessionId = store.createSDKSession('supplement-content', 'supplement-project', 'prompt');
+      store.ensureMemorySessionIdRegistered(sdkSessionId, 'supplement-mem');
+    });
+
+    afterEach(() => {
+      db.close();
+    });
+
+    // Plan-25's founding repro: Chroma's top-N for a CJK query is all prompts, so the
+    // observations bucket comes back empty although the substring path finds the row.
+    it('fills observations from the CJK substring path when Chroma only returns a prompt', async () => {
+      storeObservation('用户身份验证流程', 'discovery');
+      const promptId = store.saveUserPrompt('supplement-content', 2, '检查用户身份验证', sdkSessionId);
+
+      const result = await managerWithChroma(chromaReturningOnlyPrompt(promptId))
+        .search({ query: '用户身份', format: 'json' });
+
+      expect(result.observations.map((o: { title: string }) => o.title)).toEqual(['用户身份验证流程']);
+      expect(result.prompts.map((p: { id: number }) => p.id)).toEqual([promptId]);
+    });
+
+    it('refills observations when the obs_type filter excludes every Chroma candidate', async () => {
+      const discoveryId = storeObservation('cache eviction discovery', 'discovery');
+      storeObservation('cache eviction bugfix', 'bugfix');
+      const queryChroma = mock(() => Promise.resolve({
+        ids: [discoveryId],
+        distances: [0.1],
+        metadatas: [{ sqlite_id: discoveryId, doc_type: 'observation', project: 'supplement-project', created_at_epoch: Date.now() }],
+      }));
+
+      const result = await managerWithChroma(queryChroma)
+        .search({ query: 'cache eviction', obs_type: 'bugfix', format: 'json' });
+
+      expect(result.observations.map((o: { title: string }) => o.title)).toEqual(['cache eviction bugfix']);
+    });
+
+    it('caps the supplemented category at the requested limit', async () => {
+      for (let i = 1; i <= 8; i++) storeObservation(`队列积压排查 ${i}`, 'discovery');
+      const promptId = store.saveUserPrompt('supplement-content', 2, '队列为什么积压', sdkSessionId);
+
+      const result = await managerWithChroma(chromaReturningOnlyPrompt(promptId))
+        .search({ query: '队列', limit: 3, format: 'json' });
+
+      expect(result.observations).toHaveLength(3);
+      expect(result.prompts.map((p: { id: number }) => p.id)).toEqual([promptId]);
+    });
   });
 });

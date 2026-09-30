@@ -9,44 +9,37 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
-const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
-  const packageRoot = getPackageRoot();
-  return [
-    path.join(packageRoot, 'ui', 'viewer.html'),
-    path.join(packageRoot, 'plugin', 'ui', 'viewer.html'),
-  ];
-})();
-
-const TV_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
-  const packageRoot = getPackageRoot();
-  return [
-    path.join(packageRoot, 'ui', 'tv.html'),
-    path.join(packageRoot, 'plugin', 'ui', 'tv.html'),
-  ];
-})();
-
-const resolvedViewerHtmlPath: string | null =
-  VIEWER_HTML_CANDIDATE_PATHS.find((candidate) => existsSync(candidate)) ?? null;
-
-const resolvedTvHtmlPath: string | null =
-  TV_HTML_CANDIDATE_PATHS.find((candidate) => existsSync(candidate)) ?? null;
-
-const tvHtmlBytes: Buffer | null = resolvedTvHtmlPath ? readFileSync(resolvedTvHtmlPath) : null;
-
-const viewerHtmlBytes: Buffer | null = resolvedViewerHtmlPath
-  ? readFileSync(resolvedViewerHtmlPath)
-  : null;
-
-if (resolvedViewerHtmlPath) {
-  logger.info('SYSTEM', 'Cached viewer.html at boot', {
-    path: resolvedViewerHtmlPath,
-    bytes: viewerHtmlBytes!.byteLength,
-  });
-} else {
-  logger.warn('SYSTEM', 'viewer.html not found at any expected location at boot', {
-    candidates: VIEWER_HTML_CANDIDATE_PATHS,
-  });
+// Read on first request, not at import. Hook processes share this module but
+// never serve the viewer or Observation TV, so reading at import made every
+// hook spawn read both HTML files and log a boot line for nothing (#3665).
+function lazyUiHtml(fileName: string): () => Buffer | null {
+  let cache: { bytes: Buffer | null } | undefined;
+  return () => {
+    if (cache) {
+      return cache.bytes;
+    }
+    const packageRoot = getPackageRoot();
+    const candidates = [
+      path.join(packageRoot, 'ui', fileName),
+      path.join(packageRoot, 'plugin', 'ui', fileName),
+    ];
+    const resolvedPath = candidates.find((candidate) => existsSync(candidate)) ?? null;
+    const bytes = resolvedPath ? readFileSync(resolvedPath) : null;
+    if (bytes) {
+      logger.debug('SYSTEM', `Cached ${fileName} on first request`, {
+        path: resolvedPath,
+        bytes: bytes.byteLength,
+      });
+    } else {
+      logger.warn('SYSTEM', `${fileName} not found at any expected location`, { candidates });
+    }
+    cache = { bytes };
+    return bytes;
+  };
 }
+
+const getViewerHtmlBytes = lazyUiHtml('viewer.html');
+const getTvHtmlBytes = lazyUiHtml('tv.html');
 
 /**
  * Self-contained (no external resources — the worker serves this on localhost
@@ -179,6 +172,7 @@ export class ViewerRoutes extends BaseRouteHandler {
   });
 
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
+    const viewerHtmlBytes = getViewerHtmlBytes();
     if (!viewerHtmlBytes) {
       throw new Error('Viewer UI not found at any expected location');
     }
@@ -192,6 +186,7 @@ export class ViewerRoutes extends BaseRouteHandler {
    * the same origin so the EventSource needs no CORS of its own.
    */
   private handleTvUI = this.wrapHandler((req: Request, res: Response): void => {
+    const tvHtmlBytes = getTvHtmlBytes();
     if (!tvHtmlBytes) {
       throw new Error('Observation TV UI not found at any expected location');
     }

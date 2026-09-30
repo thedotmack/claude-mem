@@ -1,7 +1,7 @@
 // IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
 // HookResult and MUST NOT call process.stderr.write / process.stdout.write /
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
-// caught by hookCommand and routed through emitBlockingError.
+// caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
@@ -58,7 +58,7 @@ export const summarizeHandler: EventHandler = {
     }
 
     if (input.stopHookActive === true) {
-      logger.debug('HOOK', 'Skipping summary: Codex Stop hook re-entry detected', {
+      logger.debug('HOOK', 'Skipping summary: Stop hook re-entry detected (stop_hook_active)', {
         sessionId: input.sessionId,
       });
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
@@ -85,7 +85,10 @@ export const summarizeHandler: EventHandler = {
     // the user's IDE session is running, read from its transcript.
     let observedModel: string | undefined;
 
-    if (input.lastAssistantMessage !== undefined) {
+    // Claude Code sends `last_assistant_message: ""` when a session ends
+    // mid-tool-call. An empty or whitespace-only value is no message at all,
+    // so fall back to the transcript instead of skipping the summary.
+    if (input.lastAssistantMessage?.trim()) {
       lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
       observedModel = transcriptPath ? extractLastAssistantModel(transcriptPath) : undefined;
     } else {
