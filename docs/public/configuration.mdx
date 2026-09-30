@@ -26,11 +26,6 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 | `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each shell command (Claude Code `Bash`, Codex `exec_command`); on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
-| `CLAUDE_MEM_DISABLE_TOOL_HOOKS` | _(unset)_                         | Set to `1` to no-op PreToolUse (`file-context`) and PostToolUse (`observation`) hooks while keeping SessionStart / UserPromptSubmit / Stop active (useful on Windows when bash hook consoles steal focus) |
-| `CLAUDE_MEM_DISABLE_OBSERVATION` | _(unset)_                      | Set to `1` to no-op only the PostToolUse `observation` hook |
-| `CLAUDE_MEM_DISABLE_FILE_CONTEXT` | _(unset)_                     | Set to `1` to no-op only the PreToolUse `file-context` hook |
-
-These disable flags can also be set under the `env` block in `~/.claude/settings.json` so Claude Code inherits them for every hook spawn.
 
 ### Gemini Provider Settings
 
@@ -180,6 +175,18 @@ Hooks are registered in `plugin/hooks/hooks.json`. The current shape uses a sing
 - `Stop` → `hook claude-code summarize`
 
 The exact `hooks.json` entries are written by the installer; do not hand-edit them in the marketplace copy unless you know what you're doing.
+
+#### Turning off the tool hooks
+
+These switches are read from the hook's environment only, not from `~/.claude-mem/settings.json`. Set them under the `env` block in `~/.claude/settings.json` (Claude Code passes that block to every hook) or export them in your shell:
+
+| Variable | Effect when set to `1` |
+|----------|------------------------|
+| `CLAUDE_MEM_DISABLE_TOOL_HOOKS` | PreToolUse (`file-context`) and PostToolUse (`observation`) return a no-op right away. SessionStart, UserPromptSubmit and Stop keep working. |
+| `CLAUDE_MEM_DISABLE_OBSERVATION` | Only PostToolUse `observation` returns a no-op (tool calls are no longer captured). |
+| `CLAUDE_MEM_DISABLE_FILE_CONTEXT` | Only PreToolUse `file-context` returns a no-op (no file history is injected before `Read`). |
+
+Claude Code still launches each hook, so these switches turn off claude-mem's per-tool work, not the hook process itself.
 
 ### Search Configuration
 

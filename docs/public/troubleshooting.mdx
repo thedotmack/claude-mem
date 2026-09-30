@@ -150,13 +150,11 @@ PORT=${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/set
 
 5. If Chroma continues to fail, hybrid search will gracefully degrade to SQLite FTS5 only
 
-### Windows: console windows steal focus on every tool call
+### Turning off tool-hook capture (PreToolUse / PostToolUse)
 
-**Symptoms**: On Windows, Claude Code flashes a console window (and steals focus) on nearly every Read / tool call while claude-mem is enabled.
+**When to use it**: you want claude-mem to stop capturing tool calls (`PostToolUse` `observation`) or injecting file history before `Read` (`PreToolUse` `file-context`), for example because the per-tool-call hook cost is too high on your machine. Do not rename those keys in `hooks.json` instead: Claude Code rejects unknown hook keys and drops the entire plugin hook set.
 
-**Cause**: High-frequency `PreToolUse` (`file-context`) and `PostToolUse` (`observation`) hooks run as bash commands. Renaming those keys in `hooks.json` is no longer a valid workaround; Claude Code rejects unknown hook keys and drops the entire plugin hook set.
-
-**Opt-out** (keeps SessionStart / UserPromptSubmit / Stop memory capture):
+**Opt-out** (SessionStart context, UserPromptSubmit and Stop summaries keep working):
 
 ```json
 {
@@ -166,7 +164,9 @@ PORT=${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/set
 }
 ```
 
-Add that under `~/.claude/settings.json` (or export the variable in your shell). Granular flags: `CLAUDE_MEM_DISABLE_OBSERVATION=1` and `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1`. See [Configuration](configuration).
+Add that to `~/.claude/settings.json` (or export the variable in your shell). To turn off just one of the two hooks, use `CLAUDE_MEM_DISABLE_OBSERVATION=1` or `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1`. See [Configuration](configuration).
+
+**Windows console windows**: this switch is an opt-out, not a fix for the console window that can flash on each tool call. Claude Code still starts the hook through bash, and the window appears before claude-mem runs. The switch only makes each tool hook exit right away. The fix for the window itself is tracked in [#3605](https://github.com/thedotmack/claude-mem/issues/3605).
 
 ### Smart Install Caching Issues (v5.0.3+)
 

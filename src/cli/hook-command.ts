@@ -113,8 +113,9 @@ export async function hookCommand(platform: string, event: string, options: Hook
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
 
-  // #3106: defense in depth if hookCommand is invoked without the worker-service
-  // pre-gate (tests / alternate entry points). Skip stdin + handler work.
+  // #3106: env opt-out for the high-frequency tool hooks. Checked before stdin
+  // and handler work, and still emits the no-op envelope so the host gets
+  // valid JSON.
   if (isToolHookDisabledByEnv(event)) {
     const adapter = getPlatformAdapter(platform);
     emitModelContext(adapter, buildNoOpResult(event));
