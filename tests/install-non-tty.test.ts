@@ -406,6 +406,17 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain("initialValue: 'worker'");
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');
     });
+
+    it('never aborts setup over an unreadable settings.json: the installer writer quarantines it', () => {
+      // Nothing may stop the installer before the sign-in/trial step; a corrupt
+      // file is moved aside and a fresh one written (#3080), never reset to {}.
+      const mergeRegion = installSource.slice(
+        installSource.indexOf('export function mergeSettings'),
+        installSource.indexOf('type ProviderId'),
+      );
+      expect(mergeRegion).toContain('quarantineCorrupt: true');
+      expect(mergeRegion).not.toContain('ErrorSeverity.ABORT');
+    });
   });
 
   describe('post-install Next Steps copy', () => {

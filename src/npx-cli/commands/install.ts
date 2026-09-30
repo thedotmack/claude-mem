@@ -10,7 +10,7 @@ import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -881,56 +881,35 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
   }, summary);
 }
 
-function mergeSettings(updates: Record<string, string>): boolean {
-  const path = USER_SETTINGS_PATH;
-  try {
-    // Read the FULL document so we can write it back intact. The
-    // Claude-Code-style settings.json wraps env vars in a top-level `env`
-    // block and exposes peer keys at the root (hooks, permissions,
-    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
-    // env subtree for reads, but writing that flattened view back as the
-    // entire file silently drops every non-env top-level key — destroying
-    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
-    // had carefully written.
-    //
-    // Track whether the file uses the env-nested shape so we mutate only the
-    // relevant subtree and preserve every other top-level key on write.
-    let document: Record<string, unknown> = {};
-    let envNested = false;
-    if (existsSync(path)) {
-      try {
-        const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
-        if (parsed && typeof parsed === 'object') {
-          document = parsed as Record<string, unknown>;
-          envNested = typeof document.env === 'object' && document.env !== null;
-        }
-      } catch (parseError: unknown) {
-        console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        document = {};
-      }
-    } else {
-      const dir = dirname(path);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    }
-
-    const target = envNested
-      ? (document.env as Record<string, unknown>)
-      : document;
-    for (const [key, value] of Object.entries(updates)) {
-      target[key] = value;
-    }
-
-    // settings.json can carry tokens (CMEM Pro setup token, provider API
-    // keys). The temp file is created owner-only before the first byte is
-    // written, so there is no window in which a fresh file is world-readable.
-    writeSettingsJsonAtomic(path, document, { mode: 0o600 });
-    return true;
-  } catch (error: unknown) {
-    log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
+/**
+ * Merge installer settings into settings.json through the shared settings
+ * document boundary. The whole document is kept (a Claude-Code-style `env`
+ * wrapper and its root peers survive). An unreadable file is no longer reset
+ * to `{}`: it is moved aside to `settings.json.corrupt-<epoch-ms>` (the user's
+ * bytes are kept) and a fresh document is written, so a corrupt file can never
+ * stop setup or drop the sign-in's memory key. Returns false only when the
+ * write itself fails; the worker and hooks refuse-and-report instead. The
+ * boundary writes settings.json owner-only from the first byte (it can carry
+ * the CMEM Pro setup token and provider API keys).
+ */
+export function mergeSettings(
+  updates: Record<string, string>,
+  settingsPath: string = USER_SETTINGS_PATH,
+): boolean {
+  const result = updateSettingsDocument(settingsPath, updates, {}, undefined, { quarantineCorrupt: true });
+  if (result.status === 'refused') {
+    const reason = result.error instanceof Error ? result.error.message : String(result.error);
+    // A quarantined file is moved back when the fresh write fails; quarantinedTo
+    // survives only if even that move failed, so say where the bytes are.
+    log.error(result.quarantinedTo
+      ? `Failed to write settings to ${settingsPath}: ${reason}. Its unreadable previous contents are in ${result.quarantinedTo}.`
+      : `Failed to write settings to ${settingsPath}: ${reason}`);
     return false;
   }
+  if (result.quarantinedTo) {
+    log.warn(`${settingsPath} could not be read, so it was moved to ${result.quarantinedTo} and a fresh settings file was started. Copy back any settings you still need from it.`);
+  }
+  return true;
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
@@ -1080,18 +1059,27 @@ async function maybeBootstrapServerApiKey(): Promise<void> {
 }
 
 async function bootstrapAndPersistServerApiKey(): Promise<void> {
-  const { bootstrapServerApiKey, persistServerSettings } = await import(
+  const { bootstrapServerApiKey, revokeServerApiKey, persistServerSettings } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
   const result = await bootstrapServerApiKey();
-  persistServerSettings(USER_SETTINGS_PATH, {
+  const persisted = persistServerSettings(USER_SETTINGS_PATH, {
     apiKey: result.rawKey,
     projectId: result.projectId,
   });
-  log.info(
-    `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
-      + 'Settings saved with mode 0600.',
-  );
+  if (persisted) {
+    log.info(
+      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
+        + 'Settings saved with mode 0600.',
+    );
+    return;
+  }
+  // The key exists server-side but no hook can use it: revoke it rather than
+  // leave an orphaned live credential, and say how to recover.
+  await revokeServerApiKey(result.apiKeyId).catch((error: unknown) => {
+    log.warn(`Could not revoke the unpersisted server API key: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  log.warn('Server API key was provisioned but settings.json could not be updated. Repair or restore ~/.claude-mem/settings.json and rerun the installer.');
 }
 
 /**
