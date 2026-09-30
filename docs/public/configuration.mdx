@@ -18,11 +18,14 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
+| `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` | `false` | Include observations from every harness in SessionStart context |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `CLAUDE_MEM_PUBLIC_URL`       | _(empty)_                       | Browser-reachable base URL printed for the viewer (live view, welcome hint, restart link) when the worker runs in a remote sandbox behind a port-forward, e.g. `https://37700.host.example`. Empty = `http://localhost:<port>`. The env var wins over the setting. (The [hosted server runtime](hosted-server) reads the same variable as its own public base URL.) |
 | `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each shell command (Claude Code `Bash`, Codex `exec_command`); on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
 
 ### Gemini Provider Settings
 
@@ -298,7 +301,7 @@ Access the settings modal from the web viewer. The worker prints its URL on star
 3. See changes reflected live in the **Terminal Preview** on the left
 4. Settings auto-save as you change them
 
-The Terminal Preview shows exactly what will be injected at the start of your next Claude Code session for the selected project.
+The Terminal Preview shows the selected project and source. Select **All sources** to preview a combined SessionStart context.
 
 ### Loading Settings
 
@@ -307,6 +310,7 @@ Control how many observations are injected:
 | Setting | Default | Range | Description |
 |---------|---------|-------|-------------|
 | **Observations** | 50 | 1-200 | Total number of recent observations to include |
+| **Include all sources at session start** | Off | On/Off | Include observations from Claude, Codex, and other harnesses in startup context |
 | **Sessions** | 10 | 1-50 | Number of recent sessions to pull observations from |
 
 **Considerations**:
@@ -375,6 +379,7 @@ Settings are stored in `~/.claude-mem/settings.json`:
 ```json
 {
   "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
+  "CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true",
   "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
   "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
   "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",

@@ -45,6 +45,17 @@ export interface ChromaDocument {
 }
 
 /**
+ * Why a backfill run stopped before attempting every row: the worker began
+ * shutting down (local Chroma then refuses every write), or Chroma refused
+ * writes for MAX_CONSECUTIVE_BATCH_FAILURES rows in a row. Either way the rows
+ * stay pending or above the watermark and the next run resumes from them.
+ */
+export type BackfillAbortReason = 'shutdown' | 'write_failures';
+
+/** 'completed' when a project's backfill attempted every row, else why it stopped. */
+export type BackfillOutcome = 'completed' | BackfillAbortReason;
+
+/**
  * Outcome of one backfillKind() pass (#4069). `writtenDocs` counts documents
  * that actually landed in Chroma — not rows planned — and `emptyRows` counts
  * rows that produced no indexable content and were drained instead of being
@@ -53,7 +64,7 @@ export interface ChromaDocument {
 export interface BackfillKindResult {
   writtenDocs: number;
   emptyRows: number;
-  aborted: boolean;
+  abortReason: BackfillAbortReason | null;
 }
 
 export interface MergedIntoProjectTarget {
@@ -138,6 +149,14 @@ function parseStringListField(
     });
     return rawValue.trim() ? [rawValue] : [];
   }
+}
+
+/**
+ * Whether the worker has begun shutting down: local Chroma then refuses every
+ * mutation (see {@link ChromaMcpManager.acceptsMutations}).
+ */
+function shutdownBegan(): boolean {
+  return !ChromaMcpManager.getInstance().acceptsMutations();
 }
 
 export class ChromaSync {
@@ -771,10 +790,30 @@ export class ChromaSync {
     });
   }
 
-  async ensureBackfilled(project: string, store: SessionStore): Promise<'completed' | 'aborted'> {
+  /**
+   * Backfill one project's rows above its watermarks. Resolves 'completed' when
+   * the run attempted every row, or why it stopped early (a worker shutdown or
+   * repeated write failures), in which case the next run resumes from the
+   * watermarks.
+   */
+  async ensureBackfilled(project: string, store: SessionStore): Promise<BackfillOutcome> {
+    if (shutdownBegan()) {
+      logger.info('CHROMA_SYNC', 'Backfill skipped: worker shutdown began', { project });
+      return 'shutdown';
+    }
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project });
 
-    await this.ensureCollectionExists();
+    try {
+      await this.ensureCollectionExists();
+    } catch (error) {
+      // stop() can begin while the create call is in flight; Chroma then
+      // refuses it. That is an interrupted run, not a failed one.
+      if (shutdownBegan()) {
+        logger.info('CHROMA_SYNC', 'Backfill stopped: worker shutdown began', { project });
+        return 'shutdown';
+      }
+      throw error;
+    }
 
     const watermarks = ChromaSyncState.get(project);
 
@@ -790,18 +829,18 @@ export class ChromaSync {
     db: SessionStore,
     backfillProject: string,
     watermarks: ProjectWatermarks
-  ): Promise<'completed' | 'aborted'> {
+  ): Promise<BackfillOutcome> {
     const observations = await this.backfillObservations(db, backfillProject, watermarks.observations);
-    if (observations.aborted) {
-      return 'aborted';
+    if (observations.abortReason) {
+      return observations.abortReason;
     }
     const summaries = await this.backfillSummaries(db, backfillProject, watermarks.summaries);
-    if (summaries.aborted) {
-      return 'aborted';
+    if (summaries.abortReason) {
+      return summaries.abortReason;
     }
     const prompts = await this.backfillPrompts(db, backfillProject, watermarks.prompts);
-    if (prompts.aborted) {
-      return 'aborted';
+    if (prompts.abortReason) {
+      return prompts.abortReason;
     }
 
     logger.info('CHROMA_SYNC', 'Smart backfill complete', {
@@ -820,7 +859,8 @@ export class ChromaSync {
   /**
    * Shared batch/watermark loop for all three backfill kinds. Returns how
    * many documents actually landed, how many rows were drained as empty,
-   * and whether the consecutive-failure guard stopped the run.
+   * and why the run stopped early, if it did (worker shutdown, or the
+   * consecutive-failure guard).
    *
    * Watermark durability is row-atomic, not batch-atomic: one observation or
    * summary can expand into several Chroma documents and span multiple
@@ -877,6 +917,16 @@ export class ChromaSync {
 
       let rowComplete = true;
       for (let i = 0; i < docs.length; i += this.BATCH_SIZE) {
+        // Checked before every batch, not once per row: a row can span
+        // several batches, and shutdown can begin between any two of them.
+        if (shutdownBegan()) {
+          if (i > 0) {
+            // Part of this row landed; keep it pending like any partial write.
+            ChromaSyncState.markPending(backfillProject, kind, [row.id]);
+          }
+          rowComplete = false;
+          break;
+        }
         const batch = docs.slice(i, i + this.BATCH_SIZE);
         const writtenInBatch = await this.addDocuments(batch);
         processedDocs += batch.length;
@@ -906,6 +956,20 @@ export class ChromaSync {
       }
 
       if (!rowComplete) {
+        // Once the worker begins shutting down, local Chroma refuses every
+        // write (#4069), including one already in flight. Stop the run rather
+        // than walking the remaining rows through the same refusal; they stay
+        // above the watermark or pending and the next start resumes from them.
+        if (shutdownBegan()) {
+          logger.info('CHROMA_SYNC', 'Backfill stopped: worker shutdown began', {
+            project: backfillProject,
+            kind,
+            lastRowId: row.id,
+            remainingRows: rowsWithDocs.length - rowIndex - 1
+          });
+          return { writtenDocs, emptyRows, abortReason: 'shutdown' };
+        }
+
         consecutiveFailures += 1;
         // A write that fails for several rows in a row is not a per-row
         // problem, it is Chroma refusing writes. Walking every remaining row
@@ -921,7 +985,7 @@ export class ChromaSync {
             lastRowId: row.id,
             remainingRows: rowsWithDocs.length - rowIndex - 1
           });
-          return { writtenDocs, emptyRows, aborted: true };
+          return { writtenDocs, emptyRows, abortReason: 'write_failures' };
         }
         continue;
       }
@@ -930,7 +994,7 @@ export class ChromaSync {
       ChromaSyncState.bump(backfillProject, kind, row.id);
     }
 
-    return { writtenDocs, emptyRows, aborted: false };
+    return { writtenDocs, emptyRows, abortReason: null };
   }
 
   private async backfillObservations(
@@ -969,7 +1033,7 @@ export class ChromaSync {
     const rows = this.mergeRowsById(observations, pendingRows);
 
     if (rows.length === 0) {
-      return { writtenDocs: 0, emptyRows: 0, aborted: false };
+      return { writtenDocs: 0, emptyRows: 0, abortReason: null };
     }
 
     const totalObsCount = db.db.prepare(`
@@ -1023,7 +1087,7 @@ export class ChromaSync {
     const rows = this.mergeRowsById(summaries, pendingRows);
 
     if (rows.length === 0) {
-      return { writtenDocs: 0, emptyRows: 0, aborted: false };
+      return { writtenDocs: 0, emptyRows: 0, abortReason: null };
     }
 
     const totalSummaryCount = db.db.prepare(`
@@ -1081,7 +1145,7 @@ export class ChromaSync {
     const rows = this.mergeRowsById(prompts, pendingRows);
 
     if (rows.length === 0) {
-      return { writtenDocs: 0, emptyRows: 0, aborted: false };
+      return { writtenDocs: 0, emptyRows: 0, abortReason: null };
     }
 
     const totalPromptCount = db.db.prepare(`
@@ -1192,7 +1256,8 @@ export class ChromaSync {
   private static backfillInProgress = false;
 
   /**
-   * Backfill all projects that have observations in SQLite but may be missing from Chroma.
+   * Backfill every project that has indexable rows in SQLite (observations,
+   * summaries or session-joined prompts) but may be missing from Chroma.
    * Uses a single shared ChromaSync('claude-mem') instance and Chroma connection.
    * Per-project scoping is passed as a parameter to ensureBackfilled(), avoiding
    * instance state mutation. All documents land in the cm__claude-mem collection
@@ -1202,22 +1267,20 @@ export class ChromaSync {
    * Concurrency: processes at most BACKFILL_CONCURRENCY_LIMIT projects in parallel
    * to bound CPU and memory pressure from concurrent Chroma embedding operations.
    * A re-entrant guard prevents overlapping backfill runs from accumulating.
+   *
+   * Resolves true only when every project's backfill finished; false when a
+   * project failed or stopped early, when the sweep stopped for a worker
+   * shutdown, or when another sweep was already running.
    */
-  /**
-   * Backfill every project that has vector-indexable rows. Returns which
-   * projects completed and which did not (aborted by the consecutive-failure
-   * guard or errored), so callers can gate "complete" reporting on the
-   * outcome instead of on the promise resolving (#4069).
-   */
-  static async backfillAllProjects(store: SessionStore): Promise<{ completed: string[]; aborted: string[] }> {
+  static async backfillAllProjects(store: SessionStore): Promise<boolean> {
     if (ChromaSync.backfillInProgress) {
       logger.info('CHROMA_SYNC', 'Backfill already in progress, skipping duplicate run');
-      return { completed: [], aborted: [] };
+      return false;
     }
 
     const sync = new ChromaSync('claude-mem');
     const completed: string[] = [];
-    const aborted: string[] = [];
+    const incomplete: string[] = [];
 
     ChromaSync.backfillInProgress = true;
     try {
@@ -1242,9 +1305,17 @@ export class ChromaSync {
       if (!ChromaSyncState.exists()) {
         logger.info('CHROMA_SYNC', 'Watermark cache missing — bootstrapping from Chroma (one-time)');
         for (const { project } of projects) {
+          if (shutdownBegan()) {
+            logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
+            return false;
+          }
           try {
             await sync.bootstrapWatermarksFromChroma(project, store);
           } catch (error) {
+            if (shutdownBegan()) {
+              logger.info('CHROMA_SYNC', 'Bootstrap stopped: worker shutdown began', { project });
+              return false;
+            }
             logger.error('CHROMA_SYNC', `Bootstrap failed for project: ${project}`,
               {}, error instanceof Error ? error : new Error(String(error)));
           }
@@ -1259,6 +1330,13 @@ export class ChromaSync {
       // overhead, no unbounded fan-out.
       const concurrency = ChromaSync.BACKFILL_CONCURRENCY_LIMIT;
       for (let i = 0; i < projects.length; i += concurrency) {
+        if (shutdownBegan()) {
+          logger.info('CHROMA_SYNC', 'Backfill sweep stopped: worker shutdown began', {
+            remainingProjects: projects.length - i
+          });
+          return false;
+        }
+
         const chunk = projects.slice(i, i + concurrency);
         const chunkResults = await Promise.allSettled(
           chunk.map(({ project }) => sync.ensureBackfilled(project, store))
@@ -1268,7 +1346,7 @@ export class ChromaSync {
           const project = chunk[j].project;
           const result = chunkResults[j];
           if (result.status === 'rejected') {
-            aborted.push(project);
+            incomplete.push(project);
             const error = result.reason;
             if (error instanceof Error) {
               logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error);
@@ -1276,28 +1354,26 @@ export class ChromaSync {
               logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, { error: String(error) });
             }
             // Continue to next chunk — don't let one failure stop others
-          } else if (result.value === 'aborted') {
-            // The consecutive-failure guard already logged the reason in
-            // backfillKind; record it here so the sweep-level completion
-            // report does not claim this project finished (#4069).
-            aborted.push(project);
+          } else if (result.value !== 'completed') {
+            // backfillKind already logged why it stopped; record the project
+            // so the sweep does not claim it finished (#4069).
+            incomplete.push(project);
           } else {
             completed.push(project);
           }
         }
       }
 
-      if (aborted.length > 0) {
-        logger.warn('CHROMA_SYNC', `Backfill sweep finished with ${aborted.length} incomplete project(s)`, {
-          aborted,
+      if (incomplete.length > 0) {
+        logger.warn('CHROMA_SYNC', `Backfill sweep finished with ${incomplete.length} incomplete project(s)`, {
+          incomplete,
           completed: completed.length
         });
       }
+      return incomplete.length === 0;
     } finally {
       ChromaSync.backfillInProgress = false;
     }
-
-    return { completed, aborted };
   }
 
   async updateMergedIntoProject(
