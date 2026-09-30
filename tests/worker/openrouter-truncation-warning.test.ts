@@ -99,7 +99,8 @@ describe('OpenRouter output-token limit', () => {
 
     const result = await makeProvider().runQuery(HISTORY);
 
-    expect(result).toEqual({ content: '' });
+    // The finish reason travels with the empty result, so the drop is named as a truncation.
+    expect(result).toEqual({ content: '', finishReason: 'length' });
     expect(errorSpy).toHaveBeenCalledWith('SDK', 'Empty response from OpenRouter');
     expect(warnSpy).toHaveBeenCalledWith('SDK', TRUNCATION_WARNING, expect.objectContaining({ maxTokens: 4096 }));
   });

@@ -46,7 +46,6 @@ const EXCLUDED_PATTERNS = [
   /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
   /worker\/observer-usage\.ts$/,  // Pure observer token accumulation helpers; logging happens at provider/session completion call sites (#3508)
   /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
-  /worker\/context-window\.ts$/,  // Pure history-bounding transform (#3606); no side effects, logging happens at the OpenRouterProvider call site (mirrors output-classifier.ts)
 ];
 
 const HIGH_PRIORITY_PATTERNS = [
