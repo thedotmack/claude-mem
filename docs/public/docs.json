@@ -94,9 +94,7 @@
           "branches",
           "troubleshooting",
           "platform-integration",
-          "openclaw-integration",
-          "external-clients",
-          "local-models"
+          "openclaw-integration"
         ]
       },
       {
