@@ -12,6 +12,7 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -224,7 +225,7 @@ export class SearchRoutes extends BaseRouteHandler {
     ];
 
     combined.sort((a, b) => b.epoch - a.epoch);
-    const resultsByDate = groupByDate(combined, item => item.created_at, 'desc');
+    const resultsByDate = groupByDate(combined, item => item.created_at, { order: 'desc' });
 
     const lines: string[] = [];
     lines.push(`Found ${totalResults} result(s) for file "${filePath}"`);
@@ -259,6 +260,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   private handleContextPreview = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const projectName = req.query.project as string;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!projectName) {
       this.badRequest(res, 'Project parameter is required');
@@ -273,7 +275,8 @@ export class SearchRoutes extends BaseRouteHandler {
       {
         session_id: 'preview-' + Date.now(),
         cwd: cwd,
-        projects: [projectName]
+        projects: [projectName],
+        ...(platformSource ? { platformSource } : {})
       },
       true  
     );
@@ -313,7 +316,7 @@ export class SearchRoutes extends BaseRouteHandler {
       // observations. Hot-path: PostToolUse fires after every Read/Edit.
       if (!this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
-        const viewerUrl = `http://localhost:${port}`;
+        const viewerUrl = getViewerBaseUrl(port);
         const hintBody = WELCOME_HINT_TEMPLATE
           .replace('{viewer_url}', viewerUrl)
           .replace('{pro_trial_line}', proTrialLine('welcome-hint'));
