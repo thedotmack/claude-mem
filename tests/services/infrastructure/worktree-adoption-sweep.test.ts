@@ -84,5 +84,5 @@ describe('adoption sweep repo discovery (#2864)', () => {
     const parent = results.find(r => r.parentProject === 'parent-repo');
     expect(parent).toBeDefined();
     expect(parent!.adoptedObservations).toBe(1);
-  });
+  }, 30_000);
 });

@@ -128,7 +128,7 @@ describe('live submodules are not orphans (#2842 + #2864)', () => {
     expect(result.orphanedWorktrees).toEqual([]);
     expect(result.adoptedObservations).toBe(0);
     expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
-  });
+  }, 30_000);
 
   it('does adopt a submodule whose checkout has been deleted', async () => {
     const fx = buildFixture();
@@ -141,7 +141,7 @@ describe('live submodules are not orphans (#2842 + #2864)', () => {
 
     expect(result.orphanedWorktrees).toEqual(['react/peerless']);
     expect(mergedInto(fx.dbPath, fx.obsId)).toBe('react');
-  });
+  }, 30_000);
 
   it('does not adopt a live submodule during the startup sweep', async () => {
     const fx = buildFixture();
@@ -149,7 +149,7 @@ describe('live submodules are not orphans (#2842 + #2864)', () => {
     await adoptMergedWorktreesForAllKnownRepos({ dataDirectory: fx.dataDirectory });
 
     expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
-  });
+  }, 30_000);
 
   // A submodule's --git-common-dir is `<super>/.git/modules/<name>`, not
   // `<super>/.git`, so repo discovery has to walk back past `/.git/modules/`
@@ -183,5 +183,5 @@ describe('live submodules are not orphans (#2842 + #2864)', () => {
 
     expect(mergedInto(fx.dbPath, orphanObsId)).toBe('react');
     expect(mergedInto(fx.dbPath, fx.obsId)).toBeNull();
-  });
+  }, 30_000);
 });

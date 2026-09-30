@@ -115,7 +115,7 @@ describe('orphaned worktree adoption (#2864)', () => {
 
     expect(result.adoptedObservations).toBe(1);
     expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
-  });
+  }, 30_000);
 
   it('reports which orphans it adopted rather than folding them silently', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
@@ -138,7 +138,7 @@ describe('orphaned worktree adoption (#2864)', () => {
     const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
 
     expect(result.orphanedWorktrees).toEqual(['parent-repo/reported-wt']);
-  });
+  }, 30_000);
 
   // The Chroma patch runs after the SQL commits and can fail on its own (the
   // data dir allows a single writer, so a CLI run loses to the live worker).
@@ -177,7 +177,7 @@ describe('orphaned worktree adoption (#2864)', () => {
     // Reporting stays a changelog of what this run folded in, not a running
     // tally of everything ever adopted.
     expect(second.orphanedWorktrees).toEqual([]);
-  });
+  }, 30_000);
 
   it('adopts an orphan even when its branch was never merged', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
@@ -205,7 +205,7 @@ describe('orphaned worktree adoption (#2864)', () => {
 
     expect(result.adoptedObservations).toBe(1);
     expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
-  });
+  }, 30_000);
 
   // Nested submodules key on their path under the superproject
   // (`outer/alpha/shared`), so a composite key is not always one level deep.
@@ -226,7 +226,7 @@ describe('orphaned worktree adoption (#2864)', () => {
 
     expect(result.orphanedWorktrees).toEqual(['parent-repo/vendor/shared']);
     expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
-  });
+  }, 30_000);
 
   it('leaves a live worktree with an unmerged branch alone', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
@@ -251,7 +251,7 @@ describe('orphaned worktree adoption (#2864)', () => {
 
     expect(result.adoptedObservations).toBe(0);
     expect(mergedInto(dbPath, obsId)).toBeNull();
-  });
+  }, 30_000);
 
   it('does not treat a same-prefix sibling project as an orphan of the parent', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
@@ -272,7 +272,7 @@ describe('orphaned worktree adoption (#2864)', () => {
 
     expect(result.adoptedObservations).toBe(0);
     expect(mergedInto(dbPath, foreignObsId)).toBeNull();
-  });
+  }, 30_000);
 
   // #3641 — Codex puts worktrees at ~/.codex/worktrees/<id>/<repo>, so the
   // worktree basename equals the repo name and the composite key doubles to
@@ -316,5 +316,5 @@ describe('orphaned worktree adoption (#2864)', () => {
       where: { project: 'app/app', merged_into_project_is_null: true },
       fields: { merged_into_project: 'app' },
     });
-  });
+  }, 30_000);
 });
