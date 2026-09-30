@@ -486,6 +486,10 @@ export async function generateServerContextWithStats(
   forHuman: boolean = false
 ): Promise<{ text: string; stats: ContextInjectStats | null }> {
   const scope = resolveContextScope(input);
+  // Server ids are UUIDs that no tool can fetch by id (get_observations reads
+  // the local SQLite store), so the block prints 8-char display refs and points
+  // at observation_search instead (plan-24 step 3).
+  scope.config.fetchByIdSupported = false;
   const rows = await fetchServerContextRows(runtime, {
     config: scope.config,
     project: scope.project,

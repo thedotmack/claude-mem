@@ -1,6 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -10,6 +10,7 @@ import {
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
+  AdvisorCallRecord,
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
@@ -25,6 +26,12 @@ import {
   type UpsertToolUseInput,
   type ToolUseQueryFilters,
 } from './tool-uses.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import {
+  computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
+  runDedupScan as runDedupScanAll,
+  type DedupRuntimeConfig,
+} from './dedup-store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
@@ -185,6 +192,9 @@ export interface SessionCatalogRow {
 const SESSION_CATALOG_DEFAULT_LIMIT = 200;
 const SESSION_CATALOG_MAX_LIMIT = 1000;
 
+/** #3038 near-duplicate dedup tables/columns. v50–55 are taken on main (v53: sdk_sessions.cwd, #3525; v54: FTS trigger scoping, #3284; v55: NOCASE project indexes, #3536). */
+const DEDUP_SCHEMA_VERSION = 56;
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -239,9 +249,11 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
+    this.addDedupTables();
     this.ensureSessionCwdColumn();
     this.dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers();
     this.ensureProjectNocaseIndexes();
+    this.ensureAdvisorCallsTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -287,6 +299,70 @@ export class SessionStore {
     `).get(contentSessionId) as { id: number } | undefined;
 
     return row?.id ?? null;
+  }
+
+  // #3038 near-duplicate dedup: occurrence_count (Tier-0 merge bump), per-project
+  // token document-frequency (IDF model), dedup bookkeeping, and the Tier-1
+  // review-only candidates table. Pure DDL; the IDF model is filled forward on
+  // insert and (re)built by the opt-in dedup-scan, never a JS backfill here.
+  private addDedupTables(): void {
+
+    const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!obsCols.some(c => c.name === 'occurrence_count')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 1');
+    }
+    // Precomputed exact-normalized-title key for O(1) Tier-0 lookup (SQLite can't
+    // express the normalization itself). NON-unique index — dedup stays app-gated
+    // on CLAUDE_MEM_DEDUP_ENABLED so disabled = byte-identical legacy behavior.
+    if (!obsCols.some(c => c.name === 'title_norm_key')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN title_norm_key TEXT');
+    }
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_title_norm ON observations(project, title_norm_key)');
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS token_df (
+        project TEXT    NOT NULL,
+        token   TEXT    NOT NULL,
+        df      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project, token)
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS dedup_meta (
+        project                TEXT    PRIMARY KEY,
+        doc_count              INTEGER NOT NULL DEFAULT 0,
+        last_rebuild_doc_count INTEGER NOT NULL DEFAULT 0,
+        deleted_since_rebuild  INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS observation_dedup_candidates (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id   INTEGER NOT NULL,
+        duplicate_of_id  INTEGER NOT NULL,
+        project          TEXT    NOT NULL,
+        method           TEXT    NOT NULL CHECK(method IN ('exact', 'idf_cosine')),
+        score            REAL    NOT NULL,
+        status           TEXT    NOT NULL DEFAULT 'pending'
+                                 CHECK(status IN ('pending', 'merged', 'distinct', 'dismissed')),
+        created_at       TEXT    NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        metadata         TEXT,
+        FOREIGN KEY (observation_id)  REFERENCES observations(id) ON DELETE CASCADE,
+        FOREIGN KEY (duplicate_of_id) REFERENCES observations(id) ON DELETE CASCADE,
+        UNIQUE(observation_id, duplicate_of_id)
+      )
+    `);
+
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_token_df_project ON token_df(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_project ON observation_dedup_candidates(project, status)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_obs ON observation_dedup_candidates(observation_id)');
+
+    // Every statement above is PRAGMA/IF NOT EXISTS guarded, so the version row
+    // is bookkeeping only (v36 was consumed by the community-edge line).
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(DEDUP_SCHEMA_VERSION, new Date().toISOString());
   }
 
   private dropWorkerPidColumn(): void {
@@ -1981,6 +2057,133 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(55, new Date().toISOString());
   }
 
+  // v58 — advisor_calls: a durable, verbatim record of every `advisor` tool
+  // call. The advisor is a server-side tool (server_tool_use in the
+  // transcript): it never fires PostToolUse and never enters the observation
+  // pipeline, so rows come from the Stop hook's transcript scan (see
+  // shared/advisor-transcript.ts) via POST /api/advisor-calls, and only when
+  // CLAUDE_MEM_CAPTURE_ADVISOR_CALLS is on. The advice is stored in full; the
+  // forwarded context is not (it already lives in the transcript), only a
+  // pointer to it (transcript path + byte offset) and the turn's user message.
+  // tool_use_id is UNIQUE so replayed scans are no-ops. Local only: not synced.
+  //
+  // Guarded by introspection (CREATE ... IF NOT EXISTS) like the other late
+  // migrations, and runs last so no older sdk_sessions rebuild can drop it.
+  private ensureAdvisorCallsTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS advisor_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_db_id INTEGER NOT NULL,
+        content_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        platform_source TEXT NOT NULL,
+        tool_use_id TEXT NOT NULL,
+        advisor_model TEXT,
+        cwd TEXT,
+        last_user_message TEXT,
+        transcript_path TEXT,
+        transcript_byte_offset INTEGER,
+        advice TEXT NOT NULL,
+        occurred_at_epoch INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_advisor_calls_tool_use ON advisor_calls(tool_use_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_session ON advisor_calls(session_db_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_project ON advisor_calls(project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_advisor_calls_occurred ON advisor_calls(occurred_at_epoch DESC)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(58, new Date().toISOString());
+  }
+
+  /**
+   * Insert an advisor call; a duplicate tool_use_id (replayed transcript
+   * scan, re-fired Stop hook) is ignored. Returns the row id and whether
+   * this call actually inserted it.
+   */
+  recordAdvisorCall(input: {
+    sessionDbId: number;
+    contentSessionId: string;
+    project: string;
+    platformSource: string;
+    toolUseId: string;
+    advisorModel?: string | null;
+    cwd?: string | null;
+    lastUserMessage?: string | null;
+    transcriptPath?: string | null;
+    transcriptByteOffset?: number | null;
+    advice: string;
+    occurredAtEpoch: number;
+  }): { id: number; inserted: boolean } {
+    const now = new Date();
+
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO advisor_calls
+      (session_db_id, content_session_id, project, platform_source, tool_use_id, advisor_model, cwd, last_user_message, transcript_path, transcript_byte_offset, advice, occurred_at_epoch, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.sessionDbId,
+      input.contentSessionId,
+      input.project,
+      input.platformSource,
+      input.toolUseId,
+      input.advisorModel ?? null,
+      input.cwd ?? null,
+      input.lastUserMessage ?? null,
+      input.transcriptPath ?? null,
+      input.transcriptByteOffset ?? null,
+      input.advice,
+      input.occurredAtEpoch,
+      now.toISOString(),
+      now.getTime()
+    );
+
+    if (result.changes > 0) {
+      return { id: Number(result.lastInsertRowid), inserted: true };
+    }
+
+    const existing = this.db.prepare('SELECT id FROM advisor_calls WHERE tool_use_id = ?').get(input.toolUseId) as { id: number } | undefined;
+    return { id: existing?.id ?? 0, inserted: false };
+  }
+
+  getAdvisorCalls(offset: number, limit: number, project?: string, platformSource?: string): { items: AdvisorCallRecord[]; hasMore: boolean; offset: number; limit: number } {
+    let query = 'SELECT * FROM advisor_calls';
+    const params: SQLQueryBindings[] = [];
+    const conditions: string[] = [];
+
+    if (project) {
+      conditions.push('project = ?');
+      params.push(project);
+    } else {
+      conditions.push('project != ?');
+      params.push(OBSERVER_SESSIONS_PROJECT);
+    }
+    if (platformSource) {
+      conditions.push('platform_source = ?');
+      params.push(platformSource);
+    }
+    query += ` WHERE ${conditions.join(' AND ')}`;
+
+    query += ' ORDER BY occurred_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+
+    const results = this.db.prepare(query).all(...params) as AdvisorCallRecord[];
+
+    return {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
+      offset,
+      limit
+    };
+  }
+
+  getAdvisorCallById(id: number): AdvisorCallRecord | null {
+    const row = this.db.prepare('SELECT * FROM advisor_calls WHERE id = ?').get(id) as AdvisorCallRecord | undefined;
+    return row ?? null;
+  }
+
   private addObservationSubagentColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
 
@@ -3129,6 +3332,79 @@ export class SessionStore {
     return result?.prompt_text ?? null;
   }
 
+  // #3038 — resolve the dedup knobs from settings.json (env overrides apply);
+  // off by default. SettingsDefaultsManager.get() would read env/defaults only.
+  // Garbage/NaN values fall back to the safe defaults rather than disabling guards.
+  private dedupConfig(): DedupRuntimeConfig & { enabled: boolean; minProjectDocs: number } {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const num = (key: keyof SettingsDefaults, fallback: number): number => {
+      const v = Number(settings[key]);
+      return Number.isFinite(v) ? v : fallback;
+    };
+    // Integer knobs are truncated — maxScan is bound as a SQL `LIMIT ?`, so a
+    // fractional misconfig must not reach the binding as a float (review N1).
+    const int = (key: keyof SettingsDefaults, fallback: number): number => Math.trunc(num(key, fallback));
+    return {
+      enabled: settings.CLAUDE_MEM_DEDUP_ENABLED === 'true',
+      cosineThreshold: num('CLAUDE_MEM_DEDUP_COSINE_THRESHOLD', 0.8),
+      idfVetoDf: int('CLAUDE_MEM_DEDUP_IDF_VETO_DF', 10),
+      minSharedTokens: int('CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS', 2),
+      maxScan: int('CLAUDE_MEM_DEDUP_MAX_SCAN', 2000),
+      maxBackfillRows: int('CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS', 50000),
+      minProjectDocs: int('CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS', 10),
+    };
+  }
+
+  // #3038 — read-only listing of Tier-1 near-duplicate candidates (joined to both titles).
+  listDedupCandidates(
+    project?: string,
+    limit = 100
+  ): Array<{
+    id: number; project: string; method: string; score: number; status: string; created_at_epoch: number;
+    observation_id: number; observation_title: string | null;
+    duplicate_of_id: number; duplicate_of_title: string | null;
+  }> {
+    type Row = {
+      id: number; project: string; method: string; score: number; status: string; created_at_epoch: number;
+      observation_id: number; observation_title: string | null;
+      duplicate_of_id: number; duplicate_of_title: string | null;
+    };
+    // Two explicit prepared statements — no conditional SQL-fragment interpolation.
+    const select =
+      'SELECT c.id, c.project, c.method, c.score, c.status, c.created_at_epoch, ' +
+      'c.observation_id, o1.title AS observation_title, c.duplicate_of_id, o2.title AS duplicate_of_title ' +
+      'FROM observation_dedup_candidates c ' +
+      'JOIN observations o1 ON o1.id = c.observation_id ' +
+      'JOIN observations o2 ON o2.id = c.duplicate_of_id ';
+    const order = 'ORDER BY c.score DESC, c.id DESC LIMIT ?';
+    return project
+      ? this.db.prepare(`${select}WHERE c.project = ? ${order}`).all(project, limit) as Row[]
+      : this.db.prepare(`${select}${order}`).all(limit) as Row[];
+  }
+
+  /** #3038 — whether CLAUDE_MEM_DEDUP_ENABLED is on (settings.json or env). */
+  isDedupEnabled(): boolean {
+    return this.dedupConfig().enabled;
+  }
+
+  // #3038 — opt-in dedup-scan: backfill the IDF model + sweep all projects for candidates.
+  runDedupScan(): { project: string; docs: number; candidates: number }[] {
+    return runDedupScanAll(this.db, this.dedupConfig());
+  }
+
+  // Forward IDF maintenance + Tier-1 candidate scan for a freshly-inserted observation.
+  private maintainDedupOnInsert(
+    project: string,
+    obsId: number,
+    title: string | null | undefined,
+    dedup: DedupRuntimeConfig & { minProjectDocs: number }
+  ): void {
+    bumpTokenDf(this.db, project, title);
+    if (isFuzzyReady(this.db, project, dedup.minProjectDocs)) {
+      recordTier1Candidates(this.db, project, obsId, title, dedup);
+    }
+  }
+
   storeObservation(
     memorySessionId: string,
     project: string,
@@ -3149,7 +3425,7 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string
-  ): { id: number; createdAtEpoch: number } {
+  ): { id: number; createdAtEpoch: number; mergedIntoExisting: boolean } {
     // storeObservations skips empty-title rows, which would leave no id to return here.
     // This wrapper stores exactly one observation, so require a title up front rather than
     // returning an undefined id.
@@ -3168,7 +3444,11 @@ export class SessionStore {
       generatedByModel
     );
 
-    return { id: result.observationIds[0], createdAtEpoch: result.createdAtEpoch };
+    return {
+      id: result.observationIds[0],
+      createdAtEpoch: result.createdAtEpoch,
+      mergedIntoExisting: result.mergedIntoExisting[0] ?? false,
+    };
   }
 
   storeSummary(
@@ -3251,19 +3531,33 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string
-  ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
+  ): {
+    observationIds: number[];
+    /** Parallel to observationIds: true where a Tier-0 merge reused an existing row (nothing new was stored). */
+    mergedIntoExisting: boolean[];
+    summaryId: number | null;
+    createdAtEpoch: number;
+  } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+    const dedup = this.dedupConfig();
+    // Context is platform-scoped, so Tier-0 must be too: a Codex observation
+    // merged into a Claude row would vanish from Codex context.
+    const sessionPlatform = normalizePlatformSource(
+      (this.db.prepare('SELECT platform_source FROM sdk_sessions WHERE memory_session_id = ? LIMIT 1')
+        .get(memorySessionId) as { platform_source: string | null } | undefined)?.platform_source
+    );
 
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
+      const mergedIntoExisting: boolean[] = [];
 
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata, title_norm_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -3280,6 +3574,25 @@ export class SessionStore {
         }
 
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        const titleNormKey = computeTitleNormKey(project, sessionPlatform, observation.title);
+
+        // Tier-0 (#3038): cross-session normalized-title duplicate (incl. earlier items
+        // in THIS batch — already inserted and visible in-transaction) → bump + reuse.
+        if (dedup.enabled) {
+          // Retry idempotency: identical (session, content_hash) redelivery returns
+          // the existing row without bumping occurrence_count (same as ON CONFLICT).
+          const retry = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
+          if (retry) { observationIds.push(retry.id); mergedIntoExisting.push(false); continue; }
+
+          const canonical = findTier0Canonical(this.db, project, titleNormKey);
+          if (canonical) {
+            this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
+            observationIds.push(canonical.id);
+            mergedIntoExisting.push(true);
+            continue;
+          }
+        }
+
         const inserted = obsStmt.get(
           memorySessionId,
           project,
@@ -3299,11 +3612,14 @@ export class SessionStore {
           timestampIso,
           timestampEpoch,
           generatedByModel || null,
-          observation.metadata ?? null
+          observation.metadata ?? null,
+          titleNormKey
         ) as { id: number } | null;
 
         if (inserted) {
+          if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
           observationIds.push(inserted.id);
+          mergedIntoExisting.push(false);
           continue;
         }
 
@@ -3314,6 +3630,7 @@ export class SessionStore {
           );
         }
         observationIds.push(existing.id);
+        mergedIntoExisting.push(false);
       }
 
       let summaryId: number | null = null;
@@ -3347,7 +3664,7 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
-      return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
+      return { observationIds, mergedIntoExisting, summaryId, createdAtEpoch: timestampEpoch };
     });
 
     return storeTx();

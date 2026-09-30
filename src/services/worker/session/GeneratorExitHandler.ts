@@ -51,7 +51,9 @@ export async function handleGeneratorExit(
   // start a fresh generator for the newly-selected provider on this same
   // session — finalizeSession + removeSessionImmediate would dispose the
   // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
-  // wiping the very queue/conversationHistory the switch is meant to preserve.
+  // wiping the very queue the switch is meant to preserve. The transcript is
+  // not carried over: every generator start opens a new generation seeded from
+  // the session's memory (#3800, #3479), so the queue is what must survive.
   const abortCategory = (reason ?? '').split(':')[0];
   // Every category listed here has ALREADY called resetProcessingToPending
   // (except provider_switch, which parks a live buffer for a provider change).

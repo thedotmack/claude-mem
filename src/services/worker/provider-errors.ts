@@ -6,6 +6,9 @@ export type ProviderErrorClass =
   | 'quota_exhausted'
   | 'auth_invalid'
   | 'setup_required'
+  // The request did not fit the model's context window. Retiring the
+  // conversation fixes it, so the observer recycles instead of finalizing.
+  | 'context_overflow'
   | (string & {}); // open union: providers may emit custom kinds
 
 /**

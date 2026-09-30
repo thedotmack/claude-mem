@@ -36,10 +36,12 @@ import { resolveSummaryTierModel, resolveTierAlias } from './model-aliases.js';
 import { accumulateClaudeUsage, observerUsageLogFields } from './observer-usage.js';
 import {
   shouldRecycleConversation,
-  conversationChars,
+  describeGenerationUsage,
   resolveConversationMaxChars,
+  windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
 import { ObserverResponsePacer } from './session/response-pacer.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
@@ -193,14 +195,40 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
 }
 
+/**
+ * The full context the model read on a turn: fresh input + cache writes +
+ * cache reads. This is the value that grows across an observer generation and
+ * eventually meets the model's window (#2956).
+ */
+export function computeFullContextTokens(
+  usage: {
+    input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  } | undefined | null
+): number {
+  if (!usage) return 0;
+  return (
+    (usage.input_tokens || 0) +
+    (usage.cache_creation_input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0)
+  );
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 
-  /** Character budget for one observer generation, operator-overridable (#3800). */
-  private conversationMaxChars(): number {
-    return resolveConversationMaxChars(
-      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+  /**
+   * Character budget for one observer generation: operator-overridable (#3800)
+   * and never more than half this generation's model window (#3625).
+   */
+  private conversationMaxChars(session: ActiveSession): number {
+    return windowAwareConversationMaxChars(
+      resolveConversationMaxChars(
+        SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+      ),
+      session.observerContextWindowTokens,
     );
   }
 
@@ -257,6 +285,9 @@ export class ClaudeProvider {
 
     const modelId = session.modelOverride || this.getModelId();
     session.lastModelId = typeof modelId === 'string' ? modelId : undefined;
+    // Resolved once per generation: the generation budget and the per-field
+    // cap both scale with the model's window (#3625).
+    session.observerContextWindowTokens = await resolveContextWindowTokens('claude', String(modelId ?? ''));
     // Each query() starts a fresh SDK process, so its total_cost_usd
     // accumulator starts from zero — reset the per-turn cost baseline with it.
     session.lastResultTotalCostUsd = null;
@@ -468,9 +499,7 @@ export class ClaudeProvider {
             // Real per-response usage for telemetry (tokens_input includes the
             // full context the model read: fresh + cache writes + cache reads).
             session.lastUsage = {
-              input: (usage.input_tokens || 0) +
-                (usage.cache_creation_input_tokens || 0) +
-                (usage.cache_read_input_tokens || 0),
+              input: computeFullContextTokens(usage),
               output: usage.output_tokens || 0,
             };
 
@@ -550,6 +579,15 @@ export class ClaudeProvider {
             cache_read_input_tokens?: number;
             output_tokens?: number;
           } | undefined;
+          // What this turn actually read feeds the generation budget (#2957):
+          // the proxy history misses the SDK's system prompt and tool schemas.
+          // An init turn's reading is not kept, so a budget smaller than the
+          // init prompt cannot recycle every fresh generation on it. With the
+          // feed paced to one unanswered prompt, lastGeneratorSource names the
+          // prompt this result answers.
+          if (resultUsage && session.lastGeneratorSource !== 'init') {
+            session.lastContextTokens = computeFullContextTokens(resultUsage);
+          }
           const totalCostUsd = (message as any).total_cost_usd as number | undefined;
           let turnCostUsd: number | undefined;
           if (typeof totalCostUsd === 'number') {
@@ -563,11 +601,7 @@ export class ClaudeProvider {
           const pending = session.pendingCompressionEvent;
           if (pending) {
             session.pendingCompressionEvent = null;
-            const finalInput = resultUsage
-              ? (resultUsage.input_tokens || 0) +
-                (resultUsage.cache_creation_input_tokens || 0) +
-                (resultUsage.cache_read_input_tokens || 0)
-              : undefined;
+            const finalInput = resultUsage ? computeFullContextTokens(resultUsage) : undefined;
             const finalOutput = resultUsage ? resultUsage.output_tokens || 0 : undefined;
             telemetryBuffer.record('session_compressed', session.sessionDbId, {
               ...pending,
@@ -791,7 +825,8 @@ export class ClaudeProvider {
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
     activeResponseContext.current = snapshotResponseContext(session);
 
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    // This SDK process never resumes, so the proxy history starts over with it.
+    openObserverGeneration(session, initPrompt);
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'init';
@@ -828,13 +863,13 @@ export class ClaudeProvider {
         // conversation server-side, but conversationHistory tracks every prompt
         // fed into it, so its size is the proxy for how close that conversation
         // is to the ceiling (#3800).
-        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars())) {
+        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars(session), session.lastContextTokens)) {
           await recycleObserverConversation(
             session,
             this.sessionManager,
             worker,
             'budget',
-            `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+            describeGenerationUsage(session.conversationHistory, session.lastContextTokens),
           );
           return;
         }
@@ -842,12 +877,14 @@ export class ClaudeProvider {
         // An oversized payload is condensed by a bounded model pass before the
         // prompt is built, so the observation carries a summary of the whole
         // field rather than a head/tail slice with the middle cut out (#3800).
+        // The field cap scales with the model's window (#3625).
+        const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
         const optimized = compressField
           ? await optimizeObservationFields(
               { toolInput: message.tool_input, toolOutput: message.tool_response },
               compressField,
               { sessionDbId: session.sessionDbId, toolName: message.tool_name },
-              undefined,
+              fieldMaxChars,
               resolveFieldOptimizeTimeoutMs,
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
@@ -859,7 +896,7 @@ export class ClaudeProvider {
           tool_output: JSON.stringify(optimized.toolOutput),
           created_at_epoch: Date.now(),
           cwd: message.cwd
-        });
+        }, fieldMaxChars);
         activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });

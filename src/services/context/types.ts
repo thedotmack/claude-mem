@@ -36,6 +36,14 @@ export interface ContextConfig {
   showLastSummary: boolean;
   showLastMessage: boolean;
   mainAgentOnly: boolean;
+
+  /**
+   * Whether observation refs in the inject panel can be fetched by id.
+   * When false (server runtime, where ids are Postgres UUIDs), refs are
+   * abbreviated to an 8-char prefix (display-only) and the legend points to
+   * observation_search. Defaults to true (full id shown) when omitted.
+   */
+  fetchByIdSupported?: boolean;
 }
 
 export interface Observation {

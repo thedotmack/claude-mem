@@ -178,10 +178,19 @@ describe('Install Non-TTY Support', () => {
       );
       expect(copyRegion).toContain("'.agents'");
       expect(copyRegion).toContain("'.codex-plugin'");
+      expect(copyRegion).toContain("'.claude-plugin'");
+      // The shipped manifest also lists cowork/, which npm does not ship.
+      expect(copyRegion).toContain('writeTrimmedMarketplaceManifest(marketplaceDir);');
       // Root .mcp.json was dropped in #2411; the MCP manifest now ships
       // exclusively as plugin/.mcp.json (bundled inside the 'plugin' entry).
       expect(copyRegion).toContain("'plugin'");
       expect(copyRegion).not.toContain("'.mcp.json'");
+    });
+
+    it('publishes the Claude marketplace root manifest in the npm package (#3424)', () => {
+      const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+      expect(packageJson.files).toContain('.claude-plugin');
+      expect(packageJson.files).toContain('plugin/.claude-plugin');
     });
 
     it('validates the bundled plugin as the Codex marketplace source', () => {
@@ -396,6 +405,17 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('Server (beta)');
       expect(installSource).toContain("initialValue: 'worker'");
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');
+    });
+
+    it('never aborts setup over an unreadable settings.json: the installer writer quarantines it', () => {
+      // Nothing may stop the installer before the sign-in/trial step; a corrupt
+      // file is moved aside and a fresh one written (#3080), never reset to {}.
+      const mergeRegion = installSource.slice(
+        installSource.indexOf('export function mergeSettings'),
+        installSource.indexOf('type ProviderId'),
+      );
+      expect(mergeRegion).toContain('quarantineCorrupt: true');
+      expect(mergeRegion).not.toContain('ErrorSeverity.ABORT');
     });
   });
 

@@ -48,6 +48,11 @@ export type SSEEventPayload =
 
 export interface StorageResult {
   observationIds: number[];
+  /**
+   * Parallel to observationIds: true where a Tier-0 dedup merge (#3038) reused
+   * an existing row instead of storing a new one. Absent = nothing merged.
+   */
+  mergedIntoExisting?: boolean[];
   summaryId: number | null;
   createdAtEpoch: number;
 }
