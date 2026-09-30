@@ -76,6 +76,16 @@ function streamRows(statement: {
   return statement.all();
 }
 
+/**
+ * Coerce a value to something bun:sqlite can bind. The cloud/export shape
+ * (CloudSync `toCloud`) carries columns like facts/concepts/files_read as real
+ * arrays, but locally they are stored as JSON strings. bun's driver rejects
+ * arrays/objects with "Binding expected string, TypedArray, boolean, number,
+ * bigint or null", so re-stringify any non-primitive right before binding.
+ */
+const coerceBindValue = <T>(value: T): T | string | null =>
+  typeof value === 'object' && value !== null ? JSON.stringify(value) : value ?? null;
+
 interface IndexColumnInfo {
   seqno: number;
   cid: number;
@@ -3729,6 +3739,17 @@ export class SessionStore {
     created_at: string;
     created_at_epoch: number;
   }): { imported: boolean; id: number } {
+    // Same exposure as importObservation below: an import row can arrive
+    // without a usable session id, and session_summaries.memory_session_id is
+    // NOT NULL. /api/import validates rows first; this guard covers any other
+    // caller. Skip the row instead of letting the constraint abort the batch.
+    if (typeof summary?.memory_session_id !== 'string' || summary.memory_session_id.trim() === '') {
+      logger.warn('DB', 'Skipping imported session summary without memory_session_id', {
+        project: typeof summary?.project === 'string' ? summary.project : null,
+      });
+      return { imported: false, id: 0 };
+    }
+
     const existing = this.db.prepare(
       'SELECT id FROM session_summaries WHERE memory_session_id = ?'
     ).get(summary.memory_session_id) as { id: number } | undefined;
@@ -3748,14 +3769,14 @@ export class SessionStore {
     const result = stmt.run(
       summary.memory_session_id,
       summary.project,
-      summary.request,
-      summary.investigated,
-      summary.learned,
-      summary.completed,
-      summary.next_steps,
-      summary.files_read,
-      summary.files_edited,
-      summary.notes,
+      coerceBindValue(summary.request),
+      coerceBindValue(summary.investigated),
+      coerceBindValue(summary.learned),
+      coerceBindValue(summary.completed),
+      coerceBindValue(summary.next_steps),
+      coerceBindValue(summary.files_read),
+      coerceBindValue(summary.files_edited),
+      coerceBindValue(summary.notes),
       summary.prompt_number,
       summary.discovery_tokens || 0,
       summary.created_at,
@@ -3784,10 +3805,24 @@ export class SessionStore {
     agent_type?: string | null;
     agent_id?: string | null;
   }): { imported: boolean; id: number } {
+    // A row from a legacy or hand-edited export can arrive without a session
+    // id, and observations.memory_session_id is NOT NULL. /api/import validates
+    // rows first; this guard covers any other caller. Skip the malformed row
+    // with a warning instead of letting the SQLite constraint ("NOT NULL
+    // constraint failed: observations.memory_session_id") abort the batch.
+    // Only a non-empty string is a session id: {}, true or 123 are not.
+    if (typeof obs?.memory_session_id !== 'string' || obs.memory_session_id.trim() === '') {
+      logger.warn('DB', 'Skipping imported observation without memory_session_id', {
+        title: typeof obs?.title === 'string' ? obs.title : null,
+        type: typeof obs?.type === 'string' ? obs.type : null,
+      });
+      return { imported: false, id: 0 };
+    }
+
     const existing = this.db.prepare(`
       SELECT id FROM observations
       WHERE memory_session_id = ? AND title = ? AND created_at_epoch = ?
-    `).get(obs.memory_session_id, obs.title, obs.created_at_epoch) as { id: number } | undefined;
+    `).get(obs.memory_session_id, coerceBindValue(obs.title), obs.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
@@ -3805,15 +3840,15 @@ export class SessionStore {
     const result = stmt.run(
       obs.memory_session_id,
       obs.project,
-      obs.text,
+      coerceBindValue(obs.text),
       obs.type,
-      obs.title,
-      obs.subtitle,
-      obs.facts,
-      obs.narrative,
-      obs.concepts,
-      obs.files_read,
-      obs.files_modified,
+      coerceBindValue(obs.title),
+      coerceBindValue(obs.subtitle),
+      coerceBindValue(obs.facts),
+      coerceBindValue(obs.narrative),
+      coerceBindValue(obs.concepts),
+      coerceBindValue(obs.files_read),
+      coerceBindValue(obs.files_modified),
       obs.prompt_number,
       obs.discovery_tokens || 0,
       obs.agent_type ?? null,
@@ -3896,7 +3931,7 @@ export class SessionStore {
       sessionDbId,
       prompt.content_session_id,
       prompt.prompt_number,
-      prompt.prompt_text,
+      coerceBindValue(prompt.prompt_text),
       prompt.created_at,
       prompt.created_at_epoch
     );

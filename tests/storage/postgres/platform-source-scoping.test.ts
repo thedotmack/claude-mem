@@ -219,6 +219,31 @@ describe('server-beta Postgres platform source scoping', () => {
       'auth bug',
       7,
       'cursor',
+      null,
+    ]);
+  });
+
+  it('keeps the platform filter on a query-less (recency) search and passes the folder filter', async () => {
+    const client = new CapturingClient();
+    const repo = new PostgresObservationRepository(client);
+
+    await repo.search({
+      projectId: 'project-1',
+      teamId: 'team-1',
+      limit: 50,
+      platformSource: 'Cursor CLI',
+      folderProjects: ['alpha'],
+    });
+
+    expect(client.calls[0].text).toContain('server_sessions.platform_source = $5');
+    expect(client.calls[0].text).toContain("observations.metadata->>'project' = ANY($6::text[])");
+    expect(client.calls[0].values).toEqual([
+      'project-1',
+      'team-1',
+      null,
+      50,
+      'cursor',
+      ['alpha'],
     ]);
   });
 });

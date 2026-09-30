@@ -53,6 +53,12 @@ export interface ExtendedSearchOptions extends SearchOptions {
   concepts?: string | string[];
   files?: string | string[];
   format?: 'text' | 'json';
+  /**
+   * Skip the implicit 90-day window Chroma results get when no dateRange is given. Corpus
+   * builds set it: a corpus is defined by its stored filter, so a date-less corpus must not
+   * lose everything older than 90 days each time it is rebuilt.
+   */
+  ignoreDefaultRecencyWindow?: boolean;
 }
 
 export type SearchStrategyHint = 'chroma' | 'sqlite' | 'hybrid' | 'auto';

@@ -88,12 +88,90 @@ const toolUsesBatchSchema = z.object({
   platform_source: z.string().optional(),
 }).passthrough();
 
+// The cloud/export shape (CloudSync `toCloud`) carries columns that are stored
+// locally as JSON strings — facts, concepts, files_read/modified — as real
+// arrays. Re-stringify them at the boundary so every downstream consumer
+// (the SQLite binding layer and the ChromaDB `JSON.parse` path alike) sees the
+// canonical JSON-string shape rather than a raw array. Without this, the array
+// crashes bun:sqlite ("Binding expected string…") and silently drops from Chroma.
+const OBSERVATION_JSON_FIELDS = ['facts', 'concepts', 'files_read', 'files_modified'] as const;
+const SUMMARY_JSON_FIELDS = ['files_read', 'files_edited'] as const;
+
+const jsonStringifyFields = (fields: readonly string[]) =>
+  (value: unknown): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    let normalized: Record<string, unknown> | undefined;
+    for (const field of fields) {
+      const fieldValue = record[field];
+      if (fieldValue !== null && typeof fieldValue === 'object') {
+        normalized ??= { ...record };
+        normalized[field] = JSON.stringify(fieldValue);
+      }
+    }
+    return normalized ?? record;
+  };
+
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
-  summaries: z.array(z.unknown()).optional(),
-  observations: z.array(z.unknown()).optional(),
+  summaries: z.array(z.preprocess(jsonStringifyFields(SUMMARY_JSON_FIELDS), z.unknown())).optional(),
+  observations: z.array(z.preprocess(jsonStringifyFields(OBSERVATION_JSON_FIELDS), z.unknown())).optional(),
   prompts: z.array(z.unknown()).optional(),
 }).passthrough();
+
+// Per-row checks for /api/import: the columns each table requires (NOT NULL,
+// no default), with session ids as non-empty strings. A row that fails is
+// rejected with a named reason. Anything else the insert refuses (a foreign
+// key to a session that is not in the database, an unbindable value) is caught
+// per row in handleImport. Either way one bad row from a legacy or hand-edited
+// export is reported instead of aborting the rest of the batch.
+const importedSessionIdText = z.string().trim().min(1, 'expected a non-empty string');
+const importedRequiredValue = z.custom<unknown>(
+  (value) => value !== null && value !== undefined,
+  { message: 'required' },
+);
+const importRowSchemas = {
+  sessions: z.object({
+    content_session_id: importedSessionIdText,
+    project: importedRequiredValue,
+    started_at: importedRequiredValue,
+    started_at_epoch: importedRequiredValue,
+  }).passthrough(),
+  summaries: z.object({
+    memory_session_id: importedSessionIdText,
+    project: importedRequiredValue,
+    created_at: importedRequiredValue,
+    created_at_epoch: importedRequiredValue,
+  }).passthrough(),
+  observations: z.object({
+    memory_session_id: importedSessionIdText,
+    project: importedRequiredValue,
+    type: importedRequiredValue,
+    created_at: importedRequiredValue,
+    created_at_epoch: importedRequiredValue,
+  }).passthrough(),
+  prompts: z.object({
+    content_session_id: importedSessionIdText,
+    prompt_number: importedRequiredValue,
+    prompt_text: importedRequiredValue,
+    created_at: importedRequiredValue,
+    created_at_epoch: importedRequiredValue,
+  }).passthrough(),
+};
+
+type ImportRowKind = keyof typeof importRowSchemas;
+
+interface ImportRowRejection {
+  /** Position of the row in the request's array for its kind. */
+  index: number;
+  reason: string;
+}
+
+function describeImportRowIssues(error: z.ZodError): string {
+  return error.issues
+    .map(issue => `${issue.path.length > 0 ? issue.path.join('.') : 'row'}: ${issue.message}`)
+    .join('; ');
+}
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -642,32 +720,53 @@ export class DataRoutes extends BaseRouteHandler {
       sessionContextsByContentId.set(session.content_session_id, existing);
     };
 
-    if (Array.isArray(sessions)) {
-      for (const session of sessions) {
-        const result = store.importSdkSession(session);
-        rememberSessionContext(session, result.id);
-        if (result.imported) {
-          stats.sessionsImported++;
-        } else {
-          stats.sessionsSkipped++;
+    // Rows that could not be imported, by kind. "Skipped" above means the row
+    // was already present; "rejected" means it failed validation or the insert
+    // refused it. Reported back so a partial import is never silent.
+    const rejected: Record<ImportRowKind, ImportRowRejection[]> = {
+      sessions: [],
+      summaries: [],
+      observations: [],
+      prompts: [],
+    };
+    const importEachRow = (kind: ImportRowKind, rows: unknown, importOne: (row: any) => void): void => {
+      if (!Array.isArray(rows)) return;
+      rows.forEach((row, index) => {
+        const checked = importRowSchemas[kind].safeParse(row);
+        if (!checked.success) {
+          rejected[kind].push({ index, reason: describeImportRowIssues(checked.error) });
+          return;
         }
-      }
-    }
-
-    if (Array.isArray(summaries)) {
-      for (const summary of summaries) {
-        const result = store.importSessionSummary(summary);
-        if (result.imported) {
-          stats.summariesImported++;
-        } else {
-          stats.summariesSkipped++;
+        try {
+          importOne(row);
+        } catch (error: unknown) {
+          rejected[kind].push({ index, reason: error instanceof Error ? error.message : String(error) });
         }
-      }
-    }
+      });
+    };
 
-    const importedObservations: Array<{ id: number; obs: typeof observations[0] }> = [];
+    importEachRow('sessions', sessions, (session) => {
+      const result = store.importSdkSession(session);
+      rememberSessionContext(session, result.id);
+      if (result.imported) {
+        stats.sessionsImported++;
+      } else {
+        stats.sessionsSkipped++;
+      }
+    });
+
+    importEachRow('summaries', summaries, (summary) => {
+      const result = store.importSessionSummary(summary);
+      if (result.imported) {
+        stats.summariesImported++;
+      } else {
+        stats.summariesSkipped++;
+      }
+    });
+
+    const importedObservations: Array<{ id: number; obs: any }> = [];
     if (Array.isArray(observations)) {
-      for (const obs of observations) {
+      importEachRow('observations', observations, (obs) => {
         const result = store.importObservation(obs);
         if (result.imported) {
           stats.observationsImported++;
@@ -675,7 +774,7 @@ export class DataRoutes extends BaseRouteHandler {
         } else {
           stats.observationsSkipped++;
         }
-      }
+      });
 
       if (stats.observationsImported > 0) {
         store.rebuildObservationsFTSIndex();
@@ -734,54 +833,63 @@ export class DataRoutes extends BaseRouteHandler {
       }
     }
 
-    if (Array.isArray(prompts)) {
-      for (const prompt of prompts) {
-        let promptToImport = prompt;
-        if (prompt && typeof prompt === 'object' && !Array.isArray(prompt)) {
-          const promptRecord = prompt as Record<string, unknown>;
-          const contentSessionId = typeof promptRecord.content_session_id === 'string'
-            ? promptRecord.content_session_id
-            : undefined;
-          const explicitPlatformSource = typeof promptRecord.platform_source === 'string'
-            ? normalizePlatformSource(promptRecord.platform_source)
-            : undefined;
+    importEachRow('prompts', prompts, (prompt) => {
+      let promptToImport = prompt;
+      if (prompt && typeof prompt === 'object' && !Array.isArray(prompt)) {
+        const promptRecord = prompt as Record<string, unknown>;
+        const contentSessionId = typeof promptRecord.content_session_id === 'string'
+          ? promptRecord.content_session_id
+          : undefined;
+        const explicitPlatformSource = typeof promptRecord.platform_source === 'string'
+          ? normalizePlatformSource(promptRecord.platform_source)
+          : undefined;
 
-          if (contentSessionId) {
-            let sessionContext: { id: number; platformSource: string } | undefined;
-            if (explicitPlatformSource) {
-              sessionContext = sessionContextByKey.get(sessionContextKey(explicitPlatformSource, contentSessionId));
-            } else {
-              const candidates = sessionContextsByContentId.get(contentSessionId) ?? [];
-              sessionContext = candidates.length === 1 ? candidates[0] : undefined;
-            }
+        if (contentSessionId) {
+          let sessionContext: { id: number; platformSource: string } | undefined;
+          if (explicitPlatformSource) {
+            sessionContext = sessionContextByKey.get(sessionContextKey(explicitPlatformSource, contentSessionId));
+          } else {
+            const candidates = sessionContextsByContentId.get(contentSessionId) ?? [];
+            sessionContext = candidates.length === 1 ? candidates[0] : undefined;
+          }
 
-            if (sessionContext) {
-              promptToImport = {
-                ...promptRecord,
-                session_db_id: sessionContext.id,
-                platform_source: explicitPlatformSource ?? sessionContext.platformSource,
-              };
-            } else if (explicitPlatformSource) {
-              promptToImport = {
-                ...promptRecord,
-                platform_source: explicitPlatformSource,
-              };
-            }
+          if (sessionContext) {
+            promptToImport = {
+              ...promptRecord,
+              session_db_id: sessionContext.id,
+              platform_source: explicitPlatformSource ?? sessionContext.platformSource,
+            };
+          } else if (explicitPlatformSource) {
+            promptToImport = {
+              ...promptRecord,
+              platform_source: explicitPlatformSource,
+            };
           }
         }
-
-        const result = store.importUserPrompt(promptToImport as any);
-        if (result.imported) {
-          stats.promptsImported++;
-        } else {
-          stats.promptsSkipped++;
-        }
       }
+
+      const result = store.importUserPrompt(promptToImport as any);
+      if (result.imported) {
+        stats.promptsImported++;
+      } else {
+        stats.promptsSkipped++;
+      }
+    });
+
+    const rejectedCounts = {
+      sessionsRejected: rejected.sessions.length,
+      summariesRejected: rejected.summaries.length,
+      observationsRejected: rejected.observations.length,
+      promptsRejected: rejected.prompts.length,
+    };
+    if (Object.values(rejectedCounts).some(count => count > 0)) {
+      logger.warn('HTTP', 'Import rejected rows', rejectedCounts);
     }
 
     res.json({
       success: true,
-      stats
+      stats: { ...stats, ...rejectedCounts },
+      rejected,
     });
   });
 

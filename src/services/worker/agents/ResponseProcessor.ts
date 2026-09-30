@@ -382,6 +382,9 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
+      // /api/health's ai.lastInteraction: the observer is signed out and will
+      // keep producing nothing until re-auth, so say so instead of "ok".
+      worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
       logger.error('PARSER', `${agentName} authentication failed; run /login to preserve queued batch`, {
         sessionId: session.sessionDbId,
         outputClass: 'prose',
@@ -522,6 +525,10 @@ export async function processAgentResponse(
     sessionId: session.sessionDbId,
     memorySessionId: registeredMemorySessionId
   });
+
+  // The provider that produced THIS response (the session's), not whichever
+  // provider the settings name right now.
+  worker?.recordAiInteraction?.({ success: true, provider: providerName });
 
   session.lastSummaryStored = result.summaryId !== null;
 
