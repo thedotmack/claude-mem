@@ -1,8 +1,20 @@
 
 import type { ContextConfig, TokenEconomics } from '../types.js';
 import { shouldShowContextEconomics } from '../TokenCalculator.js';
+import { loadProjectEnvironments } from '../../../utils/project-name.js';
 import * as Agent from '../formatters/AgentFormatter.js';
 import * as Human from '../formatters/HumanFormatter.js';
+
+/**
+ * A named environment spans several directories; say so in the header so the
+ * model does not read the project name as one folder. The name only: the glob
+ * patterns would cost tokens on every session and add nothing for the model.
+ */
+function projectHeaderLabel(project: string): string {
+  return loadProjectEnvironments().some(environment => environment.name === project)
+    ? `${project} (environment)`
+    : project;
+}
 
 export function renderHeader(
   project: string,
@@ -12,11 +24,12 @@ export function renderHeader(
 ): string[] {
   const output: string[] = [];
   const fetchByIdSupported = config.fetchByIdSupported !== false;
+  const projectDisplay = projectHeaderLabel(project);
 
   if (forHuman) {
-    output.push(...Human.renderHumanHeader(project));
+    output.push(...Human.renderHumanHeader(projectDisplay));
   } else {
-    output.push(...Agent.renderAgentHeader(project));
+    output.push(...Agent.renderAgentHeader(projectDisplay));
   }
 
   if (forHuman) {

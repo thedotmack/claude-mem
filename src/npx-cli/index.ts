@@ -54,6 +54,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem hook cursor <event>')}    Run Cursor hook forwarding
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
+  ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
 
@@ -241,6 +242,12 @@ async function main(): Promise<void> {
     case 'adopt': {
       const { runAdoptCommand } = await import('./commands/runtime.js');
       runAdoptCommand(args.slice(1));
+      break;
+    }
+
+    case 'project': {
+      const { runProjectCommand } = await import('./commands/runtime.js');
+      runProjectCommand(args.slice(1));
       break;
     }
 
