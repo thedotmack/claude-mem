@@ -30,6 +30,7 @@ import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { observerUsageLogFields } from '../../observer-usage.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -585,6 +586,7 @@ export class SessionRoutes extends BaseRouteHandler {
             kind: classified.kind,
             ...(classified.code ? { code: classified.code } : {}),
             ...(classified.requestId ? { requestId: classified.requestId } : {}),
+            ...observerUsageLogFields(session),
           }, describeProviderError(classified));
           const resumeAfterMs = this.bookClassifiedFailure(session, provider, classified);
           if (resumeAfterMs !== null) scheduledResume = { afterMs: resumeAfterMs, source: 'rate-limit' };
@@ -593,6 +595,7 @@ export class SessionRoutes extends BaseRouteHandler {
             sessionId: session.sessionDbId,
             provider,
             error: errorMsg,
+            ...observerUsageLogFields(session),
           }, error);
           recordObserverFailure(provider, errorMsg);
         }

@@ -75,7 +75,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds,
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -336,7 +336,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds,
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       {
         queryChroma: mock(() => Promise.resolve({
@@ -417,7 +417,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds,
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -482,7 +482,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,
+        getUserPromptsByIds,         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -542,7 +542,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
         getTimelineAroundObservation,
       } as any,
       null,
@@ -636,7 +636,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -715,7 +715,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -787,7 +787,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -808,6 +808,38 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       observations: [observation],
       totalResults: 1,
     }));
+  });
+
+  // #3531 — SQLite reads compare project keys case-insensitively, but Chroma
+  // metadata filters are exact, so every stored spelling is passed to Chroma.
+  it('hands Chroma every stored spelling of the project', async () => {
+    const queryChroma = mock(() => Promise.resolve({ ids: [], distances: [], metadatas: [] }));
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectKeyCaseVariants: () => ['pasteypal', 'PasteyPal'],
+      } as any,
+      { queryChroma } as any,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.search({ query: 'overlap', type: 'observations', project: 'pasteypal', format: 'json', limit: 10 });
+
+    const spellings = { $in: ['pasteypal', 'PasteyPal'] };
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
+      $and: [
+        { doc_type: 'observation' },
+        { $or: [{ project: spellings }, { merged_into_project: spellings }] },
+      ],
+    });
   });
 });
 
@@ -939,7 +971,7 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,
+        getUserPromptsByIds,         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
       {} as any,
@@ -972,7 +1004,7 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,
+        getUserPromptsByIds,         getProjectKeyCaseVariants: (project: string) => [project],
       } as any,
       { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
       {} as any,
