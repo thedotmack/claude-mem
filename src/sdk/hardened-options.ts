@@ -29,7 +29,17 @@
  *                  filesystem escape hatches.
  *
  * The redundancy IS the security property: removing any one layer must not
- * re-open the gap. Verified against @anthropic-ai/claude-agent-sdk v0.2.141
+ * re-open the gap.
+ *
+ * NOTE: every layer only counts if it reaches the `claude` child. The SDK turns
+ * them into flags: `--tools ""`, `--disallowedTools`, `--permission-mode
+ * dontAsk`, and `canUseTool` via `--permission-prompt-tool stdio`. The Observer
+ * spawn factory used to drop the `--tools ""` pair (normalizeSpawnSdkArgs), so
+ * the CLI loaded its default tool set and the deny-list did the work of
+ * `tools: []`. The pair now reaches the CLI as `--tools=`, and
+ * tests/security/observer-tool-enforcement.test.ts pins that argv.
+ *
+ * Verified against @anthropic-ai/claude-agent-sdk v0.2.141
  * (sdk.d.ts): `tools`, `allowedTools`, `disallowedTools`, `permissionMode`
  * ('dontAsk' = "Don't prompt for permissions, deny if not pre-approved"),
  * `canUseTool` (returns PermissionResult { behavior: 'deny', message }),
@@ -43,9 +53,12 @@ import { recordObserverToolAttempt } from '../utils/observer-audit.js';
 import { logger } from '../utils/logger.js';
 
 /**
- * Tools explicitly named in the deny-list. `tools: []` already disables all
- * built-ins; this list is the redundant "suspenders" layer and documents
- * intent for human reviewers.
+ * Tools explicitly named in the deny-list.
+ *
+ * NOTE: `tools: []` already disables all built-ins, but treat every entry as
+ * load-bearing anyway and review the list whenever the harness gains a tool:
+ * while the spawn factory dropped `--tools` (see the NOTE above), this list
+ * was the only enforcement.
  */
 export const OBSERVER_DISALLOWED_TOOLS = [
   'Bash',           // Prevent infinite loops
@@ -60,7 +73,31 @@ export const OBSERVER_DISALLOWED_TOOLS = [
   'NotebookEdit',   // No notebook editing
   'AskUserQuestion',// No asking questions
   'TodoWrite',
+  'SendMessage',    // No instructing other sessions
+  'ListAgents',     // No discovering other sessions to instruct
 ] as const;
+
+/**
+ * WHY SendMessage AND ListAgents ARE ON THAT LIST
+ *
+ * Every other entry above stops the Observer from acting on the user's machine.
+ * These two stop it from asking a session that still can.
+ *
+ * An Observer with no tools, messaging a working session that has all of them,
+ * borrows that session's authority for as far as it can persuade. The system
+ * prompt's "You do not have access to tools" stays true the whole time, which
+ * is why the property is worth naming separately: what is bounded is the
+ * Observer's own reach, not the reach of what it can talk into acting.
+ *
+ * This is the case the threat model above predicts, arriving through a tool the
+ * deny-list had never heard of. It arrived while `--tools ""` was being dropped
+ * before the `claude` child saw it (see the NOTE in the module docblock), so
+ * this list alone stood between the Observer and SendMessage (#3566). With
+ * `--tools=` reaching the CLI, the list is back to being one layer of several.
+ *
+ * ListAgents rides along because it is how a session finds peers to address.
+ * Denying the send while leaving discovery open is half a boundary.
+ */
 
 export interface HardenedSdkOptionsInput {
   /** Which call site is constructing options — flows into audit entries. */

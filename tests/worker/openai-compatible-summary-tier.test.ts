@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
-import { logger } from '../../src/utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 
 const mockMode = {
@@ -69,11 +68,6 @@ class TestProvider extends OpenAICompatibleProvider<{ apiKey: string; model: str
   }
 }
 
-class ForwardingProvider extends TestProvider {
-  protected readonly providerName = 'ForwardingProvider';
-  protected readonly forwardEmptyMessageResponse = true;
-}
-
 describe('OpenAICompatibleProvider summary tier routing', () => {
   let modeManagerSpy: ReturnType<typeof spyOn>;
   let loadFromFileSpy: ReturnType<typeof spyOn>;
@@ -128,61 +122,36 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
     expect(provider.queriedModels).toEqual(['session-model', 'session-model']);
   });
 
-  it('forwards an empty observation to the processor, which requeues the claimed batch (OpenRouter reach)', async () => {
-    const resetProcessingToPending = mock(() => Promise.resolve(0));
-    const confirmClaimedMessages = mock(() => Promise.resolve(0));
-    const session = makeSession();
-
-    const provider = new ForwardingProvider({} as any, {
-      getMessageIterator: async function* () {
-        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 };
-      },
-      getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-      resetProcessingToPending,
-      confirmClaimedMessages,
+  it('reuses the persisted synthetic id when an in-memory session restarts', async () => {
+    const updateMemorySessionId = mock(() => {});
+    const provider = new TestProvider({
+      getSessionById: () => ({ memory_session_id: 'test-test-session-1234' }),
+      getSessionStore: () => ({ updateMemorySessionId }),
+    } as any, {
+      getMessageIterator: async function* () {},
     } as any);
-
-    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    const session = makeSession({ memorySessionId: null });
 
     await provider.startSession(session);
 
-    const retryCall = warnSpy.mock.calls.find(
-      (c: any[]) => typeof c[1] === 'string' && c[1].includes('retrying claimed batch')
-    );
-    expect(retryCall).toBeDefined();
-    expect(resetProcessingToPending).toHaveBeenCalledWith(session.sessionDbId);
-    expect(confirmClaimedMessages).not.toHaveBeenCalled();
-    expect(session.consecutiveInvalidOutputs).toBe(1);
-
-    warnSpy.mockRestore();
+    expect(session.memorySessionId).toBe('test-test-session-1234');
+    expect(updateMemorySessionId).not.toHaveBeenCalled();
   });
 
-  it('does not forward an empty observation when the flag is false (Gemini path)', async () => {
-    const resetProcessingToPending = mock(() => Promise.resolve(0));
-    const confirmClaimedMessages = mock(() => Promise.resolve(0));
-    const session = makeSession();
-
-    const provider = new TestProvider({} as any, {
-      getMessageIterator: async function* () {
-        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 };
-      },
-      getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-      resetProcessingToPending,
-      confirmClaimedMessages,
+  it('replaces a persisted synthetic id from a different provider', async () => {
+    const updateMemorySessionId = mock(() => {});
+    const provider = new TestProvider({
+      getSessionById: () => ({ memory_session_id: 'other-test-session-1234' }),
+      getSessionStore: () => ({ updateMemorySessionId }),
+    } as any, {
+      getMessageIterator: async function* () {},
     } as any);
-
-    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    const session = makeSession({ memorySessionId: null });
 
     await provider.startSession(session);
 
-    const leavingCall = warnSpy.mock.calls.find(
-      (c: any[]) => typeof c[1] === 'string' && c[1].includes('leaving queue intact')
-    );
-    expect(leavingCall).toBeDefined();
-    expect(resetProcessingToPending).not.toHaveBeenCalled();
-    expect(confirmClaimedMessages).not.toHaveBeenCalled();
-    expect(session.consecutiveInvalidOutputs).toBe(0);
-
-    warnSpy.mockRestore();
+    expect(session.memorySessionId).toStartWith('test-test-session-');
+    expect(updateMemorySessionId).toHaveBeenCalledTimes(1);
+    expect(updateMemorySessionId).toHaveBeenCalledWith(1, session.memorySessionId);
   });
 });

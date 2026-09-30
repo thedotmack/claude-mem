@@ -44,16 +44,23 @@
 	//                   DB-backed TOKEN_VERIFY_URL stops answering 401/403+JSON
 	//                   for a bogus token (the Jul 20–22 silent-Supabase-pause
 	//                   failure mode). Anti-flap policy + silencing: DEPLOY.md §7.
+	// Crons are off while the Worker runs in FORWARD_ORIGIN mode (the hub is on
+	// Fly at sync.cmem.ai); they only burned Free-plan quota and touched DO/KV.
+	// To return to the DO path, restore: ["7 * * * *", "*/5 * * * *"].
 	"triggers": {
-		"crons": ["7 * * * *", "*/5 * * * *"]
+		"crons": []
 	},
 	"vars": {
 		// Implemented Pro verifier dependency. Deploy and canary this route first;
 		// activate SyncHub only after the production route passes token/user binding.
+		// When non-empty, proxy every request (including WebSocket upgrades) to
+		// this origin and touch zero DO / zero KV. Empty = today's DO path.
+		"FORWARD_ORIGIN": "",
 		"TOKEN_VERIFY_URL": "https://cmem.ai/api/pro/sync/verify",
-		// Positive-verdict cache TTL. Runtime clamps this to exactly 60 seconds:
-		// Cloudflare KV's minimum and the public token-rotation bound coincide.
-		"AUTH_CACHE_TTL_SECONDS": "60",
+		// Positive-verdict cache TTL. Runtime clamps to 60s–3600s (default 900).
+		// Longer TTL cuts AUTH_CACHE writes; revoked tokens linger up to this
+		// window on a warm isolate / KV hit. See src/index.ts.
+		"AUTH_CACHE_TTL_SECONDS": "900",
 		// Stateless Worker -> Pro projection endpoint. The companion bearer
 		// credential is the CMEM_INTERNAL_PROJECTOR_SECRET Worker secret.
 		"INTERNAL_PROJECTOR_URL": "https://cmem.ai/api/internal/sync/project",
@@ -65,8 +72,10 @@
 
 		// --- Watchdog (src/watchdog.ts) ---------------------------------------
 		// Account tag (32-hex account id) for the GraphQL Analytics query.
-		// Required for the watchdog to run; empty ⇒ the watchdog
-		// logs a skip (never a false alert). (DEPLOY.md)
+		// Required for the watchdog to query Analytics. Empty ACCOUNT_ID or a
+		// missing ANALYTICS_API_TOKEN secret used to silently skip the hourly
+		// kill-switch. The runner now console.errors and Discord-pages when
+		// the webhook secret is set. Do not invent a token here.
 		// The companion secrets ANALYTICS_API_TOKEN and DISCORD_WEBHOOK_URL are
 		// set via `wrangler secret put` (typed in src/secrets.d.ts).
 		"ACCOUNT_ID": "b68923b1c0a9c2840648102da88ba9d4",
@@ -89,6 +98,14 @@
 		"WATCHDOG_ROWS_READ_KILL": ""
 	},
 	"observability": {
-		"enabled": true
+		// `enabled: true` with no sample rate is a 100% head sample. That was a
+		// cost multiplier on every console line (healthy cron logs included).
+		// 1% still leaves a usable debug tail without ingesting the full flood.
+		"enabled": true,
+		"head_sampling_rate": 0.01,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 0.01
+		}
 	}
 }

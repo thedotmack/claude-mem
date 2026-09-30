@@ -1,2 +1,0 @@
-[WARN] [PARSER] [session-97] observer returned non-XML idle response — ignoring queued batch
-       {outputClass=idle, preview=, consecutiveInvalidOutputs=0}
