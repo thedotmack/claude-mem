@@ -17,7 +17,7 @@
  * The fallback chain ORDER is contractual and must not change:
  *   1. ${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}   (host-injected env)
  *   2. (mcp only) $PWD/plugin, $PWD               (repo/dev checkout)
- *   3. cache directories (newest first via `ls -dt`)
+ *   3. cache directories (highest version first, .orphaned_at dirs skipped)
  *   4. $_C/plugins/marketplaces/thedotmack/plugin (marketplace install)
  */
 
@@ -44,6 +44,8 @@ export interface ShellTemplateOptions {
   trailingJson?: object;
   /** stderr message when no candidate root resolves. */
   notFoundMessage: string;
+  /** Runtime hooks that observe memory should degrade to no-memory, not block the host prompt. */
+  failOpen?: boolean;
   /**
    * MCP-only: extra candidate roots enumerated before the cache directories
    * (e.g. '$PWD/plugin', '$PWD'). Ignored for non-mcp hosts.
@@ -58,10 +60,10 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
-
-const CLAUDE_CODE_SETUP_PATH_PRELUDE =
-  'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
+// Prepend common tool locations without spawning a login shell on every hook
+// invocation. Setup already used this shape; runtime hooks now match (#3190).
+const CLAUDE_CODE_HOOK_PATH_PRELUDE =
+  'export PATH="$HOME/.nvm/versions/node/v$(ls "$HOME/.nvm/versions/node" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
 const CODEX_CLI_PATH_PRELUDE =
@@ -72,9 +74,8 @@ const CODEX_CLI_PATH_PRELUDE =
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
     case 'claude-code':
-      return CLAUDE_CODE_PATH_PRELUDE;
     case 'claude-code-setup':
-      return CLAUDE_CODE_SETUP_PATH_PRELUDE;
+      return CLAUDE_CODE_HOOK_PATH_PRELUDE;
     case 'codex-cli':
       // Trailing space is intentional: join() adds one more → double space
       // before `_C=`, matching the hand-authored codex-hooks.json.
@@ -122,7 +123,27 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const allGlobs = [...extraCacheRoots, '$_C/plugins/cache/thedotmack/claude-mem']
     .map((root) => `"${root}"/[0-9]*/`)
     .join(' ');
-  lines.push(`ls -dt ${allGlobs} 2>/dev/null;`);
+  // Cache dirs ranked by VERSION descending (zero-padded major.minor.patch
+  // key, release ahead of prerelease at the same base), skipping dirs Claude
+  // Code stamped with .orphaned_at. Mirrors compareVersionsDescending in
+  // src/shared/worker-utils.ts — every resolver ranking candidates
+  // identically (by version, never mtime) is the restart-storm invariant.
+  // (The former `ls -dt` mtime order let an orphan stamp on the OLD version
+  // dir make it "newest": the 2026-07-22 restart storm.)
+  lines.push(
+    `for _V in ${allGlobs}; do ` +
+    `[ -d "$_V" ] || continue; [ -e "\${_V}.orphaned_at" ] && continue; ` +
+    `_B=\${_V%/}; _B=\${_B##*/}; ` +
+    // Balanced (pattern) case form: an unmatched `)` inside the enclosing
+    // $(...) command substitution is a POSIX parser error.
+    `case "$_B" in (*-*) _G=0;; (*) _G=1;; esac; ` +
+    `_N=\${_B%%-*}; _M1=\${_N%%.*}; ` +
+    `case "$_N" in (*.*) _T=\${_N#*.};; (*) _T=0;; esac; _M2=\${_T%%.*}; ` +
+    `case "$_T" in (*.*) _U=\${_T#*.};; (*) _U=0;; esac; _M3=\${_U%%.*}; ` +
+    `_M1=\${_M1%%[!0-9]*}; _M2=\${_M2%%[!0-9]*}; _M3=\${_M3%%[!0-9]*}; ` +
+    `printf '%08d%08d%08d%d %s\\n' "\${_M1:-0}" "\${_M2:-0}" "\${_M3:-0}" "$_G" "$_V"; ` +
+    `done 2>/dev/null | sort -r | sed 's/^[^ ]* //';`
+  );
   lines.push(`printf '%s\\n' "$_C/plugins/marketplaces/thedotmack/plugin";`);
 
   // The MCP loop trims a trailing slash inline; the hook loop trims via _R="${_R%/}".
@@ -138,6 +159,11 @@ function candidateBlock(options: ShellTemplateOptions): string {
 
 const CYGPATH_CLAUSE =
   `command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w "$_P" 2>/dev/null); [ -n "$_W" ] && _P="$_W"; };`;
+const FAIL_OPEN_EXIT_STATUS_VAR = '_S';
+const FAIL_OPEN_COMMAND_MESSAGE = 'claude-mem: hook command failed';
+/** Fail-open hooks degrade to no-memory; fail-loud hooks surface the failure to the host. */
+const FAIL_OPEN_EXIT_CODE = '0';
+const FAIL_LOUD_EXIT_CODE = '1';
 
 /**
  * Translate a shell-token candidate (`$PWD`, `$PWD/x`, `$HOME/x`, `$_C/x`) into
@@ -168,7 +194,8 @@ function shTokenToNode(token: string): string {
  * the same plugin-root discovery in pure Node — no shell dependency — then
  * spawns the resolved server and forwards signals. The candidate order mirrors
  * the POSIX prelude's: $CLAUDE_PLUGIN_ROOT/$PLUGIN_ROOT, mcpExtraCandidates,
- * mtime-sorted cache roots, then the marketplace install dir.
+ * version-sorted cache roots (never mtime; orphan-stamped dirs skipped), then
+ * the marketplace install dir.
  *
  * Only `requireFile`, `notFoundMessage`, and the mcp* candidate fields are
  * consumed. `trailingCommand`, `extraEnv`, `trailingJson`, and the cygpath
@@ -198,12 +225,18 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
     `const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');` +
     `const E=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';` +
     `const d=process.cwd();` +
-    `const L=x=>{try{return f.readdirSync(x).filter(n=>/^\\d/.test(n)).map(n=>p.join(x,n)).filter(z=>{try{return f.statSync(z).isDirectory()}catch{return false}}).sort((a,b)=>f.statSync(b).mtimeMs-f.statSync(a).mtimeMs)}catch{return[]}};` +
+    // S/W mirror compareVersionsDescending in src/shared/worker-utils.ts and
+    // L skips Claude Code's .orphaned_at-stamped cache dirs, same as
+    // cacheWorkerScriptCandidates — every resolver ranking candidates
+    // identically (by version, never mtime) is the restart-storm invariant.
+    `const S=n=>{const q=n.split('-')[0].split('.');return[parseInt(q[0],10)||0,parseInt(q[1],10)||0,parseInt(q[2],10)||0]};` +
+    `const W=(a,b)=>{const x=S(a),y=S(b);return(y[0]-x[0])||(y[1]-x[1])||(y[2]-x[2])||((a.indexOf('-')<0?0:1)-(b.indexOf('-')<0?0:1))||(a<b?1:a>b?-1:0)};` +
+    `const L=x=>{try{return f.readdirSync(x).filter(n=>/^\\d/.test(n)).map(n=>p.join(x,n)).filter(z=>{try{return f.statSync(z).isDirectory()&&!f.existsSync(p.join(z,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b)))}catch{return[]}};` +
     `const K=[${kParts}].filter(Boolean);` +
     `let R=null;` +
     `for(const k of K){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(f.existsSync(p.join(r,'scripts',${require}))){R=r;break}}` +
     `if(!R){process.stderr.write(${notFound});process.exit(1)}` +
-    `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${require})],{stdio:'inherit'});` +
+    `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${require})],{stdio:'inherit',windowsHide:true});` +
     `for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});` +
     `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})`
   );
@@ -217,10 +250,6 @@ function jsArray(values: string[]): string {
   return `[${values.map(jsSingleQuoted).join(',')}]`;
 }
 
-export interface CodexWindowsCommandOptions {
-  startupVersionCheck?: boolean;
-}
-
 /**
  * Codex hook contract supports `commandWindows` as the Windows-only command
  * override. Keep this Node-based so Codex App on Windows can execute hooks from
@@ -228,7 +257,6 @@ export interface CodexWindowsCommandOptions {
  */
 export function buildCodexWindowsCommand(
   workerArgs: string[],
-  options: CodexWindowsCommandOptions = {},
 ): string {
   const parts = [
     "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
@@ -237,20 +265,19 @@ export function buildCodexWindowsCommand(
     "const roots=[];",
     "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
     "const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');",
-    "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()}catch{return false}}).sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs))}catch{}",
+    // S/W mirror compareVersionsDescending in src/shared/worker-utils.ts and
+    // the filter skips .orphaned_at-stamped cache dirs, same as
+    // cacheWorkerScriptCandidates — every resolver ranking candidates
+    // identically (by version, never mtime) is the restart-storm invariant.
+    "const S=n=>{const q=n.split('-')[0].split('.');return[parseInt(q[0],10)||0,parseInt(q[1],10)||0,parseInt(q[2],10)||0]};",
+    "const W=(a,b)=>{const x=S(a),y=S(b);return(y[0]-x[0])||(y[1]-x[1])||(y[2]-x[2])||((a.indexOf('-')<0?0:1)-(b.indexOf('-')<0?0:1))||(a<b?1:a>b?-1:0)};",
+    "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}",
     "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
     "let R=null;",
     "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}",
     "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
     "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
   ];
-
-  if (options.startupVersionCheck) {
-    parts.push(
-      "const v=c.spawnSync(process.execPath,[p.join(R,'scripts','version-check.js')],{encoding:'utf8',env});",
-      "if(v.stdout&&v.stdout.trim()){process.stdout.write(v.stdout);if(!v.stdout.endsWith('\\n'))process.stdout.write('\\n');process.exit(0)}",
-    );
-  }
 
   parts.push(
     `const workerArgs=${jsArray(workerArgs)};`,
@@ -287,7 +314,8 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push('_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";');
   parts.push('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";');
   parts.push(candidateBlock(options));
-  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit 1; };`);
+  const notFoundExitCode = options.failOpen ? FAIL_OPEN_EXIT_CODE : FAIL_LOUD_EXIT_CODE;
+  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit ${notFoundExitCode}; };`);
 
   // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
   // uses the Node launcher), so every host reaching here needs the clause.
@@ -307,6 +335,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   let command = `${envPrefix}${options.trailingCommand.join(' ')}`;
   if (options.trailingJson) {
     command += `; echo '${JSON.stringify(options.trailingJson)}'`;
+  }
+  if (options.failOpen) {
+    command = `{ ${command}; } || { ${FAIL_OPEN_EXIT_STATUS_VAR}=$?; echo "${FAIL_OPEN_COMMAND_MESSAGE} (exit $${FAIL_OPEN_EXIT_STATUS_VAR})" >&2; exit ${FAIL_OPEN_EXIT_CODE}; }`;
   }
   parts.push(command);
 

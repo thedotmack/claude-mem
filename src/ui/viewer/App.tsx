@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
@@ -8,8 +8,9 @@ import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
-import { Observation, Summary, UserPrompt, AdvisorCall } from './types';
+import { Observation, Summary, UserPrompt, FeedItemType } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
+import { removeLoadedRow } from './utils/feed-deletion';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
@@ -19,9 +20,8 @@ export function App() {
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
-  const [paginatedAdvisorCalls, setPaginatedAdvisorCalls] = useState<AdvisorCall[]>([]);
 
-  const { observations, summaries, prompts, advisorCalls, projects, isProcessing, queueDepth } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem } = useSSE(removeDeletedItem);
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
@@ -54,12 +54,6 @@ export function App() {
     return mergeAndDeduplicateByProject(live, paginated);
   }, [prompts, paginatedPrompts, matchesSelection]);
 
-  const allAdvisorCalls = useMemo(() => {
-    const live = advisorCalls.filter(matchesSelection);
-    const paginated = paginatedAdvisorCalls.filter(matchesSelection);
-    return mergeAndDeduplicateByProject(live, paginated);
-  }, [advisorCalls, paginatedAdvisorCalls, matchesSelection]);
-
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
   }, []);
@@ -70,11 +64,10 @@ export function App() {
 
   const handleLoadMore = useCallback(async () => {
     try {
-      const [newObservations, newSummaries, newPrompts, newAdvisorCalls] = await Promise.all([
+      const [newObservations, newSummaries, newPrompts] = await Promise.all([
         pagination.observations.loadMore(),
         pagination.summaries.loadMore(),
-        pagination.prompts.loadMore(),
-        pagination.advisorCalls.loadMore()
+        pagination.prompts.loadMore()
       ]);
 
       if (newObservations.length > 0) {
@@ -86,19 +79,41 @@ export function App() {
       if (newPrompts.length > 0) {
         setPaginatedPrompts(prev => [...prev, ...newPrompts]);
       }
-      if (newAdvisorCalls.length > 0) {
-        setPaginatedAdvisorCalls(prev => [...prev, ...newAdvisorCalls]);
-      }
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [pagination.observations, pagination.summaries, pagination.prompts, pagination.advisorCalls]);
+  }, [pagination.observations, pagination.summaries, pagination.prompts]);
+
+  // One removal path for a deleted row, whether this tab deleted it or another
+  // tab did (item_deleted SSE, which also reaches this tab): drop it from the
+  // live and loaded lists once, and move a loaded page's offset back by one so
+  // the next page does not skip a row.
+  const handledDeletionsRef = useRef(new Set<string>());
+  const loadedRowsRef = useRef({ observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts });
+  loadedRowsRef.current = { observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts };
+
+  function removeDeletedItem(itemType: FeedItemType, id: number): void {
+    const key = `${itemType}:${id}`;
+    if (handledDeletionsRef.current.has(key)) return;
+    handledDeletionsRef.current.add(key);
+
+    removeLiveItem(itemType, id);
+    if (itemType === 'observation') {
+      if (removeLoadedRow(loadedRowsRef.current.observation, id).wasLoaded) pagination.observations.noteRemoved();
+      setPaginatedObservations(prev => removeLoadedRow(prev, id).rows);
+    } else if (itemType === 'summary') {
+      if (removeLoadedRow(loadedRowsRef.current.summary, id).wasLoaded) pagination.summaries.noteRemoved();
+      setPaginatedSummaries(prev => removeLoadedRow(prev, id).rows);
+    } else {
+      if (removeLoadedRow(loadedRowsRef.current.prompt, id).wasLoaded) pagination.prompts.noteRemoved();
+      setPaginatedPrompts(prev => removeLoadedRow(prev, id).rows);
+    }
+  }
 
   useEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
-    setPaginatedAdvisorCalls([]);
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter]);
@@ -124,10 +139,10 @@ export function App() {
         observations={allObservations}
         summaries={allSummaries}
         prompts={allPrompts}
-        advisorCalls={allAdvisorCalls}
         onLoadMore={handleLoadMore}
-        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading || pagination.advisorCalls.isLoading}
-        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore || pagination.advisorCalls.hasMore}
+        onDeleted={removeDeletedItem}
+        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
+        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
       />
 
       {!welcomeDismissed && (

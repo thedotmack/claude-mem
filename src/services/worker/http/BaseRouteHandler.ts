@@ -46,11 +46,26 @@ export abstract class BaseRouteHandler {
     return value;
   }
 
+  /** Cap the array descent in {@link firstString}. Express only ever nests one
+   * level deep (repeated query keys → `string[]`); anything deeper is malformed
+   * or hostile input, so a small bound is safe. */
+  private static readonly MAX_ARRAY_DEPTH = 8;
+
   protected static firstString(value: unknown): string | undefined {
-    if (Array.isArray(value)) {
-      return BaseRouteHandler.firstString(value[0]);
+    // Walk to the first non-array leaf. `value` is untrusted request input
+    // (req.query / req.body), so a crafted deeply-nested array — or a
+    // self-referential one (`a[0] = a`) — must never recurse without bound:
+    // that overflows the stack (RangeError: Maximum call stack size exceeded)
+    // and takes down request handling. Descend iteratively up to a fixed cap
+    // and bail rather than follow it forever.
+    let current = value;
+    for (let depth = 0; depth < BaseRouteHandler.MAX_ARRAY_DEPTH && Array.isArray(current); depth++) {
+      current = current[0];
     }
-    return typeof value === 'string' && value.trim() ? value : undefined;
+    if (Array.isArray(current)) {
+      return undefined; // still nested past the cap — treat as absent
+    }
+    return typeof current === 'string' && current.trim() ? current : undefined;
   }
 
   private static rawPlatformSourceFromRequest(req: Request): string | undefined {
@@ -83,13 +98,20 @@ export abstract class BaseRouteHandler {
 
   protected handleError(res: Response, error: Error, context?: string): void {
     const statusCode = error instanceof AppError ? error.statusCode : 500;
-    // The local failure line (full fidelity) always fires. The Error payload
-    // routes through logger.error → the error sink → captureException
-    // (Phase 3), which sends a REDACTED $exception to PostHog Error Tracking —
-    // consent-gated, kill-switch-gated, and rate-limited. This replaces the old
-    // enum-only `error_occurred` event with the real (scrubbed) exception, so we
-    // no longer attach a telemetry descriptor here.
-    logger.failure('WORKER', context || 'Request failed', undefined, error);
+    // Client errors (4xx AppErrors) are routine bad input, not server faults, so
+    // they log at WARN and are NOT routed to the error sink — surfacing a
+    // validation rejection like a bad corpus name as a captured $exception just
+    // pollutes error tracking with noise. Only true server faults (5xx, or any
+    // non-AppError, which maps to 500) go through logger.failure, whose Error
+    // payload routes through logger.error → the error sink → captureException
+    // (Phase 3): a REDACTED $exception to PostHog Error Tracking, consent-gated,
+    // kill-switch-gated, and rate-limited.
+    const isClientError = statusCode >= 400 && statusCode < 500;
+    if (isClientError) {
+      logger.warn('WORKER', context || 'Request rejected', { statusCode }, error);
+    } else {
+      logger.failure('WORKER', context || 'Request failed', undefined, error);
+    }
     if (!res.headersSent) {
       const response: Record<string, unknown> = { error: error.message };
 

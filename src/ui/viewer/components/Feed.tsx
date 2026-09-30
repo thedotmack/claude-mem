@@ -1,9 +1,9 @@
 import React, { useMemo, useRef, useEffect } from 'react';
-import { Observation, Summary, UserPrompt, AdvisorCall, FeedItem } from '../types';
+import { Observation, Summary, UserPrompt, FeedItem } from '../types';
+import type { DeletableItemType } from '../utils/feed-deletion';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
-import { AdvisorCallCard } from './AdvisorCallCard';
 import { ScrollToTop } from './ScrollToTop';
 import { UI } from '../constants/ui';
 
@@ -11,13 +11,13 @@ interface FeedProps {
   observations: Observation[];
   summaries: Summary[];
   prompts: UserPrompt[];
-  advisorCalls: AdvisorCall[];
   onLoadMore: () => void;
+  onDeleted: (itemType: DeletableItemType, id: number) => void;
   isLoading: boolean;
   hasMore: boolean;
 }
 
-export function Feed({ observations, summaries, prompts, advisorCalls, onLoadMore, isLoading, hasMore }: FeedProps) {
+export function Feed({ observations, summaries, prompts, onLoadMore, onDeleted, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -54,12 +54,11 @@ export function Feed({ observations, summaries, prompts, advisorCalls, onLoadMor
     const combined = [
       ...observations.map(o => ({ ...o, itemType: 'observation' as const })),
       ...summaries.map(s => ({ ...s, itemType: 'summary' as const })),
-      ...prompts.map(p => ({ ...p, itemType: 'prompt' as const })),
-      ...advisorCalls.map(a => ({ ...a, itemType: 'advisor_call' as const }))
+      ...prompts.map(p => ({ ...p, itemType: 'prompt' as const }))
     ];
 
     return combined.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
-  }, [observations, summaries, prompts, advisorCalls]);
+  }, [observations, summaries, prompts]);
 
   return (
     <div className="feed" ref={feedRef}>
@@ -68,11 +67,9 @@ export function Feed({ observations, summaries, prompts, advisorCalls, onLoadMor
         {items.map(item => {
           const key = `${item.itemType}-${item.id}`;
           if (item.itemType === 'observation') {
-            return <ObservationCard key={key} observation={item} />;
+            return <ObservationCard key={key} observation={item} onDeleted={onDeleted} />;
           } else if (item.itemType === 'summary') {
-            return <SummaryCard key={key} summary={item} />;
-          } else if (item.itemType === 'advisor_call') {
-            return <AdvisorCallCard key={key} advisorCall={item} />;
+            return <SummaryCard key={key} summary={item} onDeleted={onDeleted} />;
           } else {
             return <PromptCard key={key} prompt={item} />;
           }

@@ -8,9 +8,13 @@ import { PassThrough } from 'node:stream';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
+import * as realSdkClientStdio from '@modelcontextprotocol/sdk/client/stdio.js';
+import * as realSdkClientIndex from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
+const realSdkClientStdioSnapshot = { ...realSdkClientStdio };
+const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
 
 let currentSettings: Record<string, string> = {};
@@ -105,6 +109,11 @@ afterAll(() => {
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
   mock.module('child_process', () => realChildProcess);
+  // The MCP SDK mocks must be re-registered too: leaking FakeClient (no
+  // listTools, canned callTool) breaks tests/server/mcp/recall-mcp-server.test.ts
+  // whenever the readdir-dependent file order runs it after this file.
+  mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => realSdkClientStdioSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/index.js', () => realSdkClientIndexSnapshot);
 });
 
 function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persistent') {
@@ -114,10 +123,12 @@ function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persiste
   expect(args[fromIdx + 2]).toBe('chroma-mcp');
   expect(args[fromIdx + 3]).toBe('--client-type');
   expect(args[fromIdx + 4]).toBe(mode);
+  expect(args.filter(arg => arg === 'chromadb==1.5.9')).toHaveLength(1);
   expect(args.slice(0, fromIdx)).toEqual([
     '--python', '3.13',
     '--with', 'onnxruntime>=1.20',
     '--with', 'protobuf<7',
+    '--with', 'chromadb==1.5.9',
   ]);
 }
 
@@ -170,5 +181,18 @@ describe('ChromaMcpManager SSL flag regression (#1286)', () => {
     expectLauncherPrefixBeforeMode(args, 'persistent');
     expect(args).toContain('--client-type');
     expect(args[args.indexOf('--client-type') + 1]).toBe('persistent');
+  });
+
+  it('pins chromadb exactly once before --from in remote and local modes', async () => {
+    currentSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
+    await mgr.callTool('chroma_list_collections', {});
+    expectLauncherPrefixBeforeMode(capturedTransportOpts!.args, 'http');
+
+    await ChromaMcpManager.reset();
+    capturedTransportOpts = null;
+    currentSettings = { CLAUDE_MEM_CHROMA_MODE: 'local' };
+    mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', {});
+    expectLauncherPrefixBeforeMode(capturedTransportOpts!.args, 'persistent');
   });
 });

@@ -1,12 +1,12 @@
 // IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
 // HookResult and MUST NOT call process.stderr.write / process.stdout.write /
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
-// caught by hookCommand and routed through emitBlockingError.
+// caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { extractLastMessage } from '../../shared/transcript-parser.js';
-import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
+import { extractLastAssistantTurn, extractLastAssistantModel } from '../../shared/transcript-parser.js';
+import { detectObservedBilling } from '../../shared/observed-billing.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -14,88 +14,6 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
-
-/**
- * Capture the turn's `advisor` tool calls. The advisor is a server-side tool
- * (server_tool_use in the transcript) — PostToolUse never fires for it, so
- * the Stop hook's transcript scan is the only capture point. currentTurnOnly
- * keeps each Stop from re-sending the whole session's history; the worker's
- * UNIQUE(tool_use_id) and the server's idempotency key absorb any overlap.
- * Failures here must never break summarization — the caller wraps this.
- */
-async function dispatchAdvisorCalls(
-  sessionId: string,
-  transcriptPath: string | undefined,
-  cwd: string | undefined,
-  platformSource: string,
-): Promise<void> {
-  if (!transcriptPath) return;
-
-  const calls = extractAdvisorCalls(transcriptPath, { currentTurnOnly: true });
-  if (calls.length === 0) return;
-
-  logger.debug('HOOK', 'Stop: dispatching advisor calls', { count: calls.length });
-
-  const runtime = resolveRuntimeContext();
-  if (runtime.runtime === 'server') {
-    try {
-      for (const call of calls) {
-        await runtime.client.recordEvent({
-          projectId: runtime.projectId,
-          contentSessionId: sessionId,
-          platformSource,
-          sourceType: 'hook',
-          eventType: 'tool_use',
-          occurredAtEpoch: call.occurredAtEpoch,
-          // Advice is already model output — recording it is the point;
-          // never spend a generation job re-compressing it.
-          generate: false,
-          payload: {
-            tool_name: 'advisor',
-            tool_response: { type: 'advisor_result', text: call.advice },
-            toolUseId: call.toolUseId,
-            advisorModel: call.advisorModel,
-            cwd,
-            lastUserMessage: call.lastUserMessage,
-            transcriptPath,
-            transcriptLineNumber: call.transcriptLineNumber,
-            platformSource,
-          },
-        });
-      }
-      return;
-    } catch (error: unknown) {
-      if (isServerClientError(error) && error.isFallbackEligible()) {
-        logServerFallback(error.kind, { status: error.status, message: error.message, route: '/v1/events' });
-        // fall through to worker fallback
-      } else {
-        logger.warn('HOOK', 'Server advisor-call dispatch failed (non-recoverable)', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return;
-      }
-    }
-  }
-
-  await executeWithWorkerFallback<{ status?: string }>(
-    '/api/advisor-calls',
-    'POST',
-    {
-      contentSessionId: sessionId,
-      platformSource,
-      cwd,
-      transcriptPath,
-      calls: calls.map(call => ({
-        toolUseId: call.toolUseId,
-        advice: call.advice,
-        advisorModel: call.advisorModel,
-        occurredAtEpoch: call.occurredAtEpoch,
-        lastUserMessage: call.lastUserMessage,
-        transcriptLineNumber: call.transcriptLineNumber,
-      })),
-    },
-  );
-}
 
 async function summarizeViaServer(
   runtime: ServerRuntimeContext,
@@ -140,7 +58,7 @@ export const summarizeHandler: EventHandler = {
     }
 
     if (input.stopHookActive === true) {
-      logger.debug('HOOK', 'Skipping summary: Codex Stop hook re-entry detected', {
+      logger.debug('HOOK', 'Skipping summary: Stop hook re-entry detected (stop_hook_active)', {
         sessionId: input.sessionId,
       });
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
@@ -162,22 +80,17 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    // Advisor capture runs before summarize's own early returns (an empty
-    // assistant message must not drop the turn's advisor calls) and is
-    // failure-isolated from it.
-    try {
-      await dispatchAdvisorCalls(sessionId, transcriptPath, input.cwd, normalizePlatformSource(input.platform));
-    } catch (err) {
-      logger.warn('HOOK', 'Advisor-call capture failed; continuing with summary', {
-        sessionId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
     let lastAssistantMessage = '';
+    // Observed-session model for telemetry (NOT the observer model): the model
+    // the user's IDE session is running, read from its transcript.
+    let observedModel: string | undefined;
 
-    if (input.lastAssistantMessage !== undefined) {
+    // Claude Code sends `last_assistant_message: ""` when a session ends
+    // mid-tool-call. An empty or whitespace-only value is no message at all,
+    // so fall back to the transcript instead of skipping the summary.
+    if (input.lastAssistantMessage?.trim()) {
       lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
+      observedModel = transcriptPath ? extractLastAssistantModel(transcriptPath) : undefined;
     } else {
       if (!transcriptPath) {
         logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
@@ -185,8 +98,10 @@ export const summarizeHandler: EventHandler = {
       }
 
       try {
-        lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
-        lastAssistantMessage = stripMemoryTags(lastAssistantMessage);
+        // One read of the transcript yields both the text and the model.
+        const turn = extractLastAssistantTurn(transcriptPath, true);
+        lastAssistantMessage = stripMemoryTags(turn.text);
+        observedModel = turn.model;
       } catch (err) {
         logger.warn('HOOK', `Stop hook: failed to extract last assistant message for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
         return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
@@ -206,6 +121,11 @@ export const summarizeHandler: EventHandler = {
     });
 
     const platformSource = normalizePlatformSource(input.platform);
+
+    // Observed-session billing posture for telemetry (NOT the observer
+    // provider). `.claude.json` is Claude Code specific, so billing detection
+    // is skipped on other platforms.
+    const observedBilling = input.platform === 'claude-code' ? detectObservedBilling() : undefined;
 
     const runtime = resolveRuntimeContext();
     // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
@@ -237,6 +157,8 @@ export const summarizeHandler: EventHandler = {
         contentSessionId: sessionId,
         last_assistant_message: lastAssistantMessage,
         platformSource,
+        observedModel,
+        observedBilling,
       },
     );
     if (isWorkerFallback(queueResult)) {

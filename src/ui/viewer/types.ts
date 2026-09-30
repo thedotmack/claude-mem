@@ -41,43 +41,26 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
-export interface AdvisorCall {
-  id: number;
-  session_db_id: number;
-  content_session_id: string;
-  project: string;
-  platform_source: string;
-  tool_use_id: string;
-  advisor_model: string | null;
-  cwd: string | null;
-  last_user_message: string | null;
-  transcript_path: string | null;
-  transcript_line_number: number | null;
-  advice: string;
-  occurred_at_epoch: number;
-  created_at: string;
-  created_at_epoch: number;
-}
-
 export type FeedItem =
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })
-  | (UserPrompt & { itemType: 'prompt' })
-  | (AdvisorCall & { itemType: 'advisor_call' });
+  | (UserPrompt & { itemType: 'prompt' });
+
+export type FeedItemType = 'observation' | 'summary' | 'prompt';
 
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'new_advisor_call' | 'processing_status';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
-  advisorCalls?: AdvisorCall[];
   projects?: string[];
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;
-  advisorCall?: AdvisorCall;
   isProcessing?: boolean;
   queueDepth?: number;
+  itemType?: FeedItemType;
+  id?: number;
 }
 
 export interface ProjectCatalog {
@@ -89,6 +72,7 @@ export interface ProjectCatalog {
 export interface Settings {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES?: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
 
@@ -112,4 +96,7 @@ export interface Settings {
 
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+
+  /** File/env only — shown read-only. Not written via POST /api/settings. */
+  CLAUDE_CODE_PATH?: string;
 }

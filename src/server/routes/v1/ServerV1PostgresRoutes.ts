@@ -34,7 +34,11 @@ import { PostgresServerSessionsRepository } from '../../../storage/postgres/serv
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
-import { buildAdvisorCallView } from '../../../shared/advisor-call-view.js';
+import {
+  SERVER_CONTEXT_MAX_LIMIT,
+  SERVER_CONTEXT_QUERY_DEFAULT_LIMIT,
+  SERVER_CONTEXT_RECENT_DEFAULT_LIMIT,
+} from '../../../shared/server-context-limits.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
@@ -484,25 +488,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       });
     }));
 
-    // GET /v1/advisor-calls — `advisor` tool calls are just `tool_use`
-    // agent_events whose payload names that tool (see
-    // PostgresAgentEventsRepository.listAdvisorCalls). agent_events is
-    // already durable, so no separate table/write-path is needed here.
-    app.get('/v1/advisor-calls', readAuth, this.asyncHandler(async (req, res) => {
-      const teamId = this.requireTeamId(req, res);
-      if (!teamId) return;
-      const projectId = String(req.query.projectId ?? '');
-      if (!projectId) {
-        res.status(400).json({ error: 'ValidationError', message: 'projectId query parameter is required' });
-        return;
-      }
-      if (!this.ensureProjectAllowed(req, res, projectId)) return;
-      const limit = clampInt(req.query.limit, 100, 1, 500);
-      const events = await new PostgresAgentEventsRepository(this.options.pool).listAdvisorCalls({ projectId, teamId, limit });
-      await this.auditWrite(req, 'advisor_call.list', null, projectId, { resultCount: events.length });
-      res.json({ advisorCalls: events.map(serializeAdvisorCall) });
-    }));
-
     // Phase 11 — team-scoped queue listing. The api key MUST be bound to this
     // team OR a project owned by this team. We never let a project-scoped key
     // read a sibling project's jobs even if it has team-level read scope, so
@@ -894,6 +879,16 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       z.object({
         projectId: z.string().min(1),
         serverSessionId: z.string().min(1).nullable().optional(),
+        // Callers that write memories from inside a session know the agent's own
+        // session id, not the server_sessions row UUID. /v1/events already accepts
+        // contentSessionId and resolves it (#2634); without the same affordance here
+        // every such memory lands with server_session_id NULL and can never be
+        // grouped, scoped or compared by session.
+        contentSessionId: z.string().min(1).nullable().optional(),
+        // Two sessions in the same team/project can share a contentSessionId across
+        // platforms; without the scope the lookup picks whichever started last, so a
+        // Cursor memory can land on a Codex session. /v1/events already scopes this.
+        platformSource: z.string().min(1).nullable().optional(),
         kind: z.string().min(1).optional(),
         content: z.string().min(1),
         metadata: z.record(z.string(), z.unknown()).optional(),
@@ -902,10 +897,19 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const linkedSessionId = await this.resolveMemorySessionLink({
+          serverSessionId: body.serverSessionId ?? null,
+          contentSessionId: body.contentSessionId ?? null,
+          projectId: body.projectId,
+          teamId,
+          // same normalization the ingest path applies, so an omitted field and an
+          // explicit null keep meaning different things
+          ...this.sessionLookupPlatformScope(req.body),
+        });
         const createInput = {
           projectId: body.projectId,
           teamId,
-          serverSessionId: body.serverSessionId ?? null,
+          serverSessionId: linkedSessionId,
           kind: body.kind ?? 'manual',
           content: body.content,
           metadata: body.metadata ?? {},
@@ -976,24 +980,37 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     app.post('/v1/context', readAuth, this.handleCreate(
       z.object({
         projectId: z.string().min(1),
-        query: z.string().min(1),
-        limit: z.number().int().positive().max(50).optional(),
+        // Optional: a context request with no query asks for the most RECENT
+        // observations, which is what a session-start block actually wants.
+        query: z.string().min(1).optional(),
+        // A recency read needs more rows than a relevance lookup, so the cap is
+        // the CLAUDE_MEM_CONTEXT_OBSERVATIONS range and the default depends on
+        // whether a query was given.
+        limit: z.number().int().positive().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
         platformSource: z.string().min(1).nullable().optional(),
+        // Folder labels (observations.metadata.project). When set, only rows
+        // generated for one of these folders are returned.
+        folderProjects: z.array(z.string().min(1)).min(1).max(20).optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         const platformSource = normalizePlatformSourceOrNull(body.platformSource);
+        const limit = body.limit
+          ?? (body.query ? SERVER_CONTEXT_QUERY_DEFAULT_LIMIT : SERVER_CONTEXT_RECENT_DEFAULT_LIMIT);
         let results;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
+          // One query for both modes, so the platform and folder filters apply
+          // to the recency read exactly as they do to a relevance read.
           results = await repo.search({
             projectId: body.projectId,
             teamId,
-            query: body.query,
-            limit: body.limit ?? 10,
+            query: body.query ?? null,
+            limit,
             platformSource,
+            folderProjects: body.folderProjects ?? null,
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -1007,9 +1024,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           .join('\n\n');
         await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'context',
-          query: body.query,
-          limit: body.limit ?? 10,
+          query: body.query ?? null,
+          limit,
           platformSource,
+          folderProjects: body.folderProjects ?? null,
           resultCount: results.length,
           observationIds: results.map(o => o.id),
         });
@@ -1203,6 +1221,49 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return null;
     }
     return teamId;
+  }
+
+
+  /**
+   * Resolve the server_sessions row for a memory write.
+   *
+   * Callers writing from inside a session know the agent's own session id, not the
+   * server_sessions row UUID. /v1/events already accepts contentSessionId and resolves
+   * it (#2634); without the same affordance on the memory path every such write lands
+   * with server_session_id NULL and can never be grouped or scoped by session.
+   *
+   * Explicit serverSessionId always wins. The lookup is best-effort, mirroring the
+   * ingest path: a failure must not fail the write — store unlinked, as before.
+   * Unlike /v1/events there is no idempotency concern: observations key off `id`, and
+   * server_session_id is a plain FK (ON DELETE SET NULL), so linking later cannot
+   * drift a key.
+   */
+  private async resolveMemorySessionLink(input: {
+    serverSessionId: string | null;
+    contentSessionId: string | null;
+    projectId: string;
+    teamId: string;
+    platformSource?: string | null;
+  }): Promise<string | null> {
+    if (input.serverSessionId) return input.serverSessionId;
+    if (!input.contentSessionId) return null;
+    const platformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource')
+      ? { platformSource: input.platformSource ?? null }
+      : {};
+    try {
+      return await new PostgresServerSessionsRepository(this.options.pool)
+        .findIdByContentSessionId({
+          contentSessionId: input.contentSessionId,
+          projectId: input.projectId,
+          teamId: input.teamId,
+          ...platformScope,
+        });
+    } catch (err) {
+      logger.warn('HTTP', 'session linkage lookup failed; storing memory unlinked', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   private async applyContentSessionLinks(
@@ -1946,16 +2007,6 @@ function serializeSession(session: {
     createdAtEpoch: session.createdAtEpoch,
     updatedAtEpoch: session.updatedAtEpoch,
   };
-}
-
-function serializeAdvisorCall(event: PostgresAgentEvent): Record<string, unknown> {
-  return buildAdvisorCallView(event.payload, {
-    id: event.id,
-    project: event.projectId,
-    occurredAtEpoch: event.occurredAtEpoch,
-    serverSessionId: event.serverSessionId,
-    platformSourceFallback: event.platformSource,
-  });
 }
 
 function serializeEvent(event: PostgresAgentEvent): Record<string, unknown> {
