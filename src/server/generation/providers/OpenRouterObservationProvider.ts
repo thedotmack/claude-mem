@@ -3,6 +3,7 @@
 import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE } from '../../../shared/openrouter-attribution.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../../shared/openrouter-token-compatibility.js';
+import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
@@ -14,8 +15,6 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
-
-const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
 
 export interface OpenRouterObservationProviderOptions {
   apiKey: string;
@@ -59,7 +58,10 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     }
     this.apiKey = options.apiKey;
     // Model is passed verbatim so arbitrary OpenAI-compatible ids work. #2393.
-    this.model = options.model ?? DEFAULT_MODEL;
+    // Without one, use the worker's OpenRouter default: the old hard-coded
+    // 'anthropic/claude-3.5-sonnet' left OpenRouter's catalog, so every
+    // unconfigured server-runtime request was rejected.
+    this.model = options.model ?? SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
     this.apiUrl = resolveOpenRouterChatCompletionsUrl(options.baseUrl);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.siteUrl = options.siteUrl ?? OPENROUTER_APP_URL;

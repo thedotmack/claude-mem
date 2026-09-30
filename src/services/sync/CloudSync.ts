@@ -59,6 +59,13 @@ import {
   type CanonicalWireOp,
   type ContentKind,
 } from './CanonicalContent.js';
+import {
+  classifySyncAuthFailure,
+  friendlySyncError,
+  writeSyncHealth,
+  type SyncAuthFailure,
+  type SyncHealthState,
+} from '../../shared/sync-health.js';
 
 // Page size for drain SELECTs. 200-op content pushes timed out at 30s under
 // hub projection_busy (plan-24 #3618 / Alex Mac). 40 stays under one hub
@@ -77,6 +84,82 @@ export const REQUEST_TIMEOUT_MS_MAX = 180_000;
 const MAX_BODY_BYTES = 4_000_000;
 // Hub cap: ≤500 ops per POST /v1/sync/ops request.
 const MAX_OPS_PER_PUSH = 500;
+/** Cloudflare HTML 429 (error 1027) means the edge quota is exhausted. */
+const HTML_429_MIN_RETRY_MS = 10 * 60 * 1_000;
+const RETRY_AFTER_MAX_MS = 60 * 60 * 1_000;
+/**
+ * 401/403 from the sync server: the same credentials cannot succeed on retry.
+ * The flush loop pauses and re-checks once per interval (a renewed trial
+ * resumes on its own) instead of climbing the normal 30s..10m ladder forever.
+ */
+export const DEFAULT_AUTH_RETRY_MS = 60 * 60 * 1_000;
+/**
+ * #4086: an op the server rejects by name (`invalid_ops: ops[i] …`,
+ * `revision_hash_conflict:<id>:<rev>`, `stale_revision:<id>:<rev>…`) is
+ * dead-lettered after this many rejections so the rest of the queue drains.
+ */
+export const POISON_OP_REJECTION_THRESHOLD = 3;
+/** Above this many poison quarantines in one flush the failure is systemic: stop and back off. */
+const MAX_POISON_QUARANTINES_PER_FLUSH = 25;
+/** Failure-streak ledger writes are throttled to one per interval. */
+const HEALTH_WRITE_THROTTLE_MS = 60 * 1_000;
+
+/**
+ * Typed hub HTTP failure. Carries Retry-After so scheduleRetry can wait
+ * instead of immediately re-arming a 1.5s notify() debounce (#4231).
+ */
+export class HubHttpError extends Error {
+  readonly status: number;
+  readonly retryAfterMs: number | null;
+  readonly retryable: boolean;
+  /** Non-null for 401/403: stop retrying and tell the user what to do. */
+  readonly authFailure: SyncAuthFailure | null;
+  /** Untruncated response body (for poison-op identification). */
+  readonly rawBody: string;
+
+  constructor(label: string, status: number, body: string, retryAfterMs: number | null, rawBody: string = body) {
+    super(`${label} ${status}: ${body}`);
+    this.name = 'HubHttpError';
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+    this.retryable = status === 429 || (status >= 500 && status <= 599);
+    this.authFailure = classifySyncAuthFailure(status, rawBody);
+    this.rawBody = rawBody;
+  }
+}
+
+/** Parse `Retry-After` as delta-seconds or an HTTP-date. */
+export function parseRetryAfterMs(header: string | null | undefined, nowMs = Date.now()): number | null {
+  if (header == null) return null;
+  const trimmed = header.trim();
+  if (trimmed.length === 0) return null;
+  if (/^[0-9]+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    return Math.min(seconds * 1_000, RETRY_AFTER_MAX_MS);
+  }
+  const date = Date.parse(trimmed);
+  if (Number.isNaN(date)) return null;
+  return Math.max(0, Math.min(date - nowMs, RETRY_AFTER_MAX_MS));
+}
+
+export function hubRetryAfterMs(
+  status: number,
+  body: string,
+  retryAfterHeader: string | null | undefined,
+  nowMs = Date.now(),
+): number | null {
+  const parsed = parseRetryAfterMs(retryAfterHeader, nowMs);
+  if (status === 429 && /<!DOCTYPE html/i.test(body)) {
+    return Math.max(parsed ?? 0, HTML_429_MIN_RETRY_MS);
+  }
+  return parsed;
+}
+
+function applyBackoffJitter(baseMs: number): number {
+  if (!Number.isFinite(baseMs) || baseMs <= 0) return 0;
+  return Math.round(baseMs * (0.8 + Math.random() * 0.4));
+}
 
 function parseBoundedInt(raw: string | undefined, fallback: number, min: number, max: number): number {
   if (raw == null || raw === '') return fallback;
@@ -166,6 +249,35 @@ function isStaleOriginDeviceIdReject(message: string): boolean {
   return message.includes('sync hub push 400:')
     && message.includes('invalid_ops')
     && message.includes('origin_device_id does not match authenticated X-Device-Id');
+}
+
+/**
+ * Identify the single op a 400 `invalid_ops` rejection names, if any:
+ * `ops[<index>] …` (request-relative index) or `<class>:<entity id>:<rev>`
+ * for revision conflicts. Returns null for batch-level 400s (bad protocol
+ * version, missing device id) — those are not a poison op and must not
+ * dead-letter anything.
+ */
+export function identifyRejectedOp(
+  body: string,
+  ops: ReadonlyArray<{ body: string; operation_sha256: string }>,
+): number | null {
+  if (!body.includes('invalid_ops')) return null;
+  const indexMatch = /invalid_ops:\s*ops\[(\d+)\]/.exec(body);
+  if (indexMatch) {
+    const index = Number(indexMatch[1]);
+    return Number.isSafeInteger(index) && index < ops.length ? index : null;
+  }
+  const conflict = /(?:revision_hash_conflict|stale_revision):([^"\s<]+):(\d+)/.exec(body);
+  if (!conflict) return null;
+  const [, entityId, entityRev] = conflict;
+  for (let i = 0; i < ops.length; i++) {
+    try {
+      const parsed = JSON.parse(ops[i].body) as { id?: unknown; entity_rev?: unknown };
+      if (parsed.id === entityId && parsed.entity_rev === entityRev) return i;
+    } catch { /* unparseable op cannot match */ }
+  }
+  return null;
 }
 
 const TABLE_BY_KIND: Record<RowKind, string> = {
@@ -382,6 +494,13 @@ export interface CloudSyncOptions {
   backoffMaxMs?: number;
   /** Per-request timeout — a hub POST can never hang the drain. Default 90s. */
   requestTimeoutMs?: number;
+  /** Re-check interval while paused on a 401/403. Default 1h. */
+  authRetryMs?: number;
+  /**
+   * sync-health ledger path read by the SessionStart banner. null/omitted =
+   * no ledger (tests, out-of-band callers); the worker passes the default.
+   */
+  healthFilePath?: string | null;
 }
 
 export interface CloudSyncStatus {
@@ -391,6 +510,10 @@ export interface CloudSyncStatus {
   quarantine: { count: number; latestReason: string | null };
   lastFlushAt: number | null;
   lastError: string | null;
+  /** Set while paused on a 401/403; cleared by a successful re-check. */
+  authError: { code: SyncAuthFailure['code']; status: number; message: string } | null;
+  /** Plain-language summary for UIs: ok / auth_paused / failing. */
+  health: { state: SyncHealthState['state']; message: string | null; consecutiveFailures: number; failingSinceAt: number | null };
   hub: {
     checkedAt: number | null;
     reachable: boolean | null;
@@ -415,6 +538,8 @@ export class CloudSync {
   private readonly backoffMaxMs: number;
   private readonly contentBatchSize: number;
   private readonly requestTimeoutMs: number;
+  private readonly authRetryMs: number;
+  private readonly healthFilePath: string | null;
 
   /** '' when unconfigured or when device-id resolution failed closed. */
   private deviceId = '';
@@ -426,6 +551,13 @@ export class CloudSync {
   private stopped = false;
   private lastFlushAt: number | null = null;
   private lastError: string | null = null;
+  private authFailure: SyncAuthFailure | null = null;
+  private consecutiveFailures = 0;
+  private failingSinceAt: number | null = null;
+  private lastHealthWrite: { state: SyncHealthState['state']; code: string | null; at: number } | null = null;
+  /** #4086: rejections per operation_sha256 (in-memory; restart re-counts). */
+  private readonly poisonRejections = new Map<string, number>();
+  private poisonQuarantinesThisFlush = 0;
   private hubStatus: CloudSyncStatus['hub'] = {
     checkedAt: null,
     reachable: null,
@@ -473,6 +605,8 @@ export class CloudSync {
     this.requestTimeoutMs = options.requestTimeoutMs ?? parseRequestTimeoutMs(
       settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS,
     );
+    this.authRetryMs = options.authRetryMs ?? DEFAULT_AUTH_RETRY_MS;
+    this.healthFilePath = options.healthFilePath ?? null;
     this.nextBackoffMs = this.backoffInitialMs;
 
     if (this.isConfigured()) {
@@ -547,6 +681,13 @@ export class CloudSync {
   notify(): void {
     try {
       if (this.stopped || !this.isActive()) return;
+      // #4231: write-site nudges must not bypass an in-flight 429/5xx backoff.
+      // The retry timer owns the next flush; mark a follow-up so a success
+      // path (or the timer itself) still drains rows written during the wait.
+      if (this.retryTimer) {
+        this.flushAgainRequested = true;
+        return;
+      }
       if (this.debounceTimer) clearTimeout(this.debounceTimer);
       const timer = setTimeout(() => {
         this.debounceTimer = null;
@@ -578,6 +719,17 @@ export class CloudSync {
     }
     this.flushing = true;
     try {
+      if (this.authFailure) {
+        // Paused on 401/403: one cheap authenticated status GET decides
+        // whether to resume (renewed plan) or keep waiting. No op pushes.
+        await this.probeHubStatus();
+        if (this.stopped) return;
+        if (this.authFailure) {
+          this.scheduleRetry(this.authRetryMs);
+          return;
+        }
+      }
+      this.poisonQuarantinesThisFlush = 0;
       this.dropStaleOriginDeviceIdSnapshots();
       do {
         this.flushAgainRequested = false;
@@ -590,15 +742,26 @@ export class CloudSync {
       if (this.stopped) return; // shutdown mid-flush — skip success bookkeeping
       this.lastFlushAt = Date.now();
       this.lastError = null;
+      this.recordFlushSuccess();
       this.resetBackoff();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      this.lastError = err.message;
+      this.lastError = friendlySyncError(err.message);
+      if (err instanceof HubHttpError && err.authFailure) {
+        this.lastError = err.authFailure.message;
+        this.enterAuthPause(err.authFailure, err);
+        this.scheduleRetry(this.authRetryMs);
+        return;
+      }
       // Rows stay NULL — retried by the backoff timer below and on next notify().
+      const retryAfterMs = err instanceof HubHttpError ? err.retryAfterMs : null;
+      this.recordFlushFailure(err);
       logger.warn('CLOUD_SYNC', 'Cloud sync flush failed; unsynced rows remain queued', {
-        retryInMs: this.nextBackoffMs,
+        retryInMs: Math.max(this.nextBackoffMs, retryAfterMs ?? 0),
+        status: err instanceof HubHttpError ? err.status : undefined,
+        consecutiveFailures: this.consecutiveFailures,
       }, err);
-      this.scheduleRetry();
+      this.scheduleRetry(retryAfterMs ?? 0);
     } finally {
       this.flushing = false;
     }
@@ -618,8 +781,110 @@ export class CloudSync {
       quarantine: this.quarantineStatus(),
       lastFlushAt: this.lastFlushAt,
       lastError: this.lastError,
+      authError: this.authFailure
+        ? { code: this.authFailure.code, status: this.authFailure.status, message: this.authFailure.message }
+        : null,
+      health: {
+        state: this.healthStateName(),
+        message: this.authFailure?.message ?? (this.consecutiveFailures > 0 ? this.lastError : null),
+        consecutiveFailures: this.consecutiveFailures,
+        failingSinceAt: this.failingSinceAt,
+      },
       hub: { ...this.hubStatus },
     };
+  }
+
+  private healthStateName(): SyncHealthState['state'] {
+    if (this.authFailure) return 'auth_paused';
+    return this.consecutiveFailures > 0 ? 'failing' : 'ok';
+  }
+
+  /** 401/403: stop the retry ladder, keep one clear status, log once per cause. */
+  private enterAuthPause(failure: SyncAuthFailure, err?: Error): void {
+    const changed = this.authFailure?.code !== failure.code;
+    this.authFailure = failure;
+    // The ladder is irrelevant while paused; start fresh after recovery.
+    this.nextBackoffMs = this.backoffInitialMs;
+    if (changed) {
+      logger.error('CLOUD_SYNC', 'Cloud sync paused: the sync server rejected this device\'s credentials', {
+        code: failure.code,
+        status: failure.status,
+        recheckInMs: this.authRetryMs,
+        action: failure.message,
+      }, err);
+    }
+    this.writeHealth(true);
+  }
+
+  private exitAuthPause(): void {
+    if (!this.authFailure) return;
+    logger.info('CLOUD_SYNC', 'Cloud sync credentials accepted again; resuming uploads', {
+      previousCode: this.authFailure.code,
+    });
+    this.authFailure = null;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.writeHealth(true);
+    // Drain whatever queued up while paused (outside the probe's call stack).
+    if (!this.flushing && !this.stopped) {
+      const timer = setTimeout(() => { void this.flush(); }, 0);
+      (timer as { unref?: () => void }).unref?.();
+    }
+  }
+
+  private recordFlushSuccess(): void {
+    const wasUnhealthy = this.consecutiveFailures > 0 || this.authFailure !== null;
+    this.consecutiveFailures = 0;
+    this.failingSinceAt = null;
+    this.authFailure = null;
+    this.poisonRejections.clear();
+    if (wasUnhealthy || this.lastHealthWrite === null || this.lastHealthWrite.state !== 'ok') {
+      this.writeHealth(true);
+    }
+  }
+
+  private recordFlushFailure(err: Error): void {
+    const now = Date.now();
+    this.consecutiveFailures++;
+    this.failingSinceAt ??= now;
+    if (this.consecutiveFailures === 1 || this.consecutiveFailures % 20 === 0) {
+      // A failure streak is otherwise a stream of warn lines nobody reads;
+      // make the start (and every 20th) an error with the plain cause.
+      logger.error('CLOUD_SYNC', 'Cloud sync is failing; memories stay queued locally', {
+        consecutiveFailures: this.consecutiveFailures,
+        status: err instanceof HubHttpError ? err.status : undefined,
+        error: this.lastError,
+      });
+    }
+    this.writeHealth(false);
+  }
+
+  /** Persist the ledger on state/code transitions, throttled while a streak continues. */
+  private writeHealth(force: boolean): void {
+    if (!this.healthFilePath) return;
+    const now = Date.now();
+    const state = this.healthStateName();
+    const code = this.authFailure?.code ?? null;
+    const last = this.lastHealthWrite;
+    if (
+      !force && last && last.state === state && last.code === code
+      && now - last.at < HEALTH_WRITE_THROTTLE_MS
+    ) {
+      return;
+    }
+    this.lastHealthWrite = { state, code, at: now };
+    writeSyncHealth({
+      state,
+      code,
+      message: this.authFailure?.message ?? (state === 'failing' ? this.lastError : null),
+      consecutiveFailures: this.consecutiveFailures,
+      failingSinceAt: this.failingSinceAt,
+      lastErrorAt: state === 'ok' ? null : now,
+      lastSuccessAt: this.lastFlushAt,
+      updatedAt: now,
+    }, this.healthFilePath);
   }
 
   /**
@@ -652,8 +917,15 @@ export class CloudSync {
       const syncMode = response.headers.get('X-Sync-Mode');
       if (syncMode !== null || response.ok) this.emitSyncMode(syncMode);
       if (!response.ok) {
-        const body = (await response.text().catch(() => '')).slice(0, 200);
-        throw new Error(`sync hub status ${response.status}: ${body}`);
+        const rawBody = await response.text().catch(() => '');
+        const body = rawBody.slice(0, 200);
+        throw new HubHttpError(
+          'sync hub status',
+          response.status,
+          body,
+          hubRetryAfterMs(response.status, body, response.headers.get('Retry-After')),
+          rawBody,
+        );
       }
 
       let parsed: unknown;
@@ -690,8 +962,13 @@ export class CloudSync {
         projectedSeq,
         error: null,
       };
+      this.exitAuthPause();
     } catch (error) {
-      const raw = error instanceof Error ? error.message : String(error);
+      if (error instanceof HubHttpError && error.authFailure) {
+        this.enterAuthPause(error.authFailure, error);
+        if (!this.retryTimer) this.scheduleRetry(this.authRetryMs);
+      }
+      const raw = error instanceof Error ? friendlySyncError(error.message) : String(error);
       const safe = this.token === '' ? raw : raw.split(this.token).join('[REDACTED]');
       this.hubStatus = {
         checkedAt,
@@ -998,12 +1275,99 @@ export class CloudSync {
         this.emitHeadSeq(response.head_seq);
         return;
       } catch (error) {
-        const next = this.dropStaleOriginDeviceIdOps(remaining, error);
+        const next = this.dropStaleOriginDeviceIdOps(remaining, error)
+          ?? this.dropPoisonOp(remaining, error);
         if (next === null) throw error;
         if (next.length === 0 || this.stopped) return;
         remaining = next;
       }
     }
+  }
+
+  /**
+   * #4086: one op the server keeps rejecting by name (e.g.
+   * `revision_hash_conflict`) used to abort every batch forever. Count
+   * rejections per op; below the threshold rethrow (normal backoff, the
+   * conflict may be transient), at the threshold dead-letter just that op and
+   * return the rest of the batch so the queue keeps draining. Returns null
+   * when the error names no single op in this batch.
+   */
+  private dropPoisonOp(ops: WireOp[], error: unknown): WireOp[] | null {
+    if (!(error instanceof HubHttpError) || error.status !== 400) return null;
+    const index = identifyRejectedOp(error.rawBody, ops);
+    if (index === null) return null;
+    const op = ops[index];
+    const count = (this.poisonRejections.get(op.operation_sha256) ?? 0) + 1;
+    this.poisonRejections.set(op.operation_sha256, count);
+    if (count < POISON_OP_REJECTION_THRESHOLD) return null;
+    if (this.poisonQuarantinesThisFlush >= MAX_POISON_QUARANTINES_PER_FLUSH) return null;
+    const reason = friendlySyncError(error.rawBody).slice(0, 500);
+    // Only drop the op from the batch once no outbox row can resend it;
+    // otherwise keep the count and let the normal backoff path rethrow.
+    if (!this.quarantineRejectedOp(op, `rejected by sync server ${count}x: ${reason}`)) return null;
+    this.poisonQuarantinesThisFlush++;
+    this.poisonRejections.delete(op.operation_sha256);
+    return ops.filter((_, i) => i !== index);
+  }
+
+  /**
+   * Dead-letter one rejected wire op from whichever outbox holds it. True when
+   * no outbox row can resend it any more (quarantined now, or already gone);
+   * false when the op could not be matched to its lane, so the caller must
+   * leave it in the batch.
+   */
+  private quarantineRejectedOp(op: WireOp, reason: string): boolean {
+    let body: { kind?: unknown; id?: unknown; entity_rev?: unknown };
+    try {
+      body = JSON.parse(op.body) as typeof body;
+    } catch {
+      return false;
+    }
+    if (body.kind === 'mutation' && typeof body.id === 'string' && body.id.startsWith('mutation:')) {
+      const row = this.db.prepare(`
+        SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+               body, canonical_body, operation_sha256
+        FROM sync_outbox
+        WHERE op_uuid = ? AND (operation_sha256 IS NULL OR operation_sha256 = ?)
+      `).get(body.id.slice('mutation:'.length), op.operation_sha256) as MutationOutboxRow | undefined;
+      if (row) this.quarantineMutation(row, reason);
+      return true;
+    }
+    if (typeof body.id !== 'string' || typeof body.entity_rev !== 'string') return false;
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox
+      WHERE entity_id = ? AND entity_rev = ? AND operation_sha256 = ?
+    `).get(body.id, body.entity_rev, op.operation_sha256) as ContentOutboxRow | undefined;
+    if (!row) return true;
+    const table = TABLE_BY_KIND[row.kind as RowKind];
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO sync_dead_letter
+          (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+        VALUES ('content', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(lane, queue_key, entity_rev, reason) DO NOTHING
+      `).run(row.entity_id, row.kind, row.origin_local_id, row.entity_rev, reason, row.body, Date.now());
+      this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+      if (row.deleted === 0 && table) {
+        // -1 = visible quarantine sentinel (same as writeContentQuarantine):
+        // drainKind must not resnapshot the identical rejected revision. A
+        // later local write re-nulls synced_at and ships a higher revision.
+        this.db.prepare(`
+          UPDATE ${table} SET synced_at = -1
+          WHERE id = ? AND origin_device_id IS NULL AND CAST(sync_rev AS TEXT) = ?
+            AND (synced_at IS NULL OR synced_at < 0)
+        `).run(row.origin_local_id, row.entity_rev);
+      }
+    });
+    tx();
+    logger.error('CLOUD_SYNC', 'Quarantined an op the sync server keeps rejecting; the rest of the queue continues', {
+      kind: row.kind,
+      originLocalId: row.origin_local_id,
+      entityRev: row.entity_rev,
+      reason,
+    });    return true;
   }
 
   /**
@@ -1192,8 +1556,15 @@ export class CloudSync {
       this.emitSyncMode(syncMode);
     }
     if (!res.ok) {
-      const body = (await res.text().catch(() => '')).slice(0, 200);
-      throw new Error(`sync hub push ${res.status}: ${body}`);
+      const rawBody = await res.text().catch(() => '');
+      const body = rawBody.slice(0, 200);
+      throw new HubHttpError(
+        'sync hub push',
+        res.status,
+        body,
+        hubRetryAfterMs(res.status, body, res.headers.get('Retry-After')),
+        rawBody,
+      );
     }
     let parsed: unknown;
     try {
@@ -1293,9 +1664,10 @@ export class CloudSync {
       throw new Error('sync hub push: 200 response acknowledgment multiset mismatch');
     }
 
-    if (compareCanonicalDecimals(response.head_seq, response.projected_seq) > 0) {
-      throw new Error('sync hub push: checkpoint order requires head_seq <= projected_seq');
-    }
+    // Do not require head_seq <= projected_seq on the whole checkpoint
+    // (#4191 / #4198). A lagging projector, or an empty push while the
+    // durable head is ahead of the client, is not an inconsistency in this
+    // batch. Reject only when a sent ack is actually uncovered.
     for (const ack of response.acked) {
       if (compareCanonicalDecimals(ack.seq, response.head_seq) > 0) {
         throw new Error('sync hub push: acknowledgment seq exceeds head_seq');
@@ -1618,9 +1990,9 @@ export class CloudSync {
     });
   }
 
-  private scheduleRetry(): void {
+  private scheduleRetry(minDelayMs = 0): void {
     if (this.stopped || this.retryTimer) return;
-    const delay = this.nextBackoffMs;
+    const delay = applyBackoffJitter(Math.max(this.nextBackoffMs, minDelayMs));
     this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, this.backoffMaxMs);
     const timer = setTimeout(() => {
       this.retryTimer = null;

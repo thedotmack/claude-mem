@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -19,14 +20,62 @@ import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 // the feature dead on arrival for every pre-existing install.
 const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 
+/** Pinned workers.dev hub from the Cloudflare SyncHub era. */
+const LEGACY_CLOUD_SYNC_HUB_HOST = 'sync-hub.black-pond-afbb.workers.dev';
+/** Canonical Pro hub after the Fly cutover. */
+const CANONICAL_CLOUD_SYNC_HUB_URL = 'https://sync.cmem.ai';
+
+// OpenRouter retires `:free` model ids on its own schedule, and the same seeding
+// (every default written on first load, persisted values winning over
+// DEFAULTS) freezes the shipped OpenRouter default on disk. When that id is
+// retired, every observer call 404s and nothing is remembered — the
+// xiaomi/mimo-v2-flash:free outage (#3659). Rewrite a retired shipped default
+// to the current one, but only for a tuple that talks to openrouter.ai (blank
+// or openrouter.ai base URL): a custom OpenAI-compatible endpoint or the cmem
+// gateway serves its own model ids, and any other value is a deliberate
+// choice. Add the next retired shipped default here.
+const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
+  'xiaomi/mimo-v2-flash:free',
+]);
+
+function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
+  const model = flatSettings.CLAUDE_MEM_OPENROUTER_MODEL;
+  if (typeof model !== 'string' || !RETIRED_OPENROUTER_DEFAULT_MODELS.has(model.trim())) {
+    return false;
+  }
+  const baseUrl = typeof flatSettings.CLAUDE_MEM_OPENROUTER_BASE_URL === 'string'
+    ? flatSettings.CLAUDE_MEM_OPENROUTER_BASE_URL.trim()
+    : '';
+  return baseUrl === '' || isOpenRouterApiUrl(baseUrl);
+}
+
+function migratedCloudSyncHubUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  try {
+    if (new URL(trimmed).hostname === LEGACY_CLOUD_SYNC_HUB_HOST) {
+      return CANONICAL_CLOUD_SYNC_HUB_URL;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_PUBLIC_URL: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
-  CLAUDE_MEM_PROVIDER: string;  
+  CLAUDE_MEM_SKIP_BASH_PATTERNS: string;
+  CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: string;  // #2736 — skip ALL subagent observations (agent id AND agent type present)
+  CLAUDE_MEM_SKIP_AGENT_TYPES: string;            // #2736 — comma-separated subagent agent_type values to skip (e.g. workflow-subagent,Explore)
+  CLAUDE_MEM_PROVIDER: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
@@ -54,6 +103,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SESSION_COUNT: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: string;
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
@@ -84,6 +134,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
+  CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -142,6 +193,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: string;
   CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: string;
   CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: string;
   // CCS Align (Worker Watch seat, Phase 0 breathing slice). Seat-owned middle
   // cache under ~/.claude-mem/ccs-align/<viewerId>/; pull-only, never a second
   // writer on LFG/Orifice logs. See plans/2026-09-09-ccs-align.md.
@@ -172,10 +224,17 @@ export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+    CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_PUBLIC_URL: '',  // Browser-reachable base for the live-view URL when the
+                                // worker runs behind a port-forward (e.g.
+                                // https://37700.host.<user>.<domain>). Empty => localhost.
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
+    CLAUDE_MEM_SKIP_BASH_PATTERNS: '',  // Regex matched against a shell command (Bash; Codex exec_command); when it matches, the observation is skipped. Empty = capture every command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
+    CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',  // #2736 — default off preserves current behavior; set 'true' to skip every subagent observation (recommended for heavy Dynamic Workflows users)
+    CLAUDE_MEM_SKIP_AGENT_TYPES: '',                 // #2736 — default empty preserves current behavior; recommended value 'workflow-subagent' to drop Dynamic Workflows fan-out noise
     // Deliberate divergence from the installer prompt: the interactive
     // provider prompt defaults to 'cmem' (the hosted observer), but headless
     // installs land here — no delivered key exists headlessly, so the settings
@@ -186,7 +245,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
+    // Default OpenRouter model (free tier). The same id is hard-coded in
+    // src/ui/viewer/constants/settings.ts (DEFAULT_SETTINGS) and three times in
+    // openclaw/install.sh (settings defaults, openrouter override, completion
+    // summary); tests/shared/settings-defaults-manager.test.ts keeps them equal.
+    // Changing it strands installs that were seeded with the old id: add that
+    // id to RETIRED_OPENROUTER_DEFAULT_MODELS.
+    CLAUDE_MEM_OPENROUTER_MODEL: 'cohere/north-mini-code:free',
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
@@ -207,6 +272,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
@@ -216,7 +282,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
     CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: '400000',  // Retire an observer conversation past this size and start a fresh generation (#3800)
-    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
+    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // After N consecutive worker-unreachable hook invocations, show the worker-outage notice once per session (never blocks; plan-17)
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
@@ -237,6 +303,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
     CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
+    // Embedding function used when creating the Chroma collection. 'default' is
+    // the local all-MiniLM-L6-v2 (English-tuned). The pinned chroma-mcp also
+    // accepts 'openai', 'cohere', 'jina', 'voyageai' and 'roboflow'; those are
+    // API-backed, need the vendor's API key in the environment, and send your
+    // memory text to that vendor. Any other value is rejected. Applies to new
+    // collections only — changing it requires re-indexing.
+    CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
@@ -288,6 +361,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: '',
     CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: '160',
     CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: '1500',
+    CLAUDE_MEM_GROK_BOT_INJECT_STANDING_LINE: '',
     CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
     CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: 'ccs-align',
     // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.
@@ -410,6 +484,47 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with the in-memory migration even if the write fails
+        }
+      }
+
+      if (hasRetiredOpenRouterDefault(flatSettings)) {
+        const retiredModel = String(flatSettings.CLAUDE_MEM_OPENROUTER_MODEL).trim();
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_OPENROUTER_MODEL: this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL,
+        };
+
+        try {
+          writeJsonFileAtomic(
+            settingsPath,
+            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+          );
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn(
+            `[SETTINGS] Migrated OpenRouter model off the retired default ${retiredModel} to ${this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL}:`,
+            settingsPath,
+          );
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to migrate the retired OpenRouter model:', settingsPath, error instanceof Error ? error.message : String(error));
+          // Continue with the in-memory migration even if the write fails
+        }
+      }
+
+      const rewrittenHubUrl = migratedCloudSyncHubUrl(flatSettings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL);
+      if (rewrittenHubUrl !== null) {
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: rewrittenHubUrl,
+        };
+
+        try {
+          writeJsonFileAtomic(
+            settingsPath,
+            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+          );
+          console.warn('[SETTINGS] Migrated cloud sync hub URL off the legacy workers.dev host:', settingsPath);
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
         }
       }
 
