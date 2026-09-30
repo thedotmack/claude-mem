@@ -6,19 +6,15 @@
 //      NEW script-bearing dep is added without review.
 //   2. scripts/build-hooks.js — writes the `allowScripts` field into the
 //      generated plugin/package.json.
-//   3. package.json (root) + .npmrc — carry the same `allowScripts` allowlist so
-//      the marketplace install Claude Code runs does not abort.
+//   3. package.json (root) — carries the same `allowScripts` field.
 //
-// WHY the `allowScripts` field exists at all: npm 11.16+/v12 turned install
-// scripts into an opt-in. Claude Code's plugin setup runs an install over the
-// marketplace dir and, on that newer npm, a bare `--allow-scripts` flag is
-// rejected in project scope with EALLOWSCRIPTS — npm's own remedy is to declare
-// the trusted packages in an `allowScripts` field in package.json (or `.npmrc`).
-// Without it a fresh install on Node 26+/npm 12 aborts before the tree-sitter
-// grammars / native deps can build, so no plugin and no memory capture. The
-// `allowScripts` field is npm's prescribed, strict-mode-satisfying declaration;
-// it is the complement to the runtime installer's `--ignore-scripts` (which is
-// deliberately conservative) and to bun's `trustedDependencies`.
+// WHY the `allowScripts` field exists: npm 11.16+ runs dependency install
+// scripts only for packages declared there. It is npm's counterpart to bun's
+// `trustedDependencies`. The installer itself still passes `--ignore-scripts`
+// everywhere, so this is hardening for npm-based installs of these manifests,
+// not the EALLOWSCRIPTS fix: that error comes from an `allow-scripts` value
+// inherited through the environment, which
+// src/npx-cli/install/npm-install-helper.ts strips (#3697).
 //
 // Adding a NEW entry here must be a deliberate, reviewed act (see the CHANGELOG
 // v12.6.1 -> v12.6.2 incident referenced in check-postinstall-allowlist.js).
@@ -62,11 +58,4 @@ export function allowScriptsMap() {
   const map = {};
   for (const name of POSTINSTALL_ALLOWLIST) map[name] = true;
   return map;
-}
-
-// The `.npmrc` equivalent: a comma-separated `allow-scripts` config key. Note
-// this is the CONFIG-FILE form, which npm accepts — distinct from the bare
-// `--allow-scripts` CLI flag, which npm rejects in project-scoped installs.
-export function allowScriptsNpmrcLine() {
-  return `allow-scripts=${POSTINSTALL_ALLOWLIST.join(',')}`;
 }

@@ -21,7 +21,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { POSTINSTALL_ALLOWLIST, allowScriptsMap, allowScriptsNpmrcLine } from './postinstall-allowlist.js';
+import { POSTINSTALL_ALLOWLIST, allowScriptsMap } from './postinstall-allowlist.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT_KEYS = ['preinstall', 'install', 'postinstall'];
@@ -83,10 +83,9 @@ if (offenders.length > 0) {
 }
 
 // Drift guard: the shipped `allowScripts` declarations MUST equal the reviewed
-// allowlist. These are what lets Claude Code's marketplace install run install
-// scripts on npm 11.16+/v12 instead of aborting with EALLOWSCRIPTS. If someone
-// edits the allowlist but not the shipped manifests (or hand-edits a manifest),
-// the install silently regresses — so fail loud here.
+// allowlist (npm 11.16+ runs dependency install scripts only for packages listed
+// there). If someone edits the allowlist but not the manifests (or hand-edits a
+// manifest), they silently diverge — so fail loud here.
 const expectedMap = allowScriptsMap();
 const expectedKeys = Object.keys(expectedMap).sort();
 const driftErrors = [];
@@ -122,31 +121,14 @@ function checkAllowScriptsField(label, relPath) {
 checkAllowScriptsField('root manifest', 'package.json');
 checkAllowScriptsField('plugin manifest', join('plugin', 'package.json'));
 
-// The committed root .npmrc is the belt for the git-clone marketplace path
-// (npm strips .npmrc from published tarballs, so the package.json field above is
-// the load-bearing form for the npx-install path).
-const npmrcPath = join(repoRoot, '.npmrc');
-const expectedNpmrcLine = allowScriptsNpmrcLine();
-if (!existsSync(npmrcPath)) {
-  driftErrors.push(`root .npmrc: missing file .npmrc (expected line: ${expectedNpmrcLine})`);
-} else {
-  const npmrc = readFileSync(npmrcPath, 'utf-8');
-  const hasLine = npmrc.split(/\r?\n/).some((l) => l.trim() === expectedNpmrcLine);
-  if (!hasLine) {
-    driftErrors.push(`root .npmrc: missing or stale "allow-scripts" line (expected: ${expectedNpmrcLine})`);
-  }
-}
-
 if (driftErrors.length > 0) {
   console.error('\nallowScripts declaration guard FAILED — shipped config is out of sync with the allowlist:');
   for (const e of driftErrors) console.error(`  - ${e}`);
-  console.error('\nThese declarations are what keep Claude Code\'s marketplace install from aborting');
-  console.error('with EALLOWSCRIPTS on npm 11.16+/v12. Regenerate them from the single source of');
-  console.error('truth (scripts/postinstall-allowlist.js): run `node scripts/build-hooks.js` to');
-  console.error('refresh plugin/package.json, and sync package.json + .npmrc to match.');
+  console.error('\nRegenerate them from the single source of truth (scripts/postinstall-allowlist.js):');
+  console.error('run `node scripts/build-hooks.js` to refresh plugin/package.json, and sync package.json to match.');
   process.exit(1);
 }
 
 console.log(`Postinstall allowlist guard passed — ${deps.length} plugin deps checked, no unexpected install/postinstall scripts.`);
-console.log(`allowScripts declaration guard passed — root + plugin manifests and .npmrc match the ${expectedKeys.length}-entry allowlist.`);
+console.log(`allowScripts declaration guard passed — root + plugin manifests match the ${expectedKeys.length}-entry allowlist.`);
 process.exit(0);

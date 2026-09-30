@@ -196,7 +196,6 @@
     "tree-sitter-rust",
     "tree-sitter-typescript"
   ],
-  "//allowScripts-note": "npm 11.16+/v12 made dependency install scripts opt-in; a bare `--allow-scripts` is rejected in project-scoped installs with EALLOWSCRIPTS. This field is npm's prescribed remedy and is what Claude Code's marketplace install reads at ~/.claude/plugins/marketplaces/thedotmack (this manifest is copied there by copyPluginToMarketplace). Without it a fresh install on Node 26+/npm 12 aborts before the tree-sitter grammars / esbuild can build their native bindings. Keep in sync with scripts/postinstall-allowlist.js (enforced by scripts/check-postinstall-allowlist.js) and with the npm complement to bun's trustedDependencies above.",
   "allowScripts": {
     "tree-sitter-cli": true,
     "tree-sitter": true,

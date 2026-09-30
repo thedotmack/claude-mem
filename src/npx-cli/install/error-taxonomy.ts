@@ -97,6 +97,16 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
       'ERESOLVE peer-dependency conflict in marketplace deps that --legacy-peer-deps could not resolve. Open an issue at https://github.com/thedotmack/claude-mem/issues with the conflicting peer ranges shown above.',
   },
   {
+    // npm 11.16+ refuses an `allow-scripts` value from the command line or the
+    // environment. npm-install-helper strips the one npx inherits from ~/.npmrc
+    // (#3697), so this names the fix if the value arrives some other way.
+    id: 'npm-allow-scripts-policy',
+    severity: ErrorSeverity.ABORT,
+    match: (cause) => /\bEALLOWSCRIPTS\b/.test(causeMessage(cause)),
+    remediation: () =>
+      'npm refused an `allow-scripts` setting that reached it through the command line or environment (npm 11.16+ accepts it only from package.json or .npmrc). Unset NPM_CONFIG_ALLOW_SCRIPTS in your shell. If ~/.npmrc has an `allow-scripts=` line, older npx versions re-export it to the installer: upgrade npm (`npm install -g npm@latest`) or comment that line out, then re-run `npx claude-mem install`.',
+  },
+  {
     id: 'marketplace-dir-not-writable',
     severity: ErrorSeverity.ABORT,
     match: (cause) => /\b(EACCES|EPERM)\b/.test(causeMessage(cause)),
