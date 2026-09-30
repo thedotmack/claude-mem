@@ -41,6 +41,8 @@ import {
   renderObserverQuotaCooldownNotice,
 } from '../../shared/observer-health.js';
 import { readSyncHealth, renderSyncHealthWarning } from '../../shared/sync-health.js';
+import { resolveRuntimeContext, type ServerRuntimeContext } from '../hooks/runtime-selector.js';
+import { fetchServerContextRows } from './ServerContextRows.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -401,10 +403,17 @@ export function fitContextForDelivery(
   };
 }
 
-export async function generateContextWithStats(
-  input?: ContextInput,
-  forHuman: boolean = false
-): Promise<{ text: string; stats: ContextInjectStats | null }> {
+interface ContextScope {
+  config: ContextConfig;
+  cwd: string;
+  /** Every project key for this cwd (worktree parent, legacy aliases). */
+  projects: string[];
+  /** The key the rendered block is titled with. */
+  project: string;
+  platformSource: string | undefined;
+}
+
+function resolveContextScope(input: ContextInput | undefined): ContextScope {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const context = getProjectContext(cwd);
@@ -417,6 +426,88 @@ export async function generateContextWithStats(
     config.sessionCount = 999999;
   }
 
+  const platformSource = input?.platformSource
+    ? normalizePlatformSource(input.platformSource)
+    : undefined;
+  return { config, cwd, projects, project, platformSource };
+}
+
+/**
+ * Render rows that were already fetched. DB-free: the SQLite path and the server
+ * runtime both end here, so both get the same renderer, budget fitter, health
+ * warning and stats. Empty rows render the empty state.
+ */
+export function renderContextFromRows(
+  rows: { observations: Observation[]; summaries: SessionSummary[] },
+  input: ContextInput | undefined,
+  forHuman: boolean,
+  scope: Pick<ContextScope, 'config' | 'cwd' | 'project'>,
+): { text: string; stats: ContextInjectStats | null } {
+  const { observations, summaries } = rows;
+  const { config, cwd, project } = scope;
+
+  if (observations.length === 0 && summaries.length === 0) {
+    return { text: appendObserverHealthWarning(healthWarningForContext(input, forHuman), renderEmptyState(project, forHuman)), stats: null };
+  }
+
+  // `--full` is an explicit human request for everything; only the block that
+  // has to survive a hook's 10,000-character delivery limit is fitted (#3802).
+  return fitContextForDelivery(
+    observations,
+    summaries,
+    config,
+    // The model's form: selection is fitted on the model render, and the
+    // terminal preview paints this same warning red after truncating (#4252).
+    healthWarningForContext(input),
+    (items, cfg) =>
+      buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false).text,
+    input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,
+    Boolean(input?.full),
+    forHuman ? (items, cfg) =>
+      buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, true) : undefined
+  );
+}
+
+/**
+ * Session-start context for the server runtime, read from the shared store.
+ *
+ * Never opens the local SQLite file: in server runtime the writes go to the
+ * server, so the local corpus is stale. A successful empty answer renders the
+ * empty state. When the server cannot answer, the result is empty (plus any
+ * health warning) and a `[server-fallback]` line is logged; stale local rows are
+ * never substituted. Rows are scoped to this cwd's project keys through the
+ * route's folder filter.
+ *
+ * Exported so the SessionStart hook can call it directly, with no worker.
+ */
+export async function generateServerContextWithStats(
+  runtime: ServerRuntimeContext,
+  input?: ContextInput,
+  forHuman: boolean = false
+): Promise<{ text: string; stats: ContextInjectStats | null }> {
+  const scope = resolveContextScope(input);
+  const rows = await fetchServerContextRows(runtime, {
+    config: scope.config,
+    project: scope.project,
+    folderProjects: scope.projects,
+    platformSource: scope.platformSource,
+  });
+  if (!rows) {
+    return { text: healthWarningForContext(input, forHuman), stats: null };
+  }
+  return renderContextFromRows(rows, input, forHuman, scope);
+}
+
+export async function generateContextWithStats(
+  input?: ContextInput,
+  forHuman: boolean = false
+): Promise<{ text: string; stats: ContextInjectStats | null }> {
+  const runtime = resolveRuntimeContext();
+  if (runtime.runtime === 'server') {
+    return generateServerContextWithStats(runtime, input, forHuman);
+  }
+
+  const scope = resolveContextScope(input);
   const rawDb = initializeDatabase();
   if (!rawDb) {
     return { text: healthWarningForContext(input, forHuman), stats: null };
@@ -424,33 +515,10 @@ export async function generateContextWithStats(
 
   try {
     const db = { db: rawDb };
-    const platformSource = input?.platformSource
-      ? normalizePlatformSource(input.platformSource)
-      : undefined;
-    const queryProjects = projects.length > 1 ? projects : [project];
-    const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
-    const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
-
-    if (observations.length === 0 && summaries.length === 0) {
-      return { text: appendObserverHealthWarning(healthWarningForContext(input, forHuman), renderEmptyState(project, forHuman)), stats: null };
-    }
-
-    // `--full` is an explicit human request for everything; only the block that
-    // has to survive a hook's 10,000-character delivery limit is fitted (#3802).
-    return fitContextForDelivery(
-      observations,
-      summaries,
-      config,
-      // The model's form: selection is fitted on the model render, and the
-      // terminal preview paints this same warning red after truncating (#4252).
-      healthWarningForContext(input),
-      (items, cfg) =>
-        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false).text,
-      input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,
-      Boolean(input?.full),
-      forHuman ? (items, cfg) =>
-        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, true) : undefined
-    );
+    const queryProjects = scope.projects.length > 1 ? scope.projects : [scope.project];
+    const observations = queryObservationsMulti(db, queryProjects, scope.config, scope.platformSource);
+    const summaries = querySummariesMulti(db, queryProjects, scope.config, scope.platformSource);
+    return renderContextFromRows({ observations, summaries }, input, forHuman, scope);
   } finally {
     rawDb.close();
   }
