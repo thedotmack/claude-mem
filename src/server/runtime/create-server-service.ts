@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { isAbsolute } from 'path';
+import { pathToFileURL } from 'url';
 import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../../services/domain/ModeManager.js';
 import { getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
@@ -285,10 +288,20 @@ export function resolveServerMaxOutputTokens(): number | undefined {
 // when it's `instanceof ServerClassifiedProviderError` with `kind`
 // `'transient'`/`'rate_limit'` — a plain Error, even with a `.kind`
 // property bolted on, is always treated as non-retryable.
+//
+// These helpers are internal code, not a published library, and they do change
+// (buildServerGenerationPrompt gained a summary variant and a byte budget in
+// #4029/#4030). `apiVersion` is bumped whenever a helper's contract changes, so
+// a module can refuse to run against helpers it was not written for.
+export const CUSTOM_PROVIDER_HELPERS_API_VERSION = 1;
+
 export interface CustomServerGenerationProviderHelpers {
+  apiVersion: number;
   buildServerGenerationPrompt: typeof buildServerGenerationPrompt;
   ClaudeObservationProvider: typeof ClaudeObservationProvider;
   ServerClassifiedProviderError: typeof ServerClassifiedProviderError;
+  /** CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS, resolved exactly as the built-in providers read it. */
+  maxOutputTokens: number | undefined;
 }
 
 type CustomServerGenerationProviderFactory = (
@@ -305,6 +318,16 @@ type CustomServerGenerationProviderFactory = (
 // export a `createProvider(helpers)` factory (as a named export, a default
 // export, or `default.createProvider` — CJS/ESM interop can produce any of
 // the three depending on how the module was authored).
+//
+// Trust model: the path comes ONLY from the server process's environment. Server
+// providers never read settings.json, and no HTTP route can set it, so loading a
+// module takes the same access as setting NODE_OPTIONS. Keep it that way: this
+// key must never be added to SettingsDefaultsManager, settings.json hydration or
+// the SettingsRoutes allowlist. The module runs with everything the server holds
+// (the database URL, every provider key, the Redis credentials), so the path
+// must be absolute, and the path and the file's sha256 are logged at startup so
+// an operator can see exactly what was loaded.
+//
 // Exported for tests: the wiring is otherwise only reachable through the
 // full createServerService() (Postgres + queue setup), which is expensive
 // to stand up just to exercise the module-loading logic itself.
@@ -314,7 +337,12 @@ export async function loadCustomServerGenerationProvider(): Promise<ServerGenera
     logger.warn('SYSTEM', 'server: CLAUDE_MEM_SERVER_PROVIDER=custom requires CLAUDE_MEM_CUSTOM_PROVIDER_MODULE');
     return null;
   }
-  const { pathToFileURL } = await import('url');
+  if (!isAbsolute(modulePath)) {
+    logger.warn('SYSTEM', 'server: CLAUDE_MEM_CUSTOM_PROVIDER_MODULE must be an absolute path; generation disabled', { modulePath });
+    return null;
+  }
+  const moduleSha256 = createHash('sha256').update(readFileSync(modulePath)).digest('hex');
+  logger.info('SYSTEM', 'server: loading custom generation provider module', { modulePath, sha256: moduleSha256 });
   const mod = (await import(pathToFileURL(modulePath).href)) as Record<string, unknown>;
   const defaultExport = mod.default as Record<string, unknown> | (() => unknown) | undefined;
   const factory = (
@@ -328,7 +356,13 @@ export async function loadCustomServerGenerationProvider(): Promise<ServerGenera
     logger.warn('SYSTEM', 'server: CLAUDE_MEM_CUSTOM_PROVIDER_MODULE does not export a createProvider(helpers) factory', { modulePath });
     return null;
   }
-  return factory({ buildServerGenerationPrompt, ClaudeObservationProvider, ServerClassifiedProviderError });
+  return factory({
+    apiVersion: CUSTOM_PROVIDER_HELPERS_API_VERSION,
+    buildServerGenerationPrompt,
+    ClaudeObservationProvider,
+    ServerClassifiedProviderError,
+    maxOutputTokens: resolveServerMaxOutputTokens(),
+  });
 }
 
 async function instantiateServerGenerationProvider(provider: string): Promise<ServerGenerationProvider | null> {
