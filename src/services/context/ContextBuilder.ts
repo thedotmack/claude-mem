@@ -35,6 +35,7 @@ import {
   renderObserverHealthWarning,
   renderObserverQuotaCooldownNotice,
 } from '../../shared/observer-health.js';
+import { readSyncHealth, renderSyncHealthWarning } from '../../shared/sync-health.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -225,6 +226,12 @@ export function observerHealthWarning(forHuman: boolean = false): string {
     notice = renderObserverHealthWarning(health);
   } else if (isObserverQuotaCooldownActive(health)) {
     notice = renderObserverQuotaCooldownNotice(health);
+  }
+  // Cloud sync health rides the same slot: a paused (401/403) or long-failing
+  // sync is the other outage users otherwise discover only by missing memories.
+  const syncNotice = renderSyncHealthWarning(readSyncHealth());
+  if (syncNotice) {
+    notice = notice ? `${notice}\n\n${syncNotice}` : syncNotice;
   }
   if (!notice) {
     return '';
