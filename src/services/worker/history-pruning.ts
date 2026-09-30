@@ -26,8 +26,16 @@ import { logger } from '../../utils/logger.js';
 /** Marker attribute distinguishing a stub from a live payload message. */
 const PRUNED_ATTRIBUTE = 'pruned="true"';
 
-/** Payload messages open with this tag (see buildObservationPrompt). */
-const OBSERVATION_OPEN_TAG = '<observed_from_primary_session>';
+/** Only an observation prompt names the tool call it carries (see buildObservationPrompt). */
+const TOOL_PAYLOAD_TAG = '<what_happened>';
+
+/**
+ * Init and continuation prompts carry the user's request (see buildInitPrompt,
+ * buildContinuationPrompt). They share the `<observed_from_primary_session>`
+ * wrapper with observation prompts, but they hold the observer's instructions
+ * and the session-so-far block, so they are never a spent payload.
+ */
+const USER_REQUEST_TAG = '<user_request>';
 
 /**
  * Number of trailing messages never pruned (~4 user/assistant exchanges).
@@ -60,10 +68,10 @@ function buildStub(content: string): string {
  * Replace already-processed observation payloads outside the recent window
  * with compact stubs, in place. Returns the number of messages stubbed.
  *
- * Only user messages that carry a live observation payload are touched. The
- * first message (init/continuation prompt with the observer's role and output
- * format), summary-mode prompts, assistant messages, small messages, and the
- * trailing `keepRecent` messages are always preserved verbatim.
+ * Only user messages that carry a live tool payload are touched. Init and
+ * continuation prompts (wherever they sit), summary-mode prompts, assistant
+ * messages, small messages, stubs, and the trailing `keepRecent` messages are
+ * always preserved verbatim.
  */
 export function pruneProcessedObservationPayloads(
   history: ConversationMessage[],
@@ -77,7 +85,8 @@ export function pruneProcessedObservationPayloads(
     const message = history[i];
     if (message.role !== 'user') continue;
     if (message.content.length <= minPrunableChars) continue;
-    if (!message.content.includes(OBSERVATION_OPEN_TAG)) continue;
+    if (message.content.includes(PRUNED_ATTRIBUTE)) continue;
+    if (!message.content.includes(TOOL_PAYLOAD_TAG) || message.content.includes(USER_REQUEST_TAG)) continue;
     if (message.content.includes(SUMMARY_MODE_MARKER)) continue;
 
     message.content = buildStub(message.content);
