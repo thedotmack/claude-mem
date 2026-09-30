@@ -2,8 +2,7 @@ import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { isDirectChild } from '../../shared/path-utils.js';
-import { AppError } from '../server/ErrorHandler.js';
+import { isDirectChild, normalizePath } from '../../shared/path-utils.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -14,12 +13,66 @@ import {
   ObservationRow
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { resolveDateBound } from '../../shared/date-bounds.js';
 import { applySqliteConnectionPragmas } from './connection.js';
+
+/**
+ * Code-point ranges of the scripts FTS5's unicode61 tokenizer cannot segment: Thai and Lao,
+ * Myanmar, Khmer, Hiragana/Katakana, Bopomofo and Hangul compatibility jamo, the CJK
+ * ideograph blocks, and Hangul syllables. See {@link SessionSearch.UNSEGMENTED_SCRIPT}.
+ */
+const UNSEGMENTED_SCRIPT_RANGES =
+  '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
+
+/**
+ * Sync triggers for the external-content FTS5 indexes, shared by FTS setup here and by the
+ * SessionStore migrations that rebuild these tables. The update triggers fire only when an
+ * indexed column is written: an unscoped AFTER UPDATE also fired for bookkeeping writes
+ * (sync_rev, merged_into_project, content_hash, ...), and every firing appended a delete
+ * marker plus a full re-insert of the row's text to the index (#2793).
+ */
+export const OBSERVATIONS_FTS_TRIGGERS_SQL = `
+  CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+    INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+    INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS observations_au
+  AFTER UPDATE OF title, subtitle, narrative, text, facts, concepts ON observations BEGIN
+    INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+    INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+  END;
+`;
+
+export const SESSION_SUMMARIES_FTS_TRIGGERS_SQL = `
+  CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS session_summaries_au
+  AFTER UPDATE OF request, investigated, learned, completed, next_steps, notes ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+    INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+  END;
+`;
 
 export class SessionSearch {
   private db: Database;
-
-  private static readonly MISSING_SEARCH_INPUT_MESSAGE = 'Either query or filters required for search';
 
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
@@ -93,24 +146,7 @@ export class SessionSearch {
       FROM observations;
     `);
 
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-    `);
+    this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
 
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
@@ -131,24 +167,7 @@ export class SessionSearch {
       FROM session_summaries;
     `);
 
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-    `);
+    this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
   }
 
   private buildFilterClause(
@@ -190,14 +209,12 @@ export class SessionSearch {
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         conditions.push(`${tableAlias}.created_at_epoch >= ?`);
-        params.push(startEpoch);
+        params.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         conditions.push(`${tableAlias}.created_at_epoch <= ?`);
-        params.push(endEpoch);
+        params.push(resolveDateBound(end, 'end'));
       }
     }
 
@@ -248,20 +265,59 @@ export class SessionSearch {
    *
    * Bopomofo and Hangul were raised in review on #3810. The blocks are adjacent, so
    * \u3100-\u318F covers Bopomofo together with the Hangul compatibility jamo beside it.
+   *
+   * Thai, Lao, Myanmar and Khmer write words without spaces too, so a run of them folds
+   * into one token the same way (`ภาษาไทย` inside a longer Thai run -> 0 rows).
    */
-  private static readonly UNSEGMENTED_SCRIPT =
-    /[\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/;
+  private static readonly UNSEGMENTED_SCRIPT = new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]`);
 
   /**
-   * Build the substring predicate used when the index cannot represent the query. The
+   * Split the query into the runs the index cannot segment and the runs it can, so a
+   * mixed-script query is matched term by term instead of as one literal string. A
+   * substring search for the whole of `claude 队列` requires those characters to be
+   * adjacent, which is why mixed queries returned almost nothing (#3801 / #3982).
+   */
+  private static readonly UNSEGMENTED_RUN =
+    new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'g');
+
+  /**
+   * Build the substring predicate used when the index cannot represent the query. Each
+   * term must appear in at least one column, and every term must appear somewhere. The
    * escaping matches {@link searchUserPrompts}, which has always searched by substring.
    */
   private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
-    const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
-    return {
-      clause: `(${columns.map(column => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`,
-      params: columns.map(() => pattern),
-    };
+    const terms: string[] = query.match(SessionSearch.UNSEGMENTED_RUN) ?? [];
+    if (terms.length === 0) {
+      terms.push(query);
+    }
+    const params: string[] = [];
+    const groups = terms.map(term => {
+      const pattern = `%${term.replace(/[\\%_]/g, '\\$&')}%`;
+      for (let i = 0; i < columns.length; i += 1) {
+        params.push(pattern);
+      }
+      return `(${columns.map(column => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`;
+    });
+    return { clause: `(${groups.join(' AND ')})`, params };
+  }
+
+  /**
+   * Build an FTS5 query that preserves literal-token safety while allowing multi-word
+   * input to behave as an AND of terms instead of an exact phrase.
+   *
+   * Tokens with no letter or digit (a lone `-`, `&`, `—`) are dropped: unicode61 indexes
+   * nothing for them, so each would become an empty phrase that matches no row and, ANDed
+   * in, would zero out the whole query.
+   */
+  private static buildFTSMatchQuery(query: string): string {
+    const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
+    if (tokens.length === 0) {
+      return `"${query.replace(/"/g, '""')}"`;
+    }
+
+    return tokens
+      .map(token => `"${token.replace(/"/g, '""')}"`)
+      .join(' AND ');
   }
 
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
@@ -277,6 +333,61 @@ export class SessionSearch {
     }
   }
 
+  private searchObservationsBySubstring(
+    query: string,
+    filters: SearchFilters,
+    orderBy: SearchOptions['orderBy'],
+    limit: number,
+    offset: number
+  ): ObservationSearchResult[] {
+    const match = SessionSearch.buildSubstringClause(query, [
+      'o.title', 'o.subtitle', 'o.narrative', 'o.text', 'o.facts', 'o.concepts',
+    ]);
+    const filterParams: any[] = [];
+    const filterClause = this.buildFilterClause(filters, filterParams, 'o');
+
+    const sql = `
+      SELECT o.*, o.discovery_tokens
+      FROM observations o
+      WHERE ${match.clause}
+      ${filterClause ? 'AND ' + filterClause : ''}
+      ${this.buildOrderClause(orderBy, false)}
+      LIMIT ? OFFSET ?
+    `;
+
+    return this.db.prepare(sql).all(...match.params, ...filterParams, limit, offset) as ObservationSearchResult[];
+  }
+
+  private searchSessionsBySubstring(
+    query: string,
+    filters: SearchFilters,
+    orderBy: SearchOptions['orderBy'],
+    limit: number,
+    offset: number
+  ): SessionSummarySearchResult[] {
+    const match = SessionSearch.buildSubstringClause(query, [
+      's.request', 's.investigated', 's.learned', 's.completed', 's.next_steps', 's.notes',
+    ]);
+    const filterOptions = { ...filters };
+    delete filterOptions.type;
+    const filterParams: any[] = [];
+    const filterClause = this.buildFilterClause(filterOptions, filterParams, 's');
+    const orderClause = orderBy === 'date_asc'
+      ? 'ORDER BY s.created_at_epoch ASC'
+      : 'ORDER BY s.created_at_epoch DESC';
+
+    const sql = `
+      SELECT s.*, s.discovery_tokens
+      FROM session_summaries s
+      WHERE ${match.clause}
+      ${filterClause ? 'AND ' + filterClause : ''}
+      ${orderClause}
+      LIMIT ? OFFSET ?
+    `;
+
+    return this.db.prepare(sql).all(...match.params, ...filterParams, limit, offset) as SessionSummarySearchResult[];
+  }
+
   searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
@@ -284,7 +395,9 @@ export class SessionSearch {
     if (!query) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       if (!filterClause) {
-        throw new AppError(SessionSearch.MISSING_SEARCH_INPUT_MESSAGE, 400, 'INVALID_SEARCH_REQUEST');
+        // No query text and no filters: nothing to match, so return an empty
+        // result set rather than treating a benign empty search as an error.
+        return [];
       }
 
       const orderClause = this.buildOrderClause(orderBy, false);
@@ -302,24 +415,7 @@ export class SessionSearch {
     }
 
     if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
-      const filterClause = this.buildFilterClause(filters, params, 'o');
-      const orderClause = this.buildOrderClause(orderBy, false);
-      const match = SessionSearch.buildSubstringClause(query, [
-        'o.title', 'o.subtitle', 'o.narrative', 'o.text', 'o.facts', 'o.concepts',
-      ]);
-
-      const sql = `
-        SELECT o.*, o.discovery_tokens
-        FROM observations o
-        WHERE ${match.clause}
-        ${filterClause ? 'AND ' + filterClause : ''}
-        ${orderClause}
-        LIMIT ? OFFSET ?
-      `;
-
-      params.unshift(...match.params);
-      params.push(limit, offset);
-      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+      return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
     }
 
     if (this._fts5Available) {
@@ -336,16 +432,23 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
-      params.unshift(escapedQuery);
-      params.push(limit, offset);
+      params.unshift(SessionSearch.buildFTSMatchQuery(query));
 
+      let rows: ObservationSearchResult[];
       try {
-        return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+        rows = this.db.prepare(sql).all(...params, limit, offset) as ObservationSearchResult[];
       } catch (error) {
         logger.warn('DB', 'FTS5 observation search failed', {}, error instanceof Error ? error : undefined);
         throw error;
       }
+      // An empty page past the end of real FTS matches stays empty.
+      if (rows.length > 0 || (offset > 0 && this.db.prepare(sql).all(...params, 1, 0).length > 0)) {
+        return rows;
+      }
+      // No FTS match at all. unicode61 folds a Latin run glued to ideographs (`payload优先使用LLM`)
+      // into one token that no FTS term can reach, so answer by substring, the same way queries in
+      // unsegmented scripts are answered. A query FTS already answers is never widened.
+      return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
     }
 
     logger.warn('DB', 'Text search unavailable: ChromaDB disabled and FTS5 not available');
@@ -361,7 +464,9 @@ export class SessionSearch {
       delete filterOptions.type;
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
       if (!filterClause) {
-        throw new AppError(SessionSearch.MISSING_SEARCH_INPUT_MESSAGE, 400, 'INVALID_SEARCH_REQUEST');
+        // No query text and no filters: nothing to match, so return an empty
+        // result set rather than treating a benign empty search as an error.
+        return [];
       }
 
       const orderClause = orderBy === 'date_asc'
@@ -381,28 +486,7 @@ export class SessionSearch {
     }
 
     if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
-      const filterOptions = { ...filters };
-      delete filterOptions.type;
-      const filterClause = this.buildFilterClause(filterOptions, params, 's');
-      const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY s.created_at_epoch ASC'
-        : 'ORDER BY s.created_at_epoch DESC';
-      const match = SessionSearch.buildSubstringClause(query, [
-        's.request', 's.investigated', 's.learned', 's.completed', 's.next_steps', 's.notes',
-      ]);
-
-      const sql = `
-        SELECT s.*, s.discovery_tokens
-        FROM session_summaries s
-        WHERE ${match.clause}
-        ${filterClause ? 'AND ' + filterClause : ''}
-        ${orderClause}
-        LIMIT ? OFFSET ?
-      `;
-
-      params.unshift(...match.params);
-      params.push(limit, offset);
-      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+      return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
     }
 
     if (this._fts5Available) {
@@ -426,16 +510,20 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
-      params.unshift(escapedQuery);
-      params.push(limit, offset);
+      params.unshift(SessionSearch.buildFTSMatchQuery(query));
 
+      let rows: SessionSummarySearchResult[];
       try {
-        return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+        rows = this.db.prepare(sql).all(...params, limit, offset) as SessionSummarySearchResult[];
       } catch (error) {
         logger.warn('DB', 'FTS5 session search failed', {}, error instanceof Error ? error : undefined);
         throw error;
       }
+      if (rows.length > 0 || (offset > 0 && this.db.prepare(sql).all(...params, 1, 0).length > 0)) {
+        return rows;
+      }
+      // No FTS match at all: see searchObservations.
+      return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
     }
 
     logger.warn('DB', 'Text search unavailable: ChromaDB disabled and FTS5 not available');
@@ -497,23 +585,65 @@ export class SessionSearch {
     return checkFiles(session.files_read) || checkFiles(session.files_edited);
   }
 
+  /**
+   * LIKE patterns that find a path in a files JSON column.
+   *
+   * Stored paths come in two forms: absolute when they come from a tool's
+   * input (Claude Code's Read/Edit/Write), project-relative when they come
+   * from the observer's output or a Codex patch, and neither records the
+   * project root. So a folder given as an absolute path also matches paths
+   * stored under any trailing part of it, which is the rule isDirectChild
+   * applies to the fetched rows. Without these anchored prefixes the
+   * project-relative rows never reached that check and folder lookups missed
+   * them.
+   */
+  private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
+    const patterns = [`%${filePath}%`];
+    if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
+      return patterns;
+    }
+    const segments = normalizePath(filePath).split('/').filter(segment => segment.length > 0);
+    const firstRelativeSegment = /^[A-Za-z]:$/.test(segments[0] ?? '') ? 1 : 0;
+    for (let start = firstRelativeSegment; start < segments.length; start += 1) {
+      const trailing = segments.slice(start);
+      patterns.push(`${trailing.join('/')}/%`);
+      if (filePath.includes('\\')) {
+        patterns.push(`${trailing.join('\\')}\\%`);
+      }
+    }
+    return patterns;
+  }
+
+  /** Any of `columns` (JSON arrays) holds a value matching any pattern; bind every pattern once per column. */
+  private static jsonArrayLikeClause(columns: string[], patternCount: number): string {
+    const anyPattern = Array.from({ length: patternCount }, () => 'value LIKE ?').join(' OR ');
+    return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${anyPattern})`).join(' OR ')})`;
+  }
+
   findByFile(filePath: string, options: SearchOptions = {}): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', isFolder = false, ...filters } = options;
+    // filePath is the file filter; a caller's own `files` filter is not added on top.
+    delete filters.files;
 
     const queryLimit = isFolder ? limit * 3 : limit;
+    const pathPatterns = SessionSearch.filePathPatterns(filePath, isFolder);
 
-    const fileFilters = { ...filters, files: filePath };
-    const filterClause = this.buildFilterClause(fileFilters, params, 'o');
+    const filterClause = this.buildFilterClause(filters, params, 'o');
+    params.push(...pathPatterns, ...pathPatterns);
+    const whereClause = [
+      filterClause,
+      SessionSearch.jsonArrayLikeClause(['o.files_read', 'o.files_modified'], pathPatterns.length),
+    ].filter(Boolean).join(' AND ');
     const orderClause = this.buildOrderClause(orderBy, false);
 
     const observationsSql = `
       SELECT o.*, o.discovery_tokens
       FROM observations o
-      WHERE ${filterClause}
+      WHERE ${whereClause}
       ${orderClause}
       LIMIT ? OFFSET ?
     `;
@@ -546,22 +676,17 @@ export class SessionSearch {
     if (sessionFilters.dateRange) {
       const { start, end } = sessionFilters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         baseConditions.push('s.created_at_epoch >= ?');
-        sessionParams.push(startEpoch);
+        sessionParams.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         baseConditions.push('s.created_at_epoch <= ?');
-        sessionParams.push(endEpoch);
+        sessionParams.push(resolveDateBound(end, 'end'));
       }
     }
 
-    baseConditions.push(`(
-      EXISTS (SELECT 1 FROM json_each(s.files_read) WHERE value LIKE ?)
-      OR EXISTS (SELECT 1 FROM json_each(s.files_edited) WHERE value LIKE ?)
-    )`);
-    sessionParams.push(`%${filePath}%`, `%${filePath}%`);
+    baseConditions.push(SessionSearch.jsonArrayLikeClause(['s.files_read', 's.files_edited'], pathPatterns.length));
+    sessionParams.push(...pathPatterns, ...pathPatterns);
 
     const sessionsSql = `
       SELECT s.*, s.discovery_tokens
@@ -624,20 +749,20 @@ export class SessionSearch {
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
-        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
         baseConditions.push('up.created_at_epoch >= ?');
-        params.push(startEpoch);
+        params.push(resolveDateBound(start, 'start'));
       }
       if (end) {
-        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
         baseConditions.push('up.created_at_epoch <= ?');
-        params.push(endEpoch);
+        params.push(resolveDateBound(end, 'end'));
       }
     }
 
     if (!query) {
       if (baseConditions.length === 0) {
-        throw new AppError(SessionSearch.MISSING_SEARCH_INPUT_MESSAGE, 400, 'INVALID_SEARCH_REQUEST');
+        // No query text and no filters: nothing to match, so return an empty
+        // result set rather than treating a benign empty search as an error.
+        return [];
       }
 
       const whereClause = `WHERE ${baseConditions.join(' AND ')}`;

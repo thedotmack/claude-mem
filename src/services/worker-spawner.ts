@@ -1,8 +1,9 @@
 
 import path from 'path';
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, statSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { captureCliEvent } from './telemetry/cli-telemetry.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
@@ -20,35 +21,52 @@ import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.
 import { isPidAlive } from '../supervisor/process-registry.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 
+/**
+ * Windows spawn cooldown, keyed to evidence rather than time (plan-15 step 7,
+ * #2996). The marker is written ONLY when a worker this launcher started
+ * provably crashed during boot (probeWorkerBootFailure returned its error):
+ * respawning an install that crashes on start just repeats the crash (and a
+ * console flash) on every hook, so launchers stand down for the cooldown.
+ * Every other failure (port held by something else, a reclaimed ghost, a lost
+ * spawn lock, a readiness timeout with no proven crash) writes nothing, so the
+ * next launcher that finds the port free retries immediately. The marker is
+ * cleared whenever a worker is seen healthy.
+ */
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
 function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
 }
 
-function shouldSkipSpawnOnWindows(): boolean {
-  if (process.platform !== 'win32') return false;
+/**
+ * The boot failure recorded by a provable crash inside the cooldown window, or
+ * null when a spawn is allowed. An empty string means a crash was recorded
+ * without readable detail.
+ */
+function readSpawnCooldownOnWindows(): string | null {
+  if (process.platform !== 'win32') return null;
   const lockPath = getWorkerSpawnLockPath();
-  if (!existsSync(lockPath)) return false;
+  if (!existsSync(lockPath)) return null;
   try {
     const modifiedTimeMs = statSync(lockPath).mtimeMs;
-    return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
+    if (Date.now() - modifiedTimeMs >= WINDOWS_SPAWN_COOLDOWN_MS) return null;
+    return readFileSync(lockPath, 'utf-8');
   } catch (error) {
     if (error instanceof Error) {
-      logger.debug('SYSTEM', 'Could not stat worker spawn lock file', {}, error);
+      logger.debug('SYSTEM', 'Could not read worker spawn cooldown marker', {}, error);
     } else {
-      logger.debug('SYSTEM', 'Could not stat worker spawn lock file', { error: String(error) });
+      logger.debug('SYSTEM', 'Could not read worker spawn cooldown marker', { error: String(error) });
     }
-    return false;
+    return null;
   }
 }
 
-function markWorkerSpawnAttempted(): void {
+function markWorkerBootCrashed(bootFailure: string): void {
   if (process.platform !== 'win32') return;
   try {
     const lockPath = getWorkerSpawnLockPath();
     mkdirSync(path.dirname(lockPath), { recursive: true });
-    writeFileSync(lockPath, '', 'utf-8');
+    writeFileSync(lockPath, bootFailure, 'utf-8');
   } catch {
     // APPROVED OVERRIDE: best-effort cooldown marker. If we can't even create
     // the data dir or write the marker, the worker spawn itself is almost
@@ -66,6 +84,55 @@ function clearWorkerSpawnAttempted(): void {
     // APPROVED OVERRIDE: best-effort cleanup of the cooldown marker after a
     // successful spawn. A stale marker on disk is harmless — the worst case
     // is one suppressed retry within the cooldown window, then it self-heals.
+  }
+}
+
+/**
+ * A worker we spawned is dead and not serving after boot (#3557). This covers
+ * both a worker that never bound the port and one that bound, then crashed —
+ * this path cannot tell them apart, so the diagnosis stays neutral rather than
+ * claiming "never bound". Drop the durable markers so the next session start
+ * can tell the user, and emit the telemetry event that closes the measurement
+ * hole — every other boot dies silently today. Best-effort: capture must never
+ * break because a marker or an event could not be written.
+ *
+ * `bootFailure` is probeWorkerBootFailure's reproduction of the crash, when it
+ * got one; it goes into the local marker only (telemetry stays a closed enum).
+ */
+async function recordWorkerBootFailure(
+  port: number,
+  spawnedPid: number | undefined,
+  bootFailure: string | undefined,
+): Promise<void> {
+  const diagnostic = [
+    `[worker-spawner] worker is dead and unreachable on port ${port} after boot — issue #3557`,
+    `  spawned pid: ${spawnedPid ?? 'n/a'}`,
+    `  platform: ${process.platform}`,
+    `  timestamp: ${new Date().toISOString()}`,
+    ...(bootFailure ? ['  boot failure (reproduced):', ...bootFailure.split('\n').map((line) => `    ${line}`)] : []),
+  ].join('\n');
+
+  try {
+    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+    const logsDir = path.join(dataDir, 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    appendFileSync(path.join(logsDir, 'runner-errors.log'), diagnostic + '\n\n');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path.join(dataDir, 'CAPTURE_BROKEN'), diagnostic + '\n');
+  } catch (error) {
+    logger.warn('SYSTEM', 'Failed to persist worker boot-failure marker', {},
+      error instanceof Error ? error : new Error(String(error)));
+  }
+
+  try {
+    await captureCliEvent('worker_start_failed', {
+      outcome: 'dead',
+      error_category: bootFailure ? 'boot_crash' : 'unreachable_after_boot',
+    });
+  } catch (error) {
+    // Telemetry is best-effort and must never turn a diagnosed failure into a throw.
+    logger.debug('SYSTEM', 'worker_start_failed telemetry not sent', {},
+      error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -101,7 +168,11 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
-  const pidFileStatus = cleanStalePidFile();
+  // I-4 (bwrap --unshare-pid): don't delete the pid file on a 'stale'
+  // verdict until we know whether the port is actually unhealthy — under a
+  // PID namespace a perfectly healthy host worker's pid reads back as
+  // invisible (ESRCH), not dead. removeStale:false defers the rmSync.
+  let pidFileStatus = cleanStalePidFile({ removeStale: false });
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -121,6 +192,9 @@ export async function ensureWorkerStarted(
   }
 
   if (await waitForHealth(port, 1000)) {
+    if (pidFileStatus === 'stale') {
+      logger.debug('SYSTEM', 'pid not visible (likely pid namespace); keeping pid file');
+    }
     clearWorkerSpawnAttempted();
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
@@ -128,6 +202,13 @@ export async function ensureWorkerStarted(
     }
     logger.info('SYSTEM', 'Worker already running and healthy');
     return ready ? 'ready' : 'warming';
+  }
+
+  if (pidFileStatus === 'stale') {
+    // Health genuinely failed above, so the pid file was not shielding a
+    // healthy-but-invisible worker after all — remove it now (this is the
+    // deferred rmSync from the removeStale:false call above).
+    pidFileStatus = cleanStalePidFile();
   }
 
   const portInUse = await isPortInUse(port);
@@ -140,16 +221,17 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    // The port is bound but nothing answers health. Usually this is a dead
-    // worker whose surviving chroma sidecar chain (uvx -> uv -> python) holds
-    // the inherited listening socket — a ghost listener under a dead PID
-    // (plan-15 #3603). Without a reclaim the launcher returns 'dead' forever
-    // and the port stays blocked until a human tree-kills the chain by hand.
-    // Reclaim only fires when the owner is provably dead and the survivors
-    // are chroma sidecars; a live owner keeps the old 'dead' behavior.
+    // The port is bound but nothing answers health. Two cases the reclaim
+    // handles: (1) a wedged worker WE own that stopped answering /health but
+    // still holds the port (#4127), and (2) a dead worker whose chroma sidecar
+    // chain holds the inherited listening socket — a ghost listener under a
+    // dead PID (plan-15 #3603). Without a reclaim the launcher returns 'dead'
+    // forever and the port stays blocked until a human intervenes. A live
+    // FOREIGN owner (a process our PID file does not claim) keeps the old
+    // 'dead' behavior.
     const reclaim = await reclaimGhostListeningPort(port);
     if (reclaim.reclaimed) {
-      logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — proceeding to spawn', {
+      logger.info('SYSTEM', 'Reclaimed the worker port (wedged or dead-owner ghost listener) — proceeding to spawn', {
         port,
         killedPids: reclaim.killedPids,
       });
@@ -167,8 +249,15 @@ export async function ensureWorkerStarted(
     }
   }
 
-  if (shouldSkipSpawnOnWindows()) {
-    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
+  const recentBootCrash = readSpawnCooldownOnWindows();
+  if (recentBootCrash !== null) {
+    // Report the recorded crash, not a generic "dead": the caller surfaces
+    // getLastWorkerBootFailure() to the user.
+    lastWorkerBootFailure = recentBootCrash || undefined;
+    logger.warn('SYSTEM', 'Worker crashed on boot within the cooldown window — skipping spawn on Windows', {
+      cooldownMs: WINDOWS_SPAWN_COOLDOWN_MS,
+      ...(lastWorkerBootFailure ? { bootFailure: lastWorkerBootFailure } : {}),
+    });
     return 'dead';
   }
 
@@ -184,10 +273,12 @@ export async function ensureWorkerStarted(
   try {
     if (spawnLockHeld) {
       logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
-      markWorkerSpawnAttempted();
       spawnedPid = spawnDaemon(workerScriptPath, port);
       if (spawnedPid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
+        // The launch itself failed (no Bun runtime, Start-Process refused):
+        // as deterministic as a boot crash, so it also starts the cooldown.
+        markWorkerBootCrashed('The worker daemon could not be launched (see the claude-mem log for the spawn error).');
         return 'dead';
       }
     } else {
@@ -201,6 +292,8 @@ export async function ensureWorkerStarted(
       const spawnedProcessStillAlive = spawnedPid !== undefined && spawnedPid > 0 && isPidAlive(spawnedPid);
       if (!workerStillHealthy && !workerPidStillAlive && !spawnedProcessStillAlive) {
         if (!spawnLockHeld) {
+          // A lock loser never spawned this worker, so the holder owns the
+          // failure record; writing it here too would double-report it.
           logger.error('SYSTEM', 'Spawn-lock holder never produced a live worker before readiness timed out');
           return 'dead';
         }
@@ -213,6 +306,10 @@ export async function ensureWorkerStarted(
           'Worker exited before readiness endpoint became available',
           lastWorkerBootFailure ? { bootFailure: lastWorkerBootFailure } : {}
         );
+        // Only a crash the probe reproduced starts the cooldown; an unexplained
+        // exit leaves the next launcher free to retry right away.
+        if (lastWorkerBootFailure) markWorkerBootCrashed(lastWorkerBootFailure);
+        await recordWorkerBootFailure(port, spawnedPid, lastWorkerBootFailure);
         return 'dead';
       }
       logger.warn('SYSTEM', spawnLockHeld

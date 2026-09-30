@@ -881,11 +881,12 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'rebuild_corpus',
-    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session.',
+    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session. Refuses and keeps the existing corpus if the rebuild would drop a large share of observations, unless force is set.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Name of the corpus to rebuild' }
+        name: { type: 'string', description: 'Name of the corpus to rebuild' },
+        force: { type: 'boolean', description: 'Accept a rebuild that shrinks the corpus significantly instead of keeping the existing one' }
       },
       required: ['name'],
       additionalProperties: true
