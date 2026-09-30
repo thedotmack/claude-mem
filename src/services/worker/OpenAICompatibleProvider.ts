@@ -10,7 +10,7 @@ import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
 import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
-import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
+import { DEADLINE_EXCEEDED_CODE, isClassified, type ClassifiedProviderError } from './provider-errors.js';
 import {
   shouldRecycleConversation,
   describeGenerationUsage,
@@ -514,9 +514,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         return `auth:${error.kind}`;
       // A timeout or network fault that outlived the retry policy. Finalizing
       // would turn it into permanent data loss — the same reasoning as the
-      // observer-text transport path in ResponseProcessor (#3752).
+      // observer-text transport path in ResponseProcessor (#3752). Our own
+      // per-attempt deadline keeps its own reason, so an abandoned request
+      // stays countable apart from a network fault.
       case 'transient':
-        return `transport:${error.kind}`;
+        return error.code === DEADLINE_EXCEEDED_CODE
+          ? `transport:${DEADLINE_EXCEEDED_CODE}`
+          : `transport:${error.kind}`;
       default:
         return null;
     }
@@ -552,6 +556,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         logger.warn('SDK', `${this.providerName} paused on ${error.kind}; preserving buffered work`, {
           sessionId: session.sessionDbId,
           kind: error.kind,
+          ...(error.code ? { code: error.code } : {}),
           ...observerUsageLogFields(session)
         });
       }

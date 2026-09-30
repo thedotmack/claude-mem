@@ -40,9 +40,6 @@ interface SessionCompressedRecord {
   duration_ms?: number;
   compression_ms?: number;
   outcome?: string;
-  // Normalized abort reason (closed enum), set only on aborted turns. Folded
-  // into top_abort_reason on the rollup so the cause of aborts is visible.
-  abort_reason?: string;
   model?: string;
   // Source + observed-session identity, carried per turn and surfaced on the
   // rollup with last-seen semantics (see computeSessionCompressedRollup).
@@ -64,6 +61,9 @@ interface SessionCompressedRecord {
   obs_type_decision?: number;
   obs_type_refactor?: number;
   obs_type_other?: number;
+  // Closed enum from SessionRoutes.normalizeAbortReason, on aborted turns.
+  // Counted into outcomes_aborted_deadline_exceeded and top_abort_reason.
+  abort_reason?: string;
   [key: string]: unknown;
 }
 
@@ -147,6 +147,7 @@ function computeSessionCompressedRollup(
   let outcomesOk = 0;
   let outcomesError = 0;
   let outcomesAborted = 0;
+  let outcomesAbortedDeadlineExceeded = 0;
   let outcomesInvalidOutput = 0;
   let observationsCreated = 0;
   let obsTypeBugfix = 0;
@@ -194,8 +195,10 @@ function computeSessionCompressedRollup(
     }
     if (r.outcome === 'ok') outcomesOk++;
     else if (r.outcome === 'error') outcomesError++;
-    else if (r.outcome === 'aborted') outcomesAborted++;
-    else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
+    else if (r.outcome === 'aborted') {
+      outcomesAborted++;
+      if (r.abort_reason === 'deadline_exceeded') outcomesAbortedDeadlineExceeded++;
+    } else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
 
     // abort_reason is a closed enum SessionRoutes already normalized; only
     // aborted turns carry it. Count it here for top_abort_reason below.
@@ -243,6 +246,10 @@ function computeSessionCompressedRollup(
     outcomes_ok: outcomesOk,
     outcomes_error: outcomesError,
     outcomes_aborted: outcomesAborted,
+    // Subset of outcomes_aborted: requests abandoned at the LLM deadline
+    // (CLAUDE_MEM_LLM_TIMEOUT_MS). Per-turn abort_reason does not survive the
+    // rollup, and these are the aborts a backend may still have billed.
+    outcomes_aborted_deadline_exceeded: outcomesAbortedDeadlineExceeded,
     outcomes_invalid_output: outcomesInvalidOutput,
     // Generation-side observation volume + type mix for the session. Lets
     // PostHog derive cost-per-observation (total_cost_usd / observations_created)
