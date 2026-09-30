@@ -687,3 +687,92 @@ describe('response-stall resume policy', () => {
     expect(decisions[MAX_CONSECUTIVE_STALL_RESUMES]).toEqual({ resume: false, attempts: MAX_CONSECUTIVE_STALL_RESUMES + 1 });
   });
 });
+
+// #3479: the Claude observer never resumes (a fresh, non-persisting SDK process
+// per start), yet each start used to push its init prompt onto the previous
+// generation's proxy history. A quota, auth or transport retry loop grew that
+// history by one init prompt per restart, without bound. The HTTP providers get
+// the same check in observer-generation-boundary.test.ts.
+describe('every Claude generator start opens a new generation (#3479)', () => {
+  const RESTARTS = 25;
+  const pauses: Array<[string, string]> = [
+    ['quota', "You've hit your session limit · resets 5:50pm (America/Los_Angeles)"],
+    ['auth', 'Not logged in · Please run /login'],
+    ['transport', 'fetch failed'],
+  ];
+
+  for (const [category, refusal] of pauses) {
+    it(`${RESTARTS} restarts after ${category} pauses leave exactly one generation`, async () => {
+      const h = createHarness(1);
+      liveSessions.push(h.session);
+
+      let previous: FakeSdk | null = null;
+      for (let attempt = 1; attempt <= RESTARTS; attempt++) {
+        h.session.abortController = new AbortController();
+        h.session.abortReason = null;
+        const run = h.provider.startSession(h.session);
+        previous = await sdkStarted(previous);
+        await sdk().until(() => sdk().prompts.length >= 1, `init prompt ${attempt}`);
+        sdk().answer(refusal);
+        await withTimeout(run, `attempt ${attempt}`);
+        expect(h.session.abortReason).toBe(`${category}:observer_text`);
+      }
+
+      // The last attempt's init prompt and nothing else: no stacked init
+      // prompts, and no refusal prose.
+      expect(h.session.conversationHistory).toHaveLength(1);
+      expect(h.session.conversationHistory[0].role).toBe('user');
+      expect(h.session.conversationHistory[0].content).toContain('<user_request>');
+      // The paused work is still queued for the next start.
+      expect(h.pending()).toBe(1);
+    }, 30_000);
+  }
+});
+
+// #2957: the SDK's result frame reports the context the model actually read
+// (fresh input + cache writes + cache reads), which the proxy history misses:
+// it never sees the SDK's system prompt or tool schemas. That reading feeds the
+// same generation budget. The HTTP providers get the same checks in
+// observer-measured-context.test.ts.
+describe('the measured Claude context feeds the generation budget (#2957)', () => {
+  // Past half of a 200k window: 150k tokens is 600k chars against a 400k budget.
+  const OVER_BUDGET_USAGE = { usage: { input_tokens: 12, cache_read_input_tokens: 150_000, output_tokens: 2 } };
+
+  it('retires the generation before the next observation once a turn read past the budget', async () => {
+    const h = createHarness(3);
+    liveSessions.push(h.session);
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+
+    await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+    sdk().answer(SKIP_REPLY);
+    await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+    sdk().answer(SKIP_REPLY, OVER_BUDGET_USAGE);
+    await withTimeout(run, 'recycled generation');
+
+    // The proxy history is tiny, yet the second observation was never sent.
+    expect(sdk().prompts.length).toBe(2);
+    expect(h.session.abortReason).toBe('overflow:recycle');
+    expect(h.pending()).toBe(2);
+  });
+
+  it("does not keep an init turn's reading", async () => {
+    const h = createHarness(3);
+    liveSessions.push(h.session);
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+
+    await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+    sdk().answer(SKIP_REPLY, OVER_BUDGET_USAGE);
+    await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+
+    // The init reading was ignored, so the first observation still went out.
+    expect(h.session.lastContextTokens).toBeUndefined();
+    sdk().answer(SKIP_REPLY); // the fake SDK's default usage: 10 input tokens
+    await sdk().until(() => sdk().prompts.length >= 3, 'second observation');
+    expect(h.session.lastContextTokens).toBe(10);
+
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after abort');
+  });
+});

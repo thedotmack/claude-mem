@@ -13,11 +13,10 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
-import { readFlatSettings } from '../utils/settings.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
-import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
+import { shutdownWorkerAndWait, type ShutdownResult } from '../../services/install/shutdown-helper.js';
 import {
   normalizeRuntimeFlag,
   SERVER_RUNTIME_SETTINGS_KEYS,
@@ -39,29 +38,19 @@ function readSelectedRuntime(): InstallRuntimeId {
   }
 }
 
-function clearServerRuntimeSettings(keys: readonly string[]): void {
-  let flat: Record<string, unknown> | null;
-  try {
-    flat = readFlatSettings(USER_SETTINGS_PATH);
-  } catch (error: unknown) {
-    console.warn('[uninstall] Could not read settings for server runtime cleanup:', error instanceof Error ? error.message : String(error));
-    return;
+export function clearServerRuntimeSettings(
+  keys: readonly string[],
+  settingsPath: string = USER_SETTINGS_PATH,
+): boolean {
+  if (!existsSync(settingsPath)) return true;
+  const result = updateSettingsDocument(settingsPath, {}, {}, document => {
+    for (const key of keys) delete document[key];
+  });
+  if (result.status === 'refused') {
+    console.warn('[uninstall] Could not write settings during server runtime cleanup:', result.error instanceof Error ? result.error.message : String(result.error));
+    return false;
   }
-  if (!flat) return;
-  let changed = false;
-  for (const key of keys) {
-    if (key in flat) {
-      delete flat[key];
-      changed = true;
-    }
-  }
-  if (changed) {
-    try {
-      writeSettingsJsonAtomic(USER_SETTINGS_PATH, flat);
-    } catch (error: unknown) {
-      console.warn('[uninstall] Could not write settings during server runtime cleanup:', error instanceof Error ? error.message : String(error));
-    }
-  }
+  return true;
 }
 
 function removeMarketplaceDirectory(): boolean {
@@ -236,6 +225,21 @@ function removeStrayClaudeMemPaths(): number {
   return removedCount;
 }
 
+/**
+ * What uninstall says about the worker stop. Uninstall never blocks on it —
+ * cleanup always continues — but a worker that is still running is named by
+ * PID so the user can end it. Exported for tests.
+ */
+export function uninstallShutdownNotice(result: ShutdownResult): { level: 'info' | 'warn'; message: string } | null {
+  if (result.stopped) return result.workerWasRunning ? { level: 'info', message: 'Worker service stopped.' } : null;
+  if (result.blocker?.kind === 'port-held-by-other-process') {
+    return { level: 'info', message: 'The worker port is held by another process, not a claude-mem worker; nothing to stop.' };
+  }
+  const pid = result.blocker?.kind === 'worker-still-running' ? result.blocker.pid : null;
+  const worker = pid === null ? 'Worker service' : `Worker service (PID ${pid})`;
+  return { level: 'warn', message: `${worker} did not confirm shutdown; continuing uninstall cleanup.` };
+}
+
 export async function runUninstallCommand(): Promise<void> {
   p.intro(styleText(['bgRed', 'white'], ' claude-mem uninstall '));
 
@@ -270,12 +274,9 @@ export async function runUninstallCommand(): Promise<void> {
 
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   try {
-    const result = await shutdownWorkerAndWait(workerPort, 10000);
-    if (result.workerWasRunning && result.stopped) {
-      p.log.info('Worker service stopped.');
-    } else if (result.workerWasRunning) {
-      p.log.warn('Worker service did not confirm shutdown; continuing uninstall cleanup.');
-    }
+    const notice = uninstallShutdownNotice(await shutdownWorkerAndWait(workerPort, 10000));
+    if (notice?.level === 'warn') p.log.warn(notice.message);
+    else if (notice) p.log.info(notice.message);
   } catch (error: unknown) {
     console.warn('[uninstall] Worker shutdown attempt failed:', error instanceof Error ? error.message : String(error));
   }
@@ -295,8 +296,11 @@ export async function runUninstallCommand(): Promise<void> {
     } else {
       p.log.info('Server runtime detected (externally managed stack — leaving Docker/pg/redis untouched).');
     }
-    clearServerRuntimeSettings(SERVER_RUNTIME_SETTINGS_KEYS);
-    p.log.info('Server runtime settings cleared from ~/.claude-mem/settings.json.');
+    if (clearServerRuntimeSettings(SERVER_RUNTIME_SETTINGS_KEYS)) {
+      p.log.info('Server runtime settings cleared from ~/.claude-mem/settings.json.');
+    } else {
+      p.log.error('Could not clear server runtime settings from ~/.claude-mem/settings.json. Repair the file and rerun uninstall.');
+    }
   }
 
   await p.tasks([

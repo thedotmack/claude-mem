@@ -2,17 +2,18 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { existsSync, renameSync } from 'fs';
 import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
+import { MIN_CONTEXT_WINDOW_TOKENS } from '../../context-window.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -36,6 +37,10 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_TV_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
+  // Brainbeat webhook: the shared secret, and the URL (it can carry userinfo
+  // or query tokens). Both are file/env only — never on the POST whitelist.
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
 ]);
 
 function maskSecretValue(value: unknown): unknown {
@@ -130,7 +135,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
+    ensureSettingsDocument(settingsPath, SettingsDefaultsManager.getAllDefaults());
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(redactSecretSettings(settings));
   });
@@ -161,23 +166,6 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
-    let settings: any = {};
-
-    if (existsSync(settingsPath)) {
-      const settingsData = readFileSync(settingsPath, 'utf-8');
-      try {
-        settings = parseJsonWithBom(settingsData);
-      } catch (parseError) {
-        const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
-        logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
-        res.status(500).json({
-          success: false,
-          error: `Settings file is corrupted. Delete ${settingsPath} to reset.`
-        });
-        return;
-      }
-    }
 
     // Write whitelist. POST /api/settings has no authentication — the worker
     // trusts loopback — so any page that can reach this origin could set one
@@ -204,6 +192,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
+      'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -223,24 +212,30 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
     ];
 
-    for (const key of settingKeys) {
-      if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
-      if (req.body[key] !== undefined) {
-        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], settings[key])) {
-          continue;
-        }
-        settings[key] = req.body[key];
+    // Every rule runs inside the settings-document boundary's mutate callback,
+    // which sees the CURRENT on-disk settings (flat, or the env block of a
+    // wrapped document) and refuses — without writing — a corrupt file.
+    const result = updateSettingsDocument(settingsPath, {}, SettingsDefaultsManager.getAllDefaults(), target => {
+      for (const key of settingKeys) {
+        if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
+        if (req.body[key] === undefined) continue;
+        // The viewer posts GET's masked secret back unchanged: keep the stored value.
+        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], target[key])) continue;
+        target[key] = req.body[key];
       }
-    }
 
-    // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
-    // HTTP cannot set this key; the expand is only so a tilde written by the
-    // user in settings.json is resolved before posix_spawn sees it.
-    if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
-      settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
+      // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
+      // HTTP cannot set this key; the expand is only so a tilde written by the
+      // user in settings.json is resolved before posix_spawn sees it.
+      if (typeof target.CLAUDE_CODE_PATH === 'string' && target.CLAUDE_CODE_PATH) {
+        target.CLAUDE_CODE_PATH = expandTilde(target.CLAUDE_CODE_PATH);
+      }
+    });
+    if (result.status === 'refused') {
+      logger.error('HTTP', 'Failed to persist settings file', { settingsPath }, result.error instanceof Error ? result.error : new Error(String(result.error)));
+      res.status(500).json({ success: false, error: `Settings file could not be updated. Repair or restore ${settingsPath}.` });
+      return;
     }
-
-    writeJsonFileAtomic(settingsPath, settings, { mode: 0o600 });
 
     clearPortCache();
 
@@ -286,6 +281,15 @@ export class SettingsRoutes extends BaseRouteHandler {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      }
+    }
+
+    // Empty = resolve the window automatically. Otherwise whole tokens, at
+    // least the floor the resolver would clamp a smaller value up to.
+    if (settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW).trim();
+      if (!/^\d+$/.test(raw) || Number(raw) < MIN_CONTEXT_WINDOW_TOKENS) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW must be empty (automatic) or a whole number of tokens, at least ${MIN_CONTEXT_WINDOW_TOKENS}` };
       }
     }
 
@@ -425,17 +429,4 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
   }
 
-  private ensureSettingsFile(settingsPath: string): void {
-    if (!existsSync(settingsPath)) {
-      const defaults = SettingsDefaultsManager.getAllDefaults();
-
-      const dir = path.dirname(settingsPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-
-      writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
-      logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
-    }
-  }
 }

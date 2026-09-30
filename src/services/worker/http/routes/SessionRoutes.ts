@@ -372,8 +372,9 @@ export class SessionRoutes extends BaseRouteHandler {
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider
-      // The shared conversationHistory ensures context is preserved
+      // Let current generator finish naturally, next one will use new provider.
+      // The buffered queue carries over; the next generator opens a new
+      // generation seeded from this session's memory (#3800, #3479).
     }
   }
 

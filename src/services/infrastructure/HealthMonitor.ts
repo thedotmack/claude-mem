@@ -255,9 +255,12 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
   }
 }
 
-export async function getRunningWorkerVersion(port: number): Promise<string | null> {
+export async function getRunningWorkerVersion(
+  port: number,
+  timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
+): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/health');
+    const result = await httpRequestToWorker(port, '/api/health', 'GET', timeoutMs);
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;
@@ -280,9 +283,15 @@ export interface VersionCheckResult {
  * different oracles (the 2026-07-22 restart storm). Either side unknown →
  * matches, since a recycle could not change the outcome deterministically.
  */
-export async function checkVersionMatch(port: number, expectedVersion: string | null): Promise<VersionCheckResult> {
+export async function checkVersionMatch(
+  port: number,
+  expectedVersion: string | null,
+  timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
+): Promise<VersionCheckResult> {
   const pluginVersion = expectedVersion ?? 'unknown';
-  const workerVersion = await getRunningWorkerVersion(port);
+  // A caller spending a hook budget passes what is left of it (#3434). An
+  // expired probe reads as "version unknown", which already means no recycle.
+  const workerVersion = await getRunningWorkerVersion(port, timeoutMs);
 
   if (!workerVersion || pluginVersion === 'unknown') {
     return { matches: true, pluginVersion, workerVersion };

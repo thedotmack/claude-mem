@@ -9,6 +9,8 @@ import {
   cleanStalePidFile,
   getPlatformTimeout,
   probeWorkerBootFailure,
+  readPidFile,
+  removePidFileIfOwner,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -20,6 +22,7 @@ import {
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
+import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 
 /**
  * Windows spawn cooldown, keyed to evidence rather than time (plan-15 step 7,
@@ -168,11 +171,32 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
+  // CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally. Report
+  // on it, but never launch, kill or reclaim anything (and leave its PID file
+  // alone). Read fresh: this runs in long-lived processes (the MCP server).
+  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  if (isWorkerAutostartDisabled(SettingsDefaultsManager.loadFromFile(settingsPath))) {
+    if (await waitForHealth(port, 1000)) {
+      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+      return ready ? 'ready' : 'warming';
+    }
+    logger.info('SYSTEM', 'CLAUDE_MEM_WORKER_AUTOSTART=false and no worker is running — not launching one');
+    return 'dead';
+  }
+
   // I-4 (bwrap --unshare-pid): don't delete the pid file on a 'stale'
   // verdict until we know whether the port is actually unhealthy — under a
   // PID namespace a perfectly healthy host worker's pid reads back as
   // invisible (ESRCH), not dead. removeStale:false defers the rmSync.
   let pidFileStatus = cleanStalePidFile({ removeStale: false });
+  // #3224 (health first): set when the PID file names a live process whose
+  // worker never answers health. A reused PID or a wedged worker looks like
+  // that, and neither is a worker to wait on, so it must not park every
+  // launcher in 'warming' forever.
+  let livePidNeverHealthy = false;
+  // The pid that file recorded when it was judged, so the cleanup below never
+  // deletes a PID file a restart successor wrote in the meantime.
+  let livePidNeverHealthyPid: number | null = null;
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -181,14 +205,20 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker became ready while waiting on live PID');
       return 'ready';
     }
-    const workerStillHealthy = await waitForHealth(port, 1000);
-    const workerPidStillAlive = cleanStalePidFile() === 'alive';
-    if (!workerStillHealthy && !workerPidStillAlive) {
+    if (await waitForHealth(port, 1000)) {
+      // Health answers, so this is a slow boot: keep its PID file and wait.
+      logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout');
+      return 'warming';
+    }
+    if (cleanStalePidFile() !== 'alive') {
       logger.error('SYSTEM', 'Live PID disappeared before readiness endpoint became available');
       return 'dead';
     }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout');
-    return 'warming';
+    // The PID file stays for now: if the port turns out to be held, the
+    // reclaim below needs it as proof that the listener is our worker.
+    logger.warn('SYSTEM', 'PID file names a live process whose worker never answered health; checking the port instead of waiting on it');
+    livePidNeverHealthy = true;
+    livePidNeverHealthyPid = readPidFile()?.pid ?? null;
   }
 
   if (await waitForHealth(port, 1000)) {
@@ -247,6 +277,18 @@ export async function ensureWorkerStarted(
       });
       return 'dead';
     }
+  } else if (livePidNeverHealthy) {
+    // Nothing listens on the port, so the live process in the PID file is
+    // not this worker (a reused PID, or a worker that already let the port
+    // go). A new worker refuses to boot while the PID file names a live
+    // process, so clear the file before spawning. Only the pid judged above
+    // is cleared: if a restart successor rewrote the file since the port
+    // check, removePidFileIfOwner leaves the successor's record in place.
+    logger.warn('SYSTEM', 'Clearing a PID file whose live process holds no worker port', {
+      port,
+      pid: livePidNeverHealthyPid,
+    });
+    removePidFileIfOwner(livePidNeverHealthyPid);
   }
 
   const recentBootCrash = readSpawnCooldownOnWindows();
