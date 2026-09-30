@@ -41,8 +41,15 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // trial_poll_timeout — never an email, token, pairing secret, or device
   // user code (those never enter any event property).
   'stage',
+  // phase is the installer OAuth pairing phase, a closed enum
+  // (login | enrollment | deferred) on installer_oauth_timeout and
+  // installer_oauth_start_failed.
+  'phase',
   'install_method',
   'interactive',
+  // provider_source is how the installer decided the provider, a closed enum
+  // (flag | default | persisted | prompt) on install_completed.
+  'provider_source',
   'bun_version',
   'uv_version',
   'claude_code_version',
@@ -94,7 +101,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'days_since_last_obs',
   // search_performed retrieval quality — result_count is an integer,
   // chroma_available a boolean, fallback_reason one of OUR enum values
-  // (none | chroma_connection | chroma_error | chroma_not_initialized).
+  // (none | chroma_connection | chroma_error | chroma_not_initialized | chroma_zero_results).
   // Never the query, never an error message.
   'result_count',
   'chroma_available',
@@ -127,8 +134,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'threshold_tripped',
   // usage_limit_hit — the SDK's rate_limit_info projected to closed enums:
   // limit_window (five_hour | seven_day | seven_day_opus | seven_day_sonnet |
-  // seven_day_overage_included | overage | unknown), overage_status
-  // (allowed | allowed_warning | rejected |
+  // overage | unknown), overage_status (allowed | allowed_warning | rejected |
   // unknown), a boolean, and whole minutes until the window resets. Never the
   // provider's limit message text.
   'limit_window',

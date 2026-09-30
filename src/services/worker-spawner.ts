@@ -101,7 +101,11 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
-  const pidFileStatus = cleanStalePidFile();
+  // I-4 (bwrap --unshare-pid): don't delete the pid file on a 'stale'
+  // verdict until we know whether the port is actually unhealthy — under a
+  // PID namespace a perfectly healthy host worker's pid reads back as
+  // invisible (ESRCH), not dead. removeStale:false defers the rmSync.
+  let pidFileStatus = cleanStalePidFile({ removeStale: false });
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -121,6 +125,9 @@ export async function ensureWorkerStarted(
   }
 
   if (await waitForHealth(port, 1000)) {
+    if (pidFileStatus === 'stale') {
+      logger.debug('SYSTEM', 'pid not visible (likely pid namespace); keeping pid file');
+    }
     clearWorkerSpawnAttempted();
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
@@ -128,6 +135,13 @@ export async function ensureWorkerStarted(
     }
     logger.info('SYSTEM', 'Worker already running and healthy');
     return ready ? 'ready' : 'warming';
+  }
+
+  if (pidFileStatus === 'stale') {
+    // Health genuinely failed above, so the pid file was not shielding a
+    // healthy-but-invisible worker after all — remove it now (this is the
+    // deferred rmSync from the removeStale:false call above).
+    pidFileStatus = cleanStalePidFile();
   }
 
   const portInUse = await isPortInUse(port);
@@ -140,16 +154,17 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    // The port is bound but nothing answers health. Usually this is a dead
-    // worker whose surviving chroma sidecar chain (uvx -> uv -> python) holds
-    // the inherited listening socket — a ghost listener under a dead PID
-    // (plan-15 #3603). Without a reclaim the launcher returns 'dead' forever
-    // and the port stays blocked until a human tree-kills the chain by hand.
-    // Reclaim only fires when the owner is provably dead and the survivors
-    // are chroma sidecars; a live owner keeps the old 'dead' behavior.
+    // The port is bound but nothing answers health. Two cases the reclaim
+    // handles: (1) a wedged worker WE own that stopped answering /health but
+    // still holds the port (#4127), and (2) a dead worker whose chroma sidecar
+    // chain holds the inherited listening socket — a ghost listener under a
+    // dead PID (plan-15 #3603). Without a reclaim the launcher returns 'dead'
+    // forever and the port stays blocked until a human intervenes. A live
+    // FOREIGN owner (a process our PID file does not claim) keeps the old
+    // 'dead' behavior.
     const reclaim = await reclaimGhostListeningPort(port);
     if (reclaim.reclaimed) {
-      logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — proceeding to spawn', {
+      logger.info('SYSTEM', 'Reclaimed the worker port (wedged or dead-owner ghost listener) — proceeding to spawn', {
         port,
         killedPids: reclaim.killedPids,
       });

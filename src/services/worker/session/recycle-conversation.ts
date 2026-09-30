@@ -47,6 +47,12 @@ export async function loadSessionStartContext(
       projects: [session.project],
       platformSource: session.platformSource,
       source: 'compact',
+      // This briefing is read by the observer, not by a user. The outage banner
+      // ends with an instruction addressed to the primary assistant, and a
+      // model that reads it here obeys it rather than emitting <observation>
+      // XML, so the batch is confirmed and dropped while the banner keeps
+      // itself up (#4221).
+      includeHealthWarning: false,
     });
     logger.info('SESSION', 'Briefed the observer generation with session-start context', {
       sessionId: session.sessionDbId,
@@ -68,9 +74,12 @@ export async function loadSessionStartContext(
  * Consecutive recycles allowed before the observer stops trying.
  *
  * A fresh generation carries only the framing prompt, the session-so-far block
- * and one field-truncated observation, so it fits by construction. Needing
- * several in a row means something else is oversized, and continuing would
- * re-send an over-ceiling prompt on every future tool call.
+ * and one field-truncated observation. That fits only because the Claude feed
+ * is paced to one unanswered prompt at a time: unpaced, a backlog burst pushed
+ * ~138 unanswered prompts into one generation, so every fresh one tripped the
+ * budget on the same batch and never made progress (#4066). Needing several
+ * recycles in a row therefore means a single message is genuinely oversized,
+ * and continuing would re-send an over-ceiling prompt on every future tool call.
  */
 export const MAX_CONSECUTIVE_RECYCLES = 2;
 

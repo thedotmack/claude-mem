@@ -6,15 +6,17 @@ const root = join(import.meta.dir, '../..');
 const script = readFileSync(join(root, 'scripts/sync-matrix-e2e.ts'), 'utf8');
 
 describe('sync matrix E2E safety contract', () => {
-  it('uses only the local Miniflare runner and explicit loopback guards', () => {
-    expect(script).toContain('test/run-miniflare-pro-e2e.mjs');
-    expect(script).toContain("const HUB_DIR = resolve(import.meta.dir, '../workers/sync-hub')");
-    expect(script).toContain("'--worker-root', HUB_DIR");
+  it('uses only the local sync-api and explicit loopback guards', () => {
+    expect(script).toContain("const SYNC_API_DIR = resolve(import.meta.dir, '../services/sync-api')");
+    expect(script).toContain("const SYNC_API_ENTRY = resolve(SYNC_API_DIR, 'src/index.ts')");
+    expect(script).toContain("'bun'");
+    expect(script).toContain('SYNC_API_ENTRY');
     expect(script).toContain("hostname: '127.0.0.1'");
     expect(script).toContain('refused non-loopback URL');
     expect(script).not.toContain('wrangler');
     expect(script).not.toContain('cmem.ai');
     expect(script).not.toContain('https://');
+    expect(script).not.toContain('run-miniflare-pro-e2e.mjs');
   });
 
   it('spawns the Hub with an allowlisted environment instead of inherited secrets or code selectors', () => {
