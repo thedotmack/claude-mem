@@ -7,6 +7,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
+  probeWorkerBootFailure,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -17,6 +18,7 @@ import {
 } from './infrastructure/HealthMonitor.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
+import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
@@ -69,10 +71,23 @@ function clearWorkerSpawnAttempted(): void {
 
 export type WorkerStartResult = 'ready' | 'warming' | 'dead';
 
+// Why the last spawn died, when we could prove it. ensureWorkerStarted returns
+// a three-state verdict that callers switch on, and widening that union to
+// carry a reason would churn every call site for a string only the failure
+// branch ever has. Set immediately before returning 'dead', cleared on entry so
+// a later failure can never be explained by an earlier one's diagnosis.
+let lastWorkerBootFailure: string | undefined;
+
+export function getLastWorkerBootFailure(): string | undefined {
+  return lastWorkerBootFailure;
+}
+
 export async function ensureWorkerStarted(
   port: number,
   workerScriptPath: string
 ): Promise<WorkerStartResult> {
+  lastWorkerBootFailure = undefined;
+
   if (!workerScriptPath) {
     logger.error('SYSTEM', 'ensureWorkerStarted called with empty workerScriptPath — caller bug');
     return 'dead';
@@ -86,7 +101,11 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
-  const pidFileStatus = cleanStalePidFile();
+  // I-4 (bwrap --unshare-pid): don't delete the pid file on a 'stale'
+  // verdict until we know whether the port is actually unhealthy — under a
+  // PID namespace a perfectly healthy host worker's pid reads back as
+  // invisible (ESRCH), not dead. removeStale:false defers the rmSync.
+  let pidFileStatus = cleanStalePidFile({ removeStale: false });
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -106,6 +125,9 @@ export async function ensureWorkerStarted(
   }
 
   if (await waitForHealth(port, 1000)) {
+    if (pidFileStatus === 'stale') {
+      logger.debug('SYSTEM', 'pid not visible (likely pid namespace); keeping pid file');
+    }
     clearWorkerSpawnAttempted();
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
@@ -113,6 +135,13 @@ export async function ensureWorkerStarted(
     }
     logger.info('SYSTEM', 'Worker already running and healthy');
     return ready ? 'ready' : 'warming';
+  }
+
+  if (pidFileStatus === 'stale') {
+    // Health genuinely failed above, so the pid file was not shielding a
+    // healthy-but-invisible worker after all — remove it now (this is the
+    // deferred rmSync from the removeStale:false call above).
+    pidFileStatus = cleanStalePidFile();
   }
 
   const portInUse = await isPortInUse(port);
@@ -125,8 +154,32 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return 'dead';
+    // The port is bound but nothing answers health. Two cases the reclaim
+    // handles: (1) a wedged worker WE own that stopped answering /health but
+    // still holds the port (#4127), and (2) a dead worker whose chroma sidecar
+    // chain holds the inherited listening socket — a ghost listener under a
+    // dead PID (plan-15 #3603). Without a reclaim the launcher returns 'dead'
+    // forever and the port stays blocked until a human intervenes. A live
+    // FOREIGN owner (a process our PID file does not claim) keeps the old
+    // 'dead' behavior.
+    const reclaim = await reclaimGhostListeningPort(port);
+    if (reclaim.reclaimed) {
+      logger.info('SYSTEM', 'Reclaimed the worker port (wedged or dead-owner ghost listener) — proceeding to spawn', {
+        port,
+        killedPids: reclaim.killedPids,
+      });
+      // The cooldown marker may have been written by the very spawn attempts
+      // this ghost blocked; the reason for those failures is now gone, so a
+      // time-based cooldown would only delay the recovery that just became
+      // possible (the plan-15 "cooldowns keyed to evidence, not time" rule).
+      clearWorkerSpawnAttempted();
+    } else {
+      logger.error('SYSTEM', 'Port in use but worker not responding to health checks', {
+        port,
+        reclaimReason: reclaim.reason,
+      });
+      return 'dead';
+    }
   }
 
   if (shouldSkipSpawnOnWindows()) {
@@ -162,9 +215,19 @@ export async function ensureWorkerStarted(
       const workerPidStillAlive = cleanStalePidFile() === 'alive';
       const spawnedProcessStillAlive = spawnedPid !== undefined && spawnedPid > 0 && isPidAlive(spawnedPid);
       if (!workerStillHealthy && !workerPidStillAlive && !spawnedProcessStillAlive) {
-        logger.error('SYSTEM', spawnLockHeld
-          ? 'Worker exited before readiness endpoint became available'
-          : 'Spawn-lock holder never produced a live worker before readiness timed out');
+        if (!spawnLockHeld) {
+          logger.error('SYSTEM', 'Spawn-lock holder never produced a live worker before readiness timed out');
+          return 'dead';
+        }
+        // We launched it and it is gone, so the bundle itself is the suspect —
+        // and its stderr went to a hidden window. Ask it again where we can
+        // hear the answer.
+        lastWorkerBootFailure = probeWorkerBootFailure(workerScriptPath);
+        logger.error(
+          'SYSTEM',
+          'Worker exited before readiness endpoint became available',
+          lastWorkerBootFailure ? { bootFailure: lastWorkerBootFailure } : {}
+        );
         return 'dead';
       }
       logger.warn('SYSTEM', spawnLockHeld
