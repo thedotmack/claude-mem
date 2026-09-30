@@ -1235,14 +1235,17 @@ export function isWorkerUnavailableError(error: unknown): boolean {
   return false;
 }
 
+let workerUnreachableScopeActive = false;
 let workerUnreachableRecordedThisProcess = false;
 
 /**
- * Reset the per-process worker-unreachable flag. hookCommand calls this at the
- * start of each invocation so the fail-loud counter is incremented at most once
- * per hook process, not once per worker API attempt within a composite handler.
+ * Open a per-hook-process scope for recordWorkerUnreachable. hookCommand calls
+ * this at the start of each invocation so the fail-loud counter is incremented
+ * at most once per hook process, not once per worker API attempt within a
+ * composite handler. Callers outside a hook invocation are not deduplicated.
  */
 export function resetWorkerUnreachableState(): void {
+  workerUnreachableScopeActive = true;
   workerUnreachableRecordedThisProcess = false;
 }
 
@@ -1250,10 +1253,12 @@ export async function recordWorkerUnreachable(): Promise<number> {
   // The counter tracks consecutive hook invocations (processes), not individual
   // worker API attempts: a composite handler (e.g. Kimi's session-init-context)
   // can hit the unreachable worker more than once in one process.
-  if (workerUnreachableRecordedThisProcess) {
-    return readHookFailureState().consecutiveFailures;
+  if (workerUnreachableScopeActive) {
+    if (workerUnreachableRecordedThisProcess) {
+      return readHookFailureState().consecutiveFailures;
+    }
+    workerUnreachableRecordedThisProcess = true;
   }
-  workerUnreachableRecordedThisProcess = true;
 
   const lockToken = await acquireHookFailureLock();
   if (lockToken === null) {
