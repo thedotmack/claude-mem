@@ -100,6 +100,15 @@ export interface ActiveSession {
    */
   observerContextWindowTokens?: number;
   /**
+   * The context the model actually read on the last answered turn of this
+   * generation, in tokens, as the provider reported it: the Claude result
+   * frame's input + cache writes + cache reads, or an HTTP provider's prompt
+   * tokens. Unlike the character proxy it counts the system prompt and tool
+   * schemas a provider adds. Reset at every generation start; an init turn's
+   * reading is never recorded (#2957).
+   */
+  lastContextTokens?: number;
+  /**
    * session_compressed properties stashed by ResponseProcessor on the claude
    * path: the streamed assistant message's output_tokens is an early-streaming
    * placeholder, so the event waits for the SDK result message's finalized

@@ -61,6 +61,30 @@ export function conversationChars(history: ConversationMessage[]): number {
 }
 
 /**
+ * How much of its budget this generation has used, in chars: the character
+ * proxy, or the context the provider measured on the last answered turn
+ * (#2957) when that is larger. The proxy misses the system prompt and tool
+ * schemas a provider adds, so the measured context is the truer reading.
+ */
+export function generationUsageChars(
+  history: ConversationMessage[],
+  lastContextTokens?: number,
+): number {
+  return Math.max(conversationChars(history), (lastContextTokens ?? 0) * CHARS_PER_TOKEN);
+}
+
+/** What filled the generation, for the recycle log line. */
+export function describeGenerationUsage(
+  history: ConversationMessage[],
+  lastContextTokens?: number,
+): string {
+  const chars = conversationChars(history);
+  return lastContextTokens
+    ? `conversation reached ${chars} chars; the last turn read ${lastContextTokens} tokens`
+    : `conversation reached ${chars} chars`;
+}
+
+/**
  * True when this generation has used its budget and should be retired before
  * the next observation is sent.
  *
@@ -70,8 +94,9 @@ export function conversationChars(history: ConversationMessage[]): number {
 export function shouldRecycleConversation(
   history: ConversationMessage[],
   maxChars: number = OBSERVER_CONVERSATION_MAX_CHARS,
+  lastContextTokens?: number,
 ): boolean {
-  return conversationChars(history) >= maxChars;
+  return generationUsageChars(history, lastContextTokens) >= maxChars;
 }
 
 /**
