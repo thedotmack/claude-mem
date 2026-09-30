@@ -35,17 +35,18 @@ export class DatabaseManager {
       settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID !== '' &&
       settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL.trim() !== '';
 
-    // Resolve E2E readiness before choosing the mutation-producer policy: with
-    // E2E required but the key unusable there is no CloudSync to drain
-    // sync_outbox, so new mutation ops are not produced. Rows already queued
-    // stay for when the key is back (content rows need no queue: they stay
-    // unsynced and are snapshotted then).
+    // With E2E required but the key unusable there is no CloudSync, yet
+    // mutation ops are still produced: they are the only way a custom title
+    // (sdk_sessions rows don't sync) or a prompt's session link reaches other
+    // devices, and they drain once the key is back. The queue stays bounded
+    // meanwhile: set_title is emitted once per titled session and
+    // set_prompt_session supersedes per prompt.
     const e2eReady = cloudSyncConfigured && configureSyncE2EFromSettings(settings);
 
     // The launch schema is SyncHub-native. SessionStore marks any pre-launch
     // local corpus as a nonqueued baseline once; only subsequent writes enter
     // the canonical v2 outbox.
-    this.sessionStore = new SessionStore(this.db, { syncOpsEnabled: e2eReady });
+    this.sessionStore = new SessionStore(this.db, { syncOpsEnabled: cloudSyncConfigured });
     this.sessionSearch = new SessionSearch(this.db);
 
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
