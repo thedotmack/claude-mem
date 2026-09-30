@@ -7,8 +7,34 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
 import { MAX_LLM_TIMEOUT_MS, resolveLlmTimeoutMs } from './retry.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
+
+/**
+ * An unattended transport resume re-sends the buffered batch with no user
+ * activity behind it. On the cmem.ai gateway every one of those probes spends
+ * plan tokens, and a gateway or model that keeps timing out would spend them
+ * for as long as the worker runs. After this many consecutive unanswered
+ * pauses the timer stops re-arming: the work stays buffered for the next
+ * hook-driven start, and a confirmed answer resets the count.
+ */
+export const MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES = 3;
+
+/**
+ * Whether an unattended probe would be billed to the cmem.ai gateway. Settings
+ * only, the same predicate dispatch uses: memory selected on OpenRouter with
+ * the gateway base URL. Deliberately ignores the trial-expiry fallback window,
+ * so a fallen-back session is capped too (the safe direction: fewer
+ * unattended probes, never more).
+ */
+function unattendedProbeUsesCmemGateway(): boolean {
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  return settings.CLAUDE_MEM_PROVIDER === 'openrouter'
+    && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+}
 
 export interface TransportResumeClock {
   setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>;
@@ -80,6 +106,17 @@ export class SessionManager {
     const prior = this.transportResumes.get(sessionDbId);
     if (prior?.timer) this.transportResumeClock.clearTimeout(prior.timer);
     const pauses = (prior?.pauses ?? 0) + 1;
+    if (pauses > MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES && unattendedProbeUsesCmemGateway()) {
+      // Keep the count without a timer, so later exits stay capped until a
+      // confirmed answer resets it; a hook-driven start still drains the buffer.
+      this.transportResumes.set(sessionDbId, { pauses });
+      logger.warn('SESSION', 'Transport pause: unattended resumes stopped on the cmem gateway; buffered work waits for the next hook', {
+        sessionId: sessionDbId,
+        pauses,
+        maxUnattendedResumes: MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES,
+      });
+      return;
+    }
     const delayMs = transportResumeDelayMs(pauses);
     const state: TransportResumeState = { pauses };
     const timer = this.transportResumeClock.setTimeout(() => {

@@ -2,7 +2,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun
 import type { ActiveSession } from '../../../../src/services/worker-types.js';
 import { OpenRouterProvider } from '../../../../src/services/worker/OpenRouterProvider.js';
 import { ModeManager } from '../../../../src/services/domain/ModeManager.js';
-import { SessionManager, transportResumeDelayMs, MAX_TRANSPORT_RESUME_BASE_DELAY_MS } from '../../../../src/services/worker/SessionManager.js';
+import {
+  SessionManager,
+  transportResumeDelayMs,
+  MAX_TRANSPORT_RESUME_BASE_DELAY_MS,
+  MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES,
+} from '../../../../src/services/worker/SessionManager.js';
 import { handleGeneratorExit } from '../../../../src/services/worker/session/GeneratorExitHandler.js';
 import { startGeneratorWithProvider } from '../../../../src/services/worker/session/GeneratorRunner.js';
 import { ClassifiedProviderError } from '../../../../src/services/worker/provider-errors.js';
@@ -225,6 +230,70 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
     expect(harness.stats().processedId).toBe(harness.messageId);
     expect(harness.stats().confirmedCount).toBe(1);
     expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
+  });
+
+  describe('unattended resume cap on the cmem gateway (plan tokens)', () => {
+    const GATEWAY_ENV_KEYS = ['CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_BASE_URL', 'CMEM_PRO_ORIGIN'] as const;
+    let savedEnv: Record<string, string | undefined>;
+
+    beforeEach(() => {
+      savedEnv = {};
+      for (const key of GATEWAY_ENV_KEYS) {
+        savedEnv[key] = process.env[key];
+        delete process.env[key];
+      }
+    });
+
+    afterEach(() => {
+      for (const key of GATEWAY_ENV_KEYS) {
+        if (savedEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = savedEnv[key];
+      }
+    });
+
+    it('stops re-arming after the cap on the gateway; a hook-driven start still drains the work', async () => {
+      // Settings apply env overrides last, so this pins memory on the gateway.
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
+      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES + 1);
+      await harness.startInitial();
+
+      for (let index = 0; index < MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES; index++) {
+        expect(scheduled).toHaveLength(index + 1);
+        await harness.fireResume(index);
+      }
+
+      // The initial run and every unattended probe hit the deadline; no
+      // further timer is armed, and the work stays buffered, not dropped.
+      expect(harness.stats().starts).toBe(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES + 1);
+      expect(scheduled).toHaveLength(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES);
+      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
+      expect(harness.sessionManager.getSession(harness.session.sessionDbId)).toBe(harness.session);
+      expect(harness.stats().finalizeCalls).toBe(0);
+
+      // Real user activity (the next hook) still drains the buffer.
+      await harness.routes.ensureGeneratorRunning(harness.session.sessionDbId, 'observation');
+      await harness.session.generatorPromise;
+      expect(harness.stats().processedId).toBe(harness.messageId);
+      expect(harness.stats().confirmedCount).toBe(1);
+      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
+    });
+
+    it('keeps resuming a user-owned OpenRouter key past the gateway cap', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES + 1);
+      await harness.startInitial();
+
+      for (let index = 0; index <= MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES; index++) {
+        expect(scheduled).toHaveLength(index + 1);
+        await harness.fireResume(index);
+      }
+
+      expect(harness.stats().starts).toBe(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES + 2);
+      expect(harness.stats().confirmedCount).toBe(1);
+      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
+    });
   });
 
   it('releases the probe permit when starting a resume rejects', async () => {
