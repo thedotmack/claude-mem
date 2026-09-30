@@ -737,7 +737,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(firstState.dependencyOverrides).toEqual([
       'onnxruntime>=1.20',
       'protobuf<7',
-      'chromadb==1.0.16',
+      'chromadb==1.5.9',
     ]);
     expect(logEntries.find(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')?.meta)
       .toMatchObject({ count: 1, exitCode: null, signalCode: 'SIGSEGV' });
@@ -944,6 +944,8 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker open, skipping spawn')
     ).toBe(true);
     expect(getDependencyStatus('uvx')).toMatchObject({ kind: 'vector_search_unavailable' });
+    // doctor reads the breaker from the crash state.
+    expect(mgr.getCrashState().prewarm).toEqual({ consecutiveFailures: 5, state: 'paused' });
   });
 
   it('sweeps scratch leaked by earlier failures once a prewarm succeeds (#4108)', async () => {
@@ -1049,6 +1051,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(
       logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker latched, restart required')
     ).toBe(true);
+    expect(mgr.getCrashState().prewarm).toEqual({ consecutiveFailures: 20, state: 'stopped' });
   }, 30_000);
 
   it('classifies a mid-handshake transport death as ChromaUnavailableError without error-tracking noise', async () => {

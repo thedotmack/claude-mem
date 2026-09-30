@@ -109,8 +109,11 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'chromadb==1.5.9',
 ];
 
+/** Chroma child health for /api/admin/doctor and `npx claude-mem doctor`. */
 export interface ChromaCrashState {
+  /** Unexpected exits of the chroma-mcp child (uvx) in this worker's lifetime. */
   count: number;
+  /** The last one. uvx is the direct child, so a crash inside chroma-mcp usually shows as its exit code. */
   lastExit: {
     timestamp: string;
     code: number | null;
@@ -118,6 +121,11 @@ export interface ChromaCrashState {
   } | null;
   chromaMcpVersion: string;
   dependencyOverrides: string[];
+  /** The uvx prewarm circuit breaker (#4108): paused after 5 consecutive failures, stopped after 20. */
+  prewarm: {
+    consecutiveFailures: number;
+    state: 'ok' | 'paused' | 'stopped';
+  };
 }
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
@@ -452,11 +460,20 @@ export class ChromaMcpManager {
   }
 
   getCrashState(): ChromaCrashState {
+    const consecutiveFailures = this.consecutivePrewarmFailures;
     return {
       count: this.chromaCrashCount,
       lastExit: this.chromaLastExit ? { ...this.chromaLastExit } : null,
       chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
       dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      prewarm: {
+        consecutiveFailures,
+        state: consecutiveFailures >= CHROMA_PREWARM_GIVE_UP_FAILURES
+          ? 'stopped'
+          : consecutiveFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES
+            ? 'paused'
+            : 'ok',
+      },
     };
   }
 

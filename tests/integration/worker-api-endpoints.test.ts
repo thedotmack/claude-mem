@@ -55,7 +55,8 @@ describe('Worker API Endpoints Integration', () => {
         count: 1,
         lastExit: { timestamp: '2026-07-23T12:00:00.000Z', code: null, signal: 'SIGSEGV' },
         chromaMcpVersion: '0.2.6',
-        dependencyOverrides: ['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.0.16'],
+        dependencyOverrides: ['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9'],
+        prewarm: { consecutiveFailures: 0, state: 'ok' },
       }),
     };
 
@@ -266,7 +267,8 @@ describe('Worker API Endpoints Integration', () => {
         count: 1,
         lastExit: { timestamp: '2026-07-23T12:00:00.000Z', code: null, signal: 'SIGSEGV' },
         chromaMcpVersion: '0.2.6',
-        dependencyOverrides: ['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.0.16'],
+        dependencyOverrides: ['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9'],
+        prewarm: { consecutiveFailures: 0, state: 'ok' },
       });
     });
 

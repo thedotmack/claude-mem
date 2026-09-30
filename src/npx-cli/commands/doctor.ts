@@ -19,7 +19,7 @@ import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
 
-interface CheckResult {
+export interface CheckResult {
   name: string;
   status: CheckStatus;
   detail: string;
@@ -27,6 +27,7 @@ interface CheckResult {
   required: boolean;
 }
 
+/** The worker's `health.chroma` block from /api/admin/doctor. */
 interface ChromaCrashState {
   count: number;
   lastExit: {
@@ -36,6 +37,11 @@ interface ChromaCrashState {
   } | null;
   chromaMcpVersion: string;
   dependencyOverrides: string[];
+  /** uvx prewarm circuit breaker (#4108); absent from older workers. */
+  prewarm?: {
+    consecutiveFailures: number;
+    state: 'ok' | 'paused' | 'stopped';
+  };
 }
 
 function probeVersion(bin: 'bun' | 'uv'): string | null {
@@ -71,7 +77,65 @@ function isChromaCrashState(value: unknown): value is ChromaCrashState {
     && (state.lastExit === null || (typeof state.lastExit === 'object' && state.lastExit !== null
       && typeof state.lastExit.timestamp === 'string'
       && (typeof state.lastExit.code === 'number' || state.lastExit.code === null)
-      && (typeof state.lastExit.signal === 'string' || state.lastExit.signal === null)));
+      && (typeof state.lastExit.signal === 'string' || state.lastExit.signal === null)))
+    && (state.prewarm === undefined || (typeof state.prewarm === 'object' && state.prewarm !== null
+      && typeof state.prewarm.consecutiveFailures === 'number'
+      && ['ok', 'paused', 'stopped'].includes(state.prewarm.state)));
+}
+
+/**
+ * The direct child is uvx, not python, so a crash in chroma-mcp (e.g. a
+ * SIGSEGV in the engine) usually reaches the worker as uvx's exit code; a
+ * signal only shows when uvx itself was killed.
+ */
+function describeChromaExit(lastExit: NonNullable<ChromaCrashState['lastExit']>): string {
+  return lastExit.signal ? `signal ${lastExit.signal}` : `exit code ${lastExit.code ?? 'unknown'}`;
+}
+
+/**
+ * Warn rows from the worker's /api/admin/doctor `health.chroma` block. These
+ * are optional: any failure yields no rows and never changes the worker's
+ * own status.
+ */
+export async function probeChromaDiagnostics(workerUrl: string): Promise<CheckResult[]> {
+  try {
+    const response = await fetch(`${workerUrl}/api/admin/doctor`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const diagnostics = await response.json() as { health?: { chroma?: unknown } };
+    const chroma = diagnostics?.health?.chroma;
+    return isChromaCrashState(chroma) ? chromaDiagnosticChecks(chroma) : [];
+  } catch {
+    // Diagnostics are optional and must not change worker health status.
+    return [];
+  }
+}
+
+/** Warn rows for the worker's Chroma child exits and prewarm breaker, if any. */
+function chromaDiagnosticChecks(chroma: ChromaCrashState): CheckResult[] {
+  const checks: CheckResult[] = [];
+  if (chroma.count > 0 && chroma.lastExit) {
+    checks.push({
+      name: 'Chroma child exits',
+      status: 'warn',
+      detail: `${chroma.count} unexpected exit(s) since the worker started, last by ${describeChromaExit(chroma.lastExit)} at ${chroma.lastExit.timestamp}; chroma-mcp ${chroma.chromaMcpVersion}; overrides: ${chroma.dependencyOverrides.join(', ')}`,
+      required: false,
+    });
+  }
+  if (chroma.prewarm && chroma.prewarm.state !== 'ok') {
+    checks.push({
+      name: 'Chroma prewarm',
+      status: 'warn',
+      detail: chroma.prewarm.state === 'stopped'
+        ? `stopped after ${chroma.prewarm.consecutiveFailures} consecutive uvx failures — fix uv or free disk space, then run \`npx claude-mem restart\``
+        : `paused after ${chroma.prewarm.consecutiveFailures} consecutive uvx failures; retrying with a growing cooldown`,
+      required: false,
+    });
+  }
+  return checks;
 }
 
 async function probeChromaCensus(): Promise<CheckResult> {
@@ -179,32 +243,12 @@ export async function runDoctorCommand(): Promise<void> {
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
+  let chromaChecks: CheckResult[] = [];
   try {
     const worker = await probeWorkerHealth(workerHost, workerPort);
     workerStatus = worker.status;
     workerDetail = worker.detail;
-    try {
-      const diagnosticsResponse = await fetch(`${worker.workerUrl}/api/admin/doctor`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (diagnosticsResponse.ok) {
-        const diagnostics = await diagnosticsResponse.json() as { health?: { chroma?: unknown } };
-        const chroma = diagnostics?.health?.chroma;
-        if (isChromaCrashState(chroma) && chroma.count > 0 && chroma.lastExit) {
-          const outcome = chroma.lastExit.signal
-            ? `signal ${chroma.lastExit.signal}`
-            : `code ${chroma.lastExit.code}`;
-          checks.push({
-            name: 'Chroma child exits',
-            status: 'warn',
-            detail: `${chroma.count} (${outcome}) at ${chroma.lastExit.timestamp}; chroma-mcp ${chroma.chromaMcpVersion}; overrides: ${chroma.dependencyOverrides.join(', ')}`,
-            required: false,
-          });
-        }
-      }
-    } catch {
-      // Diagnostics are optional and must not change worker health status.
-    }
+    chromaChecks = await probeChromaDiagnostics(worker.workerUrl);
   } catch {
     // leave as fail
   }
@@ -214,6 +258,7 @@ export async function runDoctorCommand(): Promise<void> {
     detail: workerDetail,
     required: false, // worker can be intentionally stopped; don't hard-fail
   });
+  checks.push(...chromaChecks);
 
   // 6. Windows Git Bash reachability. All claude-mem hooks run via
   // `"shell": "bash"`; on Windows, Claude Code resolves that through Git for
