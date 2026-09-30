@@ -1,6 +1,6 @@
 
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, existsSync, writeFileSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
@@ -70,11 +70,40 @@ export const DEFAULT_LLM_TIMEOUT_MS = 180_000;
 // wrote; any other value, including a hand-written number, is a deliberate
 // choice and is left untouched.
 //
-// Like the Telegram migration, this cannot tell a deliberately kept "30000" from
-// the seeded one. The trade favors the recoverable side: a deadline that is too
-// long only delays noticing a hung request, one that is too short discards work
-// that may be paid for, and any other value (or the env var) keeps a short one.
+// The move runs once per settings file (see the marker below), so a "30000" the
+// user sets afterwards is kept. The first run, like the Telegram migration,
+// cannot tell a deliberately kept "30000" from the seeded one. The trade favors
+// the recoverable side: a deadline that is too long only delays noticing a hung
+// request, one that is too short discards work that may be paid for, and any
+// other value (or the env var) keeps a short one.
 const LEGACY_LLM_TIMEOUT_MS = '30000';
+
+// Present ⇔ this settings file has had its one chance at the move above. It is
+// the marker-file shape of ProcessManager's `.cwd-remap-applied-v1`, kept next
+// to the settings file and named after it. It is written once the file holds a
+// value the move leaves alone: after a saved rewrite, or when there was nothing
+// to move. It is never written after a failed rewrite, so a read-only
+// settings.json keeps getting the new default in memory.
+function llmTimeoutMigrationMarkerPath(settingsPath: string): string {
+  return join(dirname(settingsPath), `.${basename(settingsPath)}.llm-timeout-migrated-v1`);
+}
+
+function markLlmTimeoutMigrationDone(settingsPath: string): void {
+  try {
+    writeFileSync(llmTimeoutMigrationMarkerPath(settingsPath), new Date().toISOString(), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+  } catch {
+    // Nothing is lost: without the marker the next load checks again, and a
+    // file that no longer holds "30000" is left alone either way.
+  }
+}
+
+// Settings files whose rewrite already failed in this process. A read-only
+// settings.json (a symlink into the Nix store) fails on every load, and every
+// observer request loads settings (retry.ts), so the failure is said once.
+const llmTimeoutMigrationFailuresReported = new Set<string>();
 
 function migratedCloudSyncHubUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -479,6 +508,8 @@ export class SettingsDefaultsManager {
         const defaults = this.getAllDefaults();
         try {
           writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
+          // A fresh file already holds the raised deadline: nothing to move.
+          markLlmTimeoutMigrationDone(settingsPath);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
@@ -576,26 +607,39 @@ export class SettingsDefaultsManager {
         }
       }
 
-      if (flatSettings.CLAUDE_MEM_LLM_TIMEOUT_MS === LEGACY_LLM_TIMEOUT_MS) {
-        flatSettings = {
-          ...flatSettings,
-          CLAUDE_MEM_LLM_TIMEOUT_MS: this.DEFAULTS.CLAUDE_MEM_LLM_TIMEOUT_MS,
-        };
+      if (!existsSync(llmTimeoutMigrationMarkerPath(settingsPath))) {
+        if (flatSettings.CLAUDE_MEM_LLM_TIMEOUT_MS === LEGACY_LLM_TIMEOUT_MS) {
+          flatSettings = {
+            ...flatSettings,
+            CLAUDE_MEM_LLM_TIMEOUT_MS: this.DEFAULTS.CLAUDE_MEM_LLM_TIMEOUT_MS,
+          };
 
-        try {
-          writeJsonFileAtomic(
-            settingsPath,
-            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
-            { mode: 0o600 },
-          );
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn(
-            `[SETTINGS] Migrated CLAUDE_MEM_LLM_TIMEOUT_MS off the old ${LEGACY_LLM_TIMEOUT_MS}ms default to ${this.DEFAULTS.CLAUDE_MEM_LLM_TIMEOUT_MS}ms:`,
-            settingsPath,
-          );
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to migrate CLAUDE_MEM_LLM_TIMEOUT_MS:', settingsPath, error instanceof Error ? error.message : String(error));
-          // Continue with the in-memory migration even if the write fails
+          try {
+            writeJsonFileAtomic(
+              settingsPath,
+              hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
+            );
+            markLlmTimeoutMigrationDone(settingsPath);
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn(
+              `[SETTINGS] Migrated CLAUDE_MEM_LLM_TIMEOUT_MS off the old ${LEGACY_LLM_TIMEOUT_MS}ms default to ${this.DEFAULTS.CLAUDE_MEM_LLM_TIMEOUT_MS}ms:`,
+              settingsPath,
+            );
+          } catch (error: unknown) {
+            // Continue with the in-memory migration even if the write fails; with
+            // no marker, the next load tries the rewrite again.
+            if (!llmTimeoutMigrationFailuresReported.has(settingsPath)) {
+              llmTimeoutMigrationFailuresReported.add(settingsPath);
+              console.warn(
+                '[SETTINGS] Failed to migrate CLAUDE_MEM_LLM_TIMEOUT_MS; using the new default in memory (reported once per process):',
+                settingsPath,
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+          }
+        } else {
+          markLlmTimeoutMigrationDone(settingsPath);
         }
       }
 

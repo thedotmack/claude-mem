@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -624,6 +624,50 @@ describe('SettingsDefaultsManager', () => {
         const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
         expect(parsed.env.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
         expect(parsed.hooks).toEqual({ SessionStart: [] });
+      });
+
+      // The move runs once per settings file. Without a marker it ran on every
+      // load, so a 30000 the user chose later was silently moved back to the
+      // new default.
+      it.each([
+        ['after the seeded value was moved', JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY })],
+        ['on an install that never held the old default', JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' })],
+        ['on a settings file created fresh', null],
+      ])('keeps a 30000 the user sets %s', (_label, initial) => {
+        if (initial !== null) writeFileSync(settingsPath, initial);
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY }));
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(LEGACY);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(LEGACY);
+        expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+      });
+
+      // settings.json can be a symlink into a read-only store (Nix home-manager).
+      // The move still applies in memory, but saving it fails on every load, and
+      // every observer request loads settings (retry.ts), so it is said once.
+      it('warns once per process when the move cannot be saved, and still uses the new default', () => {
+        if (process.platform === 'win32' || process.getuid?.() === 0) return;
+        const storeDir = join(tempDir, 'read-only-store');
+        mkdirSync(storeDir);
+        const storedSettings = join(storeDir, 'settings.json');
+        const raw = JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY });
+        writeFileSync(storedSettings, raw);
+        symlinkSync(storedSettings, settingsPath);
+        chmodSync(storeDir, 0o555);
+        try {
+          const loads = [1, 2, 3].map(() => captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false)));
+
+          for (const { value } of loads) expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+          const failures = loads.flatMap(({ warnings }) => deadlineMigrationWarnings(warnings));
+          expect(failures).toHaveLength(1);
+          expect(failures[0]).toContain('Failed to migrate');
+          expect(readFileSync(storedSettings, 'utf-8')).toBe(raw);
+        } finally {
+          chmodSync(storeDir, 0o755);
+        }
       });
     });
 
