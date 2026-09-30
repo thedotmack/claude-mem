@@ -34,18 +34,26 @@ export class CorpusBuilder {
     this.renderer = new CorpusRenderer();
   }
 
-  async build(name: string, description: string, filter: CorpusFilter): Promise<CorpusFile> {
+  async build(
+    name: string,
+    description: string,
+    filter: CorpusFilter,
+    options: { writeFile?: boolean } = {}
+  ): Promise<CorpusFile> {
     logger.debug('WORKER', `Building corpus "${name}" with filter`, { filter });
 
     const searchArgs: Record<string, unknown> = {};
     if (filter.project) searchArgs.project = filter.project;
-    if (filter.types && filter.types.length > 0) searchArgs.type = filter.types.join(',');
+    if (filter.types && filter.types.length > 0) searchArgs.obs_type = filter.types.join(',');
     if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts.join(',');
     if (filter.files && filter.files.length > 0) searchArgs.files = filter.files.join(',');
     if (filter.query) searchArgs.query = filter.query;
     if (filter.date_start) searchArgs.dateStart = filter.date_start;
     if (filter.date_end) searchArgs.dateEnd = filter.date_end;
     if (filter.limit) searchArgs.limit = filter.limit;
+    // The stored filter is the whole definition of a corpus; the 90-day window interactive
+    // search applies to date-less Chroma queries would shrink it on every rebuild.
+    searchArgs.ignoreDefaultRecencyWindow = true;
 
     const searchResult = await this.searchOrchestrator.search(searchArgs);
 
@@ -91,7 +99,9 @@ export class CorpusBuilder {
     const renderedText = this.renderer.renderCorpus(corpus);
     corpus.stats.token_estimate = this.renderer.estimateTokens(renderedText);
 
-    this.corpusStore.write(corpus);
+    if (options.writeFile !== false) {
+      this.corpusStore.write(corpus);
+    }
 
     logger.debug('WORKER', `Corpus "${name}" built with ${observations.length} observations, ~${corpus.stats.token_estimate} tokens`);
 

@@ -8,23 +8,19 @@ import type {
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
 
-function formatHeaderDateTime(): string {
-  const now = new Date();
-  const date = now.toLocaleDateString('en-CA'); 
-  const time = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }).toLowerCase().replace(' ', '');
-  const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-  return `${date} ${time} ${tz}`;
+function formatActiveMode(): string {
+  const manager = ModeManager.getInstance();
+  const mode = manager.getActiveMode();
+  return `${mode.name} (${manager.getActiveModeId()})`;
 }
 
 export function renderHumanHeader(project: string): string[] {
   return [
     '',
     `${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}`,
+    `${colors.dim}Mode: ${formatActiveMode()}${colors.reset}`,
     `${colors.gray}${'─'.repeat(60)}${colors.reset}`,
     ''
   ];
@@ -146,7 +142,7 @@ export function renderHumanFullObservation(
 }
 
 export function renderHumanSummaryItem(
-  summary: { id: number; request: string | null },
+  summary: { id: number | string; request: string | null },
   formattedTime: string
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
@@ -184,5 +180,5 @@ export function renderHumanFooter(totalDiscoveryTokens: number, totalReadTokens:
 }
 
 export function renderHumanEmptyState(project: string): string {
-  return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
+  return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}\n${colors.dim}Mode: ${formatActiveMode()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
 }

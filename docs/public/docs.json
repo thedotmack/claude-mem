@@ -42,11 +42,10 @@
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/auto-redaction",
           "usage/export-import",
           "usage/manual-recovery",
-          "usage/folder-context",
-          "beta-features",
-          "endless-mode"
+          "usage/folder-context"
         ]
       },
       {
@@ -56,6 +55,13 @@
           "cursor/index",
           "cursor/gemini-setup",
           "cursor/openrouter-setup"
+        ]
+      },
+      {
+        "group": "Grok Bot Integration",
+        "icon": "robot",
+        "pages": [
+          "grok-bot/index"
         ]
       },
       {
@@ -85,6 +91,7 @@
           "modes",
           "telemetry",
           "development",
+          "branches",
           "troubleshooting",
           "platform-integration",
           "openclaw-integration"
@@ -94,7 +101,9 @@
         "group": "Hosted Server",
         "icon": "cloud",
         "pages": [
-          "hosted-server"
+          "hosted-server",
+          "cloud-sync",
+          "cmem-pro-headless"
         ]
       },
       {

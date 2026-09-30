@@ -18,6 +18,7 @@ import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../sh
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -38,6 +39,7 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
+import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -231,6 +233,8 @@ function wrapHandler<Args>(
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -246,6 +250,8 @@ const handleObservationAdd = wrapHandler('observation_add', async (args: Observa
     projectId,
     content: args.content,
     ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: args.platformSource } : {}),
     ...(args.kind !== undefined ? { kind: args.kind } : {}),
     ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
   };
@@ -436,11 +442,12 @@ async function ensureWorkerConnection(): Promise<boolean> {
 
 const tools = [
   {
-    name: '__IMPORTANT',
-    description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
+    name: 'important_workflow',
+    description: `LAYERED WORKFLOW (ALWAYS FOLLOW):
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
+4. get_tool_uses([IDs]) → Raw tool_input/tool_response, ONLY when the summary is not enough
 NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
@@ -465,7 +472,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
    Returns: Complete details (~500-1000 tokens/result)
 
-**Why:** 10x token savings. Never fetch full details without filtering first.`
+4. **Disclose raw tool I/O** - Last resort, when the observation summary does not answer the question
+   \`get_tool_uses(ids=[...])\`
+   Returns: The original tool_input / tool_response bodies (UNSUMMARIZED — can be thousands of tokens each)
+
+**Why:** 10x token savings. Never fetch full details without filtering first, and never reach for layer 4 before layer 3 answered.`
       }]
     })
   },
@@ -479,8 +490,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         limit: { type: 'number', description: 'Max results (default 20)' },
         project: { type: 'string', description: 'Filter by project name' },
         platformSource: { type: 'string', description: "Filter by platform source (e.g. claude, codex, cursor) — restricts results to that agent's own memory" },
-        type: { type: 'string', description: 'Filter by observation type' },
-        obs_type: { type: 'string', description: 'Filter by obs_type field' },
+        type: { type: 'string', description: "Document category to search: 'observations', 'sessions', or 'prompts' (default: all). Any other value is treated as an observation-type filter (alias for obs_type)." },
+        obs_type: { type: 'string', description: 'Filter observations by their type (e.g. bugfix, feature). Comma-separated for multiple.' },
         dateStart: { type: 'string', description: 'Start date filter (ISO)' },
         dateEnd: { type: 'string', description: 'End date filter (ISO)' },
         offset: { type: 'number', description: 'Pagination offset' },
@@ -489,6 +500,34 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      // In server-beta runtime the local worker /api/search reads the local SQLite via
+      // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
+      // generated observations live in Postgres, not local SQLite) and Chroma is not
+      // configured, observation text queries return empty — so `search` silently yields
+      // 0 observations even though the data is in PG.
+      //
+      // Route to the PG-backed /v1/search (same path as observation_search) ONLY when it
+      // can serve the request faithfully: server-beta is available, there is a text query,
+      // the result type is observations (or unspecified), and no filter /v1/search cannot
+      // honor is set. /v1/search is observations-only and takes only { projectId, query,
+      // limit } — so prompt/session-typed queries and platformSource/project/obs_type/date/
+      // offset/orderBy filters must keep the worker path (which applies them), otherwise we
+      // would silently drop the filter or mis-route the query.
+      const sb = resolveServerToolContext();
+      const hasText = typeof args?.query === 'string' && args.query.trim().length > 0;
+      const typeIsObservations = args?.type === undefined || args?.type === 'observations';
+      const hasUnsupportedFilter =
+        args?.platformSource !== undefined || args?.project !== undefined ||
+        args?.obs_type !== undefined || args?.dateStart !== undefined ||
+        args?.dateEnd !== undefined || args?.offset !== undefined || args?.orderBy !== undefined;
+      if (sb && sb.available && hasText && typeIsObservations && !hasUnsupportedFilter) {
+        const request: ServerSearchObservationsRequest = {
+          projectId: sb.projectId,
+          query: args.query,
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        };
+        return formatJsonResult(await sb.client.searchObservations(request));
+      }
       return await callWorker('/api/search', { query: args });
     }
   },
@@ -527,6 +566,28 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
+    }
+  },
+  {
+    name: 'get_tool_uses',
+    description: 'Step 4 (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: ['number', 'string'] },
+          description: 'Tool-use ids to fetch (required). Numeric tool_uses.id or opaque tool_use_id strings.'
+        },
+        limit: { type: 'number', description: 'Max rows to return' },
+        project: { type: 'string', description: 'Filter by project name' },
+        contentSessionId: { type: 'string', description: 'Filter to one content session' }
+      },
+      required: ['ids'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorker('/api/tool-uses/batch', { body: args });
     }
   },
   {
@@ -662,7 +723,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['query']
     },
     handler: async (args: any) => {
-      const rootDir = resolve(args.path || process.cwd());
+      const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
       const result = await searchCodebase(rootDir, args.query, {
         maxResults: args.max_results || 20,
         filePattern: args.file_pattern
@@ -691,7 +752,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path', 'symbol_name']
     },
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
       if (unfolded) {
@@ -731,7 +792,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path']
     },
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
@@ -820,11 +881,12 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'rebuild_corpus',
-    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session.',
+    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session. Refuses and keeps the existing corpus if the rebuild would drop a large share of observations, unless force is set.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Name of the corpus to rebuild' }
+        name: { type: 'string', description: 'Name of the corpus to rebuild' },
+        force: { type: 'boolean', description: 'Accept a rebuild that shrinks the corpus significantly instead of keeping the existing one' }
       },
       required: ['name'],
       additionalProperties: true
@@ -867,8 +929,9 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const advertisedTools = getAdvertisedMcpToolsForRuntime(tools, selectRuntime());
   return {
-    tools: tools.map(tool => ({
+    tools: advertisedTools.map(tool => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema
