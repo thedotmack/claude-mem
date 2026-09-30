@@ -680,20 +680,14 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       const parsed = readJson('plugin/hooks/hooks.json');
       const setupCommand = hookCommandByPath(parsed, 'Setup.0.0')!;
-      const setupResult = spawnSync('bash', ['-c', setupCommand], {
-        env: { PATH: process.env.PATH ?? '', HOME: home },
-        encoding: 'utf-8',
-      });
+      const setupResult = shellEval(setupCommand, { HOME: home });
       expect(setupResult.status).not.toBe(0);
-      expect(setupResult.stderr ?? '').toMatch(/claude-mem: .* not found/);
+      expect(setupResult.stderr).toMatch(/claude-mem: .* not found/);
 
       const runtimeCommand = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
-      const runtimeResult = spawnSync('bash', ['-c', runtimeCommand], {
-        env: { PATH: process.env.PATH ?? '', HOME: home },
-        encoding: 'utf-8',
-      });
+      const runtimeResult = shellEval(runtimeCommand, { HOME: home });
       expect(runtimeResult.status).toBe(0);
-      expect(runtimeResult.stderr ?? '').toMatch(/claude-mem: .* not found/);
+      expect(runtimeResult.stderr).toMatch(/claude-mem: .* not found/);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -709,13 +703,10 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       const parsed = readJson('plugin/hooks/hooks.json');
       const runtimeCommand = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
-      const runtimeResult = spawnSync('bash', ['-c', runtimeCommand], {
-        env: { PATH: process.env.PATH ?? '', HOME: home },
-        encoding: 'utf-8',
-      });
+      const runtimeResult = shellEval(runtimeCommand, { HOME: home });
 
       expect(runtimeResult.status).toBe(0);
-      expect(runtimeResult.stderr ?? '').toContain('claude-mem: hook command failed (exit 7)');
+      expect(runtimeResult.stderr).toContain('claude-mem: hook command failed (exit 7)');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
