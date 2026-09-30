@@ -47,6 +47,7 @@ describe('OpenRouterProvider empty content', () => {
         outputTokens: 8,
         costUsd: undefined,
         servedModel: 'reasoning-model',
+        finishReason: 'stop',
       });
       expect(errorSpy).not.toHaveBeenCalled();
     } finally {
@@ -105,7 +106,7 @@ describe('OpenRouterProvider empty content', () => {
         },
       );
 
-      expect(result).toEqual({ content: '' });
+      expect(result).toEqual({ content: '', finishReason: 'stop' });
       expect(errorSpy).toHaveBeenCalledWith('SDK', 'Empty response from OpenRouter');
     } finally {
       errorSpy.mockRestore();

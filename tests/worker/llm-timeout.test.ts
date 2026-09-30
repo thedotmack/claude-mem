@@ -4,7 +4,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveLlmTimeoutMs, resolveFieldOptimizeTimeoutMs, withRetry } from '../../src/services/worker/retry.js';
 import { DEADLINE_EXCEEDED_CODE, isClassified } from '../../src/services/worker/provider-errors.js';
-import { DEFAULT_LLM_TIMEOUT_MS } from '../../src/shared/SettingsDefaultsManager.js';
+import { DEFAULT_LLM_TIMEOUT_MS, SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { FIELD_OPTIMIZE_TIMEOUT_MS } from '../../src/services/worker/field-optimizer.js';
 
 // Every resolve reads a settings file; point it at a scratch one so the tests
 // never see (or seed) the real ~/.claude-mem/settings.json.
@@ -115,8 +116,32 @@ describe('resolveLlmTimeoutMs', () => {
 // resolver gives the field pass the same env-first, then settings.json rules as
 // the sibling per-attempt deadline.
 describe('resolveFieldOptimizeTimeoutMs', () => {
-  it('defaults to 30s when nothing is configured', () => {
-    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(30_000);
+  // The field pass is one request to the same backend as the observer request,
+  // and the heaviest one: the whole oversized field in, up to 12.8K characters
+  // back. At 30s it expired on the gateway's ordinary latency (p90 40–72s) and
+  // fell back to truncation while the abandoned request could still be billed.
+  it('defaults to 180s, the same per-request deadline as the observer request', () => {
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
+    expect(FIELD_OPTIMIZE_TIMEOUT_MS).toBe(DEFAULT_LLM_TIMEOUT_MS);
+  });
+
+  // The module's own fallback is a copy (field-optimizer.ts stays free of the
+  // settings module); this stops it drifting from the shipped default.
+  it('falls back to the same value the settings default ships', () => {
+    expect(String(FIELD_OPTIMIZE_TIMEOUT_MS)).toBe(
+      SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS,
+    );
+  });
+
+  it('moves an install seeded with the old 30s budget onto the new default', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '30000' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('180000');
+  });
+
+  it('keeps an explicitly chosen shorter budget', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '15000' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(15_000);
   });
 
   it('reads settings.json when the env var is unset', () => {
@@ -133,19 +158,19 @@ describe('resolveFieldOptimizeTimeoutMs', () => {
     writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: 90000 });
     expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(90_000);
     writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '90000ms' });
-    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(30_000);
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
   });
 
   it('falls back to the default rather than trusting a value out of range', () => {
     for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
-      expect(resolveFieldOptimizeTimeoutMs({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: value }, settingsPath)).toBe(30_000);
+      expect(resolveFieldOptimizeTimeoutMs({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: value }, settingsPath)).toBe(180_000);
     }
   });
 
   // The two deadlines are independent knobs: setting one must not move the other.
   it('resolves independently of CLAUDE_MEM_LLM_TIMEOUT_MS', () => {
     writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' });
-    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(30_000);
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
     expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(120_000);
   });
 });

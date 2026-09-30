@@ -65,33 +65,49 @@ function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean
  */
 export const DEFAULT_LLM_TIMEOUT_MS = 180_000;
 
-// Every settings.json seeded from #4125 (13.25.2) until the raise above carries
-// the then-default deadline, and persisted values win over DEFAULTS — so the
-// raise could never reach those installs. Rewrite the exact string the seeders
-// wrote; any other value, including a hand-written number, is a deliberate
-// choice and is left untouched.
-//
-// The move runs once per settings file (see the marker below), so a "30000" the
-// user sets afterwards is kept. The first run, like the Telegram migration,
-// cannot tell a deliberately kept "30000" from the seeded one. The trade favors
-// the recoverable side: a deadline that is too long only delays noticing a hung
-// request, one that is too short discards work that may be paid for, and any
-// other value (or the env var) keeps a short one.
-const LEGACY_LLM_TIMEOUT_MS = '30000';
-
-// Present ⇔ this settings file has had its one chance at the move above. It is
-// the marker-file shape of ProcessManager's `.cwd-remap-applied-v1`, kept next
-// to the settings file and named after it. It is written once the file holds a
-// value the move leaves alone: after a saved rewrite, or when there was nothing
-// to move. It is never written after a failed rewrite, so a read-only
-// settings.json keeps getting the new default in memory.
-function llmTimeoutMigrationMarkerPath(settingsPath: string): string {
-  return join(dirname(settingsPath), `.${basename(settingsPath)}.llm-timeout-migrated-v1`);
+/**
+ * A per-request deadline whose shipped default was raised after installs had
+ * seeded the old one. Every settings.json seeded while 30000 was the default
+ * holds it on disk, and persisted values win over DEFAULTS, so a raise could
+ * never reach those installs. The move rewrites the exact string the seeders
+ * wrote; any other value, including a hand-written number, is a deliberate
+ * choice and is left untouched.
+ *
+ * It runs once per settings file and key (see the marker below), so a "30000"
+ * the user sets afterwards is kept. The first run, like the Telegram migration,
+ * cannot tell a deliberately kept "30000" from the seeded one. The trade favors
+ * the recoverable side: a deadline that is too long only delays noticing a hung
+ * request, one that is too short discards work that may be paid for, and any
+ * other value (or the env var) keeps a short one.
+ */
+interface RaisedDeadlineDefault {
+  key: 'CLAUDE_MEM_LLM_TIMEOUT_MS' | 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS';
+  /** The exact string the seeders wrote while it was the default. */
+  legacy: string;
+  /** Names this key's marker, so each move gets its own one chance. */
+  markerTag: string;
 }
 
-function markLlmTimeoutMigrationDone(settingsPath: string): void {
+const RAISED_DEADLINE_DEFAULTS: readonly RaisedDeadlineDefault[] = [
+  // Seeded from #4125 (13.25.2) until #4278.
+  { key: 'CLAUDE_MEM_LLM_TIMEOUT_MS', legacy: '30000', markerTag: 'llm-timeout-migrated-v1' },
+  // Seeded from #4136 until the field pass got the same deadline.
+  { key: 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', legacy: '30000', markerTag: 'field-optimize-timeout-migrated-v1' },
+];
+
+// Present ⇔ this settings file has had its one chance at the move for that key.
+// It is the marker-file shape of ProcessManager's `.cwd-remap-applied-v1`, kept
+// next to the settings file and named after it. It is written once the file
+// holds a value the move leaves alone: after a saved rewrite, or when there was
+// nothing to move. It is never written after a failed rewrite, so a read-only
+// settings.json keeps getting the new default in memory.
+function raisedDefaultMarkerPath(settingsPath: string, raised: RaisedDeadlineDefault): string {
+  return join(dirname(settingsPath), `.${basename(settingsPath)}.${raised.markerTag}`);
+}
+
+function markRaisedDefaultDone(settingsPath: string, raised: RaisedDeadlineDefault): void {
   try {
-    writeFileSync(llmTimeoutMigrationMarkerPath(settingsPath), new Date().toISOString(), {
+    writeFileSync(raisedDefaultMarkerPath(settingsPath, raised), new Date().toISOString(), {
       encoding: 'utf-8',
       mode: 0o600,
     });
@@ -101,10 +117,11 @@ function markLlmTimeoutMigrationDone(settingsPath: string): void {
   }
 }
 
-// Settings files whose rewrite already failed in this process. A read-only
-// settings.json (a symlink into the Nix store) fails on every load, and every
-// observer request loads settings (retry.ts), so the failure is said once.
-const llmTimeoutMigrationFailuresReported = new Set<string>();
+// Moves whose rewrite already failed in this process, per key and settings
+// file. A read-only settings.json (a symlink into the Nix store) fails on every
+// load, and every observer request loads settings (retry.ts), so the failure is
+// said once.
+const raisedDefaultFailuresReported = new Set<string>();
 
 function migratedCloudSyncHubUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -175,6 +192,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
   CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: string;
   CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: string;  // Observer model context window in tokens; '' = resolve automatically
+  CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS: string;  // Output-token cap on every HTTP observer request (OpenRouter, custom, gateway, Gemini)
   CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;
   CLAUDE_MEM_REDACT_ENABLED: string;
   CLAUDE_MEM_REDACT_DISABLED_BUILTINS: string;
@@ -374,6 +392,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
     CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: '400000',  // Retire an observer conversation past this size and start a fresh generation (#3800)
     CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '',  // Observer model context window in tokens; '' = resolve it (OpenRouter catalogue, Gemini/Claude maps). Lowers the budget above to half the window (#3625)
+    CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS: '4096',  // max_tokens / max_completion_tokens / Gemini maxOutputTokens on every HTTP observer request (#3868)
     CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // After N consecutive worker-unreachable hook invocations, show the worker-outage notice once per session (never blocks; plan-17)
     CLAUDE_MEM_REDACT_ENABLED: 'false',                   // Opt-in auto-redaction of common secret patterns (see docs/public/usage/auto-redaction.mdx)
     CLAUDE_MEM_REDACT_DISABLED_BUILTINS: '',              // CSV of built-in pattern names to disable, e.g. 'jwt,slack_token'
@@ -418,7 +437,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
     CLAUDE_MEM_LLM_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Per-attempt observer LLM deadline (retry.ts); see DEFAULT_LLM_TIMEOUT_MS
-    CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '30000',       // Oversized-field condensation deadline (field-optimizer.ts); raise for slow/local backends
+    CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Oversized-field condensation deadline (field-optimizer.ts); a request to the same backend, so the same deadline
     // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
     // mounted and the worker behaves exactly as before. Set (with a non-loopback
     // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
@@ -549,8 +568,8 @@ export class SettingsDefaultsManager {
         const defaults = this.getAllDefaults();
         try {
           writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
-          // A fresh file already holds the raised deadline: nothing to move.
-          markLlmTimeoutMigrationDone(settingsPath);
+          // A fresh file already holds the raised deadlines: nothing to move.
+          for (const raised of RAISED_DEADLINE_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
@@ -651,39 +670,41 @@ export class SettingsDefaultsManager {
         }
       }
 
-      if (!existsSync(llmTimeoutMigrationMarkerPath(settingsPath))) {
-        if (flatSettings.CLAUDE_MEM_LLM_TIMEOUT_MS === LEGACY_LLM_TIMEOUT_MS) {
-          flatSettings = {
-            ...flatSettings,
-            CLAUDE_MEM_LLM_TIMEOUT_MS: this.DEFAULTS.CLAUDE_MEM_LLM_TIMEOUT_MS,
-          };
+      for (const raised of RAISED_DEADLINE_DEFAULTS) {
+        if (existsSync(raisedDefaultMarkerPath(settingsPath, raised))) continue;
+        if (flatSettings[raised.key] !== raised.legacy) {
+          markRaisedDefaultDone(settingsPath, raised);
+          continue;
+        }
+        flatSettings = {
+          ...flatSettings,
+          [raised.key]: this.DEFAULTS[raised.key],
+        };
 
-          try {
-            writeJsonFileAtomic(
-              settingsPath,
-              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
-              { mode: 0o600 },
-            );
-            markLlmTimeoutMigrationDone(settingsPath);
-            // stderr, never stdout — same JSON-on-stdout contract as above.
+        try {
+          writeJsonFileAtomic(
+            settingsPath,
+            hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+            { mode: 0o600 },
+          );
+          markRaisedDefaultDone(settingsPath, raised);
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn(
+            `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}ms default to ${this.DEFAULTS[raised.key]}ms:`,
+            settingsPath,
+          );
+        } catch (error: unknown) {
+          // Continue with the in-memory migration even if the write fails; with
+          // no marker, the next load tries the rewrite again.
+          const reported = `${raised.key}\0${settingsPath}`;
+          if (!raisedDefaultFailuresReported.has(reported)) {
+            raisedDefaultFailuresReported.add(reported);
             console.warn(
-              `[SETTINGS] Migrated CLAUDE_MEM_LLM_TIMEOUT_MS off the old ${LEGACY_LLM_TIMEOUT_MS}ms default to ${this.DEFAULTS.CLAUDE_MEM_LLM_TIMEOUT_MS}ms:`,
+              `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
               settingsPath,
+              error instanceof Error ? error.message : String(error),
             );
-          } catch (error: unknown) {
-            // Continue with the in-memory migration even if the write fails; with
-            // no marker, the next load tries the rewrite again.
-            if (!llmTimeoutMigrationFailuresReported.has(settingsPath)) {
-              llmTimeoutMigrationFailuresReported.add(settingsPath);
-              console.warn(
-                '[SETTINGS] Failed to migrate CLAUDE_MEM_LLM_TIMEOUT_MS; using the new default in memory (reported once per process):',
-                settingsPath,
-                error instanceof Error ? error.message : String(error),
-              );
-            }
           }
-        } else {
-          markLlmTimeoutMigrationDone(settingsPath);
         }
       }
 
