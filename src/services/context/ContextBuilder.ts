@@ -9,7 +9,7 @@ import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 
-import type { ContextInput, ContextConfig, Observation, SessionSummary, TimelineItem } from './types.js';
+import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
@@ -23,13 +23,16 @@ import {
   getFullObservationIds,
 } from './ObservationCompiler.js';
 import { renderHeader } from './sections/HeaderRenderer.js';
-import { groupTimelineByDay, renderTimeline } from './sections/TimelineRenderer.js';
+import {
+  renderAgentTimeline,
+  buildHumanTimelineEntries,
+  renderHumanTimelineEntries,
+  type HumanTimelineEntry,
+} from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
-import * as Human from './formatters/HumanFormatter.js';
-import { formatTime, formatDateTime, extractFirstFile, parseJsonArray } from '../../shared/timeline-formatting.js';
 import {
   readObserverHealth,
   isObserverUnhealthy,
@@ -91,84 +94,6 @@ interface RenderedContext {
   previousEnd: number;
 }
 
-interface HumanTimelineEntry {
-  day: string;
-  file: string | null;
-  lines: string[];
-  linesWithTime?: string[];
-  summary: boolean;
-}
-
-// Keep row boundaries as data. Titles and narratives may contain newlines or
-// text that looks like an observation ID, so rendered lines cannot identify
-// where a complete entry begins or ends.
-function humanTimelineEntries(
-  timeline: TimelineItem[],
-  fullObservationIds: Set<number>,
-  config: ContextConfig,
-  cwd: string
-): HumanTimelineEntry[] {
-  const entries: HumanTimelineEntry[] = [];
-  for (const [day, dayItems] of groupTimelineByDay(timeline)) {
-    let lastTime = '';
-    for (const item of dayItems) {
-      if (item.type === 'summary') {
-        lastTime = '';
-        entries.push({
-          day, file: null, summary: true,
-          lines: Human.renderHumanSummaryItem(item.data, formatDateTime(item.data.displayTime)),
-        });
-        continue;
-      }
-      const obs = item.data;
-      const time = formatTime(obs.created_at);
-      const showTime = time !== lastTime;
-      lastTime = time;
-      const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
-      const detail = config.fullObservationField === 'narrative'
-        ? obs.narrative
-        : obs.facts ? parseJsonArray(obs.facts).join('\n') : null;
-      const full = fullObservationIds.has(obs.id);
-      entries.push({
-        day, file, summary: false,
-        lines: full
-          ? Human.renderHumanFullObservation(obs, time, showTime, detail, config)
-          : [Human.renderHumanTableRow(obs, time, showTime, config)],
-        linesWithTime: showTime ? undefined : full
-          ? Human.renderHumanFullObservation(obs, time, true, detail, config)
-          : [Human.renderHumanTableRow(obs, time, true, config)],
-      });
-    }
-  }
-  return entries;
-}
-
-function renderHumanEntries(entries: HumanTimelineEntry[]): string[] {
-  const lines: string[] = [];
-  let day = '';
-  let file: string | null = null;
-  let seenObservation = false;
-  for (const entry of entries) {
-    if (entry.day !== day) {
-      if (day) lines.push('');
-      lines.push(...Human.renderHumanDayHeader(entry.day));
-      day = entry.day;
-      file = null;
-      seenObservation = false;
-    }
-    if (entry.summary) {
-      file = null;
-    } else if (entry.file !== file) {
-      lines.push(...Human.renderHumanFileHeader(entry.file!));
-      file = entry.file;
-    }
-    lines.push(...(!entry.summary && !seenObservation ? entry.linesWithTime ?? entry.lines : entry.lines));
-    if (!entry.summary) seenObservation = true;
-  }
-  if (day) lines.push('');
-  return lines;
-}
-
 function buildContextOutput(
   project: string,
   observations: Observation[],
@@ -189,9 +114,9 @@ function buildContextOutput(
   const timeline = buildTimeline(observations, summariesForTimeline);
   const fullObservationIds = getFullObservationIds(observations, config.fullObservationCount);
 
-  const entries = forHuman ? humanTimelineEntries(timeline, fullObservationIds, config, cwd) : undefined;
+  const entries = forHuman ? buildHumanTimelineEntries(timeline, fullObservationIds, config, cwd) : undefined;
   const timelineStart = output.join('\n').length + 1;
-  output.push(...(entries ? renderHumanEntries(entries) : renderTimeline(timeline, fullObservationIds, config, cwd, false)));
+  output.push(...(entries ? renderHumanTimelineEntries(entries) : renderAgentTimeline(timeline, fullObservationIds, config)));
   const timelineEnd = output.join('\n').length;
 
   const mostRecentSummary = summaries[0];
@@ -383,13 +308,13 @@ function truncateTerminalPreview(rendered: RenderedContext | string, limit: numb
   // The footer is short and useful. Fit complete, newest-first timeline entries
   // before spending any of the remaining display budget on the prior message.
   let omitted = 0;
-  let timeline = renderHumanEntries(entries).join('\n');
+  let timeline = renderHumanTimelineEntries(entries).join('\n');
   const allVisiblePrefix = prefixWithNotice(false);
   const prefix = allVisiblePrefix.length + timeline.length + footer.length <= limit
     ? allVisiblePrefix : prefixWithNotice(true);
   while (omitted < entries.length && prefix.length + timeline.length + footer.length > limit) {
     omitted++;
-    timeline = renderHumanEntries(entries.slice(omitted)).join('\n');
+    timeline = renderHumanTimelineEntries(entries.slice(omitted)).join('\n');
   }
   const room = limit - prefix.length - timeline.length - footer.length;
   const keptSummary = summary.length <= room ? summary : '';
