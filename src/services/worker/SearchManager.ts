@@ -129,7 +129,7 @@ export class SearchManager {
 
   private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
     return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-      this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit: 1, project, platformSource })
+      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, platformSource })
     );
   }
 
@@ -446,9 +446,9 @@ export class SearchManager {
           platformSource: options.platformSource
         });
       }
-    } else {
-      if (options.platformSource) {
-        logger.debug('SEARCH', 'Platform-scoped ChromaDB search found no matches; falling back to scoped FTS5 search', {});
+
+      if (obsIds.length === 0 && sessionIds.length === 0 && promptIds.length === 0) {
+        logger.debug('SEARCH', 'ChromaDB matches did not survive date filtering; falling back to FTS5 search', {});
         platformScopedChromaZeroFallback = true;
 
         if (searchObservations) {
@@ -460,8 +460,19 @@ export class SearchManager {
         if (searchPrompts) {
           prompts = this.sessionSearch.searchUserPrompts(query, options);
         }
-      } else {
-        logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
+      }
+    } else {
+      logger.debug('SEARCH', 'ChromaDB search found no matches; falling back to FTS5 search', {});
+      platformScopedChromaZeroFallback = true;
+
+      if (searchObservations) {
+        observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+      }
+      if (searchSessions) {
+        sessions = this.sessionSearch.searchSessions(query, options);
+      }
+      if (searchPrompts) {
+        prompts = this.sessionSearch.searchUserPrompts(query, options);
       }
     }
 
@@ -924,7 +935,7 @@ export class SearchManager {
       try {
         const limit = options.limit || 20;
         results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit, project: options.project, platformSource: options.platformSource })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, platformSource: options.platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -952,13 +963,29 @@ export class SearchManager {
       };
     }
 
-    const header = `Found ${results.length} observation(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
+    // Relevance-ordered results (FTS/Chroma): only add day headers, never
+    // reorder into chronological groups, or the most relevant match could
+    // print below a less relevant but more recent one.
+    const resultsByDate = groupByDate(results, obs => obs.created_at, { sort: false });
+
+    const lines: string[] = [];
+    lines.push(`Found ${results.length} observation(s) matching "${query}"`);
+    lines.push('');
+
+    for (const [day, dayResults] of resultsByDate) {
+      lines.push(`### ${day}`);
+      lines.push('');
+      lines.push(this.formatter.formatTableHeader());
+      for (const obs of dayResults) {
+        lines.push(this.formatter.formatObservationIndex(obs, 0));
+      }
+      lines.push('');
+    }
 
     return {
       content: [{
         type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
+        text: lines.join('\n')
       }]
     };
   }
@@ -1103,7 +1130,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
       try {
         results = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit, project, platformSource })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project, platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
