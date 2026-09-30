@@ -7,7 +7,7 @@ import { logger } from '../../utils/logger.js';
 // FTS5 external-content indexes delete logically: every delete, and every update the old
 // unscoped update triggers mirrored, appended a delete marker plus a re-inserted copy of the
 // row's text. Neither VACUUM nor auto_vacuum can compact an FTS index; only merging its
-// b-trees drops that dead content (#2793). Schema v53 stops new bloat at the source
+// b-trees drops that dead content (#2793). Schema v54 stops new bloat at the source
 // (column-scoped update triggers, no user_prompts_fts); this reclaims what an install already
 // accumulated — once, off the startup path, in bounded steps.
 

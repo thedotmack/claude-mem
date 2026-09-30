@@ -5,7 +5,7 @@ import { execFileSync } from 'child_process';
 import { expandHome } from '../shared/expand-home.js';
 import { CLAUDE_CONFIG_DIR } from '../shared/paths.js';
 import { logger } from './logger.js';
-import { detectWorktree } from './worktree.js';
+import { detectWorktree, type WorktreeInfo } from './worktree.js';
 
 const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
 const UNKNOWN_PROJECT_NAME = 'unknown-project';
@@ -166,7 +166,24 @@ export interface ProjectContext {
   primary: string;
   parent: string | null;
   isWorktree: boolean;
+  /** Set when `primary` is a composite key for a submodule (#2842). */
+  isSubmodule: boolean;
   allProjects: string[];
+}
+
+/**
+ * A submodule's key component is its path under the superproject, not its
+ * basename: two nested submodules can share a leaf repo name
+ * (`outer/alpha/shared` and `outer/beta/shared`), and keying on the basename
+ * alone collapses them into one project whose observations overwrite each
+ * other. Worktrees keep the basename — they usually live outside the parent
+ * tree, where a relative path is meaningless.
+ */
+function submoduleLeaf(info: WorktreeInfo, repoRoot: string): string | null {
+  if (!info.isSubmodule || !info.parentRepoPath) return null;
+  const relative = path.relative(info.parentRepoPath, repoRoot);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep).join('/');
 }
 
 export function getProjectContext(
@@ -175,7 +192,7 @@ export function getProjectContext(
 ): ProjectContext {
   if (!cwd || cwd.trim() === '') {
     const fallback = getProjectName(cwd, platform);
-    return { primary: fallback, parent: null, isWorktree: false, allProjects: [fallback] };
+    return { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback] };
   }
 
   const expandedCwd = expandHome(cwd, platform);
@@ -187,15 +204,24 @@ export function getProjectContext(
   const markerRoot = repoRoot ? null : findMarkerProjectRoot(expandedCwd);
   const cwdProjectName = projectNameFromSource(cwd, repoRoot ?? markerRoot ?? expandedCwd);
 
-  const worktreeInfo = detectWorktree(repoRoot ?? expandedCwd);
+  const checkoutRoot = repoRoot ?? expandedCwd;
+  const worktreeInfo = detectWorktree(checkoutRoot);
 
-  if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
+  if ((worktreeInfo.isWorktree || worktreeInfo.isSubmodule) && worktreeInfo.parentProjectName) {
+    const parent = worktreeInfo.parentProjectName;
+    const composite = `${parent}/${submoduleLeaf(worktreeInfo, checkoutRoot) ?? cwdProjectName}`;
+    // #2842 — before submodules folded into their superproject, a submodule's
+    // rows were stored under its own leaf name. Keep that key readable so the
+    // re-key never hides existing memory; writes use the composite only.
+    const legacySubmoduleKey = worktreeInfo.isSubmodule && cwdProjectName !== parent
+      ? [cwdProjectName]
+      : [];
     return {
       primary: composite,
-      parent: worktreeInfo.parentProjectName,
-      isWorktree: true,
-      allProjects: [worktreeInfo.parentProjectName, composite]
+      parent,
+      isWorktree: worktreeInfo.isWorktree,
+      isSubmodule: worktreeInfo.isSubmodule,
+      allProjects: [parent, ...legacySubmoduleKey, composite]
     };
   }
 
@@ -206,9 +232,9 @@ export function getProjectContext(
   if (markerRoot && path.resolve(markerRoot) !== path.resolve(expandedCwd)) {
     const legacyKey = projectNameFromSource(cwd, expandedCwd);
     if (legacyKey !== cwdProjectName && legacyKey !== UNKNOWN_PROJECT_NAME) {
-      return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [legacyKey, cwdProjectName] };
+      return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [legacyKey, cwdProjectName] };
     }
   }
 
-  return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+  return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [cwdProjectName] };
 }

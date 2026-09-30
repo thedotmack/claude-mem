@@ -137,12 +137,13 @@ export function estimateTokens(text: string | null): number {
 
 export interface GroupByDateOptions {
   /**
-   * When true (default), day groups are reordered chronologically
-   * (oldest first). When false, day groups keep the order in which
-   * their first item appeared in `items`, so a relevance-ordered
-   * input stays relevance-ordered across day headers.
+   * Order of the day groups:
+   * - 'asc' (default): oldest day first.
+   * - 'desc': newest day first, for date_desc results.
+   * - 'first-seen': the order in which each day's first item appears in `items`, so a
+   *   relevance-ordered input stays relevance-ordered across day headers.
    */
-  sort?: boolean;
+  order?: 'asc' | 'desc' | 'first-seen';
 }
 
 export function groupByDate<T>(
@@ -150,7 +151,7 @@ export function groupByDate<T>(
   getDate: (item: T) => string,
   options: GroupByDateOptions = {}
 ): Map<string, T[]> {
-  const { sort = true } = options;
+  const { order = 'asc' } = options;
   const itemsByDay = new Map<string, T[]>();
   for (const item of items) {
     const itemDate = getDate(item);
@@ -161,14 +162,14 @@ export function groupByDate<T>(
     itemsByDay.get(day)!.push(item);
   }
 
-  if (!sort) {
+  if (order === 'first-seen') {
     return itemsByDay;
   }
 
   const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {
     const aDate = new Date(a[0]).getTime();
     const bDate = new Date(b[0]).getTime();
-    return aDate - bDate;
+    return order === 'desc' ? bDate - aDate : aDate - bDate;
   });
 
   return new Map(sortedEntries);

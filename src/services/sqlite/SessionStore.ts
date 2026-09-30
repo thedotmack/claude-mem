@@ -217,6 +217,7 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
+    this.ensureSessionCwdColumn();
     this.dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers();
   }
 
@@ -471,7 +472,7 @@ export class SessionStore {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_user_prompts_content_lookup ON user_prompts(content_session_id, prompt_number)');
 
     // The prompt FTS triggers dropped above are not recreated: user_prompts_fts is write-only
-    // and v53 drops it (dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers).
+    // and v54 drops it (dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers).
 
     if (!applied) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(34, new Date().toISOString());
@@ -1845,7 +1846,7 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
   }
 
-  // v53 — stop FTS5 shadow-index bloat at the source (plan-21, #2793).
+  // v54 — stop FTS5 shadow-index bloat at the source (plan-21, #2793).
   //
   // 1. observations_au / session_summaries_au become column-scoped (AFTER UPDATE OF the
   //    indexed columns). Unscoped, every bookkeeping update (sync_rev, merged_into_project,
@@ -1895,7 +1896,7 @@ export class SessionStore {
       });
     }
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(54, new Date().toISOString());
   }
 
   private ensureMergedIntoProjectColumns(): void {
@@ -1918,6 +1919,28 @@ export class SessionStore {
     this.db.run(
       'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
     );
+  }
+
+  // v53 — sdk_sessions.cwd. Worktree adoption discovers repos from this;
+  // sdk_sessions is local-only, so no sync-lane plumbing (#2864).
+  //
+  // Runs LAST in the constructor, after every migration that rebuilds
+  // sdk_sessions from a fixed column list (v33's composite-identity rebuild):
+  // added any earlier, a pre-v33 database would lose the column in that
+  // rebuild and every ingest would then fail on setSessionCwd.
+  private ensureSessionCwdColumn(): void {
+    const cols = this.db
+      .query('PRAGMA table_info(sdk_sessions)')
+      .all() as TableColumnInfo[];
+    if (!cols.some(c => c.name === 'cwd')) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN cwd TEXT');
+      logger.debug('DB', 'Added cwd column to sdk_sessions table (#2864)');
+    }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_sdk_sessions_cwd ON sdk_sessions(cwd)'
+    );
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
   }
 
   private addObservationSubagentColumns(): void {
@@ -2926,6 +2949,15 @@ export class SessionStore {
     }
 
     return Number(result.lastInsertRowid);
+  }
+
+  // First write wins: cwd drifts when the agent `cd`s into a subdirectory, and
+  // the launch directory is the one that identifies the repo.
+  setSessionCwd(sessionDbId: number, cwd: string): void {
+    if (!cwd.trim()) return;
+    this.db.prepare(
+      'UPDATE sdk_sessions SET cwd = ? WHERE id = ? AND cwd IS NULL'
+    ).run(cwd, sessionDbId);
   }
 
   /**

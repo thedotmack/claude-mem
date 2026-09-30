@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 
-// Schema v53 (plan-21, #2793): FTS5 external-content indexes only grow when a row's indexed
+// Schema v54 (plan-21, #2793): FTS5 external-content indexes only grow when a row's indexed
 // text is written. total_changes() counts rows written by trigger programs too, so an update
 // that leaves the index alone changes exactly one row.
 function totalChanges(db: Database): number {
@@ -22,7 +22,7 @@ function userPromptsFtsObjects(db: Database): string[] {
   `).all() as { name: string }[]).map(row => row.name);
 }
 
-describe('FTS sync triggers (schema v53)', () => {
+describe('FTS sync triggers (schema v54)', () => {
   let db: Database;
   let store: SessionStore;
   let search: SessionSearch;
@@ -87,8 +87,8 @@ describe('FTS sync triggers (schema v53)', () => {
     expect(search.searchUserPrompts('this prompt', {})).toHaveLength(1);
   });
 
-  it('migrates a pre-v53 database: re-scopes the update triggers and drops user_prompts_fts', () => {
-    // Recreate the pre-v53 shape: unscoped update triggers plus the write-only prompt index.
+  it('migrates a pre-v54 database: re-scopes the update triggers and drops user_prompts_fts', () => {
+    // Recreate the pre-v54 shape: unscoped update triggers plus the write-only prompt index.
     db.run('DROP TRIGGER observations_au');
     db.run(`
       CREATE TRIGGER observations_au AFTER UPDATE ON observations BEGIN
@@ -113,7 +113,7 @@ describe('FTS sync triggers (schema v53)', () => {
         INSERT INTO user_prompts_fts(rowid, prompt_text) VALUES (new.id, new.prompt_text);
       END;
     `);
-    db.run('DELETE FROM schema_versions WHERE version = 53');
+    db.run('DELETE FROM schema_versions WHERE version = 54');
 
     const legacyBefore = totalChanges(db);
     db.run(`UPDATE observations SET merged_into_project = 'legacy-project' WHERE id = ?`, [observationId]);
@@ -124,7 +124,7 @@ describe('FTS sync triggers (schema v53)', () => {
     expect(schemaObjectSql(db, 'observations_au')).toContain('UPDATE OF');
     expect(schemaObjectSql(db, 'session_summaries_au')).toContain('UPDATE OF');
     expect(userPromptsFtsObjects(db)).toEqual([]);
-    expect(db.query('SELECT version FROM schema_versions WHERE version = 53').get()).not.toBeNull();
+    expect(db.query('SELECT version FROM schema_versions WHERE version = 54').get()).not.toBeNull();
 
     const before = totalChanges(db);
     db.run(`UPDATE observations SET merged_into_project = 'migrated-project' WHERE id = ?`, [observationId]);

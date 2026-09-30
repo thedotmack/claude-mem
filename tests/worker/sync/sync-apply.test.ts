@@ -788,7 +788,7 @@ describe('SyncApply', () => {
     ).all();
     expect(summaryHits.length).toBe(1);
 
-    // Prompts have no FTS index (it was write-only, schema v53); they are searched by substring.
+    // Prompts have no FTS index (it was write-only, schema v54); they are searched by substring.
     expect(search.searchUserPrompts('remote', {})).toHaveLength(1);
   });
 
