@@ -4,6 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { pruneProcessedObservationPayloads } from './history-pruning.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
@@ -15,7 +16,7 @@ import {
   conversationChars,
   resolveConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
@@ -191,7 +192,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
 
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    // Every request re-sends the history, so a restart must not carry the
+    // previous attempt's turns into the new generation.
+    openObserverGeneration(session, initPrompt);
 
     try {
       session.lastPromptSentAt = Date.now();
@@ -333,6 +336,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
+
+    // Stub out payloads already converted to stored observations so the
+    // request below stays bounded instead of re-sending every prior tool
+    // dump (see history-pruning.ts).
+    pruneProcessedObservationPayloads(session.conversationHistory);
+
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
     const obsResponse = await this.query(session.conversationHistory, config);
@@ -382,6 +391,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+
+    // Same bounding as the observation path: the summary reads the assistant
+    // observations for its narrative, not the raw tool payloads behind them.
+    pruneProcessedObservationPayloads(session.conversationHistory);
+
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);

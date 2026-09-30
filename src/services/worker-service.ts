@@ -34,6 +34,7 @@ import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+import { resolveRuntimeContext } from './hooks/runtime-selector.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -1273,6 +1274,16 @@ async function main() {
 
   switch (command) {
     case 'start': {
+      // hooks.json runs `start` at every SessionStart, whatever the runtime. In
+      // server runtime the hooks talk to the shared server and nothing uses a
+      // local worker, so there is nothing to start (plan-24 step 4). Probing the
+      // worker port there waits on health checks that never answer when another
+      // process holds the port, stalling session start until the hook timeout.
+      // Incomplete server settings resolve to the worker runtime, as every other
+      // hook does, and start it as usual.
+      if (resolveRuntimeContext().runtime === 'server') {
+        exitWithStatus('ready');
+      }
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
         // Carry the boot probe's own words into the hook's status line — this

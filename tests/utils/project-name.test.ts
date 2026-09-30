@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { basename } from 'path';
 import { homedir } from 'os';
-import { getProjectName, getProjectContext, resolveHookProjectPath, buildWorktreeProjectKey } from '../../src/utils/project-name.js';
+import { getProjectName, getProjectContext, getPathModeProjectContext, resolveHookProjectPath, buildWorktreeProjectKey, parseOriginUrlToSlug } from '../../src/utils/project-name.js';
 
 const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
 const ANCHORED_PROJECT_DIR_NAME = 'anchored-project';
@@ -522,5 +522,159 @@ describe('getProjectContext', () => {
       expect(inSubdir).not.toBe('feature-x');
       expect(inSubdir).not.toBe('nested');
     });
+  });
+});
+
+describe('parseOriginUrlToSlug — CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote', () => {
+  it('parses scp-style ssh URLs', () => {
+    expect(parseOriginUrlToSlug('git@github.com:thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('parses https URLs', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('parses ssh:// URLs', () => {
+    expect(parseOriginUrlToSlug('ssh://git@github.com/thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('tolerates a missing .git suffix', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem')).toBe('thedotmack/claude-mem');
+  });
+
+  it('tolerates a trailing slash', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem/')).toBe('thedotmack/claude-mem');
+  });
+
+  it('strips the trailing slash before .git, so repo.git/ loses both', () => {
+    expect(parseOriginUrlToSlug('https://github.com/acme/widgets.git/')).toBe('acme/widgets');
+  });
+
+  it('takes the last two segments for nested groups (e.g. GitLab subgroups)', () => {
+    expect(parseOriginUrlToSlug('https://gitlab.com/group/subgroup/repo.git')).toBe('subgroup/repo');
+  });
+
+  it('handles self-hosted hosts, ports and the user-less scp form', () => {
+    expect(parseOriginUrlToSlug('git@frango:money-marathon/prolific.git')).toBe('money-marathon/prolific');
+    expect(parseOriginUrlToSlug('https://code.example.com:8443/acme/widgets.git')).toBe('acme/widgets');
+    expect(parseOriginUrlToSlug('code.example.com:acme/widgets')).toBe('acme/widgets');
+  });
+
+  it('returns a single segment when that is all there is', () => {
+    expect(parseOriginUrlToSlug('git@github.com:solorepo.git')).toBe('solorepo');
+  });
+
+  it('rejects local remotes, which name a directory on this machine', () => {
+    expect(parseOriginUrlToSlug('file:///srv/repos/widgets.git')).toBeNull();
+    expect(parseOriginUrlToSlug('/srv/repos/widgets.git')).toBeNull();
+    expect(parseOriginUrlToSlug('../widgets')).toBeNull();
+    expect(parseOriginUrlToSlug('C:\\repos\\widgets')).toBeNull();
+  });
+
+  it('rejects bare hosts and empty input', () => {
+    expect(parseOriginUrlToSlug('https://github.com')).toBeNull();
+    expect(parseOriginUrlToSlug('https://github.com/')).toBeNull();
+    expect(parseOriginUrlToSlug('git@github.com:')).toBeNull();
+    expect(parseOriginUrlToSlug('')).toBeNull();
+    expect(parseOriginUrlToSlug('   ')).toBeNull();
+  });
+});
+
+describe('#2827 — git-remote project names', () => {
+  const SOURCE_ENV = 'CLAUDE_MEM_PROJECT_NAME_SOURCE';
+  const savedSource = process.env[SOURCE_ENV];
+  let tmp: string;
+  let repo: string;
+  let worktree: string;
+  let noRemoteRepo: string;
+  let noRemoteWorktree: string;
+  let sameNameRepo: string;
+  let sameNameCodexWorktree: string;
+
+  beforeAll(async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = await import('fs');
+    const { execFileSync } = await import('child_process');
+    const { join } = await import('path');
+    const { tmpdir } = await import('os');
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' });
+    const initRepo = (dir: string) => {
+      mkdirSync(dir, { recursive: true });
+      run(dir, 'init', '-q', '-b', 'main');
+      run(dir, 'config', 'user.email', 'test@example.com');
+      run(dir, 'config', 'user.name', 'Test');
+      writeFileSync(join(dir, 'README.md'), 'base\n');
+      run(dir, 'add', 'README.md');
+      run(dir, 'commit', '-q', '-m', 'base');
+    };
+
+    tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-2827-')));
+    repo = join(tmp, 'widgets-checkout');
+    worktree = join(tmp, 'widgets-feature');
+    noRemoteRepo = join(tmp, 'scratchpad');
+    noRemoteWorktree = join(tmp, 'scratchpad-wt');
+
+    initRepo(repo);
+    run(repo, 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git');
+    run(repo, 'worktree', 'add', '-q', '-b', 'feature', worktree);
+
+    initRepo(noRemoteRepo);
+    run(noRemoteRepo, 'worktree', 'add', '-q', '-b', 'wt', noRemoteWorktree);
+
+    // org == repo (prettier/prettier), plus a Codex-style worktree named after it.
+    sameNameRepo = join(tmp, 'prettier');
+    sameNameCodexWorktree = join(tmp, 'codex', 'c1', 'prettier');
+    initRepo(sameNameRepo);
+    run(sameNameRepo, 'remote', 'add', 'origin', 'https://github.com/prettier/prettier.git');
+    mkdirSync(join(tmp, 'codex', 'c1'), { recursive: true });
+    run(sameNameRepo, 'worktree', 'add', '-q', '-b', 'codex-task', sameNameCodexWorktree);
+
+    process.env[SOURCE_ENV] = 'git-remote';
+  }, 30_000);
+
+  afterAll(async () => {
+    const { rmSync } = await import('fs');
+    if (savedSource === undefined) delete process.env[SOURCE_ENV];
+    else process.env[SOURCE_ENV] = savedSource;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('names the repository by its origin slug and keeps the folder key readable', () => {
+    expect(getProjectName(repo)).toBe('acme/widgets');
+    const ctx = getProjectContext(repo);
+    expect(ctx.primary).toBe('acme/widgets');
+    // Memory stored under the folder name before the switch stays reachable.
+    expect(ctx.allProjects).toEqual(['widgets-checkout', 'acme/widgets']);
+  });
+
+  it('folds a worktree into the repository slug, keeping its old composite keys readable', () => {
+    const ctx = getProjectContext(worktree);
+    expect(ctx.primary).toBe('acme/widgets');
+    expect(ctx.parent).toBeNull();
+    expect(ctx.isWorktree).toBe(true);
+    expect(ctx.allProjects).toEqual(['widgets-checkout', 'widgets-checkout/widgets-feature', 'acme/widgets']);
+  });
+
+  it('still exposes the folder-based identity that worktree adoption works on', () => {
+    expect(getPathModeProjectContext(repo).primary).toBe('widgets-checkout');
+    const ctx = getPathModeProjectContext(worktree);
+    expect(ctx.primary).toBe('widgets-checkout/widgets-feature');
+    expect(ctx.parent).toBe('widgets-checkout');
+  });
+
+  it('falls back to path mode, worktree compositing included, when no slug can be derived', () => {
+    expect(getProjectName(noRemoteRepo)).toBe('scratchpad');
+    const ctx = getProjectContext(noRemoteWorktree);
+    expect(ctx.primary).toBe('scratchpad/scratchpad-wt');
+    expect(ctx.allProjects).toEqual(['scratchpad', 'scratchpad/scratchpad-wt']);
+  });
+
+  // #3641's collapse (`<repo>/<repo>` → `<repo>`) is a path-mode rule: a slug
+  // whose org and repository share a name is a real identity and stays whole.
+  it('never collapses a slug whose org and repository share a name', () => {
+    expect(getProjectName(sameNameRepo)).toBe('prettier/prettier');
+    expect(getProjectContext(sameNameRepo).primary).toBe('prettier/prettier');
+    const ctx = getProjectContext(sameNameCodexWorktree);
+    expect(ctx.primary).toBe('prettier/prettier');
+    expect(ctx.allProjects).toEqual(['prettier', 'prettier/prettier']);
   });
 });

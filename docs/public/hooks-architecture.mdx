@@ -426,7 +426,7 @@ sequenceDiagram
 | **Setup (version-check)** | Before session | No | 60s | stderr hint on stale install (always exit 0) |
 | **SessionStart (worker-start)** | Session start (async) | No | 60s | stderr (log only) |
 | **SessionStart (context)** | Before session | No | 60s | JSON → additionalContext (silent) |
-| **UserPromptSubmit** | Before processing | No | 60s | stdout → context |
+| **UserPromptSubmit** | Before processing | No | 15s (10s internal budget) | stdout → context |
 | **PostToolUse** | After tool | No | 120s | Transcript only |
 | **Summary** | Worker triggered | No | 120s | Database |
 | **SessionEnd** | On exit | No | 120s | Log only |
