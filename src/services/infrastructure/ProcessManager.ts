@@ -20,7 +20,7 @@ const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
 
 const BUN_NOT_FOUND_MESSAGE =
-  'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.';
+  'Bun runtime not found — install from https://bun.sh and ensure it is on PATH, under ~/.bun/bin, or set BUN / BUN_PATH / BUN_INSTALL. The worker daemon requires Bun because it uses bun:sqlite.';
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
@@ -100,6 +100,19 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
   return result;
 }
 
+/**
+ * Bun's official installer honors BUN_INSTALL (default ~/.bun) and puts the
+ * binary in $BUN_INSTALL/bin. Hook shells on Windows often lack that
+ * directory on PATH (#3224).
+ */
+function bunInstallBinCandidates(bunInstall: string | undefined, platform: NodeJS.Platform): string[] {
+  const root = bunInstall?.trim();
+  if (!root) return [];
+  return platform === 'win32'
+    ? [path.join(root, 'bin', 'bun.exe'), path.join(root, 'bin', 'bun'), path.join(root, 'bun.exe')]
+    : [path.join(root, 'bin', 'bun'), path.join(root, 'bun')];
+}
+
 function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): string | null {
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
@@ -118,6 +131,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     ? [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
@@ -128,6 +142,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     : [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
