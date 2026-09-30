@@ -5,10 +5,12 @@ import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realProcessManagerSnapshot = { ...realProcessManager };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
 
 // On version mismatch the hook must NOT delegate the recycle to the running
 // worker (the old design POSTed /api/admin/restart and the dying worker
@@ -47,11 +49,15 @@ const spawnCalls: Array<{ command: string; args: string[] }> = [];
 // the version probe must inherit the caller's remaining budget (#3434).
 const versionMatchCalls: Array<{ timeoutMs?: number }> = [];
 
+// Shared by the barrel mock and the HealthMonitor mock below, so the call is
+// recorded whichever module binding worker-utils ends up using.
+const recordingCheckVersionMatch = (_port: number, _expectedVersion: string | null, timeoutMs?: number) => {
+  versionMatchCalls.push({ timeoutMs });
+  return Promise.resolve(versionMatchResult);
+};
+
 mock.module('../../src/services/infrastructure/index.js', () => ({
-  checkVersionMatch: (_port: number, _expectedVersion: string | null, timeoutMs?: number) => {
-    versionMatchCalls.push({ timeoutMs });
-    return Promise.resolve(versionMatchResult);
-  },
+  checkVersionMatch: recordingCheckVersionMatch,
   isPortInUse: () => Promise.resolve(false),
 }));
 
@@ -67,6 +73,20 @@ mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
     successorUp = true;
     return 0;
   },
+}));
+
+// Port release is decided by a bind probe (classifyPortOccupancy), not by a
+// refused HTTP connect — a connect probe cannot tell "free" from "orphaned
+// listener still holding the port", which is what wedged Windows on
+// 2026-07-26 (#3416). Stubbed so these tests never bind the real worker port;
+// the killed stale worker's port reports free.
+// The infrastructure barrel re-exports HealthMonitor's bindings, so the
+// barrel's stubs are repeated here or this mock would put the real ones back.
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+  ...realHealthMonitorSnapshot,
+  checkVersionMatch: recordingCheckVersionMatch,
+  isPortInUse: () => Promise.resolve(false),
+  classifyPortOccupancy: () => Promise.resolve('free'),
 }));
 
 async function importWorkerUtilsFresh() {
@@ -157,6 +177,7 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
     mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
   });
 
   it('SIGKILLs the stale worker and lazy-spawns the resolved script — never POSTs /api/admin/restart', async () => {

@@ -581,24 +581,20 @@ async function fetchWorkerHealthUptimeSeconds(timeoutMs: number = HEALTH_CHECK_T
 /**
  * After SIGKILLing the stale worker, wait for the OS to release its listen
  * socket before lazy-spawning — the worker boot refuses to start while the
- * port is bound. A rejected connection is the port-free signal. Only called
- * once the stale process is confirmed dead (kill succeeded or ESRCH), so a
- * rejection here cannot be a live-but-stalled worker.
+ * port is bound. Released means BINDABLE: a bind probe (classifyPortOccupancy)
+ * must report 'free'. A refused connection is not proof (#3416): on Windows a
+ * killed worker's socket can stay LISTENING under the dead PID, refusing every
+ * connection while bind() still hits EADDRINUSE, and a successor spawned onto
+ * it can never listen, so each hook would spawn another one forever.
  */
-async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
-  // Each probe is cut to the time left, and an exhausted wait returns before
-  // probing: a spent hook budget used to still pay one full health timeout
-  // here (#3434).
-  const deadlineAt = Date.now() + timeoutMs;
+async function waitForWorkerPortReleased(timeoutMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const waitLeftMs = deadlineAt - Date.now();
-    if (waitLeftMs < MIN_WORKER_BUDGET_MS) return false;
-    try {
-      await workerHttpRequest('/api/health', { timeoutMs: Math.min(HEALTH_CHECK_TIMEOUT_MS, waitLeftMs) });
-    } catch {
-      return true;
-    }
-    await new Promise<void>(resolve => setTimeout(resolve, Math.min(200, Math.max(0, deadlineAt - Date.now()))));
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    if ((await classifyPortOccupancy(getWorkerPort(), Math.min(1000, remainingMs))) === 'free') return true;
+    const pauseMs = Math.min(200, deadline - Date.now());
+    if (pauseMs > 0) await new Promise<void>(resolve => setTimeout(resolve, pauseMs));
   }
 }
 
@@ -806,7 +802,7 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
     // #3482 — a single-PID kill here orphans the stale worker's whole spawn
     // chain (uvx -> uv -> python -> chroma-mcp). Those descendants inherited
     // the worker's listening socket, so they keep the port bound after the
-    // root dies: waitForWorkerPortClosed() below never succeeds, every hook
+    // root dies: waitForWorkerPortReleased() below never succeeds, every hook
     // hard-blocks, and the recycle repeats forever (834 health-check failures
     // observed). This is NOT Windows-specific — on POSIX the same descendants
     // simply re-parent to init and survive identically.
@@ -830,11 +826,18 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
       }, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
-    if (!(await waitForWorkerPortClosed(boundedByBudget(5000, deadlineAt)))) {
+    if (!(await waitForWorkerPortReleased(boundedByBudget(5000, deadlineAt)))) {
+      // A spent hook budget cut the wait short, which is no evidence of an
+      // orphaned socket: leave the diagnosis to a hook that waits it out.
       if (outOfBudget('stale port release')) return false;
+      // The worker we killed is gone and its port still cannot be bound: an
+      // orphaned OS socket. Name the fix in the fail-loud message (#4002)
+      // instead of spawning a successor that could never listen.
+      orphanedPortDiagnosis = getWorkerPort();
       logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
         pid: stalePidInfo.pid,
         port: getWorkerPort(),
+        fix: ORPHANED_PORT_REMEDIATION,
       });
       return false;
     }
@@ -861,7 +864,7 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
   try {
     if (spawnLockHeld) {
       // A stale worker we just killed already proved its port closed
-      // (waitForWorkerPortClosed); every other spawn must first prove the port
+      // (waitForWorkerPortReleased); every other spawn must first prove the port
       // free (#3171).
       if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline))) return false;
       const runtimePath = resolveWorkerRuntimePath();

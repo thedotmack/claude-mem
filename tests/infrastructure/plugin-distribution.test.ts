@@ -88,6 +88,14 @@ function installFakeNvmNode(home: string, version: string): string {
   return nodeBin;
 }
 
+function shellEval(command: string, env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(bashExecutable(), ['-c', command], {
+    env: { PATH: process.env.PATH ?? '', ...env },
+    encoding: 'utf-8',
+  });
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
 describe('Plugin Distribution - Skills', () => {
   const skillPath = path.join(projectRoot, 'plugin/skills/mem-search/SKILL.md');
   const modeCreatorPath = path.join(projectRoot, 'plugin/skills/mode-creator/SKILL.md');
@@ -342,6 +350,26 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
       expect(command).not.toContain('$HOME/.claude/plugins/');
     }
   });
+
+  it('Claude runtime hooks fail open when plugin scripts cannot be resolved (#3412)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    try {
+      const parsed = readJson('plugin/hooks/hooks.json');
+      for (const [eventName, matchers] of Object.entries(parsed.hooks ?? {})) {
+        if (eventName === 'Setup') continue;
+        for (const matcher of matchers as any[]) {
+          for (const hook of matcher.hooks ?? []) {
+            if (hook.type !== 'command') continue;
+            const result = shellEval(hook.command, { HOME: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude') });
+            expect(result.status).toBe(0);
+            expect(result.stderr).toContain('claude-mem: plugin scripts not found');
+          }
+        }
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
@@ -477,7 +505,7 @@ const ccTrailing = (...tail: string[]) => [
 ];
 const claudeHook = (tail: string[], extra: Record<string, unknown> = {}) => buildShellCommand({
   host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-  trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
+  trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', failOpen: true, ...extra,
 });
 const codexHook = (tail: string[]) => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
@@ -616,14 +644,6 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     return `${resolution} echo "RESOLVED=$_P"`;
   }
 
-  function shellEval(command: string, env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
-    const result = spawnSync(bashExecutable(), ['-c', command], {
-      env: { PATH: process.env.PATH ?? '', ...env },
-      encoding: 'utf-8',
-    });
-    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
-  }
-
   const claudeCommands = () => {
     const parsed = readJson('plugin/hooks/hooks.json');
     return Object.entries(RULE_A_EXPECTATIONS['plugin/hooks/hooks.json']).map(
@@ -647,6 +667,62 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a valid CLAUDE_PLUGIN_ROOT without scanning the plugin cache (#3449, #4121)', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cm-root-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const shimBin = mkdtempSync(path.join(tmpdir(), 'cm-bin-'));
+    const cacheScanMarker = path.join(home, 'cache-scan-ran');
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(root, 'scripts', file), '');
+    }
+    // Only the cache scan sorts with `sort -r`; the NVM PATH prelude sorts by
+    // -t. keys. This shim records `-r` calls and passes input through.
+    writeFileSync(
+      path.join(shimBin, 'sort'),
+      '#!/bin/sh\n[ "$1" = "-r" ] && printf touched > "$CACHE_SCAN_MARKER"\ncat\n',
+    );
+    chmodSync(path.join(shimBin, 'sort'), 0o755);
+
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const codexCommands = Object.keys(RULE_A_EXPECTATIONS['plugin/hooks/codex-hooks.json']).map(
+      (dottedPath) => ({ dottedPath, command: hookCommandByPath(codexHooks, dottedPath)! }),
+    );
+
+    try {
+      for (const { dottedPath, command } of [...claudeCommands(), ...codexCommands]) {
+        rmSync(cacheScanMarker, { force: true });
+        const { status, stdout } = shellEval(instrument(command), {
+          CLAUDE_PLUGIN_ROOT: root,
+          HOME: home,
+          CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
+          PATH: `${shimBin}${path.delimiter}${process.env.PATH ?? ''}`,
+        });
+        expect({ dottedPath, status }).toEqual({ dottedPath, status: 0 });
+        expectResolvedPath(stdout, root);
+        expect({ dottedPath, cacheScanned: existsSync(cacheScanMarker) }).toEqual({ dottedPath, cacheScanned: false });
+      }
+
+      // Control: with an invalid CLAUDE_PLUGIN_ROOT the cache scan still runs,
+      // so the shim above would have caught a fast path that never engaged.
+      rmSync(cacheScanMarker, { force: true });
+      const [{ command: sessionStartCommand }] = claudeCommands().filter(
+        ({ dottedPath }) => dottedPath === 'SessionStart.0.1',
+      );
+      shellEval(instrument(sessionStartCommand), {
+        CLAUDE_PLUGIN_ROOT: path.join(home, 'not-a-plugin-root'),
+        HOME: home,
+        CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
+        PATH: `${shimBin}${path.delimiter}${process.env.PATH ?? ''}`,
+      });
+      expect(existsSync(cacheScanMarker)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+      rmSync(shimBin, { recursive: true, force: true });
     }
   });
 
@@ -698,17 +774,38 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     }
   });
 
-  it('fails cleanly with the canonical not-found message when no candidate exists', () => {
+  it('keeps Setup fail-loud while runtime hooks fail open when no candidate exists', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-empty-'));
     try {
       const parsed = readJson('plugin/hooks/hooks.json');
-      const command = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
-      const result = spawnSync('bash', ['-c', command], {
-        env: { PATH: process.env.PATH ?? '', HOME: home },
-        encoding: 'utf-8',
-      });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr ?? '').toMatch(/claude-mem: .* not found/);
+      const setupCommand = hookCommandByPath(parsed, 'Setup.0.0')!;
+      const setupResult = shellEval(setupCommand, { HOME: home });
+      expect(setupResult.status).not.toBe(0);
+      expect(setupResult.stderr).toMatch(/claude-mem: .* not found/);
+
+      const runtimeCommand = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
+      const runtimeResult = shellEval(runtimeCommand, { HOME: home });
+      expect(runtimeResult.status).toBe(0);
+      expect(runtimeResult.stderr).toMatch(/claude-mem: .* not found/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps runtime hooks fail-open when the resolved command exits non-zero (#3412)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-command-fail-'));
+    const pluginRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    writeFileSync(path.join(pluginRoot, 'scripts', 'bun-runner.js'), 'process.exit(7);\n');
+    writeFileSync(path.join(pluginRoot, 'scripts', 'worker-service.cjs'), '');
+
+    try {
+      const parsed = readJson('plugin/hooks/hooks.json');
+      const runtimeCommand = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
+      const runtimeResult = shellEval(runtimeCommand, { HOME: home });
+
+      expect(runtimeResult.status).toBe(0);
+      expect(runtimeResult.stderr).toContain('claude-mem: hook command failed (exit 7)');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

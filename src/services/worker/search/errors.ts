@@ -7,3 +7,10 @@ export class ChromaUnavailableError extends AppError {
     this.name = 'ChromaUnavailableError';
   }
 }
+
+export class ChromaCorruptCollectionError extends AppError {
+  constructor(message: string, cause?: Error) {
+    super(message, 500, 'CHROMA_CORRUPT_COLLECTION', cause ? { cause: cause.message } : undefined);
+    this.name = 'ChromaCorruptCollectionError';
+  }
+}
