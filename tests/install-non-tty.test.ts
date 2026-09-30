@@ -250,7 +250,9 @@ describe('Install Non-TTY Support', () => {
         installSource.indexOf("title: 'Setting up runtime"),
         installSource.indexOf("return `Runtime ready"),
       );
-      expect(runtimeSetupRegion).toContain('await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary)');
+      expect(runtimeSetupRegion).toContain(
+        'await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary, TREE_SITTER_INSTALL_BUDGET_MS)',
+      );
       expect(runtimeSetupRegion).not.toContain('ErrorSeverity.ABORT');
     });
 

@@ -60,6 +60,9 @@ function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[
 
 const isInteractive = process.stdin.isTTY === true;
 
+/** How long `install` waits for the tree-sitter CLI download before warning and moving on to sign-in. */
+const TREE_SITTER_INSTALL_BUDGET_MS = 2 * 60 * 1000;
+
 /**
  * Which package manager launched this CLI (npx / bunx / pnpm / yarn), parsed
  * from npm_config_user_agent ("npm/10.8.2 node/v22.14.0 darwin arm64 ...").
@@ -2408,10 +2411,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
           // Installs run with lifecycle scripts suppressed, so tree-sitter-cli's
-          // own download never ran (#2910). A failure here only warns: this runs
-          // before the sign-in/trial step, and `npx claude-mem repair` retries it.
-          message('Checking the tree-sitter CLI…');
-          await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary);
+          // own download never ran (#2910). This runs before the sign-in/trial
+          // step, so a failure only warns and a stalled download is cut off at
+          // TREE_SITTER_INSTALL_BUDGET_MS; `npx claude-mem repair` retries it
+          // with the full dependency timeout.
+          const stopTreeSitterHeartbeat = startHeartbeat(message, 'Checking the tree-sitter CLI…');
+          try {
+            await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary, TREE_SITTER_INSTALL_BUDGET_MS);
+          } finally {
+            stopTreeSitterHeartbeat();
+          }
           writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },
