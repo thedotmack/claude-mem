@@ -379,6 +379,8 @@ export class DataRoutes extends BaseRouteHandler {
       ).run(originLocalId);
     }
 
+    // Only after the delete committed: open viewer tabs drop the row live.
+    this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: kind, id: Number(originLocalId) });
     res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev });
   }
 
