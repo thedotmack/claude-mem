@@ -273,4 +273,48 @@ describe('orphaned worktree adoption (#2864)', () => {
     expect(result.adoptedObservations).toBe(0);
     expect(mergedInto(dbPath, foreignObsId)).toBeNull();
   });
+
+  // #3641 — Codex puts worktrees at ~/.codex/worktrees/<id>/<repo>, so the
+  // worktree basename equals the repo name and the composite key doubles to
+  // `<repo>/<repo>`. Once that worktree is deleted the sweep must still fold the
+  // rows into the repo, non-destructively, and queue the remap for cloud sync.
+  it('adopts a deleted Codex worktree keyed <repo>/<repo> and queues the remap for sync', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
+    const mainRepo = path.join(tempRoot, 'app');
+    const codexWorktree = path.join(tempRoot, 'codex', 'worktrees', 'a1b2', 'app');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory, { recursive: true });
+    mkdirSync(path.dirname(codexWorktree), { recursive: true });
+    initRepo(mainRepo);
+
+    git(mainRepo, 'worktree', 'add', '-b', 'codex-task', codexWorktree);
+    const dbPath = path.join(dataDirectory, 'claude-mem.db');
+    const store = new SessionStore(dbPath);
+    seedSession(store, 'content-codex', 'app/app', 'memory-codex');
+    const obsId = seedObservation(store, 'memory-codex', 'app/app');
+    store.close();
+
+    git(mainRepo, 'worktree', 'remove', '--force', codexWorktree);
+    git(mainRepo, 'worktree', 'prune');
+
+    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+
+    expect(result.orphanedWorktrees).toEqual(['app/app']);
+    expect(result.adoptedObservations).toBe(1);
+    expect(mergedInto(dbPath, obsId)).toBe('app');
+
+    const verify = new SessionStore(dbPath);
+    const project = verify.db.prepare('SELECT project FROM observations WHERE id = ?').get(obsId) as { project: string };
+    const ops = (verify.db.prepare('SELECT body FROM sync_outbox').all() as Array<{ body: string }>)
+      .map(op => JSON.parse(op.body));
+    verify.close();
+
+    // Non-destructive: the stored key is untouched, only the alias is stamped.
+    expect(project.project).toBe('app/app');
+    expect(ops).toContainEqual({
+      op: 'remap_project',
+      where: { project: 'app/app', merged_into_project_is_null: true },
+      fields: { merged_into_project: 'app' },
+    });
+  });
 });

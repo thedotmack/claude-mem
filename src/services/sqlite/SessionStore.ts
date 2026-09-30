@@ -197,7 +197,6 @@ export class SessionStore {
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
     this.ensureMergedIntoProjectColumns();
-    this.ensureSessionCwdColumn();
     this.addObservationSubagentColumns();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
@@ -217,6 +216,7 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
+    this.ensureSessionCwdColumn();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1964,8 +1964,13 @@ export class SessionStore {
     );
   }
 
-  // Worktree adoption discovers repos from this; sdk_sessions is local-only,
-  // so no sync-lane plumbing (#2864).
+  // v53 — sdk_sessions.cwd. Worktree adoption discovers repos from this;
+  // sdk_sessions is local-only, so no sync-lane plumbing (#2864).
+  //
+  // Runs LAST in the constructor, after every migration that rebuilds
+  // sdk_sessions from a fixed column list (v33's composite-identity rebuild):
+  // added any earlier, a pre-v33 database would lose the column in that
+  // rebuild and every ingest would then fail on setSessionCwd.
   private ensureSessionCwdColumn(): void {
     const cols = this.db
       .query('PRAGMA table_info(sdk_sessions)')
@@ -1978,7 +1983,7 @@ export class SessionStore {
       'CREATE INDEX IF NOT EXISTS idx_sdk_sessions_cwd ON sdk_sessions(cwd)'
     );
 
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
   }
 
   private addObservationSubagentColumns(): void {
