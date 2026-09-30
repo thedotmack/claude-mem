@@ -668,10 +668,13 @@ export class SessionRoutes extends BaseRouteHandler {
         // (#4150). Only that Claude prose path is booked here: a classified auth
         // error is booked by the .catch with the provider's own words, and the
         // cmem gateway's key_invalid is the trial-expiry fallback, not an outage.
+        // It is booked as the refused credential it is (auth_invalid), so the
+        // SessionStart banner shows at once with the /login remedy rather than
+        // waiting out the failure threshold and then offering a restart.
         if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
           recordObserverFailure(provider, {
             message: 'Claude Code reported the observer as signed out',
-            kind: 'auth',
+            kind: 'auth_invalid',
             action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
           });
         }

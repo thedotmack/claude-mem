@@ -861,6 +861,79 @@ describe('SessionRoutes — cmem gateway integrity', () => {
     });
   });
 
+  describe('a signed-out Claude observer (#4150)', () => {
+    /**
+     * What ResponseProcessor does with the CLI's "Not logged in · Please run
+     * /login": the batch goes back to pending and the run pauses without
+     * throwing, so the catch never sees it.
+     */
+    function answerSignedOut(s: ActiveSession): Promise<void> {
+      s.abortReason = 'auth:observer_text';
+      s.abortController.abort();
+      return Promise.resolve();
+    }
+
+    it('is booked as a refused credential with the /login remedy, shown at the next SessionStart', async () => {
+      const id = 924001;
+      seedSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+      const { routes, claudeAgent, completionHandler } = makeHarness([id]);
+      claudeAgent.startSession.mockImplementationOnce(answerSignedOut);
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      const health = readObserverHealth();
+      expect(health?.consecutiveFailures).toBe(1);
+      expect(health?.lastErrorProvider).toBe('claude');
+      expect(health?.lastErrorKind).toBe('auth_invalid');
+      expect(health?.lastErrorAction).toContain('/login');
+      // Paused, not finalized: the batch waits for the re-login.
+      expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+
+      // Shown at once, with the /login remedy: a restart cannot sign the CLI in.
+      const notice = observerHealthWarning();
+      expect(notice).toContain('What to do: Run /login in Claude Code');
+      expect(notice).not.toContain('npx claude-mem restart');
+    });
+
+    it('a classified refusal that also paused on the prose is booked once, by the catch', async () => {
+      const id = 924002;
+      seedSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+      const { routes, claudeAgent } = makeHarness([id]);
+      claudeAgent.startSession.mockImplementationOnce((s: ActiveSession) => {
+        s.abortReason = 'auth:observer_text';
+        s.abortController.abort();
+        return Promise.reject(new ClassifiedProviderError('The provider refused the credential', {
+          kind: 'auth_invalid',
+          cause: null,
+          action: 'Run /login',
+        }));
+      });
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      // One failure, in the provider's own words — not re-booked as signed out.
+      const health = readObserverHealth();
+      expect(health?.consecutiveFailures).toBe(1);
+      expect(health?.lastErrorMessage).toBe('The provider refused the credential');
+    });
+
+    it('signed-out prose from a cmem gateway session is never booked as a Claude /login outage', async () => {
+      const id = 924003;
+      seedSettings();
+      const gatewayAgent = { startSession: mock(answerSignedOut) };
+      const { routes } = makeHarness([id], gatewayAgent);
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      expect(gatewayAgent.startSession).toHaveBeenCalledTimes(1);
+      expect(readObserverHealth()?.consecutiveFailures ?? 0).toBe(0);
+      expect(persistedFallbackAt()).toBe('');
+    });
+  });
+
   describe('the single gateway re-probe after the fallback window', () => {
     it('admits exactly one of N concurrent sessions to the gateway; its failure re-arms the marker once', async () => {
       const ids = [921001, 921002, 921003, 921004, 921005];
