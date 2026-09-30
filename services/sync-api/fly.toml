@@ -1,0 +1,35 @@
+# CMEM Pro cloud sync-api — protocol v2 hub on Fly + Neon.
+# Deploy from this directory: `fly deploy`
+# Secrets: DATABASE_URL (already set), CMEM_INTERNAL_PROJECTOR_SECRET
+
+app = "cmem-sync-api"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  TOKEN_VERIFY_URL = "https://cmem.ai/api/pro/sync/verify"
+  AUTH_CACHE_TTL_SECONDS = "900"
+  INTERNAL_PROJECTOR_URL = "https://cmem.ai/api/internal/sync/project"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

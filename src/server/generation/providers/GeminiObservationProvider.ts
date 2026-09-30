@@ -13,8 +13,12 @@ import type {
   ServerGenerationResult,
 } from './shared/types.js';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+// v1beta is required: current Gemini 3.x models and the `-latest` aliases are
+// only served under v1beta, and the retired v1-only 2.x models 404 for new keys.
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+// `gemini-flash-latest` is a Google-maintained alias for the current GA Flash
+// model, so it stays valid for new API keys instead of pinning a retired ID.
+const DEFAULT_MODEL = 'gemini-flash-latest';
 
 export interface GeminiObservationProviderOptions {
   apiKey: string;

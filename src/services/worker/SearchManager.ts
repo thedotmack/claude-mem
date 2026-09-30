@@ -16,6 +16,8 @@ import {
   SearchOrchestrator,
   SEARCH_CONSTANTS
 } from './search/index.js';
+import type { SearchResults, StrategySearchResult } from './search/index.js';
+import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 
@@ -27,9 +29,9 @@ import { ChromaUnavailableError } from './search/errors.js';
  */
 export interface SearchTelemetryEnvelope {
   result_count?: number;
-  search_strategy?: 'chroma' | 'fts' | 'filter_only';
+  search_strategy?: 'chroma' | 'fts' | 'hybrid' | 'filter_only';
   chroma_available?: boolean;
-  fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized';
+  fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized' | 'chroma_zero_results';
 }
 
 export class SearchManager {
@@ -129,7 +131,7 @@ export class SearchManager {
 
   private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
     return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-      this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit: 1, project, platformSource })
+      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, platformSource })
     );
   }
 
@@ -274,14 +276,20 @@ export class SearchManager {
       normalized.type = normalized.type.split(',').map((s: string) => s.trim()).filter(Boolean);
     }
 
-    if (normalized.dateStart || normalized.dateEnd) {
+    const dateStart = normalized.dateStart ?? normalized.date_start ?? normalized.date_from;
+    const dateEnd = normalized.dateEnd ?? normalized.date_end ?? normalized.date_to;
+    if (dateStart || dateEnd) {
       normalized.dateRange = {
-        start: normalized.dateStart,
-        end: normalized.dateEnd
+        start: dateStart,
+        end: dateEnd
       };
-      delete normalized.dateStart;
-      delete normalized.dateEnd;
     }
+    delete normalized.dateStart;
+    delete normalized.dateEnd;
+    delete normalized.date_start;
+    delete normalized.date_end;
+    delete normalized.date_from;
+    delete normalized.date_to;
 
     if (normalized.isFolder === 'true') {
       normalized.isFolder = true;
@@ -304,10 +312,50 @@ export class SearchManager {
   }
 
   /**
+   * Reconcile the overloaded `type` param with `obs_type`.
+   *
+   * `type` is used two ways: as a document-category selector
+   * ('observations' | 'sessions' | 'prompts'), and — per the MCP schema, which
+   * documents it as "filter by observation type" — as an observation-type
+   * filter. The real observation-type filter is `obs_type`, which reaches
+   * SQLite as a `type IN (...)` condition with no allowlist, so custom types
+   * work through it. But a custom `type` value matched no category, turned off
+   * every collection, and returned nothing.
+   *
+   * Resolution: if every `type` value is a known category, use it as the
+   * category selector (unchanged behavior). Otherwise treat it as an alias for
+   * `obs_type` (merged with any explicit obs_type), and scope the search to
+   * observations — the only category obs_type applies to.
+   */
+  private resolveTypeFilters(type: any, obs_type: any): { category: any; effectiveObsType: any } {
+    const CATEGORY_TYPES = ['observations', 'sessions', 'prompts'];
+
+    if (type == null) {
+      return { category: type, effectiveObsType: obs_type };
+    }
+
+    const typeValues = Array.isArray(type) ? type : [type];
+    const isCategorySelector = typeValues.length > 0 && typeValues.every(t => CATEGORY_TYPES.includes(t));
+
+    if (isCategorySelector) {
+      return { category: type, effectiveObsType: obs_type };
+    }
+
+    const existingObsType = Array.isArray(obs_type)
+      ? obs_type
+      : (obs_type != null ? [obs_type] : []);
+    const mergedObsType = Array.from(new Set([...existingObsType, ...typeValues]));
+
+    return { category: 'observations', effectiveObsType: mergedObsType };
+  }
+
+  /**
    * PATH 2 body for search(): Chroma semantic query -> date-window filter ->
-   * SQLite hydration, with a scoped FTS5 fallback when a platform-scoped
-   * query matches nothing in Chroma. Extracted so search()'s try block stays
-   * narrow; any error here is handled by search()'s Chroma-failure fallback.
+   * SQLite hydration. Categories left empty here (no Chroma match, or every hit
+   * dropped by the date window or a filter) are refilled by search() through
+   * SearchOrchestrator.supplementEmptyCategories. Extracted so search()'s try
+   * block stays narrow; any error here is handled by search()'s Chroma-failure
+   * fallback.
    */
   private async performChromaSemanticSearch(
     query: string,
@@ -321,17 +369,11 @@ export class SearchManager {
       searchSessions: boolean;
       searchPrompts: boolean;
     }
-  ): Promise<{
-    observations: ObservationSearchResult[];
-    sessions: SessionSummarySearchResult[];
-    prompts: UserPromptSearchResult[];
-    platformScopedChromaZeroFallback: boolean;
-  }> {
+  ): Promise<SearchResults> {
     const { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts } = scope;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
-    let platformScopedChromaZeroFallback = false;
 
     const chromaResults = await this.queryChroma(query, 100, whereFilter);
     logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
@@ -382,8 +424,9 @@ export class SearchManager {
       }
 
       if (obsIds.length > 0) {
-        const obsOptions = { ...options, type: obs_type, concepts, files };
+        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: 'relevance' };
         observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
+        observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
       }
       if (sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
@@ -401,26 +444,9 @@ export class SearchManager {
           platformSource: options.platformSource
         });
       }
-    } else {
-      if (options.platformSource) {
-        logger.debug('SEARCH', 'Platform-scoped ChromaDB search found no matches; falling back to scoped FTS5 search', {});
-        platformScopedChromaZeroFallback = true;
-
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
-        }
-      } else {
-        logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
-      }
     }
 
-    return { observations, sessions, prompts, platformScopedChromaZeroFallback };
+    return { observations, sessions, prompts };
   }
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
@@ -430,16 +456,35 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
-    let platformScopedChromaZeroFallback = false;
+    let chromaSupplementStrategy: StrategySearchResult['strategy'] = 'chroma';
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
-    const searchObservations = !type || type === 'observations';
-    const searchSessions = !type || type === 'sessions';
-    const searchPrompts = !type || type === 'prompts';
+    // `type` historically doubles as a document-category selector
+    // ('observations' | 'sessions' | 'prompts'). But it is documented in the
+    // MCP schema as "filter by observation type", so callers routinely pass a
+    // custom observation type (e.g. 'bugfix') here. Left as-is, such a value
+    // matches none of the three categories, zeroes every collection boolean,
+    // and returns nothing. Reconcile the two meanings: when `type` is not one
+    // of the known categories, treat it as an alias for `obs_type` and scope
+    // the search to observations, so the documented behavior actually holds.
+    const { category, effectiveObsType } = this.resolveTypeFilters(type, obs_type);
+    assertSearchHasQueryOrFilter({
+      query,
+      project: options.project,
+      platformSource: options.platformSource,
+      dateRange: options.dateRange,
+      obsType: effectiveObsType,
+      concepts,
+      files,
+    });
+
+    const searchObservations = !category || category === 'observations';
+    const searchSessions = !category || category === 'sessions';
+    const searchPrompts = !category || category === 'prompts';
 
     if (!query) {
       logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
-      const obsOptions = { ...options, type: obs_type, concepts, files };
+      const obsOptions = { ...options, type: effectiveObsType, concepts, files };
       if (searchObservations) {
         observations = this.sessionSearch.searchObservations(undefined, obsOptions);
       }
@@ -453,14 +498,14 @@ export class SearchManager {
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
     else if (this.chromaSync) {
       let chromaSucceeded = false;
-      logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
+      logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: category || 'all' });
 
       const whereFilters: Array<Record<string, any>> = [];
-      if (type === 'observations') {
+      if (category === 'observations') {
         whereFilters.push({ doc_type: 'observation' });
-      } else if (type === 'sessions') {
+      } else if (category === 'sessions') {
         whereFilters.push({ doc_type: 'session_summary' });
-      } else if (type === 'prompts') {
+      } else if (category === 'prompts') {
         whereFilters.push({ doc_type: 'user_prompt' });
       }
 
@@ -484,9 +529,24 @@ export class SearchManager {
           : { $and: whereFilters };
 
       try {
-        const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts });
+        const chromaResults = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts });
         chromaSucceeded = true;
-        ({ observations, sessions, prompts, platformScopedChromaZeroFallback } = chromaOutcome);
+        // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
+        // category Chroma left empty, or answers alone when Chroma left them all empty.
+        const supplemented = await this.orchestrator.supplementEmptyCategories(
+          {
+            ...options,
+            query,
+            searchType: category ?? 'all',
+            obsType: effectiveObsType,
+            concepts,
+            files,
+            orderBy: options.orderBy ?? 'relevance',
+          },
+          { results: chromaResults, usedChroma: true, strategy: 'chroma' }
+        );
+        ({ observations, sessions, prompts } = supplemented.results);
+        chromaSupplementStrategy = supplemented.strategy;
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -497,7 +557,7 @@ export class SearchManager {
         chromaFailed = true;
 
         if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
         }
         if (searchSessions) {
           sessions = this.sessionSearch.searchSessions(query, options);
@@ -512,7 +572,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
       try {
         if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
         }
         if (searchSessions) {
           sessions = this.sessionSearch.searchSessions(query, options);
@@ -540,14 +600,20 @@ export class SearchManager {
         searchStrategy = 'filter_only';
         fallbackReason = 'none';
       } else if (this.chromaSync) {
-        // PATH 2: Chroma semantic search, degrading to FTS5 on error or
-        // platform-scoped zeroes caused by pre-platform Chroma metadata.
-        searchStrategy = chromaFailed || platformScopedChromaZeroFallback ? 'fts' : 'chroma';
+        // PATH 2: Chroma semantic search. FTS5 answers alone on a Chroma error
+        // or when Chroma left every requested category empty; 'hybrid' means
+        // SQLite refilled only the categories Chroma left empty.
         if (chromaFailed) {
+          searchStrategy = 'fts';
           fallbackReason = chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error';
-        } else if (platformScopedChromaZeroFallback) {
-          fallbackReason = 'chroma_error';
+        } else if (chromaSupplementStrategy === 'sqlite') {
+          searchStrategy = 'fts';
+          fallbackReason = 'chroma_zero_results';
+        } else if (chromaSupplementStrategy === 'hybrid') {
+          searchStrategy = 'hybrid';
+          fallbackReason = 'chroma_zero_results';
         } else {
+          searchStrategy = 'chroma';
           fallbackReason = 'none';
         }
       } else {
@@ -869,7 +935,7 @@ export class SearchManager {
       try {
         const limit = options.limit || 20;
         results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit, project: options.project, platformSource: options.platformSource })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, platformSource: options.platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -897,13 +963,29 @@ export class SearchManager {
       };
     }
 
-    const header = `Found ${results.length} observation(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
+    // Relevance-ordered results (FTS/Chroma): only add day headers, never
+    // reorder into chronological groups, or the most relevant match could
+    // print below a less relevant but more recent one.
+    const resultsByDate = groupByDate(results, obs => obs.created_at, { sort: false });
+
+    const lines: string[] = [];
+    lines.push(`Found ${results.length} observation(s) matching "${query}"`);
+    lines.push('');
+
+    for (const [day, dayResults] of resultsByDate) {
+      lines.push(`### ${day}`);
+      lines.push('');
+      lines.push(this.formatter.formatTableHeader());
+      for (const obs of dayResults) {
+        lines.push(this.formatter.formatObservationIndex(obs, 0));
+      }
+      lines.push('');
+    }
 
     return {
       content: [{
         type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
+        text: lines.join('\n')
       }]
     };
   }
@@ -1048,7 +1130,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
       try {
         results = await this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'date_desc', limit, project, platformSource })
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project, platformSource })
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
