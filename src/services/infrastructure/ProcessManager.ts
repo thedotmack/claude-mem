@@ -9,6 +9,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
+import { buildWorktreeProjectKey } from '../../utils/project-name.js';
 import { paths } from '../../shared/paths.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 
@@ -261,7 +262,7 @@ function classifyCwdForRemap(cwd: string): CwdClassification {
     ? path.dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
   const parent = path.basename(parentRepoDir);
-  return { kind: 'worktree', project: `${parent}/${leaf}` };
+  return { kind: 'worktree', project: buildWorktreeProjectKey(parent, leaf) };
 }
 
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
