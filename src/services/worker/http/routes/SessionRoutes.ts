@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -37,7 +38,7 @@ import {
   isDependencyStatusInCooldown,
   recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
-import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
+import { findClaudeExecutable, isClaudeExecutableUnspawnable } from '../../../../shared/find-claude-executable.js';
 import { recordObserverFailure } from '../../../../shared/observer-health.js';
 import {
   tryAdmitQuotaProbe,
@@ -45,11 +46,19 @@ import {
   recordAuthCooldown,
   recordQuotaExhausted,
   getQuotaCooldown,
+  isQuotaCooldownActive,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError, type ClassifiedProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
+import {
+  canAttemptClaudeCliSelfHeal,
+  recordClaudeCliSelfHealAttempt,
+  clearClaudeCliSelfHealAttempts,
+  claudeCliSelfHealAttemptsInWindow,
+  SELF_HEAL_MAX_ATTEMPTS,
+} from '../../stale-spawn-recovery.js';
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
@@ -105,6 +114,52 @@ export class SessionRoutes extends BaseRouteHandler {
     this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
   }
 
+  /**
+   * A worker process self-heals the stale-Claude-spawn wedge at most once: the
+   * restart replaces this process, so concurrent sessions hitting the same wedge
+   * must not each burn a slot in the per-generation persistent budget.
+   */
+  private claudeSelfHealTriggered = false;
+
+  /**
+   * When the Claude CLI is present on disk but this worker process can no longer
+   * spawn it (ENOENT after a CLI auto-update swapped the binary underneath a
+   * long-running process), an in-process re-probe can never recover — only a
+   * fresh process can. Self-restart the worker via the successor-handoff path,
+   * bounded by a cross-process-persistent budget so a genuinely broken install
+   * cannot thrash. Returns true when a restart was triggered.
+   */
+  private maybeSelfHealStaleClaudeSpawn(error: unknown, source: string, sessionDbId: number): boolean {
+    const cause = isClassified(error) ? (error as ClassifiedProviderError).cause : undefined;
+    const unspawnable = isClaudeExecutableUnspawnable(error) || isClaudeExecutableUnspawnable(cause);
+    if (!unspawnable) return false;
+
+    // Restart already scheduled by an earlier session in this process — the
+    // successor will re-resolve the CLI; do not record another attempt.
+    if (this.claudeSelfHealTriggered) return true;
+
+    if (!canAttemptClaudeCliSelfHeal()) {
+      logger.warn('SESSION', 'Claude CLI present but unspawnable; self-heal restart budget exhausted — leaving in setup_required (restart claude-mem manually / verify the CLI)', {
+        sessionId: sessionDbId,
+        source,
+        attemptsInWindow: claudeCliSelfHealAttemptsInWindow(),
+        maxAttempts: SELF_HEAL_MAX_ATTEMPTS,
+      });
+      return false;
+    }
+
+    const attempt = recordClaudeCliSelfHealAttempt();
+    logger.warn('SESSION', 'Claude CLI present on disk but unspawnable from this worker (stale process after CLI auto-update) — self-restarting to recover', {
+      sessionId: sessionDbId,
+      source,
+      selfHealAttempt: attempt,
+      maxAttempts: SELF_HEAL_MAX_ATTEMPTS,
+    });
+    this.claudeSelfHealTriggered = true;
+    void this.workerService.shutdown('restart');
+    return true;
+  }
+
   private formatTelegramWrapup = async (input: TelegramWrapupFormatterInput): Promise<string> => {
     const activeSession = this.sessionManager.getSession(input.sessionDbId);
     const selection = activeSession?.currentProvider
@@ -133,6 +188,32 @@ export class SessionRoutes extends BaseRouteHandler {
       releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
     }
   };
+
+  /** Schedule retries through the normal provider gates and per-session mutex.
+   * The count is attempts scheduled, not generators admitted by those gates.
+   *
+   * The automatic sweep is paced by the provider's quota breaker (read-only):
+   * nothing is scheduled while the breaker withholds requests, since every
+   * attempt would only log a skip (#4127 counted 159 of those). Once the window
+   * elapses, one session per tick goes through to carry the recovery probe; the
+   * rest follow after that probe succeeds and clears the breaker. The operator
+   * retry (`POST /api/processing`) is not paced.
+   */
+  public resumePendingSessions(source: string, includeOperatorOnly: boolean = false): number {
+    let sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
+    if (!includeOperatorOnly && sessionIds.length > 0) {
+      const provider = getSelectedProvider();
+      if (isQuotaCooldownActive(provider)) return 0;
+      if (getQuotaCooldown(provider)) sessionIds = sessionIds.slice(0, 1);
+    }
+    for (const sessionDbId of sessionIds) {
+      void this.ensureGeneratorRunning(sessionDbId, source).catch((error: unknown) => {
+        logger.warn('SESSION', 'Failed to resume buffered session', { sessionId: sessionDbId, source },
+          error instanceof Error ? error : new Error(String(error)));
+      });
+    }
+    return sessionIds.length;
+  }
 
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
@@ -211,11 +292,24 @@ export class SessionRoutes extends BaseRouteHandler {
           try {
             findClaudeExecutable('SDK');
             clearDependencyStatus('claude_cli');
+            clearClaudeCliSelfHealAttempts();
             logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {
               sessionId: sessionDbId,
               source,
             });
           } catch (error) {
+            if (this.maybeSelfHealStaleClaudeSpawn(error, source, sessionDbId)) {
+              // The self-heal restart can be delayed or fail to hand off, and a
+              // second session hitting the already-triggered flag returns here
+              // while the first restart is still pending — in any of those
+              // windows this worker keeps running. No generator is started to
+              // carry the claim, so release it now like every other early
+              // return in this block; otherwise the gateway probe stays
+              // in-flight and suppresses later gateway checks in a worker that
+              // survived its own restart trigger.
+              releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+              return;
+            }
             const err = error instanceof Error ? error : new Error(String(error));
             const classified = classifyClaudeError(error);
             if (classified.kind === 'setup_required') {
@@ -369,6 +463,10 @@ export class SessionRoutes extends BaseRouteHandler {
       clearTimeout(session.stallResumeTimer);
       session.stallResumeTimer = undefined;
     }
+    // The last pause no longer describes this session; if this run pauses
+    // too, its exit records a fresh reason. Without this, one auth pause would
+    // keep the session out of every automatic sweep for good.
+    session.pausedReason = null;
 
     if (session.abortController.signal.aborted) {
       logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
@@ -421,7 +519,9 @@ export class SessionRoutes extends BaseRouteHandler {
         const errorMsg = error instanceof Error ? error.message : String(error);
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
+          session.pausedReason = 'setup_required';
           recordClaudeCliSetupRequired(error.message);
+          this.maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
           logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
             sessionId: session.sessionDbId,
             provider,
@@ -542,7 +642,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // one), nor given a breaker over a cmem fallback's window.
         if (normalizeAbortReason(reason) === 'quota' && !failureBooked) {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
-          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
+          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
           // Quota returned as assistant prose never throws, so it never reaches
           // the .catch above and never armed the health ledger. Without this the
           // session-start warning is structurally blind to an entire outage
@@ -610,6 +710,11 @@ export class SessionRoutes extends BaseRouteHandler {
               maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
             });
           } else {
+            // The delayed retry may hit a quota cooldown and return without
+            // starting a generator. Keep this pause eligible for the periodic
+            // sweep after the timer fires; ordinary transport pauses still
+            // require an explicit retry, and exhausted stalls keep their cap.
+            session.pausedReason = 'response_stall';
             const resume = setTimeout(() => {
               session.stallResumeTimer = undefined;
               void this.ensureGeneratorRunning(session.sessionDbId, 'response-stall')
@@ -644,12 +749,12 @@ export class SessionRoutes extends BaseRouteHandler {
       case 'quota_exhausted':
         // A spent allowance: withhold requests for a cooldown, then let one
         // through to re-probe, instead of one doomed request per event (#3634).
-        recordQuotaExhausted(provider, error.message);
+        recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile);
         break;
       case 'auth_invalid':
         // A refused credential fails every request until the user acts; the
         // cooldown stops one wasted request per captured event.
-        recordAuthCooldown(provider, error.message);
+        recordAuthCooldown(provider, error.message, session.observerProfile);
         break;
       case 'rate_limit': {
         // Never a spent allowance. The provider already retried in place, and
@@ -662,7 +767,7 @@ export class SessionRoutes extends BaseRouteHandler {
         if (plan?.resume && error.retryAfterMs !== undefined) {
           resumeAfterMs = Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
         } else {
-          recordQuotaExhausted(provider, error.message, 'rate_limit');
+          recordQuotaExhausted(provider, error.message, 'rate_limit', undefined, session.observerProfile);
         }
         break;
       }
@@ -693,6 +798,15 @@ export class SessionRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    // Operator repair route: it starts generators and retries auth/transport
+    // pauses that the automatic sweep leaves alone, so it is localhost-only
+    // like the other admin routes.
+    app.post(
+      '/api/processing',
+      requireLocalhost,
+      validateBody(SessionRoutes.processingSchema),
+      this.handleProcessing.bind(this)
+    );
     app.post(
       '/api/sessions/init',
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
@@ -714,6 +828,24 @@ export class SessionRoutes extends BaseRouteHandler {
       this.handleSessionEnd.bind(this)
     );
   }
+
+  private static readonly processingSchema = z.object({
+    isProcessing: z.boolean(),
+  });
+
+  private handleProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // Legacy callers request false to unstick processing. There is no global
+    // processing flag to reset: retry existing buffered sessions instead.
+    const scheduledSessions = req.body.isProcessing ? 0 : this.resumePendingSessions('processing-api', true);
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    res.json({
+      status: 'ok',
+      isProcessing: queueDepth > 0,
+      queueDepth,
+      activeSessions: this.sessionManager.getActiveSessionCount(),
+      scheduledSessions,
+    });
+  });
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),

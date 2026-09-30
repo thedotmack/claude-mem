@@ -23,6 +23,13 @@ export interface ActiveSession {
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  /**
+   * Claude account (config-dir profile key) the latest Claude generator was
+   * spawned under. Its env, and so its billing account, is fixed at spawn, so
+   * a quota refusal it hits is armed under this account even if the setting
+   * changed while it ran.
+   */
+  observerProfile?: string;
   consecutiveRestarts: number;
   /**
    * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
@@ -75,6 +82,8 @@ export interface ActiveSession {
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
+  /** Why buffered work was last parked after a generator exit. */
+  pausedReason?: string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;

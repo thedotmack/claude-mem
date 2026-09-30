@@ -16,6 +16,7 @@ import {
 } from '../../shared/observer-recycle.js';
 import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
+import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 
 import {
@@ -77,8 +78,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Throw a provider-specific "API key not configured" error. */
   protected abstract missingApiKeyError(): Error;
 
-  /** Issue the actual HTTP request and normalize its response. */
-  protected abstract query(history: ConversationMessage[], config: TConfig, signal?: AbortSignal): Promise<ProviderQueryResult>;
+  /**
+   * Issue the actual HTTP request and normalize its response.
+   * `perAttemptTimeoutMs` overrides the CLAUDE_MEM_LLM_TIMEOUT_MS per-attempt
+   * deadline for callers racing their own, longer deadline (the field pass).
+   */
+  protected abstract query(
+    history: ConversationMessage[],
+    config: TConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult>;
 
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
@@ -87,11 +97,21 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
    * `session.conversationHistory` would grow the very conversation the recycle
    * logic exists to bound.
    */
-  private async compressField(text: string, budgetChars: number, config: TConfig, signal: AbortSignal): Promise<string | null> {
+  private async compressField(
+    text: string,
+    budgetChars: number,
+    config: TConfig,
+    signal: AbortSignal,
+    deadlineMs?: number,
+  ): Promise<string | null> {
+    // The field pass races `deadlineMs` (CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).
+    // Without it the request keeps the LLM per-attempt default, and a longer
+    // field knob would never take effect on this path (#4134).
     const result = await this.query(
       [{ role: 'user', content: buildFieldCompressionPrompt(text, budgetChars) }],
       config,
       signal,
+      deadlineMs,
     );
     return result.content || null;
   }
@@ -294,8 +314,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // rather than a head/tail slice with the middle cut out (#3800).
     const optimized = await optimizeObservationFields(
       { toolInput: message.tool_input, toolOutput: message.tool_response },
-      (text, budgetChars, signal) => this.compressField(text, budgetChars, config, signal),
+      (text, budgetChars, signal, deadlineMs) => this.compressField(text, budgetChars, config, signal, deadlineMs),
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+      undefined,
+      resolveFieldOptimizeTimeoutMs,
     );
 
     const obsPrompt = buildObservationPrompt({

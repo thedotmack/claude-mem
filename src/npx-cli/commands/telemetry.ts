@@ -96,6 +96,7 @@ const EVENT_NAMES = [
   'installer_oauth_deferred',
   'uninstall_completed',
   'worker_started',
+  'worker_start_failed',
   'worker_stopped',
   'supervisor_registry_degraded',
   'session_compressed',

@@ -34,6 +34,11 @@ import { PostgresServerSessionsRepository } from '../../../storage/postgres/serv
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
+import {
+  SERVER_CONTEXT_MAX_LIMIT,
+  SERVER_CONTEXT_QUERY_DEFAULT_LIMIT,
+  SERVER_CONTEXT_RECENT_DEFAULT_LIMIT,
+} from '../../../shared/server-context-limits.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
@@ -975,24 +980,37 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     app.post('/v1/context', readAuth, this.handleCreate(
       z.object({
         projectId: z.string().min(1),
-        query: z.string().min(1),
-        limit: z.number().int().positive().max(50).optional(),
+        // Optional: a context request with no query asks for the most RECENT
+        // observations, which is what a session-start block actually wants.
+        query: z.string().min(1).optional(),
+        // A recency read needs more rows than a relevance lookup, so the cap is
+        // the CLAUDE_MEM_CONTEXT_OBSERVATIONS range and the default depends on
+        // whether a query was given.
+        limit: z.number().int().positive().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
         platformSource: z.string().min(1).nullable().optional(),
+        // Folder labels (observations.metadata.project). When set, only rows
+        // generated for one of these folders are returned.
+        folderProjects: z.array(z.string().min(1)).min(1).max(20).optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         const platformSource = normalizePlatformSourceOrNull(body.platformSource);
+        const limit = body.limit
+          ?? (body.query ? SERVER_CONTEXT_QUERY_DEFAULT_LIMIT : SERVER_CONTEXT_RECENT_DEFAULT_LIMIT);
         let results;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
+          // One query for both modes, so the platform and folder filters apply
+          // to the recency read exactly as they do to a relevance read.
           results = await repo.search({
             projectId: body.projectId,
             teamId,
-            query: body.query,
-            limit: body.limit ?? 10,
+            query: body.query ?? null,
+            limit,
             platformSource,
+            folderProjects: body.folderProjects ?? null,
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -1006,9 +1024,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           .join('\n\n');
         await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'context',
-          query: body.query,
-          limit: body.limit ?? 10,
+          query: body.query ?? null,
+          limit,
           platformSource,
+          folderProjects: body.folderProjects ?? null,
           resultCount: results.length,
           observationIds: results.map(o => o.id),
         });

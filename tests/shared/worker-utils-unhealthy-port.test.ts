@@ -186,6 +186,9 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
 
   it('does not suppress verified stale-worker recycling when the port wait consumes the deadline', async () => {
     versionMatch = { matches: false, pluginVersion: '13.15.2', workerVersion: '13.14.0' };
+    // The killed worker's port binds free again (the release check after the
+    // kill is a bind probe since #3416; the recycle path skips the pre-spawn gate).
+    occupancy = 'free';
     delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
     const workerUtils = await importWorkerUtilsFresh();
     ownedPidInfo = { pid: 4242, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
