@@ -1,36 +1,56 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync, chmodSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 import { DEFAULT_SETTINGS as VIEWER_DEFAULT_SETTINGS } from '../../src/ui/viewer/constants/settings.js';
 
+/** Run `run` and collect every console.warn line it printed (the migration log channel). */
+function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  try {
+    return { value: run(), warnings };
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 describe('SettingsDefaultsManager', () => {
   let tempDir: string;
   let settingsPath: string;
-  let prevDataDirEnv: string | undefined;
+  let savedDefaultKeyEnv: Record<string, string | undefined>;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `settings-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     settingsPath = join(tempDir, 'settings.json');
 
-    // The preload tripwire (tests/preload.ts) pins CLAUDE_MEM_DATA_DIR for
-    // the whole run, and loadFromFile applies env overrides on top of file
-    // values — which would make every loadFromFile result diverge from
-    // getAllDefaults()'s hardcoded ~/.claude-mem default. These tests are
-    // about file > defaults behavior on an EXPLICIT settingsPath (no real
-    // data-dir I/O happens here), so drop the env override for their
-    // duration and restore it after.
-    prevDataDirEnv = process.env.CLAUDE_MEM_DATA_DIR;
-    delete process.env.CLAUDE_MEM_DATA_DIR;
+    // loadFromFile applies env overrides on top of file/defaults, so ANY
+    // settings-default key present in process.env makes its result diverge
+    // from getAllDefaults(). On a dev machine this is not just the
+    // CLAUDE_MEM_DATA_DIR pinned by the preload tripwire (tests/preload.ts) —
+    // a running claude-mem install also exports e.g. CLAUDE_MEM_API_TIMEOUT_MS,
+    // which silently broke these tests on contributor boxes while passing in a
+    // clean CI env. These tests cover file > defaults behavior on an EXPLICIT
+    // settingsPath (no real data-dir I/O), so strip EVERY default key from the
+    // env for their duration and restore after — robust to whichever
+    // CLAUDE_MEM_* vars the host happens to export.
+    savedDefaultKeyEnv = {};
+    for (const key of Object.keys(SettingsDefaultsManager.getAllDefaults())) {
+      savedDefaultKeyEnv[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
-    if (prevDataDirEnv === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
-    else process.env.CLAUDE_MEM_DATA_DIR = prevDataDirEnv;
+    for (const [key, value] of Object.entries(savedDefaultKeyEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -54,6 +74,12 @@ describe('SettingsDefaultsManager', () => {
 
         const content = readFileSync(settingsPath, 'utf-8');
         expect(() => JSON.parse(content)).not.toThrow();
+      });
+
+      it('should create the settings file as owner-readable only', () => {
+        if (process.platform === 'win32') return;
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
 
       it('should write pretty-printed JSON (2-space indent)', () => {
@@ -218,8 +244,8 @@ describe('SettingsDefaultsManager', () => {
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
-      });
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+    });
 
       it('should auto-migrate file from nested to flat schema', () => {
         const nestedSettings = {
@@ -235,6 +261,61 @@ describe('SettingsDefaultsManager', () => {
         const parsed = JSON.parse(content);
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
+      });
+
+      it('retains the env wrapper when it has root peers, and reads settings from it', () => {
+        const wrapped = {
+          theme: 'dark',
+          permissions: { defaultMode: 'auto' },
+          env: {
+            CLAUDE_MEM_MODEL: 'wrapped-model',
+          },
+        };
+        writeFileSync(settingsPath, JSON.stringify(wrapped));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_MODEL).toBe('wrapped-model');
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual(wrapped);
+      });
+
+      it('reads root claude-mem keys when the env block beside them only holds Claude Code settings', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_MODEL: 'root-model',
+          env: { CLAUDE_CODE_PATH: '~/bin/claude' },
+        }));
+
+        expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_MODEL).toBe('root-model');
+      });
+
+      it('should not overwrite the settings file when env is an array containing ["sentinel"]', () => {
+        const original = JSON.stringify({ env: ['sentinel'], CLAUDE_MEM_MODEL: 'keep-me' });
+        writeFileSync(settingsPath, original);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const after = readFileSync(settingsPath, 'utf-8');
+        const parsed = JSON.parse(after);
+        expect(Array.isArray(parsed)).toBe(false);
+        expect(parsed.env).toEqual(['sentinel']);
+        expect(parsed.CLAUDE_MEM_MODEL).toBe('keep-me');
+        expect(result.CLAUDE_MEM_MODEL).toBe('keep-me');
+      });
+
+      it('should preserve an object-valued env setting across repeated loads', () => {
+        const nestedValue = { enabled: true, sources: ['local'] };
+        writeFileSync(settingsPath, JSON.stringify({
+          env: {
+            env: nestedValue,
+            CLAUDE_MEM_MODEL: 'nested-model',
+          },
+        }));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
       });
 
       it('should preserve peer root keys instead of flattening a mixed nested document', () => {
@@ -376,17 +457,6 @@ describe('SettingsDefaultsManager', () => {
       const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
       const CMEM_GATEWAY = 'https://cmem.ai/api/inference/v1';
 
-      function captureWarnings<T>(run: () => T): { value: T; warnings: string[] } {
-        const warnings: string[] = [];
-        const originalWarn = console.warn;
-        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-        try {
-          return { value: run(), warnings };
-        } finally {
-          console.warn = originalWarn;
-        }
-      }
-
       function migrationWarnings(warnings: string[]): string[] {
         return warnings.filter((line) => line.includes('retired default'));
       }
@@ -526,6 +596,141 @@ describe('SettingsDefaultsManager', () => {
         const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
         expect(parsed.env.CLAUDE_MEM_OPENROUTER_MODEL).toBe(CURRENT);
         expect(parsed.hooks).toEqual({ SessionStart: [] });
+      });
+    });
+
+    // Every settings.json seeded since #4125 carries the then-default 30000ms
+    // observer deadline, and a persisted value wins over DEFAULTS — so a raised
+    // default would never reach those installs. The cmem.ai gateway's normal
+    // tail runs past 30s, and an abandoned request can still be billed upstream.
+    describe('legacy LLM deadline default migration', () => {
+      const LEGACY = '30000';
+      const CURRENT = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_LLM_TIMEOUT_MS;
+
+      function deadlineMigrationWarnings(warnings: string[]): string[] {
+        return warnings.filter((line) => line.includes('CLAUDE_MEM_LLM_TIMEOUT_MS'));
+      }
+
+      it('ships the raised 180s default', () => {
+        expect(CURRENT).toBe('180000');
+      });
+
+      it('moves the seeded 30000 to the current default once, with one log line', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY,
+          // Seeded beside it with the same string, and still its own default.
+          CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '30000',
+        }));
+
+        const first = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(first.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(first.value.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('30000');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        // The rest of the file survives the rewrite, the field budget included.
+        expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openrouter');
+        expect(parsed.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('30000');
+        const [logLine, ...extra] = deadlineMigrationWarnings(first.warnings);
+        expect(extra).toEqual([]);
+        expect(logLine).toContain(`30000ms default to ${CURRENT}ms`);
+        expect(logLine).toContain(settingsPath);
+
+        const second = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+        expect(second.value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(deadlineMigrationWarnings(second.warnings)).toEqual([]);
+      });
+
+      it.each([
+        ['a raised deadline', '120000'],
+        ['a lowered deadline', '15000'],
+        ['a deadline written as a JSON number', 90000],
+        // Every writer persists the string; a bare number is a hand edit.
+        ['the legacy value hand-written as a JSON number', 30000],
+      ])('leaves %s chosen by the user untouched', (_label, value) => {
+        const raw = JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: value });
+        writeFileSync(settingsPath, raw);
+
+        const { value: result, warnings } = captureWarnings(
+          () => SettingsDefaultsManager.loadFromFile(settingsPath, false),
+        );
+
+        expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toEqual(value as string);
+        expect(readFileSync(settingsPath, 'utf-8')).toBe(raw);
+        expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+      });
+
+      // Like every other settings.json writer since #3498: the file holds API
+      // keys and sync tokens, so the rewrite leaves it owner-only even when an
+      // older build had left it readable.
+      it('rewrites the file owner-only', () => {
+        if (process.platform === 'win32') return;
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY }));
+        chmodSync(settingsPath, 0o644);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+      });
+
+      it('keeps the peer root keys of a nested settings file', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          env: { CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY },
+          hooks: { SessionStart: [] },
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.env.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+        expect(parsed.hooks).toEqual({ SessionStart: [] });
+      });
+
+      // The move runs once per settings file. Without a marker it ran on every
+      // load, so a 30000 the user chose later was silently moved back to the
+      // new default.
+      it.each([
+        ['after the seeded value was moved', JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY })],
+        ['on an install that never held the old default', JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' })],
+        ['on a settings file created fresh', null],
+      ])('keeps a 30000 the user sets %s', (_label, initial) => {
+        if (initial !== null) writeFileSync(settingsPath, initial);
+        SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+        writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY }));
+        const { value, warnings } = captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false));
+
+        expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(LEGACY);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(LEGACY);
+        expect(deadlineMigrationWarnings(warnings)).toEqual([]);
+      });
+
+      // settings.json can be a symlink into a read-only store (Nix home-manager).
+      // The move still applies in memory, but saving it fails on every load, and
+      // every observer request loads settings (retry.ts), so it is said once.
+      it('warns once per process when the move cannot be saved, and still uses the new default', () => {
+        if (process.platform === 'win32' || process.getuid?.() === 0) return;
+        const storeDir = join(tempDir, 'read-only-store');
+        mkdirSync(storeDir);
+        const storedSettings = join(storeDir, 'settings.json');
+        const raw = JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: LEGACY });
+        writeFileSync(storedSettings, raw);
+        symlinkSync(storedSettings, settingsPath);
+        chmodSync(storeDir, 0o555);
+        try {
+          const loads = [1, 2, 3].map(() => captureWarnings(() => SettingsDefaultsManager.loadFromFile(settingsPath, false)));
+
+          for (const { value } of loads) expect(value.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe(CURRENT);
+          const failures = loads.flatMap(({ warnings }) => deadlineMigrationWarnings(warnings));
+          expect(failures).toHaveLength(1);
+          expect(failures[0]).toContain('Failed to migrate');
+          expect(readFileSync(storedSettings, 'utf-8')).toBe(raw);
+        } finally {
+          chmodSync(storeDir, 0o755);
+        }
       });
     });
 
@@ -698,6 +903,8 @@ describe('SettingsDefaultsManager', () => {
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
+      expect(defaults.CLAUDE_MEM_GROK_BOT_WEBHOOK_URL).toBeDefined();
+      expect(defaults.CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET).toBeDefined();
     });
 
     // #2753 — new key: empty by default (fall through to
@@ -768,7 +975,20 @@ describe('SettingsDefaultsManager', () => {
 
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+      });
+
+    it('keeps a wrapped document with a root peer intact, including a nested setting named env', () => {
+      const wrapped = {
+        theme: 'dark',
+        env: { env: 'keep-me', CLAUDE_MEM_MODEL: 'nested-model' },
+      };
+      writeFileSync(settingsPath, JSON.stringify(wrapped));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual(wrapped);
     });
 
     it('should prioritize env var over default', () => {

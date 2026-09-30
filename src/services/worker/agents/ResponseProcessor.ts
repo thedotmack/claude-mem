@@ -12,6 +12,7 @@ import {
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
+import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -282,7 +283,7 @@ export function snapshotResponseContext(session: ActiveSession): ResponseContext
 
 /**
  * An accepted reply proves the conversation fits and the provider is alive, so
- * the overflow and stall debts reset — but only when the reply answered queued
+ * the overflow, stall, and rate-limit debts reset — but only when the reply answered queued
  * work. The init prompt is answered on every fresh generation, so letting it
  * reset the debt meant an oversized message or a too-small budget went
  * init -> reset -> recycle -> restart forever and never reached the exhausted
@@ -293,6 +294,7 @@ function clearDebtForAnsweredWork(session: ActiveSession): void {
   if (session.lastGeneratorSource === 'init') return;
   session.consecutiveContextOverflows = 0;
   session.consecutiveResponseStalls = 0;
+  session.consecutiveRateLimitResumes = 0;
 }
 
 export async function processAgentResponse(
@@ -313,6 +315,10 @@ export async function processAgentResponse(
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
+  // Scoped to the reply that produced `text`: consumed here, before any branch,
+  // so a later reply (from any provider) never reads one an earlier turn set.
+  const finishReason = session.lastFinishReason ?? null;
+  session.lastFinishReason = null;
 
   // Classify rejections BEFORE growing the window. "Prompt is too long", quota
   // prose and auth prose are refusals, not conversational turns; appending them
@@ -442,6 +448,9 @@ export async function processAgentResponse(
       sessionId: session.sessionDbId,
       outputClass,
       preview,
+      // An HTTP reply cut off at the output-token cap reads as xml/prose here;
+      // name it, so a truncation is not mistaken for a skip (#3868).
+      ...(finishReason ? { finishReason, truncated: finishReason === 'length' || finishReason === 'MAX_TOKENS' } : {}),
       consecutiveContextOverflows: session.consecutiveContextOverflows,
       // Only an idle turn has a shape worth naming: blank text, thinking or
       // tool_use blocks only, or no content blocks at all (#3454).
@@ -551,21 +560,22 @@ export async function processAgentResponse(
       .map(message => message.toolUseId)
       .filter((id): id is string => typeof id === 'string' && id.length > 0)
   ));
-  if (claimedToolUseIds.length > 0 && result.observationIds.length > 0) {
+  const linkObservationId = firstStoredObservationId(result);
+  if (claimedToolUseIds.length > 0 && linkObservationId !== undefined) {
     try {
       const linked = sessionStore.linkToolUsesToObservation({
         contentSessionId: session.contentSessionId,
         toolUseIds: claimedToolUseIds,
-        observationId: result.observationIds[0],
+        observationId: linkObservationId,
         memorySessionId: session.memorySessionId,
       });
-      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${result.observationIds[0]}`, {
+      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${linkObservationId}`, {
         sessionId: session.sessionDbId
       });
     } catch (error) {
       logger.warn('DB', 'tool_uses observation link failed', {
         sessionId: session.sessionDbId,
-        observationId: result.observationIds[0],
+        observationId: linkObservationId,
       }, error instanceof Error ? error : new Error(String(error)));
     }
   }
@@ -650,19 +660,31 @@ export async function processAgentResponse(
   session.earliestPendingTimestamp = null;
   worker?.broadcastProcessingStatus?.();
 
+  // Alerts fire for newly stored observations only; a Tier-0 merge (#3038)
+  // re-confirms a row that already alerted.
+  const fresh = freshlyStoredObservations(labeledObservations, result);
+
   void notifyTelegram({
-    observations: labeledObservations,
-    observationIds: result.observationIds,
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
     project: context.project,
     memorySessionId: session.memorySessionId,
   });
 
   void notifyGrokBotAwareness({
-    observations: labeledObservations,
-    observationIds: result.observationIds,
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
     project: context.project,
     memorySessionId: session.memorySessionId,
     agentId: context.pendingAgentId,
+  });
+
+  // Optional brainbeat webhook (off unless CLAUDE_MEM_GROK_BOT_WEBHOOK_URL is set).
+  // Like the alerts above, only newly stored rows fire (a dedup merge re-confirms one that already did).
+  void notifyGrokBotBrainbeat({
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
+    project: context.project,
   });
 
   // Growing Grok Bot INDEX: any new observation (any project) can fill a
@@ -759,6 +781,35 @@ export function attachObservationFilesToSummary(
   };
 }
 
+/**
+ * The batch's first newly stored observation id, for the tool_uses late link.
+ * A Tier-0 merge (#3038) reuses a row from another session, so prefer a fresh
+ * row; when every item merged, the re-confirmed canonical row is the pointer.
+ */
+function firstStoredObservationId(result: StorageResult): number | undefined {
+  const freshIndex = result.mergedIntoExisting?.findIndex(merged => !merged) ?? 0;
+  return result.observationIds[freshIndex >= 0 ? freshIndex : 0];
+}
+
+/** Parsed observations and ids for rows this batch actually stored (Tier-0 merges dropped). */
+function freshlyStoredObservations<T>(
+  observations: T[],
+  result: StorageResult,
+): { observations: T[]; observationIds: number[] } {
+  // Dedup off (the default) or nothing merged: pass through untouched.
+  if (!result.mergedIntoExisting?.some(Boolean)) {
+    return { observations, observationIds: result.observationIds };
+  }
+  const freshObservations: T[] = [];
+  const freshIds: number[] = [];
+  result.observationIds.forEach((id, index) => {
+    if (result.mergedIntoExisting?.[index]) return;
+    freshObservations.push(observations[index]);
+    freshIds.push(id);
+  });
+  return { observations: freshObservations, observationIds: freshIds };
+}
+
 async function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
@@ -778,10 +829,15 @@ async function syncAndBroadcastObservations(
   // multiple parsed observations onto the same row via content_hash, producing
   // duplicate IDs. Syncing them 1:1 triggers repeated Chroma "IDs already exist"
   // reconciles. See issue #2240.
-  const uniqueObservationIds = [...new Set(result.observationIds)];
+  // Skip Tier-0 dedup merges (#3038): a merge reuses an existing row, so syncing
+  // the new parsed content under that id would overwrite the canonical row's
+  // Chroma vector and broadcast text the row does not hold.
+  const handledObservationIds = new Set<number>();
 
-  for (const obsId of uniqueObservationIds) {
-    const observationIndex = result.observationIds.indexOf(obsId);
+  for (let observationIndex = 0; observationIndex < result.observationIds.length; observationIndex++) {
+    const obsId = result.observationIds[observationIndex];
+    if (result.mergedIntoExisting?.[observationIndex] || handledObservationIds.has(obsId)) continue;
+    handledObservationIds.add(obsId);
     const obs = observations[observationIndex];
     if (!obs) {
       logger.warn('DB', `${agentName} storage returned observation id without matching parsed observation`, {
@@ -823,6 +879,7 @@ async function syncAndBroadcastObservations(
       id: obsId,
       memory_session_id: session.memorySessionId,
       session_id: session.contentSessionId,
+      content_session_id: session.contentSessionId,
       platform_source: session.platformSource,
       type: obs.type,
       title: obs.title,

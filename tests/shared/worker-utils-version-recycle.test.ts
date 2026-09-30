@@ -5,10 +5,12 @@ import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realProcessManagerSnapshot = { ...realProcessManager };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
 
 // On version mismatch the hook must NOT delegate the recycle to the running
 // worker (the old design POSTed /api/admin/restart and the dying worker
@@ -43,8 +45,19 @@ let successorVersion: string | null = null;
 // Records every spawn attempt (lazy-spawn seam: spawnDetachedWorkerDaemon).
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
 
+// Every checkVersionMatch call, so the hook budget plumbing can be asserted:
+// the version probe must inherit the caller's remaining budget (#3434).
+const versionMatchCalls: Array<{ timeoutMs?: number }> = [];
+
+// Shared by the barrel mock and the HealthMonitor mock below, so the call is
+// recorded whichever module binding worker-utils ends up using.
+const recordingCheckVersionMatch = (_port: number, _expectedVersion: string | null, timeoutMs?: number) => {
+  versionMatchCalls.push({ timeoutMs });
+  return Promise.resolve(versionMatchResult);
+};
+
 mock.module('../../src/services/infrastructure/index.js', () => ({
-  checkVersionMatch: () => Promise.resolve(versionMatchResult),
+  checkVersionMatch: recordingCheckVersionMatch,
   isPortInUse: () => Promise.resolve(false),
 }));
 
@@ -60,6 +73,20 @@ mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
     successorUp = true;
     return 0;
   },
+}));
+
+// Port release is decided by a bind probe (classifyPortOccupancy), not by a
+// refused HTTP connect — a connect probe cannot tell "free" from "orphaned
+// listener still holding the port", which is what wedged Windows on
+// 2026-07-26 (#3416). Stubbed so these tests never bind the real worker port;
+// the killed stale worker's port reports free.
+// The infrastructure barrel re-exports HealthMonitor's bindings, so the
+// barrel's stubs are repeated here or this mock would put the real ones back.
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+  ...realHealthMonitorSnapshot,
+  checkVersionMatch: recordingCheckVersionMatch,
+  isPortInUse: () => Promise.resolve(false),
+  classifyPortOccupancy: () => Promise.resolve('free'),
 }));
 
 async function importWorkerUtilsFresh() {
@@ -116,6 +143,7 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = scriptPath;
     installFetchMock();
     spawnCalls.length = 0;
+    versionMatchCalls.length = 0;
     staleWorkerAlive = true;
     successorUp = false;
     successorVersion = null;
@@ -149,6 +177,7 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
     mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
   });
 
   it('SIGKILLs the stale worker and lazy-spawns the resolved script — never POSTs /api/admin/restart', async () => {
@@ -227,5 +256,34 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
 
     expect(result).toBe(true);
     expect(spawnCalls.length).toBe(1);
+  });
+
+  it('spends the caller budget on the version probe, not the standalone health timeout (#3434)', async () => {
+    versionMatchResult = { matches: true, pluginVersion: PLUGIN_VERSION, workerVersion: PLUGIN_VERSION };
+    const sessionInitBudgetMs = 400;
+    const workerUtils = await importWorkerUtilsFresh();
+
+    await workerUtils.executeWithWorkerFallback('/api/sessions/init', 'POST', {}, { timeoutMs: sessionInitBudgetMs });
+
+    expect(versionMatchCalls.length).toBe(1);
+    expect(versionMatchCalls[0].timeoutMs).toBeLessThanOrEqual(sessionInitBudgetMs);
+  });
+
+  it('returns the fallback within the budget when every worker request stalls (#3434)', async () => {
+    // A bound-but-wedged worker: connections open, nothing ever answers. Each
+    // request only ends when its AbortSignal fires.
+    global.fetch = mock((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation timed out.', 'TimeoutError')));
+    })) as unknown as typeof fetch;
+    const workerUtils = await importWorkerUtilsFresh();
+
+    const startedAt = Date.now();
+    const result = await workerUtils.executeWithWorkerFallback('/api/sessions/init', 'POST', {}, { timeoutMs: 400 });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(workerUtils.isWorkerFallback(result)).toBe(true);
+    // Unbudgeted, this path spends one full health timeout and then the
+    // ~15 s cold-boot port wait before giving up.
+    expect(elapsedMs).toBeLessThan(2_000);
   });
 });

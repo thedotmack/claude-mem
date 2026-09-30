@@ -186,6 +186,32 @@ describe('classifyOpenRouterError', () => {
     expect(err.kind).toBe('auth_invalid');
   });
 
+  // OpenRouter refuses a flagged INPUT with a 403. It says nothing about the
+  // key: the next observation goes through. As auth_invalid it would pause all
+  // memory for a cooldown under "credentials refused".
+  it('classifies a moderation 403 (input flagged) as unrecoverable, not auth_invalid', () => {
+    const err = classifyOpenRouterError({
+      status: 403,
+      bodyText: JSON.stringify({ error: {
+        code: 403,
+        message: 'openai/gpt-4o-mini requires moderation on OpenAI. Your input was flagged for "harassment".',
+        metadata: { reasons: ['harassment'], flagged_input: 'the observed tool output', provider_name: 'OpenAI', model_slug: 'openai/gpt-4o-mini' },
+      } }),
+      cause: new Error('403'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.message).toContain('Your input was flagged');
+  });
+
+  it('keeps a 403 that refuses the key itself as auth_invalid', () => {
+    const err = classifyOpenRouterError({
+      status: 403,
+      bodyText: JSON.stringify({ error: { code: 403, message: 'This API key has been disabled.' } }),
+      cause: new Error('403'),
+    });
+    expect(err.kind).toBe('auth_invalid');
+  });
+
   it('classifies 502 as transient', () => {
     const err = classifyOpenRouterError({
       status: 502,

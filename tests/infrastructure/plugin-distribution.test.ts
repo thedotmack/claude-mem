@@ -5,6 +5,7 @@ import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildCodexWindowsCommand, buildShellCommand } from '../../src/build/hook-shell-template.js';
+import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -391,7 +392,7 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/sqlite');
   });
 
-  it('npm tarball includes generated runtime entries', () => {
+  it('npm tarball includes generated runtime entries and the Claude marketplace root manifests (#3424)', () => {
     const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
@@ -404,6 +405,8 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(filePaths.has('dist/bug-report/index.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/observations/files.js')).toBe(true);
+    expect(filePaths.has('.claude-plugin/marketplace.json')).toBe(true);
+    expect(filePaths.has('.claude-plugin/plugin.json')).toBe(true);
   });
 });
 
@@ -516,7 +519,10 @@ const codexHookPair = (tail: string[]) => ({
   commandWindows: buildCodexWindowsCommand(tail),
 });
 
-type RuleAExpectation = string | { command: string; commandWindows: string };
+const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
+const SESSION_INIT_HOOK_PATH = 'UserPromptSubmit.0.0';
+
+type RuleAExpectation = string | { command: string; commandWindows?: string; timeout?: number };
 
 const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
   'plugin/hooks/hooks.json': {
@@ -533,7 +539,10 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     // every session.
     'SessionStart.0.0': claudeHook(['start']),
     'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
-    'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
+    'UserPromptSubmit.0.0': {
+      command: claudeHook(['hook', 'claude-code', 'session-init']),
+      timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
+    },
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
     'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
@@ -577,7 +586,7 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
         const entry = hookEntryByPath(parsed, dottedPath);
         const expectedCommand = typeof expected === 'string' ? expected : expected.command;
         expect(entry?.command ?? null).toBe(expectedCommand);
-        if (typeof expected !== 'string') {
+        if (typeof expected !== 'string' && expected.commandWindows !== undefined) {
           expect(entry?.commandWindows ?? null).toBe(expected.commandWindows);
         }
       });
@@ -587,6 +596,19 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
   it('plugin/.mcp.json mcp-search command equals buildShellCommand output', () => {
     const parsed = readJson('plugin/.mcp.json');
     expect(parsed.mcpServers['mcp-search'].args[1]).toBe(MCP_EXPECTED);
+  });
+
+  it('bounds the Claude Code UserPromptSubmit hook below the legacy 60 second stall (#3434)', () => {
+    const parsed = readJson('plugin/hooks/hooks.json');
+    expect(hookEntryByPath(parsed, SESSION_INIT_HOOK_PATH)?.timeout).toBe(SESSION_INIT_HOOK_TIMEOUT_SECONDS);
+    // The session-init budget must fit inside the host timeout with room for
+    // shell, node and bun startup.
+    expect(HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX).toBeLessThan(SESSION_INIT_HOOK_TIMEOUT_SECONDS * 1000);
+    // Codex keeps its bounded startup (15 s wait + 2 s request) under 20 s.
+    const codex = readJson('plugin/hooks/codex-hooks.json');
+    expect(hookEntryByPath(codex, SESSION_INIT_HOOK_PATH)?.timeout).toBeGreaterThan(
+      (HOOK_TIMEOUTS.POST_SPAWN_WAIT + 2_000) / 1000,
+    );
   });
 
   it('never leaks a raw ${CLAUDE_PLUGIN_ROOT} into the resolved trailing command', () => {
@@ -647,6 +669,62 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a valid CLAUDE_PLUGIN_ROOT without scanning the plugin cache (#3449, #4121)', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cm-root-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const shimBin = mkdtempSync(path.join(tmpdir(), 'cm-bin-'));
+    const cacheScanMarker = path.join(home, 'cache-scan-ran');
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(root, 'scripts', file), '');
+    }
+    // Only the cache scan sorts with `sort -r`; the NVM PATH prelude sorts by
+    // -t. keys. This shim records `-r` calls and passes input through.
+    writeFileSync(
+      path.join(shimBin, 'sort'),
+      '#!/bin/sh\n[ "$1" = "-r" ] && printf touched > "$CACHE_SCAN_MARKER"\ncat\n',
+    );
+    chmodSync(path.join(shimBin, 'sort'), 0o755);
+
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const codexCommands = Object.keys(RULE_A_EXPECTATIONS['plugin/hooks/codex-hooks.json']).map(
+      (dottedPath) => ({ dottedPath, command: hookCommandByPath(codexHooks, dottedPath)! }),
+    );
+
+    try {
+      for (const { dottedPath, command } of [...claudeCommands(), ...codexCommands]) {
+        rmSync(cacheScanMarker, { force: true });
+        const { status, stdout } = shellEval(instrument(command), {
+          CLAUDE_PLUGIN_ROOT: root,
+          HOME: home,
+          CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
+          PATH: `${shimBin}${path.delimiter}${process.env.PATH ?? ''}`,
+        });
+        expect({ dottedPath, status }).toEqual({ dottedPath, status: 0 });
+        expectResolvedPath(stdout, root);
+        expect({ dottedPath, cacheScanned: existsSync(cacheScanMarker) }).toEqual({ dottedPath, cacheScanned: false });
+      }
+
+      // Control: with an invalid CLAUDE_PLUGIN_ROOT the cache scan still runs,
+      // so the shim above would have caught a fast path that never engaged.
+      rmSync(cacheScanMarker, { force: true });
+      const [{ command: sessionStartCommand }] = claudeCommands().filter(
+        ({ dottedPath }) => dottedPath === 'SessionStart.0.1',
+      );
+      shellEval(instrument(sessionStartCommand), {
+        CLAUDE_PLUGIN_ROOT: path.join(home, 'not-a-plugin-root'),
+        HOME: home,
+        CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
+        PATH: `${shimBin}${path.delimiter}${process.env.PATH ?? ''}`,
+      });
+      expect(existsSync(cacheScanMarker)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+      rmSync(shimBin, { recursive: true, force: true });
     }
   });
 

@@ -288,7 +288,11 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }
 
-export function buildObservationPrompt(obs: Observation): string {
+/**
+ * `fieldMaxChars` caps each of <parameters> and <outcome>; callers pass the
+ * observer model's window-aware cap (observationFieldMaxChars).
+ */
+export function buildObservationPrompt(obs: Observation, fieldMaxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   let toolInput: any;
   let toolOutput: any;
 
@@ -310,8 +314,8 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;
   }
 
-  const parameters = truncateObservationField(stripImagePayloadsFromField(toolInput));
-  const outcome = truncateObservationField(stripImagePayloadsFromField(toolOutput));
+  const parameters = truncateObservationField(stripImagePayloadsFromField(toolInput), fieldMaxChars);
+  const outcome = truncateObservationField(stripImagePayloadsFromField(toolOutput), fieldMaxChars);
   const redactionHint = hasRedactionMarker(parameters + outcome) ? `\n${REDACTION_MARKER_HINT}\n` : '';
 
   return `<observed_from_primary_session>
@@ -392,4 +396,26 @@ ${mode.prompts.continuation_instruction}
 ${observationSkeleton(mode)}
 
 ${mode.prompts.header_memory_continued}`;
+}
+
+/** The user-request block buildInitPrompt and buildContinuationPrompt embed. */
+const USER_REQUEST_BLOCK = /<observed_from_primary_session>\s*<user_request>[\s\S]*?<\/observed_from_primary_session>/;
+
+/**
+ * Split an init or continuation prompt into the observer's instructions and
+ * the user's request (#3868). HTTP providers send the instructions as the
+ * system message and the request as the first user turn: a small model keeps
+ * the output schema in view that way, where the same text sent as one user
+ * turn drifts out of its attention as the conversation grows. `userRequest`
+ * is null when the prompt carries no request block.
+ */
+export function splitFramingPrompt(prompt: string): { instructions: string; userRequest: string | null } {
+  const match = prompt.match(USER_REQUEST_BLOCK);
+  if (!match) {
+    return { instructions: prompt, userRequest: null };
+  }
+  return {
+    instructions: prompt.replace(match[0], '').replace(/\n{3,}/g, '\n\n').trim(),
+    userRequest: match[0],
+  };
 }

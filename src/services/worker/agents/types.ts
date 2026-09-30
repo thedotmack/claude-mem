@@ -11,6 +11,7 @@ export interface ObservationSSEPayload {
   id: number;
   memory_session_id: string | null;
   session_id: string;
+  content_session_id: string;
   platform_source: string;
   type: string;
   title: string | null;
@@ -47,6 +48,11 @@ export type SSEEventPayload =
 
 export interface StorageResult {
   observationIds: number[];
+  /**
+   * Parallel to observationIds: true where a Tier-0 dedup merge (#3038) reused
+   * an existing row instead of storing a new one. Absent = nothing merged.
+   */
+  mergedIntoExisting?: boolean[];
   summaryId: number | null;
   createdAtEpoch: number;
 }

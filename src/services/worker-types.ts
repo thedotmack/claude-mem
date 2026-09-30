@@ -4,6 +4,11 @@ import type { Response } from 'express';
 export interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * Set on a generation's init or continuation prompt (openObserverGeneration).
+   * HTTP providers send its instructions as the system message (#3868).
+   */
+  framing?: boolean;
 }
 
 export interface ActiveSession {
@@ -23,6 +28,13 @@ export interface ActiveSession {
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  /**
+   * Claude account (config-dir profile key) the latest Claude generator was
+   * spawned under. Its env, and so its billing account, is fixed at spawn, so
+   * a quota refusal it hits is armed under this account even if the setting
+   * changed while it ran.
+   */
+  observerProfile?: string;
   consecutiveRestarts: number;
   /**
    * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
@@ -57,10 +69,22 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Consecutive rate-limit pauses this session resumed from on its own, after
+   * the provider's Retry-After. Bounds those resumes before the provider
+   * breaker takes over; reset when a queued-work turn is answered.
+   */
+  consecutiveRateLimitResumes?: number;
+  /**
    * The delayed resume a response stall scheduled. Any generator start cancels
    * it, so a stale timer never restarts a session a newer generation paused.
    */
   stallResumeTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The resume a pause scheduled for itself: after a rate limit's Retry-After,
+   * or at once after a cmem fallback or a recycle. The periodic sweep leaves
+   * the session to it while it is pending, and any generator start cancels it.
+   */
+  scheduledResumeTimer?: ReturnType<typeof setTimeout>;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
@@ -69,6 +93,8 @@ export interface ActiveSession {
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
+  /** Why buffered work was last parked after a generator exit. */
+  pausedReason?: string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;
@@ -85,6 +111,28 @@ export interface ActiveSession {
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
   endpointClass?: 'openrouter' | 'custom';
   /**
+   * The observer model's context window in tokens, resolved once per
+   * generation at generator start (#3625). The generation budget and the
+   * per-field cap scale with it.
+   */
+  observerContextWindowTokens?: number;
+  /**
+   * The context the model actually read on the last answered turn of this
+   * generation, in tokens, as the provider reported it: the Claude result
+   * frame's input + cache writes + cache reads, or an HTTP provider's prompt
+   * tokens. Unlike the character proxy it counts the system prompt and tool
+   * schemas a provider adds. Reset at every generation start; an init turn's
+   * reading is never recorded (#2957).
+   */
+  lastContextTokens?: number;
+  /**
+   * The finish reason an HTTP provider reported for the reply about to be
+   * processed ('length' / 'MAX_TOKENS' = cut off at the output-token cap).
+   * processAgentResponse consumes and clears it, so it never outlives the
+   * reply that set it (#3868).
+   */
+  lastFinishReason?: string | null;
+  /**
    * session_compressed properties stashed by ResponseProcessor on the claude
    * path: the streamed assistant message's output_tokens is an early-streaming
    * placeholder, so the event waits for the SDK result message's finalized
@@ -93,6 +141,14 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /**
+   * Cumulative cache_read_input_tokens across the session. Kept apart from
+   * cumulativeInputTokens because discovery_tokens is the delta of that
+   * counter; on a long observer session this is where most of the context the
+   * model re-reads shows up, so it is the number that makes resend growth
+   * visible.
+   */
+  cumulativeCacheReadTokens?: number;
   /** SessionEnd requested one Telegram wrap-up after the latest summary lands. */
   telegramWrapupRequestedAt?: number | null;
   /** One-shot grace timer for a SessionEnd wrap-up request. */
@@ -151,7 +207,8 @@ export interface ViewerSettings {
 
 export interface Observation {
   id: number;
-  memory_session_id: string;  
+  memory_session_id: string;
+  content_session_id: string;
   project: string;
   merged_into_project: string | null;
   platform_source: string;

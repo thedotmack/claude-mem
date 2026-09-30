@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -12,6 +13,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
+import type { ActiveSession } from '../../../worker-types.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
@@ -22,12 +24,14 @@ import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
+  planRateLimitResume,
   planResponseStallResume,
 } from '../../session/response-pacer.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { observerUsageLogFields } from '../../observer-usage.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -41,11 +45,13 @@ import { recordObserverFailure } from '../../../../shared/observer-health.js';
 import {
   tryAdmitQuotaProbe,
   releaseQuotaProbe,
+  recordAuthCooldown,
   recordQuotaExhausted,
   getQuotaCooldown,
+  isQuotaCooldownActive,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
-import { isClassified, ClassifiedProviderError, describeProviderError } from '../../provider-errors.js';
+import { DEADLINE_EXCEEDED_CODE, isClassified, describeProviderError, type ClassifiedProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
 import {
@@ -66,13 +72,19 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'provider_switch' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | typeof DEADLINE_EXCEEDED_CODE | 'none' {
+  // The one transport pause that is ours: a request abandoned at the LLM
+  // deadline, possibly already billed upstream. Every other transport pause
+  // stays 'none', as before.
+  if (reason === `transport:${DEADLINE_EXCEEDED_CODE}`) return DEADLINE_EXCEEDED_CODE;
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
+    case 'rate_limit': return 'rate_limit';
+    case 'auth': return 'auth';
     case 'provider_switch': return 'provider_switch';
     default: return 'none';
   }
@@ -170,10 +182,44 @@ export class SessionRoutes extends BaseRouteHandler {
         default:
           return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
       }
+    } catch (error) {
+      // A wrap-up is a gateway request like any other: a terminal rejection
+      // records the fallback, and when this wrap-up holds the post-window
+      // re-probe claim, its failure keeps memory on Claude.
+      if (selection.provider === 'openrouter') {
+        recordCmemFallbackIfEligible(error, selection.gatewayProbeClaimId);
+      }
+      throw error;
     } finally {
       releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
     }
   };
+
+  /** Schedule retries through the normal provider gates and per-session mutex.
+   * The count is attempts scheduled, not generators admitted by those gates.
+   *
+   * The automatic sweep is paced by the provider's quota breaker (read-only):
+   * nothing is scheduled while the breaker withholds requests, since every
+   * attempt would only log a skip (#4127 counted 159 of those). Once the window
+   * elapses, one session per tick goes through to carry the recovery probe; the
+   * rest follow after that probe succeeds and clears the breaker. The operator
+   * retry (`POST /api/processing`) is not paced.
+   */
+  public resumePendingSessions(source: string, includeOperatorOnly: boolean = false): number {
+    let sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
+    if (!includeOperatorOnly && sessionIds.length > 0) {
+      const provider = getSelectedProvider();
+      if (isQuotaCooldownActive(provider)) return 0;
+      if (getQuotaCooldown(provider)) sessionIds = sessionIds.slice(0, 1);
+    }
+    for (const sessionDbId of sessionIds) {
+      void this.ensureGeneratorRunning(sessionDbId, source).catch((error: unknown) => {
+        logger.warn('SESSION', 'Failed to resume buffered session', { sessionId: sessionDbId, source },
+          error instanceof Error ? error : new Error(String(error)));
+      });
+    }
+    return sessionIds.length;
+  }
 
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
@@ -328,16 +374,9 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortReason = 'provider_switch';
       session.abortController.abort();
 
-      // Must fully await the OLD generator's .catch().finally() chain (which
-      // runs handleGeneratorExit) before starting a new one: handleGeneratorExit
-      // nulls session.generatorPromise/currentProvider unconditionally with no
-      // identity check, so racing this would let the old generator's async
-      // cleanup stomp the freshly-started generator's state.
-      if (oldGeneratorPromise) {
-        await oldGeneratorPromise;
-      }
-
-      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      await this.admitAndStartGenerator(
+        session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, oldGeneratorPromise,
+      );
       return;
     }
 
@@ -352,8 +391,9 @@ export class SessionRoutes extends BaseRouteHandler {
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider
-      // The shared conversationHistory ensures context is preserved
+      // Let current generator finish naturally, next one will use new provider.
+      // The buffered queue carries over; the next generator opens a new
+      // generation seeded from this session's memory (#3800, #3479).
     }
   }
 
@@ -370,39 +410,94 @@ export class SessionRoutes extends BaseRouteHandler {
     selectedProvider: 'claude' | 'gemini' | 'openrouter',
     source: string,
     gatewayProbeClaimId: number | null,
+    /** The parked generator a provider switch is replacing, if any. */
+    previousGenerator: Promise<void> | null = null,
   ): Promise<void> {
-    // Quota breaker (#3634). Without this, an exhausted allowance produced one
-    // doomed request per captured tool call for the rest of the billing cycle:
-    // the generator exits on the refusal, and the next observation starts a
-    // fresh one that earns the same refusal. Withhold requests for a cooldown,
-    // then let exactly one through to re-probe.
-    // Claim the probe rather than merely reading the clock: every live session
-    // sees the window elapse at the same instant, so a bare check would let
-    // them all through together.
-    const admission = tryAdmitQuotaProbe(selectedProvider);
-    if (!admission.admitted) {
-      // This run is not starting, so it must not hold the gateway re-probe.
-      releaseCmemGatewayProbe(gatewayProbeClaimId);
-      const cooldown = getQuotaCooldown(selectedProvider);
-      logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
-        sessionId: sessionDbId,
-        source,
-        provider: selectedProvider,
-        ...(cooldown?.window ? { window: cooldown.window } : {}),
-        probeInFlight: cooldown?.probeInFlightSinceMs !== null,
-        retryInMs: cooldown
-          ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
-          : 0,
-      });
-      return;
-    }
+    let quotaProbeClaimId: number | null = null;
+    try {
+      // Must fully await the OLD generator's .catch().finally() chain (which
+      // runs handleGeneratorExit) before starting a new one: handleGeneratorExit
+      // nulls session.generatorPromise/currentProvider unconditionally with no
+      // identity check, so racing this would let the old generator's async
+      // cleanup stomp the freshly-started generator's state.
+      if (previousGenerator) {
+        await previousGenerator;
+      }
 
-    await this.applyTierRouting(session);
-    // The claim travels with the run that took it: only that run may release
-    // it, or an earlier generator's exit would clear a later session's probe.
-    await this.startGeneratorWithProvider(
-      session, selectedProvider, source, admission.claimId, gatewayProbeClaimId,
-    );
+      // Quota breaker (#3634). Without this, an exhausted allowance produced one
+      // doomed request per captured tool call for the rest of the billing cycle:
+      // the generator exits on the refusal, and the next observation starts a
+      // fresh one that earns the same refusal. Withhold requests for a cooldown,
+      // then let exactly one through to re-probe.
+      // Claim the probe rather than merely reading the clock: every live session
+      // sees the window elapse at the same instant, so a bare check would let
+      // them all through together.
+      const admission = tryAdmitQuotaProbe(selectedProvider);
+      if (!admission.admitted) {
+        // This run is not starting, so it must not hold the gateway re-probe.
+        releaseCmemGatewayProbe(gatewayProbeClaimId);
+        const cooldown = getQuotaCooldown(selectedProvider);
+        logger.warn('SESSION', 'Skipping generator start while the provider cooldown is active', {
+          sessionId: sessionDbId,
+          source,
+          provider: selectedProvider,
+          ...(cooldown?.cause ? { cause: cooldown.cause } : {}),
+          ...(cooldown?.window ? { window: cooldown.window } : {}),
+          probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+          retryInMs: cooldown
+            ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+            : 0,
+        });
+        return;
+      }
+      quotaProbeClaimId = admission.claimId;
+
+      await this.applyTierRouting(session);
+      // The claim travels with the run that took it: only that run may release
+      // it, or an earlier generator's exit would clear a later session's probe.
+      await this.startGeneratorWithProvider(
+        session, selectedProvider, source, quotaProbeClaimId, gatewayProbeClaimId,
+      );
+    } catch (error) {
+      // Neither claim may outlive a run that never started, or it wedges its
+      // probe shut until it goes stale. A generator that did start releases
+      // its own on exit; releasing again is a no-op, scoped to the claim id.
+      releaseQuotaProbe(selectedProvider, quotaProbeClaimId);
+      releaseCmemGatewayProbe(gatewayProbeClaimId);
+      throw error;
+    }
+  }
+
+  /**
+   * Book a deadline expiry in the observer-health ledger.
+   *
+   * The provider pauses on it: it aborts the controller, so the finally books
+   * the turn once as aborted and the buffered work survives, and the catch
+   * keeps transient pauses out of the ledger. But nothing was stored. A
+   * backend that is always slower than CLAUDE_MEM_LLM_TIMEOUT_MS would store
+   * nothing and never raise the session-start warning. The error's own code
+   * and remedy (raise the deadline) let the warning say what to do, and age it
+   * into a last-known note once nothing has re-tested it
+   * (isDeadlineFailureStale). Every other transient pause stays out of the
+   * ledger: a network blip is not an outage.
+   *
+   * Only while this session is still the registered one. OpenAI-compatible
+   * queries do not take the session's abort signal, so a deleted session's
+   * request runs on to its deadline with nobody waiting for the answer.
+   */
+  private recordDeadlineExpiry(
+    provider: 'claude' | 'gemini' | 'openrouter',
+    session: ActiveSession,
+    error: unknown,
+  ): void {
+    if (!isClassified(error) || error.code !== DEADLINE_EXCEEDED_CODE) return;
+    if (this.sessionManager.getSession(session.sessionDbId) !== session) return;
+    recordObserverFailure(provider, {
+      message: error.message,
+      kind: error.kind,
+      code: error.code,
+      action: error.action,
+    });
   }
 
   private async startGeneratorWithProvider(
@@ -416,11 +511,19 @@ export class SessionRoutes extends BaseRouteHandler {
   ): Promise<void> {
     if (!session) return;
 
-    // A generator is starting, so a pending stall resume has nothing left to do.
+    // A generator is starting, so a pending resume has nothing left to do.
     if (session.stallResumeTimer !== undefined) {
       clearTimeout(session.stallResumeTimer);
       session.stallResumeTimer = undefined;
     }
+    if (session.scheduledResumeTimer !== undefined) {
+      clearTimeout(session.scheduledResumeTimer);
+      session.scheduledResumeTimer = undefined;
+    }
+    // The last pause no longer describes this session; if this run pauses
+    // too, its exit records a fresh reason. Without this, one auth pause would
+    // keep the session out of every automatic sweep for good.
+    session.pausedReason = null;
 
     if (session.abortController.signal.aborted) {
       logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
@@ -449,11 +552,23 @@ export class SessionRoutes extends BaseRouteHandler {
     const myController = session.abortController;
 
     let skipGeneratorExitFinalization = false;
+    // Set when the catch below settled this run's failure itself. The finally
+    // then leaves it alone: one failure is booked once.
+    let failureBooked = false;
+    // Set when the catch decided this paused session resumes on its own: at
+    // once on the Anthropic plan after a cmem fallback, or after a rate limit's
+    // Retry-After. The finally schedules it.
+    let scheduledResume: { afterMs: number; source: string } | null = null;
     let generatorPromise: Promise<void>;
 
     generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
-        if (myController.signal.aborted) {
+        const classified = isClassified(error) ? error : null;
+        // Since #3999 a provider PAUSES on a classified error by aborting the
+        // controller before rethrowing, so an aborted controller alone no longer
+        // means an external abort. Only an unclassified rejection after an abort
+        // is one (idle, shutdown, a provider switch) — nothing to book.
+        if (myController.signal.aborted && !classified) {
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
           return;
         }
@@ -461,6 +576,7 @@ export class SessionRoutes extends BaseRouteHandler {
         const errorMsg = error instanceof Error ? error.message : String(error);
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
+          session.pausedReason = 'setup_required';
           recordClaudeCliSetupRequired(error.message);
           this.maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
           logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
@@ -481,17 +597,42 @@ export class SessionRoutes extends BaseRouteHandler {
           return;
         }
 
-        // No retry: the generator failed, the in-RAM batch is dropped, and the
-        // transcript is the recovery path. The next observation ingest will
-        // start a fresh generator via ensureGeneratorRunning.
-        //
-        // The local error line (full fidelity) and the scrubbed
-        // session_compressed rollup are one logical event.
-        // No abort_reason here: every site that sets abortReason aborts the
-        // controller on its next line, so aborted generators either resolve
-        // normally (quota/overflow break) or hit the signal-aborted early
-        // return above — this catch only ever sees non-abort rejections.
-        if (isClassified(error)) {
+        // No retry here: a paused run keeps its buffered work for the next
+        // generator, and a failed one leaves the transcript as the recovery
+        // path. The next observation ingest starts a fresh generator via
+        // ensureGeneratorRunning.
+        failureBooked = true;
+
+        // The cmem gateway stopped serving this account, or the post-window
+        // re-probe failed: memory runs on the Anthropic plan — the promised
+        // switch, not an outage — so it is neither booked into the health
+        // ledger nor given a breaker (a 30-min breaker over the marker's 15-min
+        // window would leave memory on neither), and the finally resumes it.
+        if (provider === 'openrouter' && recordCmemFallbackIfEligible(error, gatewayProbeClaimId)) {
+          scheduledResume = { afterMs: 0, source: 'cmem-fallback' };
+          // The gateway's words and request id, which its copy asks users to
+          // quote to support.
+          logger.warn('SESSION', 'cmem gateway is not serving this account; memory runs on the Anthropic plan provider', {
+            sessionId: session.sessionDbId,
+            ...(classified ? { kind: classified.kind } : {}),
+            ...(classified?.code ? { code: classified.code } : {}),
+            ...(classified?.requestId ? { requestId: classified.requestId } : {}),
+          }, classified ? describeProviderError(classified) : errorMsg);
+        } else if (classified?.kind === 'transient' && myController.signal.aborted) {
+          this.recordDeadlineExpiry(provider, session, classified);
+          // The provider PAUSED on a deadline or an upstream fault that outlived
+          // its own retries: the batch is kept for the next generator. A fault
+          // is not an observer failure — counting these would raise the outage
+          // banner over blips that clear on their own. Our own deadline is the
+          // exception, booked just above with its own remedy and aging. A
+          // transient error that did not pause the run (Claude's overloaded or
+          // unknown errors) ended it, and is booked below like any other failure.
+          logger.debug('SESSION', 'Observer paused on a transient provider failure; buffered work kept', {
+            sessionId: session.sessionDbId,
+            provider,
+            ...(classified.requestId ? { requestId: classified.requestId } : {}),
+          }, describeProviderError(classified));
+        } else if (classified) {
           // The single error-level line for a classified provider failure:
           // code, message, action, link, and request id — same words the
           // gateway sent. Pass the rendered string (not the Error): classified
@@ -500,60 +641,41 @@ export class SessionRoutes extends BaseRouteHandler {
           logger.error('SESSION', 'Observer failed', {
             sessionId: session.sessionDbId,
             provider,
-            kind: error.kind,
-            ...(error.code ? { code: error.code } : {}),
-            ...(error.requestId ? { requestId: error.requestId } : {}),
-          }, describeProviderError(error));
+            kind: classified.kind,
+            ...(classified.code ? { code: classified.code } : {}),
+            ...(classified.requestId ? { requestId: classified.requestId } : {}),
+            ...observerUsageLogFields(session),
+          }, describeProviderError(classified));
+          const resumeAfterMs = this.bookClassifiedFailure(session, provider, classified);
+          if (resumeAfterMs !== null) scheduledResume = { afterMs: resumeAfterMs, source: 'rate-limit' };
         } else {
           logger.error('SESSION', 'Generator failed', {
             sessionId: session.sessionDbId,
             provider,
             error: errorMsg,
+            ...observerUsageLogFields(session),
           }, error);
+          recordObserverFailure(provider, errorMsg);
         }
-        // Trial-expiry fallback (plan 2026-08-26 Phase 6): a terminal quota/key
-        // rejection from the cmem gateway is the promised automatic switch to
-        // the Anthropic plan, not an outage — record the fallback marker (the
-        // next dispatch returns 'claude') and keep it OUT of the observer-health
-        // ledger so the scary session-start outage warning never fires for it.
-        //
-        // The quota breaker is NESTED in the else, not stacked ahead of this
-        // branch. Stacking them would run two cooldowns over one event with
-        // disagreeing periods (15 min here, 30 min there) and open a window
-        // where memory neither uses the gateway nor falls back. The gateway's
-        // own fallback marker IS the breaker on that path.
-        if (provider === 'openrouter' && isClassified(error) && recordCmemFallbackIfEligible(error)) {
-          logger.warn('SESSION', 'cmem gateway key is no longer funded; memory falls back to the Anthropic plan provider', {
-            sessionId: session.sessionDbId,
-            kind: error.kind,
-            ...(error.code ? { code: error.code } : {}),
+
+        // A pause (the provider aborted) is counted by the finally under its
+        // abort reason; only a run that ended on the error itself is 'error'.
+        // The local error line (full fidelity) and this scrubbed rollup are
+        // one logical event.
+        if (!myController.signal.aborted) {
+          telemetryBuffer.record('session_compressed', session.sessionDbId, {
+            outcome: 'error',
+            provider,
+            // Providers seed lastModelId when they start; 'unknown' covers a
+            // generator that died before resolving its model.
+            model: session.lastModelId ?? 'unknown',
+            error_category: 'provider_error',
+            hook: session.lastGeneratorSource,
+            ide: session.platformSource,
+            observed_model: session.observedModel,
+            observed_billing: session.observedBilling,
           });
-        } else {
-          // Observer-health ledger: repeated generator failures mean observations
-          // are being dropped — session-start context warns the user via this.
-          // Classified errors carry the structured detail (code/action/link/
-          // request id) so the warning shows the same words as the log line.
-          // A structured quota refusal arms the breaker, so the next observation
-          // does not immediately buy the same refusal again (#3634).
-          if (isClassified(error) && error.kind === 'quota_exhausted') {
-            recordQuotaExhausted(provider, error.message);
-          }
-          recordObserverFailure(provider, isClassified(error)
-            ? { message: error.message, kind: error.kind, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
-            : errorMsg);
         }
-        telemetryBuffer.record('session_compressed', session.sessionDbId, {
-          outcome: 'error',
-          provider,
-          // Providers seed lastModelId when they start; 'unknown' covers a
-          // generator that died before resolving its model.
-          model: session.lastModelId ?? 'unknown',
-          error_category: 'provider_error',
-          hook: session.lastGeneratorSource,
-          ide: session.platformSource,
-          observed_model: session.observedModel,
-          observed_billing: session.observedBilling,
-        });
       })
       .finally(async () => {
         if (skipGeneratorExitFinalization) {
@@ -572,12 +694,16 @@ export class SessionRoutes extends BaseRouteHandler {
 
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
-        // Quota surfaced as assistant prose aborts here rather than throwing, so
-        // it must arm the breaker too — otherwise the prose path keeps the
+        // Quota surfaced as assistant prose — or Claude's proactive usage guard
+        // — aborts without throwing, so it never reaches the catch; book it
+        // here, arming the breaker too, or the prose path keeps the
         // per-observation request storm the classified path no longer has.
-        if (normalizeAbortReason(reason) === 'quota') {
+        // A thrown classified error was already booked by the catch, once: it
+        // is never re-booked here as a spent allowance (a rate limit is not
+        // one), nor given a breaker over a cmem fallback's window.
+        if (normalizeAbortReason(reason) === 'quota' && !failureBooked) {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
-          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
+          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
           // Quota returned as assistant prose never throws, so it never reaches
           // the .catch above and never armed the health ledger. Without this the
           // session-start warning is structurally blind to an entire outage
@@ -613,24 +739,23 @@ export class SessionRoutes extends BaseRouteHandler {
           completionHandler: this.completionHandler,
         });
 
-        // A recycle is the one abort that should resume on its own. The batch
-        // was reset to pending and the conversation dropped; without this the
-        // work waits for the next captured tool call, so the final observation
-        // of a session is stranded when none arrives. Quota and auth pauses
-        // deliberately do NOT resume — those wait on the user.
+        // Paused work that nothing else is guaranteed to pick up resumes on its
+        // own — without it, a session's last event (a summarize) stays in RAM:
+        //  - a cmem fallback (or a failed gateway re-probe) moves to the
+        //    Anthropic plan at once;
+        //  - a rate limit that named a Retry-After resumes after it, a bounded
+        //    number of times in a row (the catch decided which);
+        //  - a recycle reset its batch to pending and dropped the conversation.
+        // Other quota and auth pauses deliberately do NOT resume — those wait
+        // on the user. A zero delay still defers a tick: `session.generatorPromise`
+        // is assigned after this chain is built, so resuming inline could be
+        // overwritten by that assignment and leave a settled promise blocking
+        // every later start.
+        if (scheduledResume) {
+          this.resumeGeneratorLater(session, scheduledResume.afterMs, scheduledResume.source);
+        }
         if (reason === 'overflow:recycle') {
-          // Deferred a tick: `session.generatorPromise` is assigned after this
-          // chain is built, so resuming inline could be overwritten by that
-          // assignment and leave a settled promise blocking every later start.
-          const resume = setTimeout(() => {
-            void this.ensureGeneratorRunning(session.sessionDbId, 'overflow-recycle')
-              .catch(error => {
-                logger.error('SESSION', 'Failed to resume the observer after recycling its conversation', {
-                  sessionId: session.sessionDbId,
-                }, error instanceof Error ? error : new Error(String(error)));
-              });
-          }, 0);
-          resume.unref?.();
+          this.resumeGeneratorLater(session, 0, 'overflow-recycle');
         }
 
         // A response stall preserved its claimed batch but, like a recycle, has
@@ -646,6 +771,11 @@ export class SessionRoutes extends BaseRouteHandler {
               maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
             });
           } else {
+            // The delayed retry may hit a quota cooldown and return without
+            // starting a generator. Keep this pause eligible for the periodic
+            // sweep after the timer fires; ordinary transport pauses still
+            // require an explicit retry, and exhausted stalls keep their cap.
+            session.pausedReason = 'response_stall';
             const resume = setTimeout(() => {
               session.stallResumeTimer = undefined;
               void this.ensureGeneratorRunning(session.sessionDbId, 'response-stall')
@@ -663,7 +793,93 @@ export class SessionRoutes extends BaseRouteHandler {
     session.generatorPromise = generatorPromise;
   }
 
+  /**
+   * Book a classified provider failure once, with the provider's own detail
+   * (code, message, action, link, request id), so the session-start warning
+   * shows the same words as the log line. Returns how long a rate-limited
+   * session waits before it resumes on its own, or null when it waits for the
+   * next captured event (or the user).
+   */
+  private bookClassifiedFailure(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    provider: 'claude' | 'gemini' | 'openrouter',
+    error: ClassifiedProviderError,
+  ): number | null {
+    let resumeAfterMs: number | null = null;
+    switch (error.kind) {
+      case 'quota_exhausted':
+        // A spent allowance: withhold requests for a cooldown, then let one
+        // through to re-probe, instead of one doomed request per event (#3634).
+        recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile);
+        break;
+      case 'auth_invalid':
+        // A refused credential fails every request until the user acts; the
+        // cooldown stops one wasted request per captured event.
+        recordAuthCooldown(provider, error.message, session.observerProfile);
+        break;
+      case 'rate_limit': {
+        // Never a spent allowance. The provider already retried in place, and
+        // when it said how long to wait (the gateway envelope always does), the
+        // session resumes after that — a bounded number of times in a row.
+        // With no Retry-After (OpenRouter's daily free-model limit is such a
+        // 429) or once the resumes run out, the limit may last hours: withhold
+        // requests behind the breaker instead of resuming into it.
+        const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
+        if (plan?.resume && error.retryAfterMs !== undefined) {
+          resumeAfterMs = Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+        } else {
+          recordQuotaExhausted(provider, error.message, 'rate_limit', undefined, session.observerProfile);
+        }
+        break;
+      }
+    }
+    recordObserverFailure(provider, {
+      message: error.message,
+      kind: error.kind,
+      code: error.code,
+      action: error.action,
+      url: error.url,
+      requestId: error.requestId,
+    });
+    return resumeAfterMs;
+  }
+
+  /**
+   * Start the session's generator again after `delayMs`, as the next captured
+   * event would. The timer is kept on the session, so the periodic sweep
+   * leaves the session to it (a rate limit must not be retried before its
+   * Retry-After) and a generator that starts first cancels it.
+   */
+  private resumeGeneratorLater(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    delayMs: number,
+    source: string,
+  ): void {
+    clearTimeout(session.scheduledResumeTimer);
+    const resume = setTimeout(() => {
+      session.scheduledResumeTimer = undefined;
+      void this.ensureGeneratorRunning(session.sessionDbId, source)
+        .catch(error => {
+          logger.error('SESSION', 'Failed to resume the observer', {
+            sessionId: session.sessionDbId,
+            source,
+          }, error instanceof Error ? error : new Error(String(error)));
+        });
+    }, delayMs);
+    resume.unref?.();
+    session.scheduledResumeTimer = resume;
+  }
+
   setupRoutes(app: express.Application): void {
+    // Operator repair route: it starts generators and retries auth/transport
+    // pauses that the automatic sweep leaves alone, so it is localhost-only
+    // like the other admin routes.
+    app.post(
+      '/api/processing',
+      requireLocalhost,
+      validateBody(SessionRoutes.processingSchema),
+      this.handleProcessing.bind(this)
+    );
     app.post(
       '/api/sessions/init',
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
@@ -685,6 +901,24 @@ export class SessionRoutes extends BaseRouteHandler {
       this.handleSessionEnd.bind(this)
     );
   }
+
+  private static readonly processingSchema = z.object({
+    isProcessing: z.boolean(),
+  });
+
+  private handleProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // Legacy callers request false to unstick processing. There is no global
+    // processing flag to reset: retry existing buffered sessions instead.
+    const scheduledSessions = req.body.isProcessing ? 0 : this.resumePendingSessions('processing-api', true);
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    res.json({
+      status: 'ok',
+      isProcessing: queueDepth > 0,
+      queueDepth,
+      activeSessions: this.sessionManager.getActiveSessionCount(),
+      scheduledSessions,
+    });
+  });
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),
