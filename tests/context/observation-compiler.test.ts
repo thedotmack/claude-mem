@@ -5,6 +5,7 @@ import {
   buildTimeline,
   countObservationsByProjects,
   queryObservationsMulti,
+  queryObservationsNewest,
   querySummariesMulti,
 } from '../../src/services/context/ObservationCompiler.js';
 import type { ContextConfig, Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
@@ -331,6 +332,65 @@ describe('concept exact-match injection (#3379)', () => {
       expect(queryObservationsMulti(store, ['concept-project'], config)).toEqual([]);
     } finally {
       db.close();
+    }
+  });
+});
+
+describe('queryObservationsNewest house feed', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['platform-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  it('returns newest rows across projects when no project filter is passed', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const seat = store.createSDKSession('seat-content', 'cmem_work_thin', 'seat', undefined, 'grok-bot');
+      store.ensureMemorySessionIdRegistered(seat, 'seat-mem');
+      store.storeObservation('seat-mem', 'cmem_work_thin', {
+        type: 'discovery',
+        title: 'SEAT_ONLY',
+        subtitle: null,
+        facts: [],
+        narrative: 'thin diary',
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      }, 1, 0, 1_700_000_000_000);
+
+      const house = store.createSDKSession('house-content', 'claude-mem', 'house', undefined, 'claude');
+      store.ensureMemorySessionIdRegistered(house, 'house-mem');
+      store.storeObservation('house-mem', 'claude-mem', {
+        type: 'discovery',
+        title: 'HOUSE_NEWEST',
+        subtitle: null,
+        facts: [],
+        narrative: 'house feed',
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      }, 1, 0, 1_700_000_100_000);
+
+      const scoped = queryObservationsNewest(store, config, {
+        limit: 10,
+        projects: ['cmem_work_thin'],
+      });
+      expect(scoped.map(obs => obs.title)).toEqual(['SEAT_ONLY']);
+
+      const houseFeed = queryObservationsNewest(store, config, { limit: 10 });
+      expect(houseFeed.map(obs => obs.title)).toEqual(['HOUSE_NEWEST', 'SEAT_ONLY']);
+    } finally {
+      store.close();
     }
   });
 });

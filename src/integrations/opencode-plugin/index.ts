@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { join } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { normalizePlatformSource } from "../../shared/platform-source.js";
 
 /**
  * OpenCode plugin event contract.
@@ -60,6 +62,7 @@ interface ToolExecuteAfterInput {
   tool: string;
   sessionID: string;
   callID: string;
+  args?: Record<string, unknown>;
 }
 
 interface ToolExecuteAfterOutput {
@@ -91,9 +94,11 @@ interface BusEvent {
 }
 
 function resolveWorkerPort(): string {
-  // Canonical resolution: CLAUDE_MEM_WORKER_PORT env override, else the
-  // UID-derived default — identical to the rest of the codebase (#2406).
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
+  const settingsPath = join(
+    SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"),
+    "settings.json",
+  );
+  return SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT;
 }
 
 function resolveWorkerHost(): string {
@@ -126,7 +131,10 @@ function workerPostFireAndForget(
   fetch(`${WORKER_BASE_URL}${path}`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      ...body,
+      platformSource: normalizePlatformSource("opencode"),
+    }),
   }).catch((error: unknown) => {
     if (!isConnectionRefusedError(error)) {
       const message = error instanceof Error ? error.message : String(error);
@@ -216,7 +224,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
-        tool_input: output.args || {},
+        tool_input: input.args || output.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
       });
