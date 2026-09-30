@@ -12,6 +12,7 @@ import {
 import { writeMcpJsonConfig, PLACEHOLDER_CONTEXT } from './McpIntegrations.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { ANTIGRAVITY_HOOK_TIMEOUT_MS } from '../../shared/host-hook-limits.js';
 
 interface AntigravityHookEntry {
   name: string;
@@ -69,7 +70,6 @@ const ANTIGRAVITY_MCP_CONFIG_PATHS = [
 const RULES_CONTEXT_PATH = path.join(homedir(), '.agents', 'rules', 'claude-mem-context.md');
 
 const HOOK_NAME = 'claude-mem';
-const HOOK_TIMEOUT_MS = 10000;
 
 // The 5 hook events `agy` 1.2.1 actually fires (issue #4057), mapped to
 // claude-mem's internal handlers:
@@ -154,7 +154,7 @@ function createHookGroup(hookCommand: string): AntigravityHookGroup {
       name: HOOK_NAME,
       type: 'command',
       command: hookCommand,
-      timeout: HOOK_TIMEOUT_MS,
+      timeout: ANTIGRAVITY_HOOK_TIMEOUT_MS,
     }],
   };
 }

@@ -29,21 +29,25 @@ import {
 } from '../../shared/cmem-gateway.js';
 import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import type { ContextInput } from '../../services/context/types.js';
+import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
 // server, so SessionStart reads from it too, straight from this hook process.
 // The rows go through the same renderer and 10,000-character budget as the
 // worker's /api/context/inject (#4112). No local worker is started or asked,
 // and a server that cannot answer yields an empty block (logged as
-// [server-fallback]), never stale local rows. The colored terminal render is
-// fetched concurrently, so a slow server costs one request timeout, not two.
+// [server-fallback]), never stale local rows. One read serves both the model
+// block and the colored terminal copy, and it is bounded by what the host's
+// SessionStart limit leaves (Codex kills the hook at 20 s, the client's own
+// default is 30 s).
 async function renderSessionStartFromServer(
   runtime: ServerRuntimeContext,
   contextInput: ContextInput,
   withColoredTerminalRender: boolean,
   modeId: string,
+  host: string | undefined,
 ): Promise<{ model: string; terminal: string }> {
-  const [{ generateServerContextWithStats }, { ModeManager }] = await Promise.all([
+  const [{ generateServerSessionStartContext }, { ModeManager }] = await Promise.all([
     import('../../services/context/ContextBuilder.js'),
     import('../../services/domain/ModeManager.js'),
   ]);
@@ -51,11 +55,11 @@ async function renderSessionStartFromServer(
   // so it loads the same mode itself: the renderer reads its observation types,
   // emojis and legend.
   ModeManager.getInstance().loadMode(modeId);
-  const [model, colored] = await Promise.all([
-    generateServerContextWithStats(runtime, contextInput, false),
-    withColoredTerminalRender ? generateServerContextWithStats(runtime, contextInput, true) : null,
-  ]);
-  return { model: model.text, terminal: colored ? colored.text : model.text };
+  const { model, terminal } = await generateServerSessionStartContext(runtime, contextInput, {
+    withTerminalRender: withColoredTerminalRender,
+    timeoutMs: serverSessionStartBudgetMs(host),
+  });
+  return { model, terminal: terminal ?? model };
 }
 
 export const contextHandler: EventHandler = {
@@ -117,6 +121,7 @@ export const contextHandler: EventHandler = {
           },
           showTerminalOutput && input.platform === 'claude-code',
           settings.CLAUDE_MEM_MODE,
+          input.platform,
         )
       : null;
 

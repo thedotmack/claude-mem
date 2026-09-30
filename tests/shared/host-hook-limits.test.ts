@@ -18,14 +18,14 @@ function setPlatform(platform: NodeJS.Platform): void {
 
 afterEach(() => setPlatform(originalPlatform));
 
-/** The `timeout` (seconds) of the SessionStart hook whose command ends in `commandTail`. */
-function registeredSessionStartTimeoutSeconds(hooksFile: string, commandTail: string): number | undefined {
+/** The `timeout` (seconds) of the SessionStart hook whose command runs `hookInvocation`. */
+function registeredSessionStartTimeoutSeconds(hooksFile: string, hookInvocation: string): number | undefined {
   const parsed = JSON.parse(readFileSync(join(REPO_ROOT, hooksFile), 'utf-8')) as {
     hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: number }> }>>;
   };
   const entry = parsed.hooks.SessionStart
     .flatMap(group => group.hooks)
-    .find(hook => hook.command.trimEnd().endsWith(commandTail));
+    .find(hook => hook.command.includes(`"$_P/scripts/worker-service.cjs" ${hookInvocation}`));
   return entry?.timeout;
 }
 
