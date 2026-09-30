@@ -1,74 +1,33 @@
-import { homedir } from 'os'
 import path from 'path';
+import { existsSync, realpathSync, statSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import { execFileSync } from 'child_process';
+import { expandHome } from '../shared/expand-home.js';
+import { CLAUDE_CONFIG_DIR, USER_SETTINGS_PATH } from '../shared/paths.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../shared/SettingsDefaultsManager.js';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
-import { loadFromFileOnce } from '../shared/hook-settings.js';
+
+const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
+const UNKNOWN_PROJECT_NAME = 'unknown-project';
 
 /**
- * Opt-in (CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote): derive the project name from
- * the git `origin` remote instead of the folder basename. Default ('path')
- * preserves existing behavior. Reading settings is cached (loadFromFileOnce).
+ * Resolve the anchor directory for a Claude Code hook payload: prefer
+ * `CLAUDE_PROJECT_DIR` (the directory Claude Code declares for the session) over
+ * the raw hook cwd, so SDK/subagent temp cwds never become the project identity
+ * (#3437). Returns `null` when neither a declared project dir nor a usable cwd
+ * exists. Scoped to the hook adapter boundary — callers that already hold an
+ * authoritative cwd (worker, transcript, worktree) must not route through this.
  */
-function useRemoteProjectName(): boolean {
-  try {
-    return String(loadFromFileOnce().CLAUDE_MEM_PROJECT_NAME_SOURCE ?? 'path')
-      .trim()
-      .toLowerCase() === 'git-remote';
-  } catch {
-    return false;
+export function resolveHookProjectPath(cwd: string | null | undefined): string | null {
+  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV]?.trim();
+  if (claudeProjectDir) {
+    return claudeProjectDir;
   }
-}
-
-/**
- * Resolve a stable `org/repo` slug from the repo's `origin` remote URL. This is
- * stable across directory renames (unlike the folder basename) and identical
- * across a repo's worktrees (they share remotes). Handles scp-style
- * (`git@host:org/repo.git`) and URL forms (`https://host/org/repo.git`).
- * Returns null when there is no `origin` remote or the URL can't be parsed.
- */
-function deriveSlugFromRemote(dir: string): string | null {
-  let url: string;
-  try {
-    url = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      cwd: dir,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
+  if (!cwd || cwd.trim() === '') {
     return null;
   }
-  return parseOriginUrlToSlug(url);
-}
-
-/**
- * Pure parser: turn a git remote URL into an `org/repo` slug. Handles scp-style
- * (`git@host:org/repo.git`) and URL forms (`https://host/org/repo.git`, with or
- * without a trailing slash or `.git`). Returns the last two path segments
- * (`org/repo`), a single segment when that's all there is, or null when the URL
- * is empty/unparseable. Exported for unit testing.
- */
-export function parseOriginUrlToSlug(url: string): string | null {
-  if (!url || !url.trim()) return null;
-  const cleaned = url.trim().replace(/\.git$/, '').replace(/\/+$/, '');
-  // scp-style: user@host:org/repo  → capture the part after the colon.
-  const scp = cleaned.match(/^[^/@]+@[^:]+:(.+)$/);
-  const pathPart = scp
-    ? scp[1]
-    // URL form: scheme://host/org/repo → strip scheme + host.
-    : cleaned.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//i, '');
-
-  const segments = pathPart.split('/').filter(Boolean);
-  if (segments.length >= 2) return segments.slice(-2).join('/');
-  if (segments.length === 1) return segments[0];
-  return null;
-}
-
-function expandTilde(p: string): string {
-  if (p === '~' || p.startsWith('~/')) {
-    return p.replace(/^~/, homedir())
-  }
-  return p
+  return cwd;
 }
 
 /**
@@ -84,36 +43,87 @@ function findGitRepoRoot(dir: string): string | null {
       cwd: dir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).trim();
     return root || null;
-  } catch {
-    // Not a git repo, git not installed, or dir does not exist — fall back to basename.
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    // Not a git repo, git not installed, or dir does not exist — fall back further.
+    logger.debug('PROJECT_NAME', 'git rev-parse failed, falling back to non-git root', { dir }, err);
     return null;
   }
 }
 
-export function getProjectName(cwd: string | null | undefined): string {
-  if (!cwd || cwd.trim() === '') {
-    logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
-    return 'unknown-project';
+/**
+ * Explicit claude-mem project-root markers (#3194, plan-20 step 1). Outside a
+ * git repo, the nearest ancestor holding one names the project, so launches
+ * from any of its subdirectories share one key. Only explicit claude-mem files
+ * count: generic manifests (package.json, CLAUDE.md, ...) sit in home
+ * directories and nested packages, and treating them as roots would silently
+ * re-key memory users already have.
+ */
+const PROJECT_ROOT_MARKERS = ['.claude-mem-project', '.claude-mem.json'] as const;
+
+/** Upper bound on the marker walk; real directory trees are far shallower. */
+const MAX_MARKER_WALK_DEPTH = 64;
+
+function realpathOrSelf(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+function isWithin(child: string, parent: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/**
+ * Directories that never name a project. The walk stops before reaching one:
+ * a marker in $HOME, TMPDIR or at the filesystem root would collapse every
+ * non-git directory below it into a single bucket. Claude's config directory
+ * (plugins and marketplaces live there) is excluded entirely.
+ */
+function markerWalkStops(): string[] {
+  return [homedir(), tmpdir(), CLAUDE_CONFIG_DIR].flatMap(dir => {
+    const resolved = path.resolve(dir);
+    return [resolved, realpathOrSelf(resolved)];
+  });
+}
+
+/**
+ * Walk up from `dir` to the nearest ancestor holding a project-root marker.
+ * Returns that directory, or null when the walk reaches a stop directory or the
+ * filesystem root first.
+ */
+function findMarkerProjectRoot(dir: string): string | null {
+  const stops = markerWalkStops();
+  let current = path.resolve(dir);
+  const configDirs = [path.resolve(CLAUDE_CONFIG_DIR), realpathOrSelf(path.resolve(CLAUDE_CONFIG_DIR))];
+  if (configDirs.some(configDir => isWithin(current, configDir))) {
+    return null;
   }
 
-  const expanded = expandTilde(cwd)
-
-  // #2663 — derive the project name from the git repo root when inside a repo so
-  // the name is stable across subdirectories/worktrees. Fall back to the cwd
-  // basename when not in a repo.
-  const repoRoot = findGitRepoRoot(expanded);
-
-  // Opt-in: derive a stable org/repo slug from the origin remote. Falls through
-  // to the folder-basename logic below when disabled, no remote, or unparseable.
-  if (repoRoot && useRemoteProjectName()) {
-    const slug = deriveSlugFromRemote(repoRoot);
-    if (slug) return slug;
+  for (let depth = 0; depth < MAX_MARKER_WALK_DEPTH; depth++) {
+    if (stops.includes(current)) {
+      return null;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null; // filesystem root
+    }
+    if (PROJECT_ROOT_MARKERS.some(marker => existsSync(path.join(current, marker)))) {
+      return current;
+    }
+    current = parent;
   }
+  return null;
+}
 
-  const nameSource = repoRoot ?? expanded;
-
+/** The project name for the directory that names it (git toplevel, marker root, or cwd). */
+function projectNameFromSource(cwd: string, nameSource: string): string {
   const basename = path.basename(nameSource);
 
   if (basename === '') {
@@ -128,10 +138,131 @@ export function getProjectName(cwd: string | null | undefined): string {
       }
     }
     logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd });
-    return 'unknown-project';
+    return UNKNOWN_PROJECT_NAME;
   }
 
   return basename;
+}
+
+const PROJECT_NAME_SOURCE_SETTING = 'CLAUDE_MEM_PROJECT_NAME_SOURCE';
+
+/**
+ * Identity settings, read live. Hooks are short-lived, but the worker resolves
+ * projects for its whole lifetime, and a copy cached at startup would keep
+ * writing under the old identity after the user switched modes. Re-parsed only
+ * when settings.json changes, so the hot path pays one stat.
+ */
+let identitySettingsCache: { mtimeMs: number; settings: SettingsDefaults } | null = null;
+
+function settingsFileMtimeMs(): number {
+  try {
+    return statSync(USER_SETTINGS_PATH).mtimeMs;
+  } catch {
+    return -1;
+  }
+}
+
+function readIdentitySettings(): SettingsDefaults {
+  const mtimeMs = settingsFileMtimeMs();
+  if (identitySettingsCache && mtimeMs !== -1 && identitySettingsCache.mtimeMs === mtimeMs) {
+    return identitySettingsCache.settings;
+  }
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  identitySettingsCache = { mtimeMs: settingsFileMtimeMs(), settings };
+  return settings;
+}
+
+function useGitRemoteProjectNames(): boolean {
+  const source = process.env[PROJECT_NAME_SOURCE_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_NAME_SOURCE;
+  return String(source ?? 'path').trim().toLowerCase() === 'git-remote';
+}
+
+/**
+ * Pure parser: turn a git remote URL into an `org/repo` slug. Handles scp-style
+ * (`git@host:org/repo.git`, `host:org/repo`) and URL forms
+ * (`https://host[:port]/org/repo.git`, `ssh://git@host/org/repo`), with or
+ * without a trailing slash or `.git`. Returns the last two path segments, a
+ * single segment when that is all there is, or null for an empty URL, a bare
+ * host, or a local remote (`file://`, an absolute or relative path): those name
+ * a directory on this machine, not a repository identity. Exported for tests.
+ */
+export function parseOriginUrlToSlug(url: string): string | null {
+  const trimmed = (url ?? '').trim();
+  if (!trimmed) return null;
+  const isLocal = /^file:/i.test(trimmed)
+    || trimmed.startsWith('/')
+    || trimmed.startsWith('.')
+    || trimmed.startsWith('~')
+    || trimmed.startsWith('\\\\')
+    || /^[a-z]:[\\/]/i.test(trimmed);
+  if (isLocal) return null;
+
+  // Trailing slashes first, then `.git`, so `repo.git/` loses both.
+  const cleaned = trimmed.replace(/\/+$/, '').replace(/\.git$/i, '');
+  const urlFormMatch = cleaned.match(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\/(.+)$/i);
+  const scpFormMatch = urlFormMatch ? null : cleaned.match(/^(?:[^/@\s]+@)?[^:/\s]+:(?!\/\/)(.+)$/);
+  const pathPart = urlFormMatch?.[1] ?? scpFormMatch?.[1];
+  if (!pathPart) return null;
+
+  const segments = pathPart.split('/').filter(Boolean);
+  if (segments.length >= 2) return segments.slice(-2).join('/');
+  if (segments.length === 1) return segments[0];
+  return null;
+}
+
+function deriveSlugFromRemote(repoRoot: string): string | null {
+  try {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    }).trim();
+    return parseOriginUrlToSlug(url);
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.debug('PROJECT_NAME', 'No usable origin remote, keeping the path-based name', { repoRoot }, err);
+    return null;
+  }
+}
+
+/**
+ * One `git remote get-url` per repository per process: this runs on the hook
+ * and ingest hot path, and a repository's origin rarely changes.
+ */
+const remoteSlugByRepoRoot = new Map<string, string | null>();
+
+/** The origin slug for `repoRoot` when git-remote naming is on and one can be derived, else null. */
+function gitRemoteProjectSlug(repoRoot: string): string | null {
+  if (!useGitRemoteProjectNames()) return null;
+  if (!remoteSlugByRepoRoot.has(repoRoot)) {
+    remoteSlugByRepoRoot.set(repoRoot, deriveSlugFromRemote(repoRoot));
+  }
+  return remoteSlugByRepoRoot.get(repoRoot) ?? null;
+}
+
+export function getProjectName(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (!cwd || cwd.trim() === '') {
+    logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
+    return UNKNOWN_PROJECT_NAME;
+  }
+
+  const expanded = expandHome(cwd, platform);
+
+  // #2663 — inside a repo, the git root names the project so the name is stable
+  // across subdirectories and worktrees (or, opt-in, the origin slug: #2827).
+  // #3194 — outside one, the nearest claude-mem marker root does; otherwise the
+  // cwd basename.
+  const repoRoot = findGitRepoRoot(expanded);
+  const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
+  if (slug) {
+    return slug;
+  }
+  const nameSource = repoRoot ?? findMarkerProjectRoot(expanded) ?? expanded;
+  return projectNameFromSource(cwd, nameSource);
 }
 
 export interface ProjectContext {
@@ -141,27 +272,47 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
-export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const cwdProjectName = getProjectName(cwd);
-
-  if (!cwd) {
-    return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
+export function getProjectContext(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): ProjectContext {
+  if (!cwd || cwd.trim() === '') {
+    const fallback = getProjectName(cwd, platform);
+    return { primary: fallback, parent: null, isWorktree: false, allProjects: [fallback] };
   }
 
-  const expandedCwd = expandTilde(cwd);
-  const worktreeInfo = detectWorktree(expandedCwd);
+  const expandedCwd = expandHome(cwd, platform);
+  // One git spawn per resolution: the toplevel both names the project and
+  // anchors worktree detection. #3262 — detectWorktree stats `<dir>/.git`, which
+  // only exists at the worktree root, so a session started in a subdirectory
+  // must detect from the toplevel to get the parent/worktree compound key.
+  const repoRoot = findGitRepoRoot(expandedCwd);
+  const pathContext = getPathProjectContext(cwd, expandedCwd, repoRoot);
 
-  // In remote mode the origin URL is the canonical repo identity, and a repo's
-  // worktrees share its remotes — so cwdProjectName already collapses worktrees
-  // onto the parent repo. Skip the parent/child compositing to avoid doubling.
-  if (useRemoteProjectName()) {
-    return {
-      primary: cwdProjectName,
-      parent: null,
-      isWorktree: worktreeInfo.isWorktree,
-      allProjects: [cwdProjectName]
-    };
+  // #2827 — opt-in: the origin remote's `org/repo` slug names every checkout of
+  // the repository (worktrees share their remotes), survives renaming the folder
+  // and tells same-named repositories apart. The path-mode keys stay readable,
+  // so switching modes never hides memory stored before the switch. Only when a
+  // slug was actually derived: without one, path mode applies unchanged,
+  // worktree compositing included.
+  const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
+  if (!slug) {
+    return pathContext;
   }
+  return {
+    primary: slug,
+    parent: null,
+    isWorktree: pathContext.isWorktree,
+    allProjects: [...pathContext.allProjects.filter(key => key !== slug), slug],
+  };
+}
+
+/** Path-mode identity: git toplevel (worktrees composite under their repo), marker root, or cwd. */
+function getPathProjectContext(cwd: string, expandedCwd: string, repoRoot: string | null): ProjectContext {
+  const markerRoot = repoRoot ? null : findMarkerProjectRoot(expandedCwd);
+  const cwdProjectName = projectNameFromSource(cwd, repoRoot ?? markerRoot ?? expandedCwd);
+
+  const worktreeInfo = detectWorktree(repoRoot ?? expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
@@ -171,6 +322,17 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
       isWorktree: true,
       allProjects: [worktreeInfo.parentProjectName, composite]
     };
+  }
+
+  // A marker re-keys launches from below its root. Keep the key those launches
+  // were stored under before the marker existed (the cwd basename) readable as
+  // an alias, so adding a marker never hides existing memory. Writes use
+  // `primary` only.
+  if (markerRoot && path.resolve(markerRoot) !== path.resolve(expandedCwd)) {
+    const legacyKey = projectNameFromSource(cwd, expandedCwd);
+    if (legacyKey !== cwdProjectName && legacyKey !== UNKNOWN_PROJECT_NAME) {
+      return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [legacyKey, cwdProjectName] };
+    }
   }
 
   return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };

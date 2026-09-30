@@ -1,7 +1,4 @@
 
-import type { ActiveSession } from '../../worker-types.js';
-import type { ParsedObservation, ParsedSummary } from '../../../sdk/parser.js';
-
 export interface WorkerRef {
   sseBroadcaster?: {
     broadcast(event: SSEEventPayload): void;
@@ -52,30 +49,3 @@ export interface StorageResult {
   summaryId: number | null;
   createdAtEpoch: number;
 }
-
-export interface ResponseProcessingContext {
-  session: ActiveSession;
-  worker: WorkerRef | undefined;
-  discoveryTokens: number;
-  originalTimestamp: number | null;
-}
-
-export interface ParsedResponse {
-  observations: ParsedObservation[];
-  summary: ParsedSummary | null;
-}
-
-export interface BaseAgentConfig {
-  dbManager: import('../DatabaseManager.js').DatabaseManager;
-  sessionManager: import('../SessionManager.js').SessionManager;
-}
-
-export const FALLBACK_ERROR_PATTERNS = [
-  '429',           // Rate limit
-  '500',           // Internal server error
-  '502',           // Bad gateway
-  '503',           // Service unavailable
-  'ECONNREFUSED',  // Connection refused
-  'ETIMEDOUT',     // Timeout
-  'fetch failed',  // Network failure
-] as const;

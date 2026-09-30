@@ -1,5 +1,5 @@
 // @strip-comments-keep — auto-generated, do not edit by hand.
-// Source: scripts/generate-banner-frames.mjs (webm video → ASCII via luminance ramp).
+// ASCII animation frames rendered offline from a webm video via a luminance ramp.
 // Frames are gzip-deflated, base64-encoded, separated by \x01.
 
 export interface BannerData {

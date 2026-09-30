@@ -8,22 +8,18 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
 
-function formatHeaderDateTime(): string {
-  const now = new Date();
-  const date = now.toLocaleDateString('en-CA'); 
-  const time = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }).toLowerCase().replace(' ', '');
-  const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-  return `${date} ${time} ${tz}`;
+function formatActiveMode(): string {
+  const manager = ModeManager.getInstance();
+  const mode = manager.getActiveMode();
+  return `${mode.name} (${manager.getActiveModeId()})`;
 }
 
 export function renderAgentHeader(project: string): string[] {
   return [
     `# [${project}] recent context, ${formatHeaderDateTime()}`,
+    `Mode: ${formatActiveMode()}`,
     ''
   ];
 }
@@ -38,14 +34,6 @@ export function renderAgentLegend(): string[] {
     `Fetch details: get_observations([IDs]) | Search: mem-search skill`,
     ''
   ];
-}
-
-export function renderAgentColumnKey(): string[] {
-  return [];
-}
-
-export function renderAgentContextIndex(): string[] {
-  return [];
 }
 
 export function renderAgentContextEconomics(
@@ -77,10 +65,6 @@ export function renderAgentDayHeader(day: string): string[] {
   return [
     `### ${day}`,
   ];
-}
-
-export function renderAgentFileHeader(_file: string): string[] {
-  return [];
 }
 
 function compactTime(time: string): string {
@@ -168,5 +152,5 @@ export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens:
 }
 
 export function renderAgentEmptyState(project: string): string {
-  return `# [${project}] recent context, ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
+  return `# [${project}] recent context, ${formatHeaderDateTime()}\nMode: ${formatActiveMode()}\n\nNo previous sessions found.`;
 }

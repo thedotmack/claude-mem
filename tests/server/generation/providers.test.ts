@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'fs';
 import {
   ServerClassifiedProviderError,
   classifyHttpProviderError,
@@ -10,19 +11,25 @@ import { classifyClaudeServerError } from '../../../src/server/generation/provid
 import {
   ClaudeObservationProvider,
 } from '../../../src/server/generation/providers/ClaudeObservationProvider.js';
-import { GeminiObservationProvider } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
+import {
+  GeminiObservationProvider,
+  categorizeGeminiBadRequest,
+  classifyGeminiServerError,
+  type GeminiBadRequestCategory,
+} from '../../../src/server/generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 
-function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null }> = {}): ServerGenerationContext {
+function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null; sourceType: 'agent_event' | 'session_summary' }> = {}): ServerGenerationContext {
   return {
     job: {
       id: 'job-1',
       projectId: 'proj-1',
       teamId: 'team-1',
       agentEventId: 'evt-1',
-      sourceType: 'agent_event',
+      sourceType: overrides.sourceType ?? 'agent_event',
       sourceId: 'evt-1',
       serverSessionId: overrides.serverSessionId ?? null,
       jobType: 'observation_generate_for_event',
@@ -94,6 +101,54 @@ describe('shared error classification', () => {
     expect(err.kind).toBe('quota_exhausted');
   });
 
+  // Mirror of the worker classifier's OpenRouter marker list (Phase 2): the
+  // "Key limit exceeded" body arrives on a 403, "Rate limit exceeded" on a
+  // 429 stays a rate limit, and a bare 402 is quota with no body marker.
+  it('classifyHttpProviderError maps a 403 "Key limit exceeded" body to quota_exhausted', () => {
+    const err = classifyHttpProviderError({
+      status: 403,
+      bodyText: 'Key limit exceeded (total limit). Manage it using https://openrouter.ai/keys/abc',
+      cause: new Error(''),
+      providerLabel: 'OpenRouter',
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('classifyHttpProviderError keeps a 429 "Rate limit exceeded" body as rate_limit', () => {
+    const err = classifyHttpProviderError({
+      status: 429,
+      bodyText: 'Rate limit exceeded',
+      cause: new Error(''),
+      providerLabel: 'OpenRouter',
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
+  it('classifyHttpProviderError maps a bare 402 to quota_exhausted', () => {
+    const err = classifyHttpProviderError({
+      status: 402,
+      cause: new Error(''),
+      providerLabel: 'OpenRouter',
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('classifyHttpProviderError redacts fallback response bodies from message and cause', () => {
+    const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
+    const err = classifyHttpProviderError({
+      status: 418,
+      bodyText: rawBody,
+      cause: new Error(`provider said ${rawBody}`),
+      providerLabel: 'Gemini',
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.message).toBe('Gemini API error (status 418)');
+    expect(err.message).not.toContain(rawBody);
+    expect(err.cause).toBeInstanceOf(Error);
+    expect((err.cause as Error).message).toContain('status 418');
+    expect((err.cause as Error).message).not.toContain(rawBody);
+  });
+
   it('classifyClaudeServerError treats 529 as transient', () => {
     expect(classifyClaudeServerError({ status: 529, cause: 'x' }).kind).toBe('transient');
   });
@@ -106,6 +161,35 @@ describe('shared error classification', () => {
 });
 
 describe('buildServerGenerationPrompt', () => {
+  // A session_summary job is a different task, and its persistence path only
+  // understands a <summary> block. Asking it for <observation> produced responses
+  // that the summary path discarded without a trace.
+  it('asks for a <summary> block on session_summary jobs', () => {
+    const result = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
+    expect(result.prompt).toContain('<summary>...</summary>');
+    expect(result.prompt).toContain('<request>');
+    expect(result.prompt).toContain('<learned>');
+    expect(result.prompt).toContain('<next_steps>');
+  });
+
+  it('does not ask a session_summary job for <observation> blocks', () => {
+    const result = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
+    expect(result.prompt).not.toContain('<observation>...</observation>');
+  });
+
+  it('still asks for <observation> blocks on agent_event jobs', () => {
+    const result = buildServerGenerationPrompt(makeContext());
+    expect(result.prompt).toContain('<observation>...</observation>');
+    expect(result.prompt).not.toContain('<summary>...</summary>');
+  });
+
+  it('keeps offering the skip escape hatch on both job types', () => {
+    for (const sourceType of ['agent_event', 'session_summary'] as const) {
+      expect(buildServerGenerationPrompt(makeContext({ sourceType })).prompt)
+        .toContain('<skip_summary />');
+    }
+  });
+
   it('strips <private> tags from event payload before sending', () => {
     const context = makeContext({
       payload: '<private>secret</private>visible',
@@ -194,6 +278,41 @@ describe('ClaudeObservationProvider', () => {
 });
 
 describe('GeminiObservationProvider', () => {
+  const closedBadRequestCategories = new Set<GeminiBadRequestCategory>([
+    'role_sequence',
+    'context_limit',
+    'model_unsupported',
+    'api_key',
+    'unknown_bad_request',
+  ]);
+
+  for (const [expectedCategory, bodyText] of [
+    ['role_sequence', 'Please ensure that multiturn requests alternate between user and model.'],
+    ['context_limit', 'Request contains 120000 tokens which exceeds the maximum token limit.'],
+    ['model_unsupported', 'Model gemini-example is not supported for generateContent.'],
+    ['api_key', 'API_KEY_INVALID: API key not valid.'],
+    ['unknown_bad_request', 'Invalid JSON payload received. Unknown name "foo".'],
+  ] as const) {
+    it(`classifies Gemini 400 as closed category ${expectedCategory}`, () => {
+      const rawBody = `${bodyText} RAW_PROVIDER_BODY`;
+      const category = categorizeGeminiBadRequest(rawBody);
+      const err = classifyGeminiServerError({
+        status: 400,
+        bodyText: rawBody,
+        cause: new Error(`Gemini API error: 400 - ${rawBody}`),
+      });
+
+      expect(category).toBe(expectedCategory);
+      expect(closedBadRequestCategories.has(category)).toBe(true);
+      expect(err.kind).toBe('unrecoverable');
+      expect(err.message).toBe(`Gemini bad request: ${expectedCategory}`);
+      expect(err.message).not.toContain('RAW_PROVIDER_BODY');
+      expect(err.cause).toBeInstanceOf(Error);
+      expect((err.cause as Error).message).toContain('status 400');
+      expect((err.cause as Error).message).not.toContain('RAW_PROVIDER_BODY');
+    });
+  }
+
   it('parses generateContent response into rawText', async () => {
     const fakeFetch = new FakeFetch(
       jsonResponse(200, {
@@ -207,9 +326,113 @@ describe('GeminiObservationProvider', () => {
     expect(result.tokensUsed).toBe(42);
     expect(result.providerLabel).toBe('gemini');
   });
+
+  it('redacts raw Gemini 400 response body from top-level message and cause', async () => {
+    const rawBody = 'Please ensure that multiturn requests alternate between user and model. RAW_PROVIDER_BODY';
+    const fakeFetch = new FakeFetch(new Response(rawBody, { status: 400 }));
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+
+    try {
+      await provider.generate(makeContext());
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
+      const classified = error as ServerClassifiedProviderError;
+      expect(classified.kind).toBe('unrecoverable');
+      expect(classified.message).toBe('Gemini bad request: role_sequence');
+      expect(classified.message).not.toContain('RAW_PROVIDER_BODY');
+      expect(classified.cause).toBeInstanceOf(Error);
+      expect((classified.cause as Error).message).not.toContain('RAW_PROVIDER_BODY');
+    }
+  });
+
+  it('redacts raw Gemini non-400 response body from top-level message and cause', async () => {
+    const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
+    const fakeFetch = new FakeFetch(new Response(rawBody, { status: 418 }));
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+
+    try {
+      await provider.generate(makeContext());
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
+      const classified = error as ServerClassifiedProviderError;
+      expect(classified.kind).toBe('unrecoverable');
+      expect(classified.message).toBe('Gemini API error (status 418)');
+      expect(classified.message).not.toContain(rawBody);
+      expect(classified.cause).toBeInstanceOf(Error);
+      expect((classified.cause as Error).message).toContain('status 418');
+      expect((classified.cause as Error).message).not.toContain(rawBody);
+    }
+  });
+
+  it('redacts raw Gemini response error message when HTTP status is OK', async () => {
+    const rawMessage = 'RAW_PROVIDER_BODY from data.error.message';
+    const fakeFetch = new FakeFetch(
+      jsonResponse(200, {
+        error: { status: 'FAILED_PRECONDITION', message: rawMessage },
+      }),
+    );
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+
+    try {
+      await provider.generate(makeContext());
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
+      const classified = error as ServerClassifiedProviderError;
+      expect(classified.kind).toBe('unrecoverable');
+      expect(classified.message).toBe('Gemini API error (status 200)');
+      expect(classified.message).not.toContain(rawMessage);
+      expect(classified.cause).toBeInstanceOf(Error);
+      expect((classified.cause as Error).message).toContain('status 200');
+      expect((classified.cause as Error).message).not.toContain(rawMessage);
+    }
+  });
 });
 
 describe('OpenRouterObservationProvider', () => {
+  it('retries the exact token-field compatibility response', async () => {
+    const issueReport = readFileSync(new URL('../../fixtures/claude-mem-issue-3712.md', import.meta.url), 'utf8');
+    const compatibilityError = issueReport.match(/Unsupported parameter:[\s\S]*?instead\./)?.[0] ?? '';
+    const requests: RequestInit[] = [];
+    const responses = [
+      jsonResponse(400, { error: { message: compatibilityError } }),
+      jsonResponse(200, { choices: [{ message: { content: '<observation>ok</observation>' } }], usage: { total_tokens: 11 } }),
+    ];
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      requests.push(init ?? {});
+      return responses.shift()!;
+    };
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', model: 'gpt-5', fetchImpl });
+
+    const result = await provider.generate(makeContext());
+
+    expect(result.rawText).toBe('<observation>ok</observation>');
+    expect(result.tokensUsed).toBe(11);
+    expect(requests).toHaveLength(2);
+    const first = JSON.parse(String(requests[0].body)) as Record<string, unknown>;
+    const second = JSON.parse(String(requests[1].body)) as Record<string, unknown>;
+    expect(second.max_completion_tokens).toBe(first.max_tokens);
+    expect(second.max_tokens).toBeUndefined();
+    expect(second.model).toBe(first.model);
+    expect(second.messages).toEqual(first.messages);
+  });
+
+  it('does not retry a similar incomplete compatibility response', async () => {
+    let calls = 0;
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fake',
+      fetchImpl: async () => {
+        calls += 1;
+        return jsonResponse(400, { error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model." } });
+      },
+    });
+
+    await expect(provider.generate(makeContext())).rejects.toBeInstanceOf(ServerClassifiedProviderError);
+    expect(calls).toBe(1);
+  });
+
   it('parses OpenAI-style response and reports tokensUsed', async () => {
     const fakeFetch = new FakeFetch(
       jsonResponse(200, {
@@ -285,5 +508,20 @@ describe('OpenRouterObservationProvider', () => {
     await provider.generate(makeContext());
     const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
     expect(body.model).toBe('deepseek-chat');
+  });
+
+  it('defaults to the worker OpenRouter model, not the retired anthropic/claude-3.5-sonnet', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+
+    const result = await provider.generate(makeContext());
+
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
+    const workerDefault = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+    expect(body.model).toBe(workerDefault);
+    expect(body.model).not.toBe('anthropic/claude-3.5-sonnet');
+    expect(result.modelId).toBe(workerDefault);
   });
 });
