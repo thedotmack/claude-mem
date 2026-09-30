@@ -4,7 +4,6 @@ import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 export type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult, SearchOptions, DateRange };
 
 export const SEARCH_CONSTANTS = {
-  RECENCY_WINDOW_DAYS: 90,
   RECENCY_WINDOW_MS: 90 * 24 * 60 * 60 * 1000,
   DEFAULT_LIMIT: 20,
   CHROMA_BATCH_SIZE: 100
@@ -12,17 +11,12 @@ export const SEARCH_CONSTANTS = {
 
 export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';
 
-export interface ChromaQueryResult {
-  ids: number[];
-  distances: number[];
-  metadatas: ChromaMetadata[];
-}
-
 export interface ChromaMetadata {
   sqlite_id: number;
   doc_type: ChromaDocType;
   memory_session_id: string;
   project: string;
+  platform_source?: string;
   created_at_epoch: number;
   type?: string;
   title?: string;

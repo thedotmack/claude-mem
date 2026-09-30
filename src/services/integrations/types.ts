@@ -1,14 +1,4 @@
 
-export interface CursorMcpConfig {
-  mcpServers: {
-    [name: string]: {
-      command: string;
-      args?: string[];
-      env?: Record<string, string>;
-    };
-  };
-}
-
 export type CursorInstallTarget = 'project' | 'user' | 'enterprise';
 
 export interface CursorHooksJson {

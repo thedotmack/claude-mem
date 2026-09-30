@@ -1,8 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { writeContextFile, readContextFile } from '../src/utils/cursor-utils';
+import { writeContextFile } from '../src/utils/cursor-utils';
+
+// Read-back helper for verifying writeContextFile output.
+function readContextFile(workspacePath: string): string | null {
+  const rulesFile = join(workspacePath, '.cursor', 'rules', 'claude-mem-context.mdc');
+  if (!existsSync(rulesFile)) return null;
+  return readFileSync(rulesFile, 'utf-8');
+}
 
 describe('Cursor Context Update', () => {
   let tempDir: string;
@@ -167,15 +174,22 @@ Paragraph 2`;
       expect(content).toContain('<html>');
     });
 
-    it('handles unicode in context', () => {
+    it('preserves BMP unicode and strips astral emoji (issue #2787)', () => {
       const unicodeContext = 'Emoji: 🚀 Japanese: 日本語 Arabic: العربية';
 
       writeContextFile(workspacePath, unicodeContext);
 
       const content = readContextFile(workspacePath);
-      expect(content).toContain('🚀');
+      // BMP scripts must survive untouched.
       expect(content).toContain('日本語');
       expect(content).toContain('العربية');
+      // Astral emoji are sanitized to BMP so a Claude Code context truncation
+      // can't split a surrogate pair and brick the session.
+      expect(content).not.toContain('🚀');
+      for (let i = 0; i < content!.length; i++) {
+        const code = content!.charCodeAt(i);
+        expect(code < 0xd800 || code > 0xdfff).toBe(true);
+      }
     });
 
     it('handles very long context', () => {

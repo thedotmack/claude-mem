@@ -164,11 +164,6 @@ export class MemoryItemsRepository {
     return row ? mapMemoryItemRow(row) : null;
   }
 
-  getByLegacyObservationId(legacyObservationId: number): MemoryItem | null {
-    const row = this.db.prepare('SELECT * FROM memory_items WHERE legacy_observation_id = ?').get(legacyObservationId) as MemoryItemRow | null;
-    return row ? mapMemoryItemRow(row) : null;
-  }
-
   update(id: string, input: Partial<CreateMemoryItem>): MemoryItem | null {
     const existing = this.getById(id);
     if (!existing) {
@@ -262,14 +257,5 @@ export class MemoryItemsRepository {
       LIMIT ?
     `).all(projectId, ftsQuery, limit) as MemoryItemRow[];
     return rows.map(mapMemoryItemRow);
-  }
-
-  listSources(memoryItemId: string): MemorySource[] {
-    const rows = this.db.prepare(`
-      SELECT * FROM memory_sources
-      WHERE memory_item_id = ?
-      ORDER BY created_at_epoch ASC
-    `).all(memoryItemId) as MemorySourceRow[];
-    return rows.map(mapMemorySourceRow);
   }
 }

@@ -1,10 +1,22 @@
 import path from 'path';
 import { homedir } from 'os';
-import { execFileSync, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  execFileSync,
+  spawnSync,
+  type SpawnSyncReturns,
+} from 'child_process';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { paths } from '../../shared/paths.js';
+import { buildSpawnSyncInvocation, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
 const CODEX_DIR = path.join(homedir(), '.codex');
 const CODEX_AGENTS_MD_PATH = path.join(CODEX_DIR, 'AGENTS.md');
@@ -21,16 +33,49 @@ const REQUIRED_MARKETPLACE_FILES = [
   path.join('plugin', 'hooks', 'codex-hooks.json'),
   path.join('plugin', 'skills', 'mem-search', 'SKILL.md'),
 ];
+const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
+const MACOS_CODEX_BUNDLE_PATHS = [
+  '/Applications/ChatGPT.app/Contents/Resources/codex',
+  '/Applications/Codex.app/Contents/Resources/codex',
+];
+
+export function isExecutableFile(
+  candidate: string,
+  access: (path: string, mode: number) => void = accessSync,
+): boolean {
+  try {
+    access(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isUsableCodexBundle(
+  candidate: string,
+  probe: typeof spawnSync = spawnSync,
+): boolean {
+  const result = probe(candidate, ['--version'], {
+    stdio: 'ignore',
+    windowsHide: true,
+    timeout: 5_000,
+    killSignal: 'SIGKILL',
+  });
+  return !result.error && result.status === 0;
+}
 
 function commandExists(command: string): boolean {
+  if (path.isAbsolute(command)) return isExecutableFile(command);
+
   try {
     if (process.platform === 'win32') {
-      execFileSync('where', [command], { stdio: 'ignore' });
+      execFileSync('where.exe', [command], { stdio: 'ignore', windowsHide: true });
     } else {
       execFileSync('which', [command], { stdio: 'ignore' });
     }
     return true;
   } catch {
+    // [ANTI-PATTERN IGNORED]: where/which exits non-zero whenever the probed command is absent from PATH; that is the expected negative probe result and commandExists reports it as false.
     return false;
   }
 }
@@ -80,11 +125,75 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
   throw new Error('Could not locate a Codex marketplace root with .agents/plugins/marketplace.json and plugin/.codex-plugin/plugin.json. Run npx claude-mem@latest install from the package or repo root.');
 }
 
-function runCodex(args: string[]): void {
-  const result = spawnSync('codex', args, {
+function lookupCodexOnWindows(): string | null {
+  let stdout: string;
+  try {
+    stdout = execFileSync('where.exe', ['codex'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('WORKER', 'Failed to locate codex via where; falling back to codex.cmd', { command: 'where codex' }, err);
+    return null;
+  }
+
+  const candidates = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return candidates.find((candidate) => WINDOWS_CODEX_EXTENSIONS.has(path.extname(candidate).toLowerCase()))
+    ?? candidates[0]
+    ?? null;
+}
+
+export function lookupCodexOnMacOS(
+  commandInPath: (command: string) => boolean = commandExists,
+  candidateAvailable: (candidate: string) => boolean = isUsableCodexBundle,
+): string | null {
+  if (commandInPath('codex')) return 'codex';
+  return MACOS_CODEX_BUNDLE_PATHS.find((candidate) => candidateAvailable(candidate)) ?? null;
+}
+
+export function resolveCodexCommand(
+  platform: NodeJS.Platform = process.platform,
+  windowsLookup: () => string | null = lookupCodexOnWindows,
+  macOSLookup: () => string | null = lookupCodexOnMacOS,
+): string {
+  if (platform === 'win32') return windowsLookup() ?? 'codex.cmd';
+  if (platform === 'darwin') return macOSLookup() ?? 'codex';
+  return 'codex';
+}
+
+export function resolveCodexSpawnInvocation(
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  windowsLookup: () => string | null = lookupCodexOnWindows,
+  macOSLookup: () => string | null = lookupCodexOnMacOS,
+): SpawnSyncInvocation {
+  const resolvedCommand = resolveCodexCommand(platform, windowsLookup, macOSLookup);
+  return buildSpawnSyncInvocation(resolvedCommand, args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }, platform);
+}
+
+/**
+ * Spawn the `codex` CLI.
+ *
+ * Issue #2695: on Windows `codex` is installed as `codex.cmd` (a PATH shim).
+ * `child_process.spawnSync('codex', args)` without a shell does not consult
+ * PATHEXT, so resolve the shim first. Native executables run directly; .cmd
+ * and .bat shims use an explicit cmd.exe wrapper without the shell option.
+ */
+export function codexSpawn(args: string[]): SpawnSyncReturns<string> {
+  const invocation = resolveCodexSpawnInvocation(args);
+  return spawnSync(invocation.command, invocation.args, invocation.options);
+}
+
+function runCodex(args: string[]): void {
+  const result = codexSpawn(args);
   const output = console;
   const stdout = result.stdout?.trimEnd();
   const stderr = result.stderr?.trimEnd();
@@ -101,18 +210,6 @@ function runCodex(args: string[]): void {
   }
 }
 
-function runCodexBestEffort(args: string[], successMessage: string, failureMessage: string): boolean {
-  try {
-    runCodex(args);
-    console.log(`  ${successMessage}`);
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`  ${failureMessage}: ${message}`);
-    return false;
-  }
-}
-
 function isMarketplaceDifferentSourceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes(`marketplace '${MARKETPLACE_NAME}' is already added from a different source`)
@@ -125,7 +222,7 @@ function registerCodexMarketplace(marketplaceRoot: string): void {
     return;
   } catch (error) {
     if (!isMarketplaceDifferentSourceError(error)) {
-      throw error;
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 
@@ -173,6 +270,55 @@ export function setTomlFeatureEnabled(content: string, featureName: string, enab
   return setTomlBooleanInTable(content, '[features]', featureName, enabled);
 }
 
+function normalizeTomlHeader(line: string): string | null {
+  const match = line.trim().match(/^\[([^\]]+)\]\s*$/);
+  if (!match) return null;
+  return match[1].replace(/\s+/g, '').replace(/"/g, '');
+}
+
+function isLegacyMcpSearchHeader(normalizedHeader: string | null): boolean {
+  return normalizedHeader === 'mcp_servers.mcp-search';
+}
+
+function isLegacyMcpSearchChildHeader(normalizedHeader: string | null): boolean {
+  return typeof normalizedHeader === 'string' && normalizedHeader.startsWith('mcp_servers.mcp-search.');
+}
+
+function isClaudeMemMcpSearchBlock(block: string): boolean {
+  return /claude-mem/.test(block);
+}
+
+export function removeLegacyCodexMcpSearchConfig(content: string): string {
+  const lines = content.split('\n');
+  const blocks: Array<{ header: string | null; text: string }> = [];
+  let currentHeader: string | null = null;
+  let currentLines: string[] = [];
+
+  for (const line of lines) {
+    const header = normalizeTomlHeader(line);
+    if (header !== null) {
+      blocks.push({ header: currentHeader, text: currentLines.join('\n') });
+      currentHeader = header;
+      currentLines = [line];
+    } else {
+      currentLines.push(line);
+    }
+  }
+  blocks.push({ header: currentHeader, text: currentLines.join('\n') });
+
+  const removeLegacyMcpSearch = blocks.some(
+    (block) => isLegacyMcpSearchHeader(block.header) && isClaudeMemMcpSearchBlock(block.text),
+  );
+  if (!removeLegacyMcpSearch) return content;
+
+  const kept = blocks.filter((block) =>
+    !isLegacyMcpSearchHeader(block.header) && !isLegacyMcpSearchChildHeader(block.header)
+  );
+  // The stale claude-mem-owned server can have tool child tables; remove the
+  // whole subtree so Codex falls back to the plugin-managed MCP declaration.
+  return kept.map((block) => block.text).join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n');
+}
+
 function writeCodexPluginConfig(enabled: boolean): boolean {
   if (!enabled && !existsSync(CODEX_CONFIG_PATH)) return false;
   mkdirSync(CODEX_DIR, { recursive: true });
@@ -181,6 +327,7 @@ function writeCodexPluginConfig(enabled: boolean): boolean {
 
   if (enabled) {
     next = setTomlFeatureEnabled(next, 'hooks', true);
+    next = removeLegacyCodexMcpSearchConfig(next);
   }
   for (const legacyPluginId of LEGACY_CODEX_PLUGIN_IDS) {
     next = setTomlPluginEnabled(next, legacyPluginId, false);
@@ -202,23 +349,12 @@ function disableCodexPluginConfig(): void {
   console.log(`  Disabled Codex plugin: ${CODEX_PLUGIN_ID}${changed ? '' : ' (already disabled)'}`);
 }
 
-function parseSemver(value: string): [number, number, number] | null {
-  const match = value.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function compareSemver(left: [number, number, number], right: [number, number, number]): number {
-  if (left[0] !== right[0]) return left[0] - right[0];
-  if (left[1] !== right[1]) return left[1] - right[1];
-  return left[2] - right[2];
+function extractSemver(value: string): string | null {
+  return value.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
 }
 
 function assertCodexMarketplaceSupported(): void {
-  const result = spawnSync('codex', ['--version'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const result = codexSpawn(['--version']);
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
 
   if (result.error) {
@@ -229,15 +365,14 @@ function assertCodexMarketplaceSupported(): void {
     return;
   }
 
-  const version = parseSemver(output);
+  const version = extractSemver(output);
   if (!version) {
     console.warn(`  Could not parse Codex CLI version from "${output || '<empty>'}". Continuing; plugin marketplace support requires ${MIN_CODEX_MARKETPLACE_VERSION} or newer.`);
     return;
   }
 
-  const minimumVersion = parseSemver(MIN_CODEX_MARKETPLACE_VERSION);
-  if (minimumVersion && compareSemver(version, minimumVersion) < 0) {
-    throw new Error(`Codex CLI ${version.join('.')} is too old for plugin marketplace support. Update Codex CLI to ${MIN_CODEX_MARKETPLACE_VERSION} or newer, then run: npx claude-mem@latest install`);
+  if (version.localeCompare(MIN_CODEX_MARKETPLACE_VERSION, undefined, { numeric: true }) < 0) {
+    throw new Error(`Codex CLI ${version} is too old for plugin marketplace support. Update Codex CLI to ${MIN_CODEX_MARKETPLACE_VERSION} or newer, then run: npx claude-mem@latest install`);
   }
 }
 
@@ -315,21 +450,7 @@ function disableCodexTranscriptAgentsContext(): boolean {
   if (!existsSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH)) return true;
 
   try {
-    const parsed = JSON.parse(readFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, 'utf-8')) as unknown;
-    if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return true;
-
-    let changed = false;
-    for (const watch of parsed.watches) {
-      if (!isRecord(watch) || !isCodexTranscriptWatch(watch)) continue;
-      if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context)) continue;
-      delete watch.context;
-      changed = true;
-    }
-
-    if (changed) {
-      writeFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, `${JSON.stringify(parsed, null, 2)}\n`);
-      console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}`);
-    }
+    stripLegacyTranscriptWatchContexts();
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -338,37 +459,61 @@ function disableCodexTranscriptAgentsContext(): boolean {
   }
 }
 
+function stripLegacyTranscriptWatchContexts(): void {
+  const parsed = JSON.parse(readFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, 'utf-8')) as unknown;
+  if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return;
+
+  let changed = false;
+  for (const watch of parsed.watches) {
+    if (!isRecord(watch) || !isCodexTranscriptWatch(watch)) continue;
+    if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context)) continue;
+    delete watch.context;
+    changed = true;
+  }
+
+  if (changed) {
+    writeFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, `${JSON.stringify(parsed, null, 2)}\n`);
+    console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}`);
+  }
+}
+
 const cleanupLegacyCodexTranscriptAgentsContext = disableCodexTranscriptAgentsContext;
 
 export async function installCodexCli(marketplaceRootOverride?: string): Promise<number> {
   console.log('\nInstalling Claude-Mem for Codex CLI (native hooks)...\n');
 
-  if (!commandExists('codex')) {
+  if (!commandExists(resolveCodexCommand())) {
     console.error('Codex CLI was not found on PATH.');
     console.error('Install Codex, then run: npx claude-mem@latest install');
     return 1;
   }
 
   try {
-    assertCodexMarketplaceSupported();
-    const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
+    return performCodexInstall(marketplaceRootOverride);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\nInstallation failed: ${message}`);
+    return 1;
+  }
+}
 
-    console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
-    registerCodexMarketplace(marketplaceRoot);
-    enableCodexPluginConfig();
-    runCodexBestEffort(
-      ['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME],
-      'Refreshed Codex marketplace and installed plugin cache.',
-      'Could not refresh Codex marketplace cache; reinstall or upgrade claude-mem from /plugins if Codex still uses old MCP config',
-    );
-    if (!cleanupLegacyCodexAgentsMdContext()) {
-      console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
-    }
-    if (!cleanupLegacyCodexTranscriptAgentsContext()) {
-      console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
-    }
+function performCodexInstall(marketplaceRootOverride?: string): number {
+  assertCodexMarketplaceSupported();
+  const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
 
-    console.log(`
+  console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
+  registerCodexMarketplace(marketplaceRoot);
+  enableCodexPluginConfig();
+  runCodex(['plugin', 'add', CODEX_PLUGIN_ID]);
+  console.log('  Installed Codex plugin cache.');
+  if (!cleanupLegacyCodexAgentsMdContext()) {
+    console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
+  }
+  if (!cleanupLegacyCodexTranscriptAgentsContext()) {
+    console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
+  }
+
+  console.log(`
 Installation complete!
 
 Codex marketplace: ${MARKETPLACE_NAME}
@@ -376,17 +521,13 @@ Plugin source:     ${marketplaceRoot}
 
 Next steps:
   1. Open Codex CLI in your project
-  2. Restart any running Codex sessions so native hooks are loaded
+  2. Review and trust the five claude-mem hooks when Codex prompts you
+  3. Restart sessions opened before trusting the hooks
 
 For a fresh setup, the supported entry point is:
   npx claude-mem@latest install
 `);
-    return 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`\nInstallation failed: ${message}`);
-    return 1;
-  }
+  return 0;
 }
 
 export function uninstallCodexCli(): number {
@@ -403,7 +544,7 @@ export function uninstallCodexCli(): number {
   }
 
   try {
-    if (commandExists('codex')) {
+    if (commandExists(resolveCodexCommand())) {
       runCodex(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
     } else {
       console.log('  Codex CLI not found; skipping marketplace removal.');

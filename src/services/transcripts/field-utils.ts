@@ -122,27 +122,45 @@ export function matchesRule(
 
   const path = rule.path || schema.eventTypePath || 'type';
   const value = path ? getValueByPath(entry, path) : undefined;
+  const isAbsent = value === undefined || value === null || value === '';
 
-  if (rule.exists) {
-    if (value === undefined || value === null || value === '') return false;
+  // Every operator present on the rule must pass (logical AND). This lets a
+  // single rule combine positive and negative conditions (e.g. match a tool
+  // event but exclude guardian/subagent sessions via `not_equals`/`not_in`).
+  if (rule.exists !== undefined) {
+    // exists:true → field must be present; exists:false → field must be absent.
+    if (rule.exists && isAbsent) return false;
+    if (!rule.exists && !isAbsent) return false;
   }
 
   if (rule.equals !== undefined) {
-    return value === rule.equals;
+    if (value !== rule.equals) return false;
+  }
+
+  if (rule.not_equals !== undefined) {
+    if (value === rule.not_equals) return false;
   }
 
   if (rule.in && Array.isArray(rule.in)) {
-    return rule.in.includes(value);
+    if (!rule.in.includes(value)) return false;
+  }
+
+  if (rule.not_in && Array.isArray(rule.not_in)) {
+    if (rule.not_in.includes(value)) return false;
   }
 
   if (rule.contains !== undefined) {
-    return typeof value === 'string' && value.includes(rule.contains);
+    if (typeof value !== 'string' || !value.includes(rule.contains)) return false;
+  }
+
+  if (rule.not_contains !== undefined) {
+    if (typeof value === 'string' && value.includes(rule.not_contains)) return false;
   }
 
   if (rule.regex) {
     try {
       const regex = new RegExp(rule.regex);
-      return regex.test(String(value ?? ''));
+      if (!regex.test(String(value ?? ''))) return false;
     } catch (error: unknown) {
       logger.debug('WORKER', 'Invalid regex in match rule', { regex: rule.regex }, error instanceof Error ? error : undefined);
       return false;

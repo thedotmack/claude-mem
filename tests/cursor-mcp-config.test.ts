@@ -4,7 +4,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   configureCursorMcp,
-  removeMcpConfig,
   type CursorMcpConfig
 } from '../src/utils/cursor-utils';
 
@@ -141,53 +140,6 @@ describe('Cursor MCP Configuration', () => {
           args.forEach((arg: string) => expect(typeof arg).toBe('string'));
         }
       }
-    });
-  });
-
-  describe('removeMcpConfig', () => {
-    it('removes claude-mem server from config', () => {
-      configureCursorMcp(mcpJsonPath, mcpServerPath);
-      removeMcpConfig(mcpJsonPath);
-
-      const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-      expect(config.mcpServers['claude-mem']).toBeUndefined();
-    });
-
-    it('preserves other servers when removing claude-mem', () => {
-      mkdirSync(join(tempDir, '.cursor'), { recursive: true });
-      const config = {
-        mcpServers: {
-          'other-server': { command: 'python', args: ['/path.py'] },
-          'claude-mem': { command: 'node', args: ['/mcp.cjs'] }
-        }
-      };
-      writeFileSync(mcpJsonPath, JSON.stringify(config));
-
-      removeMcpConfig(mcpJsonPath);
-
-      const updated: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-      expect(updated.mcpServers['other-server']).toBeDefined();
-      expect(updated.mcpServers['claude-mem']).toBeUndefined();
-    });
-
-    it('does nothing if mcp.json does not exist', () => {
-      expect(() => removeMcpConfig(mcpJsonPath)).not.toThrow();
-      expect(existsSync(mcpJsonPath)).toBe(false);
-    });
-
-    it('does nothing if claude-mem not in config', () => {
-      mkdirSync(join(tempDir, '.cursor'), { recursive: true });
-      const config = {
-        mcpServers: {
-          'other-server': { command: 'python', args: ['/path.py'] }
-        }
-      };
-      writeFileSync(mcpJsonPath, JSON.stringify(config));
-
-      removeMcpConfig(mcpJsonPath);
-
-      const updated: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-      expect(updated.mcpServers['other-server']).toBeDefined();
     });
   });
 

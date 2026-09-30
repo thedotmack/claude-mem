@@ -68,6 +68,7 @@ export interface ProjectCatalog {
 export interface Settings {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES?: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
 
@@ -91,24 +92,7 @@ export interface Settings {
 
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
-}
 
-export interface WorkerStats {
-  version?: string;
-  uptime?: number;
-  activeSessions?: number;
-  sseClients?: number;
-}
-
-export interface DatabaseStats {
-  size?: number;
-  observations?: number;
-  sessions?: number;
-  summaries?: number;
-  firstObservationAt?: string | null;
-}
-
-export interface Stats {
-  worker?: WorkerStats;
-  database?: DatabaseStats;
+  /** File/env only — shown read-only. Not written via POST /api/settings. */
+  CLAUDE_CODE_PATH?: string;
 }

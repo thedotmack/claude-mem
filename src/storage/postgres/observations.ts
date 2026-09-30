@@ -11,6 +11,7 @@ import {
   toEpoch,
   toJsonObject
 } from './utils.js';
+import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 
 export type ObservationSourceType = 'agent_event' | 'session_summary' | 'observation_reindex' | 'manual';
 
@@ -155,17 +156,41 @@ export class PostgresObservationRepository {
     teamId: string;
     query: string;
     limit?: number;
+    platformSource?: string | null;
   }): Promise<PostgresObservation[]> {
+    const platformSource = normalizePlatformSourceOrNull(input.platformSource);
     const result = await this.client.query<ObservationRow>(
       `
-        SELECT * FROM observations
-        WHERE project_id = $1
-          AND team_id = $2
-          AND content_search @@ websearch_to_tsquery('english', $3)
-        ORDER BY ts_rank(content_search, websearch_to_tsquery('english', $3)) DESC, updated_at DESC
+        SELECT observations.* FROM observations
+        LEFT JOIN server_sessions
+          ON server_sessions.id = observations.server_session_id
+          AND server_sessions.project_id = observations.project_id
+          AND server_sessions.team_id = observations.team_id
+        WHERE observations.project_id = $1
+          AND observations.team_id = $2
+          AND observations.content_search @@ websearch_to_tsquery('english', $3)
+          AND (
+            $5::text IS NULL
+            OR server_sessions.platform_source = $5
+            OR (
+              observations.server_session_id IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM observation_sources
+                INNER JOIN agent_events
+                  ON agent_events.id = observation_sources.agent_event_id
+                  AND agent_events.project_id = observations.project_id
+                  AND agent_events.team_id = observations.team_id
+                WHERE observation_sources.observation_id = observations.id
+                  AND observation_sources.source_type = 'agent_event'
+                  AND agent_events.platform_source = $5
+              )
+            )
+          )
+        ORDER BY ts_rank(observations.content_search, websearch_to_tsquery('english', $3)) DESC, observations.updated_at DESC
         LIMIT $4
       `,
-      [input.projectId, input.teamId, input.query, input.limit ?? 20]
+      [input.projectId, input.teamId, input.query, input.limit ?? 20, platformSource]
     );
     return result.rows.map(mapObservationRow);
   }

@@ -34,19 +34,21 @@ interface ObservationRow {
   discovery_tokens: number | null;
 }
 
+// BMP-only markers (issue #2787): astral emoji can be split into a lone
+// surrogate by a Claude Code context truncation and brick the session.
 const TYPE_ICONS: Record<string, string> = {
-  'bugfix': '🔴',
-  'feature': '🟣',
-  'refactor': '🔄',
-  'change': '✅',
-  'discovery': '🔵',
-  'decision': '⚖️',
-  'session': '🎯',
-  'prompt': '💬'
+  'bugfix': '●',
+  'feature': '◆',
+  'refactor': '↻',
+  'change': '✓',
+  'discovery': '○',
+  'decision': '⚖',
+  'session': '◎',
+  'prompt': '”'
 };
 
 function getTypeIcon(type: string): string {
-  return TYPE_ICONS[type] || '📝';
+  return TYPE_ICONS[type] || '•';
 }
 
 function estimateTokens(obs: ObservationRow): number {

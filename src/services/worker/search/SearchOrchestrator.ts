@@ -7,21 +7,15 @@ import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
 import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 
-import { ResultFormatter } from './ResultFormatter.js';
-import { TimelineBuilder } from './TimelineBuilder.js';
-import type { TimelineItem, TimelineData } from './TimelineBuilder.js';
-
-import {
-  SEARCH_CONSTANTS,
-} from './types.js';
 import type {
   StrategySearchOptions,
   StrategySearchResult,
-  SearchResults,
   ObservationSearchResult
 } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
+import { AppError } from '../../server/ErrorHandler.js';
 import { logger } from '../../../utils/logger.js';
+import { normalizePlatformSource } from '../../../shared/platform-source.js';
 
 interface NormalizedParams extends StrategySearchOptions {
   concepts?: string[];
@@ -29,12 +23,42 @@ interface NormalizedParams extends StrategySearchOptions {
   obsType?: string[];
 }
 
+interface SearchRequestInput {
+  query?: unknown;
+  project?: unknown;
+  platformSource?: unknown;
+  dateRange?: { start?: unknown; end?: unknown } | null;
+  obsType?: unknown;
+  concepts?: unknown;
+  files?: unknown;
+}
+
+function isPresent(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== undefined && value !== null && value !== '';
+}
+
+/**
+ * Request-boundary check for search: a request needs query text or at least one row filter.
+ * Each SessionSearch leg returns [] when none of the filters apply to it (so an obs_type-only
+ * search is not rejected by the sessions and prompts legs), which means an empty request would
+ * otherwise come back as a silent zero-result success instead of a 400.
+ * A document category (`type: 'observations'`) selects what to search, not which rows, so it
+ * does not count as a filter.
+ */
+export function assertSearchHasQueryOrFilter(input: SearchRequestInput): void {
+  const hasDateRange = !!input.dateRange && (isPresent(input.dateRange.start) || isPresent(input.dateRange.end));
+  const hasFilter = hasDateRange
+    || [input.project, input.platformSource, input.obsType, input.concepts, input.files].some(isPresent);
+  if (!isPresent(input.query) && !hasFilter) {
+    throw new AppError('Either query or filters required for search', 400, 'INVALID_SEARCH_REQUEST');
+  }
+}
+
 export class SearchOrchestrator {
   private chromaStrategy: ChromaSearchStrategy | null = null;
   private sqliteStrategy: SQLiteSearchStrategy;
   private hybridStrategy: HybridSearchStrategy | null = null;
-  private resultFormatter: ResultFormatter;
-  private timelineBuilder: TimelineBuilder;
 
   constructor(
     private sessionSearch: SessionSearch,
@@ -47,13 +71,11 @@ export class SearchOrchestrator {
       this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
       this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
     }
-
-    this.resultFormatter = new ResultFormatter();
-    this.timelineBuilder = new TimelineBuilder();
   }
 
   async search(args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
+    assertSearchHasQueryOrFilter(options);
 
     return await this.executeWithFallback(options);
   }
@@ -69,7 +91,12 @@ export class SearchOrchestrator {
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       try {
-        return await this.chromaStrategy.search(options);
+        const chromaResult = await this.chromaStrategy.search(options);
+        if (this.isEmptyResult(chromaResult)) {
+          logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches; falling back to SQLite', {});
+          return await this.sqliteStrategy.search(options);
+        }
+        return chromaResult;
       } catch (error) {
         const errorObj = error instanceof Error ? error : new Error(String(error));
         throw new ChromaUnavailableError(
@@ -87,34 +114,10 @@ export class SearchOrchestrator {
     };
   }
 
-  async findByConcept(concept: string, args: any): Promise<StrategySearchResult> {
-    const options = this.normalizeParams(args);
-
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByConcept(concept, options);
-    }
-
-    const results = this.sqliteStrategy.findByConcept(concept, options);
-    return {
-      results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
-  }
-
-  async findByType(type: string | string[], args: any): Promise<StrategySearchResult> {
-    const options = this.normalizeParams(args);
-
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByType(type, options);
-    }
-
-    const results = this.sqliteStrategy.findByType(type, options);
-    return {
-      results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
+  private isEmptyResult(result: StrategySearchResult): boolean {
+    return result.results.observations.length === 0
+      && result.results.sessions.length === 0
+      && result.results.prompts.length === 0;
   }
 
   async findByFile(filePath: string, args: any): Promise<{
@@ -130,45 +133,6 @@ export class SearchOrchestrator {
 
     const results = this.sqliteStrategy.findByFile(filePath, options);
     return { ...results, usedChroma: false };
-  }
-
-  getTimeline(
-    timelineData: TimelineData,
-    anchorId: number | string,
-    anchorEpoch: number,
-    depthBefore: number,
-    depthAfter: number
-  ): TimelineItem[] {
-    const items = this.timelineBuilder.buildTimeline(timelineData);
-    return this.timelineBuilder.filterByDepth(items, anchorId, anchorEpoch, depthBefore, depthAfter);
-  }
-
-  formatTimeline(
-    items: TimelineItem[],
-    anchorId: number | string | null,
-    options: {
-      query?: string;
-      depthBefore?: number;
-      depthAfter?: number;
-    } = {}
-  ): string {
-    return this.timelineBuilder.formatTimeline(items, anchorId, options);
-  }
-
-  formatSearchResults(
-    results: SearchResults,
-    query: string,
-    chromaFailed: boolean = false
-  ): string {
-    return this.resultFormatter.formatSearchResults(results, query, chromaFailed);
-  }
-
-  getFormatter(): ResultFormatter {
-    return this.resultFormatter;
-  }
-
-  getTimelineBuilder(): TimelineBuilder {
-    return this.timelineBuilder;
   }
 
   private normalizeParams(args: any): NormalizedParams {
@@ -198,19 +162,29 @@ export class SearchOrchestrator {
       }
     }
 
-    if (normalized.dateStart || normalized.dateEnd) {
+    const dateStart = normalized.dateStart ?? normalized.date_start ?? normalized.date_from;
+    const dateEnd = normalized.dateEnd ?? normalized.date_end ?? normalized.date_to;
+    if (dateStart || dateEnd) {
       normalized.dateRange = {
-        start: normalized.dateStart,
-        end: normalized.dateEnd
+        start: dateStart,
+        end: dateEnd
       };
-      delete normalized.dateStart;
-      delete normalized.dateEnd;
     }
+    delete normalized.dateStart;
+    delete normalized.dateEnd;
+    delete normalized.date_start;
+    delete normalized.date_end;
+    delete normalized.date_from;
+    delete normalized.date_to;
+
+    const rawPlatformSource = normalized.platformSource ?? normalized.platform_source;
+    if (typeof rawPlatformSource === 'string' && rawPlatformSource.trim()) {
+      normalized.platformSource = normalizePlatformSource(rawPlatformSource);
+    } else {
+      delete normalized.platformSource;
+    }
+    delete normalized.platform_source;
 
     return normalized;
-  }
-
-  isChromaAvailable(): boolean {
-    return !!this.chromaSync;
   }
 }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { Database } from 'bun:sqlite';
 import { Server, type ServerOptions } from '../../src/services/server/Server.js';
 import { ServerV1Routes } from '../../src/server/routes/v1/ServerV1Routes.js';
-import { createServerApiKey } from '../../src/server/auth/api-key-service.js';
+import { createServerApiKey } from '../../src/server/auth/sqlite-api-key-service.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -127,6 +127,59 @@ describe('server REST API v1 routes', () => {
     expect((await endResponse.json()).session.status).toBe('completed');
   });
 
+  it('persists a full-field memory create with narrative populated and indexed (#2684)', async () => {
+    const projectResponse = await post('/v1/projects', { name: 'Write Path Project' });
+    expect(projectResponse.status).toBe(201);
+    const { project } = await projectResponse.json();
+
+    const memoryResponse = await post('/v1/memories', {
+      projectId: project.id,
+      kind: 'manual',
+      type: 'note',
+      title: 'Frozen observation fix',
+      narrative: 'The sync trigger needs narrative populated to index the row.',
+    });
+    expect(memoryResponse.status).toBe(201);
+    const { memory } = await memoryResponse.json();
+    expect(memory.narrative).toBe('The sync trigger needs narrative populated to index the row.');
+
+    // The narrative column must be populated on the persisted row — the FTS
+    // trigger reads it, so an empty narrative means "frozen observations".
+    const stored = db.prepare('SELECT narrative FROM memory_items WHERE id = ?').get(memory.id) as { narrative: string | null };
+    expect(stored.narrative).toBe('The sync trigger needs narrative populated to index the row.');
+
+    // The FTS trigger must have fired and indexed the narrative so search finds it.
+    const ftsRow = db.prepare('SELECT narrative FROM memory_items_fts WHERE memory_item_id = ?').get(memory.id) as { narrative: string | null } | undefined;
+    expect(ftsRow?.narrative).toBe('The sync trigger needs narrative populated to index the row.');
+
+    const searchResponse = await post('/v1/search', { projectId: project.id, query: 'narrative populated' });
+    expect(searchResponse.status).toBe(200);
+    const search = await searchResponse.json();
+    expect(search.memories.map((item: any) => item.id)).toContain(memory.id);
+  });
+
+  it('loudly rejects a create with no searchable content instead of persisting an empty row (#2684)', async () => {
+    const projectResponse = await post('/v1/projects', { name: 'Reject Empty Project' });
+    expect(projectResponse.status).toBe(201);
+    const { project } = await projectResponse.json();
+
+    // kind + type present (schema-valid) but every searchable text field empty.
+    const memoryResponse = await post('/v1/memories', {
+      projectId: project.id,
+      kind: 'manual',
+      type: 'note',
+    });
+    expect(memoryResponse.status).toBe(400);
+    const body = await memoryResponse.json();
+    expect(body.error).toBe('ValidationError');
+
+    // Critically: no empty row was persisted.
+    const count = db.prepare('SELECT COUNT(*) AS count FROM memory_items WHERE project_id = ?').get(project.id) as { count: number };
+    expect(count.count).toBe(0);
+    const ftsCount = db.prepare('SELECT COUNT(*) AS count FROM memory_items_fts WHERE project_id = ?').get(project.id) as { count: number };
+    expect(ftsCount.count).toBe(0);
+  });
+
   it('denies writes when an API key lacks write scope', async () => {
     const key = createServerApiKey(db, {
       name: 'read only',
@@ -142,6 +195,28 @@ describe('server REST API v1 routes', () => {
     });
 
     expect(response.status).toBe(403);
+  });
+
+  it('authorizes a DEFAULT-scoped API key for the read and write routes it must access (#2428)', async () => {
+    // A key created with NO explicit scopes must work against the v1 routes
+    // (which require memories:read for reads and memories:write for writes).
+    // Previously the default was [] and every route 403'd.
+    const key = createServerApiKey(db, { name: 'default-scoped' });
+    const auth = { Authorization: `Bearer ${key.rawKey}`, 'Content-Type': 'application/json' };
+
+    // Write route (memories:write) — must be allowed.
+    const writeResponse = await fetch(`http://127.0.0.1:${port}/v1/projects`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'Default Key Project' }),
+    });
+    expect(writeResponse.status).toBe(201);
+
+    // Read route (memories:read) — must be allowed.
+    const readResponse = await fetch(`http://127.0.0.1:${port}/v1/projects`, {
+      headers: { Authorization: `Bearer ${key.rawKey}` },
+    });
+    expect(readResponse.status).toBe(200);
   });
 
   it('denies project creation when an API key is scoped to an existing project', async () => {

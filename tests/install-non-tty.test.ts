@@ -94,6 +94,75 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain("selectedIDEs = ['claude-code']");
     });
 
+    it('resolves a missing provider before the OAuth gate instead of aborting', () => {
+      const validationIndex = installSource.indexOf('validateNonInteractiveProvider(options, summary)');
+      const oauthIndex = installSource.indexOf('await requireInstallerOAuthLogin(version)');
+      expect(validationIndex).toBeGreaterThan(-1);
+      expect(validationIndex).toBeLessThan(oauthIndex);
+      expect(installSource).not.toContain('A provider must be explicit when stdin is not interactive.');
+      expect(installSource).toContain("providerSource = 'default'");
+      expect(installSource).toContain("providerSource = 'persisted'");
+    });
+
+    it('refuses to keep a persisted personal provider whose key is blank', () => {
+      const fnStart = installSource.indexOf('export function validateNonInteractiveProvider(');
+      const persistedAssign = installSource.indexOf("options.providerSource = 'persisted'", fnStart);
+      const branch = installSource.slice(fnStart, persistedAssign);
+      expect(branch).toContain("component: 'provider-credentials'");
+      // An env-only key is a working configuration (the worker reads the same
+      // env var ahead of settings.json), so it must satisfy the check without
+      // ever being copied to disk.
+      expect(branch).toContain('const persistedKey = String(persisted[persistedKeyName] ?? \'\').trim();');
+      expect(branch).toContain("const envKey = persistedCmemGateway ? '' : String(process.env[persistedKeyName] ?? '').trim();");
+      expect(branch).toContain('if (!persistedKey && !envKey) {');
+      expect(branch).not.toContain('mergeSettings');
+      // A persisted cmem gateway tuple is locked to its saved key by the
+      // worker, so an exported key must not satisfy the check for it.
+      expect(branch).toContain("const persistedCmemGateway = persistedProvider === 'openrouter'");
+      expect(branch).toContain("isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))");
+      // ...unless a base-URL override is exported: the worker then detaches
+      // from the gateway and runs on the exported URL and key, so the exported
+      // key counts again (mirrors lockPersistedCmemTuple in OpenRouterProvider).
+      expect(branch).toContain("&& !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');");
+      // The cmem gateway rejection stays on the explicit-flag path only.
+      expect(branch).not.toContain('configuredCmemKey');
+    });
+
+    it('offers a deferred login-only sign-in link at the end of a non-interactive install', () => {
+      expect(installSource).toContain("'npx-installer-deferred'");
+      expect(installSource).toContain('AGENT: show this link to the user so they can finish signing in.');
+      const helperStart = installSource.indexOf('export async function offerDeferredLogin(');
+      const helperEnd = installSource.indexOf('\n}\n', helperStart);
+      const helper = installSource.slice(helperStart, helperEnd);
+      expect(helper).not.toContain('checkoutUrl');
+      expect(helper).not.toContain('userCode');
+      expect(helper).not.toContain('process.exit');
+      expect(helper).not.toContain('DO_NOT_TRACK');
+      expect(helper).not.toContain('await requireInstallerOAuthLogin(version)');
+      // The offer runs after the success line and before install_completed.
+      const callIndex = installSource.indexOf('await offerDeferredLogin(options, version)');
+      expect(callIndex).toBeGreaterThan(installSource.indexOf("'\\nclaude-mem installed successfully!'"));
+      expect(callIndex).toBeLessThan(installSource.indexOf("captureCliEvent('install_completed'"));
+    });
+
+    it('never opens an API-key prompt on non-interactive stdin', () => {
+      const passwordIndex = installSource.indexOf('const apiKeyResult = await p.password');
+      const guardIndex = installSource.lastIndexOf('if (!isInteractive)', passwordIndex);
+      expect(guardIndex).toBeGreaterThan(-1);
+      expect(guardIndex).toBeLessThan(passwordIndex);
+      expect(installSource.slice(guardIndex, passwordIndex)).toContain('missing a personal API key');
+    });
+
+    it('parses the explicit --disable-auto-memory flag for non-interactive installs', () => {
+      expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
+        .toContain("disableAutoMemory: values['disable-auto-memory'] === true");
+    });
+
+    it('documents the explicit --disable-auto-memory install flag in help output', () => {
+      expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
+        .toContain('npx claude-mem install --disable-auto-memory');
+    });
+
     it('uses console.log for intro in non-interactive mode', () => {
       expect(installSource).toContain("console.log('claude-mem install')");
     });
@@ -109,7 +178,10 @@ describe('Install Non-TTY Support', () => {
       );
       expect(copyRegion).toContain("'.agents'");
       expect(copyRegion).toContain("'.codex-plugin'");
-      expect(copyRegion).toContain("'.mcp.json'");
+      // Root .mcp.json was dropped in #2411; the MCP manifest now ships
+      // exclusively as plugin/.mcp.json (bundled inside the 'plugin' entry).
+      expect(copyRegion).toContain("'plugin'");
+      expect(copyRegion).not.toContain("'.mcp.json'");
     });
 
     it('validates the bundled plugin as the Codex marketplace source', () => {
@@ -119,12 +191,14 @@ describe('Install Non-TTY Support', () => {
       expect(codexInstallerSource).toContain("path.join('plugin', 'skills', 'mem-search', 'SKILL.md')");
     });
 
-    it('does not exclude MCP manifests during local marketplace sync', () => {
+    it('keeps the sync-managed gitignore override mechanism for local marketplace sync', () => {
       const gitignoreExcludeRegion = syncMarketplaceSource.slice(
         syncMarketplaceSource.indexOf('function getGitignoreExcludes'),
         syncMarketplaceSource.indexOf('const branch = getCurrentBranch'),
       );
-      expect(gitignoreExcludeRegion).toContain("'.mcp.json'");
+      // Root .mcp.json was dropped in #2411, so it is no longer a
+      // sync-managed override — the override mechanism itself remains.
+      expect(gitignoreExcludeRegion).toContain('syncManagedFiles');
       expect(gitignoreExcludeRegion).toContain('syncManagedFiles.has(line)');
     });
 
@@ -132,19 +206,29 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('installCodexCli(marketplaceDirectory())');
     });
 
-    it('refreshes Codex marketplace cache after registration', () => {
+    it('installs the Codex plugin cache after local marketplace registration', () => {
       const installRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
-      expect(installRegion).toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
-      expect(installRegion).toContain('installed plugin cache');
+      expect(installRegion).toContain("runCodex(['plugin', 'add', CODEX_PLUGIN_ID])");
+      expect(installRegion).toContain('Installed Codex plugin cache.');
+      expect(installRegion).not.toContain('runCodexBestEffort(');
+      expect(installRegion).not.toContain("['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME]");
+    });
+
+    it('copies the install marker into the bundled marketplace plugin before Codex installs it', () => {
+      const runtimeSetupRegion = installSource.slice(
+        installSource.indexOf("title: 'Setting up runtime"),
+        installSource.indexOf("return `Runtime ready"),
+      );
+      expect(runtimeSetupRegion).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
     });
 
     it('replaces stale Codex marketplace registrations from a different source', () => {
       const registerRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('function registerCodexMarketplace'),
-        codexInstallerSource.indexOf('function parseSemver'),
+        codexInstallerSource.indexOf('function extractSemver'),
       );
       expect(registerRegion).toContain('isMarketplaceDifferentSourceError(error)');
       expect(registerRegion).toContain("['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]");
@@ -162,13 +246,22 @@ describe('Install Non-TTY Support', () => {
       expect(installRegion).not.toContain('plugin_hooks');
     });
 
+    it('tells Codex users to trust the native hooks before restarting sessions', () => {
+      expect(codexInstallerSource).toContain('Review and trust the five claude-mem hooks when Codex prompts you');
+      expect(codexInstallerSource).toContain('Restart sessions opened before trusting the hooks');
+    });
+
     it('captures Codex CLI output for install failure reporting', () => {
-      const runCodexRegion = codexInstallerSource.slice(
-        codexInstallerSource.indexOf('function runCodex'),
+      // codex is spawned through the centralized codexSpawn() helper (#2695:
+      // shell-resolved on Windows so codex.cmd is found). The helper region
+      // owns the spawnSync call; runCodex captures stdout/stderr (pipe, not
+      // inherit) for failure reporting.
+      const codexSpawnRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export function codexSpawn'),
         codexInstallerSource.indexOf('function removeCodexAgentsMdContext'),
       );
-      expect(runCodexRegion).toContain('spawnSync');
-      expect(runCodexRegion).not.toContain("stdio: 'inherit'");
+      expect(codexSpawnRegion).toContain('spawnSync');
+      expect(codexSpawnRegion).not.toContain("stdio: 'inherit'");
     });
 
     it('checks Codex CLI marketplace version before registration', () => {
@@ -177,9 +270,65 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
       expect(codexInstallerSource).toContain("const MIN_CODEX_MARKETPLACE_VERSION = '0.128.0'");
-      expect(codexInstallerSource).toContain("spawnSync('codex', ['--version']");
+      expect(codexInstallerSource).toContain("codexSpawn(['--version'])");
       expect(installRegion.indexOf('assertCodexMarketplaceSupported()'))
         .toBeLessThan(installRegion.indexOf('registerCodexMarketplace(marketplaceRoot)'));
+    });
+
+    it('resolves codex.cmd on Windows without shell argument re-tokenization (#2695)', () => {
+      const codexSpawnRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export function resolveCodexSpawnInvocation'),
+        codexInstallerSource.indexOf('function runCodex'),
+      );
+      const resolverRegion = codexInstallerSource.slice(
+        codexInstallerSource.indexOf('export function resolveCodexCommand'),
+        codexInstallerSource.indexOf('/**\n * Spawn the `codex` CLI.'),
+      );
+      expect(codexSpawnRegion).toContain('buildSpawnSyncInvocation(resolvedCommand, args');
+      expect(codexSpawnRegion).not.toContain('shell: true');
+      expect(resolverRegion).toContain("'codex.cmd'");
+    });
+
+    it('probes Claude Code version through the shared no-shell Windows invocation', () => {
+      const versionProbeRegion = installSource.slice(
+        installSource.indexOf('function readClaudeCodeVersionOutput'),
+        installSource.indexOf('function detectClaudeCodeVersion'),
+      );
+      expect(versionProbeRegion).toContain("lookupWindowsCommand('claude') ?? 'claude.cmd'");
+      expect(versionProbeRegion).toContain('buildSpawnSyncInvocation(command, [');
+      expect(versionProbeRegion).not.toContain("shell: process.platform === 'win32'");
+      expect(versionProbeRegion).not.toContain('shell: IS_WINDOWS');
+    });
+
+    it('writes install markers for both the marketplace and executable plugin roots', () => {
+      const markerHelperStart = installSource.indexOf('function writeMarketplaceInstallMarkers(');
+      const markerHelperEnd = installSource.indexOf('/**\n * Install marketplace dependencies', markerHelperStart);
+      const markerHelperRegion = installSource.slice(markerHelperStart, markerHelperEnd);
+      expect(markerHelperRegion).toContain('writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion)');
+      expect(markerHelperRegion).toContain("writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion, uvVersion)");
+
+      const start = installSource.indexOf("title: 'Installing marketplace dependencies'");
+      const end = installSource.indexOf('await runTasks(tasks);', start);
+      const marketplaceDepsRegion = installSource.slice(start, end);
+      expect(marketplaceDepsRegion).toContain('await runNpmInstallInMarketplace(summary)');
+      expect(marketplaceDepsRegion).toContain('writeMarketplaceInstallMarkers(');
+      expect(marketplaceDepsRegion).toContain('marketplaceDirectory()');
+      expect(marketplaceDepsRegion).toContain("installedBunVersion ?? 'unknown'");
+    });
+
+    it('repairs both the cache root and marketplace runtime root', () => {
+      const repairRegion = installSource.slice(
+        installSource.indexOf('async function runRepairCommandInner'),
+        installSource.indexOf('export async function runRepairCommand'),
+      );
+      expect(repairRegion).toContain("title: 'Setting up runtime'");
+      expect(repairRegion).toContain("title: 'Repairing marketplace runtime'");
+      expect(repairRegion).toContain('copyPluginToCache(version)');
+      expect(repairRegion).toContain('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(repairRegion).toContain('Repopulating marketplace root from npm package');
+      expect(repairRegion).toContain('copyPluginToMarketplace()');
+      expect(repairRegion).toContain('await runNpmInstallInMarketplace(summary)');
+      expect(repairRegion).toContain('writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion, uvVersion)');
     });
 
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {
@@ -212,7 +361,6 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('does not seed new Codex transcript watcher configs with AGENTS context injection', () => {
-      expect(transcriptConfigSource).toContain("name: 'codex'");
       const sampleConfigRegion = transcriptConfigSource.slice(
         transcriptConfigSource.indexOf('export const SAMPLE_CONFIG'),
         transcriptConfigSource.indexOf('stateFile: DEFAULT_STATE_PATH'),
@@ -241,7 +389,10 @@ describe('Install Non-TTY Support', () => {
 
   describe('runtime selection', () => {
     it('offers Server (beta) while keeping worker as the default runtime', () => {
-      expect(installSource).toContain("'server-beta'");
+      // Phase 1d: installer writes the new canonical `'server'` runtime value.
+      // The legacy `'server-beta'` value is still accepted by
+      // runtime-selector.ts for existing installs, but new writes use 'server'.
+      expect(installSource).toContain("value: 'server'");
       expect(installSource).toContain('Server (beta)');
       expect(installSource).toContain("initialValue: 'worker'");
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');
@@ -249,8 +400,11 @@ describe('Install Non-TTY Support', () => {
   });
 
   describe('post-install Next Steps copy', () => {
-    it('frames the choice as two paths', () => {
-      expect(installSource).toContain('Two paths from here:');
+    it('opens with a plain instruction, not a menu of paths', () => {
+      // The A/B framing dressed up "just start working" as a decision the user
+      // had to make on the last screen of the funnel.
+      expect(installSource).toContain("styleText('bold', 'Start working.')");
+      expect(installSource).not.toContain('Two paths from here:');
     });
 
     it('sets timing honesty about second-session memory injection', () => {
@@ -259,15 +413,23 @@ describe('Install Non-TTY Support', () => {
 
     it('addresses privacy: everything stays local', () => {
       expect(installSource).toContain('Everything stays in ');
-      expect(installSource).toContain("pc.cyan('~/.claude-mem')");
+      expect(installSource).toContain("styleText('cyan', '~/.claude-mem')");
     });
 
     it('keeps /learn-codebase as the optional front-load path', () => {
       expect(installSource).toContain('/learn-codebase');
     });
 
-    it('demotes the uninstall caveat into a dim footer', () => {
-      expect(installSource).toContain('close all Claude Code sessions before uninstalling');
+    it('keeps uninstall trivia and env-var opt-outs off the install screen', () => {
+      // Uninstall instructions do not belong on the screen that just finished
+      // installing, and opting out of the first-session hint is meaningless to
+      // someone who has not seen it yet.
+      const nextStepsRegion = installSource.slice(
+        installSource.indexOf('const nextSteps = '),
+        installSource.indexOf("p.note(nextSteps.join"),
+      );
+      expect(nextStepsRegion).not.toContain('before uninstalling');
+      expect(nextStepsRegion).not.toContain('CLAUDE_MEM_WELCOME_HINT_ENABLED');
     });
 
     it('does not advertise /mem-search in the post-install Next Steps', () => {

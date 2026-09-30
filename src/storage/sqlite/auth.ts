@@ -169,6 +169,39 @@ export class AuthRepository {
     return row ? mapApiKeyRow(row) : null;
   }
 
+  // Salted hashes are no longer deterministic per raw key, so verification
+  // narrows candidates by the (non-secret) key prefix before doing a slow,
+  // timing-safe scrypt comparison against each candidate hash.
+  listActiveApiKeysByPrefix(prefix: string): ApiKey[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM api_keys
+      WHERE status = 'active' AND prefix = ?
+      ORDER BY created_at_epoch DESC
+    `).all(prefix) as ApiKeyRow[];
+    return rows.map(mapApiKeyRow);
+  }
+
+  // #2541 — rewrite a key's stored hash (used to transparently upgrade a
+  // legacy unsalted SHA-256 key to the salted scrypt scheme on verify).
+  updateApiKeyHash(id: string, keyHash: string, updatedAtEpoch = Date.now()): ApiKey | null {
+    this.db.prepare(`
+      UPDATE api_keys
+      SET key_hash = ?, updated_at_epoch = ?
+      WHERE id = ?
+    `).run(keyHash, updatedAtEpoch, id);
+    return this.getApiKeyById(id);
+  }
+
+  // #2560 — re-issue the scope set on an existing key (scope-migration tool).
+  updateApiKeyScopes(id: string, scopes: string[], updatedAtEpoch = Date.now()): ApiKey | null {
+    this.db.prepare(`
+      UPDATE api_keys
+      SET scopes = ?, updated_at_epoch = ?
+      WHERE id = ?
+    `).run(stringifyJson(scopes), updatedAtEpoch, id);
+    return this.getApiKeyById(id);
+  }
+
   listApiKeys(limit = 100): ApiKey[] {
     const rows = this.db.prepare(`
       SELECT * FROM api_keys

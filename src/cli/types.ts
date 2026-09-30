@@ -6,17 +6,25 @@ export interface NormalizedHookInput {
   toolName?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
+  /**
+   * Provider-assigned id for THIS tool call. Already honoured downstream (the
+   * pending_messages dedupe index and the durable `tool_uses` side index both
+   * key on it); adapters simply never forwarded it from the hook payload, so
+   * only the transcript-watch path populated it. Optional everywhere: a
+   * platform that omits it still ingests, it just cannot be de-duplicated.
+   */
+  toolUseId?: string;
   transcriptPath?: string;
   lastAssistantMessage?: string;
+  reason?: string;
   turnId?: string;
   stopHookActive?: boolean;
   permissionMode?: string;
   model?: string;
   sessionSource?: 'startup' | 'resume' | 'clear';
-  filePath?: string;   
-  edits?: unknown[];   
-  metadata?: Record<string, unknown>;
-  agentId?: string;      
+  filePath?: string;
+  edits?: unknown[];
+  agentId?: string;
   agentType?: string;    
 }
 

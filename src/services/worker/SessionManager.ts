@@ -1,81 +1,41 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
-import {
-  SqliteObservationQueueEngine,
-  type HealthCheckedObservationQueueEngine,
-  type InspectableObservationQueueEngine,
-  type ObservationQueueHealth
-} from '../../server/queue/ObservationQueueEngine.js';
-import { BullMqObservationQueueEngine } from '../../server/queue/BullMqObservationQueueEngine.js';
-import { getObservationQueueEngineName } from '../../server/queue/redis-config.js';
+import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { RestartGuard } from './RestartGuard.js';
+import { telemetryBuffer } from '../telemetry/buffer.js';
+import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
+
+export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
-  private onSessionDeletedCallback?: () => void;
-  private queueEngine: InspectableObservationQueueEngine | null = null;
-  private queueEngineName: 'sqlite' | 'bullmq' | null = null;
   private onPendingMutate?: () => void;
+  private telegramWrapupFormatter: TelegramWrapupFormatter | null = null;
+  private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
-  }
-
-  private getQueueEngine(): InspectableObservationQueueEngine {
-    if (!this.queueEngine) {
-      this.queueEngineName = getObservationQueueEngineName();
-      if (this.queueEngineName === 'bullmq') {
-        this.queueEngine = new BullMqObservationQueueEngine({
-          onMutate: () => this.onPendingMutate?.()
-        });
-      } else {
-        const sessionStore = this.dbManager.getSessionStore();
-        this.queueEngine = new SqliteObservationQueueEngine(
-          sessionStore.db,
-          () => this.onPendingMutate?.()
-        );
-      }
-    }
-    return this.queueEngine;
-  }
-
-  async initializeQueueEngine(): Promise<void> {
-    this.queueEngineName = getObservationQueueEngineName();
-    if (this.queueEngineName === 'sqlite') {
-      return;
-    }
-    const queue = this.getQueueEngine();
-    if (isHealthCheckedQueue(queue)) {
-      await queue.assertHealthy();
-      await queue.getTotalQueueDepth();
-    }
-  }
-
-  isBullMqQueueEnabled(): boolean {
-    return (this.queueEngineName ?? getObservationQueueEngineName()) === 'bullmq';
-  }
-
-  async getQueueHealth(): Promise<ObservationQueueHealth | null> {
-    const queue = this.getQueueEngine();
-    if (isHealthCheckedQueue(queue)) {
-      return queue.getHealth();
-    }
-    return null;
-  }
-
-  setOnSessionDeleted(callback: () => void): void {
-    this.onSessionDeletedCallback = callback;
   }
 
   setOnPendingMutate(cb: () => void): void {
     this.onPendingMutate = cb;
   }
 
-  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
+  setTelegramWrapupFormatter(formatter: TelegramWrapupFormatter): void {
+    this.telegramWrapupFormatter = formatter;
+  }
+
+  initializeSession(
+    sessionDbId: number,
+    currentUserPrompt?: string,
+    promptNumber?: number,
+    currentProject?: string,
+  ): ActiveSession {
+    const suppliedProject = currentProject && currentProject !== 'unknown' ? currentProject : undefined;
+
     logger.debug('SESSION', 'initializeSession called', {
       sessionDbId,
       promptNumber,
@@ -91,7 +51,7 @@ export class SessionManager {
       });
 
       const dbSession = this.dbManager.getSessionById(sessionDbId);
-      if (dbSession.project && dbSession.project !== session.project) {
+      if (dbSession.project && dbSession.project !== session.project && !suppliedProject) {
         logger.debug('SESSION', 'Updating project from database', {
           sessionDbId,
           oldProject: session.project,
@@ -99,15 +59,24 @@ export class SessionManager {
         });
         session.project = dbSession.project;
       }
+      if (suppliedProject) {
+        session.project = suppliedProject;
+      }
       if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
         session.platformSource = dbSession.platform_source;
+      }
+      if (dbSession.observed_model && dbSession.observed_model !== session.observedModel) {
+        session.observedModel = dbSession.observed_model;
+      }
+      if (dbSession.observed_billing && dbSession.observed_billing !== session.observedBilling) {
+        session.observedBilling = dbSession.observed_billing;
       }
 
       if (currentUserPrompt) {
         logger.debug('SESSION', 'Updating userPrompt for continuation', {
           sessionDbId,
           promptNumber,
-          oldPrompt: session.userPrompt.substring(0, 80),
+          oldPrompt: session.userPrompt?.substring(0, 80) ?? '',
           newPrompt: currentUserPrompt.substring(0, 80)
         });
         session.userPrompt = currentUserPrompt;
@@ -116,7 +85,7 @@ export class SessionManager {
         logger.debug('SESSION', 'No currentUserPrompt provided for existing session', {
           sessionDbId,
           promptNumber,
-          usingCachedPrompt: session.userPrompt.substring(0, 80)
+          usingCachedPrompt: session.userPrompt?.substring(0, 80) ?? ''
         });
       }
       return session;
@@ -138,13 +107,22 @@ export class SessionManager {
       });
     }
 
-    const userPrompt = currentUserPrompt || dbSession.user_prompt;
+    const latestPromptText = currentUserPrompt
+      ? null
+      : this.dbManager.getSessionStore().getLatestPromptTextFromUserPrompts(
+          dbSession.content_session_id,
+          sessionDbId,
+        );
+    const userPrompt = currentUserPrompt || latestPromptText || dbSession.user_prompt;
 
     if (!currentUserPrompt) {
-      logger.debug('SESSION', 'No currentUserPrompt provided for new session, using database', {
+      logger.debug('SESSION', latestPromptText
+        ? 'No currentUserPrompt provided for new session, using latest user_prompts'
+        : 'No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
-        dbPrompt: dbSession.user_prompt.substring(0, 80)
+        latestPrompt: latestPromptText?.substring(0, 80) ?? '',
+        dbPrompt: dbSession.user_prompt?.substring(0, 80) ?? ''
       });
     } else {
       logger.debug('SESSION', 'Initializing session with fresh userPrompt', {
@@ -158,13 +136,14 @@ export class SessionManager {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
       memorySessionId: null,  // Always start fresh - SDK will capture new ID
-      project: dbSession.project,
+      project: suppliedProject || dbSession.project,
       platformSource: dbSession.platform_source,
+      observedModel: dbSession.observed_model ?? undefined,
+      observedBilling: dbSession.observed_billing ?? undefined,
       userPrompt,
-      pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id),
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id, sessionDbId),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
@@ -172,11 +151,12 @@ export class SessionManager {
       claimedMessageIds: [],
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
-      consecutiveRestarts: 0,  // DEPRECATED: use restartGuard. Kept for logging compat.
-      restartGuard: new RestartGuard(),
+      consecutiveRestarts: 0,
+      consecutiveInvalidOutputs: 0,
+      consecutiveContextOverflows: 0,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
-      pendingAgentType: null  
+      pendingAgentType: null
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -184,7 +164,7 @@ export class SessionManager {
       contentSessionId: dbSession.content_session_id,
       dbMemorySessionId: dbSession.memory_session_id || '(none in DB)',
       memorySessionId: '(cleared - will capture fresh from SDK)',
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id, sessionDbId)
     });
 
     this.sessions.set(sessionDbId, session);
@@ -202,6 +182,63 @@ export class SessionManager {
 
   getSession(sessionDbId: number): ActiveSession | undefined {
     return this.sessions.get(sessionDbId);
+  }
+
+  private deliverSessionWrapupInBackground(sessionDbId: number): void {
+    const formatSummary = this.telegramWrapupFormatter;
+    if (!formatSummary) {
+      logger.warn('TELEGRAM', 'Telegram session wrap-up formatter is unavailable', {
+        sessionId: sessionDbId,
+      });
+      return;
+    }
+
+    void deliverSessionWrapup({
+      sessionStore: this.dbManager.getSessionStore(),
+      sessionDbId,
+      formatSummary,
+    }).catch((error: unknown) => {
+      logger.warn('TELEGRAM', 'Failed to deliver Telegram session wrap-up from SessionManager', {
+        sessionId: sessionDbId,
+      }, error instanceof Error ? error : new Error(String(error)));
+    });
+  }
+
+  private takeRequestedSessionWrapup(session: ActiveSession): boolean {
+    if (session.telegramWrapupTimer != null) {
+      clearTimeout(session.telegramWrapupTimer);
+      session.telegramWrapupTimer = null;
+    }
+
+    return session.telegramWrapupRequestedAt != null;
+  }
+
+  /** SessionEnd is the sole producer of this marker; Stop only queues a summary. */
+  async requestSessionWrapup(sessionDbId: number): Promise<void> {
+    const session = this.getSession(sessionDbId);
+    if (!session) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+      return;
+    }
+
+    session.telegramWrapupRequestedAt = Date.now();
+    if (session.telegramWrapupTimer != null) {
+      clearTimeout(session.telegramWrapupTimer);
+    }
+    session.telegramWrapupTimer = setTimeout(() => {
+      session.telegramWrapupTimer = null;
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }, SESSION_END_WRAPUP_GRACE_MS);
+    session.telegramWrapupTimer.unref?.();
+  }
+
+  /** Called after a summary write; the SessionEnd marker preserves Stop-only silence. */
+  deliverRequestedSessionWrapup(sessionDbId: number): void {
+    const session = this.getSession(sessionDbId);
+    if (session?.telegramWrapupRequestedAt == null) {
+      return;
+    }
+    this.deliverSessionWrapupInBackground(sessionDbId);
   }
 
   async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
@@ -222,30 +259,18 @@ export class SessionManager {
       toolUseId: data.toolUseId,
     };
 
-    try {
-      const queue = this.getQueueEngine();
-      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message);
-      const queueDepth = await queue.getPendingCount(sessionDbId);
-      const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
-      if (messageId === 0) {
-        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      } else {
-        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      }
-    } catch (error) {
-      const normalized = error instanceof Error ? error : new Error(String(error));
-      logger.info('QUEUE', 'enqueue failed; observation dropped', {
-        sessionId: sessionDbId,
-        tool: data.tool_name,
-        err: normalized.message
+    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
+    if (messageId === 0) {
+      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
+        sessionId: sessionDbId
       });
-      throw normalized;
+    } else {
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
     }
-
   }
 
   async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
@@ -259,36 +284,21 @@ export class SessionManager {
       last_assistant_message: lastAssistantMessage
     };
 
-    try {
-      const queue = this.getQueueEngine();
-      const messageId = await queue.enqueue(sessionDbId, session.contentSessionId, message);
-      const queueDepth = await queue.getPendingCount(sessionDbId);
-      if (messageId === 0) {
-        logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      } else {
-        logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
-          sessionId: sessionDbId
-        });
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.error('SESSION', 'Failed to persist summarize to DB', {
-          sessionId: sessionDbId
-        }, error);
-      } else {
-        logger.error('SESSION', 'Failed to persist summarize to DB with non-Error', {
-          sessionId: sessionDbId
-        }, new Error(String(error)));
-      }
-      throw error; 
+    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    if (messageId === 0) {
+      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
+    } else {
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
+        sessionId: sessionDbId
+      });
     }
-
   }
 
   async clearPendingForSession(sessionDbId: number): Promise<number> {
-    return await this.getQueueEngine().clearPendingForSession(sessionDbId);
+    return this.buffer.clear(sessionDbId);
   }
 
   async resetProcessingToPending(sessionDbId: number): Promise<number> {
@@ -296,7 +306,7 @@ export class SessionManager {
     if (session) {
       session.claimedMessageIds = [];
     }
-    return await this.getQueueEngine().resetProcessingToPending(sessionDbId);
+    return this.buffer.resetClaimed(sessionDbId);
   }
 
   async confirmClaimedMessages(sessionDbId: number): Promise<number> {
@@ -304,7 +314,7 @@ export class SessionManager {
     const claimedIds = session?.claimedMessageIds ?? [];
     let confirmed = 0;
     for (const messageId of claimedIds) {
-      confirmed += await this.getQueueEngine().confirmProcessed(messageId);
+      confirmed += this.buffer.confirm(messageId);
     }
     if (session) {
       session.claimedMessageIds = [];
@@ -313,11 +323,23 @@ export class SessionManager {
     return confirmed;
   }
 
+  getClaimedMessages(sessionDbId: number): PendingMessageWithId[] {
+    const session = this.sessions.get(sessionDbId);
+    const claimedIds = session?.claimedMessageIds ?? [];
+    return this.buffer.getMessagesByIds(sessionDbId, claimedIds);
+  }
+
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
     if (!session) {
       return;
     }
+
+    // Phase 2: emit this session's single observer_turn_rollup at session end,
+    // while the session still exists. flushSession removes the bucket, so the
+    // matching call in removeSessionImmediate (or a re-entry here) is a safe
+    // no-op. Never throws — telemetry is fire-and-forget.
+    telemetryBuffer.flushSession(sessionDbId, 'session_end');
 
     const sessionDuration = Date.now() - session.startTime;
 
@@ -365,63 +387,63 @@ export class SessionManager {
       }
     }
 
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }
+    this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session deleted', {
       sessionId: sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       project: session.project
     });
-
-    if (this.onSessionDeletedCallback) {
-      this.onSessionDeletedCallback();
-    }
   }
 
   removeSessionImmediate(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
     if (!session) return;
 
+    // Phase 2: same session-end rollup as deleteSession. Whichever teardown
+    // path runs first flushes; flushSession removes the bucket so the second is
+    // a no-op (guards against the deleteSession/removeSessionImmediate pair).
+    telemetryBuffer.flushSession(sessionDbId, 'session_end');
+
     if (session.respawnTimer) {
       clearTimeout(session.respawnTimer);
       session.respawnTimer = undefined;
     }
 
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }
+
+    this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
       project: session.project
     });
-
-    if (this.onSessionDeletedCallback) {
-      this.onSessionDeletedCallback();
-    }
   }
 
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
     await Promise.all(sessionIds.map(id => this.deleteSession(id)));
-    await this.queueEngine?.close();
-    this.queueEngine = null;
-  }
-
-  async hasPendingMessages(): Promise<boolean> {
-    return (await this.getTotalQueueDepth()) > 0;
   }
 
   getActiveSessionCount(): number {
     return this.sessions.size;
   }
 
-  async getTotalQueueDepth(): Promise<number> {
-    return await this.getQueueEngine().getTotalQueueDepth();
+  getTotalQueueDepth(): number {
+    return this.buffer.getTotalDepth();
   }
 
   async getTotalActiveWork(): Promise<number> {
-    return await this.getTotalQueueDepth();
+    return this.getTotalQueueDepth();
   }
 
   async isAnySessionProcessing(): Promise<boolean> {
-    return (await this.getTotalQueueDepth()) > 0;
+    return this.getTotalQueueDepth() > 0;
   }
 
   async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessageWithId> {
@@ -430,10 +452,10 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    const queue = this.getQueueEngine();
+    // Re-yield anything a prior generator pass claimed but did not confirm.
     await this.resetProcessingToPending(sessionDbId);
 
-    for await (const message of queue.createIterator({
+    for await (const message of this.buffer.drain({
       sessionDbId,
       signal: session.abortController.signal,
       onIdleTimeout: () => {
@@ -456,11 +478,8 @@ export class SessionManager {
     }
   }
 
-  getPendingMessageStore(): InspectableObservationQueueEngine {
-    return this.getQueueEngine();
+  /** Read-only access to the in-RAM buffer for diagnostics. */
+  getMessageBuffer(): SessionMessageBuffer {
+    return this.buffer;
   }
-}
-
-function isHealthCheckedQueue(queue: InspectableObservationQueueEngine): queue is HealthCheckedObservationQueueEngine {
-  return 'getHealth' in queue && 'assertHealthy' in queue;
 }

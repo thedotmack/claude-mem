@@ -8,24 +8,11 @@ import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../../s
 import { buildIsolatedEnvWithFreshOAuth } from '../../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../../shared/find-claude-executable.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
+import { resolveTierAlias } from '../model-aliases.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
-
-const KNOWLEDGE_AGENT_DISALLOWED_TOOLS = [
-  'Bash',           // Prevent infinite loops
-  'Read',           // No file reading
-  'Write',          // No file writing
-  'Edit',           // No file editing
-  'Grep',           // No code searching
-  'Glob',           // No file pattern matching
-  'WebFetch',       // No web fetching
-  'WebSearch',      // No web searching
-  'Task',           // No spawning sub-agents
-  'NotebookEdit',   // No notebook editing
-  'AskUserQuestion',// No asking questions
-  'TodoWrite'       
-];
+import { buildHardenedSdkOptions } from '../../../sdk/hardened-options.js';
 
 export class KnowledgeAgent {
   private renderer: CorpusRenderer;
@@ -55,16 +42,13 @@ export class KnowledgeAgent {
 
     const queryResult = query({
       prompt: primePrompt,
-      options: {
+      options: buildHardenedSdkOptions({
+        source: 'KnowledgeAgent',
+        project: corpus.name,
         model: this.getModelId(),
-        cwd: OBSERVER_SESSIONS_DIR,
-        disallowedTools: KNOWLEDGE_AGENT_DISALLOWED_TOOLS,
-        pathToClaudeCodeExecutable: claudePath,
         env: isolatedEnv,
-        mcpServers: {},
-        settingSources: [],
-        strictMcpConfig: true,
-      }
+        pathToClaudeCodeExecutable: claudePath,
+      }),
     });
 
     let sessionId: string | undefined;
@@ -150,17 +134,14 @@ export class KnowledgeAgent {
 
     const queryResult = query({
       prompt: question,
-      options: {
+      options: buildHardenedSdkOptions({
+        source: 'KnowledgeAgent',
+        project: corpus.name,
         model: this.getModelId(),
-        resume: corpus.session_id!,
-        cwd: OBSERVER_SESSIONS_DIR,
-        disallowedTools: KNOWLEDGE_AGENT_DISALLOWED_TOOLS,
-        pathToClaudeCodeExecutable: claudePath,
         env: isolatedEnv,
-        mcpServers: {},
-        settingSources: [],
-        strictMcpConfig: true,
-      }
+        pathToClaudeCodeExecutable: claudePath,
+        resume: corpus.session_id!,
+      }),
     });
 
     let answer = '';
@@ -193,7 +174,8 @@ export class KnowledgeAgent {
 
   private getModelId(): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    return settings.CLAUDE_MEM_MODEL;
+    // Resolve $TIER:<fast|smart|simple|summary> aliases at request time (#2289).
+    return resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings);
   }
 
 }
