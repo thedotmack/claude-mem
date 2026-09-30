@@ -307,6 +307,21 @@ describe('describeSaveFailure', () => {
     expect(statuses).toEqual(['\u2713 Saved', '', '\u2717 Error: boom']);
   });
 
+  it('never POSTs the file-only CLAUDE_CODE_PATH, even when GET echoed it into local state', async () => {
+    let postedBody = '';
+    await submitSettings({ CLAUDE_CODE_PATH: '/usr/local/bin/claude', CLAUDE_MEM_MODEL: 'haiku' } as never, {
+      fetchImpl: async (_url, init) => {
+        postedBody = String(init?.body ?? '');
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      },
+      setSettings: () => {},
+      setSaveStatus: () => {},
+      setIsSaving: () => {},
+      setStatusTimeout: () => {},
+    });
+    expect(JSON.parse(postedBody)).toEqual({ CLAUDE_MEM_MODEL: 'haiku' });
+  });
+
   it('keeps a rejected production fetch inside the outer saveSettings catch', async () => {
     const statuses: string[] = [];
     let saving = false;
