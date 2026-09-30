@@ -12,7 +12,7 @@ Claude-mem uses an **MCP-based search architecture** that provides intelligent m
 **Architecture**: MCP Tools → MCP Protocol → HTTP API → Worker Service
 
 **Key Components**:
-1. **MCP Tools** (4 tools) - `search`, `timeline`, `get_observations`, `__IMPORTANT`
+1. **MCP Tools** (4 tools) - `search`, `timeline`, `get_observations`, `important_workflow`
 2. **MCP Server** (`plugin/scripts/mcp-server.cjs`) - Thin wrapper over HTTP API
 3. **HTTP API Endpoints** - Fast search operations on the configured Worker Service port
 4. **Worker Service** - Express.js server with FTS5 full-text search
@@ -95,7 +95,7 @@ Claude reviews the index, decides which observations are relevant, and can:
 
 ## The 4 MCP Tools
 
-### `__IMPORTANT` - Workflow Documentation
+### `important_workflow` - Workflow Documentation
 
 Always visible to Claude. Explains the 3-layer workflow pattern.
 
@@ -337,7 +337,7 @@ Total: 2,500-5,000 tokens (50-75% savings)
 **Token Cost:** ~312 lines of code, simplified tool definitions
 
 **Tools:**
-1. `__IMPORTANT` - Workflow guidance (always visible)
+1. `important_workflow` - Workflow guidance (always visible)
 2. `search` - Step 1 (index)
 3. `timeline` - Step 2 (context)
 4. `get_observations` - Step 3 (details)
@@ -359,7 +359,7 @@ Total: 2,500-5,000 tokens (50-75% savings)
 
 The 3-layer workflow pattern makes it structurally difficult to waste tokens:
 - Can't fetch details without first getting IDs from search
-- Can't search without seeing workflow reminder (`__IMPORTANT`)
+- Can't search without seeing workflow reminder (`important_workflow`)
 - Timeline provides middle ground between index and full details
 
 ## Configuration

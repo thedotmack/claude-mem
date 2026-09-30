@@ -1,10 +1,8 @@
 
-import path from 'path';
 import net from 'net';
-import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -17,12 +15,23 @@ function formatHostForUrl(host: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
+// Probes against a ghost listener (plan-15 #3603) can connect — the kernel
+// completes handshakes on the inherited socket — but never receive a response,
+// because no application is reading. An unbounded fetch would hang the probe
+// forever, so every HTTP probe is aborted after this budget. 5s is above a
+// healthy worker's sub-100ms response and below every caller's retry budget.
+const HEALTH_PROBE_TIMEOUT_MS = 5_000;
+
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
-  method: string = 'GET'
+  method: string = 'GET',
+  timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
+    method,
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+  });
   let body = '';
   try {
     body = await response.text();
@@ -32,19 +41,51 @@ async function httpRequestToWorker(
   return { ok: response.ok, statusCode: response.status, body };
 }
 
-export async function isPortInUse(port: number): Promise<boolean> {
+export async function isPortInUse(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<boolean> {
   if (process.platform === 'win32') {
+    // Fast path: HTTP health check. A live claude-mem worker responds to
+    // /api/health, so this is the cheapest non-disruptive probe for the
+    // common case (worker is running and healthy).
+    //
+    // Bounded like every other probe (HEALTH_PROBE_TIMEOUT_MS): a ghost
+    // listener — the dead worker's inherited socket, held open by its chroma
+    // sidecar chain (plan-15 #3603) — completes the TCP handshake and then
+    // never answers. Unbounded, this fetch would hang forever, and with it
+    // ensureWorkerStarted(), which calls this BEFORE it can reach the reclaim:
+    // the very bug the reclaim exists to fix would instead wedge every
+    // launcher. On timeout the flow falls through to the socket probe below,
+    // which still reports a bound port as in use.
     try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {
+        signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+      });
+      if (response.ok) return true;
+      // Non-ok response: port is reachable but the worker is unhealthy.
+      // Fall through to the net.createServer check below so we still report
+      // the port as in-use rather than falsely claiming it is free.
+      logger.debug('SYSTEM', 'Windows health check returned non-ok; falling through to socket probe', {
+        port,
+        status: response.status,
+      });
     } catch (error) {
+      // fetch threw (ECONNREFUSED, timeout, etc.): the port may still be in
+      // use by a non-HTTP process (zombie worker, foreign service, etc.).
+      // Fall through to the net.createServer probe — only a definitive bind
+      // attempt can tell whether the port is truly free.
       if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {
+          port,
+          message: error.message,
+        });
       } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {
+          port,
+          error: String(error),
+        });
       }
-      return false;
     }
+    // Fall through: the HTTP probe was inconclusive. Use the POSIX
+    // net.createServer() approach to definitively check port occupancy.
   }
 
   return new Promise((resolve) => {
@@ -70,10 +111,16 @@ async function pollEndpointUntilOk(
   timeoutMs: number,
   retryLogMessage: string
 ): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
-      const result = await httpRequestToWorker(port, endpointPath);
+      const remainingMs = deadline - Date.now();
+      const result = await httpRequestToWorker(
+        port,
+        endpointPath,
+        'GET',
+        Math.min(HEALTH_PROBE_TIMEOUT_MS, remainingMs),
+      );
       if (result.ok) return true;
     } catch (error) {
       if (error instanceof Error) {
@@ -82,7 +129,10 @@ async function pollEndpointUntilOk(
         logger.debug('SYSTEM', retryLogMessage, { error: String(error) });
       }
     }
-    await new Promise(r => setTimeout(r, 500));
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }
@@ -96,10 +146,14 @@ export function waitForReadiness(port: number, timeoutMs: number = 30000): Promi
 }
 
 export async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!(await isPortInUse(port))) return true;
-    await new Promise(r => setTimeout(r, 500));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (!(await isPortInUse(port, Math.min(HEALTH_PROBE_TIMEOUT_MS, remainingMs)))) return true;
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }
@@ -126,24 +180,6 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
   }
 }
 
-export function getInstalledPluginVersion(): string {
-  try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version;
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'EBUSY') {
-        logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-        return 'unknown';
-      }
-      throw error;
-    }
-    throw error;
-  }
-}
-
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
     const result = await httpRequestToWorker(port, '/api/health');
@@ -162,8 +198,15 @@ export interface VersionCheckResult {
   workerVersion: string | null;
 }
 
-export async function checkVersionMatch(port: number): Promise<VersionCheckResult> {
-  const pluginVersion = getInstalledPluginVersion();
+/**
+ * Compare the live worker's self-reported version against expectedVersion —
+ * the version of the script the caller's resolveWorkerScript() oracle would
+ * spawn. The caller supplies it so detection and respawn can never consult
+ * different oracles (the 2026-07-22 restart storm). Either side unknown →
+ * matches, since a recycle could not change the outcome deterministically.
+ */
+export async function checkVersionMatch(port: number, expectedVersion: string | null): Promise<VersionCheckResult> {
+  const pluginVersion = expectedVersion ?? 'unknown';
   const workerVersion = await getRunningWorkerVersion(port);
 
   if (!workerVersion || pluginVersion === 'unknown') {

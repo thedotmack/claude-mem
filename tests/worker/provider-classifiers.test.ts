@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   ClassifiedProviderError,
   isClassified,
+  describeProviderError,
 } from '../../src/services/worker/provider-errors.js';
 import { classifyClaudeError } from '../../src/services/worker/ClaudeProvider.js';
 import {
@@ -198,6 +199,307 @@ describe('classifyOpenRouterError', () => {
     const cause = new Error('ECONNRESET');
     const err = classifyOpenRouterError({ cause });
     expect(err.kind).toBe('transient');
+  });
+
+  // --- Gateway taxonomy envelope: { error: { code, message, action, url, request_id } } ---
+
+  it('carries an allowance_exhausted envelope verbatim as quota_exhausted', () => {
+    const message = "You've used your $30 CMEM Pro inference allowance for this billing cycle.";
+    const action = 'It resets at the start of your next billing cycle. Need more before then? Email support@cmem.ai.';
+    const err = classifyOpenRouterError({
+      status: 402,
+      bodyText: JSON.stringify({
+        error: { code: 'allowance_exhausted', message, action, url: 'https://cmem.ai/dashboard', request_id: 'abc' },
+      }),
+      cause: new Error('402'),
+      requestId: 'header-id',
+    });
+    expect(err.kind).toBe('quota_exhausted');
+    expect(err.code).toBe('allowance_exhausted');
+    expect(err.message).toBe(message);
+    expect(err.action).toBe(action);
+    expect(err.url).toBe('https://cmem.ai/dashboard');
+    expect(err.requestId).toBe('abc'); // body request_id wins over the header id
+    expect(err.retryAfterMs).toBeUndefined();
+  });
+
+  it('maps a key_invalid envelope (401) to auth_invalid', () => {
+    const err = classifyOpenRouterError({
+      status: 401,
+      bodyText: JSON.stringify({
+        error: {
+          code: 'key_invalid',
+          message: "This CMEM Pro key isn't recognized.",
+          action: 'Run `npx claude-mem pro-setup` to re-link this machine, or copy a fresh key from your dashboard.',
+          url: 'https://cmem.ai/dashboard',
+          request_id: 'req-401',
+        },
+      }),
+      cause: new Error('401'),
+    });
+    expect(err.kind).toBe('auth_invalid');
+    expect(err.code).toBe('key_invalid');
+    expect(err.message).toBe("This CMEM Pro key isn't recognized.");
+    expect(err.action).toContain('npx claude-mem pro-setup');
+    expect(err.url).toBe('https://cmem.ai/dashboard');
+    expect(err.requestId).toBe('req-401');
+  });
+
+  it('maps a subscription_inactive envelope (402) to auth_invalid', () => {
+    const err = classifyOpenRouterError({
+      status: 402,
+      bodyText: JSON.stringify({
+        error: {
+          code: 'subscription_inactive',
+          message: 'Your CMEM Pro subscription has ended.',
+          action: 'Resubscribe from the dashboard to turn the observer back on.',
+          url: 'https://cmem.ai/dashboard',
+          request_id: 'req-sub',
+        },
+      }),
+      cause: new Error('402'),
+    });
+    expect(err.kind).toBe('auth_invalid');
+    expect(err.code).toBe('subscription_inactive');
+    expect(err.message).toBe('Your CMEM Pro subscription has ended.');
+    expect(err.action).toBe('Resubscribe from the dashboard to turn the observer back on.');
+    expect(err.requestId).toBe('req-sub');
+  });
+
+  it('maps a rate_limited envelope (429, Retry-After: 60) to rate_limit with retryAfterMs=60000', () => {
+    const err = classifyOpenRouterError({
+      status: 429,
+      bodyText: JSON.stringify({
+        error: {
+          code: 'rate_limited',
+          message: 'Too many observer requests in the last minute.',
+          action: 'Retrying automatically in 60s — nothing to do.',
+          request_id: 'req-429',
+        },
+      }),
+      headers: new Headers({ 'retry-after': '60' }),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.code).toBe('rate_limited');
+    expect(err.retryAfterMs).toBe(60_000);
+    expect(err.message).toBe('Too many observer requests in the last minute.');
+    expect(err.action).toBe('Retrying automatically in 60s — nothing to do.');
+    expect(err.url).toBeUndefined();
+    expect(err.requestId).toBe('req-429');
+  });
+
+  it('defaults a rate_limited envelope with no Retry-After header to retryAfterMs=60000', () => {
+    const err = classifyOpenRouterError({
+      status: 429,
+      bodyText: JSON.stringify({ error: { code: 'rate_limited', message: 'Too many.', request_id: 'r' } }),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(60_000);
+  });
+
+  it('maps an upstream_unavailable envelope (503) to transient', () => {
+    const err = classifyOpenRouterError({
+      status: 503,
+      bodyText: JSON.stringify({
+        error: {
+          code: 'upstream_unavailable',
+          message: 'The observer model is temporarily unavailable.',
+          action: 'claude-mem retries automatically. If this lasts more than an hour, email support@cmem.ai with the request id.',
+          request_id: 'req-503',
+        },
+      }),
+      cause: new Error('503'),
+    });
+    expect(err.kind).toBe('transient');
+    expect(err.code).toBe('upstream_unavailable');
+    expect(err.message).toBe('The observer model is temporarily unavailable.');
+    expect(err.action).toContain('email support@cmem.ai');
+    expect(err.requestId).toBe('req-503');
+  });
+
+  it('maps a bad_request envelope (400) to unrecoverable', () => {
+    const err = classifyOpenRouterError({
+      status: 400,
+      bodyText: JSON.stringify({
+        error: {
+          code: 'bad_request',
+          message: "The observer sent a request the gateway couldn't parse.",
+          action: 'This is a claude-mem bug — please open an issue with the request id.',
+          url: 'https://github.com/thedotmack/claude-mem/issues',
+          request_id: 'req-400',
+        },
+      }),
+      cause: new Error('400'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe('bad_request');
+    expect(err.message).toBe("The observer sent a request the gateway couldn't parse.");
+    expect(err.action).toBe('This is a claude-mem bug — please open an issue with the request id.');
+    expect(err.url).toBe('https://github.com/thedotmack/claude-mem/issues');
+    expect(err.requestId).toBe('req-400');
+  });
+
+  it('falls back to the header request id when the envelope has no request_id', () => {
+    const err = classifyOpenRouterError({
+      status: 402,
+      bodyText: JSON.stringify({ error: { code: 'allowance_exhausted', message: 'Used up.' } }),
+      cause: new Error('402'),
+      requestId: 'from-header',
+    });
+    expect(err.kind).toBe('quota_exhausted');
+    expect(err.requestId).toBe('from-header');
+    expect(err.action).toBeUndefined();
+    expect(err.url).toBeUndefined();
+  });
+
+  it('ignores an unknown envelope code and falls through to legacy classification', () => {
+    const err = classifyOpenRouterError({
+      status: 500,
+      bodyText: JSON.stringify({ error: { code: 'something_else', message: 'boom' } }),
+      cause: new Error('500'),
+    });
+    expect(err.kind).toBe('transient');
+    expect(err.code).toBeUndefined();
+    expect(err.message).toBe('OpenRouter upstream error (status 500): boom');
+  });
+
+  // --- Legacy (raw OpenRouter) bodies: keep the upstream message, carry the request id ---
+
+  it('classifies legacy 403 "Key limit exceeded" as quota_exhausted and keeps the manage-key URL', () => {
+    const upstream = 'Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/94121a';
+    const err = classifyOpenRouterError({
+      status: 403,
+      bodyText: JSON.stringify({ error: { message: upstream, code: 403 } }),
+      cause: new Error('403'),
+      requestId: 'or-req-1',
+    });
+    expect(err.kind).toBe('quota_exhausted');
+    expect(err.message).toBe(`OpenRouter quota exhausted (status 403): ${upstream}`);
+    expect(err.message).toContain('Key limit exceeded');
+    expect(err.message).toContain('https://openrouter.ai/');
+    expect(err.requestId).toBe('or-req-1');
+    expect(err.code).toBeUndefined();
+  });
+
+  it('classifies legacy 403 "Key limit exceeded (monthly limit)" as quota_exhausted', () => {
+    const err = classifyOpenRouterError({
+      status: 403,
+      bodyText: JSON.stringify({ error: { message: 'Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/keys/abc', code: 403 } }),
+      cause: new Error('403'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+    expect(err.message).toContain('Key limit exceeded (monthly limit)');
+  });
+
+  it('classifies legacy 402 (no marker) as quota_exhausted', () => {
+    const err = classifyOpenRouterError({
+      status: 402,
+      bodyText: JSON.stringify({ error: { message: 'Payment required', code: 402 } }),
+      cause: new Error('402'),
+      requestId: 'or-req-402',
+    });
+    expect(err.kind).toBe('quota_exhausted');
+    expect(err.message).toBe('OpenRouter quota exhausted (status 402): Payment required');
+    expect(err.requestId).toBe('or-req-402');
+  });
+
+  it('classifies legacy 401 "User not found." as auth_invalid with the body in the message', () => {
+    const err = classifyOpenRouterError({
+      status: 401,
+      bodyText: JSON.stringify({ error: { message: 'User not found.', code: 401 } }),
+      cause: new Error('401'),
+      requestId: 'or-req-401',
+    });
+    expect(err.kind).toBe('auth_invalid');
+    expect(err.message).toBe('OpenRouter auth error (status 401): User not found.');
+    expect(err.requestId).toBe('or-req-401');
+  });
+
+  it('classifies legacy 502 with a plain-text body as transient and keeps the body', () => {
+    const err = classifyOpenRouterError({
+      status: 502,
+      bodyText: 'bad gateway from cloudflare',
+      cause: new Error('502'),
+      requestId: 'or-req-502',
+    });
+    expect(err.kind).toBe('transient');
+    expect(err.message).toBe('OpenRouter upstream error (status 502): bad gateway from cloudflare');
+    expect(err.requestId).toBe('or-req-502');
+  });
+
+  it('truncates a long non-JSON legacy body to 300 chars in the message', () => {
+    const err = classifyOpenRouterError({
+      status: 500,
+      bodyText: 'x'.repeat(1000),
+      cause: new Error('500'),
+    });
+    expect(err.kind).toBe('transient');
+    expect(err.message).toBe(`OpenRouter upstream error (status 500): ${'x'.repeat(300)}`);
+  });
+
+  it('classifies legacy 429 with the body and Retry-After preserved', () => {
+    const err = classifyOpenRouterError({
+      status: 429,
+      bodyText: JSON.stringify({ error: { message: 'Rate limit exceeded', code: 429 } }),
+      headers: new Headers({ 'retry-after': '5' }),
+      cause: new Error('429'),
+      requestId: 'or-req-429',
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(5_000);
+    expect(err.message).toBe('OpenRouter rate limit (status 429): Rate limit exceeded');
+    expect(err.requestId).toBe('or-req-429');
+  });
+
+  it('classifies legacy 400 with the body in the message as unrecoverable', () => {
+    const err = classifyOpenRouterError({
+      status: 400,
+      bodyText: JSON.stringify({ error: { message: 'model is required', code: 400 } }),
+      cause: new Error('400'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.message).toBe('OpenRouter bad request (status 400): model is required');
+  });
+});
+
+describe('describeProviderError', () => {
+  it('renders message — action url (req id) when all parts are present', () => {
+    const err = new ClassifiedProviderError('You have used your allowance.', {
+      kind: 'quota_exhausted',
+      cause: null,
+      code: 'allowance_exhausted',
+      action: 'Email support@cmem.ai.',
+      url: 'https://cmem.ai/dashboard',
+      requestId: 'abc',
+    });
+    expect(describeProviderError(err)).toBe(
+      'You have used your allowance. — Email support@cmem.ai. https://cmem.ai/dashboard (req abc)',
+    );
+  });
+
+  it('omits missing parts', () => {
+    expect(describeProviderError(new ClassifiedProviderError('Only message', { kind: 'transient', cause: null })))
+      .toBe('Only message');
+    expect(describeProviderError(new ClassifiedProviderError('Msg', { kind: 'transient', cause: null, requestId: 'r1' })))
+      .toBe('Msg (req r1)');
+    expect(describeProviderError(new ClassifiedProviderError('Msg', { kind: 'transient', cause: null, action: 'Do it.' })))
+      .toBe('Msg — Do it.');
+    expect(describeProviderError(new ClassifiedProviderError('Msg', { kind: 'transient', cause: null, url: 'https://cmem.ai/dashboard' })))
+      .toBe('Msg https://cmem.ai/dashboard');
+  });
+
+  it('renders legacy classified errors (no structured fields) as message + request id', () => {
+    const err = classifyOpenRouterError({
+      status: 403,
+      bodyText: JSON.stringify({ error: { message: 'Key limit exceeded (total limit). Manage it using https://openrouter.ai/keys/x', code: 403 } }),
+      cause: new Error('403'),
+      requestId: 'or-1',
+    });
+    expect(describeProviderError(err)).toBe(
+      'OpenRouter quota exhausted (status 403): Key limit exceeded (total limit). Manage it using https://openrouter.ai/keys/x (req or-1)',
+    );
   });
 });
 

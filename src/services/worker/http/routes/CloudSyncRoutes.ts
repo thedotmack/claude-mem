@@ -21,12 +21,15 @@ export class CloudSyncRoutes extends BaseRouteHandler {
     app.get('/api/sync/status', this.handleGetStatus.bind(this));
   }
 
-  private handleGetStatus = this.wrapHandler((_req: Request, res: Response): void => {
-    // CloudSync.status() carries counts and metadata only — never the token.
-    const status = this.dbManager.getCloudSync()?.status();
-    if (!status) {
+  private handleGetStatus = this.wrapHandler(async (_req: Request, res: Response): Promise<void> => {
+    const cloudSync = this.dbManager.getCloudSync();
+    if (!cloudSync) {
       logger.debug('CLOUD_SYNC', 'Status requested but cloud sync is not configured');
+      res.json({ configured: false });
+      return;
     }
-    res.json(status ?? { configured: false });
+    // Always performs an authenticated, read-only SyncHub status GET. An
+    // empty local queue alone is not evidence that the connection works.
+    res.json(await cloudSync.statusWithHubProbe());
   });
 }

@@ -2,6 +2,35 @@ import { describe, it, expect, mock } from 'bun:test';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';
 
 describe('SearchManager platform-scoped Chroma hydration', () => {
+  it('normalizes date_from/date_to filters into dateRange for worker search', async () => {
+    const searchObservations = mock(() => []);
+    const manager = new SearchManager(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.search({
+      type: 'observations',
+      date_from: '2025-01-01',
+      date_to: '2025-01-31',
+      format: 'json',
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      dateRange: {
+        start: '2025-01-01',
+        end: '2025-01-31',
+      },
+    }));
+  });
+
   it('passes platformSource into Chroma observation where filter and SQLite hydration', async () => {
     const observation = {
       id: 5,
@@ -71,6 +100,67 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       project: 'search-project',
     }));
     expect(result.observations).toEqual([observation]);
+  });
+
+  it('hydrates Chroma observation matches in relevance order, not by date', async () => {
+    // Chroma returns up to 100 candidates already ranked by distance. Hydrating
+    // them with orderBy 'date_desc' discards that ranking and yields the N
+    // newest candidates instead of the N most relevant, so an older exact match
+    // loses to a newer vague one. 'relevance' preserves the caller-provided id
+    // order (tests/services/sqlite/get-observations-by-ids-relevance.test.ts).
+    // performChromaSemanticSearch already does this; these two paths did not.
+    const olderExactMatch = 11;
+    const newerVagueMatch = 22;
+    const now = Date.now();
+
+    const makeManager = (getObservationsByIds: any) => new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds,
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      {
+        queryChroma: mock(() => Promise.resolve({
+          // Chroma's own order: the exact match ranks first despite being older.
+          ids: [olderExactMatch, newerVagueMatch],
+          distances: [0.05, 0.4],
+          metadatas: [
+            { sqlite_id: olderExactMatch, doc_type: 'observation', created_at_epoch: now - 86_400_000 },
+            { sqlite_id: newerVagueMatch, doc_type: 'observation', created_at_epoch: now },
+          ],
+        })),
+      } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const searchHydrate = mock(() => []);
+    await makeManager(searchHydrate).searchObservations({ query: 'exact phrase', limit: 1 });
+    expect(searchHydrate).toHaveBeenCalledWith(
+      [olderExactMatch, newerVagueMatch],
+      expect.objectContaining({ orderBy: 'relevance' })
+    );
+
+    const timelineHydrate = mock(() => []);
+    await makeManager(timelineHydrate).getTimelineByQuery({ query: 'exact phrase', limit: 1 });
+    expect(timelineHydrate).toHaveBeenCalledWith(
+      [olderExactMatch, newerVagueMatch],
+      expect.objectContaining({ orderBy: 'relevance' })
+    );
+
+    // timeline() picks a single anchor via searchChromaForTimeline; the anchor
+    // should be the top-ranked match, not merely the most recent one.
+    const anchorHydrate = mock(() => []);
+    await makeManager(anchorHydrate).timeline({ query: 'exact phrase' });
+    expect(anchorHydrate).toHaveBeenCalledWith(
+      [olderExactMatch, newerVagueMatch],
+      expect.objectContaining({ orderBy: 'relevance' })
+    );
   });
 
   it('passes platformSource into Chroma session where filter and SQLite hydration', async () => {
