@@ -1,5 +1,5 @@
 import { dirname, join } from 'path';
-import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'fs';
 import { resolveDataDir } from './paths.js';
 import { logger } from '../utils/logger.js';
 
@@ -37,6 +37,11 @@ import { logger } from '../utils/logger.js';
  * Windows. Keep a 30s margin so a readiness poll cannot outlive the lock.
  */
 const SPAWN_LOCK_STALE_MS = 90_000;
+
+/** How often holdSpawnLock refreshes the mtime of a lock it holds: well inside SPAWN_LOCK_STALE_MS. */
+const SPAWN_LOCK_REFRESH_MS = SPAWN_LOCK_STALE_MS / 3;
+
+const SPAWN_LOCK_RETRY_MS = 250;
 
 /**
  * Resolved at call time (resolveDataDir consults CLAUDE_MEM_DATA_DIR / the
@@ -222,5 +227,52 @@ export function releaseSpawnLock(): void {
   } catch {
     // Missing, unreadable, or corrupt lock file — leave it alone; the
     // staleness breaker (SPAWN_LOCK_STALE_MS) reclaims anything orphaned.
+  }
+}
+
+/**
+ * Hold the spawn lock across a long operation that must not race a launcher:
+ * the installer holds it from its pre-overwrite worker stop until the new
+ * plugin files are in place, so no hook or MCP server lazily respawns a worker
+ * from half-copied files the moment the old one exits (the respawn then held
+ * the port and the stop reported a stuck worker).
+ *
+ * Waits up to `waitMs` for a launcher that is mid-spawn to release the lock,
+ * then keeps the file's mtime fresh: a first install's dependency download can
+ * outlast SPAWN_LOCK_STALE_MS, and the staleness breaker must not hand the
+ * lock to a hook while this process still works. A holder that dies leaves a
+ * dead PID in the file, which the breaker reclaims at once.
+ *
+ * Returns the release function, or null when the lock stayed taken for
+ * `waitMs`. The caller then carries on without it: the lock is a collision
+ * guard, never a correctness gate.
+ */
+export async function holdSpawnLock(
+  waitMs: number,
+  refreshEveryMs: number = SPAWN_LOCK_REFRESH_MS,
+): Promise<(() => void) | null> {
+  const giveUpAt = Date.now() + waitMs;
+  while (!acquireSpawnLock()) {
+    if (Date.now() >= giveUpAt) return null;
+    await new Promise((resolve) => setTimeout(resolve, SPAWN_LOCK_RETRY_MS));
+  }
+  const refresh = setInterval(refreshOwnSpawnLock, refreshEveryMs);
+  refresh.unref();
+  return () => {
+    clearInterval(refresh);
+    releaseSpawnLock();
+  };
+}
+
+/** Bump the lock's mtime, only while this process is still its holder. */
+function refreshOwnSpawnLock(): void {
+  const lockPath = getSpawnLockPath();
+  try {
+    if (readLockHolderPid(lockPath) !== process.pid) return;
+    const now = new Date();
+    utimesSync(lockPath, now, now);
+  } catch {
+    // Best-effort: a missed refresh only lets the staleness breaker reclaim
+    // the lock sooner, which is the pre-hold behavior.
   }
 }

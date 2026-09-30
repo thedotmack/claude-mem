@@ -6,9 +6,11 @@
  * install; this command exposes the same routine on demand, beside `doctor`.
  *
  * Keeps the newest two usable versions, whatever version a live worker
- * reports, and the version installed_plugins.json registers, so it never
- * removes the directory a running worker was launched from or the one Claude
- * Code loads. When a worker is present but its version cannot be read, every
+ * reports, the version installed_plugins.json registers, the version the
+ * worker resolver would launch, and the newest version whose dependencies are
+ * complete, so it never removes the directory a running worker was launched
+ * from, the one Claude Code loads, or the only copy that can still start a
+ * worker. When a worker is present but its version cannot be read, every
  * version is retained. `--dry-run` reports the plan without deleting. `--keep <n>`
  * overrides how many newest usable versions to retain.
  */

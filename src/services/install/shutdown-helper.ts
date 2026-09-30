@@ -4,30 +4,34 @@ import { readOwnedWorkerPidInfo, verifyPidFileOwnership, type PidInfo } from '..
 
 /**
  * Why a stop did not complete, so callers can name the fix:
- * - `worker-still-running`: a claude-mem worker (it owns the PID file, or it
- *   accepted the shutdown request) is still alive. `pid` is null when the
- *   worker could not be identified through the PID file.
+ * - `worker-still-running`: the claude-mem worker that owns the PID file, the
+ *   one this stop targeted, is still alive after the wait. `pid` was verified
+ *   against the PID file and its start token at the deadline, so it is safe
+ *   to tell the user to end it.
+ * - `port-rebound`: the worker this stop targeted has exited (or accepted the
+ *   shutdown without owning the PID file), yet the port still accepts
+ *   connections: a hook's lazy spawn or a process manager bound it again, or a
+ *   leftover process still holds the socket. That is not a stop that failed.
+ *   `ownerPid` is the verified PID-file owner now on the port, when there is one.
  * - `port-held-by-other-process`: something accepts connections on the port,
  *   but no live claude-mem worker owns it and it never accepted a shutdown.
  */
 export type ShutdownBlocker =
-  | { kind: 'worker-still-running'; pid: number | null }
+  | { kind: 'worker-still-running'; pid: number }
+  | { kind: 'port-rebound'; ownerPid: number | null }
   | { kind: 'port-held-by-other-process' };
 
-export interface ShutdownResult {
-  workerWasRunning: boolean;
-  /** True when no claude-mem worker was running on the port, or it exited. */
-  stopped: boolean;
-  /** Set exactly when `stopped` is false. */
-  blocker?: ShutdownBlocker;
-}
+export type ShutdownResult =
+  /** No claude-mem worker was running on the port, or the targeted one exited and freed it. */
+  | { stopped: true; workerWasRunning: boolean }
+  | { stopped: false; workerWasRunning: boolean; blocker: ShutdownBlocker };
 
 /** A raw TCP connect: `open` only when a connection completed. */
 export type PortProbeResult = 'open' | 'refused' | 'no-answer';
 
 /** The evidence sources, injectable so tests never touch real ports or PIDs. */
 export interface ShutdownProbes {
-  /** The live, verified claude-mem worker that owns the PID file, or null. */
+  /** The live, verified claude-mem worker that owns the PID file, or null. Read again at the deadline. */
   readOwnedWorker: () => PidInfo | null;
   /** Whether that worker's process is still alive (it may exit while we wait). */
   isOwnedWorkerAlive: (worker: PidInfo) => boolean;
@@ -71,6 +75,14 @@ const DEFAULT_PROBES: ShutdownProbes = {
  * - an explicit refusal, however slow, means nothing listens: stopped;
  * - an owned, live worker is running until its process exits;
  * - with no owned worker, only a completed TCP connect counts as a listener.
+ *
+ * The stop targets the worker that owned the PID file when it began. Only that
+ * worker, still alive and still verified as ours at the deadline, is a worker
+ * that did not stop. Once it has exited, a port that answers again belongs to
+ * a new process (a hook's lazy spawn, a process manager restarting it, a
+ * leftover socket), so the result is `port-rebound`, and no PID that has not
+ * been verified is ever reported: on Windows a dead worker's PID is soon
+ * reused by an unrelated process.
  */
 export async function shutdownWorkerAndWait(
   port: number | string,
@@ -78,9 +90,12 @@ export async function shutdownWorkerAndWait(
   probes: ShutdownProbes = DEFAULT_PROBES,
 ): Promise<ShutdownResult> {
   const portNumber = Number(port);
-  const recorded = probes.readOwnedWorker();
   // A worker the PID file places on another port is not the one this call stops.
-  const ownedWorker = recorded && (!recorded.port || Number(recorded.port) === portNumber) ? recorded : null;
+  const readOwnedWorkerOnPort = (): PidInfo | null => {
+    const recorded = probes.readOwnedWorker();
+    return recorded && (!recorded.port || Number(recorded.port) === portNumber) ? recorded : null;
+  };
+  const ownedWorker = readOwnedWorkerOnPort();
 
   let shutdownAccepted = false;
   try {
@@ -111,12 +126,27 @@ export async function shutdownWorkerAndWait(
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
 
+  if (ownedWorker && probes.isOwnedWorkerAlive(ownedWorker)) {
+    return {
+      workerWasRunning: true,
+      stopped: false,
+      blocker: { kind: 'worker-still-running', pid: ownedWorker.pid },
+    };
+  }
+  if (!identifiedAsWorker) {
+    return { workerWasRunning: false, stopped: false, blocker: { kind: 'port-held-by-other-process' } };
+  }
+  // The targeted worker is gone (or never owned the PID file), yet the port
+  // answers: whoever holds it now is a different process. Name it only when
+  // the PID file verifies a new claude-mem worker on this port.
+  const currentOwner = readOwnedWorkerOnPort();
   return {
-    workerWasRunning: identifiedAsWorker,
+    workerWasRunning: true,
     stopped: false,
-    blocker: identifiedAsWorker
-      ? { kind: 'worker-still-running', pid: ownedWorker?.pid ?? null }
-      : { kind: 'port-held-by-other-process' },
+    blocker: {
+      kind: 'port-rebound',
+      ownerPid: currentOwner && currentOwner.pid !== ownedWorker?.pid ? currentOwner.pid : null,
+    },
   };
 }
 
