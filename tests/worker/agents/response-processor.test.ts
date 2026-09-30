@@ -1205,6 +1205,48 @@ describe('ResponseProcessor', () => {
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
     });
+
+    // #3454: the idle WARN line names why the turn was empty (block kinds
+    // only), so "the model skipped" is distinguishable from "the turn had
+    // only thinking/tool_use blocks" in the field.
+    it('names the empty-turn shape on the idle WARN line', async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      await processAgentResponse(
+        '', createMockSession(), mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent', undefined, undefined, undefined,
+        'non-text-blocks-only(thinking,tool_use)'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/non-XML idle response/),
+        expect.objectContaining({ outputClass: 'idle', emptyOutputReason: 'non-text-blocks-only(thinking,tool_use)' })
+      );
+    });
+
+    it('does not attach an empty-turn shape to a prose response', async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      await processAgentResponse(
+        'Nothing durable in this batch.', createMockSession(), mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent', undefined, undefined, undefined, 'blank-text'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/non-XML prose response/),
+        expect.not.objectContaining({ emptyOutputReason: expect.anything() })
+      );
+    });
   });
 
   describe('session cleanup', () => {

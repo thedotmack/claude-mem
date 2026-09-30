@@ -306,7 +306,9 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string,
   modelId?: string,
-  responseContext?: ResponseContext
+  responseContext?: ResponseContext,
+  /** Why an empty turn was empty (block kinds only, never content), for the idle WARN line. */
+  emptyOutputReason?: string
 ): Promise<void> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
@@ -441,6 +443,9 @@ export async function processAgentResponse(
       outputClass,
       preview,
       consecutiveContextOverflows: session.consecutiveContextOverflows,
+      // Only an idle turn has a shape worth naming: blank text, thinking or
+      // tool_use blocks only, or no content blocks at all (#3454).
+      ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
     });
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
