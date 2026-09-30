@@ -11,6 +11,8 @@
 
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 /**
  * Parse Retry-After header (seconds or HTTP-date).
@@ -58,16 +60,23 @@ const FALLBACK_PER_ATTEMPT_TIMEOUT_MS = 30_000;
  * already been computed. The value was unreachable from configuration, and
  * the workaround was editing the installed bundle after every update.
  *
- * Read here rather than through worker-utils' readTimeoutEnv: this module is
- * a leaf that imports only the logger and the error classifier, and that one
- * pulls in the supervisor and telemetry.
+ * Resolved like every other CLAUDE_MEM_* setting — env override first, then
+ * ~/.claude-mem/settings.json — and on every call, so a settings change takes
+ * effect without a restart. Read here rather than through worker-utils'
+ * readTimeoutEnv, which pulls in the supervisor and telemetry.
  */
-export function resolveLlmTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+export function resolveLlmTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_LLM_TIMEOUT_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_LLM_TIMEOUT_MS;
   if (!raw) return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
   // Complete integer only. parseInt('90000ms') would silently accept a typo
-  // as 90000 — Greptile reproduced that on #3808.
-  const trimmed = raw.trim();
+  // as 90000 — Greptile reproduced that on #3808. settings.json values come
+  // back as parsed JSON, so a bare number (90000) arrives as a number, not a string.
+  // Only a string or a number is accepted: String([90000]) would read as "90000".
+  const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
   const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
   if (
     Number.isFinite(parsed)
@@ -84,9 +93,8 @@ export function resolveLlmTimeoutMs(env: NodeJS.ProcessEnv = process.env): numbe
   return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal'>> = {
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal' | 'perAttemptTimeoutMs'>> = {
   maxRetries: 2,
-  perAttemptTimeoutMs: resolveLlmTimeoutMs(),
   baseDelayMs: 100,
   maxDelayMs: 30_000,
 };
@@ -116,7 +124,11 @@ export async function withRetry<T>(
   fn: (attemptSignal: AbortSignal) => Promise<T>,
   options: RetryOptions = {},
 ): Promise<T> {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const opts = {
+    ...DEFAULT_OPTIONS,
+    ...options,
+    perAttemptTimeoutMs: options.perAttemptTimeoutMs ?? resolveLlmTimeoutMs(),
+  };
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
@@ -139,21 +151,23 @@ export async function withRetry<T>(
     } catch (err: unknown) {
       lastError = err;
 
-      // Our own deadline, not a network blip. The abort surfaces with no HTTP  // status, so it classifies as transient and was retried twice — against a
-      // backend that is already saturated, those attempts are what turn a
-      // latency problem into a congestion collapse. Raise the deadline instead.
+      // Our own deadline, not a network blip. Retrying it in-loop against a
+      // backend that is already saturated is what turns a latency problem into
+      // a congestion collapse, so it throws immediately. It is still a
+      // transient condition: classified as such, the session preserves its
+      // buffered work for the next generator instead of finalizing with
+      // reason=null and dropping it.
       if (deadlineExpired) {
-        throw new Error(
+        throw new ClassifiedProviderError(
           `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline. `
           + 'Raise CLAUDE_MEM_LLM_TIMEOUT_MS if the backend is simply slow.',
-          { cause: err },
+          { kind: 'transient', cause: err },
         );
       }
 
       if (!isRetryableKind(err)) {
         throw err;
       }
-    
 
       if (attempt === opts.maxRetries) {
         throw err;

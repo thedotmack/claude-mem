@@ -8,6 +8,8 @@ import { CloudSync } from '../sync/CloudSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { clearSyncHealth, defaultSyncHealthFilePath } from '../../shared/sync-health.js';
+import { purgeUndrainableSyncOutbox } from '../sync/outbox-purge.js';
 import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
@@ -48,7 +50,12 @@ export class DatabaseManager {
     // Inactive installs get null so the write-site `getCloudSync()?.notify()`
     // nudges are free no-ops.
     if (cloudSyncConfigured) {
-      this.cloudSync = new CloudSync(this.db, settings);
+      this.cloudSync = new CloudSync(this.db, settings, { healthFilePath: defaultSyncHealthFilePath() });
+    } else {
+      // Sync is off: no banner for a feature not in use, and no queue that
+      // nothing will ever drain (#4228).
+      clearSyncHealth();
+      purgeUndrainableSyncOutbox(this.db);
     }
 
     logger.info('DB', 'Database initialized (shared connection)');

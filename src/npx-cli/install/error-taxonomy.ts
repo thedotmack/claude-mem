@@ -155,6 +155,23 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
       'An install command did not finish in time. Check network connectivity. On a slow host, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.',
   },
   {
+    // Non-interactive runs now default the provider (fresh config -> claude,
+    // otherwise the persisted one), so this fires only if a caller
+    // reintroduces the explicit abort. It still labels that path.
+    id: 'provider-selection-non-interactive',
+    severity: ErrorSeverity.ABORT,
+    match: (_cause, ctx) => ctx.component === 'provider-selection',
+    remediation: () =>
+      'Non-interactive installs need a provider. Pass `--provider claude` for local memory on your Anthropic plan, or run `npx claude-mem install` in an interactive terminal.',
+  },
+  {
+    id: 'provider-credentials-missing',
+    severity: ErrorSeverity.ABORT,
+    match: (_cause, ctx) => ctx.component === 'provider-credentials',
+    remediation: () =>
+      'The selected provider needs a personal API key on non-interactive runs. Save it in settings first, or run the installer interactively so it can ask securely.',
+  },
+  {
     id: 'unknown-install-error',
     severity: ErrorSeverity.ABORT,
     match: () => true,

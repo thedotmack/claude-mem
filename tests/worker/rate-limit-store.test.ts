@@ -182,6 +182,56 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.window).toBe('overage');
   });
 
+  it('does not abort on a five_hour rejection after its reset time', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      utilization: 1,
+      resetsAt: Math.floor(FIXED_NOW / 1000) - 60, // epoch seconds, already reset
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
+  it('still aborts on a five_hour rejection before its reset time', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision).toEqual({
+      abort: true,
+      window: 'five_hour',
+      reason: 'quota:five_hour rejected by provider',
+    });
+  });
+
+  it('still aborts on a rejected entry with no reset time', () => {
+    store.set({ rateLimitType: 'five_hour', status: 'rejected' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision).toEqual({
+      abort: true,
+      window: 'five_hour',
+      reason: 'quota:five_hour rejected by provider',
+    });
+  });
+
+  it('does not re-abort a later allowed window because an earlier rejection expired', () => {
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW - 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.79,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
   it('aborts on five_hour at 0.96 with reason mentioning "five_hour"', () => {
     store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
