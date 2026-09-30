@@ -2,116 +2,196 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { isPluginInstalled, resolvePluginRoot } from '../../src/npx-cli/utils/paths.js';
+import { resolvePluginRoot, type WorkerScriptSearchRoots } from '../../src/shared/worker-utils.js';
+import { findMissingPluginDependencies } from '../../src/shared/plugin-dependency-closure.js';
+import { marketplaceManifestCheck, pluginRootCheck } from '../../src/npx-cli/commands/doctor.js';
 
 /**
- * `resolvePluginRoot()` must match how the runtime hooks resolve the plugin
- * (plugin/hooks/hooks.json): $CLAUDE_PLUGIN_ROOT first, then the newest
- * non-orphaned versioned cache directory, then the marketplace copy. A cache
- * install the hooks run from must not read as "not installed" (#3534).
+ * The CLI (`start`/`stop`/`status`/`doctor`) resolves the plugin root through
+ * the same oracle the worker spawner uses — resolveWorkerScript() — so a
+ * cache-only install the hooks run from is never "not installed" (#3534), and
+ * doctor names the exact root the worker spawns from. Selection prefers roots
+ * whose dependency closure is complete (plan-16 step 1c).
  */
-describe('resolvePluginRoot', () => {
-  let configDir: string;
-  const savedConfig = process.env.CLAUDE_CONFIG_DIR;
+describe('resolvePluginRoot (shared worker-script oracle)', () => {
+  let base: string;
+  let roots: WorkerScriptSearchRoots;
+  const savedOverride = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
   const savedPluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
-  const savedPluginRootAlt = process.env.PLUGIN_ROOT;
 
-  /** A runnable root: manifest plus the scripts the hooks require to accept it. */
-  function writePluginJson(root: string): string {
-    mkdirSync(join(root, '.claude-plugin'), { recursive: true });
-    writeFileSync(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'claude-mem' }));
+  /** A plugin root with a worker script; `deps` are declared, `installed` get node_modules entries. */
+  function writePluginRoot(root: string, options: { deps?: string[]; installed?: string[] } = {}): string {
     mkdirSync(join(root, 'scripts'), { recursive: true });
-    writeFileSync(join(root, 'scripts', 'bun-runner.js'), '');
-    writeFileSync(join(root, 'scripts', 'worker-service.cjs'), '');
-    return root;
-  }
-
-  /** An incomplete root: manifest only, missing the scripts the hooks require. */
-  function writeManifestOnly(root: string): string {
-    mkdirSync(join(root, '.claude-plugin'), { recursive: true });
-    writeFileSync(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'claude-mem' }));
+    writeFileSync(join(root, 'scripts', 'worker-service.cjs'), '// fake worker\n');
+    const deps = options.deps ?? [];
+    writeFileSync(join(root, 'package.json'), JSON.stringify({
+      name: 'claude-mem-plugin',
+      dependencies: Object.fromEntries(deps.map((dep) => [dep, '*'])),
+    }));
+    for (const dep of options.installed ?? deps) {
+      mkdirSync(join(root, 'node_modules', ...dep.split('/')), { recursive: true });
+      writeFileSync(join(root, 'node_modules', ...dep.split('/'), 'package.json'), JSON.stringify({ name: dep }));
+    }
     return root;
   }
 
   function cacheVersionDir(version: string): string {
-    return join(configDir, 'plugins', 'cache', 'thedotmack', 'claude-mem', version);
+    return join(roots.cacheRoot, version);
   }
 
-  function marketplacePluginDir(): string {
-    return join(configDir, 'plugins', 'marketplaces', 'thedotmack', 'plugin');
+  function writeMarketplace(version: string, options: { deps?: string[]; installed?: string[] } = {}): string {
+    mkdirSync(roots.marketplaceRoot, { recursive: true });
+    writeFileSync(join(roots.marketplaceRoot, 'package.json'), JSON.stringify({ version }));
+    return writePluginRoot(join(roots.marketplaceRoot, 'plugin'), options);
   }
 
   beforeEach(() => {
-    configDir = mkdtempSync(join(tmpdir(), 'claude-mem-paths-'));
-    process.env.CLAUDE_CONFIG_DIR = configDir;
+    base = mkdtempSync(join(tmpdir(), 'claude-mem-plugin-root-'));
+    roots = {
+      cacheRoot: join(base, 'cache', 'thedotmack', 'claude-mem'),
+      marketplaceRoot: join(base, 'marketplaces', 'thedotmack'),
+      cwd: join(base, 'project'),
+    };
+    delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
     delete process.env.CLAUDE_PLUGIN_ROOT;
-    delete process.env.PLUGIN_ROOT;
   });
 
   afterEach(() => {
-    rmSync(configDir, { recursive: true, force: true });
-    if (savedConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-    else process.env.CLAUDE_CONFIG_DIR = savedConfig;
+    rmSync(base, { recursive: true, force: true });
+    if (savedOverride === undefined) delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+    else process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = savedOverride;
     if (savedPluginRoot === undefined) delete process.env.CLAUDE_PLUGIN_ROOT;
     else process.env.CLAUDE_PLUGIN_ROOT = savedPluginRoot;
-    if (savedPluginRootAlt === undefined) delete process.env.PLUGIN_ROOT;
-    else process.env.PLUGIN_ROOT = savedPluginRootAlt;
   });
 
-  it('returns null and reports not installed when nothing is present', () => {
-    expect(resolvePluginRoot()).toBeNull();
-    expect(isPluginInstalled()).toBe(false);
+  it('returns null when nothing is installed', () => {
+    expect(resolvePluginRoot(roots)).toBeNull();
   });
 
-  it('finds the marketplace copy when only it is present', () => {
-    const root = writePluginJson(marketplacePluginDir());
-    expect(resolvePluginRoot()).toBe(root);
-    expect(isPluginInstalled()).toBe(true);
+  it('finds a cache-only install with no marketplace copy (#3534)', () => {
+    const root = writePluginRoot(cacheVersionDir('13.14.0'), { deps: ['zod-free-dep'] });
+    expect(resolvePluginRoot(roots)).toEqual({ root, version: '13.14.0', missingDependencies: [] });
   });
 
-  it('finds a cache install with no marketplace copy', () => {
-    const root = writePluginJson(cacheVersionDir('13.14.0'));
-    expect(resolvePluginRoot()).toBe(root);
-    expect(isPluginInstalled()).toBe(true);
-  });
-
-  it('prefers the cache install over the marketplace copy', () => {
-    writePluginJson(marketplacePluginDir());
-    const cacheRoot = writePluginJson(cacheVersionDir('13.14.0'));
-    expect(resolvePluginRoot()).toBe(cacheRoot);
-  });
-
-  it('prefers the newest version and stable over pre-release', () => {
-    writePluginJson(cacheVersionDir('13.13.0'));
-    writePluginJson(cacheVersionDir('13.14.0-beta.1'));
-    const newest = writePluginJson(cacheVersionDir('13.14.0'));
-    expect(resolvePluginRoot()).toBe(newest);
+  it('ranks by version across cache and marketplace, like the worker spawner', () => {
+    writePluginRoot(cacheVersionDir('13.14.0'));
+    const marketplaceRoot = writeMarketplace('13.15.0');
+    expect(resolvePluginRoot(roots)?.root).toBe(marketplaceRoot);
   });
 
   it('skips an orphaned cache directory', () => {
-    const orphaned = writePluginJson(cacheVersionDir('13.14.0'));
-    writeFileSync(join(orphaned, '.orphaned_at'), '2026-08-10T00:00:00Z');
-    const older = writePluginJson(cacheVersionDir('13.13.0'));
-    expect(resolvePluginRoot()).toBe(older);
+    writeFileSync(join(writePluginRoot(cacheVersionDir('13.14.0')), '.orphaned_at'), '2026-08-10T00:00:00Z');
+    const older = writePluginRoot(cacheVersionDir('13.13.0'));
+    expect(resolvePluginRoot(roots)?.root).toBe(older);
   });
 
-  it('honors $CLAUDE_PLUGIN_ROOT ahead of cache and marketplace', () => {
-    writePluginJson(cacheVersionDir('13.14.0'));
-    writePluginJson(marketplacePluginDir());
-    const envRoot = writePluginJson(join(configDir, 'custom-root'));
-    process.env.CLAUDE_PLUGIN_ROOT = envRoot;
-    expect(resolvePluginRoot()).toBe(envRoot);
+  it('prefers a complete older root over a newer one missing modules (#3604)', () => {
+    // A GitHub re-clone bumps the marketplace version, but its plugin/ has no
+    // node_modules: spawning from it dies on `Cannot find module`.
+    writeMarketplace('13.30.0', { deps: ['better-sqlite-ish', 'yaml'], installed: [] });
+    const complete = writePluginRoot(cacheVersionDir('13.29.0'), { deps: ['better-sqlite-ish', 'yaml'] });
+    expect(resolvePluginRoot(roots)).toEqual({ root: complete, version: '13.29.0', missingDependencies: [] });
   });
 
-  it('skips an incomplete newer cache entry for an older runnable one', () => {
-    writeManifestOnly(cacheVersionDir('13.14.0'));
-    const runnable = writePluginJson(cacheVersionDir('13.13.0'));
-    expect(resolvePluginRoot()).toBe(runnable);
+  it('falls back to the highest root when none is complete, and names what is missing', () => {
+    const newest = writePluginRoot(cacheVersionDir('13.29.0'), { deps: ['a', 'b'], installed: ['a'] });
+    writePluginRoot(cacheVersionDir('13.28.0'), { deps: ['a', 'b'], installed: [] });
+    expect(resolvePluginRoot(roots)).toEqual({ root: newest, version: '13.29.0', missingDependencies: ['b'] });
   });
 
-  it('falls through an incomplete $CLAUDE_PLUGIN_ROOT to a runnable root', () => {
-    const runnable = writePluginJson(cacheVersionDir('13.14.0'));
-    process.env.CLAUDE_PLUGIN_ROOT = writeManifestOnly(join(configDir, 'partial-root'));
-    expect(resolvePluginRoot()).toBe(runnable);
+  it('does not rank $CLAUDE_PLUGIN_ROOT: every process gets the one oracle answer', () => {
+    const cache = writePluginRoot(cacheVersionDir('13.14.0'));
+    process.env.CLAUDE_PLUGIN_ROOT = writePluginRoot(join(base, 'host-injected-root'));
+    expect(resolvePluginRoot(roots)?.root).toBe(cache);
+  });
+
+  it('honors the CLAUDE_MEM_WORKER_SCRIPT_PATH override', () => {
+    writePluginRoot(cacheVersionDir('13.14.0'));
+    const devRoot = writePluginRoot(join(base, 'dev', 'plugin'));
+    process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = join(devRoot, 'scripts', 'worker-service.cjs');
+    expect(resolvePluginRoot(roots)).toEqual({ root: devRoot, version: null, missingDependencies: [] });
+  });
+});
+
+describe('findMissingPluginDependencies', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-closure-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeZod(subpaths: string[], pluginRoot: string = root): void {
+    const zodDir = join(pluginRoot, 'node_modules', 'zod');
+    mkdirSync(zodDir, { recursive: true });
+    const exportsMap: Record<string, string> = {};
+    for (const subpath of subpaths) {
+      exportsMap[`./${subpath}`] = `./${subpath}.js`;
+      writeFileSync(join(zodDir, `${subpath}.js`), 'module.exports = {};\n');
+    }
+    writeFileSync(join(zodDir, 'package.json'), JSON.stringify({ name: 'zod', exports: exportsMap }));
+  }
+
+  it('treats a root without a readable manifest or declared deps as complete', () => {
+    expect(findMissingPluginDependencies(root)).toEqual([]);
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'x' }));
+    expect(findMissingPluginDependencies(root)).toEqual([]);
+  });
+
+  it('reports scoped and plain dependencies that this tree does not provide', () => {
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ dependencies: { '@scope/pkg': '1', plain: '1' } }));
+    expect(findMissingPluginDependencies(root)).toEqual(['@scope/pkg', 'plain']);
+  });
+
+  it('requires the zod subpaths the worker imports, not just the zod directory', () => {
+    // Separate roots: bun caches a failed module lookup for the whole process.
+    const broken = join(root, 'broken');
+    const healthy = join(root, 'healthy');
+    for (const pluginRoot of [broken, healthy]) {
+      mkdirSync(pluginRoot, { recursive: true });
+      writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({ dependencies: { zod: '^3' } }));
+    }
+    writeZod(['v4', 'v4-mini'], broken);
+    writeZod(['v3', 'v4', 'v4-mini'], healthy);
+
+    expect(findMissingPluginDependencies(broken)).toEqual(['zod/v3']);
+    expect(findMissingPluginDependencies(healthy)).toEqual([]);
+  });
+});
+
+describe('doctor plugin rows', () => {
+  it('names the root and version the worker spawns from', () => {
+    expect(pluginRootCheck({ root: '/x/cache/13.29.0', version: '13.29.0', missingDependencies: [] })).toEqual({
+      name: 'Plugin installed',
+      status: 'ok',
+      detail: '/x/cache/13.29.0 (v13.29.0)',
+      required: true,
+    });
+  });
+
+  it('fails an incomplete root and points at repair', () => {
+    const row = pluginRootCheck({ root: '/x', version: '1.0.0', missingDependencies: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] });
+    expect(row.status).toBe('fail');
+    expect(row.detail).toContain('missing a, b, c, d, e, +2 more');
+    expect(row.detail).toContain('npx claude-mem repair');
+  });
+
+  it('fails with the install hint when nothing is installed', () => {
+    expect(pluginRootCheck(null)).toMatchObject({ status: 'fail', detail: 'run `npx claude-mem install`' });
+  });
+
+  it('warns, without failing doctor, when the marketplace manifest is missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-manifest-'));
+    try {
+      expect(marketplaceManifestCheck(dir)).toMatchObject({ status: 'warn', required: false });
+      mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+      writeFileSync(join(dir, '.claude-plugin', 'marketplace.json'), '{}');
+      expect(marketplaceManifestCheck(dir)).toMatchObject({ status: 'ok' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

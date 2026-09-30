@@ -25,6 +25,7 @@ import { reclaimGhostListeningPort } from "./port-reclaim.js";
 import { sanitizeEnv } from "../supervisor/env-sanitizer.js";
 import { killProcessTree } from "./kill-process-tree.js";
 import { writeJsonFileAtomic } from "./atomic-json.js";
+import { findMissingPluginDependencies } from "./plugin-dependency-closure.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -400,19 +401,41 @@ function readPackageVersion(packageJsonPath: string): string | null {
   }
 }
 
+/** Where resolveWorkerScript() looks. Injectable so tests can use temp roots. */
+export interface WorkerScriptSearchRoots {
+  cacheRoot: string;
+  marketplaceRoot: string;
+  cwd: string;
+}
+
+function defaultWorkerScriptSearchRoots(): WorkerScriptSearchRoots {
+  return {
+    cacheRoot: path.join(path.dirname(path.dirname(MARKETPLACE_ROOT)), 'cache', 'thedotmack', 'claude-mem'),
+    marketplaceRoot: MARKETPLACE_ROOT,
+    cwd: process.cwd(),
+  };
+}
+
 /**
  * Canonical worker-script resolver AND the single version oracle: the version
  * returned here is what hooks compare the live worker against
  * (checkVersionMatch) and what every spawner — hook lazy-spawn, MCP server,
- * dying-worker restart handoff — launches. Detection and respawn consulting
- * different oracles is what made the 2026-07-22 restart storm possible.
+ * dying-worker restart handoff — launches. The CLI's `start`/`stop`/`status`/
+ * `doctor` read the same answer through resolvePluginRoot(). Detection and
+ * respawn consulting different oracles is what made the 2026-07-22 restart
+ * storm possible.
  *
- * Highest version wins. Array.prototype.sort is stable, so equal versions
+ * Highest version wins among roots whose dependency closure is complete (see
+ * selectWorkerScript). Array.prototype.sort is stable, so equal versions
  * preserve the cache → marketplace → cwd precedence, and versionless
  * candidates rank behind every versioned one. The opt-in override exists for
- * local testing.
+ * local testing. $CLAUDE_PLUGIN_ROOT is deliberately not a candidate: it is
+ * set only inside host hook processes, so honoring it would give each process
+ * its own answer. The shell hooks use it only to find their own scripts.
  */
-export function resolveWorkerScript(): WorkerScriptCandidate | null {
+export function resolveWorkerScript(
+  roots: WorkerScriptSearchRoots = defaultWorkerScriptSearchRoots(),
+): WorkerScriptCandidate | null {
   const override = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH?.trim();
   if (override) {
     if (existsSync(override)) return { scriptPath: override, version: null };
@@ -420,21 +443,41 @@ export function resolveWorkerScript(): WorkerScriptCandidate | null {
   }
 
   const candidates: WorkerScriptCandidate[] = [
-    ...cacheWorkerScriptCandidates(),
+    ...cacheWorkerScriptCandidates(roots.cacheRoot),
     {
-      scriptPath: candidateWorkerScriptPath(path.join(MARKETPLACE_ROOT, 'plugin')),
-      version: readPackageVersion(path.join(MARKETPLACE_ROOT, 'package.json')),
+      scriptPath: candidateWorkerScriptPath(path.join(roots.marketplaceRoot, 'plugin')),
+      version: readPackageVersion(path.join(roots.marketplaceRoot, 'package.json')),
     },
     {
-      scriptPath: path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
-      version: readPackageVersion(path.join(process.cwd(), 'package.json')),
+      scriptPath: path.join(roots.cwd, 'plugin', 'scripts', 'worker-service.cjs'),
+      version: readPackageVersion(path.join(roots.cwd, 'package.json')),
     },
   ];
 
   return selectWorkerScript(candidates);
 }
 
-export function selectWorkerScript(candidates: WorkerScriptCandidate[]): WorkerScriptCandidate | null {
+/** The plugin root a worker script belongs to: `<root>/scripts/worker-service.cjs`. */
+export function pluginRootOfWorkerScript(scriptPath: string): string {
+  return path.dirname(path.dirname(scriptPath));
+}
+
+function hasCompleteDependencyClosure(candidate: WorkerScriptCandidate): boolean {
+  return findMissingPluginDependencies(pluginRootOfWorkerScript(candidate.scriptPath)).length === 0;
+}
+
+/**
+ * The highest-version installed candidate whose dependency closure is complete
+ * (plan-16 step 1c). A newer root with missing modules — a marketplace copy
+ * whose node_modules was never installed, or a fresh cache extract the Setup
+ * hook has not filled yet — would spawn a worker that dies on
+ * `Cannot find module 'zod/v3'` (#3604). When no candidate is complete, the
+ * highest installed one still wins, so nothing regresses before Setup runs.
+ */
+export function selectWorkerScript(
+  candidates: WorkerScriptCandidate[],
+  isComplete: (candidate: WorkerScriptCandidate) => boolean = hasCompleteDependencyClosure,
+): WorkerScriptCandidate | null {
   const installed = candidates.filter(candidate => existsSync(candidate.scriptPath));
   if (installed.length === 0) return null;
 
@@ -444,11 +487,34 @@ export function selectWorkerScript(candidates: WorkerScriptCandidate[]): WorkerS
     if (b.version === null) return -1;
     return compareVersionsDescending(a.version, b.version);
   });
-  return installed[0];
+  return installed.find(isComplete) ?? installed[0];
 }
 
 export function resolveWorkerScriptPath(): string | null {
   return resolveWorkerScript()?.scriptPath ?? null;
+}
+
+export interface PluginRootResolution {
+  /** The directory holding scripts/worker-service.cjs. */
+  root: string;
+  version: string | null;
+  /** Declared dependencies this root's node_modules does not provide. */
+  missingDependencies: string[];
+}
+
+/**
+ * The plugin root the worker spawns from, from the same oracle as
+ * resolveWorkerScript(), with its dependency completeness. The CLI reports and
+ * spawns from this instead of assuming the marketplace copy, so a working
+ * cache-only install is never "not installed" (#3534, plan-16 steps 1 and 5).
+ */
+export function resolvePluginRoot(
+  roots: WorkerScriptSearchRoots = defaultWorkerScriptSearchRoots(),
+): PluginRootResolution | null {
+  const script = resolveWorkerScript(roots);
+  if (!script) return null;
+  const root = pluginRootOfWorkerScript(script.scriptPath);
+  return { root, version: script.version, missingDependencies: findMissingPluginDependencies(root) };
 }
 
 async function waitForWorkerPort(options: { attempts: number; backoffMs: number }): Promise<boolean> {
