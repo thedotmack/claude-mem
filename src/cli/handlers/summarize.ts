@@ -81,11 +81,12 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    // Kimi PreCompact (and Stop) route here. Clear the once-per-session
-    // injection marker BEFORE any early return below: even when there is
-    // nothing to summarize, the first prompt after a compaction must
-    // re-inject a fresh timeline (see src/shared/kimi-context-gate.ts).
-    if (input.platform === 'kimi') {
+    // Kimi routes BOTH PreCompact and Stop to this handler, and Kimi's Stop
+    // fires at the end of EVERY turn — clearing the once-per-session injection
+    // marker on Stop would re-inject the full timeline into every prompt.
+    // Clear only on PreCompact so the first prompt after a compaction
+    // re-injects a fresh timeline (see src/shared/kimi-context-gate.ts).
+    if (input.platform === 'kimi' && input.hookEventName === 'PreCompact') {
       clearInjected(sessionId);
     }
 

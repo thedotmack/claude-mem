@@ -76,6 +76,9 @@ export const kimiAdapter: PlatformAdapter = {
       transcriptPath: deriveKimiTranscriptPath(sessionId),
       model: stringOrUndefined(r.model),
       sessionSource: source === 'startup' || source === 'resume' ? source : undefined,
+      // Kimi binds both Stop and PreCompact to the same internal `summarize`
+      // event; the raw event name is the only way handlers can tell them apart.
+      hookEventName: stringOrUndefined(r.hook_event_name),
     };
   },
 
