@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
+const {
+  MAX_CONSECUTIVE_STALL_RESUMES,
+  RESPONSE_STALL_RESUME_DELAY_MS,
+} = await import('../../src/services/worker/session/response-pacer.js');
 
 function makeSession(): ActiveSession {
   return {
@@ -186,5 +190,70 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     expect(stats().finalizeCalls).toBe(0);
     expect(stats().removed).toBe(0);
     expect(stats().active).toBe(session);
+  });
+
+  describe('after a response stall (#4066)', () => {
+    const realSetTimeout = globalThis.setTimeout;
+    let requestedDelays: number[] = [];
+
+    beforeEach(() => {
+      requestedDelays = [];
+      // Run the 30s resume delay immediately, but record that it was asked for.
+      globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+        if (ms === RESPONSE_STALL_RESUME_DELAY_MS) {
+          requestedDelays.push(ms);
+          return realSetTimeout(fn, 0, ...args);
+        }
+        return realSetTimeout(fn, ms, ...args);
+      }) as typeof setTimeout;
+    });
+
+    afterEach(() => {
+      globalThis.setTimeout = realSetTimeout;
+    });
+
+    it('resumes the preserved backlog after a delay', async () => {
+      const session = makeSession();
+      let starts = 0;
+
+      const { routes, stats } = buildRoutes(session, async () => {
+        starts += 1;
+        if (starts === 1) {
+          session.abortReason = 'transport:response_stall';
+          return;
+        }
+        await new Promise<void>(() => {});
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      await nextTick();
+
+      expect(requestedDelays).toEqual([RESPONSE_STALL_RESUME_DELAY_MS]);
+      expect(starts).toBe(2);
+      expect(session.consecutiveResponseStalls).toBe(1);
+      expect(stats().finalizeCalls).toBe(0);
+    });
+
+    it('stops resuming once the consecutive stall cap is reached', async () => {
+      const session = makeSession();
+      session.consecutiveResponseStalls = MAX_CONSECUTIVE_STALL_RESUMES;
+      let starts = 0;
+
+      const { routes, stats } = buildRoutes(session, async () => {
+        starts += 1;
+        session.abortReason = 'transport:response_stall';
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      await nextTick();
+
+      expect(requestedDelays).toEqual([]);
+      expect(starts).toBe(1);
+      // Still preserved for the next hook event rather than finalized.
+      expect(stats().finalizeCalls).toBe(0);
+      expect(stats().active).toBe(session);
+    });
   });
 });

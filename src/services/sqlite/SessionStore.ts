@@ -36,6 +36,46 @@ import {
   type CanonicalMutation,
 } from '../sync/CanonicalContent.js';
 
+// A Telegram send normally completes in seconds. A five-minute lease absorbs
+// a slow request while allowing a later SessionEnd delivery to recover work
+// abandoned by a process crash between claiming and marking the row sent.
+export const TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS = 5 * 60_000;
+
+let warnedMissingIterate = false;
+
+/**
+ * Iterate a prepared statement's rows, preferring the streaming `.iterate()`
+ * added in Bun v1.1.31 and falling back to the materializing `.all()` on
+ * older runtimes.
+ *
+ * package.json declares `engines.bun >= 1.1.31`, but engines is advisory —
+ * nothing enforces it when the plugin is installed through the Claude Code
+ * marketplace. On an older Bun the bare `.iterate()` call threw
+ * "…iterate is not a function" from inside schema migration v46, which runs
+ * during background init. That rejection left the worker permanently
+ * `initialized:false` while still serving 200 on /api/health, so every hook
+ * silently skipped until the failure counter began blocking them outright.
+ *
+ * Falling back keeps the migration correct on old runtimes (it only costs
+ * peak memory, and this scan runs once per install) and the one-time warning
+ * names the real cause instead of a cryptic TypeError.
+ */
+function streamRows(statement: {
+  iterate?: () => Iterable<unknown>;
+  all: () => unknown[];
+}): Iterable<unknown> {
+  if (typeof statement.iterate === 'function') return statement.iterate();
+  if (!warnedMissingIterate) {
+    warnedMissingIterate = true;
+    logger.warn('DB', 'bun:sqlite lacks Statement.iterate(); falling back to .all()', {
+      bunVersion: typeof Bun !== 'undefined' ? Bun.version : 'unknown',
+      requiredBunVersion: '>=1.1.31',
+      impact: 'migration rows are materialized in memory; upgrade Bun to restore streaming',
+    });
+  }
+  return statement.all();
+}
+
 interface IndexColumnInfo {
   seqno: number;
   cid: number;
@@ -175,6 +215,7 @@ export class SessionStore {
     this.normalizeConceptTags();
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
+    this.ensureTelegramWrapupsTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -666,12 +707,12 @@ export class SessionStore {
           throw new Error(`schema v46: missing ${target.table}.${target.column}`);
         }
 
-        for (const raw of this.db.query(`
+        for (const raw of streamRows(this.db.query(`
           SELECT CAST(id AS TEXT) AS row_id,
                  typeof(${target.column}) AS storage_type,
                  CAST(${target.column} AS TEXT) AS revision
           FROM ${target.table}
-        `).iterate()) {
+        `))) {
           const row = raw as { row_id: string; storage_type: string; revision: string | null };
           if (row.storage_type === 'real') {
             throw new Error(
@@ -1876,6 +1917,30 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
   }
 
+  // v52 — durable claim ledger for one Telegram session wrap-up per route.
+  // The DDL is intentionally idempotent so fresh installs and existing DBs
+  // converge even if a fixture has an incomplete schema_versions ledger.
+  private ensureTelegramWrapupsTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS telegram_wrapups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform_source TEXT NOT NULL,
+        content_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        route_key TEXT NOT NULL,
+        summary_created_at_epoch INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('claimed', 'sent')),
+        claimed_at_epoch INTEGER NOT NULL,
+        sent_at_epoch INTEGER,
+        UNIQUE(platform_source, content_session_id, project, route_key)
+      )
+    `);
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_telegram_wrapups_platform_content ON telegram_wrapups(platform_source, content_session_id)'
+    );
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
+  }
+
   private ensureMergedIntoProjectColumns(): void {
     const obsCols = this.db
       .query('PRAGMA table_info(observations)')
@@ -2616,6 +2681,132 @@ export class SessionStore {
     return (stmt.get(id) as SdkSessionDetailRow | null) || null;
   }
 
+  findSessionDbIdByContentSessionId(contentSessionId: string, platformSource: string): number | null {
+    const row = this.db.prepare(`
+      SELECT id
+      FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
+        AND content_session_id = ?
+      LIMIT 1
+    `).get(
+      DEFAULT_PLATFORM_SOURCE,
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+    ) as { id: number } | null;
+
+    return row?.id ?? null;
+  }
+
+  claimTelegramWrapup({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+    summaryCreatedAtEpoch,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+    summaryCreatedAtEpoch: number;
+  }): boolean {
+    const claimedAtEpoch = Date.now();
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO telegram_wrapups
+      (platform_source, content_session_id, project, route_key, summary_created_at_epoch, status, claimed_at_epoch, sent_at_epoch)
+      VALUES (?, ?, ?, ?, ?, 'claimed', ?, NULL)
+    `).run(
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+      summaryCreatedAtEpoch,
+      claimedAtEpoch,
+    );
+
+    if (result.changes === 1) return true;
+
+    // A process can die after recording its claim but before it attempts the
+    // Telegram POST (or before it marks the result sent). Treat a long-held
+    // claim as an abandoned lease, while sent rows remain permanent dedupe
+    // records. The compare-and-set predicate lets only one racing recovery
+    // caller reclaim the row.
+    const reclaim = this.db.prepare(`
+      UPDATE telegram_wrapups
+      SET summary_created_at_epoch = ?, claimed_at_epoch = ?, sent_at_epoch = NULL
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+        AND claimed_at_epoch <= ?
+    `).run(
+      summaryCreatedAtEpoch,
+      claimedAtEpoch,
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+      claimedAtEpoch - TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS,
+    );
+
+    return reclaim.changes === 1;
+  }
+
+  markTelegramWrapupSent({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+  }): void {
+    this.db.prepare(`
+      UPDATE telegram_wrapups
+      SET status = 'sent', sent_at_epoch = ?
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+    `).run(
+      Date.now(),
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+    );
+  }
+
+  releaseTelegramWrapupClaim({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+  }): void {
+    this.db.prepare(`
+      DELETE FROM telegram_wrapups
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+    `).run(
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+    );
+  }
+
   /**
    * Record the observed IDE session's model id and billing posture (from the
    * Stop hook). Each field only overwrites when supplied, so a turn that could
@@ -2841,6 +3032,13 @@ export class SessionStore {
     overrideTimestampEpoch?: number,
     generatedByModel?: string
   ): { id: number; createdAtEpoch: number } {
+    // storeObservations skips empty-title rows, which would leave no id to return here.
+    // This wrapper stores exactly one observation, so require a title up front rather than
+    // returning an undefined id.
+    if (!observation.title || observation.title.trim() === '') {
+      throw new Error('storeObservation requires a non-empty title');
+    }
+
     const result = this.storeObservations(
       memorySessionId,
       project,
@@ -2956,6 +3154,13 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
+        // Skip observations with an empty title. They're malformed, low-signal rows that
+        // just take up space in the recency-based recall window without adding any facts.
+        if (!observation.title || observation.title.trim() === '') {
+          logger.debug('DB', 'Skipping observation with empty title');
+          continue;
+        }
+
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
         const inserted = obsStmt.get(
           memorySessionId,

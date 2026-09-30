@@ -16,6 +16,7 @@ import {
 } from '../../shared/observer-recycle.js';
 import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
+import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 
 import {
   processAgentResponse,
@@ -49,7 +50,7 @@ export interface ProviderQueryResult {
  * resolution, request shape, token estimation, usage/cost reporting) are
  * supplied by abstract members.
  */
-export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string }> {
+export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string; plainText?: boolean }> {
   protected dbManager: DatabaseManager;
   protected sessionManager: SessionManager;
 
@@ -93,6 +94,30 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       signal,
     );
     return result.content || null;
+  }
+
+  /** Format a stored summary through this provider's normal summary-model query path. */
+  async formatTelegramWrapup(
+    input: TelegramWrapupFormatterInput,
+    activeModelId?: string,
+  ): Promise<string> {
+    const config = this.getConfig();
+    if (!config.apiKey) {
+      throw this.missingApiKeyError();
+    }
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const model = resolveSummaryTierModel(activeModelId ?? config.model, settings);
+    const summaryConfig = { ...config, model, plainText: true };
+    const result = await this.query(
+      [{ role: 'user', content: buildTelegramWrapupPrompt(input.summaryText) }],
+      summaryConfig,
+    );
+    if (!result.content?.trim()) {
+      const error = new Error(`${this.providerName} returned no text for the Telegram wrap-up`);
+      logger.error('TELEGRAM', error.message, { sessionId: input.sessionDbId, model }, error);
+      throw error;
+    }
+    return result.content;
   }
 
   /** Estimate token count for a single message body. */
@@ -390,6 +415,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       // credentials that are fixed by /login are no more fatal than a 429.
       case 'auth_invalid':
         return `auth:${error.kind}`;
+      // A timeout or network fault that outlived the retry policy. Finalizing
+      // would turn it into permanent data loss — the same reasoning as the
+      // observer-text transport path in ResponseProcessor (#3752).
+      case 'transient':
+        return `transport:${error.kind}`;
       default:
         return null;
     }

@@ -22,6 +22,7 @@ Do **not** pass `--provider host` unless you want the loopback shim. With no `--
 - Observer via CMEM Pro: `CLAUDE_MEM_PROVIDER=openrouter`, `CLAUDE_MEM_OPENROUTER_BASE_URL=https://cmem.ai/api/inference/v1`, `CLAUDE_MEM_OPENROUTER_MODEL=cmem-observer`, API key from installer OAuth (`cm_pro` memory key)
 - Interactive installer pre-selects CMEM Pro
 - MCP `session_start_context` at the start of a real task
+- Live INDEX into `agents/<uuid>/memory/log/zz-claude-mem-inject.md` (disable with `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED=false`)
 
 No xAI key. No Claude CLI.
 

@@ -16,6 +16,7 @@ export interface NormalizedHookInput {
   toolUseId?: string;
   transcriptPath?: string;
   lastAssistantMessage?: string;
+  reason?: string;
   turnId?: string;
   stopHookActive?: boolean;
   permissionMode?: string;

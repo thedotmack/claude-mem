@@ -5,6 +5,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import '../../../sqlite/manual-session.js';
+import { notifyGrokBotIndex } from '../../../integrations/GrokBotIndexWriter.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -45,7 +46,9 @@ export class MemoryRoutes extends BaseRouteHandler {
 
     const observation = {
       type: 'discovery',  // Use existing valid type
-      title: title || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
+      // A whitespace-only title is truthy but blank once trimmed; fall back to the text so we
+      // never hand storeObservation an empty title.
+      title: title?.trim() || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
       subtitle: 'Manual memory',
       facts: [] as string[],
       narrative: text,
@@ -73,6 +76,9 @@ export class MemoryRoutes extends BaseRouteHandler {
     // (placed before the chroma branch so the chroma-disabled early return
     // cannot skip it).
     this.dbManager.getCloudSync()?.notify();
+    // Manual saves (e.g. Grok Bot seat self-saves) must reach the live INDEX
+    // promptly, not wait for the next SDK observation. Debounced, never throws.
+    notifyGrokBotIndex();
 
     if (!chromaSync) {
       logger.debug('CHROMA', 'ChromaDB sync skipped (chromaSync not available)', { id: result.id });

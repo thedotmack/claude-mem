@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
-import { paths } from '../shared/paths.js';
+import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
@@ -139,8 +139,50 @@ export class ProcessRegistry {
     this.persist();
   }
 
+  /**
+   * Keep a still-running process that is about to lose its registry id.
+   *
+   * Ids are caller-supplied and some are fixed for the life of the product —
+   * chroma always registers under `chroma-mcp` — so a new generation's
+   * `register()` replaced the previous generation's record while that
+   * process was still running. Nothing signals a pid that is not in the map:
+   * `runShutdownCascade` walks `getAll()` and `pruneDeadEntries` only visits
+   * entries, so the process went unreachable by every reaper at once. That is
+   * the cross-generation orphan of #3301.
+   *
+   * It is re-keyed rather than killed here. `register()` is synchronous and
+   * `killProcessTree()` is not, and a setter is the wrong place to start a
+   * kill nobody awaits. Under an id of its own the process stays visible to
+   * the reapers that already exist: shutdown verifies identity with
+   * `isSameProcess` before it signals anything, and `pruneDeadEntries` drops
+   * the record as soon as it exits.
+   */
+  private retainSupersededEntry(id: string, incomingPid: number): void {
+    const superseded = this.entries.get(id);
+    if (!superseded || superseded.pid === incomingPid || !isPidAlive(superseded.pid)) return;
+
+    // Keyed by pid, so re-registering over the same survivor twice records it
+    // once rather than growing the registry.
+    const supersededId = `${id}#superseded:${superseded.pid}`;
+    this.entries.set(supersededId, superseded);
+
+    const runtimeRef = this.runtimeProcesses.get(id);
+    if (runtimeRef) {
+      this.runtimeProcesses.set(supersededId, runtimeRef);
+      this.runtimeProcesses.delete(id);
+    }
+
+    logger.warn('SYSTEM', 'Registry id reused while the previous process was still alive; kept it for reaping', {
+      id,
+      supersededId,
+      supersededPid: superseded.pid,
+      incomingPid,
+    });
+  }
+
   register(id: string, processInfo: ManagedProcessInfo, processRef?: ChildProcess): void {
     this.initialize();
+    this.retainSupersededEntry(id, processInfo.pid);
     this.entries.set(id, processInfo);
     if (processRef) {
       this.runtimeProcesses.set(id, processRef);
@@ -659,6 +701,8 @@ export interface SpawnSdkOptions {
   command: string;
   args: string[];
   extraArgs?: string[];
+  // Part of the Claude SDK callback contract. Accepted at this trust boundary
+  // so callers remain compatible, but deliberately ignored for isolation.
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
@@ -688,6 +732,10 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   return filteredArgs;
 }
 
+export function normalizeSpawnSdkCwd(sessionDbId: number): string {
+  return path.join(OBSERVER_SESSIONS_DIR, String(sessionDbId));
+}
+
 export function spawnSdkProcess(
   sessionDbId: number,
   options: SpawnSdkOptions
@@ -697,11 +745,22 @@ export function spawnSdkProcess(
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
   const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
+  const cwd = normalizeSpawnSdkCwd(sessionDbId);
+  try {
+    ensureDir(cwd);
+  } catch (error: unknown) {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    logger.error('SDK_SPAWN', `[session-${sessionDbId}] failed to create observer session directory`, {
+      sessionDbId,
+      cwd,
+    }, cause);
+    return null;
+  }
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
     ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
-        cwd: options.cwd,
+        cwd,
         env,
         detached: !isWin,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -709,7 +768,7 @@ export function spawnSdkProcess(
         windowsHide: true,
       })
     : spawnHidden(options.command, filteredArgs, {
-        cwd: options.cwd,
+        cwd,
         env,
         detached: !isWin,
         stdio: ['pipe', 'pipe', 'pipe'],
