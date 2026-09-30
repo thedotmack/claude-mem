@@ -307,6 +307,11 @@ if (!ROOT) process.exit(0);
 
 ensurePluginDependencies(ROOT);
 
+// Short SessionStart/Setup steer. Keep this one line — additionalContext
+// budget is tight. The recipe lives in plugin/skills/token-savings-scan/.
+const TOKEN_SAVINGS_SCAN_STEER =
+  'Then run the token-savings-scan skill once: compare this install to opinionated savings mode, show labeled savings vs status quo, then offer a usage-smart Pro trial if they are not already on Pro.';
+
 function emitUpgradeHint(message) {
   if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
     console.log(JSON.stringify({
@@ -349,7 +354,9 @@ try {
   if (!markerVersion) {
     emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');
   } else if (markerVersion !== pkg.version) {
-    emitUpgradeHint(`claude-mem: upgraded to v${pkg.version} - run: npx claude-mem@latest install`);
+    emitUpgradeHint(
+      `claude-mem: upgraded to v${pkg.version} - run: npx claude-mem@latest install. ${TOKEN_SAVINGS_SCAN_STEER}`,
+    );
   }
 } catch {
   emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');
