@@ -392,7 +392,11 @@ export async function adoptMergedWorktrees(opts: {
     const adoptionTargets: Array<{ project: string; label: string }> = [
       ...targets.map(wt => ({ project: getProjectContext(wt.path).primary, label: wt.path })),
       ...orphanProjects.map(project => ({ project, label: `${project} (worktree removed)` })),
-    ];
+    ]
+      // A worktree named after its repo writes to the repo key itself (#3641);
+      // "adopting" it would stamp the repo's own rows as merged into
+      // themselves and queue a remap op that re-pushes every one of them.
+      .filter(target => target.project !== parentProject);
 
     const tx = db.transaction(() => {
       for (const target of adoptionTargets) {
