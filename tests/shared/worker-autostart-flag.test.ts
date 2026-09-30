@@ -30,6 +30,8 @@ const realSpawnGateSnapshot = { ...realSpawnGate };
 
 let settings: Record<string, unknown> = {};
 let workerUp = true;
+// false: /api/readiness answers 503 (a worker that is up but never ready).
+let workerReady = true;
 let versionMatch = { matches: true, pluginVersion: '13.4.1', workerVersion: '13.4.1' };
 const spawnCalls: string[] = [];
 const killCalls: number[] = [];
@@ -45,6 +47,10 @@ mock.module('../../src/services/infrastructure/index.js', () => ({
 }));
 mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
   ...realHealthMonitorSnapshot,
+  // The infrastructure barrel re-exports HealthMonitor's bindings, so the
+  // barrel's version stub is repeated here; otherwise the real probe answers
+  // and a mismatch is never simulated.
+  checkVersionMatch: () => Promise.resolve(versionMatch),
   // The pre-spawn port gate (#3171): report the port free so the default path
   // reaches the spawn.
   classifyPortOccupancy: () => Promise.resolve('free'),
@@ -131,6 +137,7 @@ describe('CLAUDE_MEM_WORKER_AUTOSTART opt-out in the hook path', () => {
   beforeEach(() => {
     settings = {};
     workerUp = true;
+    workerReady = true;
     versionMatch = { matches: true, pluginVersion: '13.4.1', workerVersion: '13.4.1' };
     spawnCalls.length = 0;
     killCalls.length = 0;
@@ -142,6 +149,9 @@ describe('CLAUDE_MEM_WORKER_AUTOSTART opt-out in the hook path', () => {
       if (!workerUp) return Promise.reject(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
       const u = typeof url === 'string' ? url : url.toString();
       if (u.includes('/api/health')) return Promise.resolve(jsonResponse({ version: versionMatch.workerVersion, uptime: 10 }));
+      if (u.includes('/api/readiness') && !workerReady) {
+        return Promise.resolve({ ...jsonResponse({}), ok: false, status: 503 } as Response);
+      }
       return Promise.resolve(jsonResponse({}));
     }) as unknown as typeof fetch;
   });
@@ -181,6 +191,23 @@ describe('CLAUDE_MEM_WORKER_AUTOSTART opt-out in the hook path', () => {
     const workerUtils = await importWorkerUtilsFresh();
 
     expect(await workerUtils.ensureWorkerAliveOnce()).toBe(true);
+    expect(killCalls).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it('bounds the readiness wait on a mismatched external worker by the hook budget (#3434)', async () => {
+    settings = { CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
+    versionMatch = { matches: false, pluginVersion: '13.4.1', workerVersion: '13.3.0' };
+    workerReady = false;
+    const workerUtils = await importWorkerUtilsFresh();
+
+    const startedAt = Date.now();
+    const alive = await workerUtils.ensureWorkerRunning(400);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(alive).toBe(false);
+    // Unbudgeted, this path waits out the full hook readiness timeout (10 s).
+    expect(elapsedMs).toBeLessThan(2_000);
     expect(killCalls).toHaveLength(0);
     expect(spawnCalls).toHaveLength(0);
   });

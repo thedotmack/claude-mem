@@ -777,7 +777,8 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
           pluginVersion,
           workerVersion,
         });
-        return waitForWorkerReadiness();
+        if (outOfBudget('readiness wait')) return false;
+        return waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
       }
       // The version-mismatch recycle keeps its own guard: an unchanged bundle
       // that still reports a stale version must not be recycled again. The
