@@ -378,18 +378,6 @@ export class SessionRoutes extends BaseRouteHandler {
     generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
         if (myController.signal.aborted) {
-          // A deadline expiry aborts the controller so it is booked once, as a
-          // pause (see .finally), yet nothing was stored. Put it in the health
-          // ledger, or a backend that is always slower than the deadline would
-          // store nothing and never raise the session-start warning.
-          if (isClassified(error) && error.code === DEADLINE_EXCEEDED_CODE) {
-            recordObserverFailure(provider, {
-              message: error.message,
-              kind: error.kind,
-              code: error.code,
-              action: error.action,
-            });
-          }
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
           return;
         }

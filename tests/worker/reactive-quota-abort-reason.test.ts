@@ -1,11 +1,7 @@
 import { describe, expect, it, mock, beforeEach, afterEach, spyOn } from 'bun:test';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { telemetryBuffer } from '../../src/services/telemetry/buffer.js';
-import { OBSERVER_HEALTH_FILENAME, readObserverHealth } from '../../src/shared/observer-health.js';
-import { paths } from '../../src/shared/paths.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { ClassifiedProviderError, DEADLINE_EXCEEDED_CODE } from '../../src/services/worker/provider-errors.js';
 import { withRetry } from '../../src/services/worker/retry.js';
@@ -307,25 +303,12 @@ describe('the reason actually reaches handleGeneratorExit (#3700)', () => {
 
 /**
  * Since #4125 a deadline expiry is a quiet pause. SessionRoutes booked it as an
- * aborted turn with abort_reason 'none' and never touched the health ledger, so
- * a backend slower than the deadline — every request abandoned, possibly after
- * being billed upstream — looked exactly like ordinary idle aborts.
+ * aborted turn with abort_reason 'none', so a backend slower than the deadline —
+ * every request abandoned, possibly after being billed upstream — looked
+ * exactly like ordinary idle aborts.
  */
-describe('a deadline pause stays visible in telemetry and observer health', () => {
-  const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
-  let ledgerBefore: string | null;
-
-  // The ledger is shared by every test in the run; leave it as we found it.
-  beforeEach(() => {
-    ledgerBefore = existsSync(healthPath) ? readFileSync(healthPath, 'utf-8') : null;
-  });
-
-  afterEach(() => {
-    if (ledgerBefore === null) rmSync(healthPath, { force: true });
-    else writeFileSync(healthPath, ledgerBefore);
-  });
-
-  it('books a distinct abort reason and a classified health failure, exactly once', async () => {
+describe('a deadline pause stays visible in telemetry', () => {
+  it('books a distinct abort reason, exactly once, and keeps the session', async () => {
     const session = makeSession();
     const finalizeSession = mock(() => Promise.resolve());
     const routes = new SessionRoutes(
@@ -341,7 +324,6 @@ describe('a deadline pause stays visible in telemetry and observer health', () =
       {} as never,
       { finalizeSession } as unknown as SessionCompletionHandler,
     );
-    const priorFailures = readObserverHealth(healthPath)?.consecutiveFailures ?? 0;
     const telemetrySpy = spyOn(telemetryBuffer, 'record').mockImplementation(() => {});
 
     let turns: Record<string, unknown>[];
@@ -366,14 +348,6 @@ describe('a deadline pause stays visible in telemetry and observer health', () =
       abort_reason: DEADLINE_EXCEEDED_CODE,
       provider: 'gemini',
     });
-
-    const health = readObserverHealth(healthPath)!;
-    expect(health.consecutiveFailures).toBe(priorFailures + 1);
-    expect(health.lastErrorProvider).toBe('gemini');
-    expect(health.lastErrorKind).toBe('transient');
-    expect(health.lastErrorCode).toBe(DEADLINE_EXCEEDED_CODE);
-    expect(health.lastErrorMessage).toContain('per-attempt deadline');
-    expect(health.lastErrorAction).toContain('CLAUDE_MEM_LLM_TIMEOUT_MS');
 
     // Still a pause: the buffered work survives for the next generator.
     expect(finalizeSession).not.toHaveBeenCalled();

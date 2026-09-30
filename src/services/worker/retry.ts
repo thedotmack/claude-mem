@@ -160,13 +160,9 @@ export async function withRetry<T>(
       // fault — we abandoned a request the backend may still bill.
       if (deadlineExpired) {
         throw new ClassifiedProviderError(
-          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline.`,
-          {
-            kind: 'transient',
-            code: DEADLINE_EXCEEDED_CODE,
-            action: `Raise CLAUDE_MEM_LLM_TIMEOUT_MS in ~/.claude-mem/settings.json (up to ${LLM_TIMEOUT_BOUNDS.max}) if the backend is simply slow.`,
-            cause: err,
-          },
+          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline. `
+          + 'Raise CLAUDE_MEM_LLM_TIMEOUT_MS if the backend is simply slow.',
+          { kind: 'transient', code: DEADLINE_EXCEEDED_CODE, cause: err },
         );
       }
 

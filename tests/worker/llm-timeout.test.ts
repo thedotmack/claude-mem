@@ -148,9 +148,9 @@ describe('per-attempt deadline', () => {
   });
 
   // Since #4125 an expiry is a quiet pause, not an error. The code is what keeps
-  // an abandoned (and likely billed) request countable apart from a network
-  // fault, and the action is the remedy the health warning shows.
-  it('marks an expired deadline with its own code and remedy', async () => {
+  // an abandoned (possibly still billed) request countable apart from a network
+  // fault.
+  it('marks an expired deadline with its own code and keeps the remedy', async () => {
     const error = await withRetry(
       signal => new Promise<string>((_resolve, reject) => {
         signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
@@ -159,7 +159,7 @@ describe('per-attempt deadline', () => {
     ).catch((err: unknown) => err);
 
     expect(isClassified(error) && error.code).toBe(DEADLINE_EXCEEDED_CODE);
-    expect(isClassified(error) && error.action).toContain('CLAUDE_MEM_LLM_TIMEOUT_MS');
+    expect((error as Error).message).toContain('Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
   });
 
   it('still retries a genuine transient failure', async () => {
