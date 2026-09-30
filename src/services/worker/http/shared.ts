@@ -3,14 +3,16 @@ import { logger } from '../../../utils/logger.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
-import type { ParsedSummary } from '../../../sdk/parser.js';
-import { stripMemoryTagsFromJson } from '../../../utils/tag-stripping.js';
+import { stripMemoryTags } from '../../../utils/tag-stripping.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
+import { shouldSkipAgentObservation } from '../../../shared/should-skip-agent-observation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
+import { captureEvent } from '../../telemetry/telemetry.js';
+import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -20,6 +22,39 @@ interface IngestContext {
 }
 
 let ctx: IngestContext | null = null;
+
+// Compile each CLAUDE_MEM_SKIP_BASH_PATTERNS value once, not per observation:
+// ingestObservation runs on the hot path. A cached `null` marks a value that
+// failed to compile, so an invalid regex warns once instead of on every Bash
+// command until the setting is fixed.
+const bashPatternCache = new Map<string, RegExp | null>();
+
+function getBashSkipPattern(pattern: string): RegExp | null {
+  const cached = bashPatternCache.get(pattern);
+  if (cached !== undefined) return cached;
+
+  let compiled: RegExp | null = null;
+  try {
+    compiled = new RegExp(pattern);
+  } catch (error) {
+    logger.warn('INGEST', 'Invalid CLAUDE_MEM_SKIP_BASH_PATTERNS regex — ignoring', {
+      pattern,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  bashPatternCache.set(pattern, compiled);
+  return compiled;
+}
+
+// The shell command CLAUDE_MEM_SKIP_BASH_PATTERNS is matched against. Claude
+// Code sends `Bash` + `command` (Cursor and Windsurf adapters normalize to the
+// same shape); the Codex transcript watcher sends `exec_command` + `cmd`.
+function shellCommandOf(toolName: string, toolInput: unknown): string {
+  if (!toolInput || typeof toolInput !== 'object') return '';
+  const input = toolInput as { command?: unknown; cmd?: unknown };
+  const command = toolName === 'Bash' ? input.command : toolName === 'exec_command' ? input.cmd : undefined;
+  return typeof command === 'string' ? command : '';
+}
 
 export function setIngestContext(next: IngestContext): void {
   ctx = next;
@@ -53,6 +88,14 @@ export interface ObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  /**
+   * Receipt join keys (frozen 2026-09-06). Both nullable and both pass-through:
+   * Claude-Mem never derives them, it only echoes what a stamper supplied, so
+   * `tool_uses` can be joined to an OpenRouter spend line. No cost field here —
+   * dollars stay on the OR stamp / spend log.
+   */
+  orGenerationId?: string;
+  orSessionId?: string;
 }
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
@@ -72,7 +115,38 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean)
   );
   if (skipTools.has(payload.toolName)) {
+    if (payload.toolName === 'Skill') {
+      const { skill_id, skill_source } = classifySkillId(
+        skillNameFromToolInput(payload.toolName, payload.toolInput),
+      );
+      captureEvent('skill_invoked', {
+        skill_id,
+        skill_source,
+        skill_trigger: 'tool',
+        ide: platformSource,
+      });
+    }
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
+  }
+
+  const skipBashPatterns = settings.CLAUDE_MEM_SKIP_BASH_PATTERNS.trim();
+  const command = skipBashPatterns ? shellCommandOf(payload.toolName, payload.toolInput) : '';
+  if (command) {
+    // A bad user regex never throws here — getBashSkipPattern returns null, so the
+    // command is captured as if no pattern was set.
+    const pattern = getBashSkipPattern(skipBashPatterns);
+    if (pattern && pattern.test(command)) {
+      return { ok: true, status: 'skipped', reason: 'bash_pattern_excluded' };
+    }
+  }
+
+  // #2736 — defense in depth: the hook handler already filters subagent
+  // observations before this HTTP call, but skip again here so any non-hook
+  // caller (direct API, future ingestion paths) is filtered before the
+  // queueObservation → provider request below.
+  const agentSkip = shouldSkipAgentObservation(payload.agentId, payload.agentType, settings);
+  if (agentSkip.skip) {
+    return { ok: true, status: 'skipped', reason: agentSkip.reason };
   }
 
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
@@ -113,11 +187,47 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTagsFromJson(JSON.stringify(payload.toolInput))
+    ? stripMemoryTags(JSON.stringify(payload.toolInput))
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTagsFromJson(JSON.stringify(payload.toolResponse))
+    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
     : '{}';
+
+  // Dual-write: the durable `tool_uses` side index (v51) alongside — never
+  // instead of — the pending_messages → generator queue below. This is the one
+  // choke point both the PostToolUse hook route and the transcript-watch
+  // processor already funnel through, so the JSONL spine keeps its own path and
+  // no second capture surface exists to drift.
+  //
+  // Best-effort by construction: an observation must still be generated if the
+  // backup index write fails, so a throw here is logged and swallowed. Rows
+  // without a tool_use_id are skipped by upsertToolUse (nothing to de-dupe on).
+  if (payload.toolUseId) {
+    try {
+      store.upsertToolUse({
+        toolUseId: payload.toolUseId,
+        contentSessionId: payload.contentSessionId,
+        sessionDbId,
+        project,
+        platformSource,
+        toolName: payload.toolName,
+        toolInput: cleanedToolInput,
+        toolResponse: cleanedToolResponse,
+        cwd: cwd || null,
+        promptNumber,
+        agentType: typeof payload.agentType === 'string' ? payload.agentType : null,
+        agentId: typeof payload.agentId === 'string' ? payload.agentId : null,
+        orGenerationId: typeof payload.orGenerationId === 'string' ? payload.orGenerationId : null,
+        orSessionId: typeof payload.orSessionId === 'string' ? payload.orSessionId : null,
+      });
+    } catch (error) {
+      logger.warn('INGEST', 'tool_uses backup write failed (observation still queued)', {
+        sessionId: sessionDbId,
+        toolName: payload.toolName,
+        toolUseId: payload.toolUseId,
+      }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
 
   await sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,
@@ -140,49 +250,4 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
 
   return { ok: true, sessionDbId };
-}
-
-export type SummaryPayload =
-  | {
-      kind: 'queue';
-      contentSessionId: string;
-      lastAssistantMessage?: string;
-      platformSource?: string;
-      cwd?: string;
-    }
-  | {
-      kind: 'parsed';
-      sessionDbId: number;
-      messageId: number;
-      contentSessionId: string;
-      parsed: ParsedSummary;
-    };
-
-export async function ingestSummary(payload: SummaryPayload): Promise<IngestResult> {
-  if (payload.kind === 'queue') {
-    const { sessionManager, dbManager, ensureGeneratorRunning } = requireContext();
-
-    if (!payload.contentSessionId) {
-      return { ok: false, reason: 'missing contentSessionId', status: 400 };
-    }
-
-    const platformSource = normalizePlatformSource(payload.platformSource);
-    const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-    const project = cwd.trim() ? getProjectContext(cwd).primary : '';
-
-    let sessionDbId: number;
-    try {
-      sessionDbId = dbManager.getSessionStore().createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, reason: message, status: 500 };
-    }
-
-    await sessionManager.queueSummarize(sessionDbId, payload.lastAssistantMessage);
-    await ensureGeneratorRunning?.(sessionDbId, 'summarize');
-
-    return { ok: true, sessionDbId };
-  }
-
-  return { ok: true, sessionDbId: payload.sessionDbId, messageId: payload.messageId };
 }

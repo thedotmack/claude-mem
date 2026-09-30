@@ -132,6 +132,10 @@ export interface ServerEndSessionResponse {
 export interface ServerAddObservationRequest {
   projectId: string;
   serverSessionId?: string | null;
+  // Callers inside a session know the agent's own session id, not the
+  // server_sessions row UUID; the server resolves it (mirrors /v1/events).
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -299,6 +303,10 @@ export class ServerClient {
       narrative: content,
       ...(metadataTitle ? { title: metadataTitle } : {}),
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
+      // Forward the in-session identifiers so the server can resolve the
+      // server_sessions row itself; without these the memory lands unlinked.
+      ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
+      ...(input.platformSource !== undefined ? { platformSource: input.platformSource } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
   }
@@ -395,10 +403,11 @@ export class ServerClient {
     try {
       return JSON.parse(text) as T;
     } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
       throw new ServerClientError(
         'invalid_response',
         `Server ${method} ${path} returned non-JSON response`,
-        { cause: error },
+        { cause: err },
       );
     }
   }

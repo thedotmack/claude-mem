@@ -24,8 +24,10 @@
 // logged.
 
 import { createHash, randomBytes } from 'crypto';
-import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { logger } from '../../utils/logger.js';
+import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -136,13 +138,20 @@ export function persistServerSettings(
   let existing: Record<string, unknown> = {};
   if (existsSync(settingsPath)) {
     try {
-      existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
-    } catch {
+      existing = readJsonFileWithBom<Record<string, unknown>>(settingsPath);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('HOOK', 'Failed to read existing settings file; starting fresh', { settingsPath }, err);
       existing = {};
     }
   }
-  // Settings file format: prefer the flat shape (modern). The migration in
-  // SettingsDefaultsManager.loadFromFile already collapses nested → flat.
+  // Settings file format: support both the flat shape (modern) and the
+  // env-nested shape (Claude-Code-style: { env: {...}, hooks: [...], ... }).
+  // `flat` is a *reference* into `existing` — the env subtree when nested, or
+  // the root document otherwise — so mutating `flat` mutates `existing` in
+  // place. We then write the full `existing` document below (NOT `flat`), so
+  // non-env top-level keys (hooks, permissions, apiKeyHelper, ...) survive.
+  // Writing `flat` back as the whole file silently dropped them (data loss).
   const flat = (existing.env && typeof existing.env === 'object'
     ? existing.env
     : existing) as Record<string, unknown>;
@@ -158,7 +167,11 @@ export function persistServerSettings(
     flat.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
   }
 
-  writeFileSync(settingsPath, JSON.stringify(flat, null, 2), 'utf-8');
+  // Write the full document (via the atomic temp-file+rename writer), then
+  // tighten permissions. `writeJsonFileAtomic` creates new files under the
+  // process umask, so on first creation the API key plaintext is briefly
+  // world-readable until chmodSync narrows it to 0o600.
+  writeJsonFileAtomic(settingsPath, existing);
   // Hooks read this file on every invocation; restrict permissions so other
   // local users cannot read the API key.
   try {

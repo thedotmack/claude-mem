@@ -41,7 +41,7 @@ export class DedupRoutes extends BaseRouteHandler {
   private handleScan = this.wrapHandler(async (_req: Request, res: Response): Promise<void> => {
     // Scan MUTATES observation rows (title_norm_key) — gate on the feature flag so a
     // disabled install stays byte-identical to legacy behavior.
-    if (!SettingsDefaultsManager.getBool('CLAUDE_MEM_DEDUP_ENABLED')) {
+    if (SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_ENABLED') !== 'true') {
       res.status(409).json({ error: 'dedup_disabled', message: 'Set CLAUDE_MEM_DEDUP_ENABLED=true before running a dedup scan.' });
       return;
     }

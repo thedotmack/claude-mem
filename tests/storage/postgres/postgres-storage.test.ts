@@ -8,6 +8,7 @@ import {
   type PostgresPoolClient,
   type PostgresStorageRepositories
 } from '../../../src/storage/postgres/index.js';
+import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -503,6 +504,39 @@ describe('server beta postgres observation storage', () => {
     })).resolves.toBeNull();
   });
 
+  it('re-pins payload.generation_job_id to the surviving row on idempotent re-create', async () => {
+    const { project, event } = await createFixtureScopeWithEventJob(storage);
+
+    const first = await storage.observationGenerationJobs.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      sourceType: 'agent_event',
+      sourceId: event.id,
+      agentEventId: event.id,
+      jobType: 'payload_id_drift',
+      payload: { generation_job_id: 'id-minted-for-the-first-insert' }
+    });
+
+    // The second create collides on idempotency_key. ON CONFLICT keeps the
+    // existing row, so the id minted for this attempt is discarded -- but the
+    // caller still put it in the payload it is handing over.
+    const second = await storage.observationGenerationJobs.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      sourceType: 'agent_event',
+      sourceId: event.id,
+      agentEventId: event.id,
+      jobType: 'payload_id_drift',
+      payload: { generation_job_id: 'id-discarded-by-on-conflict' }
+    });
+
+    expect(second.id).toBe(first.id);
+    // The worker resolves the job through payload.generation_job_id. If the
+    // discarded id survived here, the row could never be locked and the job
+    // would be dropped silently while reporting success to the queue.
+    expect((second.payload as { generation_job_id?: string }).generation_job_id).toBe(first.id);
+  });
+
   it('rejects illegal generation job lifecycle transitions and max-attempt retries', async () => {
     const { project, event } = await createFixtureScopeWithEventJob(storage);
     const job = await storage.observationGenerationJobs.create({
@@ -901,8 +935,4 @@ async function createFixtureScopeWithEventJob(storage: PostgresStorageRepositori
   });
 
   return { ...scope, event, eventJob };
-}
-
-function quoteIdentifier(identifier: string): string {
-  return `"${identifier.replaceAll('"', '""')}"`;
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
+import path from 'node:path';
 import { runWorkerDependencyPreflight } from '../../src/services/worker/dependency-preflight.js';
 import {
   getDependencyStatus,
@@ -47,6 +48,31 @@ describe('worker dependency preflight', () => {
       kind: 'vector_search_unavailable',
     });
     expect(getDependencyStatus('uvx')?.remediation).toContain('uv/uvx');
+  });
+
+  it('recognizes a Homebrew-only uvx install on darwin', () => {
+    let claudeChecked = false;
+
+    const snapshot = runWorkerDependencyPreflight({
+      settings: {
+        CLAUDE_MEM_PROVIDER: 'gemini',
+        CLAUDE_MEM_CHROMA_ENABLED: 'true',
+      },
+      classifyClaudeError: classifier,
+      findClaudeExecutable: () => {
+        claudeChecked = true;
+        throw new Error('Claude should not be checked for Gemini');
+      },
+      env: { PATH: '/usr/bin:/bin' },
+      platform: 'darwin',
+      homedir: () => '/tmp/home',
+      pathExists: filePath => filePath === '/opt/homebrew/bin',
+      isFile: filePath => filePath === path.join('/opt/homebrew/bin', 'uvx'),
+    });
+
+    expect(claudeChecked).toBe(false);
+    expect(snapshot.degraded).toBe(false);
+    expect(getDependencyStatus('uvx')).toBeNull();
   });
 
   it('clears stale Claude CLI setup status when a non-Claude provider is selected', () => {

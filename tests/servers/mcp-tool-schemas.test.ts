@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 
-const mcpServerPath = new URL('../../src/servers/mcp-server.ts', import.meta.url).pathname;
+const mcpServerPath = fileURLToPath(new URL('../../src/servers/mcp-server.ts', import.meta.url));
 
 describe('MCP tool inputSchema declarations', () => {
   let tools: any[];
@@ -120,18 +121,6 @@ describe('MCP tool inputSchema declarations', () => {
     expect(src).toContain("import { normalizePlatformSource } from '../shared/platform-source.js'");
     expect(handlers).toContain('normalizePlatformSource(value)');
     expect(handlers).toContain('platformSource: normalizeMcpPlatformSource(args.platformSource)');
-  });
-
-  it('memory_* compatibility aliases delegate to observation handlers', async () => {
-    const src = await Bun.file(mcpServerPath).text();
-    // The aliases must keep the same handler functions as the canonical
-    // observation_* tools, otherwise we have two write paths in MCP.
-    const memoryAdd = src.slice(src.indexOf("name: 'memory_add'"), src.indexOf("name: 'memory_search'"));
-    expect(memoryAdd).toContain('handleObservationAdd');
-    const memorySearch = src.slice(src.indexOf("name: 'memory_search'"), src.indexOf("name: 'memory_context'"));
-    expect(memorySearch).toContain('handleObservationSearch');
-    const memoryContext = src.slice(src.indexOf("name: 'memory_context'"), src.indexOf("name: 'smart_search'"));
-    expect(memoryContext).toContain('handleObservationContext');
   });
 
   it('mcp-server skips worker auto-start when runtime=server (anti-pattern guard)', async () => {

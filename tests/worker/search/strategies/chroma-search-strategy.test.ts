@@ -214,7 +214,7 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { project: 'my-project' }
+        { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
       );
     });
 
@@ -230,7 +230,7 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $and: [{ doc_type: 'observation' }, { project: 'my-project' }] }
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] }
       );
     });
 
@@ -262,7 +262,7 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $and: [{ doc_type: 'observation' }, { project: 'my-project' }, { platform_source: 'cursor' }] }
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] }
       );
     });
 

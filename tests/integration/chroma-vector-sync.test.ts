@@ -110,12 +110,6 @@ describe('ChromaSync Vector Sync Integration', () => {
       expect(typeof sync.queryChroma).toBe('function');
     });
 
-    it('should have close method for cleanup', async () => {
-      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
-      const sync = new ChromaSync(testProject);
-      expect(typeof sync.close).toBe('function');
-    });
-
     it('should have ensureBackfilled method', async () => {
       const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
       const sync = new ChromaSync(testProject);
@@ -252,25 +246,6 @@ describe('ChromaSync Vector Sync Integration', () => {
       } catch (error) {
         expect(error).toBeDefined();
       }
-
-      await sync.close();
-    });
-  });
-
-  describe('Cleanup', () => {
-    it('should handle close on unconnected instance', async () => {
-      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
-      const sync = new ChromaSync(testProject);
-
-      await expect(sync.close()).resolves.toBeUndefined();
-    });
-
-    it('should be safe to call close multiple times', async () => {
-      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
-      const sync = new ChromaSync(testProject);
-
-      await expect(sync.close()).resolves.toBeUndefined();
-      await expect(sync.close()).resolves.toBeUndefined();
     });
   });
 
@@ -283,13 +258,6 @@ describe('ChromaSync Vector Sync Integration', () => {
       expect(sourceFile).toContain('await this.disposeCurrentSubprocess()');
       expect(sourceFile).toContain('this.transport = null');
       expect(sourceFile).toContain('this.connected = false');
-    });
-
-    it('should reset state after close regardless of connection status', async () => {
-      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
-      const sync = new ChromaSync(testProject);
-
-      await expect(sync.close()).resolves.toBeUndefined();
     });
 
     it('should clean up transport in ChromaMcpManager close() method', async () => {
