@@ -3,7 +3,7 @@ import path from 'path';
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
-import { getProjectContext } from '../../utils/project-name.js';
+import { getPathModeProjectContext, getProjectContext } from '../../utils/project-name.js';
 import { ChromaSync, MergedIntoProjectTarget } from '../sync/ChromaSync.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
@@ -212,8 +212,8 @@ interface WriterEvidenceColumns {
  *
  * - Keys whose sessions recorded their checkout (sdk_sessions.cwd): every
  *   recorded checkout that still exists must still resolve into this
- *   repository. A deleted worktree's checkout is gone; a live repo-named
- *   worktree resolves to the repository itself (#3641).
+ *   repository (read its key). A deleted worktree's checkout is gone; a live
+ *   repo-named worktree resolves to the repository itself (#3641).
  * - Keys with nothing recorded (rows from before #2864, or from another device):
  *   the key must hold rows this device wrote. A replica's rows are adopted by
  *   the device that wrote them, and that remap reaches this one through sync.
@@ -231,8 +231,9 @@ function wasWrittenUnderRepository(
     if (checkouts.length > 0) {
       return checkouts.every(({ cwd }) => {
         if (!existsSync(cwd)) return true;
-        const owner = getProjectContext(cwd);
-        return owner.primary === parentProject || owner.parent === parentProject;
+        // Checkouts of this repository (itself, its worktrees and submodules)
+        // read its folder-based key in every naming mode.
+        return getProjectContext(cwd).allProjects.includes(parentProject);
       });
     }
   }
@@ -298,7 +299,13 @@ export async function adoptMergedWorktrees(opts: {
   const startCwd = opts.repoPath ?? process.cwd();
 
   const mainRepo = resolveMainRepoPath(startCwd);
-  const parentProject = mainRepo ? getProjectContext(mainRepo).primary : '';
+  // Worktree and submodule composites (`<repo>/<worktree>`) are folder-based
+  // keys, so the sweep works on the repository's folder-based key whatever
+  // names the repository now: with a git-remote slug (#2827), rows a worktree
+  // wrote before the switch are still folded when it merges or is deleted, into
+  // a key the repository keeps reading.
+  const parentProject = mainRepo ? getPathModeProjectContext(mainRepo).primary : '';
+  const currentProject = mainRepo ? getProjectContext(mainRepo).primary : '';
 
   const result: AdoptionResult = {
     repoPath: mainRepo ?? startCwd,
@@ -438,9 +445,16 @@ export async function adoptMergedWorktrees(opts: {
       result.adoptedSummaries += sumChanges;
     };
 
+    // Every key a live checkout writes, folder-based and current (a slug can
+    // sit under the folder key's prefix: `acme/acme`), plus the repository's
+    // own current key: the sweep never adopts what a live checkout still writes.
+    const liveCheckouts = [...childWorktrees.map(w => w.path), ...listSubmodulePaths(mainRepo)];
     const liveWorktreeProjects = new Set([
-      ...childWorktrees.map(w => getProjectContext(w.path).primary),
-      ...listSubmodulePaths(mainRepo).map(p => getProjectContext(p).primary),
+      currentProject,
+      ...liveCheckouts.flatMap(checkout => [
+        getPathModeProjectContext(checkout).primary,
+        getProjectContext(checkout).primary,
+      ]),
     ]);
 
     // `--branch` is a targeted squash-merge escape hatch; no orphan sweep.
@@ -452,7 +466,7 @@ export async function adoptMergedWorktrees(opts: {
       : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false, writerEvidence);
 
     const adoptionTargets: Array<{ project: string; label: string }> = [
-      ...targets.map(wt => ({ project: getProjectContext(wt.path).primary, label: wt.path })),
+      ...targets.map(wt => ({ project: getPathModeProjectContext(wt.path).primary, label: wt.path })),
       ...orphanProjects.map(project => ({ project, label: `${project} (worktree removed)` })),
     ]
       // A worktree named after its repo writes to the repo key itself (#3641);

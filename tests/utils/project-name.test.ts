@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { basename } from 'path';
 import { homedir } from 'os';
-import { getProjectName, getProjectContext, resolveHookProjectPath, buildWorktreeProjectKey, parseOriginUrlToSlug } from '../../src/utils/project-name.js';
+import { getProjectName, getProjectContext, getPathModeProjectContext, resolveHookProjectPath, buildWorktreeProjectKey, parseOriginUrlToSlug } from '../../src/utils/project-name.js';
 
 const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
 const ANCHORED_PROJECT_DIR_NAME = 'anchored-project';
@@ -652,6 +652,13 @@ describe('#2827 — git-remote project names', () => {
     expect(ctx.parent).toBeNull();
     expect(ctx.isWorktree).toBe(true);
     expect(ctx.allProjects).toEqual(['widgets-checkout', 'widgets-checkout/widgets-feature', 'acme/widgets']);
+  });
+
+  it('still exposes the folder-based identity that worktree adoption works on', () => {
+    expect(getPathModeProjectContext(repo).primary).toBe('widgets-checkout');
+    const ctx = getPathModeProjectContext(worktree);
+    expect(ctx.primary).toBe('widgets-checkout/widgets-feature');
+    expect(ctx.parent).toBe('widgets-checkout');
   });
 
   it('falls back to path mode, worktree compositing included, when no slug can be derived', () => {

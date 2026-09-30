@@ -343,6 +343,20 @@ export function getProjectContext(
   };
 }
 
+/**
+ * The folder-based identity (CLAUDE_MEM_PROJECT_NAME_SOURCE=path), whatever
+ * names the checkout now. Worktree and submodule composites only exist in this
+ * mode, so worktree adoption works on these keys; every other mode keeps them
+ * readable (#2827).
+ */
+export function getPathModeProjectContext(
+  cwd: string,
+  platform: NodeJS.Platform = process.platform,
+): ProjectContext {
+  const expandedCwd = expandHome(cwd, platform);
+  return getPathProjectContext(cwd, expandedCwd, findGitRepoRoot(expandedCwd));
+}
+
 /** Path-mode identity: git toplevel (worktrees and submodules composite under their parent), marker root, or cwd. */
 function getPathProjectContext(cwd: string, expandedCwd: string, repoRoot: string | null): ProjectContext {
   const markerRoot = repoRoot ? null : findMarkerProjectRoot(expandedCwd);

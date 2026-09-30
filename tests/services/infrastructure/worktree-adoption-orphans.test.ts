@@ -345,6 +345,75 @@ describe('orphaned worktree adoption (#2864)', () => {
     }
   }, 30_000);
 
+  // #2827 — worktree composites are folder-based keys. With git-remote naming
+  // on, a deleted worktree's rows from before the switch are still folded into
+  // the repository's folder-based key (which the repository keeps reading), and
+  // the rows the repository writes under its slug are left alone.
+  it('folds a deleted worktree\'s folder-based rows into the repository in git-remote mode', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2827-orphan-'));
+    const mainRepo = path.join(tempRoot, 'widgets');
+    const worktree = path.join(tempRoot, 'widgets-feature');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory, { recursive: true });
+    initRepo(mainRepo);
+    git(mainRepo, 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git');
+    git(mainRepo, 'worktree', 'add', '-b', 'feature', worktree);
+
+    const dbPath = path.join(dataDirectory, 'claude-mem.db');
+    const store = new SessionStore(dbPath);
+    seedSessionWithCheckout(store, 'content-pre', 'widgets/widgets-feature', 'memory-pre', worktree);
+    const preSwitchObsId = seedObservation(store, 'memory-pre', 'widgets/widgets-feature');
+    seedSessionWithCheckout(store, 'content-slug', 'acme/widgets', 'memory-slug', mainRepo);
+    const slugObsId = seedObservation(store, 'memory-slug', 'acme/widgets');
+    store.close();
+
+    git(mainRepo, 'worktree', 'remove', '--force', worktree);
+    git(mainRepo, 'worktree', 'prune');
+
+    const savedNameSource = process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
+    process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = 'git-remote';
+    try {
+      const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+
+      expect(result.parentProject).toBe('widgets');
+      expect(result.orphanedWorktrees).toEqual(['widgets/widgets-feature']);
+      expect(mergedInto(dbPath, preSwitchObsId)).toBe('widgets');
+      expect(mergedInto(dbPath, slugObsId)).toBeNull();
+    } finally {
+      if (savedNameSource === undefined) delete process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
+      else process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = savedNameSource;
+    }
+  }, 30_000);
+
+  // #2827 — a repository whose slug sits under its own folder key (`acme/acme`
+  // in folder `acme`) keeps writing that key; the sweep must not stamp it.
+  it('never adopts the key the repository itself writes under git-remote naming', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2827-orphan-'));
+    const mainRepo = path.join(tempRoot, 'acme');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory, { recursive: true });
+    initRepo(mainRepo);
+    git(mainRepo, 'remote', 'add', 'origin', 'https://github.com/acme/acme.git');
+
+    const dbPath = path.join(dataDirectory, 'claude-mem.db');
+    const store = new SessionStore(dbPath);
+    seedSessionWithCheckout(store, 'content-own', 'acme/acme', 'memory-own', mainRepo);
+    const ownObsId = seedObservation(store, 'memory-own', 'acme/acme');
+    store.close();
+
+    const savedNameSource = process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
+    process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = 'git-remote';
+    try {
+      const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+
+      expect(result.orphanedWorktrees).toEqual([]);
+      expect(mergedInto(dbPath, ownObsId)).toBeNull();
+    } finally {
+      if (savedNameSource === undefined) delete process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
+      else process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = savedNameSource;
+    }
+  }, 30_000);
+
   // #2827 — rows synced from another device carry no local checkout. That device
   // adopts its own orphans and the remap syncs here; adopting them locally could
   // fold another device's slug-named repository into a same-named folder.
