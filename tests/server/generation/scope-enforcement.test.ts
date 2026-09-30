@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
@@ -16,12 +16,9 @@ import { ServerGenerationJobPayloadValidationError } from '../../../src/server/j
 import type { ServerGenerationProvider } from '../../../src/server/generation/providers/shared/types.js';
 import type { Job } from 'bullmq';
 import type { ServerGenerationJobPayload, GenerateObservationsForEventJob } from '../../../src/server/jobs/types.js';
+import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
 
 class StubProvider implements ServerGenerationProvider {
   readonly providerLabel = 'claude' as const;
@@ -58,7 +55,7 @@ describe('Phase 11 — ProviderObservationGenerator scope enforcement', () => {
     schemaName = `cm_phase11_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
 
     pool.on('connect', (poolClient) => {

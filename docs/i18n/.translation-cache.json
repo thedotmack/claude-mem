@@ -1,146 +1,166 @@
 {
-  "sourceHash": "c0eb50d6772b5e61",
-  "lastUpdated": "2025-12-23T00:48:34.035Z",
+  "sourceHash": "363753f858082cd4",
+  "lastUpdated": "2026-07-06T19:25:18.460Z",
   "translations": {
     "zh": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:39:44.891Z",
-      "costUsd": 0.09515915
-    },
-    "ja": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:39:44.891Z",
-      "costUsd": 0.09678544999999998
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.611Z",
+      "costUsd": 0.2820174
     },
     "pt-br": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:39:44.891Z",
-      "costUsd": 0.08436794999999998
-    },
-    "ko": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:39:44.891Z",
-      "costUsd": 0.10244419999999999
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.611Z",
+      "costUsd": 0.411693
     },
     "es": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:39:44.891Z",
-      "costUsd": 0.0894832
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.611Z",
+      "costUsd": 0.2996934
     },
-    "de": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:39:44.891Z",
-      "costUsd": 0.08818689999999998
+    "pt": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.611Z",
+      "costUsd": 0.375255
     },
     "fr": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:39:44.891Z",
-      "costUsd": 0.0855869
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.611Z",
+      "costUsd": 0.4141020000000001
     },
-    "nl": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:43:09.878Z",
-      "costUsd": 0.0943619
+    "zh-tw": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.611Z",
+      "costUsd": 0.2854734
     },
-    "ru": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:43:09.878Z",
-      "costUsd": 0.0944719
+    "ja": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.612Z",
+      "costUsd": 0.407814
     },
-    "pl": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:43:09.878Z",
-      "costUsd": 0.08966189999999999
+    "de": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.612Z",
+      "costUsd": 0.3109974
     },
-    "cs": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:43:09.878Z",
-      "costUsd": 0.08897189999999998
-    },
-    "uk": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:43:09.878Z",
-      "costUsd": 0.09968189999999999
-    },
-    "tr": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:43:09.878Z",
-      "costUsd": 0.0969419
-    },
-    "ar": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:43:09.878Z",
-      "costUsd": 0.10445689999999998
-    },
-    "he": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:43:09.878Z",
-      "costUsd": 0.1489769
+    "ko": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:05:38.612Z",
+      "costUsd": 0.42012000000000005
     },
     "id": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:45:44.015Z",
-      "costUsd": 0.08454690000000001
-    },
-    "sv": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:45:44.015Z",
-      "costUsd": 0.09621189999999999
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:06:47.996Z",
+      "costUsd": 0.41407499999999997
     },
     "ro": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:45:44.015Z",
-      "costUsd": 0.10500190000000001
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:06:47.996Z",
+      "costUsd": 0.417174
     },
     "vi": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:45:44.015Z",
-      "costUsd": 0.1035169
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:06:47.996Z",
+      "costUsd": 0.43416600000000005
     },
     "hi": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:45:44.015Z",
-      "costUsd": 0.1171519
-    },
-    "th": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:45:44.015Z",
-      "costUsd": 0.11580689999999999
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:06:47.996Z",
+      "costUsd": 0.448296
     },
     "bn": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:45:44.015Z",
-      "costUsd": 0.1376269
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:06:47.996Z",
+      "costUsd": 0.47555400000000003
+    },
+    "th": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:06:47.996Z",
+      "costUsd": 0.45055500000000004
+    },
+    "tl": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:06:47.996Z",
+      "costUsd": 0.549732
+    },
+    "ru": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:06.144Z",
+      "costUsd": 0.409269
+    },
+    "nl": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:06.144Z",
+      "costUsd": 0.41447100000000003
+    },
+    "tr": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:06.144Z",
+      "costUsd": 0.426993
+    },
+    "pl": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:06.144Z",
+      "costUsd": 0.4277099999999999
+    },
+    "uk": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:06.144Z",
+      "costUsd": 0.29703840000000004
+    },
+    "cs": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:06.144Z",
+      "costUsd": 0.3023304
+    },
+    "he": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:06.144Z",
+      "costUsd": 0.422784
+    },
+    "ar": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:06.144Z",
+      "costUsd": 0.674184
+    },
+    "sv": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:11.780Z",
+      "costUsd": 0.2918214
     },
     "it": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:48:34.035Z",
-      "costUsd": 0.0875869
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:56.973Z",
+      "costUsd": 0.30166139999999997
     },
     "da": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:48:34.035Z",
-      "costUsd": 0.0830469
-    },
-    "no": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:48:34.035Z",
-      "costUsd": 0.08986190000000001
-    },
-    "hu": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:48:34.035Z",
-      "costUsd": 0.0911269
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:56.973Z",
+      "costUsd": 0.2977074
     },
     "fi": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:48:34.035Z",
-      "costUsd": 0.09436689999999999
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:56.973Z",
+      "costUsd": 0.3121044
+    },
+    "hu": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:56.973Z",
+      "costUsd": 0.30374639999999997
     },
     "el": {
-      "hash": "c0eb50d6772b5e61",
-      "translatedAt": "2025-12-23T00:48:34.035Z",
-      "costUsd": 0.19731189999999998
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:08:56.973Z",
+      "costUsd": 0.5626133999999999
+    },
+    "no": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:10:37.489Z",
+      "costUsd": 0.29734740000000004
+    },
+    "ur": {
+      "hash": "363753f858082cd4",
+      "translatedAt": "2026-07-06T19:13:44.286Z",
+      "costUsd": 0.3279894
     }
   }
 }

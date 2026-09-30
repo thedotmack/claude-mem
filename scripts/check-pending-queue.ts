@@ -1,8 +1,19 @@
 #!/usr/bin/env bun
 
-const DEFAULT_WORKER_PORT = 37777;
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
 
-function resolveWorkerPort(): number {
+const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+const DEFAULT_WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
+const DEFAULT_WORKER_PORT = workerSettings.CLAUDE_MEM_WORKER_PORT;
+
+function resolveWorkerHost(): string {
+  // loadFromFile already applies env overrides and normalizes 'localhost'
+  // to 127.0.0.1 (#2992); a raw process.env read here would bypass both.
+  return DEFAULT_WORKER_HOST;
+}
+
+function resolveWorkerPort(): string {
   const raw = process.env.CLAUDE_MEM_WORKER_PORT;
   if (raw === undefined || raw === '') return DEFAULT_WORKER_PORT;
   const parsed = parseInt(raw, 10);
@@ -13,11 +24,12 @@ function resolveWorkerPort(): number {
     );
     return DEFAULT_WORKER_PORT;
   }
-  return parsed;
+  return String(parsed);
 }
 
+const WORKER_HOST = resolveWorkerHost();
 const WORKER_PORT = resolveWorkerPort();
-const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
+const WORKER_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
 const WORKER_FETCH_TIMEOUT_MS = 10_000;
 
 interface ProcessingStatusResponse {
@@ -30,6 +42,7 @@ interface SetProcessingResponse {
   isProcessing: boolean;
   queueDepth: number;
   activeSessions: number;
+  scheduledSessions: number;
 }
 
 async function fetchWithTimeout(
@@ -83,7 +96,7 @@ async function triggerProcessing(): Promise<SetProcessingResponse> {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      body: JSON.stringify({ isProcessing: false })
     },
     'Failed to trigger processing',
   );
@@ -127,7 +140,8 @@ Options:
   --process      Trigger processing without prompting
 
 Environment:
-  CLAUDE_MEM_WORKER_PORT  Worker port (default: 37777)
+  CLAUDE_MEM_WORKER_HOST  Worker host (default: ${DEFAULT_WORKER_HOST})
+  CLAUDE_MEM_WORKER_PORT  Worker port (default: ${DEFAULT_WORKER_PORT})
 
 Examples:
   # Check queue status interactively
@@ -186,6 +200,7 @@ What is this for?
   console.log(`  Is processing:    ${result.isProcessing ? 'yes' : 'no'}`);
   console.log(`  Queue depth:      ${result.queueDepth}`);
   console.log(`  Active sessions:  ${result.activeSessions}`);
+  console.log(`  Resume attempts:  ${result.scheduledSessions}`);
 
   console.log('\nProcessing handled by worker. Check status again in a few minutes.\n');
 }

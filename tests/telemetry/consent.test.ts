@@ -24,8 +24,17 @@ const disabledConfig: TelemetryConfig = {
 };
 
 describe('resolveTelemetryConsent', () => {
-  it('defaults to off with null config and empty env', () => {
-    expect(resolveTelemetryConsent({}, null)).toBe(false);
+  it('defaults to on (opt-out) with null config and empty env', () => {
+    expect(resolveTelemetryConsent({}, null)).toBe(true);
+  });
+
+  it('a config without an enabled decision falls through to the default (on)', () => {
+    const undecided: TelemetryConfig = {
+      installId: '00000000-0000-4000-8000-000000000002',
+      decidedAt: '',
+    };
+    expect(resolveTelemetryConsent({}, undecided)).toBe(true);
+    expect(explainTelemetryConsent({}, undecided)).toEqual({ enabled: true, source: 'default' });
   });
 
   it('DO_NOT_TRACK=1 beats an enabled config', () => {
@@ -54,7 +63,7 @@ describe('resolveTelemetryConsent', () => {
 
   it('empty-string DO_NOT_TRACK counts as not set', () => {
     expect(resolveTelemetryConsent({ DO_NOT_TRACK: '' }, enabledConfig)).toBe(true);
-    expect(resolveTelemetryConsent({ DO_NOT_TRACK: '' }, null)).toBe(false);
+    expect(resolveTelemetryConsent({ DO_NOT_TRACK: '' }, disabledConfig)).toBe(false);
   });
 
   it('CLAUDE_MEM_TELEMETRY=0 beats an enabled config', () => {
@@ -79,8 +88,8 @@ describe('resolveTelemetryConsent', () => {
   });
 
   it('unrecognized CLAUDE_MEM_TELEMETRY values fall through to config', () => {
-    expect(resolveTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, enabledConfig)).toBe(true);
-    expect(resolveTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, null)).toBe(false);
+    expect(resolveTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, disabledConfig)).toBe(false);
+    expect(resolveTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, null)).toBe(true);
   });
 
   it('config enabled=true enables with empty env', () => {
@@ -131,17 +140,17 @@ describe('explainTelemetryConsent', () => {
     });
   });
 
-  it('falls back to default-off with no env and no config', () => {
-    expect(explainTelemetryConsent({}, null)).toEqual({ enabled: false, source: 'default' });
+  it('falls back to default-on (opt-out) with no env and no config', () => {
+    expect(explainTelemetryConsent({}, null)).toEqual({ enabled: true, source: 'default' });
   });
 
   it('unrecognized env values fall through to config/default', () => {
-    expect(explainTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, enabledConfig)).toEqual({
-      enabled: true,
+    expect(explainTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, disabledConfig)).toEqual({
+      enabled: false,
       source: 'config',
     });
     expect(explainTelemetryConsent({ CLAUDE_MEM_TELEMETRY: 'maybe' }, null)).toEqual({
-      enabled: false,
+      enabled: true,
       source: 'default',
     });
   });
@@ -199,11 +208,22 @@ describe('telemetry config persistence', () => {
     });
 
     it('returns null for malformed shapes', () => {
-      writeFileSync(join(tempDir, 'telemetry.json'), JSON.stringify({ enabled: 'yes' }));
+      writeFileSync(
+        join(tempDir, 'telemetry.json'),
+        JSON.stringify({ enabled: 'yes', installId: 'abc' })
+      );
       expect(loadTelemetryConfig()).toBeNull();
 
       writeFileSync(join(tempDir, 'telemetry.json'), JSON.stringify([1, 2, 3]));
       expect(loadTelemetryConfig()).toBeNull();
+    });
+
+    it('loads an installId-only config with enabled left undecided', () => {
+      writeFileSync(join(tempDir, 'telemetry.json'), JSON.stringify({ installId: 'abc' }));
+
+      const config = loadTelemetryConfig();
+      expect(config?.installId).toBe('abc');
+      expect(config?.enabled).toBeUndefined();
     });
 
     it('round-trips a saved config', () => {
@@ -232,13 +252,15 @@ describe('telemetry config persistence', () => {
   });
 
   describe('getOrCreateInstallId', () => {
-    it('generates a UUID and persists it with enabled defaulting to false', () => {
+    it('generates a UUID and persists it WITHOUT recording a consent decision', () => {
       const id = getOrCreateInstallId();
 
       expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
       const config = loadTelemetryConfig();
       expect(config?.installId).toBe(id);
-      expect(config?.enabled).toBe(false);
+      expect(config?.enabled).toBeUndefined();
+      // The opt-out default must survive the ID bootstrap.
+      expect(explainTelemetryConsent({}, config)).toEqual({ enabled: true, source: 'default' });
     });
 
     it('returns the existing install ID on subsequent calls', () => {

@@ -1,6 +1,6 @@
 {
   "name": "claude-mem-plugin",
-  "version": "13.4.2",
+  "version": "13.28.0",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
@@ -19,7 +19,6 @@
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-swift": "^0.7.1",
     "tree-sitter-php": "^0.24.2",
-    "tree-sitter-elixir": "^0.3.5",
     "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
     "tree-sitter-scala": "^0.24.0",
     "tree-sitter-bash": "^0.25.1",
@@ -31,7 +30,7 @@
     "@tree-sitter-grammars/tree-sitter-yaml": "^0.7.1",
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
-    "shell-quote": "^1.8.3"
+    "shell-quote": "1.9.0"
   },
   "overrides": {
     "tree-sitter": "^0.25.0"
@@ -40,7 +39,7 @@
     "tree-sitter-cli"
   ],
   "engines": {
-    "node": ">=18.0.0",
-    "bun": ">=1.0.0"
+    "node": ">=20.12.0",
+    "bun": ">=1.1.31"
   }
 }

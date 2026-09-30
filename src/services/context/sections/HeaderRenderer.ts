@@ -25,16 +25,11 @@ export function renderHeader(
     output.push(...Agent.renderAgentLegend(fetchByIdSupported));
   }
 
+  // Agent variants render nothing; only the Human column-key / context-index
+  // arms produce output.
   if (forHuman) {
     output.push(...Human.renderHumanColumnKey());
-  } else {
-    output.push(...Agent.renderAgentColumnKey());
-  }
-
-  if (forHuman) {
     output.push(...Human.renderHumanContextIndex(fetchByIdSupported));
-  } else {
-    output.push(...Agent.renderAgentContextIndex());
   }
 
   if (shouldShowContextEconomics(config)) {

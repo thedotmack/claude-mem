@@ -1,10 +1,25 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshot in afterAll so the partial ModeManager stub (no
+// class prototype, no loadMode) does not leak into later test files (bun's
+// mock.module is process-global; mock.restore() does NOT undo it). A leaked
+// stub breaks tests/server/server-boot.test.ts, server-runtime-smoke and the
+// tests/sdk parser suites whenever the readdir-dependent file order runs them
+// after this file.
+import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+
+const realModeManagerSnapshot = { ...realModeManagerModule };
+
+afterAll(() => {
+  mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
       getActiveMode: () => ({
-        name: 'code',
+        name: 'Code Development',
         prompts: {},
         observation_types: [
           { id: 'decision', emoji: 'D' },
@@ -13,6 +28,7 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
         ],
         observation_concepts: [],
       }),
+      getActiveModeId: () => 'code',
       getTypeIcon: (type: string) => {
         const icons: Record<string, string> = {
           decision: 'D',
@@ -29,11 +45,8 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 import {
   renderAgentHeader,
   renderAgentLegend,
-  renderAgentColumnKey,
-  renderAgentContextIndex,
   renderAgentContextEconomics,
   renderAgentDayHeader,
-  renderAgentFileHeader,
   renderAgentTableRow,
   renderAgentFullObservation,
   renderAgentSummaryItem,
@@ -90,6 +103,7 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: true,
+    mainAgentOnly: true,
     ...overrides,
   };
 }
@@ -99,9 +113,10 @@ describe('AgentFormatter', () => {
     it('should produce valid markdown header with project name', () => {
       const result = renderAgentHeader('my-project');
 
-      expect(result).toHaveLength(2);
+      expect(result).toHaveLength(3);
       expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
-      expect(result[1]).toBe('');
+      expect(result[1]).toBe('Mode: Code Development (code)');
+      expect(result[2]).toBe('');
     });
 
     it('should handle special characters in project name', () => {
@@ -140,22 +155,6 @@ describe('AgentFormatter', () => {
       const joined = renderAgentLegend(false).join('\n');
       expect(joined).toContain('short refs are display-only');
       expect(joined).not.toContain('get_observations');
-    });
-  });
-
-  describe('renderAgentColumnKey', () => {
-    it('should return empty array in compact format', () => {
-      const result = renderAgentColumnKey();
-
-      expect(result).toHaveLength(0);
-    });
-  });
-
-  describe('renderAgentContextIndex', () => {
-    it('should return empty array in compact format', () => {
-      const result = renderAgentContextIndex();
-
-      expect(result).toHaveLength(0);
     });
   });
 
@@ -227,14 +226,6 @@ describe('AgentFormatter', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]).toBe('### 2025-01-01');
-    });
-  });
-
-  describe('renderAgentFileHeader', () => {
-    it('should return empty array in compact format', () => {
-      const result = renderAgentFileHeader('src/index.ts');
-
-      expect(result).toHaveLength(0);
     });
   });
 
@@ -392,7 +383,6 @@ describe('AgentFormatter', () => {
   describe('renderAgentPreviouslySection', () => {
     it('should render section when assistantMessage exists', () => {
       const priorMessages: PriorMessages = {
-        userMessage: '',
         assistantMessage: 'I completed the task successfully.',
       };
 
@@ -405,7 +395,6 @@ describe('AgentFormatter', () => {
 
     it('should return empty when assistantMessage is empty', () => {
       const priorMessages: PriorMessages = {
-        userMessage: '',
         assistantMessage: '',
       };
 
@@ -416,7 +405,6 @@ describe('AgentFormatter', () => {
 
     it('should include separator', () => {
       const priorMessages: PriorMessages = {
-        userMessage: '',
         assistantMessage: 'Some message',
       };
 
@@ -455,6 +443,7 @@ describe('AgentFormatter', () => {
       const result = renderAgentEmptyState('my-project');
 
       expect(result).toContain('# [my-project] recent context,');
+      expect(result).toContain('Mode: Code Development (code)');
       expect(result).toContain('No previous sessions found.');
     });
 

@@ -42,11 +42,10 @@
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/auto-redaction",
           "usage/export-import",
           "usage/manual-recovery",
-          "usage/folder-context",
-          "beta-features",
-          "endless-mode"
+          "usage/folder-context"
         ]
       },
       {
@@ -59,10 +58,17 @@
         ]
       },
       {
-        "group": "Gemini CLI Integration",
+        "group": "Grok Bot Integration",
+        "icon": "robot",
+        "pages": [
+          "grok-bot/index"
+        ]
+      },
+      {
+        "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
-          "gemini-cli/setup"
+          "antigravity-cli/setup"
         ]
       },
       {
@@ -85,9 +91,19 @@
           "modes",
           "telemetry",
           "development",
+          "branches",
           "troubleshooting",
           "platform-integration",
           "openclaw-integration"
+        ]
+      },
+      {
+        "group": "Hosted Server",
+        "icon": "cloud",
+        "pages": [
+          "hosted-server",
+          "cloud-sync",
+          "cmem-pro-headless"
         ]
       },
       {

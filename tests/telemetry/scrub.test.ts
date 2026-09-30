@@ -30,6 +30,206 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps the funnel/feature keys with primitive values', () => {
+    const result = scrubProperties({
+      endpoint: 'by-file',
+      ide: 'claude-code',
+      provider: 'claude',
+      runtime_mode: 'worker',
+      trigger: 'heartbeat',
+      count: 7,
+      has_summary: true,
+      is_update: false,
+    });
+
+    expect(result).toEqual({
+      endpoint: 'by-file',
+      ide: 'claude-code',
+      provider: 'claude',
+      runtime_mode: 'worker',
+      trigger: 'heartbeat',
+      count: 7,
+      has_summary: true,
+      is_update: false,
+    });
+  });
+
+  it('keeps the platform/toolchain keys with primitive values', () => {
+    const result = scrubProperties({
+      os_version: '10.0.22631',
+      is_wsl: false,
+      node_version: '22.14.0',
+      interactive: true,
+      install_method: 'npm',
+      bun_version: '1.3.9',
+      uv_version: '0.7.2',
+      claude_code_version: '2.0.14',
+    });
+
+    expect(result).toEqual({
+      os_version: '10.0.22631',
+      is_wsl: false,
+      node_version: '22.14.0',
+      interactive: true,
+      install_method: 'npm',
+      bun_version: '1.3.9',
+      uv_version: '0.7.2',
+      claude_code_version: '2.0.14',
+    });
+  });
+
+  it('keeps bounded installer offer experiment properties', () => {
+    const result = scrubProperties({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+
+    expect(result).toEqual({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+  });
+
+  it('keeps the depth/economics keys with primitive values', () => {
+    const result = scrubProperties({
+      observation_count: 50,
+      session_count: 12,
+      timeline_depth_days: 90,
+      has_session_summary: true,
+      obs_type_bugfix: 3,
+      obs_type_other: 1,
+      tokens_injected: 17914,
+      tokens_saved_vs_naive: 144379,
+      mode: 'code',
+      search_strategy: 'timeline',
+      observation_type: 'bugfix',
+      hook: 'ingest',
+      compression_ms: 2140,
+      tokens_input: 5800,
+      tokens_output: 420,
+      compression_ratio: 13.81,
+      model: 'claude-haiku-4-5',
+    });
+
+    expect(Object.keys(result)).toHaveLength(17);
+    expect(result.tokens_saved_vs_naive).toBe(144379);
+    expect(result.hook).toBe('ingest');
+    expect(result.model).toBe('claude-haiku-4-5');
+  });
+
+  it('keeps the cost/endpoint keys with primitive values', () => {
+    const result = scrubProperties({
+      cost_usd: 0.0021,
+      endpoint_class: 'openrouter',
+    });
+
+    expect(result).toEqual({
+      cost_usd: 0.0021,
+      endpoint_class: 'openrouter',
+    });
+  });
+
+  it('keeps the install snapshot keys with primitive values', () => {
+    const result = scrubProperties({
+      db_observation_count: 92501,
+      db_session_count: 5243,
+      db_summary_count: 9698,
+      db_project_count: 379,
+      db_size_mb: 364.4,
+      install_age_days: 104,
+      obs_count_7d: 1887,
+      obs_count_30d: 10357,
+      days_since_last_obs: 0,
+    });
+
+    expect(Object.keys(result)).toHaveLength(9);
+    expect(result.db_observation_count).toBe(92501);
+    expect(result.install_age_days).toBe(104);
+    expect(result.days_since_last_obs).toBe(0);
+  });
+
+  it('keeps the retrieval quality keys with primitive values', () => {
+    const result = scrubProperties({
+      result_count: 0,
+      chroma_available: false,
+      fallback_reason: 'chroma_connection',
+    });
+
+    expect(result).toEqual({
+      result_count: 0,
+      chroma_available: false,
+      fallback_reason: 'chroma_connection',
+    });
+  });
+
+  it('keeps the compression trust keys with primitive values', () => {
+    const result = scrubProperties({
+      invalid_output_class: 'prose',
+      consecutive_invalid_outputs: 0,
+      respawn_triggered: false,
+      abort_reason: 'restart_guard',
+    });
+
+    expect(Object.keys(result)).toHaveLength(4);
+    expect(result.invalid_output_class).toBe('prose');
+    expect(result.consecutive_invalid_outputs).toBe(0);
+    expect(result.respawn_triggered).toBe(false);
+    expect(result.abort_reason).toBe('restart_guard');
+  });
+
+  it('keeps the worker lifecycle keys with primitive values', () => {
+    const result = scrubProperties({
+      previous_shutdown: 'crash',
+      previous_uptime_seconds: 86400,
+      uptime_seconds: 3600,
+      shutdown_reason: 'restart',
+      process_rss_mb: 187,
+      heap_used_mb: 92,
+    });
+
+    expect(Object.keys(result)).toHaveLength(6);
+    expect(result.previous_shutdown).toBe('crash');
+    expect(result.previous_uptime_seconds).toBe(86400);
+    expect(result.uptime_seconds).toBe(3600);
+    expect(result.shutdown_reason).toBe('restart');
+    expect(result.process_rss_mb).toBe(187);
+    expect(result.heap_used_mb).toBe(92);
+  });
+
+  it('keeps the hook failure keys with primitive values', () => {
+    const result = scrubProperties({
+      hook_type: 'observation',
+      error_mode: 'worker_unavailable',
+      consecutive_failures: 3,
+      threshold_tripped: true,
+    });
+
+    expect(result).toEqual({
+      hook_type: 'observation',
+      error_mode: 'worker_unavailable',
+      consecutive_failures: 3,
+      threshold_tripped: true,
+    });
+  });
+
+  it('keeps the observed-session identity keys with primitive values', () => {
+    const result = scrubProperties({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+
+    expect(result).toEqual({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+  });
+
   it('drops unknown keys silently', () => {
     const result = scrubProperties({
       version: '1.0.0',
@@ -38,6 +238,20 @@ describe('scrubProperties', () => {
     });
 
     expect(result).toEqual({ version: '1.0.0' });
+  });
+
+  it('keeps the skill_invoked identity keys with primitive values', () => {
+    const result = scrubProperties({
+      skill_id: 'mem-search',
+      skill_source: 'first_party',
+      skill_trigger: 'tool',
+    });
+
+    expect(result).toEqual({
+      skill_id: 'mem-search',
+      skill_source: 'first_party',
+      skill_trigger: 'tool',
+    });
   });
 
   it('drops sensitive-looking keys even if present', () => {
@@ -62,8 +276,30 @@ describe('scrubProperties', () => {
     expect(Object.keys(result)).not.toContain('ip');
   });
 
+  it('drops skill args / raw skill / prompt keys even when skill identity is present', () => {
+    const result = scrubProperties({
+      skill_id: 'other',
+      skill_source: 'third_party',
+      skill_trigger: 'tool',
+      skill: 'someone-else:evil',
+      args: '/Users/alice/secret --pr 42',
+      command: '/foo do the thing',
+      prompt: '/foo leak this body',
+    });
+
+    expect(result).toEqual({
+      skill_id: 'other',
+      skill_source: 'third_party',
+      skill_trigger: 'tool',
+    });
+    expect(Object.keys(result)).not.toContain('skill');
+    expect(Object.keys(result)).not.toContain('args');
+    expect(Object.keys(result)).not.toContain('command');
+    expect(Object.keys(result)).not.toContain('prompt');
+  });
+
   it('whitelist never contains sensitive keys', () => {
-    for (const key of ['path', 'cwd', 'prompt', 'query', 'project_name', 'email', 'ip']) {
+    for (const key of ['path', 'cwd', 'prompt', 'query', 'project_name', 'email', 'ip', 'args', 'skill', 'command']) {
       expect(ALLOWED_PROPERTY_KEYS.has(key)).toBe(false);
     }
   });
@@ -135,6 +371,17 @@ describe('scrubProperties', () => {
 
   it('returns an empty object for empty input', () => {
     expect(scrubProperties({})).toEqual({});
+  });
+
+  it('redacts URL-shaped secrets even on a whitelisted key', () => {
+    const result = scrubProperties({
+      endpoint: 'https://api.example.com/v1/data?token=secret123',
+      outcome: 'success',
+    });
+
+    expect(result.outcome).toBe('success');
+    expect(String(result.endpoint)).not.toContain('secret123');
+    expect(String(result.endpoint)).not.toContain('token=');
   });
 
   it('never throws on hostile input', () => {

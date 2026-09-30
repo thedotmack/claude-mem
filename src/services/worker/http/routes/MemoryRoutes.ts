@@ -1,10 +1,11 @@
-
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
+import '../../../sqlite/manual-session.js';
+import { notifyGrokBotIndex } from '../../../integrations/GrokBotIndexWriter.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -33,16 +34,21 @@ export class MemoryRoutes extends BaseRouteHandler {
     const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim()
       ? metadata.project.trim()
       : undefined;
+    const metadataPlatformSource = typeof metadata?.platformSource === 'string' && metadata.platformSource.trim()
+      ? metadata.platformSource.trim()
+      : undefined;
     const targetProject = explicitProject || metadataProject || this.defaultProject;
 
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();
 
-    const memorySessionId = sessionStore.getOrCreateManualSession(targetProject);
+    const memorySessionId = sessionStore.getOrCreateManualSession(targetProject, metadataPlatformSource);
 
     const observation = {
       type: 'discovery',  // Use existing valid type
-      title: title || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
+      // A whitespace-only title is truthy but blank once trimmed; fall back to the text so we
+      // never hand storeObservation an empty title.
+      title: title?.trim() || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
       subtitle: 'Manual memory',
       facts: [] as string[],
       narrative: text,
@@ -66,6 +72,14 @@ export class MemoryRoutes extends BaseRouteHandler {
       title: observation.title
     });
 
+    // Fire-and-forget cloud sync nudge — every local write must nudge
+    // (placed before the chroma branch so the chroma-disabled early return
+    // cannot skip it).
+    this.dbManager.getCloudSync()?.notify();
+    // Manual saves (e.g. Grok Bot seat self-saves) must reach the live INDEX
+    // promptly, not wait for the next SDK observation. Debounced, never throws.
+    notifyGrokBotIndex();
+
     if (!chromaSync) {
       logger.debug('CHROMA', 'ChromaDB sync skipped (chromaSync not available)', { id: result.id });
       res.json({
@@ -83,8 +97,7 @@ export class MemoryRoutes extends BaseRouteHandler {
       targetProject,
       observation,
       0,
-      result.createdAtEpoch,
-      0
+      result.createdAtEpoch
     ).catch(err => {
       logger.error('CHROMA', 'ChromaDB sync failed', { id: result.id }, err as Error);
     });

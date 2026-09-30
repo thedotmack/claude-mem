@@ -3,9 +3,11 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { resolveDataDir } from '../../shared/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { logger } from '../../utils/logger.js';
 
 export type TelemetryConfig = {
-  enabled: boolean;
+  /** Explicit user decision. Absent = no decision recorded; the opt-out default applies. */
+  enabled?: boolean;
   installId: string;
   decidedAt: string;
 };
@@ -38,7 +40,7 @@ export type TelemetryConsentExplanation = {
  * 1. DO_NOT_TRACK set (truthy) -> always off
  * 2. CLAUDE_MEM_TELEMETRY env: '0'/'false'/'off' -> off, '1'/'true'/'on' -> on
  * 3. telemetry.json config: enabled === true -> on, enabled === false -> off
- * 4. Default: off
+ * 4. Default: on (opt-out — anonymous events only; see docs.claude-mem.ai/telemetry)
  */
 export function explainTelemetryConsent(
   env: NodeJS.ProcessEnv,
@@ -57,20 +59,34 @@ export function explainTelemetryConsent(
   if (config?.enabled === true) return { enabled: true, source: 'config' };
   if (config?.enabled === false) return { enabled: false, source: 'config' };
 
-  return { enabled: false, source: 'default' };
+  return { enabled: true, source: 'default' };
 }
 
 /**
  * Resolves whether telemetry is allowed. Pure function — no I/O.
- * Thin wrapper over explainTelemetryConsent; behavior is identical to the
- * original boolean resolver (a config with enabled === false and the
- * default-off case both return false).
+ * Thin wrapper over explainTelemetryConsent.
  */
 export function resolveTelemetryConsent(
   env: NodeJS.ProcessEnv,
   config: TelemetryConfig | null
 ): boolean {
   return explainTelemetryConsent(env, config).enabled;
+}
+
+/**
+ * Error-tracking kill-switch, INDEPENDENT of the analytics consent chain above.
+ *
+ * `CLAUDE_MEM_TELEMETRY_ERRORS=0` (or 'false'/'off') disables real exception
+ * capture ($exception with redacted message/stack) WITHOUT touching analytics:
+ * an operator who is fine with anonymous counters but not error text can opt out
+ * of just the error path. Defaults ON whenever telemetry consent is on — error
+ * capture is always additionally gated by the normal consent chain upstream, so
+ * "consent off" already implies "no errors". Pure — no I/O.
+ */
+export function isErrorTelemetryEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.CLAUDE_MEM_TELEMETRY_ERRORS?.toLowerCase();
+  if (value === '0' || value === 'false' || value === 'off') return false;
+  return true;
 }
 
 /** Absolute path of telemetry.json inside the claude-mem data dir. */
@@ -83,19 +99,25 @@ export function getTelemetryConfigPath(): string {
  * missing, corrupt, or malformed — never throws.
  */
 export function loadTelemetryConfig(): TelemetryConfig | null {
+  let raw: Partial<TelemetryConfig> | null;
   try {
-    const raw = readJsonSafe<Partial<TelemetryConfig> | null>(getTelemetryConfigPath(), null);
-    if (!raw || typeof raw !== 'object') return null;
-    if (typeof raw.enabled !== 'boolean' || typeof raw.installId !== 'string') return null;
-    return {
-      enabled: raw.enabled,
-      installId: raw.installId,
-      decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
-    };
-  } catch {
+    raw = readJsonSafe<Partial<TelemetryConfig> | null>(getTelemetryConfigPath(), null);
+  } catch (error) {
     // Corrupt JSON — treat as no recorded consent
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: corrupt telemetry.json; treating as no recorded consent', undefined, err);
     return null;
   }
+  if (!raw || typeof raw !== 'object') return null;
+  if (typeof raw.installId !== 'string') return null;
+  // enabled may be absent (no decision recorded — default applies), but a
+  // present non-boolean value means the file is malformed.
+  if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') return null;
+  return {
+    enabled: raw.enabled,
+    installId: raw.installId,
+    decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
+  };
 }
 
 export function saveTelemetryConfig(config: TelemetryConfig): void {
@@ -106,8 +128,8 @@ export function saveTelemetryConfig(config: TelemetryConfig): void {
 
 /**
  * Returns the stable anonymous install ID, generating and persisting one on
- * first use. Preserves any existing consent state; a freshly created config
- * defaults to enabled: false.
+ * first use. Records ONLY the ID — never a consent decision — so the opt-out
+ * default (and any future default change) still applies to this install.
  */
 export function getOrCreateInstallId(): string {
   const existing = loadTelemetryConfig();
@@ -115,9 +137,8 @@ export function getOrCreateInstallId(): string {
 
   const installId = randomUUID();
   saveTelemetryConfig({
-    enabled: existing?.enabled ?? false,
     installId,
-    decidedAt: existing?.decidedAt || new Date().toISOString(),
+    decidedAt: '',
   });
   return installId;
 }

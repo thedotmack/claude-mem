@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from 'fs';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
 
-const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
-const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
+const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+// loadFromFile already applies env overrides and normalizes 'localhost' to
+// 127.0.0.1 (#2992); a raw process.env read here would bypass both.
+const WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
+const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || workerSettings.CLAUDE_MEM_WORKER_PORT;
+const WORKER_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
 
 async function importMemories(inputFile: string) {
   if (!existsSync(inputFile)) {
@@ -61,10 +67,22 @@ async function importMemories(inputFile: string) {
 
   console.log('\n✅ Import complete!');
   console.log('📊 Summary:');
-  console.log(`   Sessions:     ${stats.sessionsImported} imported, ${stats.sessionsSkipped} skipped`);
-  console.log(`   Summaries:    ${stats.summariesImported} imported, ${stats.summariesSkipped} skipped`);
-  console.log(`   Observations: ${stats.observationsImported} imported, ${stats.observationsSkipped} skipped`);
-  console.log(`   Prompts:      ${stats.promptsImported} imported, ${stats.promptsSkipped} skipped`);
+  console.log(`   Sessions:     ${stats.sessionsImported} imported, ${stats.sessionsSkipped} skipped, ${stats.sessionsRejected ?? 0} rejected`);
+  console.log(`   Summaries:    ${stats.summariesImported} imported, ${stats.summariesSkipped} skipped, ${stats.summariesRejected ?? 0} rejected`);
+  console.log(`   Observations: ${stats.observationsImported} imported, ${stats.observationsSkipped} skipped, ${stats.observationsRejected ?? 0} rejected`);
+  console.log(`   Prompts:      ${stats.promptsImported} imported, ${stats.promptsSkipped} skipped, ${stats.promptsRejected ?? 0} rejected`);
+
+  // "Skipped" rows were already present. "Rejected" rows were not imported:
+  // they failed validation or the database refused them.
+  const rejected: Record<string, Array<{ index: number; reason: string }>> = result.rejected ?? {};
+  for (const [kind, rows] of Object.entries(rejected)) {
+    for (const row of rows.slice(0, 5)) {
+      console.log(`   ⚠️  ${kind}[${row.index}] rejected: ${row.reason}`);
+    }
+    if (rows.length > 5) {
+      console.log(`   ⚠️  …and ${rows.length - 5} more ${kind} rejected`);
+    }
+  }
 }
 
 const args = process.argv.slice(2);
