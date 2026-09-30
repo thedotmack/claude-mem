@@ -7,6 +7,7 @@ import { CLAUDE_CONFIG_DIR, USER_SETTINGS_PATH } from '../shared/paths.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../shared/SettingsDefaultsManager.js';
 import { logger } from './logger.js';
 import { detectWorktree, type WorktreeInfo } from './worktree.js';
+import { matchProjectEnvironment, parseProjectEnvironments, type ProjectEnvironment } from './project-environments.js';
 
 const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
 const UNKNOWN_PROJECT_NAME = 'unknown-project';
@@ -177,6 +178,22 @@ function useGitRemoteProjectNames(): boolean {
   return String(source ?? 'path').trim().toLowerCase() === 'git-remote';
 }
 
+const PROJECT_ENVIRONMENTS_SETTING = 'CLAUDE_MEM_PROJECT_ENVIRONMENTS';
+let environmentsCache: { raw: unknown; environments: ProjectEnvironment[] } | null = null;
+
+/**
+ * Named environments (CLAUDE_MEM_PROJECT_ENVIRONMENTS, env wins), read live
+ * like the other identity settings and re-parsed only when the raw value
+ * changes, so an invalid value warns once rather than on every resolution.
+ */
+export function loadProjectEnvironments(): ProjectEnvironment[] {
+  const raw = process.env[PROJECT_ENVIRONMENTS_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+  if (!environmentsCache || environmentsCache.raw !== raw) {
+    environmentsCache = { raw, environments: parseProjectEnvironments(raw) };
+  }
+  return environmentsCache.environments;
+}
+
 /**
  * Pure parser: turn a git remote URL into an `org/repo` slug. Handles scp-style
  * (`git@host:org/repo.git`, `host:org/repo`) and URL forms
@@ -251,6 +268,13 @@ export function getProjectName(
   }
 
   const expanded = expandHome(cwd, platform);
+
+  // #2737 — an environment the user configured is an explicit declaration of
+  // identity, so it wins over every derived name.
+  const environment = matchProjectEnvironment(expanded, loadProjectEnvironments());
+  if (environment) {
+    return environment;
+  }
 
   // #2663 — inside a repo, the git root names the project so the name is stable
   // across subdirectories and worktrees (or, opt-in, the origin slug: #2827).
@@ -331,15 +355,23 @@ export function getProjectContext(
   // slug was actually derived: without one, path mode applies unchanged,
   // worktree compositing included.
   const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
-  if (!slug) {
-    return pathContext;
-  }
+  const derivedContext = slug ? withPrimaryKey(pathContext, slug) : pathContext;
+
+  // #2737 — a configured environment wins over every derived name, and the
+  // derived keys stay readable so memory stored before the environment existed
+  // is not hidden (`project merge` folds it in permanently).
+  const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
+  return environment ? withPrimaryKey(derivedContext, environment) : derivedContext;
+}
+
+/** Re-key a context to `primary`, keeping every key it already read as a read-only alias. */
+function withPrimaryKey(context: ProjectContext, primary: string): ProjectContext {
   return {
-    primary: slug,
+    primary,
     parent: null,
-    isWorktree: pathContext.isWorktree,
-    isSubmodule: pathContext.isSubmodule,
-    allProjects: [...pathContext.allProjects.filter(key => key !== slug), slug],
+    isWorktree: context.isWorktree,
+    isSubmodule: context.isSubmodule,
+    allProjects: [...context.allProjects.filter(key => key !== primary), primary],
   };
 }
 
