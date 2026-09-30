@@ -29,6 +29,7 @@ import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { observerUsageLogFields } from '../../observer-usage.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -366,8 +367,9 @@ export class SessionRoutes extends BaseRouteHandler {
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider
-      // The shared conversationHistory ensures context is preserved
+      // Let current generator finish naturally, next one will use new provider.
+      // The buffered queue carries over; the next generator opens a new
+      // generation seeded from this session's memory (#3800, #3479).
     }
   }
 
@@ -522,12 +524,14 @@ export class SessionRoutes extends BaseRouteHandler {
             kind: error.kind,
             ...(error.code ? { code: error.code } : {}),
             ...(error.requestId ? { requestId: error.requestId } : {}),
+            ...observerUsageLogFields(session),
           }, describeProviderError(error));
         } else {
           logger.error('SESSION', 'Generator failed', {
             sessionId: session.sessionDbId,
             provider,
             error: errorMsg,
+            ...observerUsageLogFields(session),
           }, error);
         }
         // Trial-expiry fallback (plan 2026-08-26 Phase 6): a terminal quota/key

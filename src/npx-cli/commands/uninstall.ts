@@ -16,7 +16,7 @@ import { readJsonSafe } from '../../utils/json-utils.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
-import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
+import { shutdownWorkerAndWait, type ShutdownResult } from '../../services/install/shutdown-helper.js';
 import {
   normalizeRuntimeFlag,
   SERVER_RUNTIME_SETTINGS_KEYS,
@@ -225,6 +225,21 @@ function removeStrayClaudeMemPaths(): number {
   return removedCount;
 }
 
+/**
+ * What uninstall says about the worker stop. Uninstall never blocks on it —
+ * cleanup always continues — but a worker that is still running is named by
+ * PID so the user can end it. Exported for tests.
+ */
+export function uninstallShutdownNotice(result: ShutdownResult): { level: 'info' | 'warn'; message: string } | null {
+  if (result.stopped) return result.workerWasRunning ? { level: 'info', message: 'Worker service stopped.' } : null;
+  if (result.blocker?.kind === 'port-held-by-other-process') {
+    return { level: 'info', message: 'The worker port is held by another process, not a claude-mem worker; nothing to stop.' };
+  }
+  const pid = result.blocker?.kind === 'worker-still-running' ? result.blocker.pid : null;
+  const worker = pid === null ? 'Worker service' : `Worker service (PID ${pid})`;
+  return { level: 'warn', message: `${worker} did not confirm shutdown; continuing uninstall cleanup.` };
+}
+
 export async function runUninstallCommand(): Promise<void> {
   p.intro(styleText(['bgRed', 'white'], ' claude-mem uninstall '));
 
@@ -259,12 +274,9 @@ export async function runUninstallCommand(): Promise<void> {
 
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   try {
-    const result = await shutdownWorkerAndWait(workerPort, 10000);
-    if (result.workerWasRunning && result.stopped) {
-      p.log.info('Worker service stopped.');
-    } else if (result.workerWasRunning) {
-      p.log.warn('Worker service did not confirm shutdown; continuing uninstall cleanup.');
-    }
+    const notice = uninstallShutdownNotice(await shutdownWorkerAndWait(workerPort, 10000));
+    if (notice?.level === 'warn') p.log.warn(notice.message);
+    else if (notice) p.log.info(notice.message);
   } catch (error: unknown) {
     console.warn('[uninstall] Worker shutdown attempt failed:', error instanceof Error ? error.message : String(error));
   }

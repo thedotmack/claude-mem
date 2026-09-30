@@ -18,6 +18,7 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import type { ChromaCollectionDrop } from './ChromaSync.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -129,6 +130,27 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 const CHROMADB_PINNED_VERSION: string | null =
   CHROMA_MCP_DEP_OVERRIDES.find(spec => spec.startsWith('chromadb=='))?.slice('chromadb=='.length) ?? null;
 
+/** Chroma child health for /api/admin/doctor and `npx claude-mem doctor`. */
+export interface ChromaCrashState {
+  /** Unexpected exits of the chroma-mcp child (uvx) in this worker's lifetime. */
+  count: number;
+  /** The last one. uvx is the direct child, so a crash inside chroma-mcp usually shows as its exit code. */
+  lastExit: {
+    timestamp: string;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  } | null;
+  chromaMcpVersion: string;
+  dependencyOverrides: string[];
+  /** The uvx prewarm circuit breaker (#4108): paused after 5 consecutive failures, stopped after 20. */
+  prewarm: {
+    consecutiveFailures: number;
+    state: 'ok' | 'paused' | 'stopped';
+  };
+  /** The last collection dropped as corrupt and rebuilt from SQLite (#3202), if any. */
+  collectionDrop?: ChromaCollectionDrop | null;
+}
+
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
 // every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
 // `cmd.exe` shell-wrapper path, and the cmd.exe metacharacter-quoting helper that
@@ -232,6 +254,8 @@ export class ChromaMcpManager {
   private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
+  private chromaCrashCount = 0;
+  private chromaLastExit: ChromaCrashState['lastExit'] = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {
@@ -455,7 +479,23 @@ export class ChromaMcpManager {
         logger.debug('CHROMA_MCP', 'Ignoring onclose from intentionally closed transport');
         return;
       }
-      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
+      // The transport clears its own handle before onclose fires, so read the
+      // exit from the child captured at connect. That child is uvx, not
+      // python: a crash in chroma-mcp (e.g. SIGSEGV) usually surfaces as uvx's
+      // exit code rather than a signal on uvx itself, so both are recorded.
+      this.chromaCrashCount += 1;
+      this.chromaLastExit = {
+        timestamp: new Date().toISOString(),
+        code: transportChild?.exitCode ?? null,
+        signal: transportChild?.signalCode ?? null,
+      };
+      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff', {
+        count: this.chromaCrashCount,
+        exitCode: this.chromaLastExit.code,
+        signalCode: this.chromaLastExit.signal,
+        chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+        dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      });
       this.connected = false;
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
       this.client = null;
@@ -468,6 +508,24 @@ export class ChromaMcpManager {
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
       this.scheduleUnexpectedCloseCleanup(currentTracked);
+    };
+  }
+
+  getCrashState(): ChromaCrashState {
+    const consecutiveFailures = this.consecutivePrewarmFailures;
+    return {
+      count: this.chromaCrashCount,
+      lastExit: this.chromaLastExit ? { ...this.chromaLastExit } : null,
+      chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      prewarm: {
+        consecutiveFailures,
+        state: consecutiveFailures >= CHROMA_PREWARM_GIVE_UP_FAILURES
+          ? 'stopped'
+          : consecutiveFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES
+            ? 'paused'
+            : 'ok',
+      },
     };
   }
 
