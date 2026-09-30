@@ -244,8 +244,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
-    // Default OpenRouter model (free tier). Changing it strands installs that
-    // were seeded with the old id: add that id to RETIRED_OPENROUTER_DEFAULT_MODELS.
+    // Default OpenRouter model (free tier). The same id is hard-coded in
+    // src/ui/viewer/constants/settings.ts (DEFAULT_SETTINGS) and three times in
+    // openclaw/install.sh (settings defaults, openrouter override, completion
+    // summary); tests/shared/settings-defaults-manager.test.ts keeps them equal.
+    // Changing it strands installs that were seeded with the old id: add that
+    // id to RETIRED_OPENROUTER_DEFAULT_MODELS.
     CLAUDE_MEM_OPENROUTER_MODEL: 'cohere/north-mini-code:free',
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics

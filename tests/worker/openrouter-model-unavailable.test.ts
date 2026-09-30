@@ -103,7 +103,7 @@ describe('OpenRouter model unavailable (#3659)', () => {
       rmSync(dataDir, { recursive: true, force: true });
     });
 
-    it('tells the user which setting to change instead of the key/spend-limit/base-URL checklist', async () => {
+    it('tells the user which setting to change instead of the checklist or a restart', async () => {
       serve(() => jsonResponse(404, { error: { message: RETIRED_MODEL_MESSAGE, code: 404 } }));
       const error = await queryError(RETIRED_MODEL);
       const healthPath = join(dataDir, 'observer-health.json');
@@ -125,6 +125,11 @@ describe('OpenRouter model unavailable (#3659)', () => {
       expect(warning).toContain('What to do: Set CLAUDE_MEM_OPENROUTER_MODEL in ~/.claude-mem/settings.json');
       expect(warning).toContain('Link: https://openrouter.ai/models');
       expect(warning).not.toContain('spend limit');
+      // Every restarted generator asks for the same retired model, so the
+      // warning must not send the user to the restart link.
+      expect(warning).toContain('Restarting will NOT help here');
+      expect(warning).not.toContain('Click to restart');
+      expect(warning).not.toContain('npx claude-mem restart');
     });
   });
 });
