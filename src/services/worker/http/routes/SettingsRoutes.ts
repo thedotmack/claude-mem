@@ -6,7 +6,7 @@ import { existsSync, renameSync } from 'fs';
 import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
-import { MIN_CONTEXT_WINDOW_TOKENS } from '../../context-window.js';
+import { MIN_CONTEXT_WINDOW_TOKENS, OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS } from '../../context-window.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
@@ -193,6 +193,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
       'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
+      'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -290,6 +291,16 @@ export class SettingsRoutes extends BaseRouteHandler {
       const raw = String(settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW).trim();
       if (!/^\d+$/.test(raw) || Number(raw) < MIN_CONTEXT_WINDOW_TOKENS) {
         return { valid: false, error: `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW must be empty (automatic) or a whole number of tokens, at least ${MIN_CONTEXT_WINDOW_TOKENS}` };
+      }
+    }
+
+    // A whole number of tokens inside the bounds the resolver accepts; anything
+    // else would silently fall back to the default at request time.
+    if (settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS !== undefined) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS).trim();
+      const { min, max } = OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS;
+      if (!/^\d+$/.test(raw) || Number(raw) < min || Number(raw) > max) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS must be a whole number of tokens between ${min} and ${max}` };
       }
     }
 
