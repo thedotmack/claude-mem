@@ -639,6 +639,37 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
 
+    // #3460: the CLI's own stream-cut message used to be classified prose, so
+    // the batch was confirmed and lost. It must take the preserve path.
+    it('requeues the claimed batch when the CLI reports a connection closed mid-response', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'API Error: Connection closed mid-response. The response above may be incomplete.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('transport:observer_text');
+    });
+
     it('pauses the generator with a preserving abort reason on transport failure', async () => {
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
