@@ -16,6 +16,7 @@ import {
   SearchOrchestrator,
   SEARCH_CONSTANTS
 } from './search/index.js';
+import type { SearchResults, StrategySearchResult } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
@@ -350,9 +351,11 @@ export class SearchManager {
 
   /**
    * PATH 2 body for search(): Chroma semantic query -> date-window filter ->
-   * SQLite hydration, with a scoped FTS5 fallback when a platform-scoped
-   * query matches nothing in Chroma. Extracted so search()'s try block stays
-   * narrow; any error here is handled by search()'s Chroma-failure fallback.
+   * SQLite hydration. Categories left empty here (no Chroma match, or every hit
+   * dropped by the date window or a filter) are refilled by search() through
+   * SearchOrchestrator.supplementEmptyCategories. Extracted so search()'s try
+   * block stays narrow; any error here is handled by search()'s Chroma-failure
+   * fallback.
    */
   private async performChromaSemanticSearch(
     query: string,
@@ -366,17 +369,11 @@ export class SearchManager {
       searchSessions: boolean;
       searchPrompts: boolean;
     }
-  ): Promise<{
-    observations: ObservationSearchResult[];
-    sessions: SessionSummarySearchResult[];
-    prompts: UserPromptSearchResult[];
-    platformScopedChromaZeroFallback: boolean;
-  }> {
+  ): Promise<SearchResults> {
     const { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts } = scope;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
-    let platformScopedChromaZeroFallback = false;
 
     const chromaResults = await this.queryChroma(query, 100, whereFilter);
     logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
@@ -447,37 +444,9 @@ export class SearchManager {
           platformSource: options.platformSource
         });
       }
-
-      if (obsIds.length === 0 && sessionIds.length === 0 && promptIds.length === 0) {
-        logger.debug('SEARCH', 'ChromaDB matches did not survive date filtering; falling back to FTS5 search', {});
-        platformScopedChromaZeroFallback = true;
-
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
-        }
-      }
-    } else {
-      logger.debug('SEARCH', 'ChromaDB search found no matches; falling back to FTS5 search', {});
-      platformScopedChromaZeroFallback = true;
-
-      if (searchObservations) {
-        observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
-      }
-      if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(query, options);
-      }
-      if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(query, options);
-      }
     }
 
-    return { observations, sessions, prompts, platformScopedChromaZeroFallback };
+    return { observations, sessions, prompts };
   }
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
@@ -487,7 +456,7 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
-    let platformScopedChromaZeroFallback = false;
+    let chromaSupplementStrategy: StrategySearchResult['strategy'] = 'chroma';
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
     // `type` historically doubles as a document-category selector
@@ -560,9 +529,24 @@ export class SearchManager {
           : { $and: whereFilters };
 
       try {
-        const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts });
+        const chromaResults = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts });
         chromaSucceeded = true;
-        ({ observations, sessions, prompts, platformScopedChromaZeroFallback } = chromaOutcome);
+        // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
+        // category Chroma left empty, or answers alone when Chroma left them all empty.
+        const supplemented = await this.orchestrator.supplementEmptyCategories(
+          {
+            ...options,
+            query,
+            searchType: category ?? 'all',
+            obsType: effectiveObsType,
+            concepts,
+            files,
+            orderBy: options.orderBy ?? 'relevance',
+          },
+          { results: chromaResults, usedChroma: true, strategy: 'chroma' }
+        );
+        ({ observations, sessions, prompts } = supplemented.results);
+        chromaSupplementStrategy = supplemented.strategy;
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -616,12 +600,13 @@ export class SearchManager {
         searchStrategy = 'filter_only';
         fallbackReason = 'none';
       } else if (this.chromaSync) {
-        // PATH 2: Chroma semantic search, degrading to FTS5 on error or
-        // platform-scoped zeroes caused by pre-platform Chroma metadata.
-        searchStrategy = chromaFailed || platformScopedChromaZeroFallback ? 'fts' : 'chroma';
+        // PATH 2: Chroma semantic search, degrading to FTS5 on error or when
+        // Chroma left every requested category empty.
+        const sqliteAnsweredAlone = chromaSupplementStrategy === 'sqlite';
+        searchStrategy = chromaFailed || sqliteAnsweredAlone ? 'fts' : 'chroma';
         if (chromaFailed) {
           fallbackReason = chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error';
-        } else if (platformScopedChromaZeroFallback) {
+        } else if (sqliteAnsweredAlone) {
           fallbackReason = 'chroma_error';
         } else {
           fallbackReason = 'none';
