@@ -423,6 +423,7 @@ describe('context compiler main-agent-only injection filtering', () => {
       memorySessionId: string;
       title: string;
       agentId: string | null;
+      agentType: string | null;
       createdAtEpoch: number;
     },
   ): void {
@@ -447,6 +448,7 @@ describe('context compiler main-agent-only injection filtering', () => {
         files_read: [],
         files_modified: [],
         agent_id: input.agentId,
+        agent_type: input.agentType,
       },
       1,
       0,
@@ -461,17 +463,54 @@ describe('context compiler main-agent-only injection filtering', () => {
       memorySessionId: 'main-memory',
       title: 'MAIN_OBS',
       agentId: null,
+      agentType: null,
       createdAtEpoch: 1_700_000_000_000,
     });
+    // A Claude Code subagent: the hook sends both agent_id and agent_type.
     seedObs(store, {
       project,
       contentSessionId: 'sub-session',
       memorySessionId: 'sub-memory',
       title: 'SUB_OBS',
       agentId: 'agent-42',
+      agentType: 'Explore',
       createdAtEpoch: 1_700_000_001_000,
     });
   }
+
+  it('keeps main-agent rows that carry only one agent field', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+      // Transcript-watch ingestion stamps agent_id alone on main-agent rows
+      // (a Grok Bot seat id). Filtering on agent_id alone would make
+      // session_start_context return nothing for those seats.
+      seedObs(store, {
+        project: 'agent-scope-project',
+        contentSessionId: 'grok-seat-session',
+        memorySessionId: 'grok-seat-memory',
+        title: 'GROK_SEAT_OBS',
+        agentId: 'grok-seat-7',
+        agentType: null,
+        createdAtEpoch: 1_700_000_002_000,
+      });
+      // `claude --agent reviewer` runs a main thread that carries agent_type alone.
+      seedObs(store, {
+        project: 'agent-scope-project',
+        contentSessionId: 'agent-main-session',
+        memorySessionId: 'agent-main-memory',
+        title: 'AGENT_MAIN_OBS',
+        agentId: null,
+        agentType: 'reviewer',
+        createdAtEpoch: 1_700_000_003_000,
+      });
+
+      const observations = queryObservationsMulti(store, ['agent-scope-project'], baseConfig);
+      expect(observations.map(obs => obs.title)).toEqual(['AGENT_MAIN_OBS', 'GROK_SEAT_OBS', 'MAIN_OBS']);
+    } finally {
+      store.close();
+    }
+  });
 
   it('excludes subagent observations from the injection window when mainAgentOnly is true (default)', () => {
     const store = new SessionStore(':memory:');

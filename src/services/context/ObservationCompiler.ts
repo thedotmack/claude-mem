@@ -5,6 +5,7 @@ import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import type {
   ContextConfig,
   Observation,
@@ -88,8 +89,10 @@ export function queryObservationsNewest(
     : '';
 
   // #3274: SessionStart injection opts in. The seat INDEX passes `projects`
-  // too, and must keep agent-tagged rows.
-  const agentFilter = options.excludeSubagents ? 'AND o.agent_id IS NULL' : '';
+  // too, and must keep agent-tagged rows. A subagent row carries BOTH agent_id
+  // and agent_type: transcript-watch rows (Grok Bot seats) carry agent_id alone
+  // and must stay injected, or `session_start_context` returns nothing for them.
+  const agentFilter = options.excludeSubagents ? `AND ${mainAgentRowSql('o')}` : '';
 
   return db.db.prepare(`
     SELECT
