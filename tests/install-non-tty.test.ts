@@ -234,6 +234,28 @@ describe('Install Non-TTY Support', () => {
       expect(runtimeSetupRegion).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
     });
 
+    it('awaits cache dependencies before writing the initial install marker', () => {
+      const runtimeSetupRegion = installSource.slice(
+        installSource.indexOf("title: 'Setting up runtime"),
+        installSource.indexOf("return `Runtime ready"),
+      );
+      const installCall = runtimeSetupRegion.indexOf('await installPluginDependencies(cacheDir, bunPath)');
+      const markerWrite = runtimeSetupRegion.indexOf('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(installCall).toBeGreaterThanOrEqual(0);
+      expect(markerWrite).toBeGreaterThan(installCall);
+    });
+
+    it('provisions the tree-sitter CLI on install as a warning, never an abort before sign-in (#2910)', () => {
+      const runtimeSetupRegion = installSource.slice(
+        installSource.indexOf("title: 'Setting up runtime"),
+        installSource.indexOf("return `Runtime ready"),
+      );
+      expect(runtimeSetupRegion).toContain(
+        'await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary, TREE_SITTER_INSTALL_BUDGET_MS)',
+      );
+      expect(runtimeSetupRegion).not.toContain('ErrorSeverity.ABORT');
+    });
+
     it('replaces stale Codex marketplace registrations from a different source', () => {
       const registerRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('function registerCodexMarketplace'),
@@ -334,6 +356,13 @@ describe('Install Non-TTY Support', () => {
       expect(repairRegion).toContain("title: 'Repairing marketplace runtime'");
       expect(repairRegion).toContain('copyPluginToCache(version)');
       expect(repairRegion).toContain('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      const installCall = repairRegion.indexOf('await installPluginDependencies(cacheDir, bunPath)');
+      // `repair` exists to fix the runtime, so a failed tree-sitter download aborts it.
+      const provisionCall = repairRegion.indexOf('await provisionTreeSitterCli(cacheDir, ErrorSeverity.ABORT, summary)');
+      const markerWrite = repairRegion.indexOf('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(installCall).toBeGreaterThanOrEqual(0);
+      expect(provisionCall).toBeGreaterThan(installCall);
+      expect(markerWrite).toBeGreaterThan(provisionCall);
       expect(repairRegion).toContain('Repopulating marketplace root from npm package');
       expect(repairRegion).toContain('copyPluginToMarketplace()');
       expect(repairRegion).toContain('await runNpmInstallInMarketplace(summary)');

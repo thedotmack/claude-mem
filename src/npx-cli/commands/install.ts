@@ -18,6 +18,7 @@ import {
   ensureBun,
   ensureUv,
   installPluginDependencies,
+  provisionTreeSitterCli,
   writeInstallMarker,
   isInstallCurrent,
   getBunPath,
@@ -58,6 +59,9 @@ function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[
 }
 
 const isInteractive = process.stdin.isTTY === true;
+
+/** How long `install` waits for the tree-sitter CLI download before warning and moving on to sign-in. */
+const TREE_SITTER_INSTALL_BUDGET_MS = 2 * 60 * 1000;
 
 /**
  * Which package manager launched this CLI (npx / bunx / pnpm / yarn), parsed
@@ -2394,6 +2398,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
+          // Installs run with lifecycle scripts suppressed, so tree-sitter-cli's
+          // own download never ran (#2910). This runs before the sign-in/trial
+          // step, so a failure only warns and a stalled download is cut off at
+          // TREE_SITTER_INSTALL_BUDGET_MS; `npx claude-mem repair` retries it
+          // with the full dependency timeout.
+          const stopTreeSitterHeartbeat = startHeartbeat(message, 'Checking the tree-sitter CLI…');
+          try {
+            await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary, TREE_SITTER_INSTALL_BUDGET_MS);
+          } finally {
+            stopTreeSitterHeartbeat();
+          }
           writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },
@@ -2792,6 +2807,8 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         message('Reinstalling plugin dependencies…');
         const { bunPath } = bun;
         await installPluginDependencies(cacheDir, bunPath);
+        message('Provisioning the tree-sitter CLI…');
+        await provisionTreeSitterCli(cacheDir, ErrorSeverity.ABORT, summary);
         writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
         return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
       },

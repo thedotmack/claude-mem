@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { execFile, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
@@ -11,6 +11,7 @@ import { IS_WINDOWS } from '../utils/paths.js';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { settingsTarget } from '../../shared/settings-document.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
+import { treeSitterBinaryName } from '../../services/smart-file-read/tree-sitter-bin-name.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -165,7 +166,7 @@ export function getUvVersion(): string | null {
   }
 }
 
-function describeExecError(error: unknown): string {
+function describeExecError(error: unknown, includeStdoutWithStderr = false): string {
   if (error && typeof error === 'object') {
     const e = error as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
     const parts: string[] = [];
@@ -173,7 +174,7 @@ function describeExecError(error: unknown): string {
     const stderr = e.stderr ? e.stderr.toString().trim() : '';
     if (stderr) parts.push(`stderr: ${stderr}`);
     const stdout = e.stdout ? e.stdout.toString().trim() : '';
-    if (!stderr && stdout) parts.push(`stdout: ${stdout}`);
+    if (stdout && (!stderr || includeStdoutWithStderr)) parts.push(`stdout: ${stdout}`);
     return parts.join('\n');
   }
   return String(error);
@@ -480,6 +481,119 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   }
 
   verifyCriticalModules(targetDir);
+}
+
+const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
+
+function treeSitterCliPackageDir(targetDir: string): string {
+  return join(targetDir, 'node_modules', 'tree-sitter-cli');
+}
+
+/** The tree-sitter executable inside `targetDir`'s own tree-sitter-cli package. */
+export function treeSitterCliBinaryPath(targetDir: string): string {
+  return join(treeSitterCliPackageDir(targetDir), treeSitterBinaryName());
+}
+
+/** True when the package-local tree-sitter CLI answers `--version`. */
+export async function isTreeSitterCliBinaryUsable(targetDir: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const child = execFile(treeSitterCliBinaryPath(targetDir), ['--version'], {
+      encoding: 'utf-8',
+      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+      windowsHide: true,
+    }, (error, stdout) => {
+      resolve(!error && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((stdout ?? '').trim()));
+    });
+    child.stdin?.end();
+  });
+}
+
+/**
+ * Every installer path installs with lifecycle scripts suppressed, so
+ * tree-sitter-cli's own install.js — the step that downloads the executable —
+ * never runs, and nothing noticed: smart_search just returned 0 symbols
+ * (#2910). Run that one trusted, package-local script explicitly when the CLI
+ * is not usable. Throws when the executable still does not work afterwards.
+ */
+export async function ensureTreeSitterCliBinary(
+  targetDir: string,
+  isUsable: (targetDir: string) => boolean | Promise<boolean> = isTreeSitterCliBinaryUsable,
+  installTimeoutMs: number = INSTALL_TIMEOUT_MS,
+): Promise<void> {
+  const cliDir = treeSitterCliPackageDir(targetDir);
+  if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
+    throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
+  }
+  if (await isUsable(targetDir)) return;
+
+  const installScript = join(cliDir, 'install.js');
+  if (!existsSync(installScript)) {
+    throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
+  }
+
+  let installOutput: { stdout: string; stderr: string } | undefined;
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(process.execPath, [installScript], {
+      cwd: cliDir,
+      timeout: installTimeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      installOutput = { stdout, stderr };
+      resolve();
+    });
+    child.stdin?.end();
+  });
+
+  if (!(await isUsable(targetDir))) {
+    throw Object.assign(
+      new Error(`tree-sitter-cli install completed without creating a working executable ${treeSitterCliBinaryPath(targetDir)}`),
+      installOutput,
+    );
+  }
+}
+
+/**
+ * Provision the tree-sitter CLI in `targetDir` and report a failure at
+ * `severity`. `install` passes WARN_CONTINUE: it runs before the sign-in/trial
+ * step, and smart_search is not worth an aborted install. `repair` passes
+ * ABORT. Returns whether the CLI is usable.
+ */
+export async function provisionTreeSitterCli(
+  targetDir: string,
+  severity: ErrorSeverity.ABORT | ErrorSeverity.WARN_CONTINUE,
+  summary: InstallSummary,
+  installTimeoutMs: number = INSTALL_TIMEOUT_MS,
+): Promise<boolean> {
+  try {
+    await ensureTreeSitterCliBinary(targetDir, isTreeSitterCliBinaryUsable, installTimeoutMs);
+    return true;
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const processError = err as Error & { code?: number | string; killed?: boolean };
+    const failure = processError.killed
+      ? 'timed out'
+      : typeof processError.code === 'number'
+        ? `exited with code ${processError.code}`
+        : err.message;
+    installerError(severity, {
+      component: 'tree-sitter-cli-cache',
+      phase: 'dependency-install',
+      cause: Object.assign(new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`), {
+        code: processError.code,
+        killed: processError.killed,
+      }),
+      details: describeExecError(err, true).slice(0, 4000),
+      ...(severity === ErrorSeverity.WARN_CONTINUE
+        ? { remediation: 'smart_search and smart_outline stay disabled until the tree-sitter CLI is provisioned: run `npx claude-mem repair`.' }
+        : {}),
+    }, summary);
+    return false;
+  }
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {
