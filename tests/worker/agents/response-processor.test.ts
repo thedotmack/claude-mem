@@ -12,15 +12,20 @@ import { logger } from '../../../src/utils/logger.js';
 import * as realWorkerServiceModule from '../../../src/services/worker-service.js';
 import * as realWorkerUtilsModule from '../../../src/shared/worker-utils.js';
 import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+import * as realSettingsDefaultsModule from '../../../src/shared/SettingsDefaultsManager.js';
 
 const realWorkerServiceSnapshot = { ...realWorkerServiceModule };
 const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
 const realModeManagerSnapshot = { ...realModeManagerModule };
+// The 4-key SettingsDefaultsManager stub below would otherwise leak into every
+// later file that reads settings (e.g. ingestObservation's SKIP_TOOLS split).
+const realSettingsDefaultsSnapshot = { ...realSettingsDefaultsModule };
 
 afterAll(() => {
   mock.module('../../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
   mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsDefaultsSnapshot);
 });
 
 function mockSettingsDefaults(): Record<string, string> {
@@ -59,6 +64,10 @@ mock.module('../../../src/services/worker-service.js', () => ({
 
 mock.module('../../../src/utils/claude-md-utils.js', () => ({
   updateFolderClaudeMdFiles: (...args: unknown[]) => mockUpdateFolderClaudeMdFiles(...args),
+}));
+
+mock.module('../../../src/services/integrations/GrokBotIndexWriter.js', () => ({
+  notifyGrokBotIndex: () => undefined,
 }));
 
 mock.module('../../../src/shared/worker-utils.js', () => ({
