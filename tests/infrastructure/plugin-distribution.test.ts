@@ -442,6 +442,29 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     expect(sessionEnd.command).toContain('session-end');
     expect(sessionEnd.async).toBe(true);
   });
+
+  it('runs the SessionStart worker start asynchronously and keeps context and UserPromptSubmit synchronous (#3303)', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    const sessionStart = parsed.hooks.SessionStart[0].hooks;
+    const userPromptSubmit = parsed.hooks.UserPromptSubmit[0].hooks[0];
+
+    expect(sessionStart).toHaveLength(2);
+    // `start` only prints a status envelope, and the context hook lazily
+    // spawns the worker itself, so session start need not wait for it.
+    expect(sessionStart[0].command).toContain(' start');
+    expect(sessionStart[0].async).toBe(true);
+    // `context` must stay synchronous: Claude Code hands an async hook's
+    // additionalContext / systemMessage to the model on the next turn and never
+    // shows the systemMessage to the user, which would hide the startup
+    // timeline, the viewer link and the trial notice.
+    expect(sessionStart[1].command).toContain(' hook claude-code context');
+    expect(sessionStart[1]).not.toHaveProperty('async');
+    expect(userPromptSubmit.command).toContain(' hook claude-code session-init');
+    // Keep prompt-row persistence ordered before downstream hooks consume it.
+    expect(userPromptSubmit).not.toHaveProperty('async');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -11,9 +11,9 @@ import * as realCliTelemetry from '../../src/services/telemetry/cli-telemetry.js
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
-// emitBlockingError is mocked to a no-op collector below; restoring it in
-// afterAll keeps a silenced fail-loud path from leaking into other suites
-// sharing this process.
+// emitDiagnostic is mocked to a collector below; restoring it in afterAll
+// keeps a silenced fail-loud path from leaking into other suites sharing this
+// process.
 const realHookIoSnapshot = { ...realHookIo };
 const realCliTelemetrySnapshot = { ...realCliTelemetry };
 
@@ -54,12 +54,12 @@ mock.module('../../src/shared/spawn.js', () => ({
   },
 }));
 
-// emitBlockingError is the only channel the user actually sees when hooks
-// start failing; the real one writes to stderr and process.exit(2)s.
-const blockingErrors: string[] = [];
+// The fail-loud diagnostic goes through emitDiagnostic (stderr, never exits);
+// the user sees the same text via consumeWorkerOutageNotice's systemMessage.
+const failLoudDiagnostics: string[] = [];
 mock.module('../../src/shared/hook-io.js', () => ({
-  emitBlockingError: (message: string) => {
-    blockingErrors.push(message);
+  emitDiagnostic: (line: string) => {
+    failLoudDiagnostics.push(line);
   },
 }));
 
@@ -100,7 +100,7 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     tempDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-zombie-port-'));
     process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
     spawnCalls.length = 0;
-    blockingErrors.length = 0;
+    failLoudDiagnostics.length = 0;
     portOccupied = true;
     healthSequence = [false];
     installFetchMock();
@@ -156,14 +156,19 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     const workerUtils = await importWorkerUtilsFresh();
     expect(await workerUtils.ensureWorkerRunning()).toBe(false);
 
-    // Threshold is 3 consecutive failures before emitBlockingError fires.
+    // Threshold is 3 consecutive failures before the fail-loud path fires.
     await workerUtils.recordWorkerUnreachable();
     await workerUtils.recordWorkerUnreachable();
     await workerUtils.recordWorkerUnreachable();
 
-    expect(blockingErrors.length).toBeGreaterThan(0);
-    const message = blockingErrors[blockingErrors.length - 1];
-    expect(message).toContain(String(workerUtils.getWorkerPort()));
-    expect(message).toContain('CLAUDE_MEM_WORKER_PORT');
+    const diagnostic = failLoudDiagnostics.find(line => line.includes('consecutive hooks'));
+    expect(diagnostic).toBeDefined();
+    expect(diagnostic).toContain(String(workerUtils.getWorkerPort()));
+    expect(diagnostic).toContain('CLAUDE_MEM_WORKER_PORT');
+
+    // The user-visible notice (a synchronous hook's systemMessage) names the fix too.
+    const notice = await workerUtils.consumeWorkerOutageNotice('session-zombie-port');
+    expect(notice).toContain(String(workerUtils.getWorkerPort()));
+    expect(notice).toContain('CLAUDE_MEM_WORKER_PORT');
   }, 30000);
 });
