@@ -7,11 +7,15 @@
 
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { spawnSync } from 'child_process';
-import pc from 'picocolors';
-import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
+import { styleText } from 'node:util';
+import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
+import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
+import { paths } from '../../shared/paths.js';
+import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
+import { isPidAlive } from '../../supervisor/process-registry.js';
+import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
 
@@ -23,18 +27,62 @@ interface CheckResult {
   required: boolean;
 }
 
-const IS_WINDOWS = process.platform === 'win32';
-
-function probeVersion(bin: string): string | null {
+function probeVersion(bin: 'bun' | 'uv'): string | null {
   try {
-    const result = spawnSync(bin, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
-    return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+    return bin === 'bun' ? getBunVersion() : getUvVersion();
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
     return null;
+  }
+}
+
+async function probeWorkerHealth(workerHost: string, workerPort: string): Promise<{ status: CheckStatus; detail: string }> {
+  const workerUrl = `http://${workerHost}:${workerPort}`;
+  const res = await fetch(`${workerUrl}/api/health`, {
+    signal: AbortSignal.timeout(3000),
+  });
+  if (res.ok) {
+    return { status: 'ok', detail: `healthy at ${workerUrl}` };
+  }
+  return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) at ${workerUrl}` };
+}
+
+async function probeChromaCensus(): Promise<CheckResult> {
+  const name = 'Chroma processes';
+  if (IS_WINDOWS) {
+    return { name, status: 'ok', detail: 'not checked on Windows', required: false };
+  }
+  let registered = 0;
+  try {
+    const registryPath = paths.supervisorRegistry();
+    if (existsSync(registryPath)) {
+      const raw = JSON.parse(readFileSync(registryPath, 'utf-8')) as { processes?: Record<string, { type?: string }> };
+      registered = Object.values(raw.processes ?? {}).filter((p) => p.type === 'chroma').length;
+    }
+  } catch {
+    // unreadable registry: report from the process table alone
+  }
+  try {
+    const rows = await readProcessTablePosix();
+    const { roots, orphans } = findOrphanedChromaRoots(rows, { isAlive: isPidAlive, selfPid: process.pid });
+    const detail = `${roots.length} live chroma-mcp tree(s), ${registered} registered, ${orphans.length} orphaned`;
+    if (orphans.length > 0) {
+      return {
+        name,
+        status: 'warn',
+        detail: `${detail} — orphans are reaped at the next worker start (claude-mem worker restart)`,
+        required: false,
+      };
+    }
+    return { name, status: 'ok', detail, required: false };
+  } catch (error) {
+    return {
+      name,
+      status: 'warn',
+      detail: `could not read the process table: ${error instanceof Error ? error.message : String(error)}`,
+      required: false,
+    };
   }
 }
 
@@ -69,31 +117,46 @@ export async function runDoctorCommand(): Promise<void> {
     required: true,
   });
 
-  // 4. Marketplace dependencies materialized.
-  const marketplaceNodeModules = join(marketplaceDirectory(), 'node_modules');
+  // 4. Marketplace runtime root materialized. The .install-version marker is
+  // written only by the npx installer; installs via Claude Code's own plugin
+  // marketplace flow and dev `build-and-sync` never write one, so a missing
+  // marker with node_modules present is informational, not a failure (#3661).
+  const marketplaceDir = marketplaceDirectory();
+  const marketplaceNodeModules = join(marketplaceDir, 'node_modules');
+  const marketplaceMarker = join(marketplaceDir, '.install-version');
   const depsPresent = existsSync(marketplaceNodeModules);
+  const markerPresent = existsSync(marketplaceMarker);
+  const marketplaceCurrent = installed && isInstallCurrent(marketplaceDir, readPluginVersion());
+  const marketplaceDetail = marketplaceCurrent
+    ? 'node_modules and install marker present'
+    : !depsPresent
+      ? 'node_modules missing — run `npx claude-mem repair`'
+      : !markerPresent
+        ? 'node_modules present; no npx install marker (normal for marketplace/dev installs)'
+        : 'install marker stale — run `npx claude-mem repair`';
+  const marketplaceStatus: CheckStatus = !installed
+    ? 'warn'
+    : marketplaceCurrent
+      ? 'ok'
+      : depsPresent && !markerPresent
+        ? 'warn'
+        : 'fail';
   checks.push({
-    name: 'Marketplace deps',
-    status: installed ? (depsPresent ? 'ok' : 'fail') : 'warn',
-    detail: depsPresent ? 'node_modules present' : 'missing — run `npx claude-mem repair`',
+    name: 'Marketplace runtime',
+    status: marketplaceStatus,
+    detail: marketplaceDetail,
     required: installed,
   });
 
   // 5. Worker health.
+  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   let workerStatus: CheckStatus = 'fail';
-  let workerDetail = `no response on port ${workerPort} — start with \`npx claude-mem start\``;
+  let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
   try {
-    const res = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      workerStatus = 'ok';
-      workerDetail = `healthy at http://127.0.0.1:${workerPort}`;
-    } else {
-      workerStatus = 'warn';
-      workerDetail = `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}`;
-    }
+    const worker = await probeWorkerHealth(workerHost, workerPort);
+    workerStatus = worker.status;
+    workerDetail = worker.detail;
   } catch {
     // leave as fail
   }
@@ -104,7 +167,20 @@ export async function runDoctorCommand(): Promise<void> {
     required: false, // worker can be intentionally stopped; don't hard-fail
   });
 
-  // 6. Last recorded install error (surface remediation if present).
+  // 6. Windows Git Bash reachability. All claude-mem hooks run via
+  // `"shell": "bash"`; on Windows, Claude Code resolves that through Git for
+  // Windows with no WSL fallback. No-op on macOS/Linux.
+  if (IS_WINDOWS) {
+    const gitBash = checkWindowsGitBash();
+    checks.push({
+      name: 'Git Bash (Windows)',
+      status: gitBash.ok ? 'ok' : 'fail',
+      detail: gitBash.detail,
+      required: true,
+    });
+  }
+
+  // 7. Last recorded install error (surface remediation if present).
   const lastErrorPath = join(dataDir, 'last-install-error.json');
   if (existsSync(lastErrorPath)) {
     let detail = `present at ${lastErrorPath}`;
@@ -125,20 +201,25 @@ export async function runDoctorCommand(): Promise<void> {
   }
 
   const icon = (s: CheckStatus): string =>
-    s === 'ok' ? pc.green('✓') : s === 'warn' ? pc.yellow('!') : pc.red('✗');
+    s === 'ok' ? styleText('green', '✓') : s === 'warn' ? styleText('yellow', '!') : styleText('red', '✗');
 
-  console.log(pc.bold('\nclaude-mem doctor\n'));
+  // Chroma process census (#3905): live chroma-mcp trees against supervisor registry rows.
+  // Anything other than one tree per row is the orphan leak. Read-only: the registry file is
+  // parsed directly rather than through ProcessRegistry, whose initialize() prunes and persists.
+  checks.push(await probeChromaCensus());
+
+  console.log(styleText('bold', '\nclaude-mem doctor\n'));
   for (const c of checks) {
-    console.log(`  ${icon(c.status)} ${c.name.padEnd(22)} ${pc.dim(c.detail)}`);
+    console.log(`  ${icon(c.status)} ${c.name.padEnd(22)} ${styleText('dim', c.detail)}`);
   }
 
   const hardFailures = checks.filter((c) => c.required && c.status === 'fail');
   console.log('');
   if (hardFailures.length === 0) {
-    console.log(pc.green('All required checks passed.'));
+    console.log(styleText('green', 'All required checks passed.'));
     process.exit(0);
   } else {
-    console.log(pc.red(`${hardFailures.length} required check(s) failed — see remediation above.`));
+    console.log(styleText('red', `${hardFailures.length} required check(s) failed — see remediation above.`));
     process.exit(1);
   }
 }

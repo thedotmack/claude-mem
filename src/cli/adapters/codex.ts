@@ -46,7 +46,6 @@ function cloneToolInput(toolInput: unknown): unknown {
 function buildBaseOutput(result: HookResult): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   if (result.continue !== undefined) output.continue = result.continue;
-  if (result.suppressOutput !== undefined) output.suppressOutput = result.suppressOutput;
   if (result.systemMessage) output.systemMessage = result.systemMessage;
   if (result.decision === 'block') output.decision = 'block';
   if (result.reason) output.reason = result.reason;
@@ -60,7 +59,7 @@ function inferOutputEvent(result: HookResult): CodexEventName | undefined {
 export const codexAdapter: PlatformAdapter = {
   normalizeInput(raw): NormalizedHookInput {
     const r = (raw ?? {}) as Record<string, unknown>;
-    const cwd = typeof r.cwd === 'string' ? r.cwd : process.cwd();
+    const cwd = (typeof r.cwd === 'string' && r.cwd) || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
@@ -117,7 +116,7 @@ export const codexAdapter: PlatformAdapter = {
       hookEventName: outputEvent,
     };
 
-    if (hookSpecific.additionalContext) {
+    if (typeof hookSpecific.additionalContext === 'string') {
       specific.additionalContext = hookSpecific.additionalContext;
     }
 

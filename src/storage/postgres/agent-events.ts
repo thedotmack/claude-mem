@@ -11,6 +11,7 @@ import {
   toEpoch,
   toJsonObject
 } from './utils.js';
+import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 
 export interface PostgresAgentEvent {
   id: string;
@@ -34,6 +35,7 @@ export interface CreatePostgresAgentEventInput {
   projectId: string;
   teamId: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
   sourceAdapter: string;
   sourceEventId?: string | null;
   eventType: string;
@@ -71,6 +73,7 @@ export class PostgresAgentEventsRepository {
       await assertSessionOwnership(this.client, input.serverSessionId, input.projectId, input.teamId);
     }
     const idempotencyKey = buildAgentEventIdempotencyKey(input);
+    const platformSource = normalizePlatformSourceOrNull(input.platformSource);
     const row = await queryOne<AgentEventRow>(
       this.client,
       `
@@ -93,21 +96,13 @@ export class PostgresAgentEventsRepository {
         input.sourceEventId ?? null,
         idempotencyKey,
         input.eventType,
-        input.platformSource ?? null,
+        platformSource,
         JSON.stringify(input.payload ?? {}),
         JSON.stringify(input.metadata ?? {}),
         new Date(input.occurredAt)
       ]
     );
     return mapAgentEventRow(row!);
-  }
-
-  async createMany(inputs: CreatePostgresAgentEventInput[]): Promise<PostgresAgentEvent[]> {
-    const events: PostgresAgentEvent[] = [];
-    for (const input of inputs) {
-      events.push(await this.create(input));
-    }
-    return events;
   }
 
   async getByIdForScope(input: {
@@ -150,24 +145,35 @@ export function buildAgentEventIdempotencyKey(input: {
   sourceAdapter: string;
   sourceEventId?: string | null;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
   eventType: string;
+  platformSource?: string | null;
   occurredAt: Date | string | number;
   payload?: JsonValue;
 }): string {
+  const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+  const platformScope = platformSource ? [platformSource] : [];
+
   if (input.sourceEventId) {
     return `agent_event:v1:${deterministicKey([
       input.teamId,
       input.projectId,
       input.sourceAdapter,
+      ...platformScope,
       input.sourceEventId
     ])}`;
   }
 
+  // Use contentSessionId (stable, client-provided) over serverSessionId, which is
+  // resolved lazily at ingest and can be NULL on a first delivery but non-NULL on a
+  // retry — that would drift the key and create duplicate events. Falls back to
+  // serverSessionId for events that don't carry a contentSessionId.
   return `agent_event:v1:${deterministicKey([
     input.teamId,
     input.projectId,
     input.sourceAdapter,
-    input.serverSessionId ?? null,
+    ...platformScope,
+    input.contentSessionId ?? input.serverSessionId ?? null,
     input.eventType,
     new Date(input.occurredAt).toISOString(),
     canonicalJson(input.payload ?? {})

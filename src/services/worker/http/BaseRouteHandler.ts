@@ -2,6 +2,7 @@
 import { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
 import { AppError } from '../../server/ErrorHandler.js';
+import { normalizePlatformSource } from '../../../shared/platform-source.js';
 
 export abstract class BaseRouteHandler {
   protected wrapHandler(
@@ -45,6 +46,33 @@ export abstract class BaseRouteHandler {
     return value;
   }
 
+  protected static firstString(value: unknown): string | undefined {
+    if (Array.isArray(value)) {
+      return BaseRouteHandler.firstString(value[0]);
+    }
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private static rawPlatformSourceFromRequest(req: Request): string | undefined {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const header = req.get?.('x-platform-source')
+      ?? req.get?.('x-claude-mem-platform-source');
+    return BaseRouteHandler.firstString(req.query.platformSource)
+      ?? BaseRouteHandler.firstString(req.query.platform_source)
+      ?? BaseRouteHandler.firstString(body.platformSource)
+      ?? BaseRouteHandler.firstString(body.platform_source)
+      ?? BaseRouteHandler.firstString(header);
+  }
+
+  protected getPlatformSourceFromRequest(req: Request): string {
+    return normalizePlatformSource(BaseRouteHandler.rawPlatformSourceFromRequest(req));
+  }
+
+  protected getOptionalPlatformSourceFromRequest(req: Request): string | undefined {
+    const rawPlatformSource = BaseRouteHandler.rawPlatformSourceFromRequest(req);
+    return rawPlatformSource ? normalizePlatformSource(rawPlatformSource) : undefined;
+  }
+
   protected badRequest(res: Response, message: string): void {
     res.status(400).json({ error: message });
   }
@@ -54,9 +82,22 @@ export abstract class BaseRouteHandler {
   }
 
   protected handleError(res: Response, error: Error, context?: string): void {
-    logger.failure('WORKER', context || 'Request failed', {}, error);
+    const statusCode = error instanceof AppError ? error.statusCode : 500;
+    // Client errors (4xx AppErrors) are routine bad input, not server faults, so
+    // they log at WARN and are NOT routed to the error sink — surfacing a
+    // validation rejection like a bad corpus name as a captured $exception just
+    // pollutes error tracking with noise. Only true server faults (5xx, or any
+    // non-AppError, which maps to 500) go through logger.failure, whose Error
+    // payload routes through logger.error → the error sink → captureException
+    // (Phase 3): a REDACTED $exception to PostHog Error Tracking, consent-gated,
+    // kill-switch-gated, and rate-limited.
+    const isClientError = statusCode >= 400 && statusCode < 500;
+    if (isClientError) {
+      logger.warn('WORKER', context || 'Request rejected', { statusCode }, error);
+    } else {
+      logger.failure('WORKER', context || 'Request failed', undefined, error);
+    }
     if (!res.headersSent) {
-      const statusCode = error instanceof AppError ? error.statusCode : 500;
       const response: Record<string, unknown> = { error: error.message };
 
       if (error instanceof AppError && error.code) {

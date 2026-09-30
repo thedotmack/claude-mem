@@ -32,37 +32,38 @@ describe('shouldSkipAgentObservation', () => {
     expect(shouldSkipAgentObservation(undefined, undefined, settings()).skip).toBe(false);
   });
 
-  it('global toggle skips any observation carrying an agentId', () => {
+  it('global toggle skips a subagent observation (agent id AND agent type)', () => {
     const s = settings({ CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true' });
-    const decision = shouldSkipAgentObservation('agent-1', 'workflow-subagent', s);
-    expect(decision.skip).toBe(true);
-    expect(decision.reason).toBe('subagent_observation');
+    expect(shouldSkipAgentObservation('agent-1', 'workflow-subagent', s))
+      .toEqual({ skip: true, reason: 'subagent_observation' });
   });
 
-  it('global toggle skips regardless of agentType (even when type is absent)', () => {
+  it('global toggle keeps transcript-watch rows that carry an agent id alone (Grok Bot seats)', () => {
+    // Transcript-watch ingestion stamps the seat id (or an agent-transcripts
+    // uuid) as agentId on MAIN-agent rows. Keying on agentId alone would drop
+    // all Grok Bot capture as soon as the toggle is on.
     const s = settings({ CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true' });
-    expect(shouldSkipAgentObservation('agent-1', undefined, s).skip).toBe(true);
+    expect(shouldSkipAgentObservation('grok-seat-7', undefined, s)).toEqual({ skip: false });
   });
 
-  it('global toggle does NOT skip the main session (no agentId)', () => {
+  it('global toggle does NOT skip the main session', () => {
     const s = settings({ CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true' });
-    expect(shouldSkipAgentObservation(undefined, undefined, s).skip).toBe(false);
-    // agentType present but no agentId is still treated as a main-session observation
-    expect(shouldSkipAgentObservation(undefined, 'Explore', s).skip).toBe(false);
+    expect(shouldSkipAgentObservation(undefined, undefined, s)).toEqual({ skip: false });
+    // agentType alone is a `claude --agent <type>` main thread.
+    expect(shouldSkipAgentObservation(undefined, 'Explore', s)).toEqual({ skip: false });
   });
 
-  it('per-type list skips only matching agent_type values', () => {
+  it('per-type list skips only matching subagent agent_type values', () => {
     const s = settings({ CLAUDE_MEM_SKIP_AGENT_TYPES: 'workflow-subagent,Explore' });
-    const skipped = shouldSkipAgentObservation('a', 'workflow-subagent', s);
-    expect(skipped.skip).toBe(true);
-    expect(skipped.reason).toBe('agent_type_excluded');
+    expect(shouldSkipAgentObservation('a', 'workflow-subagent', s))
+      .toEqual({ skip: true, reason: 'agent_type_excluded' });
 
-    expect(shouldSkipAgentObservation('a', 'Plan', s).skip).toBe(false);
+    expect(shouldSkipAgentObservation('a', 'Plan', s)).toEqual({ skip: false });
   });
 
-  it('per-type list matches even without an agentId (type-driven)', () => {
+  it('per-type list never drops a `claude --agent <type>` main thread (agent type without an id)', () => {
     const s = settings({ CLAUDE_MEM_SKIP_AGENT_TYPES: 'workflow-subagent' });
-    expect(shouldSkipAgentObservation(undefined, 'workflow-subagent', s).skip).toBe(true);
+    expect(shouldSkipAgentObservation(undefined, 'workflow-subagent', s)).toEqual({ skip: false });
   });
 
   it('union semantics — global toggle takes precedence and reports its reason', () => {
@@ -70,9 +71,8 @@ describe('shouldSkipAgentObservation', () => {
       CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true',
       CLAUDE_MEM_SKIP_AGENT_TYPES: 'Explore',
     });
-    const decision = shouldSkipAgentObservation('a', 'workflow-subagent', s);
-    expect(decision.skip).toBe(true);
-    expect(decision.reason).toBe('subagent_observation');
+    expect(shouldSkipAgentObservation('a', 'workflow-subagent', s))
+      .toEqual({ skip: true, reason: 'subagent_observation' });
   });
 
   it('main-session observation is unaffected by a per-type list', () => {

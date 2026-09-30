@@ -1,0 +1,195 @@
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
+import {
+  CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  getDependencyStatus,
+  resetDependencyStatusesForTesting,
+} from '../../src/shared/dependency-health.js';
+import type { ActiveSession } from '../../src/services/worker-types.js';
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshot in afterAll so this mock does not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT
+// undo it). Without the restore, whichever file runs after this one sees the
+// stub — tests/shared/find-claude-executable.test.ts exercises the real
+// implementation and fails when the readdir-dependent file order puts it
+// after this file (the CI-only findClaudeExecutable failures).
+import * as realFindClaudeExecutableModule from '../../src/shared/find-claude-executable.js';
+
+const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutableModule };
+
+// bun's mock.module is process-global and sticky — it is never auto-unregistered
+// and leaks into every test file that runs afterwards in the same process. So
+// this mock must be leak-proof in two ways:
+//   1. Spread the REAL module through the factory, overriding only
+//      findClaudeExecutable. Otherwise the module's other exports (_internals,
+//      resetClaudeExecutableCache, CAPABILITY_PROBE_ARGS) vanish for later files
+//      like find-claude-executable.test.ts, which drives all of them.
+//   2. Default the override to the real implementation and restore it in
+//      afterAll, so the per-test stubs below (one of which throws) don't leak
+//      out and break unrelated suites (recall-mcp-server, server-boot) that
+//      transitively resolve the CLI.
+// The real module is snapshotted into a plain object before mocking so the
+// captured references can't be live-swapped by the mock registration.
+const actualFindClaude = { ...(await import('../../src/shared/find-claude-executable.js')) };
+const realFindClaudeExecutable = actualFindClaude.findClaudeExecutable;
+
+type FindClaudeExecutable = typeof realFindClaudeExecutable;
+let findClaudeExecutableImpl: (...args: Parameters<FindClaudeExecutable>) => string = realFindClaudeExecutable;
+
+mock.module('../../src/shared/find-claude-executable.js', () => ({
+  ...actualFindClaude,
+  findClaudeExecutable: (...args: Parameters<FindClaudeExecutable>) => findClaudeExecutableImpl(...args),
+}));
+
+afterAll(() => {
+  // Point the leaked mock back at the real implementation for subsequent files,
+  // then re-register the untouched module snapshot.
+  findClaudeExecutableImpl = realFindClaudeExecutable;
+  mock.module('../../src/shared/find-claude-executable.js', () => realFindClaudeExecutableSnapshot);
+});
+
+const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
+const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
+
+function makeSession(): ActiveSession {
+  return {
+    sessionDbId: 42,
+    contentSessionId: 'content-42',
+    memorySessionId: null,
+    project: 'project',
+    platformSource: 'claude',
+    userPrompt: 'prompt',
+    abortController: new AbortController(),
+    generatorPromise: null,
+    lastPromptNumber: 1,
+    startTime: Date.now(),
+    cumulativeInputTokens: 0,
+    cumulativeOutputTokens: 0,
+    earliestPendingTimestamp: null,
+    claimedMessageIds: [],
+    conversationHistory: [],
+    currentProvider: null,
+    consecutiveRestarts: 0,
+    consecutiveInvalidOutputs: 0,
+    lastGeneratorActivity: Date.now(),
+  };
+}
+
+describe('Claude setup-required generator gate', () => {
+  const realDateNow = Date.now;
+
+  beforeEach(() => {
+    resetDependencyStatusesForTesting();
+    findClaudeExecutableImpl = () => '/mock/claude';
+    Date.now = realDateNow;
+  });
+
+  afterEach(() => {
+    Date.now = realDateNow;
+  });
+
+  it('skips immediate repeat starts, then rechecks and clears status after cooldown repair', async () => {
+    const session = makeSession();
+    let activeSession: ActiveSession | undefined = session;
+    let starts = 0;
+    let findAttempts = 0;
+    let finalizerCalls = 0;
+    let removeSessionImmediateCalls = 0;
+    let repairedRunResolve: (() => void) | null = null;
+
+    const sessionManager = {
+      getSession: () => activeSession,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [],
+      }),
+      removeSessionImmediate: () => {
+        removeSessionImmediateCalls += 1;
+        activeSession = undefined;
+      },
+    };
+
+    const claudeProvider = {
+      startSession: async () => {
+        starts += 1;
+        if (starts === 1) {
+          throw new ClassifiedProviderError('Claude executable not found', {
+            kind: 'setup_required',
+            cause: new Error('Claude executable not found'),
+          });
+        }
+        await new Promise<void>(resolve => {
+          repairedRunResolve = resolve;
+        });
+      },
+    };
+
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {
+        finalizeSession: async () => {
+          finalizerCalls += 1;
+        },
+      } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+
+    expect(starts).toBe(1);
+    expect(getDependencyStatus('claude_cli')).toMatchObject({
+      kind: 'setup_required',
+      remediation: expect.stringContaining('Claude Code CLI'),
+    });
+    expect(activeSession).toBe(session);
+    expect(session.generatorPromise).toBeNull();
+    expect(finalizerCalls).toBe(0);
+    expect(removeSessionImmediateCalls).toBe(0);
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+
+    expect(starts).toBe(1);
+    expect(findAttempts).toBe(0);
+    expect(finalizerCalls).toBe(0);
+    expect(removeSessionImmediateCalls).toBe(0);
+
+    findClaudeExecutableImpl = () => {
+      findAttempts += 1;
+      return '/repaired/claude';
+    };
+    Date.now = () => realDateNow() + CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS + 1;
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+
+    expect(findAttempts).toBe(1);
+    expect(starts).toBe(2);
+    expect(getDependencyStatus('claude_cli')).toBeNull();
+    expect(session.generatorPromise).not.toBeNull();
+
+    repairedRunResolve?.();
+    await session.generatorPromise;
+
+    expect(finalizerCalls).toBe(1);
+    expect(removeSessionImmediateCalls).toBe(1);
+  });
+
+  it('records Claude CLI remediation when provider startup cannot find the executable', async () => {
+    findClaudeExecutableImpl = () => {
+      throw new Error('Claude executable not found');
+    };
+
+    const provider = new ClaudeProvider({} as any, {} as any);
+
+    await expect(provider.startSession(makeSession())).rejects.toThrow('Claude executable not found');
+    expect(getDependencyStatus('claude_cli')).toMatchObject({
+      kind: 'setup_required',
+      remediation: expect.stringContaining('Claude Code CLI'),
+    });
+  });
+});

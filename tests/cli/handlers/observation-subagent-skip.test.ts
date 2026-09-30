@@ -32,12 +32,12 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
 }));
 
 // Mutable runtime context so individual cases can flip between the `worker` and
-// `server-beta` runtimes. The skip check must run BEFORE this branch, so a
+// `server` runtimes. The skip check must run BEFORE this branch, so a
 // skipped subagent observation must reach neither dispatchToWorker nor recordEvent.
 const recordEventLog: Array<unknown> = [];
 let mockRuntime: Record<string, unknown> = { runtime: 'worker' };
-const serverBetaRuntime = () => ({
-  runtime: 'server-beta',
+const serverRuntime = () => ({
+  runtime: 'server',
   projectId: 'proj-test',
   serverBaseUrl: 'http://127.0.0.1:0',
   client: {
@@ -49,7 +49,7 @@ const serverBetaRuntime = () => ({
 });
 mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
   resolveRuntimeContext: () => mockRuntime,
-  logServerBetaFallback: () => {},
+  logServerFallback: () => {},
 }));
 
 import { logger } from '../../../src/utils/logger.js';
@@ -131,6 +131,15 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     expect(workerCallLog.length).toBe(1);
   });
 
+  it('does NOT skip an agent-id-only event (transcript-watch / Grok Bot seat) when the global toggle is on', async () => {
+    mockSettings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS = 'true';
+    mockSettings.CLAUDE_MEM_SKIP_AGENT_TYPES = 'workflow-subagent';
+    const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
+    const result = await observationHandler.execute(baseInput({ agentId: 'grok-seat-7' }));
+    expect(result.continue).toBe(true);
+    expect(workerCallLog.length).toBe(1);
+  });
+
   it('skips only the listed agent_type values', async () => {
     mockSettings.CLAUDE_MEM_SKIP_AGENT_TYPES = 'workflow-subagent,Explore';
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
@@ -149,10 +158,10 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
   });
 
   // The skip check sits AHEAD of the runtime branch, so it must protect the
-  // server-beta runtime too — not just the worker dispatch. These cases would
+  // server runtime too — not just the worker dispatch. These cases would
   // fail if the check were ever moved down into the worker-only branch.
-  it('skips before the server-beta runtime branch — recordEvent is never called', async () => {
-    mockRuntime = serverBetaRuntime();
+  it('skips before the server runtime branch — recordEvent is never called', async () => {
+    mockRuntime = serverRuntime();
     mockSettings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS = 'true';
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
     const result = await observationHandler.execute(
@@ -160,12 +169,12 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     );
     expect(result.continue).toBe(true);
     expect(result.exitCode).toBe(0);
-    expect(recordEventLog.length).toBe(0); // never reached the provider via server-beta
+    expect(recordEventLog.length).toBe(0); // never reached the provider via the server runtime
     expect(workerCallLog.length).toBe(0);
   });
 
-  it('still records main-session observations on the server-beta runtime', async () => {
-    mockRuntime = serverBetaRuntime();
+  it('still records main-session observations on the server runtime', async () => {
+    mockRuntime = serverRuntime();
     mockSettings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS = 'true';
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
     const result = await observationHandler.execute(baseInput()); // no agentId

@@ -1,6 +1,7 @@
-import pc from 'picocolors';
+import { parseArgs, styleText } from 'node:util';
 import { readPluginVersion } from './utils/paths.js';
 import type { InstallOptions } from './commands/install.js';
+import { resolveInstallerProviderChoice } from './installer-provider-choice.js';
 
 const args = process.argv.slice(2);
 const firstArg = args[0]?.toLowerCase() ?? '';
@@ -17,82 +18,101 @@ function printHelp(): void {
   const version = readPluginVersion();
 
   console.log(`
-${pc.bold('claude-mem')} v${version} — persistent memory for AI coding assistants
+${styleText('bold', 'claude-mem')} v${version} — persistent memory for AI coding assistants
 
-${pc.bold('Install Commands')} (no Bun required):
-  ${pc.cyan('npx claude-mem')}                     Interactive install
-  ${pc.cyan('npx claude-mem install')}              Interactive install
-  ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
-  ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
-  ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
-  ${pc.cyan('npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
-  ${pc.cyan('npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
-  ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
-  ${pc.cyan('npx claude-mem update')}               Update to latest version
-  ${pc.cyan('npx claude-mem uninstall')}            Remove plugin and configs
-  ${pc.cyan('npx claude-mem version')}              Print version
+${styleText('bold', 'Install Commands')} (no Bun required):
+  ${styleText('cyan', 'npx claude-mem')}                     Interactive install
+  ${styleText('cyan', 'npx claude-mem install')}              Interactive install
+  ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
+  ${styleText('cyan', 'npx claude-mem install --provider claude|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
+  ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
+  ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
+  ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
+  ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
+  ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
+  ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
+  ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
+  ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
+  ${styleText('cyan', 'npx claude-mem version')}              Print version
 
-${pc.bold('Runtime Commands')} (requires Bun, delegates to installed plugin):
-  ${pc.cyan('npx claude-mem start')}                Start worker service
-  ${pc.cyan('npx claude-mem stop')}                 Stop worker service
-  ${pc.cyan('npx claude-mem restart')}              Restart worker service
-  ${pc.cyan('npx claude-mem status')}               Show worker status
-  ${pc.cyan('npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
-  ${pc.cyan('npx claude-mem server start')}         Start server service
-  ${pc.cyan('npx claude-mem server stop')}          Stop server service
-  ${pc.cyan('npx claude-mem server restart')}       Restart server service
-  ${pc.cyan('npx claude-mem server status')}        Show server status
-  ${pc.cyan('npx claude-mem server logs')}          Show recent server logs
-  ${pc.cyan('npx claude-mem server doctor')}        Check server configuration (not yet implemented)
-  ${pc.cyan('npx claude-mem server migrate')}       Run server migrations (not yet implemented)
-  ${pc.cyan('npx claude-mem server export')}        Export server data (not yet implemented)
-  ${pc.cyan('npx claude-mem server import')}        Import server data (not yet implemented)
-  ${pc.cyan('npx claude-mem server api-key create|list|revoke')}   Manage API keys (not yet implemented)
-  ${pc.cyan('npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
-  ${pc.cyan('npx claude-mem search <query>')}       Search observations
-  ${pc.cyan('npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
-  ${pc.cyan('npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
-  ${pc.cyan('npx claude-mem transcript watch')}     Start transcript watcher
+${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed plugin):
+  ${styleText('cyan', 'npx claude-mem start')}                Start worker service
+  ${styleText('cyan', 'npx claude-mem stop')}                 Stop worker service
+  ${styleText('cyan', 'npx claude-mem restart')}              Restart worker service
+  ${styleText('cyan', 'npx claude-mem status')}               Show worker status
+  ${styleText('cyan', 'npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
+  ${styleText('cyan', 'npx claude-mem telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
+  ${styleText('cyan', 'npx claude-mem server start')}         Start server service
+  ${styleText('cyan', 'npx claude-mem server stop')}          Stop server service
+  ${styleText('cyan', 'npx claude-mem server restart')}       Restart server service
+  ${styleText('cyan', 'npx claude-mem server status')}        Show server status
+  ${styleText('cyan', 'npx claude-mem server api-key create|list|revoke')}   Manage API keys
+  ${styleText('cyan', 'npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
+  ${styleText('cyan', 'npx claude-mem search <query>')}       Search observations
+  ${styleText('cyan', 'npx claude-mem mcp')}                    Start the stdio MCP server
+  ${styleText('cyan', 'npx claude-mem hook cursor <event>')}    Run Cursor hook forwarding
+  ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
+  ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
+  ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
+  ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
 
-${pc.bold('IDE Identifiers')}:
-  claude-code, cursor, gemini-cli, opencode, openclaw,
+${styleText('bold', 'IDE Identifiers')}:
+  claude-code, cursor, grok-bot, opencode, openclaw,
   windsurf, codex-cli, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
 }
 
-function readFlag(argv: string[], name: string): string | undefined {
-  const i = argv.indexOf(name);
-  if (i === -1) return undefined;
-  const next = argv[i + 1];
-  // Reject missing or flag-shaped values so e.g. `--model --no-auto-start`
-  // doesn't silently treat `--no-auto-start` as the model name.
-  if (next === undefined || next.startsWith('-')) {
-    console.error(pc.red(`Flag ${name} requires a value.`));
-    process.exit(1);
-  }
-  return next;
-}
-
 function parseInstallOptions(argv: string[]): InstallOptions {
-  const provider = readFlag(argv, '--provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      ide: { type: 'string' },
+      provider: { type: 'string' },
+      model: { type: 'string' },
+      runtime: { type: 'string' },
+      'server-url': { type: 'string' },
+      'no-auto-start': { type: 'boolean' },
+      'disable-auto-memory': { type: 'boolean' },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+  const flag = (name: string): string | undefined =>
+    typeof values[name] === 'string' ? (values[name] as string) : undefined;
+  const provider = flag('provider');
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'host') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, host`);
     process.exit(1);
   }
-  const runtime = readFlag(argv, '--runtime');
+  const runtime = flag('runtime');
   if (runtime !== undefined && runtime !== 'worker' && runtime !== 'server' && runtime !== 'server-beta') {
     console.error(`Unknown --runtime: ${runtime}. Allowed: worker, server`);
     process.exit(1);
   }
+  const ide = flag('ide');
+  let resolvedProvider = provider as InstallOptions['provider'];
+  // Non-TTY grok-bot: CMEM Pro is the user default. The 'cmem' sentinel is
+  // prompt-only (install.ts maps it to openrouter + cmem-observer + OAuth).
+  // Interactive installs still get the CMEM/Claude prompt. `--provider host`
+  // stays an explicit loopback-shim opt-in.
+  if (!resolvedProvider && process.stdin.isTTY !== true) {
+    const implicit = resolveInstallerProviderChoice({ ide });
+    if (implicit) {
+      resolvedProvider = implicit as InstallOptions['provider'];
+    }
+  }
   return {
-    ide: readFlag(argv, '--ide'),
-    provider: provider as InstallOptions['provider'],
-    model: readFlag(argv, '--model'),
-    noAutoStart: argv.includes('--no-auto-start'),
+    ide,
+    provider: resolvedProvider,
+    // Both the explicit flag and the grok-bot implicit cmem default are
+    // explicit product choices; install.ts only defaults when this is unset.
+    providerSource: resolvedProvider ? 'flag' : undefined,
+    model: flag('model'),
+    noAutoStart: values['no-auto-start'] === true,
+    disableAutoMemory: values['disable-auto-memory'] === true,
     runtime: runtime as InstallOptions['runtime'],
-    serverUrl: readFlag(argv, '--server-url'),
+    serverUrl: flag('server-url'),
   };
 }
 
@@ -166,9 +186,24 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'telemetry': {
+      const { runTelemetryCommand } = await import('./commands/telemetry.js');
+      await runTelemetryCommand(args.slice(1));
+      break;
+    }
+
     case 'server': {
       const { runServerCommand } = await import('./commands/server.js');
       await runServerCommand(args.slice(1));
+      break;
+    }
+
+    case 'antigravity-cli': {
+      const { handleAntigravityCliCommand } = await import('../services/integrations/AntigravityCliHooksInstaller.js');
+      const exitCode = await handleAntigravityCliCommand(args[1]?.toLowerCase(), args.slice(2));
+      if (typeof exitCode === 'number') {
+        process.exit(exitCode);
+      }
       break;
     }
 
@@ -181,6 +216,18 @@ async function main(): Promise<void> {
     case 'search': {
       const { runSearchCommand } = await import('./commands/runtime.js');
       await runSearchCommand(args.slice(1));
+      break;
+    }
+
+    case 'mcp': {
+      const { runMcpCommand } = await import('./commands/runtime.js');
+      runMcpCommand();
+      break;
+    }
+
+    case 'hook': {
+      const { runHookCommand } = await import('./commands/runtime.js');
+      runHookCommand(args.slice(1));
       break;
     }
 
@@ -202,7 +249,7 @@ async function main(): Promise<void> {
         const { runTranscriptWatchCommand } = await import('./commands/runtime.js');
         runTranscriptWatchCommand();
       } else {
-        console.error(pc.red(`Unknown transcript subcommand: ${subCommand ?? '(none)'}`));
+        console.error(styleText('red', `Unknown transcript subcommand: ${subCommand ?? '(none)'}`));
         console.error(`Usage: npx claude-mem transcript watch`);
         process.exit(1);
       }
@@ -210,14 +257,14 @@ async function main(): Promise<void> {
     }
 
     default: {
-      console.error(pc.red(`Unknown command: ${command}`));
-      console.error(`Run ${pc.bold('npx claude-mem --help')} for usage information.`);
+      console.error(styleText('red', `Unknown command: ${command}`));
+      console.error(`Run ${styleText('bold', 'npx claude-mem --help')} for usage information.`);
       process.exit(1);
     }
   }
 }
 
 main().catch((error) => {
-  console.error(pc.red('Fatal error:'), error.message || error);
+  console.error(styleText('red', 'Fatal error:'), error.message || error);
   process.exit(1);
 });
