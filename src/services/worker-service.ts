@@ -736,6 +736,7 @@ export class WorkerService implements WorkerRef {
       watchGrokBotIndexSettings();
 
       if (this.chromaMcpManager) {
+        ChromaSync.registerBackfillStore(this.dbManager.getSessionStore());
         ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(completed => {
           if (completed) {
             logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
