@@ -85,7 +85,10 @@ export const summarizeHandler: EventHandler = {
     // the user's IDE session is running, read from its transcript.
     let observedModel: string | undefined;
 
-    if (input.lastAssistantMessage !== undefined) {
+    // Claude Code sends `last_assistant_message: ""` when a session ends
+    // mid-tool-call. An empty or whitespace-only value is no message at all,
+    // so fall back to the transcript instead of skipping the summary.
+    if (input.lastAssistantMessage?.trim()) {
       lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
       observedModel = transcriptPath ? extractLastAssistantModel(transcriptPath) : undefined;
     } else {
