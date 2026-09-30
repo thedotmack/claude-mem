@@ -200,6 +200,27 @@ describe('session-start context from the shared store', () => {
     expect(stats!.observation_count).toBeGreaterThan(0);
   });
 
+  it('prints 8-char display refs and points at observation_search, since server ids have no by-id fetch', async () => {
+    respond = async () => ({
+      observations: [
+        observationRow(3),
+        {
+          ...observationRow(4),
+          id: 'abcdef12-5048-45fa-95e0-e3222ae99671',
+          kind: 'summary',
+          metadata: { request: 'Ship the import fix', project: 'demo' },
+        },
+      ],
+    });
+    const { text } = await generateServerContextWithStats(serverRuntime(), input);
+    expect(text).toContain('00000003 ');
+    expect(text).not.toContain('00000003-5048');
+    expect(text).toContain('Sabcdef12 Ship the import fix');
+    expect(text).not.toContain('abcdef12-5048');
+    expect(text).toContain('observation_search');
+    expect(text).not.toContain('get_observations');
+  });
+
   it('renders the empty state for an empty answer', async () => {
     respond = async () => ({ observations: [] });
     const { text, stats } = await generateServerContextWithStats(serverRuntime(), input);
