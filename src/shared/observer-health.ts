@@ -18,6 +18,7 @@ import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { loadFromFileOnce } from './hook-settings.js';
 import { viewerBaseUrl } from './viewer-url.js';
+import { relayedLine, relayedLink } from './relayed-text.js';
 import { logger } from '../utils/logger.js';
 
 export interface ObserverHealthState {
@@ -453,7 +454,7 @@ export function renderObserverQuotaCooldownNotice(
     ? `${new Date(until).toISOString()} (${describeDuration(Math.max(0, until - nowMs))} from now)`
     : 'the next probe window';
   const windowText = cooldown?.window ? ` (${cooldown.window})` : '';
-  const message = cooldown?.message ? scrubErrorMessage(cooldown.message) : null;
+  const message = relayedProviderText(cooldown?.message) || null;
 
   return [
     '⚠️ Heads up: claude-mem is paused while a provider quota cooldown is active.',
@@ -474,13 +475,24 @@ export function renderObserverQuotaCooldownNotice(
   ].join('\n');
 }
 
+/**
+ * The provider's words as the banner may relay them. They come from an error
+ * body and reach model context, so each is one plain bounded line with its
+ * credentials scrubbed, and a link only when approved (relayed-text.ts).
+ */
+function relayedProviderText(text: string | null | undefined): string {
+  return text ? relayedLine(scrubErrorMessage(text)) : '';
+}
+
 /** The latest error plus the classified remedy, shared by every warning shape. */
 function renderFailureDetailLines(state: ObserverHealthState, action: string | null): string[] {
+  const link = relayedLink(state.lastErrorUrl);
+  const requestId = relayedLine(state.lastErrorRequestId);
   return [
-    `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+    `Latest error: ${relayedProviderText(state.lastErrorMessage) || 'unknown'}`,
     ...(action ? [`What to do: ${action}`] : []),
-    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
-    ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+    ...(link ? [`Link: ${link}`] : []),
+    ...(requestId ? [`Request id: ${requestId}`] : []),
   ];
 }
 
@@ -491,7 +503,7 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     : 'for an unknown amount of time';
   const provider = state.lastErrorProvider ?? 'unknown provider';
   const count = state.consecutiveFailures;
-  const action = state.lastErrorAction ? scrubErrorMessage(state.lastErrorAction) : null;
+  const action = relayedProviderText(state.lastErrorAction) || null;
 
   if (isQuotaFailureStale(state, nowMs)) {
     // Same facts, stated as what they are: the last thing we know, not the
@@ -500,14 +512,15 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     // lead the reply with an outage report, because the likeliest case by far
     // is that the allowance reset hours ago and capture is working.
     const age = state.lastErrorAt ? describeDuration(nowMs - state.lastErrorAt) : 'an unknown time';
+    const link = relayedLink(state.lastErrorUrl);
     return [
       'ℹ️ claude-mem: the memory observer last failed with a spent allowance on',
       `${provider}, ${age} ago. Nothing has re-tested it since — the health ledger only`,
       'updates on the next successful save, which happens after this message is written.',
       '',
-      `Last error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+      `Last error: ${relayedProviderText(state.lastErrorMessage) || 'unknown'}`,
       ...(action ? [`If it is still spent: ${action}`] : []),
-      ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+      ...(link ? [`Link: ${link}`] : []),
       '',
       'Allowances reset on their own, so memory capture may already be working. If it is',
       'not, the next failed save brings the full warning back.',

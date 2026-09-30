@@ -49,6 +49,23 @@ interface UpstreamErrorEnvelope {
   action?: unknown;
   url?: unknown;
   request_id?: unknown;
+  metadata?: unknown;
+}
+
+/**
+ * Whether a 403 is OpenRouter refusing a moderated model's flagged input
+ * rather than the key: its envelope carries the flagged reasons or input in
+ * `metadata`, or its message says the input was flagged.
+ */
+function isModerationRefusal(envelope: UpstreamErrorEnvelope | null, lowerBody: string): boolean {
+  const metadata = envelope?.metadata;
+  if (
+    metadata !== null && typeof metadata === 'object'
+    && ('flagged_input' in metadata || Array.isArray((metadata as { reasons?: unknown }).reasons))
+  ) {
+    return true;
+  }
+  return lowerBody.includes('requires moderation') || lowerBody.includes('input was flagged');
 }
 
 /** Best-effort parse of `{ error: {...} }` from an upstream body. */
@@ -188,6 +205,18 @@ export function classifyOpenRouterError(input: {
     return new ClassifiedProviderError(
       describe('rate limit'),
       { kind: 'rate_limit', cause: input.cause, ...detail, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
+
+  // OpenRouter's moderation refusal names the INPUT, not the key: "<model>
+  // requires moderation on <provider>. Your input was flagged for …", with the
+  // flagged reasons in `metadata`. The next observation is a different input,
+  // so this is unrecoverable for this batch only — as auth_invalid it would
+  // pause all memory behind a cooldown under "credentials refused".
+  if (status === 403 && isModerationRefusal(envelope, lower)) {
+    return new ClassifiedProviderError(
+      describe('moderation refusal'),
+      { kind: 'unrecoverable', cause: input.cause, ...detail },
     );
   }
 

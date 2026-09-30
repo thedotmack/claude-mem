@@ -109,7 +109,7 @@ curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/sync/status"
 
 Expect health with provider `openrouter`, and sync `configured: true` plus `hub.reachable: true`.
 
-6. First real observation should store via model `cmem-observer`. Gateway success **clears** `CLAUDE_MEM_PRO_FALLBACK_AT`. A terminal gateway rejection (a spent allowance, an inactive subscription, or an unrecognized key) **sets** that timestamp, memory falls back to the Anthropic plan, and the next session start relays the gateway's own message and link.
+6. First real observation should store via model `cmem-observer`. Gateway success **clears** `CLAUDE_MEM_PRO_FALLBACK_AT`. A terminal gateway rejection (a spent allowance, an inactive subscription, or a refused key) **sets** that timestamp, memory falls back to the Anthropic plan, and the next session start relays the gateway's own message and link.
 
 <Info>
 Fallback is **event-driven**, not a calendar date. Do not treat `CLAUDE_MEM_PRO_TRIAL_ENDS_AT` as the switch. The switch is `CLAUDE_MEM_PRO_FALLBACK_AT`.

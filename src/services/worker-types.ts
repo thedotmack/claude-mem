@@ -74,6 +74,12 @@ export interface ActiveSession {
    * it, so a stale timer never restarts a session a newer generation paused.
    */
   stallResumeTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The resume a pause scheduled for itself: after a rate limit's Retry-After,
+   * or at once after a cmem fallback or a recycle. The periodic sweep leaves
+   * the session to it while it is pending, and any generator start cancels it.
+   */
+  scheduledResumeTimer?: ReturnType<typeof setTimeout>;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

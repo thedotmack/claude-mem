@@ -8,6 +8,8 @@ import {
 } from '../../../../src/shared/quota-cooldown.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
 import { logger } from '../../../../src/utils/logger.js';
+import { ClassifiedProviderError } from '../../../../src/services/worker/provider-errors.js';
+import type { ActiveSession } from '../../../../src/services/worker-types.js';
 
 guardSharedQuotaCooldownSingleton('session-routes-resume.test.ts');
 
@@ -235,6 +237,34 @@ describe('paused in-memory session recovery', () => {
     expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
     await flushStarts();
     expect(agent.startSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a rate-limit pause to its own Retry-After resume while that is pending', async () => {
+    const { routes, manager, agent } = fixture();
+    agent.startSession.mockImplementationOnce(async (session: ActiveSession) => {
+      // What OpenAICompatibleProvider does with a rate limit that outlived its
+      // retries: pause, then rethrow with the provider's Retry-After.
+      session.abortReason = 'rate_limit:rate_limit';
+      session.abortController.abort();
+      throw new ClassifiedProviderError('Too many observer requests', { kind: 'rate_limit', cause: null, retryAfterMs: 60_000 });
+    });
+    const session = manager.getSession(1)!;
+
+    await routes.ensureGeneratorRunning(1, 'observation');
+    await session.generatorPromise;
+    await flushStarts();
+
+    try {
+      expect(session.pausedReason).toBe('rate_limit');
+      // The periodic sweep must not start it before Retry-After has passed...
+      expect(manager.getResumableSessionIds()).toEqual([]);
+      expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+      expect(agent.startSession).toHaveBeenCalledTimes(1);
+      // ...while an operator retry still may.
+      expect(manager.getResumableSessionIds(true)).toEqual([1]);
+    } finally {
+      clearTimeout(session.scheduledResumeTimer);
+    }
   });
 
   it('retries a stalled response after its timer fires during quota cooldown', async () => {

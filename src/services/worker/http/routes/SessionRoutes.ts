@@ -460,10 +460,14 @@ export class SessionRoutes extends BaseRouteHandler {
   ): Promise<void> {
     if (!session) return;
 
-    // A generator is starting, so a pending stall resume has nothing left to do.
+    // A generator is starting, so a pending resume has nothing left to do.
     if (session.stallResumeTimer !== undefined) {
       clearTimeout(session.stallResumeTimer);
       session.stallResumeTimer = undefined;
+    }
+    if (session.scheduledResumeTimer !== undefined) {
+      clearTimeout(session.scheduledResumeTimer);
+      session.scheduledResumeTimer = undefined;
     }
     // The last pause no longer describes this session; if this run pauses
     // too, its exit records a fresh reason. Without this, one auth pause would
@@ -695,10 +699,10 @@ export class SessionRoutes extends BaseRouteHandler {
         // overwritten by that assignment and leave a settled promise blocking
         // every later start.
         if (scheduledResume) {
-          this.resumeGeneratorLater(session.sessionDbId, scheduledResume.afterMs, scheduledResume.source);
+          this.resumeGeneratorLater(session, scheduledResume.afterMs, scheduledResume.source);
         }
         if (reason === 'overflow:recycle') {
-          this.resumeGeneratorLater(session.sessionDbId, 0, 'overflow-recycle');
+          this.resumeGeneratorLater(session, 0, 'overflow-recycle');
         }
 
         // A response stall preserved its claimed batch but, like a recycle, has
@@ -787,18 +791,30 @@ export class SessionRoutes extends BaseRouteHandler {
     return resumeAfterMs;
   }
 
-  /** Start the session's generator again after `delayMs`, as the next captured event would. */
-  private resumeGeneratorLater(sessionDbId: number, delayMs: number, source: string): void {
+  /**
+   * Start the session's generator again after `delayMs`, as the next captured
+   * event would. The timer is kept on the session, so the periodic sweep
+   * leaves the session to it (a rate limit must not be retried before its
+   * Retry-After) and a generator that starts first cancels it.
+   */
+  private resumeGeneratorLater(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    delayMs: number,
+    source: string,
+  ): void {
+    clearTimeout(session.scheduledResumeTimer);
     const resume = setTimeout(() => {
-      void this.ensureGeneratorRunning(sessionDbId, source)
+      session.scheduledResumeTimer = undefined;
+      void this.ensureGeneratorRunning(session.sessionDbId, source)
         .catch(error => {
           logger.error('SESSION', 'Failed to resume the observer', {
-            sessionId: sessionDbId,
+            sessionId: session.sessionDbId,
             source,
           }, error instanceof Error ? error : new Error(String(error)));
         });
     }, delayMs);
     resume.unref?.();
+    session.scheduledResumeTimer = resume;
   }
 
   setupRoutes(app: express.Application): void {

@@ -28,6 +28,7 @@ import { paths, USER_SETTINGS_PATH } from './paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { emitDiagnostic } from './hook-io.js';
 import { proTrialUrl } from './pro-promo.js';
+import { relayedLine, relayedLink } from './relayed-text.js';
 
 /**
  * Origin for the cmem.ai funnel and gateway. Overridable so the whole flow can
@@ -124,51 +125,29 @@ const PRO_FALLBACK_KEYS = [
   'CLAUDE_MEM_PRO_FALLBACK_URL',
 ] as const;
 
-/** Longest gateway message or action the session-start notice relays. */
-const NOTICE_TEXT_MAX_CHARS = 300;
-
 /**
  * The one-time session-start notice for an active fallback. The gateway's
- * words enter model context here, so each is reduced to one plain line — no
- * control, format, or line-separator characters, whitespace collapsed, length
- * capped — and its link is relayed only when it is https on cmem.ai (plan
- * 2026-08-16 §1.1). Anything else gets the renewal link.
+ * words enter model context here, so each is relayed as one plain, bounded
+ * line (relayed-text.ts), and its link only when it is a cmem.ai page, where
+ * the plan is managed. Anything else gets the renewal link.
  *
  * Plan-neutral: paid accounts at their monthly cap are turned away too, so it
  * never assumes a trial ended. Without the gateway's words it says only what
  * is true for every account.
  */
 export function proFallbackNotice(notice: ProFallbackNotice): string {
-  const message = noticeLine(notice.message) || 'cmem.ai memory is paused for this account.';
-  const action = noticeLine(notice.action);
+  const message = relayedLine(notice.message) || 'cmem.ai memory is paused for this account.';
+  const action = relayedLine(notice.action);
   return [
     message,
     ...(action ? [action] : []),
-    `Memory is using your Anthropic plan for now. Manage your plan: ${noticeLink(notice.url)}`,
+    `Memory is using your Anthropic plan for now. Manage your plan: ${planLink(notice.url)}`,
   ].join('\n');
 }
 
-function noticeLine(text: string | undefined): string {
-  const line = (text ?? '')
-    .replace(/\s+/g, ' ') // newlines, tabs, and line/paragraph separators
-    .replace(/[\p{Cc}\p{Cf}]/gu, '') // the remaining control and format characters
-    .replace(/ {2,}/g, ' ')
-    .trim();
-  return line.length > NOTICE_TEXT_MAX_CHARS
-    ? `${line.slice(0, NOTICE_TEXT_MAX_CHARS - 1).trimEnd()}…`
-    : line;
-}
-
-function noticeLink(url: string | undefined): string {
-  try {
-    const parsed = new URL((url ?? '').trim());
-    if (parsed.protocol === 'https:' && parsed.hostname === 'cmem.ai' && !parsed.username && !parsed.password) {
-      return parsed.href;
-    }
-  } catch {
-    // Not a URL at all.
-  }
-  return proTrialUrl('fallback');
+function planLink(url: string | undefined): string {
+  const link = relayedLink(url);
+  return link !== null && new URL(link).hostname === 'cmem.ai' ? link : proTrialUrl('fallback');
 }
 
 /**

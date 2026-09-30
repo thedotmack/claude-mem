@@ -13,7 +13,12 @@ import {
   type ProviderSelection,
 } from '../../src/services/worker/provider-dispatch.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
-import { QUOTA_PROBE_STALE_MS, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
+import {
+  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  QUOTA_PROBE_STALE_MS,
+  recordQuotaExhausted,
+  resetQuotaCooldownsForTesting,
+} from '../../src/shared/quota-cooldown.js';
 import { isCmemGatewayUrl } from '../../src/shared/cmem-gateway.js';
 
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
@@ -184,6 +189,22 @@ describe('provider-dispatch', () => {
       expect(select().provider).toBe('claude');
     });
 
+    it('stays on claude, claim-free, while an openrouter breaker outlives the fallback window, then probes', () => {
+      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsedFallbackAt() });
+      // The start gate would refuse any gateway run while this breaker is live.
+      const armedAt = Date.now() - 20 * 60_000;
+      recordQuotaExhausted('openrouter', 'rate limited', 'rate_limit', armedAt);
+
+      expect(select()).toEqual({ provider: 'claude', gatewayProbeClaimId: null });
+      expect(getSelectedProvider()).toBe('claude');
+
+      // Once the breaker's own window elapses, the single re-probe goes out.
+      setSystemTime(new Date(armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1_000));
+      const probe = select();
+      expect(probe.provider).toBe('openrouter');
+      expect(probe.gatewayProbeClaimId).not.toBeNull();
+    });
+
     it('takes no claim for a user-owned openrouter.ai key', () => {
       pinOpenRouterEnv({
         CLAUDE_MEM_OPENROUTER_BASE_URL: '',
@@ -338,6 +359,16 @@ describe('provider-dispatch', () => {
       pinOpenRouterEnv();
       const error = gatewayError(402, 'subscription_inactive');
       expect(error.kind).toBe('auth_invalid');
+
+      expect(recordCmemFallbackIfEligible(error, null, settingsPath)).toBe(true);
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).not.toBe('');
+    });
+
+    it.each([401, 403])('records the fallback for a %i the gateway sent without an envelope (an edge or WAF page)', (status) => {
+      pinOpenRouterEnv();
+      const error = classifyOpenRouterError({ status, bodyText: '<html>Access denied</html>', cause: new Error(`upstream ${status}`) });
+      expect(error.kind).toBe('auth_invalid');
+      expect(error.code).toBeUndefined();
 
       expect(recordCmemFallbackIfEligible(error, null, settingsPath)).toBe(true);
       expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).not.toBe('');

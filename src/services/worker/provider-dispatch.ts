@@ -22,7 +22,7 @@ import { scrubErrorMessage } from '../../shared/observer-health.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
-import { releaseQuotaProbe, tryAdmitCmemGatewayProbe } from '../../shared/quota-cooldown.js';
+import { isQuotaCooldownActive, releaseQuotaProbe, tryAdmitCmemGatewayProbe } from '../../shared/quota-cooldown.js';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -35,6 +35,17 @@ export function shouldUseCmemFallback(
   if (Number.isNaN(timestamp)) return Boolean((fallbackAt ?? '').trim());
   const age = nowMs - timestamp;
   return age >= 0 && age < CMEM_FALLBACK_RETRY_MS;
+}
+
+/**
+ * While a fallback is recorded, whether memory stays on the Anthropic plan
+ * with no gateway re-probe: during the fallback window, and for as long as an
+ * openrouter breaker still withholds requests after it. That breaker's start
+ * gate refuses every gateway run, so a probe admitted into it would run
+ * nothing at all, neither on the gateway nor on Claude.
+ */
+function staysOnClaudeInFallback(fallbackAt: string): boolean {
+  return shouldUseCmemFallback(fallbackAt) || isQuotaCooldownActive('openrouter');
 }
 
 /**
@@ -60,7 +71,7 @@ export function getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
     if (
       settings.CLAUDE_MEM_PRO_FALLBACK_AT
       && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)
-      && shouldUseCmemFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)
+      && staysOnClaudeInFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)
     ) {
       return 'claude';
     }
@@ -94,7 +105,7 @@ export function selectProviderForGenerator(): ProviderSelection {
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
-      if (shouldUseCmemFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
+      if (staysOnClaudeInFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
         return { provider: 'claude', gatewayProbeClaimId: null };
       }
       // Window elapsed: exactly one caller re-probes the gateway, the rest stay
@@ -124,15 +135,16 @@ export function releaseCmemGatewayProbe(claimId: number | null): void {
  * fallback's trigger:
  *  - kind 'quota_exhausted' (code allowance_exhausted, or a legacy 402): the
  *    allowance is spent, paid accounts at their monthly cap included;
- *  - code 'key_invalid': the delivered key is not recognized;
- *  - code 'subscription_inactive': a lapsed, cancelled, or unpaid trial or
- *    plan — the very case the installer's fallback promise is for (#3687), and
- *    the most common way the gateway turns an account away.
+ *  - kind 'auth_invalid': the gateway refused the key. Code 'key_invalid' (not
+ *    recognized), code 'subscription_inactive' (a lapsed, cancelled, or unpaid
+ *    trial or plan — the very case the installer's fallback promise is for,
+ *    #3687, and the most common way the gateway turns an account away), or a
+ *    401/403 with no taxonomy envelope at all (an edge or WAF page). Every
+ *    refusal leaves the key unusable here, and an auth cooldown in its place
+ *    would leave memory on neither the gateway nor Claude.
  */
 function isTerminalGatewayRejection(error: ClassifiedProviderError): boolean {
-  return error.kind === 'quota_exhausted'
-    || error.code === 'key_invalid'
-    || error.code === 'subscription_inactive';
+  return error.kind === 'quota_exhausted' || error.kind === 'auth_invalid';
 }
 
 /**
