@@ -16,6 +16,7 @@ import {
   SearchOrchestrator,
   SEARCH_CONSTANTS
 } from './search/index.js';
+import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 
@@ -498,6 +499,15 @@ export class SearchManager {
     // of the known categories, treat it as an alias for `obs_type` and scope
     // the search to observations, so the documented behavior actually holds.
     const { category, effectiveObsType } = this.resolveTypeFilters(type, obs_type);
+    assertSearchHasQueryOrFilter({
+      query,
+      project: options.project,
+      platformSource: options.platformSource,
+      dateRange: options.dateRange,
+      obsType: effectiveObsType,
+      concepts,
+      files,
+    });
 
     const searchObservations = !category || category === 'observations';
     const searchSessions = !category || category === 'sessions';

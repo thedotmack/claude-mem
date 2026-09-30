@@ -7,6 +7,7 @@ import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
+import { viewerBaseUrl } from "./viewer-url.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
@@ -236,6 +237,17 @@ export function getWorkerHost(): string {
   const settings = getWorkerSettings();
   cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
   return cachedHost;
+}
+
+/**
+ * Base URL for the live-view UI as printed to users. Prefers an explicit public
+ * URL (env `CLAUDE_MEM_PUBLIC_URL`, else the settings value) — the
+ * browser-reachable alias when the worker runs in a remote sandbox behind a
+ * port-forward — and falls back to loopback on the given port. Empty/unset
+ * preserves the historical `http://localhost:<port>` output for local users.
+ */
+export function getViewerBaseUrl(port: number | string): string {
+  return viewerBaseUrl(port, getWorkerSettings().CLAUDE_MEM_PUBLIC_URL);
 }
 
 export function getWorkerApiRequestTimeoutMs(): number {
