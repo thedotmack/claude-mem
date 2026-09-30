@@ -5,11 +5,15 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
+
+export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
   private onPendingMutate?: () => void;
+  private telegramWrapupFormatter: TelegramWrapupFormatter | null = null;
   private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
 
   constructor(dbManager: DatabaseManager) {
@@ -18,6 +22,10 @@ export class SessionManager {
 
   setOnPendingMutate(cb: () => void): void {
     this.onPendingMutate = cb;
+  }
+
+  setTelegramWrapupFormatter(formatter: TelegramWrapupFormatter): void {
+    this.telegramWrapupFormatter = formatter;
   }
 
   initializeSession(
@@ -57,6 +65,12 @@ export class SessionManager {
       if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
         session.platformSource = dbSession.platform_source;
       }
+      if (dbSession.observed_model && dbSession.observed_model !== session.observedModel) {
+        session.observedModel = dbSession.observed_model;
+      }
+      if (dbSession.observed_billing && dbSession.observed_billing !== session.observedBilling) {
+        session.observedBilling = dbSession.observed_billing;
+      }
 
       if (currentUserPrompt) {
         logger.debug('SESSION', 'Updating userPrompt for continuation', {
@@ -93,12 +107,21 @@ export class SessionManager {
       });
     }
 
-    const userPrompt = currentUserPrompt || dbSession.user_prompt;
+    const latestPromptText = currentUserPrompt
+      ? null
+      : this.dbManager.getSessionStore().getLatestPromptTextFromUserPrompts(
+          dbSession.content_session_id,
+          sessionDbId,
+        );
+    const userPrompt = currentUserPrompt || latestPromptText || dbSession.user_prompt;
 
     if (!currentUserPrompt) {
-      logger.debug('SESSION', 'No currentUserPrompt provided for new session, using database', {
+      logger.debug('SESSION', latestPromptText
+        ? 'No currentUserPrompt provided for new session, using latest user_prompts'
+        : 'No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
+        latestPrompt: latestPromptText?.substring(0, 80) ?? '',
         dbPrompt: dbSession.user_prompt?.substring(0, 80) ?? ''
       });
     } else {
@@ -115,6 +138,8 @@ export class SessionManager {
       memorySessionId: null,  // Always start fresh - SDK will capture new ID
       project: suppliedProject || dbSession.project,
       platformSource: dbSession.platform_source,
+      observedModel: dbSession.observed_model ?? undefined,
+      observedBilling: dbSession.observed_billing ?? undefined,
       userPrompt,
       abortController: new AbortController(),
       generatorPromise: null,
@@ -128,9 +153,11 @@ export class SessionManager {
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,
       consecutiveInvalidOutputs: 0,
+      consecutiveContextOverflows: 0,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
-      pendingAgentType: null
+      pendingAgentType: null,
+      pausedReason: null
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -156,6 +183,63 @@ export class SessionManager {
 
   getSession(sessionDbId: number): ActiveSession | undefined {
     return this.sessions.get(sessionDbId);
+  }
+
+  private deliverSessionWrapupInBackground(sessionDbId: number): void {
+    const formatSummary = this.telegramWrapupFormatter;
+    if (!formatSummary) {
+      logger.warn('TELEGRAM', 'Telegram session wrap-up formatter is unavailable', {
+        sessionId: sessionDbId,
+      });
+      return;
+    }
+
+    void deliverSessionWrapup({
+      sessionStore: this.dbManager.getSessionStore(),
+      sessionDbId,
+      formatSummary,
+    }).catch((error: unknown) => {
+      logger.warn('TELEGRAM', 'Failed to deliver Telegram session wrap-up from SessionManager', {
+        sessionId: sessionDbId,
+      }, error instanceof Error ? error : new Error(String(error)));
+    });
+  }
+
+  private takeRequestedSessionWrapup(session: ActiveSession): boolean {
+    if (session.telegramWrapupTimer != null) {
+      clearTimeout(session.telegramWrapupTimer);
+      session.telegramWrapupTimer = null;
+    }
+
+    return session.telegramWrapupRequestedAt != null;
+  }
+
+  /** SessionEnd is the sole producer of this marker; Stop only queues a summary. */
+  async requestSessionWrapup(sessionDbId: number): Promise<void> {
+    const session = this.getSession(sessionDbId);
+    if (!session) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+      return;
+    }
+
+    session.telegramWrapupRequestedAt = Date.now();
+    if (session.telegramWrapupTimer != null) {
+      clearTimeout(session.telegramWrapupTimer);
+    }
+    session.telegramWrapupTimer = setTimeout(() => {
+      session.telegramWrapupTimer = null;
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }, SESSION_END_WRAPUP_GRACE_MS);
+    session.telegramWrapupTimer.unref?.();
+  }
+
+  /** Called after a summary write; the SessionEnd marker preserves Stop-only silence. */
+  deliverRequestedSessionWrapup(sessionDbId: number): void {
+    const session = this.getSession(sessionDbId);
+    if (session?.telegramWrapupRequestedAt == null) {
+      return;
+    }
+    this.deliverSessionWrapupInBackground(sessionDbId);
   }
 
   async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
@@ -304,6 +388,9 @@ export class SessionManager {
       }
     }
 
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }
     this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session deleted', {
@@ -327,6 +414,10 @@ export class SessionManager {
       session.respawnTimer = undefined;
     }
 
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }
+
     this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
@@ -342,6 +433,22 @@ export class SessionManager {
 
   getActiveSessionCount(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * Snapshot paused in-memory work without loading sessions or changing the buffer.
+   * The automatic sweep also leaves out sessions whose own overflow cooldown is
+   * still running: the start gate would only refuse them and log a skip.
+   */
+  getResumableSessionIds(includeOperatorOnly: boolean = false, nowMs: number = Date.now()): number[] {
+    const automaticallyRetryable = new Set([null, undefined, 'quota', 'overflow', 'provider_switch', 'response_stall', 'setup_required']);
+    return Array.from(this.sessions.values())
+      .filter(session => !session.generatorPromise
+        && this.buffer.getPendingCount(session.sessionDbId) > 0
+        && (includeOperatorOnly || !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined))
+        && (includeOperatorOnly || !(session.overflowPausedUntilMs !== undefined && nowMs < session.overflowPausedUntilMs))
+        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
+      .map(session => session.sessionDbId);
   }
 
   getTotalQueueDepth(): number {

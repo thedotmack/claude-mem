@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -36,6 +36,63 @@ function commandHookEntriesFrom(relativePath: string): any[] {
 function mcpStartupCommandFrom(relativePath: string): string {
   const parsed = readJson(relativePath);
   return parsed.mcpServers['mcp-search'].args[1];
+}
+
+/** PATH export through the first `; _C=` marker in Claude hook commands. */
+function claudePathPreludeFrom(command: string): string {
+  const marker = '; _C=';
+  const end = command.indexOf(marker);
+  expect(end).toBeGreaterThan(0);
+  return command.slice(0, end + 1);
+}
+
+function posixPath(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
+/** Map Windows %TEMP% paths to Git bash /tmp/... so shell-eval assertions match locally and on CI. */
+function normalizeShellPath(p: string): string {
+  const posix = posixPath(p).replace(/\/+$/, '');
+  const tempMapped = posix.match(
+    /^(?:[A-Za-z]:)?\/(?:Users\/[^/]+\/)?AppData\/Local\/Temp\/(.+)$/i,
+  );
+  if (tempMapped) {
+    return `/tmp/${tempMapped[1]}`;
+  }
+  return posix;
+}
+
+function expectResolvedPath(stdout: string, expectedRoot: string): void {
+  const match = stdout.match(/RESOLVED=(.+)/);
+  expect(match).not.toBeNull();
+  expect(normalizeShellPath(match![1].trim())).toBe(normalizeShellPath(expectedRoot));
+}
+
+function bashExecutable(): string {
+  if (process.platform === 'win32') {
+    const gitBash = 'C:/Program Files/Git/bin/bash.exe';
+    if (existsSync(gitBash)) {
+      return gitBash;
+    }
+  }
+  return 'bash';
+}
+
+function installFakeNvmNode(home: string, version: string): string {
+  const nodeBin = path.join(home, '.nvm', 'versions', 'node', `v${version}`, 'bin');
+  mkdirSync(nodeBin, { recursive: true });
+  const nodePath = path.join(nodeBin, 'node');
+  writeFileSync(nodePath, '#!/bin/sh\necho "fake-node"\n');
+  chmodSync(nodePath, 0o755);
+  return nodeBin;
+}
+
+function shellEval(command: string, env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(bashExecutable(), ['-c', command], {
+    env: { PATH: process.env.PATH ?? '', ...env },
+    encoding: 'utf-8',
+  });
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
 describe('Plugin Distribution - Skills', () => {
@@ -85,6 +142,13 @@ describe('Plugin Distribution - Required Files', () => {
     'plugin/skills/mem-search/SKILL.md',
     'plugin/skills/mode-creator/SKILL.md',
     '.agents/plugins/marketplace.json',
+    '.cursor-plugin/marketplace.json',
+    'claude-mem-cursor/.cursor-plugin/plugin.json',
+    'claude-mem-cursor/mcp.json',
+    'claude-mem-cursor/hooks/hooks.json',
+    'claude-mem-grok-bot/.cursor-plugin/plugin.json',
+    'claude-mem-grok-bot/mcp.json',
+    'claude-mem-grok-bot/skills/host-observer/SKILL.md',
   ];
 
   for (const filePath of requiredFiles) {
@@ -106,6 +170,20 @@ describe('Plugin Distribution - Codex Marketplace', () => {
   it('ships Codex hooks with only Codex-supported root keys', () => {
     const codexHooks = readJson('plugin/hooks/codex-hooks.json');
     expect(Object.keys(codexHooks).sort()).toEqual(['hooks']);
+  });
+
+  it('re-injects Codex memory on every SessionStart source that starts a fresh context', () => {
+    // Codex emits startup, resume, clear and compact (SessionStartSource in
+    // codex-rs/hooks/src/events/session_start.rs). clear and compact both hand
+    // the model an empty context, so the injection hook has to run for them or
+    // the session continues with no memory.
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const matchers = codexHooks.hooks.SessionStart.map((entry: any) => entry.matcher);
+
+    expect(matchers).toHaveLength(1);
+    for (const source of ['startup', 'resume', 'clear', 'compact']) {
+      expect(matchers[0].split('|')).toContain(source);
+    }
   });
 
   it('sets the Codex hook marker on every Codex command', () => {
@@ -137,7 +215,8 @@ describe('Plugin Distribution - Codex Marketplace', () => {
   it('ships a single Codex SessionStart command', () => {
     const codexHooks = readJson('plugin/hooks/codex-hooks.json');
     expect(codexHooks.hooks.SessionStart[0].hooks).toHaveLength(1);
-    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).toContain('version-check.js');
+    expect(codexHooks.hooks.SessionStart[0].hooks[0].command).not.toContain('version-check.js');
+    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).not.toContain('version-check.js');
   });
 
   it('MCP launcher can recover without plugin root environment variables', () => {
@@ -148,6 +227,33 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(command).toContain('.codex/plugins/cache/claude-mem-local/claude-mem');
     expect(command).toContain('plugins/cache/thedotmack/claude-mem');
     expect(command).toContain('claude-mem: mcp server not found');
+  });
+});
+
+
+describe('Plugin Distribution - Cursor Marketplace', () => {
+  it('ships independent Cursor and Grok Bot marketplace entries', () => {
+    const marketplace = readJson('.cursor-plugin/marketplace.json');
+    expect(marketplace.owner.name).toBe('Alex Newman');
+    expect(marketplace.plugins.map((plugin: any) => plugin.name)).toEqual([
+      'claude-mem-cursor',
+      'claude-mem-grok-bot',
+    ]);
+  });
+
+  it('wires Cursor hooks through the npx hook entrypoint', () => {
+    const hooks = readJson('claude-mem-cursor/hooks/hooks.json');
+    expect(hooks.hooks.beforeSubmitPrompt[0].command).toContain('npx -y claude-mem hook cursor session-init');
+    expect(hooks.hooks.stop[0].command).toContain('npx -y claude-mem hook cursor summarize');
+  });
+
+  it('ships the shared local and remote MCP definitions for both plugins', () => {
+    for (const relativePath of ['claude-mem-cursor/mcp.json', 'claude-mem-grok-bot/mcp.json']) {
+      const mcp = readJson(relativePath);
+      expect(mcp.mcpServers['claude-mem-local'].args).toEqual(['-y', 'claude-mem', 'mcp']);
+      const expected = 'Bearer ' + '${' + 'CLAUDE_MEM_MCP_TOKEN' + '}';
+      expect(mcp.mcpServers['claude-mem-remote'].headers.Authorization).toBe(expected);
+    }
   });
 });
 
@@ -180,6 +286,19 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
     for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
       expect(command).toContain(cachePath);
       expect(command.indexOf(cachePath)).toBeLessThan(command.indexOf(marketplacesPath));
+    }
+  });
+
+  it('should not spawn a login shell to rebuild PATH on every Claude hook (#3190)', () => {
+    for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
+      expect(command).not.toContain('SHELL -lc');
+    }
+  });
+
+  it('should quote NVM ls path inside export PATH (#3190)', () => {
+    for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
+      expect(command).toMatch(/ls "\$HOME\/\.nvm\/versions\/node"/);
+      expect(command).not.toMatch(/ls \\"\$HOME\/\.nvm\/versions\/node\\"/);
     }
   });
 });
@@ -230,9 +349,36 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
       expect(command).not.toContain('$HOME/.claude/plugins/');
     }
   });
+
+  it('Claude runtime hooks fail open when plugin scripts cannot be resolved (#3412)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    try {
+      const parsed = readJson('plugin/hooks/hooks.json');
+      for (const [eventName, matchers] of Object.entries(parsed.hooks ?? {})) {
+        if (eventName === 'Setup') continue;
+        for (const matcher of matchers as any[]) {
+          for (const hook of matcher.hooks ?? []) {
+            if (hook.type !== 'command') continue;
+            const result = shellEval(hook.command, { HOME: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude') });
+            expect(result.status).toBe(0);
+            expect(result.stderr).toContain('claude-mem: plugin scripts not found');
+          }
+        }
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
+  it('runs bug-report from the bundled distribution entry', () => {
+    const packageJson = readJson('package.json');
+
+    expect(packageJson.scripts['bug-report']).toBe('node dist/bug-report/index.js');
+    expect(packageJson.files).toContain('dist');
+  });
+
   it('should include bundled plugin entries in root package.json files field', () => {
     const packageJsonPath = path.join(projectRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
@@ -245,7 +391,7 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/sqlite');
   });
 
-  it('npm tarball includes runtime and Claude marketplace root manifests required by clean installs (#3424)', () => {
+  it('npm tarball includes generated runtime entries and the Claude marketplace root manifests (#3424)', () => {
     const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
@@ -255,6 +401,7 @@ describe('Plugin Distribution - package.json Files Field', () => {
     const packed = JSON.parse(result.stdout);
     const filePaths = new Set(packed[0].files.map((file: { path: string }) => file.path));
 
+    expect(filePaths.has('dist/bug-report/index.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/observations/files.js')).toBe(true);
     expect(filePaths.has('.claude-plugin/marketplace.json')).toBe(true);
@@ -272,6 +419,7 @@ describe('Plugin Distribution - Build Script Verification', () => {
     expect(content).toContain('plugin/sqlite/SessionStore.js');
     expect(content).toContain('plugin/sqlite/observations/files.js');
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
+    expect(content).toContain('dist/bug-report/index.js');
   });
 });
 
@@ -306,13 +454,14 @@ describe('Plugin Distribution - Setup Hook (#1547)', () => {
 });
 
 describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
-  it('runs observation, file context, and summarization asynchronously', () => {
+  it('runs observation, file context, summarization, and SessionEnd asynchronously', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
 
     const postToolUse = parsed.hooks.PostToolUse[0].hooks[0];
     const preToolUse = parsed.hooks.PreToolUse[0].hooks[0];
     const stop = parsed.hooks.Stop[0].hooks[0];
+    const sessionEnd = parsed.hooks.SessionEnd[0].hooks[0];
 
     expect(postToolUse.command).toContain('observation');
     expect(postToolUse.async).toBe(true);
@@ -320,6 +469,31 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     expect(preToolUse.async).toBe(true);
     expect(stop.command).toContain('summarize');
     expect(stop.async).toBe(true);
+    expect(sessionEnd.command).toContain('session-end');
+    expect(sessionEnd.async).toBe(true);
+  });
+
+  it('runs the SessionStart worker start asynchronously and keeps context and UserPromptSubmit synchronous (#3303)', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    const sessionStart = parsed.hooks.SessionStart[0].hooks;
+    const userPromptSubmit = parsed.hooks.UserPromptSubmit[0].hooks[0];
+
+    expect(sessionStart).toHaveLength(2);
+    // `start` only prints a status envelope, and the context hook lazily
+    // spawns the worker itself, so session start need not wait for it.
+    expect(sessionStart[0].command).toContain(' start');
+    expect(sessionStart[0].async).toBe(true);
+    // `context` must stay synchronous: Claude Code hands an async hook's
+    // additionalContext / systemMessage to the model on the next turn and never
+    // shows the systemMessage to the user, which would hide the startup
+    // timeline, the viewer link and the trial notice.
+    expect(sessionStart[1].command).toContain(' hook claude-code context');
+    expect(sessionStart[1]).not.toHaveProperty('async');
+    expect(userPromptSubmit.command).toContain(' hook claude-code session-init');
+    // Keep prompt-row persistence ordered before downstream hooks consume it.
+    expect(userPromptSubmit).not.toHaveProperty('async');
   });
 });
 
@@ -332,26 +506,16 @@ const ccTrailing = (...tail: string[]) => [
 ];
 const claudeHook = (tail: string[], extra: Record<string, unknown> = {}) => buildShellCommand({
   host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-  trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
+  trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', failOpen: true, ...extra,
 });
 const codexHook = (tail: string[]) => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
   extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
 });
-const codexStartupHook = () => buildShellCommand({
-  host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-  trailingCommand: [
-    '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
-    'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
-    'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
-    '; fi',
-  ],
-  notFoundMessage: 'claude-mem: plugin scripts not found',
-});
-const codexHookPair = (tail: string[], options: { startupVersionCheck?: boolean } = {}) => ({
-  command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
-  commandWindows: buildCodexWindowsCommand(tail, options),
+const codexHookPair = (tail: string[]) => ({
+  command: codexHook(tail),
+  commandWindows: buildCodexWindowsCommand(tail),
 });
 
 type RuleAExpectation = string | { command: string; commandWindows: string };
@@ -375,9 +539,10 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
     'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
+    'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
   },
   'plugin/hooks/codex-hooks.json': {
-    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
     'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
@@ -461,14 +626,6 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     return `${resolution} echo "RESOLVED=$_P"`;
   }
 
-  function shellEval(command: string, env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
-    const result = spawnSync('bash', ['-c', command], {
-      env: { PATH: process.env.PATH ?? '', ...env },
-      encoding: 'utf-8',
-    });
-    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
-  }
-
   const claudeCommands = () => {
     const parsed = readJson('plugin/hooks/hooks.json');
     return Object.entries(RULE_A_EXPECTATIONS['plugin/hooks/hooks.json']).map(
@@ -488,10 +645,66 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
           CLAUDE_PLUGIN_ROOT: root,
           HOME: mkdtempSync(path.join(tmpdir(), 'cm-home-')),
         });
-        expect(stdout).toContain(`RESOLVED=${root}`);
+        expectResolvedPath(stdout, root);
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a valid CLAUDE_PLUGIN_ROOT without scanning the plugin cache (#3449, #4121)', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cm-root-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const shimBin = mkdtempSync(path.join(tmpdir(), 'cm-bin-'));
+    const cacheScanMarker = path.join(home, 'cache-scan-ran');
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(root, 'scripts', file), '');
+    }
+    // Only the cache scan sorts with `sort -r`; the NVM PATH prelude sorts by
+    // -t. keys. This shim records `-r` calls and passes input through.
+    writeFileSync(
+      path.join(shimBin, 'sort'),
+      '#!/bin/sh\n[ "$1" = "-r" ] && printf touched > "$CACHE_SCAN_MARKER"\ncat\n',
+    );
+    chmodSync(path.join(shimBin, 'sort'), 0o755);
+
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const codexCommands = Object.keys(RULE_A_EXPECTATIONS['plugin/hooks/codex-hooks.json']).map(
+      (dottedPath) => ({ dottedPath, command: hookCommandByPath(codexHooks, dottedPath)! }),
+    );
+
+    try {
+      for (const { dottedPath, command } of [...claudeCommands(), ...codexCommands]) {
+        rmSync(cacheScanMarker, { force: true });
+        const { status, stdout } = shellEval(instrument(command), {
+          CLAUDE_PLUGIN_ROOT: root,
+          HOME: home,
+          CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
+          PATH: `${shimBin}${path.delimiter}${process.env.PATH ?? ''}`,
+        });
+        expect({ dottedPath, status }).toEqual({ dottedPath, status: 0 });
+        expectResolvedPath(stdout, root);
+        expect({ dottedPath, cacheScanned: existsSync(cacheScanMarker) }).toEqual({ dottedPath, cacheScanned: false });
+      }
+
+      // Control: with an invalid CLAUDE_PLUGIN_ROOT the cache scan still runs,
+      // so the shim above would have caught a fast path that never engaged.
+      rmSync(cacheScanMarker, { force: true });
+      const [{ command: sessionStartCommand }] = claudeCommands().filter(
+        ({ dottedPath }) => dottedPath === 'SessionStart.0.1',
+      );
+      shellEval(instrument(sessionStartCommand), {
+        CLAUDE_PLUGIN_ROOT: path.join(home, 'not-a-plugin-root'),
+        HOME: home,
+        CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
+        PATH: `${shimBin}${path.delimiter}${process.env.PATH ?? ''}`,
+      });
+      expect(existsSync(cacheScanMarker)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+      rmSync(shimBin, { recursive: true, force: true });
     }
   });
 
@@ -507,7 +720,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
         const { stdout } = shellEval(instrument(command), { HOME: home });
         // The version-sort producer yields a trailing slash; the hook trims it
         // via _R="${_R%/}".
-        expect(stdout).toContain(`RESOLVED=${cacheRoot}`);
+        expectResolvedPath(stdout, cacheRoot);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -536,24 +749,62 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), { HOME: home });
-        expect(stdout).toContain(`RESOLVED=${newRoot}`);
+        expectResolvedPath(stdout, newRoot);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('fails cleanly with the canonical not-found message when no candidate exists', () => {
+  it('keeps Setup fail-loud while runtime hooks fail open when no candidate exists', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-empty-'));
     try {
       const parsed = readJson('plugin/hooks/hooks.json');
-      const command = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
-      const result = spawnSync('bash', ['-c', command], {
-        env: { PATH: process.env.PATH ?? '', HOME: home },
-        encoding: 'utf-8',
+      const setupCommand = hookCommandByPath(parsed, 'Setup.0.0')!;
+      const setupResult = shellEval(setupCommand, { HOME: home });
+      expect(setupResult.status).not.toBe(0);
+      expect(setupResult.stderr).toMatch(/claude-mem: .* not found/);
+
+      const runtimeCommand = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
+      const runtimeResult = shellEval(runtimeCommand, { HOME: home });
+      expect(runtimeResult.status).toBe(0);
+      expect(runtimeResult.stderr).toMatch(/claude-mem: .* not found/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps runtime hooks fail-open when the resolved command exits non-zero (#3412)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-command-fail-'));
+    const pluginRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    writeFileSync(path.join(pluginRoot, 'scripts', 'bun-runner.js'), 'process.exit(7);\n');
+    writeFileSync(path.join(pluginRoot, 'scripts', 'worker-service.cjs'), '');
+
+    try {
+      const parsed = readJson('plugin/hooks/hooks.json');
+      const runtimeCommand = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
+      const runtimeResult = shellEval(runtimeCommand, { HOME: home });
+
+      expect(runtimeResult.status).toBe(0);
+      expect(runtimeResult.stderr).toContain('claude-mem: hook command failed (exit 7)');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('prepends the highest NVM node bin to PATH without login shell (#3190)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-nvm-only-'));
+    installFakeNvmNode(home, '18.20.0');
+    const newestBin = installFakeNvmNode(home, '20.11.0');
+    const prelude = claudePathPreludeFrom(commandHooksFrom('plugin/hooks/hooks.json')[0]);
+    try {
+      const { status, stdout } = shellEval(`${prelude} printf '%s' "$PATH"`, {
+        HOME: home,
+        PATH: '/usr/bin:/bin',
       });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr ?? '').toMatch(/claude-mem: .* not found/);
+      expect(status).toBe(0);
+      expect(normalizeShellPath((stdout ?? '').split(':')[0])).toBe(normalizeShellPath(newestBin));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

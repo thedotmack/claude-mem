@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
-import * as realSpawn from '../../src/shared/spawn.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
-const realSpawnSnapshot = { ...realSpawn };
+const realProcessManagerSnapshot = { ...realProcessManager };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
 
 // On version mismatch the hook must NOT delegate the recycle to the running
 // worker (the old design POSTed /api/admin/restart and the dying worker
@@ -35,15 +37,17 @@ let versionMatchResult: { matches: boolean; pluginVersion: string; workerVersion
 let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null;
 
 // Simulated process states driving the fetch mock: the stale worker serves
-// the port until it is killed; the successor serves it after spawnHidden.
+// the port until it is killed; the successor serves it after spawn.
 let staleWorkerAlive = true;
 let successorUp = false;
+let successorVersion: string | null = null;
 
-// Records every spawn attempt (the lazy-spawn seam, spawnHidden in spawn.ts).
+// Records every spawn attempt (lazy-spawn seam: spawnDetachedWorkerDaemon).
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () => Promise.resolve(versionMatchResult),
+  isPortInUse: () => Promise.resolve(false),
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
@@ -51,12 +55,27 @@ mock.module('../../src/supervisor/index.js', () => ({
   readOwnedWorkerPidInfo: () => ownedPidInfo,
 }));
 
-mock.module('../../src/shared/spawn.js', () => ({
-  spawnHidden: (command: string, args: string[]) => {
-    spawnCalls.push({ command, args });
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
+  ...realProcessManagerSnapshot,
+  spawnDetachedWorkerDaemon: (runtimePath: string, scriptPath: string) => {
+    spawnCalls.push({ command: runtimePath, args: [scriptPath, '--daemon'] });
     successorUp = true;
-    return { pid: 5151, unref: () => {} };
+    return 0;
   },
+}));
+
+// Port release is decided by a bind probe (classifyPortOccupancy), not by a
+// refused HTTP connect — a connect probe cannot tell "free" from "orphaned
+// listener still holding the port", which is what wedged Windows on
+// 2026-07-26 (#3416). Stubbed so these tests never bind the real worker port;
+// the killed stale worker's port reports free.
+// The infrastructure barrel re-exports HealthMonitor's bindings, so the
+// barrel's stubs are repeated here or this mock would put the real ones back.
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+  ...realHealthMonitorSnapshot,
+  checkVersionMatch: () => Promise.resolve(versionMatchResult),
+  isPortInUse: () => Promise.resolve(false),
+  classifyPortOccupancy: () => Promise.resolve('free'),
 }));
 
 async function importWorkerUtilsFresh() {
@@ -85,7 +104,7 @@ function installFetchMock(): void {
     }
     if (u.includes('/api/health')) {
       return okResponse({
-        version: staleWorkerAlive ? versionMatchResult.workerVersion : versionMatchResult.pluginVersion,
+        version: staleWorkerAlive ? versionMatchResult.workerVersion : (successorVersion ?? versionMatchResult.pluginVersion),
       });
     }
     return okResponse({});
@@ -95,6 +114,8 @@ function installFetchMock(): void {
 describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () => {
   const originalFetch = global.fetch;
   const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  const originalScriptPath = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+  let scriptPath: string;
   let tempDataDir: string;
   let killSpy: ReturnType<typeof spyOn>;
   let killCalls: Array<{ pid: number; signal: string | number | undefined }>;
@@ -106,16 +127,21 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     // the test never touches the real ~/.claude-mem lock.
     tempDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-version-recycle-'));
     process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
+    scriptPath = join(tempDataDir, 'worker-service.cjs');
+    writeFileSync(scriptPath, '// stale worker bundle\n');
+    process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = scriptPath;
     installFetchMock();
     spawnCalls.length = 0;
     staleWorkerAlive = true;
     successorUp = false;
+    successorVersion = null;
     ownedPidInfo = null;
     killCalls = [];
     killError = null;
     killSpy = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
       killCalls.push({ pid, signal });
       staleWorkerAlive = false;
+      successorUp = false;
       if (killError !== null) throw killError;
       return true;
     }) as typeof process.kill);
@@ -129,6 +155,8 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     } else {
       process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
     }
+    if (originalScriptPath === undefined) delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+    else process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = originalScriptPath;
     rmSync(tempDataDir, { recursive: true, force: true });
     mock.restore();
   });
@@ -136,7 +164,8 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
   afterAll(() => {
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
-    mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
+    mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
   });
 
   it('SIGKILLs the stale worker and lazy-spawns the resolved script — never POSTs /api/admin/restart', async () => {
@@ -152,6 +181,29 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     expect(spawnCalls[0].args).toContain('--daemon');
     const restartCalls = fetchLog.filter(c => c.url.includes('/api/admin/restart'));
     expect(restartCalls.length).toBe(0);
+  });
+
+  it('does not recycle the same stale bundle again in a later hook, but retries after the bundle changes', async () => {
+    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+    successorVersion = STALE_VERSION;
+    const firstHook = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: STALE_PID, port: firstHook.getWorkerPort(), startedAt: new Date().toISOString() };
+
+    expect(await firstHook.ensureWorkerRunning()).toBe(true);
+    expect(spawnCalls.length).toBe(1);
+
+    // A new hook has no module-local memory of the unsuccessful restart.
+    const nextHook = await importWorkerUtilsFresh();
+    expect(await nextHook.ensureWorkerRunning()).toBe(true);
+    expect(spawnCalls.length).toBe(1);
+    expect(killCalls.length).toBe(1);
+
+    // Rebuilding the install must let the next hook replace the stale worker.
+    writeFileSync(scriptPath, '// rebuilt worker bundle with corrected version\n');
+    successorVersion = PLUGIN_VERSION;
+    const afterRebuild = await importWorkerUtilsFresh();
+    expect(await afterRebuild.ensureWorkerRunning()).toBe(true);
+    expect(spawnCalls.length).toBe(2);
   });
 
   it('does NOT kill or spawn when versions match', async () => {
