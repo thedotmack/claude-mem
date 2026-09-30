@@ -1,5 +1,5 @@
 datasets/
-node_modules/
+node_modules
 dist/
 **/_tree-sitter/
 *.log
@@ -19,6 +19,8 @@ plugin/data.backup/
 package-lock.json
 bun.lock
 !plugin/bun.lock
+!workers/sync-hub/bun.lock
+!services/sync-api/bun.lock
 private/
 Auto Run Docs/
 
@@ -40,6 +42,7 @@ plugin/.cli-installed
 plugin/scripts/claude-mem
 
 CONTRIB_NOTES.md
+CLAUDE.local.md
 
 .docker-claude-mem-data/
 

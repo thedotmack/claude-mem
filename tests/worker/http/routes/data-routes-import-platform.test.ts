@@ -17,6 +17,7 @@ function capturePostChain(routes: DataRoutes, targetPath: string): (req: Request
         handler = rest[1];
       }
     }),
+    delete: mock(() => {}),
   };
 
   routes.setupRoutes(app as any);
