@@ -12,6 +12,13 @@ export interface GrokBotBrainbeatInput {
   project: string;
 }
 
+class BrainbeatHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Brainbeat webhook responded ${status}`);
+    this.name = 'BrainbeatHttpError';
+  }
+}
+
 function splitCsv(value: string | undefined): string[] {
   if (!value) return [];
   return value
@@ -31,15 +38,31 @@ export function webhookOrigin(url: string): string {
   }
 }
 
+/**
+ * A log-safe reason for a failed POST. Never the error's message: fetch errors
+ * can embed the full webhook URL, userinfo and query tokens included. Only the
+ * HTTP status, a timeout, or the error's name plus a bare system code survive.
+ */
+export function brainbeatFailureReason(error: unknown): string {
+  if (error instanceof BrainbeatHttpError) return `HTTP ${error.status}`;
+  if (!(error instanceof Error)) return 'unknown error';
+  if (error.name === 'TimeoutError' || error.name === 'AbortError') return `timed out after ${BRAINBEAT_TIMEOUT_MS}ms`;
+  const code = (error as { code?: unknown }).code ?? (error.cause as { code?: unknown } | undefined)?.code;
+  return typeof code === 'string' && /^[A-Za-z0-9_]+$/.test(code) ? `${error.name} (${code})` : error.name;
+}
+
 async function postBrainbeat(url: string, headers: Record<string, string>, body: string): Promise<void> {
   const response = await fetch(url, {
     method: 'POST',
     headers,
     body,
+    // Never follow a redirect: it would carry the shared-secret header and the
+    // observation to whatever origin the receiver names.
+    redirect: 'error',
     signal: AbortSignal.timeout(BRAINBEAT_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(`Brainbeat webhook responded ${response.status}`);
+    throw new BrainbeatHttpError(response.status);
   }
 }
 
@@ -49,8 +72,8 @@ async function postBrainbeat(url: string, headers: Record<string, string>, body:
  * same needles the awareness pusher delivers to seats as files) to
  * CLAUDE_MEM_GROK_BOT_WEBHOOK_URL. Off while that URL is empty, and independent
  * of every Telegram setting. Fire-and-forget: the POSTs run concurrently, each
- * bounded by BRAINBEAT_TIMEOUT_MS; a failure is logged with the receiver's
- * origin only and never thrown.
+ * bounded by BRAINBEAT_TIMEOUT_MS; redirects are refused; a failure is logged
+ * with the receiver's origin and a log-safe reason only, and never thrown.
  */
 export async function notifyGrokBotBrainbeat(input: GrokBotBrainbeatInput): Promise<void> {
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -86,11 +109,13 @@ export async function notifyGrokBotBrainbeat(input: GrokBotBrainbeatInput): Prom
       timestamp: new Date().toISOString(),
     });
     return [postBrainbeat(webhookUrl, headers, body).catch((error: unknown) => {
+      // No error object: its message and stack can hold the full webhook URL.
       logger.warn('AWARENESS', 'Grok Bot brainbeat webhook failed', {
         observationId,
         project: input.project,
         webhook: webhookOrigin(webhookUrl),
-      }, error instanceof Error ? error : new Error(String(error)));
+        reason: brainbeatFailureReason(error),
+      });
     })];
   });
 

@@ -156,7 +156,7 @@ Each matching observation is sent as one JSON POST:
 }
 ```
 
-POSTs are sent concurrently and each times out after 5 seconds. A failure is logged with the receiver's origin only (never the full URL) and never blocks observation storage or other notifications.
+POSTs are sent concurrently and each times out after 5 seconds. Redirects are refused, so the shared secret and the observation only ever go to the configured URL; put the receiver's final address in the setting. A failure is logged with the receiver's origin and a short reason only (never the full URL) and never blocks observation storage or other notifications.
 
 ### Near-Duplicate Deduplication
 
