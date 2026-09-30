@@ -26,8 +26,11 @@ import type {
 
 const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'summary'];
 
+/** Per-lane upper bound for CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY. */
+export const MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE = 64;
+
 /**
- * How many generation jobs the server works in parallel.
+ * How many generation jobs each queue lane works in parallel.
  *
  * `ServerJobQueue` defaults to `concurrency: 1` and nothing has ever passed a
  * value, so generation is strictly serial however the deployment is configured —
@@ -41,17 +44,31 @@ const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'summary'];
  * time it existed. Every job completed. Every health check passed. The memory was
  * simply hours behind the work it described.
  *
+ * The value applies PER LANE. There are two lanes, `event` and `summary`, and
+ * each gets its own BullMQ worker with this concurrency, so N allows up to 2N
+ * provider calls in flight from one generation process. Size it against the
+ * provider's rate limit with that in mind. A value above
+ * MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE is clamped with a warning, so a typo
+ * cannot open an unbounded number of provider calls.
+ *
  * Unset keeps 1, so behaviour is unchanged unless a deployment opts in.
  */
 export function resolveServerGenerationConcurrency(): number | undefined {
   const raw = process.env.CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY;
   if (!raw) return undefined;
   const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     logger.warn('SYSTEM', 'server: ignoring invalid CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY', {
       value: raw,
     });
     return undefined;
+  }
+  if (parsed > MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE) {
+    logger.warn('SYSTEM', 'server: clamping CLAUDE_MEM_SERVER_GENERATION_CONCURRENCY to the per-lane cap', {
+      value: raw,
+      cap: MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE,
+    });
+    return MAX_SERVER_GENERATION_CONCURRENCY_PER_LANE;
   }
   return parsed;
 }
