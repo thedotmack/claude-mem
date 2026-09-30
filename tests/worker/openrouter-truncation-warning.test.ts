@@ -117,6 +117,29 @@ describe('OpenRouter output-token limit', () => {
     expect(warnSpy).toHaveBeenCalledWith('SDK', TRUNCATION_WARNING, expect.objectContaining({ maxTokens: 4096, contentChars: 0 }));
   });
 
+  it('names the returned response, not an earlier failed attempt, when the reply carries no request id', async () => {
+    let call = 0;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => {
+      call += 1;
+      if (call === 1) {
+        return new Response('upstream hiccup', { status: 500, headers: { 'x-request-id': 'req-failed-attempt' } });
+      }
+      return new Response(JSON.stringify({
+        model: 'test/model',
+        choices: [{ message: { content: '<observation><type>bugfix</type><title>cut' }, finish_reason: 'length' }],
+        usage: CAPPED_USAGE,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch);
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await makeProvider().runQuery(HISTORY);
+
+    expect(call).toBe(2);
+    const warning = warnSpy.mock.calls.find((call: unknown[]) => call[1] === TRUNCATION_WARNING);
+    expect(warning).toBeDefined();
+    expect((warning?.[2] as Record<string, unknown>).requestId).toBeUndefined();
+  });
+
   it('leaves output tokens undefined when the gateway reports no completion usage', async () => {
     fetchSpy = mockFetchResponse({
       model: 'test/model',

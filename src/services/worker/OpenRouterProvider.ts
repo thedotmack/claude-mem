@@ -569,6 +569,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     });
 
     let priorRequestId: string | null = null;
+    // The id of the response actually returned. priorRequestId keeps an earlier
+    // failed attempt's id for the retry-dedup header, so it would name the wrong
+    // request when the final response carries no id header.
+    let finalRequestId: string | undefined;
 
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
@@ -580,6 +584,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
+      finalRequestId = requestId ?? undefined;
       if (requestId) {
         priorRequestId = requestId;
       } else {
@@ -635,7 +640,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     if (choice?.finish_reason === 'length') {
       logger.warn('SDK', 'OpenRouter reply was cut off at the output-token limit', {
         model: data.model ?? model,
-        requestId: priorRequestId,
+        requestId: finalRequestId,
         maxTokens: OPENROUTER_MAX_OUTPUT_TOKENS,
         outputTokens: data.usage?.completion_tokens,
         contentChars: content.length,
