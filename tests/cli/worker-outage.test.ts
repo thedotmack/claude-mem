@@ -1,107 +1,140 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import path from 'path';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { pathToFileURL } from 'url';
 
-// Import after paths — DATA_DIR resolves to its module-level value regardless of when
-// the env var was set. Write test fixtures to the actual data dir the module uses.
-import { DATA_DIR } from '../../src/shared/paths.js';
-import { consumeWorkerOutageHint } from '../../src/shared/worker-utils.js';
+/**
+ * plan-17 step 2: a worker outage never blocks the user. The fail-loud counter
+ * only ever produces a message, and the user sees it once per session through
+ * a synchronous hook's systemMessage.
+ *
+ * Every case runs in a fresh bun process with its own CLAUDE_MEM_DATA_DIR. An
+ * in-process test would reuse the DATA_DIR that paths.ts resolved when an
+ * earlier test file imported it, and would then read and delete the real
+ * ~/.claude-mem failure state. Asserting the child's real exit code is also the
+ * only way to prove nothing calls process.exit(2).
+ */
 
-const stateDir = path.join(DATA_DIR, 'state');
-const hookFailuresPath = path.join(stateDir, 'hook-failures.json');
-const outageWarningPath = path.join(stateDir, 'last-outage-warning.json');
+const REPO_ROOT = join(import.meta.dir, '..', '..');
+const WORKER_UTILS_URL = pathToFileURL(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts')).href;
+const sandboxDirs: string[] = [];
 
-function writeFailures(count: number, lastFailureAt = Date.now()): void {
-  mkdirSync(stateDir, { recursive: true });
-  writeFileSync(hookFailuresPath, JSON.stringify({ consecutiveFailures: count, lastFailureAt }));
+interface OutageScriptResult {
+  exitCode: number | null;
+  stderr: string;
+  output: any;
 }
 
-function writeWarning(lastWarnedAt: number, lastSessionId?: string): void {
-  mkdirSync(stateDir, { recursive: true });
-  writeFileSync(outageWarningPath, JSON.stringify({ lastWarnedAt, lastSessionId }));
+/**
+ * Run `body` in a fresh bun process with worker-utils imported as `w`. The body
+ * stores what it wants to assert in `out`, which comes back parsed as JSON.
+ */
+function runOutageScript(body: string, threshold = 3): OutageScriptResult & { dataDir: string } {
+  const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-worker-outage-'));
+  sandboxDirs.push(dataDir);
+  const source = `
+    const w = await import(${JSON.stringify(WORKER_UTILS_URL)});
+    const out = {};
+    ${body}
+    process.stdout.write('OUT=' + JSON.stringify(out));
+  `;
+  const child = Bun.spawnSync([process.execPath, '-e', source], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      CLAUDE_MEM_DATA_DIR: dataDir,
+      CLAUDE_CONFIG_DIR: dataDir,
+      CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: String(threshold),
+      // The threshold trip sends hook_failed telemetry; keep it off the network.
+      CLAUDE_MEM_TELEMETRY: '0',
+    },
+  });
+  const stdout = new TextDecoder().decode(child.stdout);
+  const match = /OUT=(.*)$/s.exec(stdout);
+  return {
+    dataDir,
+    exitCode: child.exitCode,
+    stderr: new TextDecoder().decode(child.stderr),
+    output: match ? JSON.parse(match[1]) : null,
+  };
 }
-
-// Snapshots of the state files at the start of each test, restored afterward so
-// these tests don't mutate real ~/.claude-mem state permanently.
-let savedFailures: string | null = null;
-let savedWarning: string | null = null;
-
-beforeEach(() => {
-  mkdirSync(stateDir, { recursive: true });
-  try { savedFailures = require('fs').readFileSync(hookFailuresPath, 'utf-8'); } catch { savedFailures = null; }
-  try { savedWarning = require('fs').readFileSync(outageWarningPath, 'utf-8'); } catch { savedWarning = null; }
-  try { rmSync(hookFailuresPath); } catch {}
-  try { rmSync(outageWarningPath); } catch {}
-});
 
 afterEach(() => {
-  if (savedFailures !== null) writeFileSync(hookFailuresPath, savedFailures);
-  else try { rmSync(hookFailuresPath); } catch {}
-  if (savedWarning !== null) writeFileSync(outageWarningPath, savedWarning);
-  else try { rmSync(outageWarningPath); } catch {}
+  for (const dir of sandboxDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-describe('consumeWorkerOutageHint', () => {
-  it('returns null when worker is healthy (consecutiveFailures = 0)', () => {
-    writeFailures(0);
-    expect(consumeWorkerOutageHint('session-1')).toBeNull();
-  });
+describe('worker outage never blocks the hook', () => {
+  // Adapted from the fail-open tests in #3225 (remten341) and #3269.
+  it('keeps counting past the threshold, exits 0, and writes one diagnostic per outage', () => {
+    const result = runOutageScript(`
+      out.counts = [];
+      for (let i = 0; i < 5; i++) out.counts.push(await w.recordWorkerUnreachable());
+    `);
 
-  it('returns banner string when worker is unreachable', () => {
-    writeFailures(5);
-    const hint = consumeWorkerOutageHint('session-1');
-    expect(hint).toBeTypeOf('string');
-    expect(hint!).toContain('background worker offline');
-  });
+    // Before plan-17 the call that reached the threshold ran emitBlockingError,
+    // and the process exited 2 here, which blocked the user's prompt.
+    expect(result.exitCode).toBe(0);
+    expect(result.output.counts).toEqual([1, 2, 3, 4, 5]);
+    expect(result.stderr.match(/claude-mem worker unreachable/g)?.length).toBe(1);
+    expect(result.stderr).toContain('claude-mem worker unreachable for 3 consecutive hooks');
+    expect(result.stderr).toContain('your prompts are not blocked');
 
-  it('returns null on second call with same session (throttled)', () => {
-    writeFailures(5);
-    consumeWorkerOutageHint('session-1');
-    const second = consumeWorkerOutageHint('session-1');
-    expect(second).toBeNull();
-  });
-
-  it('returns banner again for a new session even within throttle window', () => {
-    writeFailures(5);
-    consumeWorkerOutageHint('session-1');
-    const second = consumeWorkerOutageHint('session-2');
-    expect(second).toBeTypeOf('string');
-  });
-
-  it('returns banner after throttle window expires', () => {
-    writeFailures(5);
-    const expiredTime = Date.now() - 31 * 60 * 1000;
-    writeWarning(expiredTime, 'session-1');
-    const hint = consumeWorkerOutageHint('session-1');
-    expect(hint).toBeTypeOf('string');
-  });
-
-  it('bypassThrottle always returns banner when worker is down', () => {
-    writeFailures(3);
-    consumeWorkerOutageHint('session-1');
-    const forced = consumeWorkerOutageHint('session-1', true);
-    expect(forced).toBeTypeOf('string');
-  });
-
-  it('returns null when state file does not exist (no failures)', () => {
-    expect(consumeWorkerOutageHint('session-1')).toBeNull();
+    const state = JSON.parse(readFileSync(join(result.dataDir, 'state', 'hook-failures.json'), 'utf-8'));
+    expect(state).toMatchObject({ consecutiveFailures: 5, thresholdTripped: true });
   });
 });
 
-describe('consumeWorkerOutageHint — no process.exit when reading high failure count', () => {
-  it('does not call process.exit regardless of failure count', () => {
-    const exitSpy = spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called unexpectedly');
-    });
+describe('consumeWorkerOutageNotice', () => {
+  it('stays silent until the fail-loud latch trips', () => {
+    const result = runOutageScript(`
+      await w.recordWorkerUnreachable();
+      await w.recordWorkerUnreachable();
+      out.notice = await w.consumeWorkerOutageNotice('session-a');
+    `);
 
-    try {
-      writeFailures(99);
-      // consumeWorkerOutageHint reads the same state; calling it verifies
-      // the code path runs without triggering exit(2).
-      consumeWorkerOutageHint('session-check');
-      expect(exitSpy).not.toHaveBeenCalled();
-    } finally {
-      exitSpy.mockRestore();
-    }
+    expect(result.exitCode).toBe(0);
+    expect(result.output.notice).toBeNull();
+  });
+
+  it('shows the notice once per session per outage', () => {
+    const result = runOutageScript(`
+      for (let i = 0; i < 3; i++) await w.recordWorkerUnreachable();
+      out.first = await w.consumeWorkerOutageNotice('session-a');
+      out.repeat = await w.consumeWorkerOutageNotice('session-a');
+      out.otherSession = await w.consumeWorkerOutageNotice('session-b');
+      out.otherSessionRepeat = await w.consumeWorkerOutageNotice('session-b');
+      out.firstSessionAgain = await w.consumeWorkerOutageNotice('session-a');
+      out.noSession = await w.consumeWorkerOutageNotice(undefined);
+    `);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output.first).toContain('claude-mem worker unreachable for 3 consecutive hooks');
+    expect(result.output.first).toContain('your prompts are not blocked');
+    expect(result.output.first).toContain('npx claude-mem restart');
+    expect(result.output.repeat).toBeNull();
+    expect(result.output.otherSession).toContain('claude-mem worker unreachable');
+    expect(result.output.otherSessionRepeat).toBeNull();
+    // Two sessions taking turns must not re-show it to each other.
+    expect(result.output.firstSessionAgain).toBeNull();
+    expect(result.output.noSession).toBeNull();
+  });
+
+  it('notifies the same session again for the next outage after the worker recovers', () => {
+    const result = runOutageScript(`
+      for (let i = 0; i < 3; i++) await w.recordWorkerUnreachable();
+      out.firstOutage = await w.consumeWorkerOutageNotice('session-a');
+      await w.__resetWorkerFailureCounterForTesting();
+      out.afterRecovery = await w.consumeWorkerOutageNotice('session-a');
+      for (let i = 0; i < 3; i++) await w.recordWorkerUnreachable();
+      out.secondOutage = await w.consumeWorkerOutageNotice('session-a');
+    `);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output.firstOutage).toContain('claude-mem worker unreachable');
+    expect(result.output.afterRecovery).toBeNull();
+    expect(result.output.secondOutage).toContain('claude-mem worker unreachable');
   });
 });

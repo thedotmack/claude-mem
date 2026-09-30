@@ -147,10 +147,9 @@ export async function hookCommand(platform: string, event: string, options: Hook
       logger.warn('HOOK', `Worker unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
       // EXIT_SIGNAL per CLAUDE.md: transient worker errors exit 0 to avoid
       // Windows Terminal tab accumulation. The fail-loud counter (worker-utils
-      // recordWorkerUnreachable) handles the surface-after-N-failures path and
-      // emits the threshold-gated hook_failed telemetry internally. Awaited:
-      // when the count JUST reaches the threshold it sends the event and then
-      // exits 2; exitGraceful below would kill a pending POST mid-flight.
+      // recordWorkerUnreachable) never exits; when the count JUST reaches the
+      // threshold it sends the hook_failed telemetry and writes a diagnostic.
+      // Awaited: exitGraceful below would kill a pending POST mid-flight.
       await recordWorkerUnreachable();
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
