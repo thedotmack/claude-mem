@@ -1,7 +1,6 @@
 import path from "path";
 import { randomUUID } from "crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
-import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
@@ -15,8 +14,12 @@ import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
-import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
+import {
+  resolveWorkerRuntimePath,
+  spawnDetachedWorkerDaemon,
+} from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { sanitizeEnv } from "../supervisor/env-sanitizer.js";
 import { killProcessTree } from "./kill-process-tree.js";
 import { writeJsonFileAtomic } from "./atomic-json.js";
 
@@ -773,27 +776,25 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {
-        // A cwd that does not exist makes spawn fail with ENOENT, and paths.ts resolves
-        // DATA_DIR without creating it. Idempotent, so the usual case costs one stat.
-        mkdirSync(DATA_DIR, { recursive: true });
-        const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
-          detached: true,
-          stdio: ['ignore', 'ignore', 'ignore'],
-          // This spawn runs from a hook, so the inherited cwd is the user's project. A
-          // daemon holds its cwd open for its whole life, and on Windows that locks the
-          // folder against rename or move long after the session ends (#3706).
-          cwd: DATA_DIR,
-        });
-        // A bad runtime path (dangling npm/nvm shim, missing binary) is
-        // reported by Node as an asynchronous 'error' event, which the
-        // synchronous try/catch below can never see. Without this listener the
-        // ENOENT escapes as an uncaught exception and takes down the worker
-        // mid session-end, silently stopping summarization. Log and let the
-        // readiness wait below report the failure.
-        proc.on('error', (error: Error) => {
-          logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
-        });
-        proc.unref();
+        // Windows: Start-Process -WindowStyle Hidden (never Node detached —
+        // detached allocates its own console on win32, #3521). POSIX: setsid /
+        // detached. Either way the daemon's cwd is claude-mem's data dir, not
+        // the user's project that this hook inherited: a daemon holds its cwd
+        // open for its whole life, and on Windows that locks the folder against
+        // rename or move long after the session ends (#3706). The helper also
+        // listens for the async spawn 'error' (a dangling runtime shim), which
+        // would otherwise escape as an uncaught exception (#4039).
+        const spawned = spawnDetachedWorkerDaemon(
+          runtimePath,
+          scriptPath,
+          sanitizeEnv({
+            ...process.env,
+            CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
+          }),
+        );
+        if (spawned === undefined) {
+          return false;
+        }
       } catch (error: unknown) {
         if (error instanceof Error) {
           logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
@@ -898,14 +899,18 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
-      const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
-        detached: true,
-        stdio: ['ignore', 'ignore', 'ignore'],
-      });
-      proc.on('error', (error: Error) => {
-        logger.error('SYSTEM', 'Bounded worker startup spawn failed', { runtimePath, scriptPath }, error);
-      });
-      proc.unref();
+      // Same launch as ensureWorkerRunning: hidden on Windows (#3521) and
+      // with the daemon's cwd pinned to the data dir, not the caller's project
+      // (#3706). This path used to spawn with no cwd at all.
+      const spawned = spawnDetachedWorkerDaemon(
+        runtimePath,
+        scriptPath,
+        sanitizeEnv({
+          ...process.env,
+          CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
+        }),
+      );
+      if (spawned === undefined) return false;
     }
 
     while (Date.now() < deadline) {
