@@ -1,12 +1,14 @@
 // IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
 // HookResult and MUST NOT call process.stderr.write / process.stdout.write /
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
-// caught by hookCommand and routed through emitBlockingError.
+// caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { shouldSkipAgentObservation } from '../../shared/should-skip-agent-observation.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
@@ -27,6 +29,7 @@ async function dispatchToWorker(
       cwd: input.cwd,
       agentId: input.agentId,
       agentType: input.agentType,
+      tool_use_id: input.toolUseId,
     },
   );
 
@@ -60,6 +63,20 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
+    // #2736 — drop subagent observations BEFORE any worker HTTP call or provider
+    // request. Placed ahead of the runtime branch so it covers both the worker
+    // and server runtimes. Saves the round-trip and the provider tokens, and
+    // prevents Dynamic Workflows fan-out from exhausting provider quota.
+    const skip = shouldSkipAgentObservation(input.agentId, input.agentType, loadFromFileOnce());
+    if (skip.skip) {
+      logger.debug('HOOK', `Skipping observation: ${skip.reason}`, {
+        toolName,
+        agentId: input.agentId,
+        agentType: input.agentType,
+      });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     const runtime = resolveRuntimeContext();
     // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
     // value. `runtime-selector.selectRuntime()` continues to accept the legacy
@@ -80,6 +97,7 @@ export const observationHandler: EventHandler = {
           agentId: input.agentId,
           agentType: input.agentType,
           platformSource,
+          tool_use_id: input.toolUseId,
         },
       };
       try {

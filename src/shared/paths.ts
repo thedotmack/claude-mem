@@ -4,6 +4,9 @@ import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { parseJsonWithBom } from './atomic-json.js';
+import { expandHome } from './expand-home.js';
+
+export { expandHome } from './expand-home.js';
 
 function getDirname(): string {
   if (typeof __dirname !== 'undefined') {
@@ -16,7 +19,7 @@ const _dirname = getDirname();
 
 export function resolveDataDir(): string {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
-    return process.env.CLAUDE_MEM_DATA_DIR;
+    return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
   }
 
   const defaultDataDir = join(homedir(), '.claude-mem');
@@ -24,9 +27,9 @@ export function resolveDataDir(): string {
   try {
     if (existsSync(settingsPath)) {
       const raw = parseJsonWithBom<Record<string, any>>(readFileSync(settingsPath, 'utf-8'));
-      const settings = raw.env ?? raw; 
+      const settings = raw.env ?? raw;
       if (settings.CLAUDE_MEM_DATA_DIR) {
-        return settings.CLAUDE_MEM_DATA_DIR;
+        return expandHome(settings.CLAUDE_MEM_DATA_DIR);
       }
     }
   } catch {
@@ -37,13 +40,30 @@ export function resolveDataDir(): string {
 }
 
 export const DATA_DIR = resolveDataDir();
-export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+// #2753 — the literal default config dir, independent of process.env state.
+// Lets callers (oauth-token.ts) compare an *effective* config dir against the
+// TRUE default rather than against CLAUDE_CONFIG_DIR (which already folds in
+// process.env). Purely additive: does not change CLAUDE_CONFIG_DIR's own
+// derivation or MARKETPLACE_ROOT below.
+export const DEFAULT_CLAUDE_CONFIG_DIR = join(homedir(), '.claude');
+export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
 
 export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
 
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
-export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
+export const DB_FILENAME = 'claude-mem.db';
+
+/**
+ * Database path resolved at CALL time. `DB_PATH` freezes `DATA_DIR` at import,
+ * which is right for long-lived processes but wrong for anything that must
+ * honor a `CLAUDE_MEM_DATA_DIR` set after this module was loaded.
+ */
+export function resolveDbPath(): string {
+  return join(resolveDataDir(), DB_FILENAME);
+}
+
+export const DB_PATH = join(DATA_DIR, DB_FILENAME);
 
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
@@ -57,6 +77,25 @@ export function getPackageRoot(): string {
   return join(_dirname, '..');
 }
 
+/**
+ * Expand a leading `~` / `~/` (or `~\` on Windows) to the user's home dir.
+ *
+ * User-typed config paths like `~/.local/bin/claude` are never expanded by the
+ * shell when passed programmatically to existsSync/posix_spawn, so a literal
+ * `~` reaches the syscall and fails with ENOENT. Every other home-relative path
+ * in the codebase is built with join(homedir(), ...); this brings user-supplied
+ * ones onto the same footing. Non-tilde paths are returned unchanged.
+ *
+ * `home` is injectable so callers behind a homedir() test seam stay testable.
+ */
+export function expandTilde(
+  filePath: string,
+  home: string = homedir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return expandHome(filePath, platform, home);
+}
+
 export const paths = {
   dataDir: () => DATA_DIR,
   workerPid: () => join(DATA_DIR, 'worker.pid'),
@@ -67,12 +106,11 @@ export const paths = {
   serverPort: () => join(DATA_DIR, '.server-beta.port'),
   serverRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
   settings: () => join(DATA_DIR, 'settings.json'),
-  database: () => join(DATA_DIR, 'claude-mem.db'),
+  database: () => join(DATA_DIR, DB_FILENAME),
   chroma: () => join(DATA_DIR, 'chroma'),
   combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),
   transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),
   transcriptsState: () => join(DATA_DIR, 'transcript-watch-state.json'),
-  cloudSyncState: () => join(DATA_DIR, 'cloud-sync-state.json'),
   corpora: () => join(DATA_DIR, 'corpora'),
   supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
   envFile: () => join(DATA_DIR, '.env'),

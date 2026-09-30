@@ -9,99 +9,57 @@ import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  getViewerBaseUrl,
+  consumeWorkerOutageNotice,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { callMcpToolOnce } from '../../shared/mcp-client.js';
-import { selectRuntime, buildServerContext } from '../../services/hooks/runtime-selector.js';
-import { isServerClientError } from '../../services/hooks/server-client.js';
-
-async function requestSessionStartContext(args: {
-  projects: string[];
-  platformSource?: string;
-  colors?: boolean;
-}): Promise<string | null> {
-  const result = await callMcpToolOnce('session_start_context', {
-    projects: args.projects,
-    ...(args.platformSource ? { platformSource: args.platformSource } : {}),
-    ...(args.colors !== undefined ? { colors: args.colors } : {}),
-  });
-  if (result.isError) {
-    logger.warn('HOOK', 'MCP session_start_context returned an error; falling back to worker HTTP', {
-      preview: result.text.slice(0, 200),
-    });
-    return null;
-  }
-  return result.text.trim();
-}
-
-async function fetchSessionStartContextViaMcp(args: {
-  projects: string[];
-  platformSource?: string;
-  colors?: boolean;
-}): Promise<string | null> {
-  try {
-    return await requestSessionStartContext(args);
-  } catch (error: unknown) {
-    logger.warn('HOOK', 'MCP session_start_context failed; falling back to worker HTTP', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
-
-// CLAUDE_MEM_RUNTIME=server support (plans/2026-07-13-session-start-context-
-// injection-server-mode.md / #2991). A server-runtime deployment typically
-// has no worker running at all, so `executeWithWorkerFallback` below would
-// always hit the worker-unreachable fallback and silently inject empty
-// context on every session. This talks to the server runtime directly via
-// `/v1/context` (query-less recency mode) instead. Returns null on any
-// failure (missing config, transport error, etc.) so the caller degrades to
-// `emptyResult` — deliberately NOT falling through to the worker path below,
-// since a server-runtime deployment has no worker to fall back to.
-//
-// `limit` mirrors worker-mode's own CLAUDE_MEM_CONTEXT_OBSERVATIONS (default
-// 50, see SettingsDefaultsManager) — the /v1/context route's own bare
-// default (10) is tuned for its other caller (query-based search results),
-// not "how much recent context should a fresh session start with", so an
-// explicit limit here is required for parity, not optional.
-async function fetchSessionStartContextViaServer(
-  ctx: NonNullable<ReturnType<typeof buildServerContext>>,
-  limit: number,
-): Promise<string | null> {
-  try {
-    const { context } = await ctx.client.contextObservations({ projectId: ctx.projectId, limit });
-    return (context ?? '').trim();
-  } catch (error: unknown) {
-    if (isServerClientError(error)) {
-      logger.warn('HOOK', `[server-context] ${error.kind}: ${error.message}`);
-    } else {
-      logger.warn('HOOK', 'Server context fetch failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    return null;
-  }
-}
+import { proTrialLine, proTrialUrl, PLAN_USAGE_GAIN_PERCENT } from '../../shared/pro-promo.js';
+import {
+  hasShownProFallbackNotice,
+  isCmemGatewayUrl,
+  markProFallbackNoticeShown,
+  trialDaysRemaining,
+} from '../../shared/cmem-gateway.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const cwd = input.cwd ?? process.cwd();
+
+    // Honor CLAUDE_MEM_EXCLUDED_PROJECTS on the inject/read path too. The
+    // write path (ingestObservation) already skips excluded projects, but the
+    // SessionStart summary was injected regardless — so an excluded dir (e.g.
+    // "~") still got a context dump on every new session. Suppress it here.
+    if (!shouldTrackProject(cwd)) {
+      return {
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+        exitCode: HOOK_EXIT_CODES.SUCCESS,
+      };
+    }
+
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
     const settings = loadFromFileOnce();
-    const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
+    // Codex already receives the timeline through additionalContext. Repeating
+    // it as systemMessage can push SessionStart stdout past Codex's hook-output
+    // limit, causing Codex to discard the entire payload (including context).
+    const showTerminalOutput =
+      settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true'
+      && input.platform !== 'codex';
 
     const projectsParam = context.allProjects.join(',');
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
-    const platformSourceParam = input.platform
+    // Let users share startup memory across harnesses without changing the
+    // source-scoped behavior of search and other context requests.
+    const platformSourceParam = input.platform && settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true'
       ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
       : '';
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
@@ -112,60 +70,27 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
+    // ponytail: Codex's MCP normally starts the worker; this one bounded
+    // fallback covers cold sessions without the old startup process chain.
+    const workerOptions = input.platform === 'codex'
+      ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
+      : undefined;
+    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    if (isWorkerFallback(contextResult)) {
+      // SessionStart context is synchronous, so a systemMessage here is shown
+      // to the user: the once-per-session worker-outage notice, if any.
+      const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
+      return outageNotice ? { ...emptyResult, systemMessage: outageNotice } : emptyResult;
+    }
+
     let additionalContext: string;
-    // Tracks whether additionalContext came from the server-runtime branch,
-    // so the coloredTimeline block below (showTerminalOutput) also skips its
-    // own independent worker round-trip instead of lazy-spawning a local
-    // worker as a side effect — see plans/2026-07-13-session-start-context-
-    // injection-server-mode.md. showTerminalOutput defaults to 'true'
-    // (SettingsDefaultsManager), so this isn't a rare edge case: without this
-    // guard, every SessionStart hook in a server-runtime deployment would
-    // still attempt to spawn a local worker it has no business running.
-    let usedServerRuntime = false;
-    // Resolved once regardless of platform: Codex's own MCP-based context
-    // fetch (below) is worker-backed and has no server-runtime awareness of
-    // its own, so a server-runtime deployment needs this same fallback for
-    // Codex too, not just Claude Code — see the `mcpContextResult === null`
-    // branch below.
-    const isServerRuntime = selectRuntime() === 'server';
-    const serverRuntimeCtx = isServerRuntime ? buildServerContext() : null;
-    const contextObservationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
-    const mcpContextResult = input.platform === 'codex'
-      ? await fetchSessionStartContextViaMcp({
-          projects: context.allProjects,
-          ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-        })
-      : null;
-
-    if (mcpContextResult !== null) {
-      additionalContext = mcpContextResult;
-    } else if (isServerRuntime) {
-      // A server-runtime deployment has no worker to fall back to — even
-      // when misconfigured (serverRuntimeCtx null), degrade straight to
-      // emptyResult rather than falling through to the worker branch below.
-      if (!serverRuntimeCtx) {
-        return emptyResult;
-      }
-      const serverContext = await fetchSessionStartContextViaServer(serverRuntimeCtx, contextObservationLimit);
-      if (serverContext === null) {
-        return emptyResult;
-      }
-      additionalContext = serverContext;
-      usedServerRuntime = true;
+    if (typeof contextResult === 'string') {
+      additionalContext = contextResult.trim();
+    } else if (contextResult === undefined) {
+      additionalContext = '';
     } else {
-      const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
-      if (isWorkerFallback(contextResult)) {
-        return emptyResult;
-      }
-
-      if (typeof contextResult === 'string') {
-        additionalContext = contextResult.trim();
-      } else if (contextResult === undefined) {
-        additionalContext = '';
-      } else {
-        logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
-        return emptyResult;
-      }
+      logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
+      return emptyResult;
     }
 
     // Issue #2215: surface stale OAuth token marker as a session-start hint.
@@ -179,31 +104,28 @@ export const contextHandler: EventHandler = {
         : hint;
     }
 
+    // Trial-expiry fallback notice (plan 2026-08-26 Phase 6): the worker wrote
+    // CLAUDE_MEM_PRO_FALLBACK_AT when the cmem gateway terminally rejected the
+    // delivered key, and dispatch now runs memory on the Anthropic plan. Tell
+    // the user exactly once (DATA_DIR marker file, oauth-stale pattern); the
+    // marker resets whenever the fallback is cleared.
+    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== ''
+      && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
+      && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+    if (fallbackActive && !hasShownProFallbackNotice()) {
+      const fallbackNotice = 'Your claude-mem free trial ended — memory now runs on your Anthropic plan.\n'
+        + `Keep it off-plan (up to ${PLAN_USAGE_GAIN_PERCENT}% more usage): ${proTrialUrl('fallback')}`;
+      additionalContext = additionalContext
+        ? `${fallbackNotice}\n\n${additionalContext}`
+        : fallbackNotice;
+      markProFallbackNoticeShown();
+    }
+
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      if (usedServerRuntime) {
-        // No server-side "colors" variant of /v1/context (colors are a
-        // worker-HTTP-only query param, cosmetic ANSI codes for interactive
-        // terminal display) — reuse the already-fetched plain
-        // additionalContext rather than attempting a worker round-trip that
-        // has no worker to reach in a server-runtime deployment.
-        coloredTimeline = additionalContext;
-      } else {
-        const mcpColorResult = input.platform === 'codex'
-          ? await fetchSessionStartContextViaMcp({
-              projects: context.allProjects,
-              ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-              colors: true,
-            })
-          : null;
-        if (mcpColorResult !== null) {
-          coloredTimeline = mcpColorResult;
-        } else {
-          const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
-          if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-            coloredTimeline = colorResult.trim();
-          }
-        }
+      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+        coloredTimeline = colorResult.trim();
       }
     }
 
@@ -215,15 +137,18 @@ export const contextHandler: EventHandler = {
     // back to the plain additionalContext for terminal display.
     const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
 
-    // In server runtime the viewer isn't a local worker on this machine —
-    // localhost:${port} would be unreachable (or point at an unrelated
-    // local service) once CLAUDE_MEM_SERVER_URL is remote or on another
-    // port. Point at the actual server instead.
-    const viewerUrl = usedServerRuntime && serverRuntimeCtx
-      ? serverRuntimeCtx.serverBaseUrl
-      : `http://localhost:${port}`;
+    // Days-remaining nicety: while the free trial is active (plan 'trial', an
+    // end date stored, no fallback), append the countdown. Computed locally —
+    // no network — and display-only: nothing is enabled or disabled by it.
+    const daysLeft = !fallbackActive && settings.CLAUDE_MEM_PRO_PLAN === 'trial'
+      ? trialDaysRemaining(settings.CLAUDE_MEM_PRO_TRIAL_ENDS_AT)
+      : null;
+    const trialDaysLine = daysLeft !== null && daysLeft >= 0
+      ? `claude-mem free trial: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
+      : null;
+
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}`
+      ? `${displayContent}\n\nView Observations Live @ ${getViewerBaseUrl(port)}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
 
     return {

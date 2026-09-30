@@ -271,8 +271,10 @@ export async function runUninstallCommand(): Promise<void> {
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   try {
     const result = await shutdownWorkerAndWait(workerPort, 10000);
-    if (result.workerWasRunning) {
+    if (result.workerWasRunning && result.stopped) {
       p.log.info('Worker service stopped.');
+    } else if (result.workerWasRunning) {
+      p.log.warn('Worker service did not confirm shutdown; continuing uninstall cleanup.');
     }
   } catch (error: unknown) {
     console.warn('[uninstall] Worker shutdown attempt failed:', error instanceof Error ? error.message : String(error));

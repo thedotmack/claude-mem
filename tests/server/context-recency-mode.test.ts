@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// POST /v1/context with `query` omitted: recency-ordered "recent context"
-// mode, added for SessionStart server-runtime support (plans/2026-07-13-
-// session-start-context-injection-server-mode.md, closes #2991). Postgres-
-// gated, mirrors the isolation pattern in data-deletion.test.ts /
-// pg-isolation.ts.
+// POST /v1/context with `query` omitted returns the project's most recent
+// observations: the read a session-start block needs (plan-24 step 4). The
+// platform and folder filters must apply in that mode exactly as they do to a
+// relevance read. Postgres-gated; isolation via tests/sdk/pg-isolation.ts.
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
@@ -34,13 +33,38 @@ describe('POST /v1/context recency mode (no query)', () => {
   let storage: PostgresStorageRepositories;
   let server: Server;
   let port: number;
-  let readKey: string;
+  let apiKey: string;
   let teamId: string;
   let projectId: string;
   let spies: ReturnType<typeof spyOn>[] = [];
 
+  // Creates one observation and pins its created_at `minutesAgo` minutes in the
+  // past, so the expected recency order never depends on insert timing.
+  async function observation(input: {
+    content: string;
+    minutesAgo: number;
+    serverSessionId?: string;
+    folderProject?: string;
+  }): Promise<string> {
+    const created = await storage.observations.create({
+      projectId,
+      teamId,
+      kind: 'discovery',
+      content: input.content,
+      serverSessionId: input.serverSessionId ?? null,
+      metadata: input.folderProject ? { project: input.folderProject } : {},
+    });
+    await client.query(
+      `UPDATE observations SET created_at = now() - ($2::int * interval '1 minute') WHERE id = $1`,
+      [created.id, input.minutesAgo],
+    );
+    return created.id;
+  }
+
   beforeEach(async () => {
-    spies = ['info', 'warn', 'error', 'debug'].map((m) => spyOn(logger, m as 'info').mockImplementation(() => {}));
+    spies = (['info', 'warn', 'error', 'debug'] as const).map((level) =>
+      spyOn(logger, level).mockImplementation(() => {}),
+    );
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_ctx_recency');
     pool = poolForSchema(testDatabaseUrl!, schemaName);
     client = await pool.connect();
@@ -52,108 +76,152 @@ describe('POST /v1/context recency mode (no query)', () => {
     const project = await storage.projects.create({ teamId, name: 'P' });
     projectId = project.id;
 
-    // Sequential awaited creates so `updated_at` strictly increases —
-    // recency order should come back newest-first.
-    await storage.observations.create({ projectId, teamId, kind: 'manual', content: 'first observation about setup' });
-    await storage.observations.create({ projectId, teamId, kind: 'manual', content: 'second observation about routing' });
-    await storage.observations.create({ projectId, teamId, kind: 'manual', content: 'third observation about deployment' });
+    const claudeSession = await storage.sessions.create({
+      projectId, teamId, contentSessionId: 'claude-session', platformSource: 'claude',
+    });
+    const cursorSession = await storage.sessions.create({
+      projectId, teamId, contentSessionId: 'cursor-session', platformSource: 'cursor',
+    });
 
-    const k = newApiKey(); readKey = k.raw;
-    await storage.auth.createApiKey({ keyHash: k.hash, teamId, projectId: null, actorId: 't', scopes: ['memories:read', 'memories:write'] });
+    await observation({ content: 'first observation about setup', minutesAgo: 30, serverSessionId: claudeSession.id, folderProject: 'alpha' });
+    await observation({ content: 'second observation about routing', minutesAgo: 20, serverSessionId: claudeSession.id, folderProject: 'beta' });
+    await observation({ content: 'third observation about deployment', minutesAgo: 10, serverSessionId: claudeSession.id, folderProject: 'alpha' });
+    await observation({ content: 'cursor observation about deployment', minutesAgo: 5, serverSessionId: cursorSession.id, folderProject: 'alpha' });
+    await observation({ content: 'unlabelled observation without a session', minutesAgo: 1 });
+
+    const key = newApiKey();
+    apiKey = key.raw;
+    await storage.auth.createApiKey({
+      keyHash: key.hash, teamId, projectId: null, actorId: 't', scopes: ['memories:read', 'memories:write'],
+    });
 
     server = new Server({
-      getInitializationComplete: () => true, getMcpReady: () => true,
-      onShutdown: mock(() => Promise.resolve()), onRestart: mock(() => Promise.resolve()),
-      workerPath: '/test/worker.cjs', runtime: 'server-beta',
+      getInitializationComplete: () => true,
+      getMcpReady: () => true,
+      onShutdown: mock(() => Promise.resolve()),
+      onRestart: mock(() => Promise.resolve()),
+      workerPath: '/test/worker.cjs',
+      runtime: 'server-beta',
       getAiStatus: () => ({ provider: 'disabled', authMethod: 'api-key', lastInteraction: null }),
     });
     server.registerRoutes(new ServerV1PostgresRoutes({
-      pool: pool as never, queueManager: new DisabledServerQueueManager('disabled'),
+      pool: pool as never,
+      queueManager: new DisabledServerQueueManager('disabled'),
       authMode: 'api-key',
     }));
     server.finalizeRoutes();
     await server.listen(0, '127.0.0.1');
-    const addr = server.getHttpServer()?.address();
-    if (!addr || typeof addr === 'string') throw new Error('no port');
-    port = addr.port;
+    const address = server.getHttpServer()?.address();
+    if (!address || typeof address === 'string') throw new Error('no port');
+    port = address.port;
   });
 
   afterEach(async () => {
-    try { await server.close(); } catch (e: unknown) {
-      if ((e as NodeJS.ErrnoException)?.code !== 'ERR_SERVER_NOT_RUNNING') throw e;
+    try { await server.close(); } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ERR_SERVER_NOT_RUNNING') throw error;
     }
     client.release();
     await pool.end();
     await dropSchema(testDatabaseUrl!, schemaName);
-    spies.forEach((s) => s.mockRestore());
+    spies.forEach((spy) => spy.mockRestore());
     mock.restore();
   });
 
-  const url = (p: string) => `http://127.0.0.1:${port}${p}`;
-  const auth = () => ({ Authorization: `Bearer ${readKey}`, 'Content-Type': 'application/json' });
-  const post = (p: string, body: unknown) =>
-    fetch(url(p), { method: 'POST', headers: auth(), body: JSON.stringify(body) });
+  async function context(body: Record<string, unknown>): Promise<{ status: number; contents: string[]; context: string }> {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/context`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, ...body }),
+    });
+    if (response.status !== 200) return { status: response.status, contents: [], context: '' };
+    const json = await response.json() as { observations: Array<{ content: string }>; context: string };
+    return { status: 200, contents: json.observations.map((o) => o.content), context: json.context };
+  }
 
-  it('returns recency-ordered observations and a joined context string when query is omitted', async () => {
-    const r = await post('/v1/context', { projectId });
-    expect(r.status).toBe(200);
-    const body = await r.json() as { observations: Array<{ content: string }>; context: string };
-    expect(body.observations).toHaveLength(3);
-    // Newest first.
-    expect(body.observations[0].content).toContain('third observation');
-    expect(body.observations[2].content).toContain('first observation');
-    expect(body.context).toContain('third observation');
-    expect(body.context).toContain('first observation');
+  it('returns observations newest first, with a joined context string, when query is omitted', async () => {
+    const result = await context({});
+    expect(result.status).toBe(200);
+    expect(result.contents).toEqual([
+      'unlabelled observation without a session',
+      'cursor observation about deployment',
+      'third observation about deployment',
+      'second observation about routing',
+      'first observation about setup',
+    ]);
+    expect(result.context).toContain('third observation');
   });
 
   it('respects `limit` in recency mode', async () => {
-    const r = await post('/v1/context', { projectId, limit: 2 });
-    expect(r.status).toBe(200);
-    const body = await r.json() as { observations: Array<{ content: string }> };
-    expect(body.observations).toHaveLength(2);
-    expect(body.observations[0].content).toContain('third observation');
-    expect(body.observations[1].content).toContain('second observation');
+    const result = await context({ limit: 2 });
+    expect(result.contents).toEqual([
+      'unlabelled observation without a session',
+      'cursor observation about deployment',
+    ]);
   });
 
-  it('still does relevance-ranked search when query is provided (no regression)', async () => {
-    const r = await post('/v1/context', { projectId, query: 'routing' });
-    expect(r.status).toBe(200);
-    const body = await r.json() as { observations: Array<{ content: string }> };
-    expect(body.observations).toHaveLength(1);
-    expect(body.observations[0].content).toContain('second observation');
+  it('applies the platform filter in recency mode', async () => {
+    const result = await context({ platformSource: 'claude' });
+    expect(result.contents).toEqual([
+      'third observation about deployment',
+      'second observation about routing',
+      'first observation about setup',
+    ]);
   });
 
-  it('treats an empty-string query the same as omitted (recency mode, not a 0-result FTS match)', async () => {
-    const r = await post('/v1/context', { projectId, query: '' });
-    expect(r.status).toBe(200);
-    const body = await r.json() as { observations: Array<{ content: string }> };
-    expect(body.observations).toHaveLength(3);
-    expect(body.observations[0].content).toContain('third observation');
+  it('applies the folder filter, excluding rows without a folder label', async () => {
+    const result = await context({ folderProjects: ['alpha'] });
+    expect(result.contents).toEqual([
+      'cursor observation about deployment',
+      'third observation about deployment',
+      'first observation about setup',
+    ]);
   });
 
-  it('/v1/search still requires a non-empty query (no change to that route)', async () => {
-    const r = await post('/v1/search', { projectId });
-    expect(r.status).toBe(400);
+  it('combines the platform and folder filters', async () => {
+    const result = await context({ platformSource: 'claude', folderProjects: ['alpha', 'beta'] });
+    expect(result.contents).toEqual([
+      'third observation about deployment',
+      'second observation about routing',
+      'first observation about setup',
+    ]);
   });
 
-  it('orders by creation time, not last-modified time — updating an old observation must not move it to the top', async () => {
-    // "first observation" is the oldest by creation time. Bump its
-    // updated_at far into the future without touching created_at (a raw
-    // UPDATE, since the repository has no update() method) — recency mode
-    // must still surface it last, matching "what happened recently" rather
-    // than "what was last touched".
-    const rows = await client.query<{ id: string }>(
-      `SELECT id FROM observations WHERE project_id = $1 AND content LIKE '%first observation%'`,
-      [projectId],
+  it('still runs a relevance-ranked full-text search when a query is given', async () => {
+    expect((await context({ query: 'routing' })).contents).toEqual(['second observation about routing']);
+    expect((await context({ query: 'deployment', platformSource: 'cursor' })).contents)
+      .toEqual(['cursor observation about deployment']);
+  });
+
+  it('orders by creation time, so updating an old observation does not move it to the top', async () => {
+    await client.query(
+      `UPDATE observations SET updated_at = now() + interval '1 day' WHERE content = 'first observation about setup'`,
     );
-    const staleId = rows.rows[0]?.id;
-    expect(staleId).toBeTruthy();
-    await client.query(`UPDATE observations SET updated_at = now() + interval '1 day' WHERE id = $1`, [staleId]);
+    const result = await context({});
+    expect(result.contents[0]).toBe('unlabelled observation without a session');
+    expect(result.contents.at(-1)).toBe('first observation about setup');
+  });
 
-    const r = await post('/v1/context', { projectId });
-    expect(r.status).toBe(200);
-    const body = await r.json() as { observations: Array<{ content: string }> };
-    expect(body.observations[0].content).toContain('third observation');
-    expect(body.observations[2].content).toContain('first observation');
+  it('defaults to 50 rows without a query and 10 with one', async () => {
+    for (let index = 0; index < 12; index++) {
+      await observation({ content: `bulk note number ${index}`, minutesAgo: 60 + index });
+    }
+    expect((await context({})).contents).toHaveLength(17);
+    expect((await context({ query: 'bulk note' })).contents).toHaveLength(10);
+  });
+
+  it('caps limit at 200 and rejects an empty query string', async () => {
+    expect((await context({ limit: 200 })).status).toBe(200);
+    expect((await context({ limit: 201 })).status).toBe(400);
+    // The key is omitted for recency; an empty string is a malformed query.
+    expect((await context({ query: '' })).status).toBe(400);
+  });
+
+  it('leaves /v1/search requiring a query', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/search`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
+    });
+    expect(response.status).toBe(400);
   });
 });
