@@ -116,7 +116,7 @@ export function renderAgentFullObservation(
 }
 
 export function renderAgentSummaryItem(
-  summary: { id: number; request: string | null },
+  summary: { id: number | string; request: string | null },
   formattedTime: string
 ): string[] {
   return [
