@@ -769,6 +769,24 @@ describe('ChromaSync title-only rows and truthful backfill outcomes (#4069)', ()
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 3]);
   });
 
+  it('reports write_failures when an isolated row fails but later rows succeed', async () => {
+    const store = makeStoreFromRows(project, [1, 2, 3].map(id => makeObservationRow(id, project)));
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let calls = 0;
+    // Only the first row's batch fails; the rest land. The failed row stays
+    // pending for the next run, and the project must not be claimed complete.
+    sync.addDocuments = async (documents) => {
+      calls += 1;
+      return calls === 1 ? 0 : documents.length;
+    };
+
+    expect(await sync.ensureBackfilled(project, store)).toBe('write_failures');
+    expect(ChromaSyncState.get(project).observations).toBe(3);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1]);
+  });
+
   it('keeps one project\'s write failures from stopping another project running alongside it', async () => {
     // Several projects share one ChromaSync instance during a sweep, so the
     // abort must not live on the instance.

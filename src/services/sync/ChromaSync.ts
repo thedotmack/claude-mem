@@ -1099,9 +1099,9 @@ export class ChromaSync {
 
   /**
    * Backfill one project's rows above its watermarks. Resolves 'completed' when
-   * the run attempted every row, or why it stopped early (a worker shutdown or
-   * repeated write failures), in which case the next run resumes from the
-   * watermarks.
+   * every row's documents actually landed; otherwise why the project is not
+   * fully synced (a worker shutdown or write failures), in which case the next
+   * run resumes from the watermarks.
    */
   async ensureBackfilled(project: string, store: SessionStore): Promise<BackfillOutcome> {
     if (shutdownBegan()) {
@@ -1179,7 +1179,9 @@ export class ChromaSync {
    * Shared batch/watermark loop for all three backfill kinds. Returns how
    * many documents actually landed, how many rows were drained as empty,
    * and why the run stopped early, if it did (worker shutdown, or the
-   * consecutive-failure guard).
+   * consecutive-failure guard). Isolated write failures do not stop the run,
+   * but they are still reported as 'write_failures' so the project is not
+   * claimed complete while a document is missing.
    *
    * Watermark durability is row-atomic, not batch-atomic: one observation or
    * summary can expand into several Chroma documents and span multiple
@@ -1221,6 +1223,7 @@ export class ChromaSync {
     let writtenDocs = 0;
     let emptyRows = 0;
     let consecutiveFailures = 0;
+    let hadWriteFailures = false;
     // A corrupt collection dropped mid-run (#3202) took this run's writes with
     // it; nothing may be bumped after that, since every project is rebuilt.
     const generation = ChromaSync.collectionGeneration;
@@ -1316,6 +1319,7 @@ export class ChromaSync {
         }
 
         consecutiveFailures += 1;
+        hadWriteFailures = true;
         // A write that fails for several rows in a row is not a per-row
         // problem, it is Chroma refusing writes. Walking every remaining row
         // through the same failure logs one identical error per row (millions
@@ -1343,6 +1347,13 @@ export class ChromaSync {
       ChromaSyncState.bump(backfillProject, kind, row.id);
     }
 
+    // A run that walked every row but lost some to isolated write failures is
+    // not a completed backfill: the failed rows stay pending for the next run,
+    // but a document is still missing now. Say so, so the sweep does not claim
+    // the project finished (#4264).
+    if (hadWriteFailures) {
+      return { writtenDocs, emptyRows, abortReason: 'write_failures' };
+    }
     return { writtenDocs, emptyRows, abortReason: null };
   }
 
