@@ -97,11 +97,14 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
       'ERESOLVE peer-dependency conflict in marketplace deps that --legacy-peer-deps could not resolve. Open an issue at https://github.com/thedotmack/claude-mem/issues with the conflicting peer ranges shown above.',
   },
   {
-    id: 'tree-sitter-cli-cache-provisioning-failed',
+    // npm 11.16+ refuses an `allow-scripts` value from the command line or the
+    // environment. npm-install-helper strips the one npx inherits from ~/.npmrc
+    // (#3697), so this names the fix if the value arrives some other way.
+    id: 'npm-allow-scripts-policy',
     severity: ErrorSeverity.ABORT,
-    match: (_cause, ctx) => ctx.component === 'tree-sitter-cli-cache',
-    remediation: (ctx) =>
-      `The cached tree-sitter CLI could not be provisioned. Re-run \`npx claude-mem install\`; if it persists, inspect ${ctx.dataDir}/last-install-error.json and check network connectivity. For a timeout, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.`,
+    match: (cause) => /\bEALLOWSCRIPTS\b/.test(causeMessage(cause)),
+    remediation: () =>
+      'npm refused an `allow-scripts` setting that reached it through the command line or environment (npm 11.16+ accepts it only from package.json or .npmrc). Unset NPM_CONFIG_ALLOW_SCRIPTS in your shell. If ~/.npmrc has an `allow-scripts=` line, older npx versions re-export it to the installer: upgrade npm (`npm install -g npm@latest`) or comment that line out, then re-run `npx claude-mem install`.',
   },
   {
     id: 'marketplace-dir-not-writable',
@@ -160,6 +163,23 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
     match: (cause) => /timed out|ETIMEDOUT|SIGTERM|did not finish/i.test(causeMessage(cause)),
     remediation: () =>
       'An install command did not finish in time. Check network connectivity. On a slow host, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.',
+  },
+  {
+    // Non-interactive runs now default the provider (fresh config -> claude,
+    // otherwise the persisted one), so this fires only if a caller
+    // reintroduces the explicit abort. It still labels that path.
+    id: 'provider-selection-non-interactive',
+    severity: ErrorSeverity.ABORT,
+    match: (_cause, ctx) => ctx.component === 'provider-selection',
+    remediation: () =>
+      'Non-interactive installs need a provider. Pass `--provider claude` for local memory on your Anthropic plan, or run `npx claude-mem install` in an interactive terminal.',
+  },
+  {
+    id: 'provider-credentials-missing',
+    severity: ErrorSeverity.ABORT,
+    match: (_cause, ctx) => ctx.component === 'provider-credentials',
+    remediation: () =>
+      'The selected provider needs a personal API key on non-interactive runs. Save it in settings first, or run the installer interactively so it can ask securely.',
   },
   {
     id: 'unknown-install-error',

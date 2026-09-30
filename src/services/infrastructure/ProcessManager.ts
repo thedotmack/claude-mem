@@ -1,18 +1,26 @@
 
 import path from 'path';
-import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import { homedir, tmpdir } from 'os';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, realpathSync } from 'fs';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
+import { buildWorktreeProjectKey } from '../../utils/project-name.js';
 import { paths } from '../../shared/paths.js';
+import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+
+/** Bound Windows PowerShell Start-Process so a stalled shell cannot hold the spawn lock forever (#3529 Greptile P1). */
+export const WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.POWERSHELL_COMMAND);
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
+
+const BUN_NOT_FOUND_MESSAGE =
+  'Bun runtime not found — install from https://bun.sh and ensure it is on PATH, under ~/.bun/bin, or set BUN / BUN_PATH / BUN_INSTALL. The worker daemon requires Bun because it uses bun:sqlite.';
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
@@ -21,6 +29,15 @@ interface RuntimeResolverOptions {
   homeDirectory?: string;
   pathExists?: (candidatePath: string) => boolean;
   lookupInPath?: (binaryName: string, platform: NodeJS.Platform) => string | null;
+  realpath?: (candidatePath: string) => string | null;
+}
+
+function resolveRealPath(candidatePath: string): string | null {
+  try {
+    return realpathSync(candidatePath);
+  } catch {
+    return null;
+  }
 }
 
 function isBunExecutablePath(executablePath: string | undefined | null): boolean {
@@ -30,20 +47,31 @@ function isBunExecutablePath(executablePath: string | undefined | null): boolean
 }
 
 function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): string | null {
-  const command = platform === 'win32' ? `where ${binaryName}` : `which ${binaryName}`;
+  const lookupCommand = platform === 'win32' ? 'where.exe' : 'which';
+  const lookupArgs = [binaryName];
 
   let output: string;
   try {
-    output = execSync(command, {
+    output = execFileSync(lookupCommand, lookupArgs, {
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf-8',
       windowsHide: true
     });
   } catch (error: unknown) {
     if (error instanceof Error) {
-      logger.debug('SYSTEM', `Binary lookup failed for ${binaryName}`, { command }, error);
+      logger.debug(
+        'SYSTEM',
+        `Binary lookup failed for ${binaryName}`,
+        { command: lookupCommand, args: lookupArgs },
+        error,
+      );
     } else {
-      logger.debug('SYSTEM', `Binary lookup failed for ${binaryName}`, { command }, new Error(String(error)));
+      logger.debug(
+        'SYSTEM',
+        `Binary lookup failed for ${binaryName}`,
+        { command: lookupCommand, args: lookupArgs },
+        new Error(String(error)),
+      );
     }
     return null;
   }
@@ -72,6 +100,19 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
   return result;
 }
 
+/**
+ * Bun's official installer honors BUN_INSTALL (default ~/.bun) and puts the
+ * binary in $BUN_INSTALL/bin. Hook shells on Windows often lack that
+ * directory on PATH (#3224).
+ */
+function bunInstallBinCandidates(bunInstall: string | undefined, platform: NodeJS.Platform): string[] {
+  const root = bunInstall?.trim();
+  if (!root) return [];
+  return platform === 'win32'
+    ? [path.join(root, 'bin', 'bun.exe'), path.join(root, 'bin', 'bun'), path.join(root, 'bun.exe')]
+    : [path.join(root, 'bin', 'bun'), path.join(root, 'bun')];
+}
+
 function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): string | null {
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
@@ -84,26 +125,31 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
   const homeDirectory = options.homeDirectory ?? homedir();
   const pathExists = options.pathExists ?? existsSync;
   const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
+  const realpath = options.realpath ?? resolveRealPath;
 
   const candidatePaths: (string | undefined)[] = platform === 'win32'
     ? [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
         env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
         env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
+        env.npm_config_prefix ? path.join(env.npm_config_prefix, 'bun.exe') : undefined, // npm -g install path
       ]
     : [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
         '/home/linuxbrew/.linuxbrew/bin/bun',
         '/usr/bin/bun', // Debian/Ubuntu apt install path
         '/snap/bin/bun', // Ubuntu Snap install path
+        env.npm_config_prefix ? path.join(env.npm_config_prefix, 'bin', 'bun') : undefined, // npm -g install path
       ];
 
   for (const candidate of candidatePaths) {
@@ -119,7 +165,17 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     }
   }
 
-  return lookupInPath('bun', platform);
+  // PATH fallback. `which bun` returns a path that is on PATH but may be a
+  // dangling npm/nvm shim — the `bun` package's bin symlink whose real binary
+  // never downloaded. Guard it the same way the explicit candidates are
+  // guarded, resolving symlinks so a shim pointing at a missing target is
+  // rejected instead of returned (a bad path here later crashes the spawn).
+  const pathFallback = lookupInPath('bun', platform)?.trim();
+  if (!pathFallback || !isBunExecutablePath(pathFallback)) {
+    return null;
+  }
+  const realFallback = realpath(pathFallback) ?? pathFallback;
+  return pathExists(realFallback) ? realFallback : null;
 }
 
 import {
@@ -221,7 +277,7 @@ function classifyCwdForRemap(cwd: string): CwdClassification {
     ? path.dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
   const parent = path.basename(parentRepoDir);
-  return { kind: 'worktree', project: `${parent}/${leaf}` };
+  return { kind: 'worktree', project: buildWorktreeProjectKey(parent, leaf) };
 }
 
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
@@ -357,7 +413,65 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
   }
 }
 
-export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: string): string {
+/**
+ * Where a detached daemon should stand, which is anywhere but the user's project.
+ *
+ * A process holds an open handle on its working directory. On Windows that makes the
+ * directory unrenamable and unmovable for the daemon's whole lifetime, and the daemon
+ * outlives the session that spawned it -- so a project folder became permanently locked
+ * with "The process cannot access the file because it is being used by another process"
+ * until the user found and killed bun.exe (#3706). POSIX allows the rename but still
+ * pins the directory against unmount. On Linux an inherited cwd that is later deleted (a
+ * removed git worktree) also makes every child spawn fail with ENOENT, the second
+ * trigger of the #3290 wedge. claude-mem's own data directory always exists by the time
+ * a daemon starts and is never a directory the user is reorganising.
+ */
+export function daemonWorkingDirectory(): string {
+  const dir = paths.dataDir();
+  // Created here rather than assumed: a cwd that does not exist makes spawn fail with
+  // ENOENT and Start-Process fail outright, so passing one turns a first run on a fresh
+  // install into a launch failure. paths.ts resolves DATA_DIR but does not create it --
+  // today something else happens to create it first, which is a coupling this must not
+  // depend on. mkdir -p is idempotent, so the usual case costs one stat.
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * Move the running daemon into daemonWorkingDirectory(), whatever cwd it was
+ * launched with. The spawn sites already pass that cwd, but a manual
+ * `bun worker-service.cjs --daemon` from any shell (or an older launcher) can
+ * still hand the daemon the user's project, a deleted directory, or an
+ * ACL-locked one such as a Store app under WindowsApps. From an ACL-locked cwd,
+ * cross-spawn's post-spawn chdir back throws EPERM on every child spawn. Falls
+ * back to the home directory, then the OS temp directory. Never throws: a
+ * daemon that cannot move is no worse off than before.
+ *
+ * Returns the directory it moved to, or null when every candidate failed.
+ */
+export function pinDaemonWorkingDirectory(
+  candidates: ReadonlyArray<() => string> = [daemonWorkingDirectory, homedir, tmpdir],
+  chdir: (directory: string) => void = (directory) => process.chdir(directory)
+): string | null {
+  for (const candidate of candidates) {
+    try {
+      const directory = candidate();
+      if (!directory) continue;
+      chdir(directory);
+      return directory;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  logger.warn('SYSTEM', 'Could not move the worker daemon into its data, home or temp directory; keeping the inherited cwd');
+  return null;
+}
+
+export function buildWindowsDaemonStartCommand(
+  runtimePath: string,
+  scriptPath: string,
+  workingDirectory: string = daemonWorkingDirectory()
+): string {
   const psSingleQuote = (value: string) => value.replace(/'/g, "''");
   // Windows PowerShell 5.1 joins -ArgumentList elements with spaces WITHOUT
   // quoting them when it builds the child's native command line, so a script
@@ -366,48 +480,185 @@ export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: 
   // double quotes inside the single-quoted PS string keeps the path a single
   // argument. -FilePath is safe as-is: it is a single-string parameter and
   // never goes through that join.
-  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WindowStyle Hidden`;
+  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WorkingDirectory '${psSingleQuote(workingDirectory)}' -WindowStyle Hidden`;
 }
 
-export function spawnDaemon(
+export const WORKER_BOOT_PROBE_TIMEOUT_MS = 5000;
+const WORKER_BOOT_PROBE_MAX_LINES = 8;
+
+/**
+ * Did the probe "time out" too early for that timeout to be real?
+ *
+ * Called from the worker-start failure path, the FIRST sync spawn comes back
+ * ETIMEDOUT in ~25ms — the child SIGTERMed before it could print a byte — no
+ * matter how generous the window is (measured identically at 8s and at 60s
+ * under Bun 1.3.13 on Windows). A second, identical spawn immediately after
+ * always answers in ~180ms, so the deadline is being resolved against something
+ * stale that the first call refreshes. A genuine timeout burns the whole window
+ * instead, which is what separates the two here.
+ */
+export function shouldRetryWorkerBootProbe(
+  error: Error | undefined,
+  elapsedMs: number,
+  timeoutMs: number
+): boolean {
+  if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ETIMEDOUT') return false;
+  return elapsedMs < timeoutMs / 2;
+}
+
+/**
+ * Re-run the worker bundle in the foreground to recover the stderr spawnDaemon
+ * threw away.
+ *
+ * The daemon is detached with its stdio discarded (Start-Process -WindowStyle
+ * Hidden on Windows, stdio:'ignore' elsewhere), so a bundle that dies during
+ * module resolution — a truncated `bun install` in the plugin cache, a pruned
+ * dependency — leaves the caller with nothing but "worker exited", and the
+ * operator is left guessing between Bun, the bundle and the port. Running the
+ * same bundle where we CAN read stderr puts the actual error back in the log.
+ *
+ * `status` is the probe command: it executes every top-level require in the
+ * bundle — which is where these failures happen, long before argv is parsed —
+ * then exits 0 on every branch without starting a server, so a healthy bundle
+ * costs one silent subprocess. scripts/smoke-clean-room.cjs guards the same
+ * class of failure at build time with the same trick.
+ *
+ * Failure-path only, and never throws: a probe that cannot run tells us nothing
+ * about the bundle, so it stays quiet rather than blaming the wrong thing.
+ */
+export function probeWorkerBootFailure(
   scriptPath: string,
-  port: number,
-  extraEnv: Record<string, string> = {}
-): number | undefined {
-  getSupervisor().assertCanSpawn('worker daemon');
-
-  const env = sanitizeEnv({
-    ...process.env,
-    CLAUDE_MEM_WORKER_PORT: String(port),
-    ...extraEnv
-  });
-
+  timeoutMs: number = getPlatformTimeout(WORKER_BOOT_PROBE_TIMEOUT_MS)
+): string | undefined {
   const runtimePath = resolveWorkerRuntimePath();
-  if (!runtimePath) {
-    logger.error(
-      'SYSTEM',
-      'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
-    );
-    return undefined;
+  if (!runtimePath) return undefined;
+
+  const runProbe = (): { result: ReturnType<typeof spawnSync>; elapsedMs: number } | undefined => {
+    const startedAt = Date.now();
+    try {
+      const result = spawnSync(runtimePath, [scriptPath, 'status'], {
+        encoding: 'utf-8',
+        timeout: timeoutMs,
+        windowsHide: true,
+        env: sanitizeEnv({ ...process.env })
+      });
+      return { result, elapsedMs: Date.now() - startedAt };
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.debug('SYSTEM', 'Worker boot probe could not be launched', { scriptPath }, err);
+      return undefined;
+    }
+  };
+
+  let attempt = runProbe();
+  if (attempt === undefined) return undefined;
+
+  // One retry when the window expired too early to be real — see
+  // shouldRetryWorkerBootProbe. Without it the probe stays silent on exactly
+  // the platform this fix exists for.
+  if (shouldRetryWorkerBootProbe(attempt.result.error, attempt.elapsedMs, timeoutMs)) {
+    logger.debug('SYSTEM', 'Worker boot probe timed out before it could run — retrying once', {
+      scriptPath,
+      elapsedMs: attempt.elapsedMs,
+      timeoutMs
+    });
+    attempt = runProbe();
+    if (attempt === undefined) return undefined;
   }
 
-  if (process.platform === 'win32') {
-    const psScript = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
-    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
+  const { result } = attempt;
+  // Timed out for real, or never launched at all — inconclusive either way.
+  if (result.error) return undefined;
+  // The bundle loaded and answered. Whatever killed the daemon, it was not this.
+  if (result.status === 0) return undefined;
 
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+  if (!output) return undefined;
+
+  return output.split(/\r?\n/).slice(0, WORKER_BOOT_PROBE_MAX_LINES).join('\n');
+}
+
+/** Absolute powershell.exe when SystemRoot is set; otherwise PATH lookup. */
+export function resolveWindowsPowerShellPath(
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT;
+  if (systemRoot) {
+    return `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  }
+  return 'powershell.exe';
+}
+
+/**
+ * Argv for launching a hidden worker daemon via Start-Process.
+ * -WindowStyle Hidden on powershell.exe itself plus Start-Process
+ * -WindowStyle Hidden inside the encoded script (#3521). Never use
+ * Node `detached: true` for this on Windows — that allocates a console.
+ */
+export function buildWindowsHiddenDaemonPowerShellArgs(
+  runtimePath: string,
+  scriptPath: string,
+  workingDirectory: string = daemonWorkingDirectory()
+): string[] {
+  const encodedCommand = Buffer.from(
+    buildWindowsDaemonStartCommand(runtimePath, scriptPath, workingDirectory),
+    'utf16le'
+  ).toString('base64');
+  return ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', encodedCommand];
+}
+
+/**
+ * Spawn the worker as a background daemon without a visible console, with its
+ * cwd pinned to claude-mem's data dir (daemonWorkingDirectory, #3706).
+ *
+ * Windows: Start-Process -WindowStyle Hidden via powershell argv (sync,
+ * bounded). Returns 0 as a success sentinel (Start-Process does not yield the
+ * child pid), so callers must treat only `> 0` as a real pid.
+ *
+ * POSIX: setsid/detached spawnHidden; returns the child pid.
+ *
+ * Returns undefined when the launch itself failed. Used by spawnDaemon
+ * (CLI/MCP) and both hook lazy-spawn paths in worker-utils.ts.
+ */
+export function spawnDetachedWorkerDaemon(
+  runtimePath: string,
+  scriptPath: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform
+): number | undefined {
+  if (platform === 'win32') {
+    const powershell = resolveWindowsPowerShellPath(env);
+    const args = buildWindowsHiddenDaemonPowerShellArgs(runtimePath, scriptPath);
     try {
-      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
+      // argv spawnSync — never `execSync('powershell ...')` shell string.
+      // A shell-string launch can allocate a console before windowsHide
+      // applies; argv + -WindowStyle Hidden keeps the flash off (#3521).
+      const result = spawnSync(powershell, args, {
         stdio: 'ignore',
         windowsHide: true,
-        env
+        env,
+        timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS,
+        killSignal: 'SIGTERM',
       });
+      if (result.error) {
+        throw result.error;
+      }
+      if (result.signal) {
+        throw new Error(
+          `powershell Start-Process killed by signal=${result.signal}` +
+            ` after ${WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS}ms`
+        );
+      }
+      if (result.status !== 0) {
+        throw new Error(`powershell Start-Process exited ${result.status ?? 'null'}`);
+      }
       return 0;
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       logger.error(
         'SYSTEM',
         'Failed to spawn worker daemon on Windows',
-        { runtimePath },
+        { runtimePath, powershell },
         err
       );
       return undefined;
@@ -425,7 +676,17 @@ export function spawnDaemon(
   const child = spawnHidden(execPath, args, {
     detached: true,
     stdio: 'ignore',
+    cwd: daemonWorkingDirectory(),
     env
+  });
+
+  // Node reports a bad runtime path (dangling shim, missing binary) as an
+  // asynchronous 'error' event, not a synchronous throw. Without this listener
+  // that ENOENT escapes as an uncaught exception in this long-lived process.
+  // Degrade to the Bun-not-found log; the caller sees the failure through the
+  // worker never binding its port.
+  child.on('error', (error: Error) => {
+    logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE, { runtimePath, execPath }, error);
   });
 
   if (child.pid === undefined) {
@@ -434,6 +695,28 @@ export function spawnDaemon(
 
   child.unref();
   return child.pid;
+}
+
+export function spawnDaemon(
+  scriptPath: string,
+  port: number,
+  extraEnv: Record<string, string> = {}
+): number | undefined {
+  getSupervisor().assertCanSpawn('worker daemon');
+
+  const env = sanitizeEnv({
+    ...process.env,
+    CLAUDE_MEM_WORKER_PORT: String(port),
+    ...extraEnv
+  });
+
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath) {
+    logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE);
+    return undefined;
+  }
+
+  return spawnDetachedWorkerDaemon(runtimePath, scriptPath, env);
 }
 
 export function isPidFileRecent(thresholdMs: number = 15000): boolean {
@@ -460,6 +743,6 @@ export function touchPidFile(): void {
   }
 }
 
-export function cleanStalePidFile(): ValidateWorkerPidStatus {
-  return validateWorkerPidFile({ logAlive: false });
+export function cleanStalePidFile(options: { removeStale?: boolean } = {}): ValidateWorkerPidStatus {
+  return validateWorkerPidFile({ logAlive: false, removeStale: options.removeStale });
 }

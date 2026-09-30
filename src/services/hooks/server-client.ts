@@ -60,6 +60,10 @@ export interface ServerClientConfig {
   timeoutMs?: number;
 }
 
+export interface ServerRequestOptions {
+  timeoutMs?: number;
+}
+
 export interface ServerStartSessionRequest {
   projectId: string;
   externalSessionId?: string | null;
@@ -132,6 +136,10 @@ export interface ServerEndSessionResponse {
 export interface ServerAddObservationRequest {
   projectId: string;
   serverSessionId?: string | null;
+  // Callers inside a session know the agent's own session id, not the
+  // server_sessions row UUID; the server resolves it (mirrors /v1/events).
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -171,9 +179,17 @@ export interface ServerSearchObservationsResponse {
 // matched observations AND a pre-joined `context` string.
 export interface ServerContextObservationsRequest {
   projectId: string;
-  query: string;
+  // OPTIONAL, and the whole session-start read depends on it being optional.
+  // With a query the route is FTS and answers by relevance; with the key ABSENT
+  // it answers by recency, which is what a session-start block is. An empty
+  // STRING is not the same thing -- the route's schema requires >=1 character
+  // and rejects `""` -- so the key must be omitted, never blanked.
+  query?: string;
   limit?: number;
   platformSource?: string | null;
+  // Folder labels (observations.metadata.project) to scope the read to. Omitted
+  // or empty means every folder in the server project.
+  folderProjects?: string[];
 }
 
 export interface ServerContextObservationsResponse {
@@ -206,9 +222,12 @@ export class ServerClient {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async startSession(input: ServerStartSessionRequest): Promise<ServerStartSessionResponse> {
+  async startSession(
+    input: ServerStartSessionRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerStartSessionResponse> {
     const body = this.buildStartSessionPayload(input);
-    return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body);
+    return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body, options);
   }
 
   async recordEvent(input: ServerRecordEventRequest): Promise<ServerRecordEventResponse> {
@@ -254,16 +273,26 @@ export class ServerClient {
     );
   }
 
-  // Phase 8 — MCP `observation_context`. Same FTS surface as search, but
-  // returns a pre-joined context string suitable for direct prompt injection.
+  // Phase 8 — MCP `observation_context` and the server-runtime session-start
+  // read. With a query this is the same FTS surface as search; without one the
+  // route returns the most recent rows. Either way it also returns a pre-joined
+  // context string.
   async contextObservations(
     input: ServerContextObservationsRequest,
   ): Promise<ServerContextObservationsResponse> {
-    return this.request<ServerContextObservationsResponse>(
-      'POST',
-      '/v1/context',
-      this.buildSearchPayload(input),
-    );
+    // Built here rather than through buildSearchPayload(): that helper is the
+    // /v1/search contract, where a query is genuinely required, and widening it
+    // would let a search ship without one.
+    const payload: Record<string, unknown> = { projectId: input.projectId };
+    if (input.query !== undefined) payload.query = input.query;
+    if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.platformSource !== undefined) {
+      payload.platformSource = normalizePlatformSourceField(input.platformSource);
+    }
+    if (input.folderProjects && input.folderProjects.length > 0) {
+      payload.folderProjects = input.folderProjects;
+    }
+    return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload);
   }
 
   // Phase 8 — MCP `observation_generation_status`. Server returns the same
@@ -282,23 +311,35 @@ export class ServerClient {
   buildAddObservationPayload(
     input: ServerAddObservationRequest,
   ): Record<string, unknown> {
-    // Write-path contract (#2684): /v1/memories persists a `memory_items` row
-    // whose searchable text lives in `narrative` (the FTS trigger copies it
-    // into memory_items_fts). The MCP `observation_add` surface speaks in terms
-    // of `content`; map it onto `narrative` so the row is never empty and the
-    // FTS index always has something to match. `type` is REQUIRED by
-    // CreateMemoryItemSchema; default it from `kind` so a manual insert that
-    // only supplied content still persists instead of 400-ing.
+    // Write-path contract. This client is constructed ONLY on the `server`
+    // runtime (runtime-selector.ts `buildServerContext`), so the only
+    // /v1/memories it can ever reach is ServerV1PostgresRoutes, which validates
+    // `content: z.string().min(1)` and writes an `observations` row through
+    // PostgresObservationRepository.
+    //
+    // It previously mapped `content` onto `narrative` and added `type`, citing
+    // #2684 / CreateMemoryItemSchema / `memory_items`. That is the contract of
+    // the OTHER /v1/memories — ServerV1Routes, the SQLite route mounted by
+    // worker-service — which this client never talks to: the `worker` runtime
+    // returns before a ServerClient is built. `memory_items` does not exist in
+    // the server database at all.
+    //
+    // Observed on a live `server` runtime: every MCP `observation_add`
+    // returned 400 ValidationError "path":["content"], so the direct-write
+    // surface was unusable rather than merely untested.
     const content = input.content;
     const kind = input.kind ?? 'manual';
     const metadataTitle = typeof input.metadata?.title === 'string' ? input.metadata.title : undefined;
     return {
       projectId: input.projectId,
       kind,
-      type: kind,
-      narrative: content,
+      content,
       ...(metadataTitle ? { title: metadataTitle } : {}),
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
+      // Forward the in-session identifiers so the server can resolve the
+      // server_sessions row itself; without these the memory lands unlinked.
+      ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
+      ...(input.platformSource !== undefined ? { platformSource: input.platformSource } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
   }
@@ -344,6 +385,7 @@ export class ServerClient {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
+    options: ServerRequestOptions = {},
   ): Promise<T> {
     if (!this.apiKey || !this.apiKey.trim()) {
       throw new ServerClientError(
@@ -365,8 +407,9 @@ export class ServerClient {
     }
 
     let response: Response;
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
     try {
-      response = await fetchWithTimeout(url, init, this.timeoutMs);
+      response = await fetchWithTimeout(url, init, timeoutMs);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       const isTimeout = /timed out|timeout/i.test(message);

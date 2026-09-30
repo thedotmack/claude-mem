@@ -33,8 +33,12 @@ export function claudeSettingsPath(): string {
   return join(claudeConfigDirectory(), 'settings.json');
 }
 
+export function pluginCacheRootDirectory(): string {
+  return join(pluginsDirectory(), 'cache', 'thedotmack', 'claude-mem');
+}
+
 export function pluginCacheDirectory(version: string): string {
-  return join(pluginsDirectory(), 'cache', 'thedotmack', 'claude-mem', version);
+  return join(pluginCacheRootDirectory(), version);
 }
 
 export function npmPackageRootDirectory(): string {

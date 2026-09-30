@@ -93,13 +93,18 @@ describe('MCP tool inputSchema declarations', () => {
     expect(section).toContain('handleObservationSearch');
   });
 
-  it('observation_context declares query as required and exposes a limit cap', async () => {
+  it('observation_context declares query as optional (recency mode when omitted) and exposes a limit cap', async () => {
+    // query became optional alongside SessionStart server-runtime support
+    // (plan-24 step 4, #2991): omitting it asks /v1/context for the most
+    // recent observations instead of a relevance-ranked search.
     const src = await Bun.file(mcpServerPath).text();
     const section = src.slice(
       src.indexOf("name: 'observation_context'"),
       src.indexOf("name: 'observation_generation_status'"),
     );
-    expect(section).toContain("required: ['query']");
+    expect(section).toContain('query:');
+    expect(section).not.toContain("required: ['query']");
+    expect(section).not.toContain('required:');
     expect(section).toContain('platformSource:');
     expect(section).toContain('handleObservationContext');
   });

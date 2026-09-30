@@ -3,7 +3,7 @@ import path from 'path';
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
-import { getProjectContext } from '../../utils/project-name.js';
+import { getPathModeProjectContext, getProjectContext } from '../../utils/project-name.js';
 import { ChromaSync, MergedIntoProjectTarget } from '../sync/ChromaSync.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
@@ -16,6 +16,8 @@ export interface AdoptionResult {
   parentProject: string;
   scannedWorktrees: number;
   mergedBranches: string[];
+  /** Keys adopted because their checkout is gone, merged or not (#2864). */
+  orphanedWorktrees: string[];
   adoptedObservations: number;
   adoptedSummaries: number;
   chromaUpdates: number;
@@ -24,9 +26,26 @@ export interface AdoptionResult {
   errors: Array<{ worktree: string; error: string }>;
 }
 
+/**
+ * Render per-branch adoption errors as a string for logger CONTEXT values —
+ * the logger interpolates context values with a template literal
+ * (logger.ts `${k}=${v}`), so a raw object array renders as
+ * '[object Object]' (#3378).
+ */
+export function formatAdoptionErrors(errors: AdoptionResult['errors']): string {
+  return errors.map(e => `${e.worktree}: ${e.error}`).join('; ');
+}
+
 interface WorktreeEntry {
   path: string;
   branch: string | null;
+  head: string | null;
+}
+
+interface GitCommandResult {
+  status: number | null;
+  stdout: string;
+  error: Error | undefined;
 }
 
 const GIT_TIMEOUT_MS = 15000;
@@ -38,7 +57,7 @@ class DryRunRollback extends Error {
   }
 }
 
-function gitCapture(cwd: string, args: string[]): string | null {
+function gitRun(cwd: string, args: string[]): GitCommandResult {
   const startTime = Date.now();
   const r = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
@@ -56,16 +75,21 @@ function gitCapture(cwd: string, args: string[]): string | null {
       error: r.error.message,
       timedOut: r.error.name === 'ETIMEDOUT' || (r.status === null && r.signal === 'SIGTERM')
     });
-    return null;
+    return { status: r.status, stdout: '', error: r.error };
   }
 
   if (r.status !== 0) {
     logger.debug('GIT', `Git returned non-zero exit code ${r.status}: git -C ${cwd} ${args.join(' ')}`, {
       stderr: r.stderr?.toString().trim()
     });
-    return null;
+    return { status: r.status, stdout: '', error: undefined };
   }
-  return (r.stdout ?? '').trim();
+  return { status: r.status, stdout: (r.stdout ?? '').trim(), error: undefined };
+}
+
+function gitCapture(cwd: string, args: string[]): string | null {
+  const result = gitRun(cwd, args);
+  return result.status === 0 ? result.stdout : null;
 }
 
 function resolveMainRepoPath(cwd: string): string | null {
@@ -75,6 +99,18 @@ function resolveMainRepoPath(cwd: string): string | null {
     '--git-common-dir'
   ]);
   if (!commonDir) return null;
+
+  // A submodule's --git-common-dir is `<super>/.git/modules/<name>`, which
+  // neither branch below matches — discovery used to return the gitdir itself.
+  // Anchor on the same marker detectWorktree uses, so discovery and key
+  // derivation agree (#2842).
+  const modulesMarker = `${path.sep}.git${path.sep}modules${path.sep}`;
+  const normalized = commonDir.split('/').join(path.sep);
+  const modulesIndex = normalized.indexOf(modulesMarker);
+  if (modulesIndex !== -1) {
+    const superprojectRoot = normalized.slice(0, modulesIndex);
+    return existsSync(superprojectRoot) ? superprojectRoot : null;
+  }
 
   const mainRoot = commonDir.endsWith('/.git')
     ? path.dirname(commonDir)
@@ -90,33 +126,166 @@ function listWorktrees(mainRepo: string): WorktreeEntry[] {
   let current: Partial<WorktreeEntry> = {};
   for (const line of raw.split('\n')) {
     if (line.startsWith('worktree ')) {
-      if (current.path) entries.push({ path: current.path, branch: current.branch ?? null });
-      current = { path: line.slice('worktree '.length).trim(), branch: null };
+      if (current.path) entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
+      current = { path: line.slice('worktree '.length).trim(), branch: null, head: null };
+    } else if (line.startsWith('HEAD ')) {
+      current.head = line.slice('HEAD '.length).trim() || null;
     } else if (line.startsWith('branch ')) {
       const refName = line.slice('branch '.length).trim();
       current.branch = refName.startsWith('refs/heads/')
         ? refName.slice('refs/heads/'.length)
         : refName;
     } else if (line === '' && current.path) {
-      entries.push({ path: current.path, branch: current.branch ?? null });
+      entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
       current = {};
     }
   }
-  if (current.path) entries.push({ path: current.path, branch: current.branch ?? null });
+  if (current.path) entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
   return entries;
 }
 
-function listMergedBranches(mainRepo: string): Set<string> {
-  const raw = gitCapture(mainRepo, [
-    'branch',
-    '--merged',
-    'HEAD',
-    '--format=%(refname:short)'
-  ]);
-  if (!raw) return new Set();
-  return new Set(
-    raw.split('\n').map(b => b.trim()).filter(b => b.length > 0)
-  );
+/**
+ * Composite keys with no live checkout. Their parent association can no longer
+ * be recomputed from disk, so they are unreachable by every read path and are
+ * adopted regardless of merge status — the alternative to adopting is not
+ * "kept separate", it is "lost" (#2864).
+ *
+ * Range-matched rather than `LIKE 'parent/%'`: `_` is a LIKE wildcard and
+ * common in repo names, so `my_app/%` would also match another repo's
+ * `myXapp/...`.
+ */
+function listOrphanProjectKeys(
+  db: import('bun:sqlite').Database,
+  parentProject: string,
+  liveWorktreeProjects: Set<string>,
+  /** False narrows to keys still awaiting adoption, for reporting. */
+  includeAlreadyAdopted: boolean,
+  writerEvidence: WriterEvidenceColumns
+): string[] {
+  const prefix = `${parentProject}/`;
+  // '0' is the byte after '/', so [prefix, upperBound) is exactly the children.
+  const upperBound = `${parentProject}0`;
+  // Mirrors selectObsForPatch: already-adopted rows stay eligible so a Chroma
+  // patch that failed after the SQL commit can retry. The update itself is a
+  // no-op for them, so re-runs neither double-count nor bump sync revs.
+  const adoptedClause = includeAlreadyAdopted
+    ? 'AND (merged_into_project IS NULL OR merged_into_project = ?)'
+    : 'AND merged_into_project IS NULL';
+  const params = includeAlreadyAdopted
+    ? [prefix, upperBound, parentProject, prefix, upperBound, parentProject]
+    : [prefix, upperBound, prefix, upperBound];
+
+  const rows = db.prepare(
+    `SELECT DISTINCT project FROM observations
+      WHERE project >= ? AND project < ? ${adoptedClause}
+     UNION
+     SELECT DISTINCT project FROM session_summaries
+      WHERE project >= ? AND project < ? ${adoptedClause}`
+  ).all(...params) as Array<{ project: string }>;
+
+  return rows
+    .map(r => r.project)
+    .filter(project => {
+      if (liveWorktreeProjects.has(project)) return false;
+      // Nested submodules key on their path under the superproject, so a
+      // composite is not always one level deep (#2842).
+      return project.length > prefix.length;
+    })
+    .filter(project => wasWrittenUnderRepository(db, project, parentProject, writerEvidence));
+}
+
+/** Which writer-evidence columns this database has (older schemas lack them). */
+interface WriterEvidenceColumns {
+  /** sdk_sessions.cwd (v53, #2864). */
+  sessionCwd: boolean;
+  /** origin_device_id on observations and session_summaries (cloud sync). */
+  originDevice: boolean;
+}
+
+/**
+ * Whether the rows under a candidate key can have been written by a checkout of
+ * this repository. The key's shape cannot tell on its own: with
+ * CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote a repository is named by its
+ * `org/repo` slug (#2827), which looks exactly like `<parent>/<worktree>` when a
+ * folder named after the org is a repository here, and adopting it would fold
+ * another repository's memory into this one (and sync that everywhere).
+ *
+ * - Keys whose sessions recorded their checkout (sdk_sessions.cwd): every
+ *   recorded checkout that still exists must still resolve into this
+ *   repository (read its key). A deleted worktree's checkout is gone; a live
+ *   repo-named worktree resolves to the repository itself (#3641).
+ * - Keys with nothing recorded (rows from before #2864, or from another device):
+ *   the key must hold rows this device wrote. A replica's rows are adopted by
+ *   the device that wrote them, and that remap reaches this one through sync.
+ */
+function wasWrittenUnderRepository(
+  db: import('bun:sqlite').Database,
+  candidateKey: string,
+  parentProject: string,
+  writerEvidence: WriterEvidenceColumns
+): boolean {
+  if (writerEvidence.sessionCwd) {
+    const checkouts = db.prepare(
+      "SELECT DISTINCT cwd FROM sdk_sessions WHERE project = ? AND cwd IS NOT NULL AND cwd != ''"
+    ).all(candidateKey) as Array<{ cwd: string }>;
+    if (checkouts.length > 0) {
+      return checkouts.every(({ cwd }) => {
+        if (!existsSync(cwd)) return true;
+        // Checkouts of this repository (itself, its worktrees and submodules)
+        // read its folder-based key in every naming mode.
+        return getProjectContext(cwd).allProjects.includes(parentProject);
+      });
+    }
+  }
+  if (!writerEvidence.originDevice) return true;
+  const nativeRow = db.prepare(
+    `SELECT 1 AS native FROM observations WHERE project = ? AND origin_device_id IS NULL
+     UNION ALL
+     SELECT 1 AS native FROM session_summaries WHERE project = ? AND origin_device_id IS NULL
+     LIMIT 1`
+  ).get(candidateKey, candidateKey);
+  return nativeRow != null;
+}
+
+/**
+ * Submodule checkouts, which share the composite key with worktrees but are not
+ * reported by `git worktree list` — without them a live submodule looks exactly
+ * like a deleted worktree to the orphan sweep. Existence-filtered, so a deleted
+ * submodule is still adopted (#2842).
+ */
+function listSubmodulePaths(mainRepo: string): string[] {
+  const raw = gitCapture(mainRepo, ['submodule', 'status', '--recursive']);
+  if (!raw) return [];
+
+  const paths: string[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    // ` <sha> <path> (<describe>)`; paths may contain spaces.
+    const match = line.match(/^[\s+\-U]*[0-9a-f]{7,40}\s+(.+?)(?:\s+\([^)]*\))?$/);
+    if (!match) continue;
+    const absolute = path.resolve(mainRepo, match[1]);
+    if (existsSync(absolute)) paths.push(absolute);
+  }
+  return paths;
+}
+
+function resolveCandidateOids(mainRepo: string): Set<string> {
+  const oids = new Set<string>();
+  for (const ref of ['HEAD', 'origin/HEAD', 'origin/main', 'origin/master']) {
+    const result = gitRun(mainRepo, ['rev-parse', '--verify', `${ref}^{commit}`]);
+    if (result.status === 0 && result.stdout) oids.add(result.stdout);
+  }
+  return oids;
+}
+
+export function hasProvenAncestry(mainRepo: string, worktreeHead: string, candidateOids: Set<string>): boolean {
+  for (const candidateOid of candidateOids) {
+    const result = gitRun(mainRepo, ['merge-base', '--is-ancestor', worktreeHead, candidateOid]);
+    if (result.status === 0 && !result.error) return true;
+    // Status 1 is a known negative. Spawn failures and other statuses remain
+    // conservative by simply leaving this worktree unselected.
+  }
+  return false;
 }
 
 export async function adoptMergedWorktrees(opts: {
@@ -130,13 +299,20 @@ export async function adoptMergedWorktrees(opts: {
   const startCwd = opts.repoPath ?? process.cwd();
 
   const mainRepo = resolveMainRepoPath(startCwd);
-  const parentProject = mainRepo ? getProjectContext(mainRepo).primary : '';
+  // Worktree and submodule composites (`<repo>/<worktree>`) are folder-based
+  // keys, so the sweep works on the repository's folder-based key whatever
+  // names the repository now: with a git-remote slug (#2827), rows a worktree
+  // wrote before the switch are still folded when it merges or is deleted, into
+  // a key the repository keeps reading.
+  const parentProject = mainRepo ? getPathModeProjectContext(mainRepo).primary : '';
+  const currentProject = mainRepo ? getProjectContext(mainRepo).primary : '';
 
   const result: AdoptionResult = {
     repoPath: mainRepo ?? startCwd,
     parentProject,
     scannedWorktrees: 0,
     mergedBranches: [],
+    orphanedWorktrees: [],
     adoptedObservations: 0,
     adoptedSummaries: 0,
     chromaUpdates: 0,
@@ -160,25 +336,23 @@ export async function adoptMergedWorktrees(opts: {
   const childWorktrees = allWorktrees.filter(w => w.path !== mainRepo);
   result.scannedWorktrees = childWorktrees.length;
 
-  if (childWorktrees.length === 0) {
-    return result;
-  }
-
   let targets: WorktreeEntry[];
   if (opts.onlyBranch) {
     targets = childWorktrees.filter(w => w.branch === opts.onlyBranch);
   } else {
-    const merged = listMergedBranches(mainRepo);
-    targets = childWorktrees.filter(w => w.branch !== null && merged.has(w.branch));
+    const candidateOids = resolveCandidateOids(mainRepo);
+    targets = childWorktrees.filter(w =>
+      w.head !== null &&
+      // A branch at the current parent tip is a valid existing worktree;
+      // detached exact-tip checkouts are fresh inspection worktrees.
+      (w.branch !== null || !candidateOids.has(w.head)) &&
+      hasProvenAncestry(mainRepo, w.head, candidateOids)
+    );
   }
 
   result.mergedBranches = targets
     .map(t => t.branch)
     .filter((b): b is string => b !== null);
-
-  if (targets.length === 0) {
-    return result;
-  }
 
   const adoptedChromaTargets: MergedIntoProjectTarget[] = [];
 
@@ -195,6 +369,14 @@ export async function adoptMergedWorktrees(opts: {
       .all() as ColumnInfo[];
     const obsHasColumn = obsColumns.some(c => c.name === 'merged_into_project');
     const sumHasColumn = sumColumns.some(c => c.name === 'merged_into_project');
+    const sessionColumns = db
+      .prepare('PRAGMA table_info(sdk_sessions)')
+      .all() as ColumnInfo[];
+    const writerEvidence: WriterEvidenceColumns = {
+      sessionCwd: sessionColumns.some(c => c.name === 'cwd'),
+      originDevice: obsColumns.some(c => c.name === 'origin_device_id')
+        && sumColumns.some(c => c.name === 'origin_device_id'),
+    };
     if (!obsHasColumn || !sumHasColumn) {
       logger.debug(
         'SYSTEM',
@@ -229,8 +411,7 @@ export async function adoptMergedWorktrees(opts: {
     // plain-UPDATE path.
     const syncLane = hasSyncLane(db);
 
-    const adoptWorktreeInTransaction = (wt: WorktreeEntry) => {
-      const worktreeProject = getProjectContext(wt.path).primary;
+    const adoptWorktreeInTransaction = (worktreeProject: string) => {
       const rows = selectObsForPatch.all(
         worktreeProject,
         parentProject
@@ -264,18 +445,46 @@ export async function adoptMergedWorktrees(opts: {
       result.adoptedSummaries += sumChanges;
     };
 
+    // Every key a live checkout writes, folder-based and current (a slug can
+    // sit under the folder key's prefix: `acme/acme`), plus the repository's
+    // own current key: the sweep never adopts what a live checkout still writes.
+    const liveCheckouts = [...childWorktrees.map(w => w.path), ...listSubmodulePaths(mainRepo)];
+    const liveWorktreeProjects = new Set([
+      currentProject,
+      ...liveCheckouts.flatMap(checkout => [
+        getPathModeProjectContext(checkout).primary,
+        getProjectContext(checkout).primary,
+      ]),
+    ]);
+
+    // `--branch` is a targeted squash-merge escape hatch; no orphan sweep.
+    const orphanProjects = opts.onlyBranch
+      ? []
+      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, true, writerEvidence);
+    result.orphanedWorktrees = opts.onlyBranch
+      ? []
+      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false, writerEvidence);
+
+    const adoptionTargets: Array<{ project: string; label: string }> = [
+      ...targets.map(wt => ({ project: getPathModeProjectContext(wt.path).primary, label: wt.path })),
+      ...orphanProjects.map(project => ({ project, label: `${project} (worktree removed)` })),
+    ]
+      // A worktree named after its repo writes to the repo key itself (#3641);
+      // "adopting" it would stamp the repo's own rows as merged into
+      // themselves and queue a remap op that re-pushes every one of them.
+      .filter(target => target.project !== parentProject);
+
     const tx = db.transaction(() => {
-      for (const wt of targets) {
+      for (const target of adoptionTargets) {
         try {
-          adoptWorktreeInTransaction(wt);
+          adoptWorktreeInTransaction(target.project);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.warn('SYSTEM', 'Worktree adoption skipped branch', {
-            worktree: wt.path,
-            branch: wt.branch,
+            worktree: target.label,
             error: message
           });
-          result.errors.push({ worktree: wt.path, error: message });
+          result.errors.push({ worktree: target.label, error: message });
         }
       }
       if (dryRun) {
@@ -335,6 +544,7 @@ export async function adoptMergedWorktrees(opts: {
       dryRun,
       scannedWorktrees: result.scannedWorktrees,
       mergedBranches: result.mergedBranches,
+      orphanedWorktrees: result.orphanedWorktrees,
       adoptedObservations: result.adoptedObservations,
       adoptedSummaries: result.adoptedSummaries,
       chromaUpdates: result.chromaUpdates,
@@ -365,19 +575,31 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
     db = new Database(dbPath, { readonly: true });
 
-    const hasPending = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
-    ).get() as { name: string } | undefined;
-    if (!hasPending) {
-      logger.debug('SYSTEM', 'Worktree adoption skipped (pending_messages table missing)');
+    // Discovery reads sdk_sessions.cwd; pending_messages stopped receiving
+    // writes in v13.10.0 and is UNIONed only for rows still on disk (#2864).
+    const sessionCols = db
+      .prepare('PRAGMA table_info(sdk_sessions)')
+      .all() as Array<{ name: string }>;
+    if (!sessionCols.some(c => c.name === 'cwd')) {
+      logger.debug(
+        'SYSTEM',
+        'Worktree adoption skipped (sdk_sessions.cwd missing; will run after migration)'
+      );
       return results;
     }
 
-    const cwdRows = db.prepare(`
-      SELECT cwd FROM pending_messages
-      WHERE cwd IS NOT NULL AND cwd != ''
-      GROUP BY cwd
-    `).all() as Array<{ cwd: string }>;
+    const hasPending = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
+    ).get() as { name: string } | undefined;
+
+    const cwdSources = ['SELECT cwd FROM sdk_sessions WHERE cwd IS NOT NULL AND cwd != \'\''];
+    if (hasPending) {
+      cwdSources.push('SELECT cwd FROM pending_messages WHERE cwd IS NOT NULL AND cwd != \'\'');
+    }
+
+    const cwdRows = db.prepare(
+      `SELECT DISTINCT cwd FROM (${cwdSources.join(' UNION ')})`
+    ).all() as Array<{ cwd: string }>;
 
     for (const { cwd } of cwdRows) {
       const mainRepo = resolveMainRepoPath(cwd);
