@@ -185,6 +185,7 @@ export function ContextSettingsModal({
                 onChange={(e) => setSelectedSource(e.target.value)}
                 disabled={sources.length === 0}
               >
+                <option value="">All sources</option>
                 {sources.map(source => (
                   <option key={source} value={source}>{source}</option>
                 ))}
@@ -249,6 +250,13 @@ export function ContextSettingsModal({
                   onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value)}
                 />
               </FormField>
+              <ToggleSwitch
+                id="session-start-all-sources"
+                label="Include all sources at session start"
+                description="Show observations from Claude, Codex, and other harnesses in startup context"
+                checked={formState.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'}
+                onChange={() => toggleBoolean('CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES')}
+              />
               <FormField
                 label="Sessions"
                 tooltip="Number of recent sessions to pull observations from (1-50)"
@@ -448,6 +456,22 @@ export function ContextSettingsModal({
                   </FormField>
                 </>
               )}
+
+              <FormField
+                label="Claude Code CLI path"
+                tooltip="Executable path for the Claude Code CLI. File/env only — edit ~/.claude-mem/settings.json or set CLAUDE_CODE_PATH in the environment, then restart the worker."
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_CODE_PATH || ''}
+                  readOnly
+                  disabled
+                  placeholder="Auto-detect (set via settings.json or env)"
+                />
+                <span className="toggle-description">
+                  Read-only here. Set <code>CLAUDE_CODE_PATH</code> in <code>~/.claude-mem/settings.json</code> or the environment.
+                </span>
+              </FormField>
 
               <FormField
                 label="Worker Port"
