@@ -11,48 +11,19 @@ import {
   getWorkerPort,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { callMcpToolOnce } from '../../shared/mcp-client.js';
-import { proTrialLine } from '../../shared/pro-promo.js';
-
-async function requestSessionStartContext(args: {
-  projects: string[];
-  platformSource?: string;
-  colors?: boolean;
-}): Promise<string | null> {
-  const result = await callMcpToolOnce('session_start_context', {
-    projects: args.projects,
-    ...(args.platformSource ? { platformSource: args.platformSource } : {}),
-    ...(args.colors !== undefined ? { colors: args.colors } : {}),
-  });
-  if (result.isError) {
-    logger.warn('HOOK', 'MCP session_start_context returned an error; falling back to worker HTTP', {
-      preview: result.text.slice(0, 200),
-    });
-    return null;
-  }
-  return result.text.trim();
-}
-
-async function fetchSessionStartContextViaMcp(args: {
-  projects: string[];
-  platformSource?: string;
-  colors?: boolean;
-}): Promise<string | null> {
-  try {
-    return await requestSessionStartContext(args);
-  } catch (error: unknown) {
-    logger.warn('HOOK', 'MCP session_start_context failed; falling back to worker HTTP', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
+import { proTrialLine, proTrialUrl, PLAN_USAGE_GAIN_PERCENT } from '../../shared/pro-promo.js';
+import {
+  hasShownProFallbackNotice,
+  isCmemGatewayUrl,
+  markProFallbackNoticeShown,
+  trialDaysRemaining,
+} from '../../shared/cmem-gateway.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -95,30 +66,24 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
+    // ponytail: Codex's MCP normally starts the worker; this one bounded
+    // fallback covers cold sessions without the old startup process chain.
+    const workerOptions = input.platform === 'codex'
+      ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
+      : undefined;
+    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    if (isWorkerFallback(contextResult)) {
+      return emptyResult;
+    }
+
     let additionalContext: string;
-    const mcpContextResult = input.platform === 'codex'
-      ? await fetchSessionStartContextViaMcp({
-          projects: context.allProjects,
-          ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-        })
-      : null;
-
-    if (mcpContextResult !== null) {
-      additionalContext = mcpContextResult;
+    if (typeof contextResult === 'string') {
+      additionalContext = contextResult.trim();
+    } else if (contextResult === undefined) {
+      additionalContext = '';
     } else {
-      const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
-      if (isWorkerFallback(contextResult)) {
-        return emptyResult;
-      }
-
-      if (typeof contextResult === 'string') {
-        additionalContext = contextResult.trim();
-      } else if (contextResult === undefined) {
-        additionalContext = '';
-      } else {
-        logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
-        return emptyResult;
-      }
+      logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
+      return emptyResult;
     }
 
     // Issue #2215: surface stale OAuth token marker as a session-start hint.
@@ -132,22 +97,28 @@ export const contextHandler: EventHandler = {
         : hint;
     }
 
+    // Trial-expiry fallback notice (plan 2026-08-26 Phase 6): the worker wrote
+    // CLAUDE_MEM_PRO_FALLBACK_AT when the cmem gateway terminally rejected the
+    // delivered key, and dispatch now runs memory on the Anthropic plan. Tell
+    // the user exactly once (DATA_DIR marker file, oauth-stale pattern); the
+    // marker resets whenever the fallback is cleared.
+    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== ''
+      && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
+      && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+    if (fallbackActive && !hasShownProFallbackNotice()) {
+      const fallbackNotice = 'Your claude-mem free trial ended — memory now runs on your Anthropic plan.\n'
+        + `Keep it off-plan (up to ${PLAN_USAGE_GAIN_PERCENT}% more usage): ${proTrialUrl('fallback')}`;
+      additionalContext = additionalContext
+        ? `${fallbackNotice}\n\n${additionalContext}`
+        : fallbackNotice;
+      markProFallbackNoticeShown();
+    }
+
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const mcpColorResult = input.platform === 'codex'
-        ? await fetchSessionStartContextViaMcp({
-            projects: context.allProjects,
-            ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-            colors: true,
-          })
-        : null;
-      if (mcpColorResult !== null) {
-        coloredTimeline = mcpColorResult;
-      } else {
-        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
-        if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-          coloredTimeline = colorResult.trim();
-        }
+      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+        coloredTimeline = colorResult.trim();
       }
     }
 
@@ -159,8 +130,18 @@ export const contextHandler: EventHandler = {
     // back to the plain additionalContext for terminal display.
     const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
 
+    // Days-remaining nicety: while the free trial is active (plan 'trial', an
+    // end date stored, no fallback), append the countdown. Computed locally —
+    // no network — and display-only: nothing is enabled or disabled by it.
+    const daysLeft = !fallbackActive && settings.CLAUDE_MEM_PRO_PLAN === 'trial'
+      ? trialDaysRemaining(settings.CLAUDE_MEM_PRO_TRIAL_ENDS_AT)
+      : null;
+    const trialDaysLine = daysLeft !== null && daysLeft >= 0
+      ? `claude-mem free trial: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
+      : null;
+
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}\n${proTrialLine('session-start')}`
+      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
 
     return {
