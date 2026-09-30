@@ -156,6 +156,132 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
   });
 });
 
+/**
+ * Regression coverage for #4284: when chromaSync is null at construction time
+ * (the common case on Windows when `cmd.exe /c uvx` argv quoting prevents
+ * chroma-mcp from connecting, and any install where Chroma initialization
+ * fails silently), `executeWithFallback` must run the SQLite/FTS5 strategy
+ * for queries instead of returning a confident empty result. Before the
+ * fix this branch returned `{observations:[], sessions:[], prompts:[]}`
+ * for every query, so 497 observations in SQLite never surfaced.
+ */
+describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
+  it('runs SQLite strategy for a query when chromaSync is null and SQLite returns matches', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'cursor sqlite fallback',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('cursor sqlite fallback', expect.objectContaining({
+      project: 'orchestrator-project',
+      limit: 5,
+    }));
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
+    expect(result.results.sessions).toEqual([]);
+    expect(result.results.prompts).toEqual([]);
+  });
+
+  it('returns strategy=sqlite empty result (not the confident-empty bug) when SQLite has no matches', async () => {
+    const searchObservations = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'anything-not-in-the-database',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledTimes(1);
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([]);
+    expect(result.results.sessions).toEqual([]);
+    expect(result.results.prompts).toEqual([]);
+  });
+
+  it('does not call any chroma sync methods when chromaSync is null', async () => {
+    // Mirrors the Windows install scenario: chromaSync is never wired up
+    // because the chroma-mcp subprocess never connects.
+    const searchObservations = mock(() => [observation]);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+    );
+
+    await orchestrator.search({
+      query: 'cursor sqlite fallback',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    // sqliteStrategy is the only collaborator touched.
+    expect(searchObservations).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards query text to SQLite when chromaSync is null and searchType=all', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'cursor sqlite fallback',
+      searchType: 'all',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('cursor sqlite fallback', expect.objectContaining({
+      project: 'orchestrator-project',
+    }));
+    expect(searchSessions).toHaveBeenCalledWith('cursor sqlite fallback', expect.anything());
+    expect(searchUserPrompts).toHaveBeenCalledWith('cursor sqlite fallback', expect.anything());
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
+  });
+});
+
 describe('SearchOrchestrator per-category SQLite supplement', () => {
   const userPrompt = {
     id: 7,
