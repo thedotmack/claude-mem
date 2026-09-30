@@ -352,18 +352,16 @@ export class ClaudeProvider {
         if (info) {
           // The observer runs on the same account as the observed session,
           // so a `rejected` snapshot here means the user's own Claude Code
-          // session is out of usage too. The store dedupes and returns the
-          // exact exhausted buckets so unified snapshots are attributed to
-          // the right window.
-          const newRejections = globalRateLimitStore.setWithNewRejections(info);
-          for (const rejection of newRejections) {
+          // session is out of usage too. set() dedupes: one event per
+          // exhausted window, not one per observer request against the wall.
+          if (globalRateLimitStore.set(info)) {
             logger.warn('SDK', 'Subscription usage limit hit', {
               sessionDbId: session.sessionDbId,
-              window: rejection.rateLimitType,
-              overageStatus: rejection.overageStatus,
+              window: info.rateLimitType,
+              overageStatus: info.overageStatus,
             });
             captureEvent('usage_limit_hit', {
-              ...buildUsageLimitHitProps(rejection),
+              ...buildUsageLimitHitProps(info),
               ide: session.platformSource,
               provider: 'claude',
               observed_model: session.observedModel,
