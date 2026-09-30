@@ -1,7 +1,6 @@
 import { logger } from './logger.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { join } from 'path';
-import { homedir } from 'os';
+import { USER_SETTINGS_PATH } from '../shared/paths.js';
 
 export interface RedactionPattern {
   name: string;
@@ -18,7 +17,8 @@ export interface RedactionConfig {
 export interface RedactionResult {
   redacted: string;
   counts: Record<string, number>;
-  truncated: boolean;
+  /** The input was over the size cap and was replaced whole by an oversize marker. */
+  oversize: boolean;
 }
 
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
@@ -35,32 +35,33 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/g },
   { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
   { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
+  // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
+  { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
 ];
 
-// Note: measured in UTF-16 code units (string.length), not bytes. ASCII inputs
-// are equivalent; multi-byte inputs (emoji, CJK) reach the cap at fewer code
-// points. Kept named *_BYTES for spec compatibility; semantics live in the
-// docs/public/usage/auto-redaction.mdx "Limits" section.
-const MAX_INPUT_BYTES = 1024 * 1024;
-const MAX_TOTAL_MATCHES = 200;
+// Measured in UTF-16 code units (string.length). Bounds the regex work per
+// field. Redaction fails closed: a field over the cap is replaced whole by an
+// oversize marker rather than stored unscanned (see the "Limits" section of
+// docs/public/usage/auto-redaction.mdx).
+const MAX_INPUT_CHARS = 1024 * 1024;
+export const OVERSIZE_MARKER = "<redacted type='oversize'/>";
 
 export function redactSensitive(input: string, config: RedactionConfig): RedactionResult {
   if (!config.enabled || input.length === 0) {
-    return { redacted: input, counts: {}, truncated: false };
+    return { redacted: input, counts: {}, oversize: false };
   }
 
-  if (input.length > MAX_INPUT_BYTES) {
-    logger.warn('REDACT', 'input exceeds 1 MB cap, skipping redaction', undefined, {
+  if (input.length > MAX_INPUT_CHARS) {
+    logger.warn('REDACT', 'field exceeds the 1M-char redaction cap; replaced by an oversize marker', undefined, {
       inputLength: input.length,
     });
-    return { redacted: input, counts: {}, truncated: true };
+    return { redacted: OVERSIZE_MARKER, counts: { oversize: 1 }, oversize: true };
   }
 
   const disabled = new Set(config.disabledBuiltinPatterns ?? []);
   const counts: Record<string, number> = {};
   let working = input;
-  let totalMatches = 0;
-  let truncated = false;
 
   const compiledCustom: RedactionPattern[] = [];
   for (const cp of config.customPatterns ?? []) {
@@ -77,25 +78,14 @@ export function redactSensitive(input: string, config: RedactionConfig): Redacti
 
   const allPatterns: RedactionPattern[] = [...compiledCustom, ...BUILTIN_REDACTION_PATTERNS];
 
+  // Every match is redacted: there is no match cap, so a field with many
+  // secrets never lets the tail through.
   for (const pattern of allPatterns) {
     if (disabled.has(pattern.name)) continue;
-    if (truncated) break;
     pattern.regex.lastIndex = 0;
-    working = working.replace(pattern.regex, (match) => {
-      if (totalMatches >= MAX_TOTAL_MATCHES) {
-        truncated = true;
-        return match; // leave the original token in place once cap is hit
-      }
-      totalMatches += 1;
+    working = working.replace(pattern.regex, () => {
       counts[pattern.name] = (counts[pattern.name] ?? 0) + 1;
       return `<redacted type='${pattern.name}'/>`;
-    });
-  }
-
-  if (truncated) {
-    logger.warn('REDACT', 'match cap reached, some secrets may remain in output', undefined, {
-      cap: MAX_TOTAL_MATCHES,
-      counts,
     });
   }
 
@@ -103,7 +93,19 @@ export function redactSensitive(input: string, config: RedactionConfig): Redacti
     logger.debug('REDACT', 'patterns matched', undefined, { counts });
   }
 
-  return { redacted: working, counts, truncated };
+  return { redacted: working, counts, oversize: false };
+}
+
+/**
+ * Told to the observer only when a payload actually carries a marker, so
+ * prompts cost nothing extra while redaction is off or found nothing.
+ */
+export const REDACTION_MARKER_HINT =
+  `If you see a "<redacted type='...'/>" marker, that field was a recognized secret pattern and was removed before storage. Treat it as a placeholder; do not infer the literal value or copy the marker itself into generated memory content.`;
+
+/** True when text carries a redaction marker, raw or XML-escaped. */
+export function hasRedactionMarker(text: string): boolean {
+  return text.includes("<redacted type='") || text.includes('&lt;redacted type=');
 }
 
 interface RedactionSettings {
@@ -111,7 +113,6 @@ interface RedactionSettings {
   CLAUDE_MEM_REDACT_DISABLED_BUILTINS: string;
   CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: string;
   CLAUDE_MEM_REDACT_LOG_MATCHES: string;
-  CLAUDE_MEM_DATA_DIR: string;
   [key: string]: string;
 }
 
@@ -147,10 +148,9 @@ export function loadRedactionConfig(settings: Partial<RedactionSettings>): Redac
   };
 }
 
-// Cached config for the 5 hot-path call sites — avoids re-reading
-// ~/.claude-mem/settings.json on every hook invocation. 5 s TTL is short
-// enough that settings.json edits propagate within one hook cycle without
-// requiring a worker restart.
+// Cached config for the tag-stripping choke point, which runs on every
+// captured field — avoids re-reading settings.json each time. A 5 s TTL lets
+// settings.json edits propagate within one hook cycle without a restart.
 let cachedConfig: RedactionConfig | null = null;
 let cacheStamp = 0;
 const CACHE_TTL_MS = 5000;
@@ -160,19 +160,12 @@ export function getRedactionConfig(): RedactionConfig {
   if (cachedConfig && now - cacheStamp < CACHE_TTL_MS) {
     return cachedConfig;
   }
-  try {
-    const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-    const settingsPath = join(dataDir, 'settings.json');
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    // TODO(server-beta config scope): once tenant-scoped settings are sourced
-    // for multi-tenant deployments, replace this single-user-settings load
-    // with the tenant-resolved config. Tracked in plan polish notes.
-    cachedConfig = loadRedactionConfig(settings as unknown as Partial<RedactionSettings>);
-  } catch (error) {
-    logger.warn('REDACT', 'failed to load redaction config, defaulting to disabled',
-      undefined, error instanceof Error ? error : new Error(String(error)));
-    cachedConfig = { enabled: false };
-  }
+  // The same settings source as every other reader (data dir resolved by
+  // paths.ts, env overrides applied by SettingsDefaultsManager).
+  // TODO(server-beta config scope): source tenant-scoped settings once
+  // multi-tenant deployments have them.
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  cachedConfig = loadRedactionConfig(settings as unknown as Partial<RedactionSettings>);
   cacheStamp = now;
   return cachedConfig;
 }

@@ -9,14 +9,14 @@ claude-mem can automatically detect and redact common secrets before observation
 
 ## How it works
 
-When enabled, every prompt or tool payload that flows through claude-mem's storage path is scanned for a curated set of high-confidence secret patterns. Matches are replaced inline with a self-closing `<redacted type='...'/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
+When enabled, redaction runs at the same single point where `<private>` tags are stripped, so it covers every capture path at once: tool inputs and outputs, your prompts (including stored prompt history), the assistant's last message used for summaries, and server-beta events. Content is scanned for a curated set of high-confidence secret patterns, and matches are replaced inline with a self-closing `<redacted type='...'/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
 
 ```
 Before:  curl -H "Authorization: Bearer sk-abc123def456..." …
 After:   curl -H "Authorization: Bearer <redacted type='openai_key'/>" …
 ```
 
-The observer LLM is explicitly instructed not to infer the literal value of any `<redacted/>` marker.
+When a payload contains a marker, the observer prompt tells the model to treat it as a placeholder and not to infer the literal value. Prompts without markers are unchanged, so redaction adds no tokens when it finds nothing.
 
 ## Enable it
 
@@ -28,7 +28,7 @@ Add to `~/.claude-mem/settings.json`:
 }
 ```
 
-That is all you need for the 10 built-in patterns to kick in.
+That is all you need for the 11 built-in patterns to kick in.
 
 ## Built-in patterns
 
@@ -44,6 +44,7 @@ That is all you need for the 10 built-in patterns to kick in.
 | `private_key_pem` | `-----BEGIN [RSA\|DSA\|EC\|OPENSSH\|PGP\|]PRIVATE KEY-----` blocks |
 | `stripe_key` | `sk_live_…`, `pk_live_…`, `rk_test_…` |
 | `google_api_key` | `AIza…` (35 trailing chars) |
+| `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |
 
 ## Disable a single built-in
 
@@ -67,7 +68,7 @@ CSV format. The other built-ins stay active.
 
 `name` is required and surfaces in the `<redacted type='...'/>` marker. Custom patterns are evaluated **before** built-ins, so you can override the built-in detection for a specific token family.
 
-If your regex fails to compile or your JSON is malformed, claude-mem logs a warning at worker startup and skips the broken entry — the rest keep working.
+If your regex fails to compile or your JSON is malformed, claude-mem logs a warning and skips the broken entry — the rest keep working.
 
 ## Diagnostic logging
 
@@ -81,7 +82,7 @@ Writes a `pattern,count` line per invocation to the worker log. The original mat
 
 ## Limits
 
-- **Per-invocation caps**: up to 200 total matches and 1 MB input length. Above either cap, redaction short-circuits and surfaces a `truncated: true` flag (logged as a warning). The cap counts UTF-16 code units, not bytes — multi-byte inputs (emoji, CJK characters) hit the cap at fewer characters than the same count of ASCII.
+- **Fails closed on huge fields**: a single field over about 1M characters (UTF-16 code units) is replaced whole by `<redacted type='oversize'/>` rather than stored unscanned, and a warning is logged. There is no cap on the number of matches: every match is redacted.
 - **`aws_secret_key` shape**: the lookbehind only anchors `KEY=val` (shell) and `KEY: val` (yaml) styles. JSON-style `"AWS_SECRET_ACCESS_KEY": "value"` is **not** matched because the lookbehind expects `=` or `:` directly after the key name. If you commonly handle JSON config, write a custom pattern for it.
 - **Coverage gap**: Built-ins do not cover Azure / GCP service-account JSON / IBM Cloud / private IDC tokens — use custom patterns for those.
 - **Server-beta scope**: in multi-tenant `server-beta` deployments, the redaction config is currently read from the worker's local `~/.claude-mem/settings.json` rather than from tenant-scoped settings. For team deployments, configure redaction at the worker level. A future change will source tenant-scoped redaction config.
@@ -96,4 +97,4 @@ Writes a `pattern,count` line per invocation to the worker log. The original mat
 | **Default** | Always on (no setting) | Off until you opt in |
 | **Use when** | You know up front the content is sensitive | You want a safety net for accidental token leaks |
 
-Both can be used together — the auto-redaction layer runs before `<private>` tag stripping, so a wrapped `<private>` block has its content removed entirely regardless of what's inside.
+Both can be used together — `<private>` blocks are removed first, then auto-redaction scans what remains, so a wrapped `<private>` block has its content removed entirely regardless of what's inside.

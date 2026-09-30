@@ -34,6 +34,23 @@ describe('buildObservationPrompt', () => {
     expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
   });
 
+  it('explains redaction markers only when the observed tool use carries one', () => {
+    const base = {
+      id: 1,
+      tool_name: 'Bash',
+      tool_output: JSON.stringify({ output: 'ok' }),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    };
+    const plain = buildObservationPrompt({ ...base, tool_input: JSON.stringify({ command: 'ls' }) });
+    const redacted = buildObservationPrompt({
+      ...base,
+      tool_input: JSON.stringify({ command: "curl -H 'Authorization: Bearer <redacted type='openai_key'/>'" }),
+    });
+    expect(plain).not.toContain('<redacted type=\'...\'/>');
+    expect(redacted).toContain(`If you see a "<redacted type='...'/>" marker`);
+  });
+
   it('explains redacted markers in summary prompts', () => {
     const prompt = buildSummaryPrompt({
       id: 1,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { redactSensitive, loadRedactionConfig } from '../../src/utils/redaction.js';
+import { redactSensitive, loadRedactionConfig, hasRedactionMarker, OVERSIZE_MARKER } from '../../src/utils/redaction.js';
 
 describe('redactSensitive', () => {
   it('returns input unchanged when config.enabled is false', () => {
@@ -7,14 +7,14 @@ describe('redactSensitive', () => {
     const result = redactSensitive(input, { enabled: false });
     expect(result.redacted).toBe(input);
     expect(result.counts).toEqual({});
-    expect(result.truncated).toBe(false);
+    expect(result.oversize).toBe(false);
   });
 
   it('returns empty string and empty counts for empty input', () => {
     const result = redactSensitive('', { enabled: true });
     expect(result.redacted).toBe('');
     expect(result.counts).toEqual({});
-    expect(result.truncated).toBe(false);
+    expect(result.oversize).toBe(false);
   });
 });
 
@@ -138,24 +138,38 @@ describe('redactSensitive custom patterns', () => {
 });
 
 describe('redactSensitive robustness', () => {
-  it('short-circuits with truncated=true when input exceeds 1 MB', () => {
+  it('fails closed on an input over the 1M-char cap: the whole field becomes an oversize marker', () => {
     const huge = 'a'.repeat(1024 * 1024 + 1);
     const result = redactSensitive(huge + ' AKIAIOSFODNN7EXAMPLE', { enabled: true });
-    expect(result.redacted).toContain('AKIAIOSFODNN7EXAMPLE');
-    expect(result.truncated).toBe(true);
-    expect(result.counts).toEqual({});
+    expect(result.redacted).toBe(OVERSIZE_MARKER);
+    expect(result.redacted).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(result.oversize).toBe(true);
+    expect(result.counts).toEqual({ oversize: 1 });
   });
 
-  it('sets truncated=true when total matches exceed 200 (200 redacted, 1 leftover)', () => {
+  it('redacts every match, with no cap that would let the tail through', () => {
     const oneKey = 'AKIAIOSFODNN7EXAMPLE ';
-    const input = oneKey.repeat(201);
+    const input = oneKey.repeat(500);
     const result = redactSensitive(input, { enabled: true });
-    expect(result.truncated).toBe(true);
     const placeholderCount = (result.redacted.match(/<redacted type='aws_access_key'\/>/g) ?? []).length;
-    const leftoverCount = (result.redacted.match(/AKIAIOSFODNN7EXAMPLE/g) ?? []).length;
-    expect(placeholderCount).toBe(200);
-    expect(leftoverCount).toBe(1);
-    expect(result.counts.aws_access_key).toBe(200);
+    expect(placeholderCount).toBe(500);
+    expect(result.redacted).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(result.counts.aws_access_key).toBe(500);
+  });
+
+  it("redacts claude-mem's own server and Pro keys", () => {
+    const serverKey = 'cmem_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v';
+    const input = `CLAUDE_MEM_SERVER_API_KEY=${serverKey} pro=cm_pro_abcDEF123456xyz`;
+    const result = redactSensitive(input, { enabled: true });
+    expect(result.redacted).toBe(
+      "CLAUDE_MEM_SERVER_API_KEY=<redacted type='claude_mem_key'/> pro=<redacted type='claude_mem_key'/>",
+    );
+  });
+
+  it('detects raw and XML-escaped markers so prompts explain them only when present', () => {
+    expect(hasRedactionMarker("key <redacted type='jwt'/> here")).toBe(true);
+    expect(hasRedactionMarker('key &lt;redacted type=&apos;jwt&apos;/&gt; here')).toBe(true);
+    expect(hasRedactionMarker('nothing redacted')).toBe(false);
   });
 
   it('is idempotent: running twice produces the same output', () => {
