@@ -18,6 +18,8 @@ const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
 
+const updateSettingsSchema = z.object({}).passthrough();
+
 // GET /api/settings has no auth. Mask known secrets before they leave the
 // process. Explicit allowlist — a /API_KEY|_TOKEN|SECRET/i regex also matches
 // CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS / SHOW_WORK_TOKENS (boolean display
@@ -119,7 +121,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.get('/api/settings', this.handleGetSettings.bind(this));
-    app.post('/api/settings', this.handleUpdateSettings.bind(this));
+    app.post('/api/settings', validateBody(updateSettingsSchema), this.handleUpdateSettings.bind(this));
     app.get('/api/settings/dependency-health', this.handleGetDependencyHealth.bind(this));
 
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
@@ -189,6 +191,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
@@ -283,6 +286,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== undefined
+      && !['true', 'false'].includes(settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES)) {
+      return { valid: false, error: 'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES must be "true" or "false"' };
     }
 
     if (settings.CLAUDE_MEM_WORKER_PORT) {
