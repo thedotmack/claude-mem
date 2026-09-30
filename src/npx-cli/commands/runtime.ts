@@ -4,22 +4,16 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { getBunPath } from '../install/setup-runtime.js';
-import { resolvePluginRoot } from '../utils/paths.js';
+import { isPluginInstalled, marketplaceDirectory, npmPackageRootDirectory } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
-/**
- * The plugin root the runtime loads, or exit(1) when none is found. Resolves the
- * same way the hooks do ($CLAUDE_PLUGIN_ROOT, then cache, then marketplace), so
- * a cache-based install the hooks run from is not reported as "not installed".
- */
-function pluginRootOrExit(): string {
-  const root = resolvePluginRoot();
-  if (!root) {
+function ensureInstalledOrExit(): void {
+  if (!isPluginInstalled()) {
     console.error(styleText('red', 'claude-mem is not installed.'));
     console.error(`Run: ${styleText('bold', 'npx claude-mem install')}`);
     process.exit(1);
   }
-  return root;
 }
 
 function resolveBunOrExit(): string {
@@ -33,20 +27,24 @@ function resolveBunOrExit(): string {
   return bunPath;
 }
 
-function workerServiceScriptPath(root: string): string {
-  return join(root, 'scripts', 'worker-service.cjs');
+function workerServiceScriptPath(): string {
+  return join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
 }
 
-function serverServiceScriptPath(root: string): string {
+function serverServiceScriptPath(): string {
   // Plan §1c line 149: prefer the renamed `server-service.cjs`, but fall
   // back to the legacy `server-beta-service.cjs` for installed plugin
   // caches that pre-date the rename (forced reinstall not required).
-  const scriptsDir = join(root, 'scripts');
+  const scriptsDir = join(marketplaceDirectory(), 'plugin', 'scripts');
   const renamed = join(scriptsDir, 'server-service.cjs');
   if (existsSync(renamed)) {
     return renamed;
   }
   return join(scriptsDir, 'server-beta-service.cjs');
+}
+
+function packagePluginScriptPath(scriptName: string): string {
+  return join(npmPackageRootDirectory(), 'plugin', 'scripts', scriptName);
 }
 
 /**
@@ -55,10 +53,10 @@ function serverServiceScriptPath(root: string): string {
  * host CLI bleed-through and Anthropic credentials before launch; credentials
  * are re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
  */
-function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureLabel = 'Bun'): void {
+function spawnPlugin(bunPath: string, args: string[], startFailureLabel = 'Bun'): void {
   const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
-    cwd,
+    cwd: marketplaceDirectory(),
     env: sanitizeEnv(process.env),
   });
 
@@ -73,9 +71,9 @@ function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureL
 }
 
 function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void {
-  const root = pluginRootOrExit();
+  ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();
-  const workerScript = workerServiceScriptPath(root);
+  const workerScript = workerServiceScriptPath();
 
   if (!existsSync(workerScript)) {
     console.error(styleText('red', `Worker script not found at: ${workerScript}`));
@@ -83,13 +81,13 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
     process.exit(1);
   }
 
-  spawnPlugin(bunPath, [workerScript, command, ...extraArgs], root);
+  spawnPlugin(bunPath, [workerScript, command, ...extraArgs]);
 }
 
 function spawnBunServerCommand(command: string, extraArgs: string[] = []): void {
-  const root = pluginRootOrExit();
+  ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();
-  const serverScript = serverServiceScriptPath(root);
+  const serverScript = serverServiceScriptPath();
 
   if (!existsSync(serverScript)) {
     console.error(styleText('red', `Server script not found at: ${serverScript}`));
@@ -97,7 +95,7 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
     process.exit(1);
   }
 
-  spawnPlugin(bunPath, [serverScript, command, ...extraArgs], root);
+  spawnPlugin(bunPath, [serverScript, command, ...extraArgs]);
 }
 
 export function runServerStartCommand(): void {
@@ -144,9 +142,9 @@ export function runServerApiKeyCommand(extraArgs: string[] = []): void {
 }
 
 export function runAdoptCommand(extraArgs: string[] = []): void {
-  const root = pluginRootOrExit();
+  ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();
-  const workerScript = workerServiceScriptPath(root);
+  const workerScript = workerServiceScriptPath();
 
   if (!existsSync(workerScript)) {
     console.error(styleText('red', `Worker script not found at: ${workerScript}`));
@@ -155,15 +153,62 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
   }
 
   const userCwd = process.cwd();
-  spawnPlugin(bunPath, [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs], root);
+  spawnPlugin(bunPath, [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs]);
 }
 
 export function runCleanupCommand(extraArgs: string[] = []): void {
   spawnBunWorkerCommand('cleanup', extraArgs);
 }
 
+export function runMcpCommand(): void {
+  const mcpScript = packagePluginScriptPath('mcp-server.cjs');
+  if (!existsSync(mcpScript)) {
+    console.error(styleText('red', `MCP server script not found at: ${mcpScript}`));
+    process.exit(1);
+  }
+
+  const child = spawnHidden(process.execPath, [mcpScript], {
+    stdio: 'inherit',
+    cwd: npmPackageRootDirectory(),
+    env: sanitizeEnv(process.env),
+  });
+
+  child.on('error', (error) => {
+    console.error(styleText('red', `Failed to start MCP server: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
+export function runHookCommand(extraArgs: string[] = []): void {
+  const workerScript = packagePluginScriptPath('worker-service.cjs');
+  if (!existsSync(workerScript)) {
+    console.error(styleText('red', `Worker script not found at: ${workerScript}`));
+    process.exit(1);
+  }
+
+  const bunPath = resolveBunOrExit();
+  const child = spawnHidden(bunPath, [workerScript, 'hook', ...extraArgs], {
+    stdio: 'inherit',
+    cwd: process.cwd(),
+    env: sanitizeEnv(process.env),
+  });
+
+  child.on('error', (error) => {
+    console.error(styleText('red', `Failed to start Cursor hook forwarding: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
 export async function runSearchCommand(queryParts: string[]): Promise<void> {
-  pluginRootOrExit();
+  ensureInstalledOrExit();
 
   const query = queryParts.join(' ').trim();
   if (!query) {
@@ -180,8 +225,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     response = await fetch(searchUrl);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    const cause = error instanceof Error ? (error as any).cause : undefined;
-    if (cause?.code === 'ECONNREFUSED' || message.includes('ECONNREFUSED')) {
+    if (isConnectionRefusedError(error)) {
       console.error(styleText('red', 'Worker is not running.'));
       console.error(`Start it with: ${styleText('bold', 'npx claude-mem start')}`);
       process.exit(1);
@@ -217,15 +261,20 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 }
 
 export function runTranscriptWatchCommand(): void {
-  const root = pluginRootOrExit();
+  ensureInstalledOrExit();
   const bunPath = resolveBunOrExit();
 
-  const transcriptWatcherPath = join(root, 'scripts', 'transcript-watcher.cjs');
+  const transcriptWatcherPath = join(
+    marketplaceDirectory(),
+    'plugin',
+    'scripts',
+    'transcript-watcher.cjs',
+  );
 
   if (!existsSync(transcriptWatcherPath)) {
     spawnBunWorkerCommand('transcript', ['watch']);
     return;
   }
 
-  spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], root, 'transcript watcher');
+  spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], 'transcript watcher');
 }

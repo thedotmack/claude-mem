@@ -273,6 +273,40 @@ function redactAutocapturedExceptionList(props: Record<string, unknown>): void {
 }
 
 /**
+ * True when a $exception describes an OS working-directory permission fault
+ * (`EPERM`/`EACCES` raised by a `chdir`). Reads the message/type strings both
+ * capture paths stamp onto properties (and the SDK's $exception_list). Narrow
+ * by design — it requires the `chdir` syscall AND a permission signal — so
+ * genuine claude-mem failures never match. Never throws.
+ */
+function isEnvironmentChdirError(props: Record<string, unknown>): boolean {
+  try {
+    const parts: string[] = [];
+    const push = (value: unknown): void => {
+      if (typeof value === 'string') parts.push(value);
+    };
+    push(props.$exception_message);
+    push(props.$exception_type);
+    push(props.error_message);
+    push(props.error_type);
+    const list = props.$exception_list;
+    if (Array.isArray(list)) {
+      for (const entry of list) {
+        if (entry && typeof entry === 'object') {
+          push((entry as Record<string, unknown>).value);
+          push((entry as Record<string, unknown>).type);
+        }
+      }
+    }
+    const haystack = parts.join(' ');
+    if (!/chdir/i.test(haystack)) return false;
+    return /\b(?:EPERM|EACCES)\b|operation not permitted|permission denied/i.test(haystack);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * before_send hook applied to the worker client. It ONLY governs $exception
  * events; every other event passes through unchanged.
  *
@@ -304,6 +338,16 @@ function errorBeforeSend(event: EventMessage | null): EventMessage | null {
     if (ev.event !== '$exception') return event;
 
     const props = (ev.properties ?? {}) as Record<string, unknown>;
+
+    // Drop OS working-directory permission faults (EPERM/EACCES on chdir).
+    // These are environment errors — e.g. a Windows worker whose inherited cwd
+    // is an ACL-locked Microsoft Store directory, which makes cross-spawn's
+    // post-spawn cwd restore throw — not claude-mem defects, so they only add
+    // noise to error tracking. worker-service's ensureSafeWorkingDirectory()
+    // prevents the common case; this catches any residual variant. Runs ahead
+    // of the sentinel branch so it covers BOTH the manual (captureException)
+    // and SDK-autocapture paths.
+    if (isEnvironmentChdirError(props)) return null;
 
     // MANUAL path: already redacted + counted. Strip the sentinel and pass
     // through unchanged — do NOT re-redact or re-run the limiter.

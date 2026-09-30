@@ -59,7 +59,7 @@ function inferOutputEvent(result: HookResult): CodexEventName | undefined {
 export const codexAdapter: PlatformAdapter = {
   normalizeInput(raw): NormalizedHookInput {
     const r = (raw ?? {}) as Record<string, unknown>;
-    const cwd = typeof r.cwd === 'string' ? r.cwd : process.cwd();
+    const cwd = (typeof r.cwd === 'string' && r.cwd) || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
