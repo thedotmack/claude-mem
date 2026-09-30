@@ -18,6 +18,7 @@ import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { loadFromFileOnce } from './hook-settings.js';
 import { viewerBaseUrl } from './viewer-url.js';
+import { relayedLine, relayedLink } from './relayed-text.js';
 import { logger } from '../utils/logger.js';
 
 export interface ObserverHealthState {
@@ -320,8 +321,12 @@ export function clearObserverQuotaCooldown(
 }
 
 export function isObserverUnhealthy(state: ObserverHealthState | null): state is ObserverHealthState {
+  // The threshold lets a blip self-heal before it warns. A refused credential
+  // is not a blip — the provider said so — and the cooldown armed with it
+  // allows no second attempt for a while, so waiting for the threshold would
+  // hide the one remedy (a new key) for over an hour.
   return state !== null
-    && state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD
+    && (state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD || isAuthFailure(state))
     && (state.lastErrorAt ?? 0) > (state.lastSuccessAt ?? 0);
 }
 
@@ -368,6 +373,11 @@ export function workerRestartUrl(): string {
  */
 export function isQuotaFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'quota_exhausted';
+}
+
+/** True when the current outage is the provider refusing the observer's credential. */
+export function isAuthFailure(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'auth_invalid';
 }
 
 /**
@@ -468,7 +478,7 @@ export function renderObserverQuotaCooldownNotice(
     ? `${new Date(until).toISOString()} (${describeDuration(Math.max(0, until - nowMs))} from now)`
     : 'the next probe window';
   const windowText = cooldown?.window ? ` (${cooldown.window})` : '';
-  const message = cooldown?.message ? scrubErrorMessage(cooldown.message) : null;
+  const message = relayedProviderText(cooldown?.message) || null;
 
   return [
     '⚠️ Heads up: claude-mem is paused while a provider quota cooldown is active.',
@@ -489,13 +499,24 @@ export function renderObserverQuotaCooldownNotice(
   ].join('\n');
 }
 
+/**
+ * The provider's words as the banner may relay them. They come from an error
+ * body and reach model context, so each is one plain bounded line with its
+ * credentials scrubbed, and a link only when approved (relayed-text.ts).
+ */
+function relayedProviderText(text: string | null | undefined): string {
+  return text ? relayedLine(scrubErrorMessage(text)) : '';
+}
+
 /** The latest error plus the classified remedy, shared by every warning shape. */
 function renderFailureDetailLines(state: ObserverHealthState, action: string | null): string[] {
+  const link = relayedLink(state.lastErrorUrl);
+  const requestId = relayedLine(state.lastErrorRequestId);
   return [
-    `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+    `Latest error: ${relayedProviderText(state.lastErrorMessage) || 'unknown'}`,
     ...(action ? [`What to do: ${action}`] : []),
-    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
-    ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+    ...(link ? [`Link: ${link}`] : []),
+    ...(requestId ? [`Request id: ${requestId}`] : []),
   ];
 }
 
@@ -516,14 +537,15 @@ function renderLastKnownFailureNote(
 ): string {
   const provider = state.lastErrorProvider ?? 'unknown provider';
   const age = state.lastErrorAt ? describeDuration(nowMs - state.lastErrorAt) : 'an unknown time';
+  const link = relayedLink(state.lastErrorUrl);
   return [
     `ℹ️ claude-mem: the memory observer last failed with ${shape.failedWith} on`,
     `${provider}, ${age} ago. Nothing has re-tested it since — the health ledger only`,
     'updates on the next successful save, which happens after this message is written.',
     '',
-    `Last error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+    `Last error: ${relayedProviderText(state.lastErrorMessage) || 'unknown'}`,
     ...(action ? [`${shape.remedyLabel}: ${action}`] : []),
-    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+    ...(link ? [`Link: ${link}`] : []),
     '',
     `${shape.recovery}, so memory capture may already be working. If it is`,
     'not, the next failed save brings the full warning back.',
@@ -540,7 +562,7 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     : 'for an unknown amount of time';
   const provider = state.lastErrorProvider ?? 'unknown provider';
   const count = state.consecutiveFailures;
-  const action = state.lastErrorAction ? scrubErrorMessage(state.lastErrorAction) : null;
+  const action = relayedProviderText(state.lastErrorAction) || null;
 
   if (isQuotaFailureStale(state, nowMs)) {
     return renderLastKnownFailureNote(state, nowMs, action, {
@@ -606,6 +628,30 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       '',
       '(Assistant: tell the user about this outage at the very start of your first reply,',
       'quoting the error and the "What to do" line above. Do NOT suggest restarting the worker.)',
+    ].join('\n');
+  }
+
+  // A refused credential cannot be cleared by a restart either: the provider
+  // rejected the key (or the account), and nothing is wedged. Relay the
+  // provider's remedy instead of offering a restart that changes nothing.
+  if (isAuthFailure(state)) {
+    return [
+      "⚠️ Heads up: claude-mem can't save memories right now.",
+      '',
+      `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
+      '',
+      ...renderFailureDetailLines(state, action),
+      '',
+      "Until that's fixed, nothing from this session — or any other — will be remembered.",
+      '',
+      'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
+      ...(action ? [] : [
+        "Check the observer provider's API key in ~/.claude-mem/settings.json, or switch the",
+        'observer to another provider there.',
+      ]),
+      '',
+      '(Assistant: tell the user about this outage at the very start of your first reply,',
+      'quoting the error above. Do NOT restart the worker and do NOT suggest restarting it.)',
     ].join('\n');
   }
 

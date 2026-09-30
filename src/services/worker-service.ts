@@ -76,6 +76,7 @@ import {
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdoptionErrors } from './infrastructure/WorktreeAdoption.js';
+import { mergeProjectInto } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
 import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
@@ -1607,6 +1608,27 @@ async function main() {
       }
       for (const err of result.errors) {
         console.log(`  ! ${err.worktree}: ${err.error}`);
+      }
+      process.exit(0);
+    }
+
+    case 'project': {
+      // `project merge <from> <into> [--dry-run]` (plan-20 step 2): fold one
+      // project's memory into another, sync-safe and non-destructive.
+      const [projectSubcommand, from, into] = process.argv.slice(3).filter(arg => !arg.startsWith('--'));
+      if (projectSubcommand !== 'merge' || !from || !into) {
+        console.error('Usage: project merge <from> <into> [--dry-run]');
+        process.exit(1);
+      }
+      const merge = await mergeProjectInto({ from, into, dryRun: process.argv.includes('--dry-run') });
+      console.log(`\nProject merge ${merge.dryRun ? '(dry-run, no changes made)' : '(applied)'}`);
+      console.log(`  From:                 ${merge.from}`);
+      console.log(`  Into:                 ${merge.into}`);
+      console.log(`  Observations merged:  ${merge.mergedObservations}`);
+      console.log(`  Summaries merged:     ${merge.mergedSummaries}`);
+      console.log(`  Chroma docs updated:  ${merge.chromaUpdates}`);
+      if (merge.chromaFailed > 0) {
+        console.log(`  Chroma sync failures: ${merge.chromaFailed} (run the command again to retry)`);
       }
       process.exit(0);
     }

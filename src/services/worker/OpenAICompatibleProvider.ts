@@ -503,8 +503,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   private preservingAbortReason(error: ClassifiedProviderError): string | null {
     switch (error.kind) {
       case 'quota_exhausted':
-      case 'rate_limit':
         return `quota:${error.kind}`;
+      // Its own category: a rate limit clears on its own and is not a spent
+      // allowance, so telemetry and the exit path must not count it as one.
+      case 'rate_limit':
+        return `rate_limit:${error.kind}`;
       // Same shape, same list: handleGeneratorExit already honours 'auth', and
       // credentials that are fixed by /login are no more fatal than a 429.
       case 'auth_invalid':

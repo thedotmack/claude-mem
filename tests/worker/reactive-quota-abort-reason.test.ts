@@ -141,7 +141,9 @@ describe('reactive provider errors set a preserving abortReason (#3700)', () => 
     expect(session.abortReason).toBe('quota:quota_exhausted');
   });
 
-  it('marks a rate_limit the same way', async () => {
+  // A rate limit pauses the same way, under its own label: it is not a spent
+  // allowance, so telemetry must not count it as one.
+  it('marks a rate_limit as a rate-limit pause, not a quota one', async () => {
     const session = makeSession();
 
     await runAndCatch(
@@ -149,7 +151,7 @@ describe('reactive provider errors set a preserving abortReason (#3700)', () => 
       session,
     );
 
-    expect(session.abortReason).toBe('quota:rate_limit');
+    expect(session.abortReason).toBe('rate_limit:rate_limit');
   });
 
   it('marks an invalid credential as an auth pause', async () => {

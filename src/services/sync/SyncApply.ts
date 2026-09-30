@@ -49,7 +49,9 @@
 // as op.origin_device/op.origin_id/op.rev), relevance_count (device-local
 // usage counter), occurrence_count and title_norm_key (device-local #3038
 // dedup bookkeeping; a Tier-0 merge bumps the count without re-dirtying the
-// row, and the key is recomputed locally by the dedup scan).
+// row, and the key is recomputed locally by the dedup scan), and
+// reinforcement_dates and last_reinforced (device-local ACT-R reinforcement
+// history; a replica ranks on its own confirmations).
 //
 // kind 'mutation'  (op.origin_id = op UUID minted at the mutation site):
 //   set_title:
