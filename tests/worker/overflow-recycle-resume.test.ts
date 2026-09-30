@@ -215,6 +215,12 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     it('resumes the preserved backlog after a delay', async () => {
       const session = makeSession();
       let starts = 0;
+      let pausedWhenScheduled: string | null | undefined;
+      const delayOnly = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+        if (ms === RESPONSE_STALL_RESUME_DELAY_MS) pausedWhenScheduled = session.pausedReason;
+        return delayOnly(fn, ms, ...args);
+      }) as typeof setTimeout;
 
       const { routes, stats } = buildRoutes(session, async () => {
         starts += 1;
@@ -232,7 +238,10 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
       expect(requestedDelays).toEqual([RESPONSE_STALL_RESUME_DELAY_MS]);
       expect(starts).toBe(2);
       expect(session.consecutiveResponseStalls).toBe(1);
-      expect(session.pausedReason).toBe('response_stall');
+      // The stall parked the work as a response stall; the resumed generator
+      // then cleared the pause.
+      expect(pausedWhenScheduled).toBe('response_stall');
+      expect(session.pausedReason).toBeNull();
       expect(stats().finalizeCalls).toBe(0);
     });
 

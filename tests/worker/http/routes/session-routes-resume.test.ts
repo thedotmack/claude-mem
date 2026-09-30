@@ -4,7 +4,7 @@ import { SessionManager } from '../../../../src/services/worker/SessionManager.j
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
 import * as providerDispatch from '../../../../src/services/worker/provider-dispatch.js';
 import {
-  recordQuotaExhausted, resetQuotaCooldownsForTesting, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  clearQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../src/shared/quota-cooldown.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
 import { logger } from '../../../../src/utils/logger.js';
@@ -35,20 +35,24 @@ function fixture() {
   return { manager, buffer, messageId, routes, db, mutate, agent };
 }
 
-function postProcessing(routes: SessionRoutes, body: unknown): Promise<{ status: number; body: any }> {
+function postProcessing(
+  routes: SessionRoutes,
+  body: unknown,
+  ip: string = '127.0.0.1',
+): Promise<{ status: number; body: any }> {
   type Handler = (req: Request, res: Response, next: NextFunction) => void;
   let handlers: Handler[] = [];
   routes.setupRoutes({ post: (path: string, ...registered: Handler[]) => {
     if (path === '/api/processing') handlers = registered;
   } } as any);
-  expect(handlers.length).toBe(2);
+  expect(handlers.length).toBe(3);
   return new Promise(resolve => {
     let status = 200;
     const res = {
       status: (code: number) => { status = code; return res; },
       json: (response: unknown) => resolve({ status, body: response }),
     };
-    const req = { path: '/api/processing', body };
+    const req = { path: '/api/processing', method: 'POST', ip, body };
     let index = 0;
     const next = () => handlers[index++]?.(req as Request, res as Response, next);
     next();
@@ -66,6 +70,7 @@ describe('paused in-memory session recovery', () => {
     }
     spyOn(providerDispatch, 'selectProviderForGenerator')
       .mockReturnValue({ provider: 'openrouter', gatewayProbeClaimId: null });
+    spyOn(providerDispatch, 'getSelectedProvider').mockReturnValue('openrouter');
   });
 
   afterEach(() => {
@@ -151,26 +156,46 @@ describe('paused in-memory session recovery', () => {
     expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
   });
 
-  it('preserves work during quota cooldown and admits just one probe after expiry', async () => {
+  it('schedules nothing during quota cooldown and one recovery probe after expiry', async () => {
     const { routes, manager, buffer, db, mutate, agent } = fixture();
     buffer.enqueue(3, { type: 'summarize' });
     mutate.mockClear();
     const now = Date.now();
     spyOn(Date, 'now').mockReturnValue(now);
     recordQuotaExhausted('openrouter', 'Quota exhausted');
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(2);
+    const ensure = spyOn(routes, 'ensureGeneratorRunning');
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
     await flushStarts();
+    expect(ensure).not.toHaveBeenCalled();
     expect(agent.startSession).not.toHaveBeenCalled();
     expect(manager.getResumableSessionIds()).toEqual([1, 3]);
     spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(2);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
     await flushStarts();
     expect(agent.startSession).toHaveBeenCalledTimes(1);
-    expect(manager.getResumableSessionIds()).toHaveLength(1);
+    expect(manager.getResumableSessionIds()).toEqual([3]);
     expect(manager.getTotalQueueDepth()).toBe(3);
     expect(mutate).not.toHaveBeenCalled();
     expect(db.getSessionById).not.toHaveBeenCalled();
     expect(db.getSessionStore).not.toHaveBeenCalled();
+  });
+
+  it('resumes the remaining sessions once the recovery probe clears the breaker', async () => {
+    const { routes, manager, buffer, agent } = fixture();
+    buffer.enqueue(3, { type: 'summarize' });
+    const now = Date.now();
+    spyOn(Date, 'now').mockReturnValue(now);
+    recordQuotaExhausted('openrouter', 'Quota exhausted');
+    spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await flushStarts();
+    expect(manager.getResumableSessionIds()).toEqual([3]);
+
+    clearQuotaCooldown('openrouter'); // the probe generated successfully
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await flushStarts();
+    expect(agent.startSession).toHaveBeenCalledTimes(2);
+    expect(manager.getResumableSessionIds()).toEqual([]);
   });
 
   it('retries a provider-switch pause after the replacement provider cooldown expires', async () => {
@@ -181,7 +206,7 @@ describe('paused in-memory session recovery', () => {
     spyOn(Date, 'now').mockReturnValue(now);
     recordQuotaExhausted('openrouter', 'Quota exhausted');
 
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
     await flushStarts();
     expect(agent.startSession).not.toHaveBeenCalled();
     expect(buffer.getPendingCount(1)).toBe(pending);
@@ -206,7 +231,7 @@ describe('paused in-memory session recovery', () => {
     const now = Date.now();
     spyOn(Date, 'now').mockReturnValue(now);
     recordQuotaExhausted('openrouter', 'Quota exhausted');
-    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
     await flushStarts();
     expect(agent.startSession).not.toHaveBeenCalled();
     expect(session.pausedReason).toBe('response_stall');
@@ -255,5 +280,40 @@ describe('paused in-memory session recovery', () => {
     expect(manager.getResumableSessionIds(true)).toEqual([1, 3]);
     expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
     expect(routes.resumePendingSessions('processing-api', true)).toBe(2);
+  });
+
+  it('clears the pause reason when a generator starts, so later pauses are swept again', async () => {
+    const { routes, manager } = fixture();
+    const session = manager.getSession(1)!;
+    session.pausedReason = 'auth';
+    expect(manager.getResumableSessionIds()).toEqual([]);
+
+    await postProcessing(routes, { isProcessing: false });
+    await flushStarts();
+    expect(session.generatorPromise).toBeDefined();
+    expect(session.pausedReason).toBeNull();
+
+    // The run ends without a new pause reason: the automatic sweep may retry it.
+    session.generatorPromise = null;
+    expect(manager.getResumableSessionIds()).toEqual([1]);
+  });
+
+  it('leaves a session out of the automatic sweep while its overflow cooldown runs', () => {
+    const { manager } = fixture();
+    const now = Date.now();
+    const session = manager.getSession(1)!;
+    session.pausedReason = 'overflow';
+    session.overflowPausedUntilMs = now + 60_000;
+    expect(manager.getResumableSessionIds(false, now)).toEqual([]);
+    expect(manager.getResumableSessionIds(true, now)).toEqual([1]);
+    expect(manager.getResumableSessionIds(false, now + 60_001)).toEqual([1]);
+  });
+
+  it('refuses the operator retry from a non-local address', async () => {
+    const { routes, agent } = fixture();
+    const sweep = spyOn(routes, 'resumePendingSessions');
+    expect((await postProcessing(routes, { isProcessing: false }, '203.0.113.7')).status).toBe(403);
+    expect(sweep).not.toHaveBeenCalled();
+    expect(agent.startSession).not.toHaveBeenCalled();
   });
 });

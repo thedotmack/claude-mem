@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -43,6 +44,7 @@ import {
   releaseQuotaProbe,
   recordQuotaExhausted,
   getQuotaCooldown,
+  isQuotaCooldownActive,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
@@ -124,9 +126,21 @@ export class SessionRoutes extends BaseRouteHandler {
 
   /** Schedule retries through the normal provider gates and per-session mutex.
    * The count is attempts scheduled, not generators admitted by those gates.
+   *
+   * The automatic sweep is paced by the provider's quota breaker (read-only):
+   * nothing is scheduled while the breaker withholds requests, since every
+   * attempt would only log a skip (#4127 counted 159 of those). Once the window
+   * elapses, one session per tick goes through to carry the recovery probe; the
+   * rest follow after that probe succeeds and clears the breaker. The operator
+   * retry (`POST /api/processing`) is not paced.
    */
   public resumePendingSessions(source: string, includeOperatorOnly: boolean = false): number {
-    const sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
+    let sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
+    if (!includeOperatorOnly && sessionIds.length > 0) {
+      const provider = getSelectedProvider();
+      if (isQuotaCooldownActive(provider)) return 0;
+      if (getQuotaCooldown(provider)) sessionIds = sessionIds.slice(0, 1);
+    }
     for (const sessionDbId of sessionIds) {
       void this.ensureGeneratorRunning(sessionDbId, source).catch((error: unknown) => {
         logger.warn('SESSION', 'Failed to resume buffered session', { sessionId: sessionDbId, source },
@@ -355,6 +369,10 @@ export class SessionRoutes extends BaseRouteHandler {
       clearTimeout(session.stallResumeTimer);
       session.stallResumeTimer = undefined;
     }
+    // The last pause no longer describes this session; if this run pauses
+    // too, its exit records a fresh reason. Without this, one auth pause would
+    // keep the session out of every automatic sweep for good.
+    session.pausedReason = null;
 
     if (session.abortController.signal.aborted) {
       logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
@@ -603,8 +621,12 @@ export class SessionRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    // Operator repair route: it starts generators and retries auth/transport
+    // pauses that the automatic sweep leaves alone, so it is localhost-only
+    // like the other admin routes.
     app.post(
       '/api/processing',
+      requireLocalhost,
       validateBody(SessionRoutes.processingSchema),
       this.handleProcessing.bind(this)
     );

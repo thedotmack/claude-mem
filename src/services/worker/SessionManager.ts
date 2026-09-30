@@ -435,13 +435,18 @@ export class SessionManager {
     return this.sessions.size;
   }
 
-  /** Snapshot paused in-memory work without loading sessions or changing the buffer. */
-  getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
+  /**
+   * Snapshot paused in-memory work without loading sessions or changing the buffer.
+   * The automatic sweep also leaves out sessions whose own overflow cooldown is
+   * still running: the start gate would only refuse them and log a skip.
+   */
+  getResumableSessionIds(includeOperatorOnly: boolean = false, nowMs: number = Date.now()): number[] {
     const automaticallyRetryable = new Set([null, undefined, 'quota', 'overflow', 'provider_switch', 'response_stall', 'setup_required']);
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0
         && (includeOperatorOnly || !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined))
+        && (includeOperatorOnly || !(session.overflowPausedUntilMs !== undefined && nowMs < session.overflowPausedUntilMs))
         && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
       .map(session => session.sessionDbId);
   }
