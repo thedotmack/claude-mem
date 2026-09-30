@@ -9,7 +9,8 @@ import {
   cleanStalePidFile,
   getPlatformTimeout,
   probeWorkerBootFailure,
-  removePidFile,
+  readPidFile,
+  removePidFileIfOwner,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -179,6 +180,9 @@ export async function ensureWorkerStarted(
   // that, and neither is a worker to wait on, so it must not park every
   // launcher in 'warming' forever.
   let livePidNeverHealthy = false;
+  // The pid that file recorded when it was judged, so the cleanup below never
+  // deletes a PID file a restart successor wrote in the meantime.
+  let livePidNeverHealthyPid: number | null = null;
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -200,6 +204,7 @@ export async function ensureWorkerStarted(
     // reclaim below needs it as proof that the listener is our worker.
     logger.warn('SYSTEM', 'PID file names a live process whose worker never answered health; checking the port instead of waiting on it');
     livePidNeverHealthy = true;
+    livePidNeverHealthyPid = readPidFile()?.pid ?? null;
   }
 
   if (await waitForHealth(port, 1000)) {
@@ -262,9 +267,14 @@ export async function ensureWorkerStarted(
     // Nothing listens on the port, so the live process in the PID file is
     // not this worker (a reused PID, or a worker that already let the port
     // go). A new worker refuses to boot while the PID file names a live
-    // process, so clear the file before spawning.
-    logger.warn('SYSTEM', 'Clearing a PID file whose live process holds no worker port', { port });
-    removePidFile();
+    // process, so clear the file before spawning. Only the pid judged above
+    // is cleared: if a restart successor rewrote the file since the port
+    // check, removePidFileIfOwner leaves the successor's record in place.
+    logger.warn('SYSTEM', 'Clearing a PID file whose live process holds no worker port', {
+      port,
+      pid: livePidNeverHealthyPid,
+    });
+    removePidFileIfOwner(livePidNeverHealthyPid);
   }
 
   const recentBootCrash = readSpawnCooldownOnWindows();

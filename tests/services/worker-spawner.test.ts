@@ -28,7 +28,8 @@ const processManager = {
   getPlatformTimeout: mock((timeout: number) => timeout),
   spawnDaemon: mock(() => 2147483647),
   touchPidFile: mock(() => {}),
-  removePidFile: mock(() => {}),
+  readPidFile: mock((): { pid: number; port: number; startedAt: string } | null => null),
+  removePidFileIfOwner: mock((_expectedOwnerPid: number | null) => {}),
   probeWorkerBootFailure: mock((): string | undefined => undefined),
 };
 
@@ -115,7 +116,9 @@ function resetMocks(): void {
   processManager.spawnDaemon.mockReset();
   processManager.spawnDaemon.mockReturnValue(2147483647);
   processManager.touchPidFile.mockClear();
-  processManager.removePidFile.mockClear();
+  processManager.readPidFile.mockReset();
+  processManager.readPidFile.mockReturnValue(null);
+  processManager.removePidFileIfOwner.mockClear();
   processManager.probeWorkerBootFailure.mockReset();
   processManager.probeWorkerBootFailure.mockReturnValue(undefined);
   healthMonitor.isPortInUse.mockReset();
@@ -313,7 +316,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     const result = await ensureWorkerStarted(39010, import.meta.filename);
 
     expect(result).toBe('warming');
-    expect(processManager.removePidFile).not.toHaveBeenCalled();
+    expect(processManager.removePidFileIfOwner).not.toHaveBeenCalled();
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
   });
 
@@ -321,6 +324,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     resetMocks();
     // A reused PID: the process is alive, but no worker answers and the port is free.
     processManager.cleanStalePidFile.mockReturnValue('alive');
+    processManager.readPidFile.mockReturnValue({ pid: 4242, port: 39011, startedAt: '2026-09-30T00:00:00.000Z' });
     healthMonitor.waitForReadiness
       .mockResolvedValueOnce(false) // waiting on the live PID
       .mockResolvedValueOnce(true); // the freshly spawned worker
@@ -329,7 +333,10 @@ describe('ensureWorkerStarted startup readiness', () => {
 
     // Before #3224 this returned 'warming' forever and never spawned.
     expect(result).toBe('ready');
-    expect(processManager.removePidFile).toHaveBeenCalledTimes(1);
+    // Owner-checked: only the pid judged silent is cleared, so a PID file a
+    // restart successor wrote after the port check survives.
+    expect(processManager.removePidFileIfOwner).toHaveBeenCalledTimes(1);
+    expect(processManager.removePidFileIfOwner).toHaveBeenCalledWith(4242);
     expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
   });
 
@@ -352,7 +359,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(portReclaim.reclaimGhostListeningPort).toHaveBeenCalledWith(39012);
     // The reclaim proves ownership through the PID file, so it must still be
     // there when the reclaim runs.
-    expect(processManager.removePidFile).not.toHaveBeenCalled();
+    expect(processManager.removePidFileIfOwner).not.toHaveBeenCalled();
     expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
   });
 
