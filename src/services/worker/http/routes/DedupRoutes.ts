@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 
 /**
@@ -50,7 +51,13 @@ export class DedupRoutes extends BaseRouteHandler {
     }
     DedupRoutes.scanInProgress = true;
     try {
+      const startedAt = Date.now();
       const scanned = this.dbManager.getSessionStore().runDedupScan();
+      logger.info('DEDUP', 'Dedup scan finished', {
+        projects: scanned.length,
+        candidates: scanned.reduce((sum, project) => sum + project.candidates, 0),
+        durationMs: Date.now() - startedAt,
+      });
       res.json({ scanned });
     } finally {
       DedupRoutes.scanInProgress = false;
