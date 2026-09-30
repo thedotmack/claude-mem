@@ -405,8 +405,10 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
  * outlives the session that spawned it -- so a project folder became permanently locked
  * with "The process cannot access the file because it is being used by another process"
  * until the user found and killed bun.exe (#3706). POSIX allows the rename but still
- * pins the directory against unmount. claude-mem's own data directory always exists by
- * the time a daemon starts and is never a directory the user is reorganising.
+ * pins the directory against unmount. On Linux an inherited cwd that is later deleted (a
+ * removed git worktree) also makes every child spawn fail with ENOENT, the second
+ * trigger of the #3290 wedge. claude-mem's own data directory always exists by the time
+ * a daemon starts and is never a directory the user is reorganising.
  */
 export function daemonWorkingDirectory(): string {
   const dir = paths.dataDir();
