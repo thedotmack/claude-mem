@@ -4,8 +4,12 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
-import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { USER_SETTINGS_PATH, OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX, paths } from '../../shared/paths.js';
+import {
+  buildIsolatedEnvWithFreshOAuth,
+  getAuthMethodDescription,
+  resolveConfigDirProfileKey,
+} from '../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
@@ -29,19 +33,24 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveSummaryTierModel, resolveTierAlias } from './model-aliases.js';
+import { accumulateClaudeUsage, observerUsageLogFields } from './observer-usage.js';
 import {
   shouldRecycleConversation,
-  conversationChars,
+  describeGenerationUsage,
   resolveConversationMaxChars,
+  windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
 import { ObserverResponsePacer } from './session/response-pacer.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
+import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { captureEvent } from '../telemetry/telemetry.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
+import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -76,6 +85,17 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     message.includes('ENOENT') ||
     message.startsWith('spawn ')
   ) {
+    return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
+  }
+
+  // The observer working directory cannot be created: the data dir is a file,
+  // sits under one, or is not writable (ensureObserverSessionsDir). Retrying
+  // cannot fix that, so it is a setup problem. The CLI's own
+  // `Path "..." does not exist` result is deliberately NOT matched here:
+  // telemetry shows it once per install and never again (occurrence_count 1
+  // across 13.10-13.25), so parking Claude starts behind the setup cooldown
+  // for it would cost more than the retry.
+  if (message.startsWith(`${OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX}: `)) {
     return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
@@ -175,14 +195,40 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
 }
 
+/**
+ * The full context the model read on a turn: fresh input + cache writes +
+ * cache reads. This is the value that grows across an observer generation and
+ * eventually meets the model's window (#2956).
+ */
+export function computeFullContextTokens(
+  usage: {
+    input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  } | undefined | null
+): number {
+  if (!usage) return 0;
+  return (
+    (usage.input_tokens || 0) +
+    (usage.cache_creation_input_tokens || 0) +
+    (usage.cache_read_input_tokens || 0)
+  );
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 
-  /** Character budget for one observer generation, operator-overridable (#3800). */
-  private conversationMaxChars(): number {
-    return resolveConversationMaxChars(
-      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+  /**
+   * Character budget for one observer generation: operator-overridable (#3800)
+   * and never more than half this generation's model window (#3625).
+   */
+  private conversationMaxChars(session: ActiveSession): number {
+    return windowAwareConversationMaxChars(
+      resolveConversationMaxChars(
+        SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+      ),
+      session.observerContextWindowTokens,
     );
   }
 
@@ -226,6 +272,7 @@ export class ClaudeProvider {
     try {
       claudePath = findClaudeExecutable('SDK');
       clearDependencyStatus('claude_cli');
+      clearClaudeCliSelfHealAttempts();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       const classified = classifyClaudeError(err);
@@ -238,6 +285,9 @@ export class ClaudeProvider {
 
     const modelId = session.modelOverride || this.getModelId();
     session.lastModelId = typeof modelId === 'string' ? modelId : undefined;
+    // Resolved once per generation: the generation budget and the per-field
+    // cap both scale with the model's window (#3625).
+    session.observerContextWindowTokens = await resolveContextWindowTokens('claude', String(modelId ?? ''));
     // Each query() starts a fresh SDK process, so its total_cost_usd
     // accumulator starts from zero — reset the per-turn cost baseline with it.
     session.lastResultTotalCostUsd = null;
@@ -281,6 +331,12 @@ export class ClaudeProvider {
     try {
       const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
       const authMethod = getAuthMethodDescription();
+      // The account this generator bills for its whole life: its env (and so
+      // its OAuth identity) is fixed at spawn, even if the setting changes
+      // while it runs. Quota snapshots are tagged with it and checked against
+      // it, and a refusal it hits arms the breaker under it.
+      const observerProfile = resolveConfigDirProfileKey();
+      session.observerProfile = observerProfile;
 
       logger.info('SDK', 'Starting SDK query', {
         sessionDbId: session.sessionDbId,
@@ -303,10 +359,9 @@ export class ClaudeProvider {
         }
       }
 
-      ensureDir(OBSERVER_SESSIONS_DIR);
-      const queryResult = query({
-        prompt: messageGenerator,
-        options: buildHardenedSdkOptions({
+      let observerOptions: ReturnType<typeof buildHardenedSdkOptions>;
+      try {
+        observerOptions = buildHardenedSdkOptions({
           source: 'Observer',
           sessionDbId: session.sessionDbId,
           contentSessionId: session.contentSessionId,
@@ -317,8 +372,14 @@ export class ClaudeProvider {
           abortController: session.abortController,
           ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
           spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, slotReservation, observerExtraArgs),
-        }),
-      });
+        });
+      } catch (error) {
+        // Building the options creates the working directory. An unusable data
+        // dir classifies as setup_required, so the generator-start catch records
+        // it for the SessionStart notice instead of retrying every ingest.
+        throw classifyClaudeError(error);
+      }
+      const queryResult = query({ prompt: messageGenerator, options: observerOptions });
 
       // Baseline for the next dispatched response's discovery-token delta.
       // Textless frames are not dispatched (see below), so their usage rolls
@@ -354,7 +415,7 @@ export class ClaudeProvider {
           // so a `rejected` snapshot here means the user's own Claude Code
           // session is out of usage too. set() dedupes: one event per
           // exhausted window, not one per observer request against the wall.
-          if (globalRateLimitStore.set(info)) {
+          if (globalRateLimitStore.set({ ...info, profile: observerProfile })) {
             logger.warn('SDK', 'Subscription usage limit hit', {
               sessionDbId: session.sessionDbId,
               window: info.rateLimitType,
@@ -368,7 +429,7 @@ export class ClaudeProvider {
               observed_billing: session.observedBilling,
             });
           }
-          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore);
+          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore, Date.now(), observerProfile);
           if (decision.abort) {
             logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
               sessionDbId: session.sessionDbId,
@@ -433,19 +494,12 @@ export class ClaudeProvider {
 
           const usage = message.message.usage;
           if (usage) {
-            session.cumulativeInputTokens += usage.input_tokens || 0;
-            session.cumulativeOutputTokens += usage.output_tokens || 0;
-
-            if (usage.cache_creation_input_tokens) {
-              session.cumulativeInputTokens += usage.cache_creation_input_tokens;
-            }
+            accumulateClaudeUsage(session, usage);
 
             // Real per-response usage for telemetry (tokens_input includes the
             // full context the model read: fresh + cache writes + cache reads).
             session.lastUsage = {
-              input: (usage.input_tokens || 0) +
-                (usage.cache_creation_input_tokens || 0) +
-                (usage.cache_read_input_tokens || 0),
+              input: computeFullContextTokens(usage),
               output: usage.output_tokens || 0,
             };
 
@@ -525,6 +579,15 @@ export class ClaudeProvider {
             cache_read_input_tokens?: number;
             output_tokens?: number;
           } | undefined;
+          // What this turn actually read feeds the generation budget (#2957):
+          // the proxy history misses the SDK's system prompt and tool schemas.
+          // An init turn's reading is not kept, so a budget smaller than the
+          // init prompt cannot recycle every fresh generation on it. With the
+          // feed paced to one unanswered prompt, lastGeneratorSource names the
+          // prompt this result answers.
+          if (resultUsage && session.lastGeneratorSource !== 'init') {
+            session.lastContextTokens = computeFullContextTokens(resultUsage);
+          }
           const totalCostUsd = (message as any).total_cost_usd as number | undefined;
           let turnCostUsd: number | undefined;
           if (typeof totalCostUsd === 'number') {
@@ -538,11 +601,7 @@ export class ClaudeProvider {
           const pending = session.pendingCompressionEvent;
           if (pending) {
             session.pendingCompressionEvent = null;
-            const finalInput = resultUsage
-              ? (resultUsage.input_tokens || 0) +
-                (resultUsage.cache_creation_input_tokens || 0) +
-                (resultUsage.cache_read_input_tokens || 0)
-              : undefined;
+            const finalInput = resultUsage ? computeFullContextTokens(resultUsage) : undefined;
             const finalOutput = resultUsage ? resultUsage.output_tokens || 0 : undefined;
             telemetryBuffer.record('session_compressed', session.sessionDbId, {
               ...pending,
@@ -631,7 +690,8 @@ export class ClaudeProvider {
     const sessionDuration = Date.now() - session.startTime;
     logger.success('SDK', 'Agent completed', {
       sessionId: session.sessionDbId,
-      duration: `${(sessionDuration / 1000).toFixed(1)}s`
+      duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+      ...observerUsageLogFields(session)
     });
   }
 
@@ -765,7 +825,8 @@ export class ClaudeProvider {
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
     activeResponseContext.current = snapshotResponseContext(session);
 
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    // This SDK process never resumes, so the proxy history starts over with it.
+    openObserverGeneration(session, initPrompt);
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'init';
@@ -802,13 +863,13 @@ export class ClaudeProvider {
         // conversation server-side, but conversationHistory tracks every prompt
         // fed into it, so its size is the proxy for how close that conversation
         // is to the ceiling (#3800).
-        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars())) {
+        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars(session), session.lastContextTokens)) {
           await recycleObserverConversation(
             session,
             this.sessionManager,
             worker,
             'budget',
-            `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+            describeGenerationUsage(session.conversationHistory, session.lastContextTokens),
           );
           return;
         }
@@ -816,11 +877,15 @@ export class ClaudeProvider {
         // An oversized payload is condensed by a bounded model pass before the
         // prompt is built, so the observation carries a summary of the whole
         // field rather than a head/tail slice with the middle cut out (#3800).
+        // The field cap scales with the model's window (#3625).
+        const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
         const optimized = compressField
           ? await optimizeObservationFields(
               { toolInput: message.tool_input, toolOutput: message.tool_response },
               compressField,
               { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+              fieldMaxChars,
+              resolveFieldOptimizeTimeoutMs,
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 
@@ -831,7 +896,7 @@ export class ClaudeProvider {
           tool_output: JSON.stringify(optimized.toolOutput),
           created_at_epoch: Date.now(),
           cwd: message.cwd
-        });
+        }, fieldMaxChars);
         activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });

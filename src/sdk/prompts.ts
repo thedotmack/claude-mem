@@ -288,7 +288,11 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }
 
-export function buildObservationPrompt(obs: Observation): string {
+/**
+ * `fieldMaxChars` caps each of <parameters> and <outcome>; callers pass the
+ * observer model's window-aware cap (observationFieldMaxChars).
+ */
+export function buildObservationPrompt(obs: Observation, fieldMaxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   let toolInput: any;
   let toolOutput: any;
 
@@ -310,8 +314,8 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;
   }
 
-  const parameters = truncateObservationField(stripImagePayloadsFromField(toolInput));
-  const outcome = truncateObservationField(stripImagePayloadsFromField(toolOutput));
+  const parameters = truncateObservationField(stripImagePayloadsFromField(toolInput), fieldMaxChars);
+  const outcome = truncateObservationField(stripImagePayloadsFromField(toolOutput), fieldMaxChars);
   const redactionHint = hasRedactionMarker(parameters + outcome) ? `\n${REDACTION_MARKER_HINT}\n` : '';
 
   return `<observed_from_primary_session>
