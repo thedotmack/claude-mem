@@ -120,16 +120,16 @@ export function resolveWrapupRoute(
  * external model and then a chat, so these must never travel as text.
  */
 const SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
-  /(^|\/)\.ssh\//,
-  /(^|\/)\.aws\//,
-  /(^|\/)\.gnupg\//,
-  /(^|\/)\.env(\.[^/]*)?$/,
-  /(^|\/)\.netrc$/,
-  /(^|\/)\.npmrc$/,
-  /(^|\/)\.pypirc$/,
-  /(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/,
-  /(^|\/)credentials$/,
-  /\.(pem|p12|pfx|key)$/,
+  /(^|\/)\.ssh\//i,
+  /(^|\/)\.aws\//i,
+  /(^|\/)\.gnupg\//i,
+  /(^|\/)\.env(\.[^/]*)?$/i,
+  /(^|\/)\.netrc$/i,
+  /(^|\/)\.npmrc$/i,
+  /(^|\/)\.pypirc$/i,
+  /(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/i,
+  /(^|\/)credentials$/i,
+  /\.(pem|p12|pfx|key)$/i,
 ];
 
 function isSensitiveFilePath(filePath: string): boolean {

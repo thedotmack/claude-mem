@@ -142,6 +142,25 @@ describe('Telegram wrap-up notifier', () => {
     expect(joined).not.toContain('.env');
   });
 
+  it('drops credential paths regardless of letter case', () => {
+    const joined = joinStoredSummaryForTelegram({
+      request: 'request',
+      investigated: 'investigated',
+      learned: 'learned',
+      completed: 'completed',
+      next_steps: 'next steps',
+      files_read: JSON.stringify([
+        'src/App.ts',
+        'C:\\Users\\Me\\.SSH\\ID_ED25519',
+        'project/.ENV.local',
+        'certs/Server.PEM',
+      ]),
+      files_edited: JSON.stringify(['C:\\Users\\Me\\.AWS\\Credentials']),
+      notes: 'notes',
+    });
+    expect(joined).toContain('1 files read, 0 edited');
+  });
+
   it('treats a missing or malformed file list as zero counts', () => {
     const joined = joinStoredSummaryForTelegram({
       request: 'request',
