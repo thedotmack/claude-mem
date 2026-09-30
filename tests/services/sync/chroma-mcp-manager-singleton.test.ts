@@ -1319,7 +1319,7 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
   it('[reproduction] Newer-epoch store record refuses the local writer', async () => {
     // Seed a record stamped with epoch 2 (strictly above the shipped CHROMA_WRITER_EPOCH = 1).
     // Record JSON: {"writerEpoch":2,"claudeMemVersion":"13.99.0",...}
-    writeChromaStoreRecord({ writerEpoch: 2, claudeMemVersion: '13.99.0' });
+    writeChromaStoreRecord({ writerEpoch: 2, claudeMemVersion: '13.99.0', chromadbVersion: '1.6.0' });
     const mgr = ChromaMcpManager.getInstance();
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
@@ -1335,6 +1335,8 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(chromaStatus?.message ?? '').toContain('epoch 2');
     expect(chromaStatus?.message ?? '').toContain('epoch 1');
     expect(chromaStatus?.message ?? '').toContain('13.99.0');
+    // The engine that wrote the store is named too, so the refusal explains itself.
+    expect(chromaStatus?.message ?? '').toContain('chromadb 1.6.0');
     // Remediation is attached separately; not concatenated into the message.
     expect(chromaStatus?.message ?? '').not.toContain('Stop the other');
   });
@@ -1444,6 +1446,21 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(record.writerEpoch).toBe(1);
   });
 
+  it('A record from before the engine version was stamped fails open and gains it', async () => {
+    // Stamped by an earlier build of this guard: no chromadbVersion field.
+    writeChromaStoreRecord({ writerEpoch: 1 });
+    const seeded = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(seeded.chromadbVersion).toBeUndefined();
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+    expect(record.chromadbVersion).toBe('1.5.9');
+  });
+
   it('Remote Chroma mode writes and reads no store record', async () => {
     mockedSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
     const mgr = ChromaMcpManager.getInstance();
@@ -1516,7 +1533,10 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(existsSync(chromaStoreRecordPath())).toBe(true);
     const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
     expect(record.chromaMcpVersion).toBe('0.2.6');
-    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7']);
+    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9']);
+    // The engine version is read from the launcher pin, never kept separately.
+    expect(record.chromadbVersion).toBe('1.5.9');
+    expect(record.depOverrides).toContain(`chromadb==${record.chromadbVersion}`);
     expect(record.clientType).toBe('persistent');
     expect(typeof record.claudeMemVersion).toBe('string');
     expect(record.claudeMemVersion.length).toBeGreaterThan(0);

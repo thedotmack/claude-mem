@@ -77,6 +77,13 @@ const CHROMA_STORE_RECORD_FILENAME = '.claude-mem-chroma-store.json';
 // Writer epoch — monotonic integer, bumped only when an older writer can no
 // longer safely follow a newer one's store layout. Deliberately not tied to
 // the package version so routine releases do not trigger spurious refusals.
+//
+// Bump it whenever the chromadb pin in CHROMA_MCP_DEP_OVERRIDES crosses a
+// store-format boundary. chromadb migrations are forward-only, and an older
+// engine can crash on a newer store: chromadb 1.0.16 panics opening a store
+// that 1.5.9 wrote ("range start index 10 out of range", #3384). After the
+// bump, an older claude-mem refuses such a store up front instead of handing
+// it to an engine that cannot read it.
 const CHROMA_WRITER_EPOCH = 1;
 // Size cap for the store record. A legitimate record is a small JSON envelope;
 // anything larger is damaged or adversarially written and must fail open.
@@ -116,6 +123,11 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'protobuf<7',
   'chromadb==1.5.9',
 ];
+
+// The chromadb version the launcher pins, read from the override list itself
+// so the store record can never disagree with what uvx actually runs.
+const CHROMADB_PINNED_VERSION: string | null =
+  CHROMA_MCP_DEP_OVERRIDES.find(spec => spec.startsWith('chromadb=='))?.slice('chromadb=='.length) ?? null;
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
 // every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
@@ -172,6 +184,8 @@ interface ChromaWriterLockPayload {
 interface ChromaStoreRecord {
   writerEpoch: number;
   chromaMcpVersion: string;
+  /** The chromadb engine version that last wrote the store ('' when unknown). */
+  chromadbVersion: string;
   // depOverrides is written for diagnostic provenance but not parsed back —
   // element types are unchecked and the field never participates in any predicate.
   clientType: string;
@@ -770,6 +784,7 @@ export class ChromaMcpManager {
       record: {
         writerEpoch: candidate.writerEpoch as number,
         chromaMcpVersion: typeof candidate.chromaMcpVersion === 'string' ? candidate.chromaMcpVersion : '',
+        chromadbVersion: typeof candidate.chromadbVersion === 'string' ? candidate.chromadbVersion : '',
         clientType: typeof candidate.clientType === 'string' ? candidate.clientType : '',
         claudeMemVersion: typeof candidate.claudeMemVersion === 'string' ? candidate.claudeMemVersion : '',
         updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : '',
@@ -795,9 +810,13 @@ export class ChromaMcpManager {
     const sanitizeField = (s: string) => s.replace(/[^\x20-\x7E]/g, '').slice(0, 80);
     const version = sanitizeField(stored.record.claudeMemVersion);
     const ts = sanitizeField(stored.record.updatedAt);
-    const writerDesc = version
-      ? `claude-mem ${version}${ts ? ` at ${ts}` : ''}`
-      : ts || 'an unknown version';
+    const engine = sanitizeField(stored.record.chromadbVersion);
+    const writerDesc = [
+      version
+        ? `claude-mem ${version}${ts ? ` at ${ts}` : ''}`
+        : ts || 'an unknown version',
+      ...(engine ? [`chromadb ${engine}`] : []),
+    ].join(', ');
     const message =
       `Chroma data dir ${path.resolve(dataDir)} was last written by epoch ` +
       `${stored.record.writerEpoch} (${writerDesc}); this writer is epoch ${CHROMA_WRITER_EPOCH}. ` +
@@ -816,6 +835,7 @@ export class ChromaMcpManager {
     const record = {
       writerEpoch: CHROMA_WRITER_EPOCH,
       chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      chromadbVersion: CHROMADB_PINNED_VERSION ?? '',
       depOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
       clientType: 'persistent',
       claudeMemVersion,
