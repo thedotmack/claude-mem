@@ -77,6 +77,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SKIP_BASH_PATTERNS: string;
   CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: string;  // #2736 — skip ALL subagent observations (agent id AND agent type present)
   CLAUDE_MEM_SKIP_AGENT_TYPES: string;            // #2736 — comma-separated subagent agent_type values to skip (e.g. workflow-subagent,Explore)
+  CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: string;       // #3165 — record Claude Code `advisor` tool calls (advice text) at Stop
   CLAUDE_MEM_PROVIDER: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
@@ -115,7 +116,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: string;
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
   CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: string;
-  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  
+  CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: string;  // Observer model context window in tokens; '' = resolve automatically
+  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;
   CLAUDE_MEM_REDACT_ENABLED: string;
   CLAUDE_MEM_REDACT_DISABLED_BUILTINS: string;
   CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: string;
@@ -257,6 +259,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SKIP_BASH_PATTERNS: '',  // Regex matched against a shell command (Bash; Codex exec_command); when it matches, the observation is skipped. Empty = capture every command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
     CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',  // #2736 — default off preserves current behavior; set 'true' to skip every subagent observation (recommended for heavy Dynamic Workflows users)
     CLAUDE_MEM_SKIP_AGENT_TYPES: '',                 // #2736 — default empty preserves current behavior; recommended value 'workflow-subagent' to drop Dynamic Workflows fan-out noise
+    CLAUDE_MEM_CAPTURE_ADVISOR_CALLS: 'false',       // #3165 — opt-in: the Stop hook scans the transcript's tail for advisor calls and stores the advice locally (worker runtime only)
     // Deliberate divergence from the installer prompt: the interactive
     // provider prompt defaults to 'cmem' (the hosted observer), but headless
     // installs land here — no delivered key exists headlessly, so the settings
@@ -304,6 +307,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
     CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: '400000',  // Retire an observer conversation past this size and start a fresh generation (#3800)
+    CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '',  // Observer model context window in tokens; '' = resolve it (OpenRouter catalogue, Gemini/Claude maps). Lowers the budget above to half the window (#3625)
     CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // After N consecutive worker-unreachable hook invocations, show the worker-outage notice once per session (never blocks; plan-17)
     CLAUDE_MEM_REDACT_ENABLED: 'false',                   // Opt-in auto-redaction of common secret patterns (see docs/public/usage/auto-redaction.mdx)
     CLAUDE_MEM_REDACT_DISABLED_BUILTINS: '',              // CSV of built-in pattern names to disable, e.g. 'jwt,slack_token'
