@@ -1,5 +1,9 @@
 import { z } from "zod";
+import { join } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { normalizePlatformSource } from "../../shared/platform-source.js";
+// Dependency-free, so it stays bundle-safe for the plugin (no worker-only imports).
+import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 
 /**
  * OpenCode plugin event contract.
@@ -60,6 +64,7 @@ interface ToolExecuteAfterInput {
   tool: string;
   sessionID: string;
   callID: string;
+  args?: Record<string, unknown>;
 }
 
 interface ToolExecuteAfterOutput {
@@ -91,9 +96,11 @@ interface BusEvent {
 }
 
 function resolveWorkerPort(): string {
-  // Canonical resolution: CLAUDE_MEM_WORKER_PORT env override, else the
-  // UID-derived default — identical to the rest of the codebase (#2406).
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
+  const settingsPath = join(
+    SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"),
+    "settings.json",
+  );
+  return SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT;
 }
 
 function resolveWorkerHost(): string {
@@ -105,6 +112,9 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
+// A refused connection means the worker is simply not running and must stay
+// quiet. isConnectionRefusedError recognizes Bun's and undici's shapes, which a
+// message.includes('ECONNREFUSED') check misses (OpenCode hosts plugins under Bun).
 function workerPostFireAndForget(
   path: string,
   body: Record<string, unknown>,
@@ -112,10 +122,13 @@ function workerPostFireAndForget(
   fetch(`${WORKER_BASE_URL}${path}`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      ...body,
+      platformSource: normalizePlatformSource("opencode"),
+    }),
   }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
+    if (!isConnectionRefusedError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
       console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
   });
@@ -130,8 +143,8 @@ async function workerGetText(path: string): Promise<string | null> {
     }
     return await response.text();
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
+    if (!isConnectionRefusedError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
       console.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
     }
     return null;
@@ -202,7 +215,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
-        tool_input: output.args || {},
+        tool_input: input.args || output.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
       });

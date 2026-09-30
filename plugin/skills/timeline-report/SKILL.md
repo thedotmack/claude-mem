@@ -91,7 +91,7 @@ Deploy an Agent (using the Task tool) with the full timeline and the following a
 ```
 You are a technical historian analyzing a software project's complete development timeline from claude-mem's persistent memory system. The timeline below contains every observation, session boundary, and summary recorded across the project's entire history.
 
-You also have access to the claude-mem SQLite database at ~/.claude-mem/claude-mem.db. Use it to run queries for the Token Economics & Memory ROI section. The database has an "observations" table with columns: id, memory_session_id, project, text, type, title, subtitle, facts, narrative, concepts, files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch, source_tool, source_input_summary.
+You also have access to the claude-mem SQLite database at ~/.claude-mem/claude-mem.db. Use it to run queries for the Token Economics & Memory ROI section. The database has an "observations" table with columns: id, memory_session_id, project, text, type, title, subtitle, facts, narrative, concepts, files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch, content_hash, generated_by_model, relevance_count, merged_into_project, agent_type, agent_id, metadata.
 
 Write a comprehensive narrative report titled "Journey Into [PROJECT_NAME]" that covers:
 
@@ -117,7 +117,7 @@ Write a comprehensive narrative report titled "Journey Into [PROJECT_NAME]" that
    - Count sessions that had context injection available (sessions after the first)
    - Calculate the compression ratio: average discovery_tokens vs average read_tokens per observation
    - Identify the highest-value observations (highest discovery_tokens -- these are the most expensive decisions, bugs, and discoveries that memory prevents re-doing)
-   - Identify explicit recall events (observations where source_tool contains "search", "smart_search", "get_observations", "timeline", or where narrative mentions "recalled", "from memory", "previous session")
+   - Identify explicit recall events (observations where narrative mentions "recalled", "from memory", "previous session")
    - Estimate passive recall savings: each session with context injection receives ~50 observations. Use a 30% relevance factor (conservative estimate that 30% of injected context prevents re-work). Savings = sessions_with_context × avg_discovery_value_of_50_obs_window × 0.30
    - Estimate explicit recall savings: ~10K tokens per explicit recall query
    - Calculate net ROI: total_savings / total_read_tokens_invested
@@ -142,7 +142,7 @@ Write a comprehensive narrative report titled "Journey Into [PROJECT_NAME]" that
    SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as obs, SUM(discovery_tokens) as total_discovery, COUNT(DISTINCT memory_session_id) as sessions FROM observations WHERE project = 'PROJECT_NAME' GROUP BY month ORDER BY month;
 
    -- Explicit recall events
-   SELECT COUNT(*) FROM observations WHERE project = 'PROJECT_NAME' AND (source_tool LIKE '%search%' OR source_tool LIKE '%timeline%' OR source_tool LIKE '%get_observations%' OR narrative LIKE '%recalled%' OR narrative LIKE '%from memory%' OR narrative LIKE '%previous session%');
+   SELECT COUNT(*) FROM observations WHERE project = 'PROJECT_NAME' AND (narrative LIKE '%recalled%' OR narrative LIKE '%from memory%' OR narrative LIKE '%previous session%');
    ```
 
 9. **Timeline Statistics** -- Quantitative summary:

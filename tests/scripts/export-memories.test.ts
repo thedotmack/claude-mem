@@ -55,7 +55,7 @@ describe('export-memories script', () => {
     let batchSignal: unknown;
     const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.startsWith('http://localhost:45678/api/search?')) {
+      if (url.startsWith('http://127.0.0.1:45678/api/search?')) {
         searchSignal = init?.signal;
         return new Response(JSON.stringify({
           observations: [
@@ -69,7 +69,7 @@ describe('export-memories script', () => {
         }), { status: 200 });
       }
 
-      if (url === 'http://localhost:45678/api/sdk-sessions/batch') {
+      if (url === 'http://127.0.0.1:45678/api/sdk-sessions/batch') {
         batchSignal = init?.signal;
         batchBody = JSON.parse(String(init?.body));
         return new Response(JSON.stringify([
@@ -172,7 +172,7 @@ describe('export-memories script', () => {
 
     const fetchMock = mock(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.startsWith('http://localhost:45678/api/search?')) {
+      if (url.startsWith('http://127.0.0.1:45678/api/search?')) {
         return new Response(JSON.stringify({
           observations: [{ memory_session_id: 'memory-a' }],
           sessions: [],
@@ -180,7 +180,7 @@ describe('export-memories script', () => {
         }), { status: 200 });
       }
 
-      if (url === 'http://localhost:45678/api/sdk-sessions/batch') {
+      if (url === 'http://127.0.0.1:45678/api/sdk-sessions/batch') {
         return new Response('worker unavailable', {
           status: 503,
           statusText: 'Service Unavailable',

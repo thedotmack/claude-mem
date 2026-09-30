@@ -1,34 +1,33 @@
-import { describe, it, expect, mock, afterAll } from 'bun:test';
-import { readFileSync, mkdtempSync, rmSync } from 'fs';
-import { join } from 'path';
+import { describe, it, expect, mock, afterAll, beforeEach, afterEach } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
+import { join } from 'path';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
+import * as realWorkerSpawnGate from '../../src/shared/worker-spawn-gate.js';
+import * as realPortReclaim from '../../src/shared/port-reclaim.js';
 
-// Isolate the Windows spawn-cooldown marker (.worker-start-attempted) so a
-// spawn in one test cannot cooldown-block the next. The env var must be set
-// BEFORE the modules under test load: paths.ts freezes DATA_DIR on first
-// evaluation and ProcessManager freezes PID_FILE from it at import time, and
-// ESM hoists static imports above every statement. Hence the dynamic imports
-// below, matching the isolation pattern in process-manager.test.ts.
-const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-spawner-test-'));
-const PREVIOUS_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
-process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
-
-// Real modules captured BEFORE mock.module so the mocks can (a) spread the
-// full export surface instead of leaking a partial stub into later test
-// files, and (b) be re-pointed at the real implementations in afterAll.
-// bun's mock.module has no unmock and persists for the rest of the process,
-// which previously broke e.g. health-monitor.test.ts when this file ran first.
-const RealProcessManager = await import('../../src/services/infrastructure/ProcessManager.js');
-const RealHealthMonitor = await import('../../src/services/infrastructure/HealthMonitor.js');
-const RealSpawnGate = await import('../../src/shared/worker-spawn-gate.js');
+/**
+ * The whole suite runs in one bun process and `mock.module` mutates the shared
+ * module registry, so the stubs below leak into every test file that loads
+ * after this one (tests/infrastructure/{health-monitor,process-manager}.test.ts
+ * import the same modules via src/services/infrastructure/index.js and would
+ * silently exercise these fakes). Snapshot the real namespaces before the mocks
+ * are installed and put them back in afterAll — same pattern as
+ * tests/shared/worker-utils-version-recycle.test.ts.
+ */
+const realProcessManagerSnapshot = { ...realProcessManager };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
+const realWorkerSpawnGateSnapshot = { ...realWorkerSpawnGate };
+const realPortReclaimSnapshot = { ...realPortReclaim };
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
   getPlatformTimeout: mock((timeout: number) => timeout),
   spawnDaemon: mock(() => 2147483647),
-  removePidFile: mock(() => {}),
   touchPidFile: mock(() => {}),
+  probeWorkerBootFailure: mock((): string | undefined => undefined),
 };
 
 const healthMonitor = {
@@ -42,29 +41,32 @@ const spawnGate = {
   releaseSpawnLock: mock(() => {}),
 };
 
-mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({ ...RealProcessManager, ...processManager }));
-mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({ ...RealHealthMonitor, ...healthMonitor }));
-mock.module('../../src/shared/worker-spawn-gate.js', () => ({ ...RealSpawnGate, ...spawnGate }));
+// port-reclaim must be stubbed like the rest of the module graph: its
+// production implementation shells out to netstat/Get-CimInstance/taskkill,
+// which would run for real inside the "port in use" branch of every test
+// below. The ghost-recovery behavior itself has dedicated unit coverage in
+// tests/shared/port-reclaim.test.ts and a Windows integration gate.
+const portReclaim = {
+  reclaimGhostListeningPort: mock(async () => ({
+    reclaimed: false,
+    reason: 'not-supported',
+    killedPids: [] as number[],
+  })),
+};
 
-const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
+mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
+mock.module('../../src/shared/port-reclaim.js', () => portReclaim);
 
 afterAll(() => {
-  processManager.cleanStalePidFile.mockImplementation(RealProcessManager.cleanStalePidFile);
-  processManager.getPlatformTimeout.mockImplementation(RealProcessManager.getPlatformTimeout);
-  processManager.spawnDaemon.mockImplementation(RealProcessManager.spawnDaemon);
-  processManager.removePidFile.mockImplementation(RealProcessManager.removePidFile);
-  processManager.touchPidFile.mockImplementation(RealProcessManager.touchPidFile);
-  healthMonitor.isPortInUse.mockImplementation(RealHealthMonitor.isPortInUse);
-  healthMonitor.waitForHealth.mockImplementation(RealHealthMonitor.waitForHealth);
-  healthMonitor.waitForReadiness.mockImplementation(RealHealthMonitor.waitForReadiness);
-  spawnGate.acquireSpawnLock.mockImplementation(RealSpawnGate.acquireSpawnLock);
-  spawnGate.releaseSpawnLock.mockImplementation(RealSpawnGate.releaseSpawnLock);
-  if (PREVIOUS_DATA_DIR === undefined) {
-    delete process.env.CLAUDE_MEM_DATA_DIR;
-  } else {
-    process.env.CLAUDE_MEM_DATA_DIR = PREVIOUS_DATA_DIR;
-  }
+  mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+  mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+  mock.module('../../src/shared/worker-spawn-gate.js', () => realWorkerSpawnGateSnapshot);
+  mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
 });
+
+const { ensureWorkerStarted, getLastWorkerBootFailure } = await import('../../src/services/worker-spawner.js');
 
 type TimedProbe = (port: number, timeout: number) => Promise<boolean>;
 
@@ -96,8 +98,9 @@ function resetMocks(): void {
   processManager.getPlatformTimeout.mockClear();
   processManager.spawnDaemon.mockReset();
   processManager.spawnDaemon.mockReturnValue(2147483647);
-  processManager.removePidFile.mockClear();
   processManager.touchPidFile.mockClear();
+  processManager.probeWorkerBootFailure.mockReset();
+  processManager.probeWorkerBootFailure.mockReturnValue(undefined);
   healthMonitor.isPortInUse.mockReset();
   healthMonitor.isPortInUse.mockResolvedValue(false);
   healthMonitor.waitForHealth.mockReset();
@@ -107,7 +110,6 @@ function resetMocks(): void {
   spawnGate.acquireSpawnLock.mockReset();
   spawnGate.acquireSpawnLock.mockReturnValue(true);
   spawnGate.releaseSpawnLock.mockReset();
-  rmSync(join(TEST_DATA_DIR, '.worker-start-attempted'), { force: true });
 }
 
 describe('ensureWorkerStarted startup readiness', () => {
@@ -161,36 +163,20 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(processManager.touchPidFile).toHaveBeenCalledTimes(1);
   });
 
-  it('self-heals when a live PID never becomes ready before timeout (#3224)', async () => {
+  it('returns dead when a live PID disappears before readiness comes up', async () => {
     resetMocks();
-    // 'alive' once for the initial PID-file check; after removePidFile() the
-    // post-spawn readiness-timeout re-check sees the cleared file as 'dead'.
-    processManager.cleanStalePidFile.mockReturnValueOnce('alive');
+    let cleanChecks = 0;
+    processManager.cleanStalePidFile.mockImplementation(() => {
+      cleanChecks += 1;
+      return cleanChecks === 1 ? 'alive' : 'dead';
+    });
 
     const result = await ensureWorkerStarted(39003, import.meta.filename);
 
-    expect(processManager.removePidFile).toHaveBeenCalled();
-    expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39003, HOOK_TIMEOUTS.READINESS_WAIT);
-    // After clearing the stale PID claim, spawn proceeds instead of stuck warming.
-    expect(processManager.spawnDaemon).toHaveBeenCalled();
     expect(result).toBe('dead');
-  });
-
-  it('keeps the PID file when a live PID is healthy but not ready yet', async () => {
-    resetMocks();
-    processManager.cleanStalePidFile.mockReturnValue('alive');
-    // Healthy (answers /api/health) but never ready (/api/readiness stays 503),
-    // i.e. a worker that is genuinely alive and still initializing.
-    healthMonitor.waitForHealth.mockResolvedValue(true);
-    healthMonitor.waitForReadiness.mockResolvedValue(false);
-
-    const result = await ensureWorkerStarted(39008, import.meta.filename);
-
-    expect(result).toBe('warming');
-    // Regression (#3224 follow-up): readiness timing out is not proof of a
-    // stale PID, so a healthy worker must keep ownership of its PID file.
-    expect(processManager.removePidFile).not.toHaveBeenCalled();
+    expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39003, HOOK_TIMEOUTS.READINESS_WAIT);
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+    expect(processManager.touchPidFile).not.toHaveBeenCalled();
   });
 
   it('returns dead when the spawned worker never becomes ready and no live worker remains', async () => {
@@ -228,6 +214,40 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
   });
 
+  it('starts a worker after reclaiming a ghost listener from a dead worker', async () => {
+    resetMocks();
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    healthMonitor.waitForReadiness.mockResolvedValue(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({
+      reclaimed: true,
+      killedPids: [3001, 3002],
+    });
+
+    const result = await ensureWorkerStarted(39008, import.meta.filename);
+
+    // The ghost is gone, so the launcher must NOT give up: it proceeds to the
+    // spawn path like a free port would.
+    expect(result).toBe('ready');
+    expect(portReclaim.reclaimGhostListeningPort).toHaveBeenCalledWith(39008);
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+    expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39008, HOOK_TIMEOUTS.READINESS_WAIT);
+  });
+
+  it('stays dead when the ghost port cannot be reclaimed', async () => {
+    resetMocks();
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({
+      reclaimed: false,
+      reason: 'owner-alive',
+      killedPids: [],
+    });
+
+    const result = await ensureWorkerStarted(39009, import.meta.filename);
+
+    expect(result).toBe('dead');
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+  });
+
   it('keeps spawn failures dead', async () => {
     resetMocks();
     processManager.spawnDaemon.mockReturnValue(undefined);
@@ -254,19 +274,93 @@ describe('ensureWorkerStarted validation guards', () => {
   });
 });
 
-const WORKER_SPAWNER_PATH = join(import.meta.dir, '../../src/services/worker-spawner.ts');
-const workerSpawnerSource = readFileSync(WORKER_SPAWNER_PATH, 'utf-8');
+/**
+ * plan-15 step 7 (#2996): the Windows spawn cooldown is keyed to evidence, not
+ * time. Only a worker this launcher started that provably crashed on boot (or
+ * a launch that failed outright) cools later launchers down; a port-bound
+ * failure, a lost spawn lock or an unexplained exit leaves the next launcher
+ * free to retry at once. The marker is Windows-only, so the platform is faked.
+ */
+describe('Windows spawn cooldown keyed to a proven boot crash (plan-15 step 7)', () => {
+  const originalPlatform = process.platform;
+  const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  let dataDir: string;
+  const marker = () => join(dataDir, '.worker-start-attempted');
 
-describe('ensureWorkerStarted stale PID self-heal (#3224)', () => {
-  it('clears the PID file and continues spawn when a live PID never becomes healthy', () => {
-    expect(workerSpawnerSource).toContain('removePidFile()');
-    expect(workerSpawnerSource).toContain(
-      'PID file claims a live process but worker port never became healthy'
-    );
-    // Regression: the old branch returned warming and permanently blocked
-    // lazy-spawn / self-heal when worker.pid was stale or PID-reused.
-    expect(workerSpawnerSource).not.toContain(
-      'Live PID detected but worker did not become ready before timeout'
-    );
+  beforeEach(() => {
+    resetMocks();
+    portReclaim.reclaimGhostListeningPort.mockReset();
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({ reclaimed: false, reason: 'not-supported', killedPids: [] });
+    dataDir = mkdtempSync(join(tmpdir(), 'cmem-spawn-cooldown-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+    if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('cools down after the spawned worker provably crashed, and reports the recorded crash', async () => {
+    processManager.probeWorkerBootFailure.mockReturnValue('SyntaxError: bad bundle');
+
+    expect(await ensureWorkerStarted(39101, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(true);
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+
+    // The next launcher inside the window stands down, and still says why.
+    expect(await ensureWorkerStarted(39101, import.meta.filename)).toBe('dead');
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+    expect(getLastWorkerBootFailure()).toBe('SyntaxError: bad bundle');
+  });
+
+  it('cools down after the daemon launch itself failed', async () => {
+    processManager.spawnDaemon.mockReturnValue(undefined);
+
+    expect(await ensureWorkerStarted(39102, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  it('retries at once when the worker exited without a reproducible crash', async () => {
+    processManager.probeWorkerBootFailure.mockReturnValue(undefined);
+
+    expect(await ensureWorkerStarted(39103, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(false);
+
+    await ensureWorkerStarted(39103, import.meta.filename);
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cool down after a port-bound failure: once the port is free it spawns at once', async () => {
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({ reclaimed: false, reason: 'owner-alive', killedPids: [] });
+
+    expect(await ensureWorkerStarted(39104, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(false);
+
+    healthMonitor.isPortInUse.mockResolvedValue(false);
+    healthMonitor.waitForReadiness.mockResolvedValue(true);
+    expect(await ensureWorkerStarted(39104, import.meta.filename)).toBe('ready');
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cool down when another launcher held the spawn lock', async () => {
+    spawnGate.acquireSpawnLock.mockReturnValue(false);
+
+    expect(await ensureWorkerStarted(39105, import.meta.filename)).toBe('dead');
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  it('clears a recorded crash once a reclaim frees the port', async () => {
+    writeFileSync(marker(), 'SyntaxError: bad bundle');
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    healthMonitor.waitForReadiness.mockResolvedValue(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({ reclaimed: true, killedPids: [3001] });
+
+    expect(await ensureWorkerStarted(39106, import.meta.filename)).toBe('ready');
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+    expect(existsSync(marker())).toBe(false);
   });
 });
