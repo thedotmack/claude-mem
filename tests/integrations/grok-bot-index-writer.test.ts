@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -15,6 +16,8 @@ import {
   shouldRewriteInject,
   type GrokBotIndexObservation,
 } from '../../src/services/integrations/grok-bot-index-format.js';
+import { queryObservationsNewest } from '../../src/services/context/ObservationCompiler.js';
+import type { ContextConfig } from '../../src/services/context/types.js';
 import {
   checkGrokBotIndexSettings,
   loadGrokBotIndexConfig,
@@ -90,7 +93,7 @@ function queries(seatRows: GrokBotIndexObservation[], houseRows: GrokBotIndexObs
 }
 
 describe('mergeIndexObservations', () => {
-  it('fills a thin seat diary from newer house rows without dropping IDs', () => {
+  it('lists seat rows first, then fills from house rows without duplicating IDs', () => {
     const seat = [obs(5, 'Seat stale', 1_000, 'cmem_work_prioritizer')];
     const house = [
       obs(80, 'House newest', 8_000, 'claude-mem'),
@@ -98,8 +101,51 @@ describe('mergeIndexObservations', () => {
       obs(5, 'Seat stale', 1_000, 'cmem_work_prioritizer'),
     ];
     const merged = mergeIndexObservations(seat, house, 80);
-    expect(merged.map(row => row.id)).toEqual([80, 79, 5]);
-    expect(merged[0].title).toBe('House newest');
+    expect(merged.map(row => row.id)).toEqual([5, 80, 79]);
+    expect(merged[0].title).toBe('Seat stale');
+  });
+
+  it('keeps seat rows ahead of newer house rows, each list newest first', () => {
+    const seat = [obs(2, 'Seat older', 100), obs(3, 'Seat newer', 200)];
+    const house = [obs(90, 'House a', 9_000, 'claude-mem'), obs(91, 'House b', 9_100, 'claude-mem')];
+    const merged = mergeIndexObservations(seat, house, 80);
+    expect(merged.map(row => row.id)).toEqual([3, 2, 91, 90]);
+  });
+
+  it('seat rows that reach the window leave no room for house rows', () => {
+    const seat = Array.from({ length: 80 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
+    const house = Array.from({ length: 50 }, (_, i) => obs(1_000 + i, `House ${i}`, 100_000 + i, 'claude-mem'));
+    const merged = mergeIndexObservations(seat, house, 80);
+    expect(merged).toHaveLength(80);
+    expect(merged.every(row => row.id <= 80)).toBe(true);
+    expect(merged[0].id).toBe(80);
+    expect(merged[merged.length - 1].id).toBe(1);
+  });
+
+  it('caps the seat itself at the window, dropping its oldest rows', () => {
+    const seat = Array.from({ length: 100 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
+    const merged = mergeIndexObservations(seat, [obs(999, 'House', 999_999, 'claude-mem')], 80);
+    expect(merged).toHaveLength(80);
+    expect(merged[0].id).toBe(100);
+    expect(merged[merged.length - 1].id).toBe(21);
+    expect(merged.some(row => row.id === 999)).toBe(false);
+  });
+
+  it('house rows fill only the slots the seat leaves open', () => {
+    const seat = Array.from({ length: 78 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
+    const house = [
+      obs(78, 'Seat 78', 78),
+      ...Array.from({ length: 5 }, (_, i) => obs(500 + i, `House ${i}`, 50_000 + i, 'claude-mem')),
+    ];
+    const merged = mergeIndexObservations(seat, house, 80);
+    expect(merged).toHaveLength(80);
+    expect(new Set(merged.map(row => row.id)).size).toBe(80);
+    expect(merged.slice(78).map(row => row.id)).toEqual([504, 503]);
+  });
+
+  it('dedupes rows repeated inside the seat list', () => {
+    const merged = mergeIndexObservations([obs(7, 'A', 7), obs(7, 'A', 7)], [obs(7, 'A', 7)], 80);
+    expect(merged.map(row => row.id)).toEqual([7]);
   });
 
   it('slides off the oldest rows past the window', () => {
@@ -108,6 +154,44 @@ describe('mergeIndexObservations', () => {
     expect(merged).toHaveLength(80);
     expect(merged[0].id).toBe(120);
     expect(merged[merged.length - 1].id).toBe(41);
+  });
+});
+
+describe('queryObservationsNewest manual saves', () => {
+  function seedDb(): Database {
+    const db = new Database(':memory:');
+    db.run(`CREATE TABLE sdk_sessions (memory_session_id TEXT, platform_source TEXT)`);
+    db.run(`CREATE TABLE observations (
+      id INTEGER PRIMARY KEY, memory_session_id TEXT, type TEXT, title TEXT, subtitle TEXT,
+      narrative TEXT, facts TEXT, concepts TEXT, files_read TEXT, files_modified TEXT,
+      discovery_tokens INTEGER, created_at TEXT, created_at_epoch INTEGER, project TEXT,
+      merged_into_project TEXT)`);
+    db.run(`INSERT INTO sdk_sessions VALUES ('manual-seat', 'claude'), ('sdk-1', 'claude')`);
+    const insert = db.prepare(`INSERT INTO observations
+      (id, memory_session_id, type, title, concepts, created_at, created_at_epoch, project)
+      VALUES (?, ?, ?, ?, ?, '', ?, ?)`);
+    insert.run(1, 'sdk-1', 'discovery', 'Tagged', '["how-it-works"]', 1, 'seat');
+    insert.run(2, 'manual-seat', 'discovery', 'Grok seat save', '[]', 2, 'seat');
+    insert.run(3, 'sdk-1', 'discovery', 'Untagged sdk row', '[]', 3, 'seat');
+    return db;
+  }
+  const config = {
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['how-it-works']),
+  } as unknown as ContextConfig;
+
+  it('includes /api/memory/save rows for the seat project when asked', () => {
+    const db = seedDb();
+    const rows = queryObservationsNewest({ db }, config, { limit: 10, projects: ['seat'], includeManualSaves: true });
+    expect(rows.map(row => row.id)).toEqual([2, 1]);
+    db.close();
+  });
+
+  it('keeps the strict mode filter by default', () => {
+    const db = seedDb();
+    const rows = queryObservationsNewest({ db }, config, { limit: 10, projects: ['seat'] });
+    expect(rows.map(row => row.id)).toEqual([1]);
+    db.close();
   });
 });
 
@@ -245,6 +329,45 @@ describe('refreshSeatIndex live write', () => {
     );
     expect(third.status).toBe('unchanged');
     expect(factBlock(readFileSync(third.filePath!, 'utf8'))).toBe(factBlock(secondText));
+  });
+
+  it('reports houseFilled false when seat rows fill the whole window', () => {
+    const root = tempRoot();
+    writeSeat(root, PRIORITIZER, 'Prioritizer');
+    const seatRows = Array.from({ length: 80 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
+    const result = refreshSeatIndex(
+      makeCfg(root),
+      { id: PRIORITIZER, name: 'Prioritizer', projects: ['cmem_work_prioritizer'] },
+      queries(seatRows, [obs(900, 'Busy house', 900_000, 'claude-mem')]),
+      NOW,
+    );
+    expect(result.status).toBe('written');
+    expect(result.houseFilled).toBe(false);
+    const text = readFileSync(result.filePath!, 'utf8');
+    expect(text).not.toContain('Busy house');
+    expect(text).not.toContain('house fill');
+  });
+
+  it('skips the house query entirely when seat rows fill the window', () => {
+    const root = tempRoot();
+    writeSeat(root, PRIORITIZER, 'Prioritizer');
+    const seatRows = Array.from({ length: 80 }, (_, i) => obs(i + 1, `Seat ${i + 1}`, i + 1));
+    let houseCalls = 0;
+    const result = refreshSeatIndex(
+      makeCfg(root),
+      { id: PRIORITIZER, name: 'Prioritizer', projects: ['cmem_work_prioritizer'] },
+      {
+        querySeat: () => seatRows,
+        queryHouse: () => {
+          houseCalls += 1;
+          throw new Error('house query must not run');
+        },
+      },
+      NOW,
+    );
+    expect(houseCalls).toBe(0);
+    expect(result.status).toBe('written');
+    expect(result.houseFilled).toBe(false);
   });
 
   it('skips CCS as a required intermediate even when a TIMELINE.md already exists', () => {
