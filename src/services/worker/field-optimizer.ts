@@ -28,8 +28,16 @@ import { logger } from '../../utils/logger.js';
  * A single bounded model call: condense `text` to at most `budgetChars`.
  * Returns null when the provider cannot do it. Supplied by each provider so
  * this module stays free of provider wiring and is testable on its own.
+ * `deadlineMs` is the deadline `signal` enforces; a provider whose request
+ * path has its own per-attempt timeout must use it there too, or its shorter
+ * default cuts the pass off first (#4134).
  */
-export type FieldCompressor = (text: string, budgetChars: number, signal: AbortSignal) => Promise<string | null>;
+export type FieldCompressor = (
+  text: string,
+  budgetChars: number,
+  signal: AbortSignal,
+  deadlineMs: number,
+) => Promise<string | null>;
 
 /**
  * Default deadline for one compression pass before the observer gives up on it.
@@ -106,7 +114,7 @@ export async function optimizeField(
   const deadlineMs = typeof timeoutMs === 'function' ? timeoutMs() : timeoutMs;
   let condensed: string | null = null;
   try {
-    condensed = await withTimeout(signal => compress(raw, budget, signal), deadlineMs);
+    condensed = await withTimeout(signal => compress(raw, budget, signal, deadlineMs), deadlineMs);
   } catch (error) {
     logger.warn('SDK', 'Oversized field compression failed; falling back to truncation', {
       sessionId: context.sessionDbId,
