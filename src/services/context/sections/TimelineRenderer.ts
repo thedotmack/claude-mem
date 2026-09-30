@@ -40,7 +40,7 @@ function getDetailField(obs: Observation, config: ContextConfig): string | null 
 function renderDayTimelineAgent(
   day: string,
   dayItems: TimelineItem[],
-  fullObservationIds: Set<number>,
+  fullObservationIds: Set<Observation['id']>,
   config: ContextConfig,
 ): string[] {
   const output: string[] = [];
@@ -77,7 +77,7 @@ function renderDayTimelineAgent(
 
 export function renderAgentTimeline(
   timeline: TimelineItem[],
-  fullObservationIds: Set<number>,
+  fullObservationIds: Set<Observation['id']>,
   config: ContextConfig
 ): string[] {
   const output: string[] = [];
@@ -106,7 +106,7 @@ export interface HumanTimelineEntry {
 
 export function buildHumanTimelineEntries(
   timeline: TimelineItem[],
-  fullObservationIds: Set<number>,
+  fullObservationIds: Set<Observation['id']>,
   config: ContextConfig,
   cwd: string
 ): HumanTimelineEntry[] {

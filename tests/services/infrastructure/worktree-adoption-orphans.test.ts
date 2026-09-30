@@ -274,6 +274,43 @@ describe('orphaned worktree adoption (#2864)', () => {
     expect(mergedInto(dbPath, foreignObsId)).toBeNull();
   }, 30_000);
 
+  // #3641 — with the write path collapsing a repo-named worktree onto the repo,
+  // a LIVE Codex worktree no longer claims its old doubled key, so the sweep
+  // folds the rows it wrote before the collapse into the repo. Its merged
+  // branch must not be "adopted" onto the repo key itself: that would stamp the
+  // repo's own rows as merged into themselves and re-push every one of them.
+  it('folds a live Codex worktree\'s pre-collapse rows into the repo without touching the repo\'s own rows', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
+    const mainRepo = path.join(tempRoot, 'app');
+    const codexWorktree = path.join(tempRoot, 'codex', 'worktrees', 'c3d4', 'app');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory, { recursive: true });
+    mkdirSync(path.dirname(codexWorktree), { recursive: true });
+    initRepo(mainRepo);
+    git(mainRepo, 'worktree', 'add', '-b', 'codex-live', codexWorktree);
+
+    const dbPath = path.join(dataDirectory, 'claude-mem.db');
+    const store = new SessionStore(dbPath);
+    seedSession(store, 'content-doubled', 'app/app', 'memory-doubled');
+    const doubledObsId = seedObservation(store, 'memory-doubled', 'app/app');
+    seedSession(store, 'content-repo', 'app', 'memory-repo');
+    const repoObsId = seedObservation(store, 'memory-repo', 'app');
+    store.close();
+
+    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+
+    expect(result.orphanedWorktrees).toEqual(['app/app']);
+    expect(mergedInto(dbPath, doubledObsId)).toBe('app');
+    expect(mergedInto(dbPath, repoObsId)).toBeNull();
+
+    const verify = new SessionStore(dbPath);
+    const ops = (verify.db.prepare('SELECT body FROM sync_outbox').all() as Array<{ body: string }>)
+      .map(op => JSON.parse(op.body))
+      .filter(op => op.op === 'remap_project');
+    verify.close();
+    expect(ops.map(op => op.where.project)).toEqual(['app/app']);
+  }, 30_000);
+
   // #3641 — Codex puts worktrees at ~/.codex/worktrees/<id>/<repo>, so the
   // worktree basename equals the repo name and the composite key doubles to
   // `<repo>/<repo>`. Once that worktree is deleted the sweep must still fold the
