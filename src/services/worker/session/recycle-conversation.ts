@@ -86,6 +86,8 @@ export async function loadSessionStartContext(
 export function openObserverGeneration(session: ActiveSession, initPrompt: string): void {
   const discardedMessages = session.conversationHistory.length;
   session.conversationHistory = [{ role: 'user', content: initPrompt }];
+  // The last generation's measured context says nothing about this one (#2957).
+  session.lastContextTokens = undefined;
   if (discardedMessages > 0) {
     logger.debug('SESSION', 'Generator start opened a new observer generation', {
       sessionId: session.sessionDbId,
