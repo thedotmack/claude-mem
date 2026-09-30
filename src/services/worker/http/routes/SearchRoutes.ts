@@ -321,7 +321,7 @@ export class SearchRoutes extends BaseRouteHandler {
         // A project with zero observations is exactly where a failing observer
         // hides: without this the health warning (applied inside
         // generateContextWithStats) never reached the user this early-return serves.
-        res.send(withObserverHealthWarning(hintBody));
+        res.send(withObserverHealthWarning(hintBody, forHuman));
         return;
       }
     }
