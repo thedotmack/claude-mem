@@ -15,7 +15,7 @@ import {
   conversationChars,
   resolveConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
@@ -191,7 +191,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
 
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    // Every request re-sends the history, so a restart must not carry the
+    // previous attempt's turns into the new generation.
+    openObserverGeneration(session, initPrompt);
 
     try {
       session.lastPromptSentAt = Date.now();
