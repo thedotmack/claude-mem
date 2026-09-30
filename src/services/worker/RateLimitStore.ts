@@ -145,9 +145,14 @@ export function isNewRejection(
  * documents epoch ms, so anything too small to be ms is treated as seconds.
  */
 export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
-  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
-  const resetsAtMs = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
+  const resetsAtMs = normalizeResetTimeMs(resetsAt);
+  if (resetsAtMs === undefined) return undefined;
   return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
+}
+
+function normalizeResetTimeMs(resetsAt: number | undefined): number | undefined {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
+  return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
 }
 
 /**
@@ -217,6 +222,11 @@ export function shouldAbortForQuota(
     const entry = store.get(window);
     if (!entry) continue;
 
+    // Ignore expired snapshots without removing them from the store so a
+    // repeated stale rejection does not look new to set() telemetry.
+    const resetsAtMs = normalizeResetTimeMs(entry.resetsAt);
+    if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
+
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
     // An explicit false means the provider is not charging the overage bucket,
@@ -253,11 +263,11 @@ export function shouldAbortForQuota(
     // bailing on a window that just reset to ~0%.
     if (
       window === 'five_hour' &&
-      typeof entry.resetsAt === 'number' &&
+      resetsAtMs !== undefined &&
       typeof util === 'number' &&
       util >= RESET_GRACE_UTILIZATION_FLOOR
     ) {
-      const msUntilReset = entry.resetsAt - now;
+      const msUntilReset = resetsAtMs - now;
       if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
         return {
           abort: true,
