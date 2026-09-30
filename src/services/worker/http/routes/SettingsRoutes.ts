@@ -18,6 +18,98 @@ const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
 
+// GET /api/settings has no auth. Mask known secrets before they leave the
+// process. Explicit allowlist — a /API_KEY|_TOKEN|SECRET/i regex also matches
+// CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS / SHOW_WORK_TOKENS (boolean display
+// prefs) and corrupts them on every GET (#3680 / #3861).
+const SECRET_SETTING_KEYS = new Set([
+  'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_CHROMA_API_KEY',
+  'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
+  'CLAUDE_MEM_TELEGRAM_BOT_TOKEN',
+  'CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES',
+  'CLAUDE_MEM_SERVER_API_KEY',
+  'CLAUDE_MEM_SERVER_BETA_API_KEY',
+  'CLAUDE_MEM_TV_TOKEN',
+  'CLAUDE_MEM_PRO_MEMORY_KEY',
+  'CLAUDE_MEM_REDIS_URL',
+]);
+
+function maskSecretValue(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  if (value.length <= 4) return '*'.repeat(value.length);
+  return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`;
+}
+
+// Viewer save posts the GET body back unchanged. Treat a secret as untouched
+// only when the submitted value equals the mask of the currently stored
+// secret — not "any string starting with *", which would silently drop a
+// legitimate replacement key that happens to begin with '*'.
+function isUnchangedMaskedSecret(incoming: unknown, stored: unknown): boolean {
+  return typeof incoming === 'string' && incoming === maskSecretValue(stored);
+}
+
+function redactSecretSettings<T extends object>(settings: T): T {
+  const redacted: Record<string, unknown> = { ...(settings as Record<string, unknown>) };
+  for (const key of SECRET_SETTING_KEYS) {
+    if (key in redacted) {
+      redacted[key] = maskSecretValue(redacted[key]);
+    }
+  }
+  return redacted as T;
+}
+
+// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
+// the HTTP write list below, this set keeps it from being persisted via POST.
+const FILE_ONLY_SETTING_KEYS = new Set([
+  'CLAUDE_CODE_PATH',
+]);
+
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function splitHostHeader(hostHeader: string): { hostname: string; port: string } {
+  if (hostHeader.startsWith('[')) {
+    const match = hostHeader.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    return { hostname: match?.[1] ?? hostHeader, port: match?.[2] ?? '80' };
+  }
+  const colon = hostHeader.lastIndexOf(':');
+  if (colon === -1) return { hostname: hostHeader, port: '80' };
+  return { hostname: hostHeader.slice(0, colon), port: hostHeader.slice(colon + 1) };
+}
+
+/**
+ * True when a browser Origin is present and is not the same loopback host:port
+ * as this request. Used to reject settings writes from other localhost pages
+ * without adding a new auth scheme. Exported for unit tests.
+ */
+export function isForeignLoopbackBrowserWrite(req: Pick<Request, 'headers'>): boolean {
+  const rawOrigin = req.headers?.origin;
+  if (Array.isArray(rawOrigin)) return true;
+  const origin = rawOrigin;
+  if (typeof origin !== 'string' || origin.length === 0) return false;
+
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return true;
+  }
+  if (originUrl.protocol !== 'http:') return true;
+  if (!LOOPBACK_HOSTNAMES.has(originUrl.hostname)) return true;
+
+  const rawHost = req.headers?.host;
+  if (Array.isArray(rawHost)) return true;
+  const hostHeader = rawHost;
+  if (typeof hostHeader !== 'string' || hostHeader.length === 0) return true;
+
+  const { hostname, port } = splitHostHeader(hostHeader);
+  if (!LOOPBACK_HOSTNAMES.has(hostname)) return true;
+
+  const originPort = originUrl.port || '80';
+  return originPort !== port;
+}
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
@@ -38,7 +130,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingsPath = paths.settings();
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    res.json(settings);
+    res.json(redactSecretSettings(settings));
   });
 
   private handleGetDependencyHealth = this.wrapHandler((_req: Request, res: Response): void => {
@@ -46,6 +138,17 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
+    // Browser POSTs always send Origin. Reject cross-port loopback origins so
+    // another http://localhost:* page cannot write settings. Origin-less
+    // clients (hooks, CLI, curl) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const validation = this.validateSettings(req.body);
     if (!validation.valid) {
       res.status(400).json({
@@ -74,6 +177,15 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Write whitelist. POST /api/settings has no authentication — the worker
+    // trusts loopback — so any page that can reach this origin could set one
+    // of these. Secrets stay off this list except the two provider keys the
+    // viewer Settings UI must save (Gemini / OpenRouter); those are masked on
+    // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
+    // Telegram / CloudSync / Redis tokens remain file/env only.
+    //
+    // Executable spawn paths (CLAUDE_CODE_PATH) are also file/env only: that
+    // value is the binary passed to posix_spawn, so it must not be HTTP-writable.
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
@@ -85,13 +197,14 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
+      'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
-      'CLAUDE_CODE_PATH',
+      'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
@@ -107,15 +220,18 @@ export class SettingsRoutes extends BaseRouteHandler {
     ];
 
     for (const key of settingKeys) {
+      if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
       if (req.body[key] !== undefined) {
+        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], settings[key])) {
+          continue;
+        }
         settings[key] = req.body[key];
       }
     }
 
-    // Persist CLAUDE_CODE_PATH with any leading `~` expanded: it's fed straight
-    // to existsSync/posix_spawn (no shell), where a literal `~` fails with
-    // ENOENT and silently breaks all memory capture. Store the resolved path so
-    // the resolver never sees the tilde.
+    // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
+    // HTTP cannot set this key; the expand is only so a tilde written by the
+    // user in settings.json is resolved before posix_spawn sees it.
     if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
       settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
     }
@@ -178,9 +294,12 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_WORKER_HOST) {
       const host = settings.CLAUDE_MEM_WORKER_HOST;
-      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+      // Loopback, plus the documented bind-all addresses used by Observation TV
+      // and Docker (docs/public/configuration.mdx). Arbitrary IPv4 used to be
+      // accepted and would expose the unauthenticated worker API on that NIC.
+      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|::1|::|localhost)$/;
       if (!validHostPattern.test(host)) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)' };
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, localhost) or a bind-all address (0.0.0.0, ::) for Observation TV / Docker' };
       }
     }
 
@@ -195,6 +314,21 @@ export class SettingsRoutes extends BaseRouteHandler {
       const pythonVersionRegex = /^3\.\d{1,2}$/;
       if (!pythonVersionRegex.test(settings.CLAUDE_MEM_PYTHON_VERSION)) {
         return { valid: false, error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")' };
+      }
+    }
+
+    // #2753 — CLAUDE_MEM_CLAUDE_CONFIG_DIR controls which keychain identity's
+    // OAuth token gets read (oauth-token.ts's deriveMacKeychainServiceName)
+    // and which CLAUDE_CONFIG_DIR gets stamped onto every spawned SDK
+    // subprocess (EnvManager.ts's buildIsolatedEnv), so — unlike most of this
+    // whitelist — a malformed value here has spawn/auth-identity consequences,
+    // not just a rejected form field. Empty string is valid (the documented
+    // "fall through to default" sentinel); a present value must be a
+    // non-empty-after-trim string so a type-confused payload (number, array,
+    // object) can't reach path.join/createHash downstream.
+    if (settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== undefined && settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== '') {
+      if (typeof settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR.trim()) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to use the default' };
       }
     }
 
@@ -239,6 +373,20 @@ export class SettingsRoutes extends BaseRouteHandler {
       } catch (error) {
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE) {
+      const batch = parseInt(settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE, 10);
+      if (isNaN(batch) || batch < 1 || batch > 500) {
+        return { valid: false, error: 'CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE must be between 1 and 500' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS) {
+      const timeoutMs = parseInt(settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS, 10);
+      if (isNaN(timeoutMs) || timeoutMs < 5000 || timeoutMs > 180000) {
+        return { valid: false, error: 'CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS must be between 5000 and 180000' };
       }
     }
 

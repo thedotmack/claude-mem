@@ -17,10 +17,13 @@ export async function submitSettings(
   newSettings: Settings,
   deps: SubmitSettingsDependencies,
 ): Promise<void> {
+  // CLAUDE_CODE_PATH is file/env only (spawn binary). Never POST it, even
+  // when GET echoed it into local state.
+  const { CLAUDE_CODE_PATH: _fileOnly, ...writableSettings } = newSettings;
   const response = await deps.fetchImpl(API_ENDPOINTS.SETTINGS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(newSettings)
+    body: JSON.stringify(writableSettings)
   });
 
   if (!response.ok) {
