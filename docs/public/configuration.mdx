@@ -121,7 +121,8 @@ Two deterministic tiers:
 
 - **Tier 0 — exact-normalized-title** → safe silent auto-merge: a new observation whose
   title matches an existing one after lowercasing / whitespace-collapse / punctuation-strip
-  is collapsed onto the existing row and its `occurrence_count` is bumped (cross-session).
+  is collapsed onto the existing row and its `occurrence_count` is bumped (cross-session,
+  within the same project and the same host platform, since context is platform-scoped).
 - **Tier 1 — IDF-weighted similarity** → *review-only* near-duplicate **candidates** are
   recorded in `observation_dedup_candidates` (never auto-merged), so distinct work that
   differs only in one rare token (`rdlp-api` vs `rdlp-plugin`) is never silently destroyed.

@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
 const ENV_KEYS = ['CLAUDE_MEM_DEDUP_ENABLED', 'CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS'] as const;
 const saved: Record<string, string | undefined> = {};
@@ -19,8 +20,8 @@ describe('storeObservation dedup integration (#3038)', () => {
     for (const k of ENV_KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
   });
 
-  function session(mem: string, project = 'p'): string {
-    const id = store.createSDKSession(`content-${mem}`, project, 'prompt');
+  function session(mem: string, project = 'p', platformSource?: string): string {
+    const id = store.createSDKSession(`content-${mem}`, project, 'prompt', undefined, platformSource);
     store.updateMemorySessionId(id, mem);
     return mem;
   }
@@ -122,5 +123,57 @@ describe('storeObservation dedup integration (#3038)', () => {
     // Tier-0 exact still works even cold:
     const dup = store.storeObservation(mem, 'p', obs('Build The Worker Service Module'), 1, 0, t++);
     expect(dup.id).toBe(r1.id);
+  });
+
+  it('Tier-0 is platform-scoped: a Codex observation never merges into a Claude row', () => {
+    process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
+    const t = Date.now();
+    const claude = store.storeObservation(session('s1', 'p', 'claude'), 'p', obs('On-Demand Checkpoint.'), 1, 0, t);
+    const codex = store.storeObservation(session('s2', 'p', 'codex'), 'p', obs('on demand checkpoint'), 1, 0, t + 1000);
+    expect(codex.id).not.toBe(claude.id);
+    expect(codex.mergedIntoExisting).toBe(false);
+    expect(rowCount()).toBe(2);
+    // ...but a second Codex session does merge into the Codex row.
+    const codexAgain = store.storeObservation(session('s3', 'p', 'codex'), 'p', obs('On demand checkpoint!'), 1, 0, t + 2000);
+    expect(codexAgain.id).toBe(codex.id);
+    expect(codexAgain.mergedIntoExisting).toBe(true);
+  });
+
+  it('flags each merged item so callers can skip the fanout (Chroma, SSE, alerts) for it', () => {
+    process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
+    const t = Date.now();
+    store.storeObservation(session('s1'), 'p', obs('Checkpoint written'), 1, 0, t);
+    const res = store.storeObservations(session('s2'), 'p', [obs('New fact'), obs('checkpoint written'), obs('new fact!')], null, 1, 0, t + 1000);
+    // item 0 new, item 1 merges into the older row, item 2 merges into item 0 of this batch
+    expect(res.mergedIntoExisting).toEqual([false, true, true]);
+    expect(res.observationIds[2]).toBe(res.observationIds[0]);
+  });
+
+  it('a content_hash retry is not reported as a merge', () => {
+    process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
+    const mem = session('s1');
+    const t = Date.now();
+    const first = store.storeObservation(mem, 'p', obs('Checkpoint written'), 1, 0, t);
+    const retry = store.storeObservation(mem, 'p', obs('Checkpoint written'), 1, 0, t);
+    expect(retry.id).toBe(first.id);
+    expect(retry.mergedIntoExisting).toBe(false);
+  });
+
+  it('honors CLAUDE_MEM_DEDUP_ENABLED from settings.json, not only the environment', () => {
+    delete process.env.CLAUDE_MEM_DEDUP_ENABLED;
+    expect(store.isDedupEnabled()).toBe(false);
+    const load = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_DEDUP_ENABLED: 'true',
+    }));
+    try {
+      expect(store.isDedupEnabled()).toBe(true);
+      const t = Date.now();
+      const a = store.storeObservation(session('s1'), 'p', obs('On-Demand Checkpoint.'), 1, 0, t);
+      const b = store.storeObservation(session('s2'), 'p', obs('on demand checkpoint'), 1, 0, t + 1000);
+      expect(b.id).toBe(a.id);
+    } finally {
+      load.mockRestore();
+    }
   });
 });

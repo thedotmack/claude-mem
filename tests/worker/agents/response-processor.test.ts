@@ -259,6 +259,40 @@ describe('ResponseProcessor', () => {
       expect(observations[0].title).toBe('Found important pattern');
     });
 
+    it('skips Chroma sync and the SSE broadcast for a Tier-0 dedup merge (#3038)', async () => {
+      // Item 1 reused an existing row: syncing its new content under id 3 would
+      // overwrite that row's vector and show text the row does not hold.
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [7, 3],
+        mergedIntoExisting: [false, true],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Fresh finding</title>
+          <narrative>New row</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+        <observation>
+          <type>discovery</type>
+          <title>Recurring finding</title>
+          <narrative>Merged into an older row</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(responseText, createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(mockChromaSyncObservation.mock.calls.map(call => call[0])).toEqual([7]);
+      const broadcastIds = mockBroadcast.mock.calls
+        .map(call => call[0] as { type: string; observation?: { id: number } })
+        .filter(event => event.type === 'new_observation')
+        .map(event => event.observation?.id);
+      expect(broadcastIds).toEqual([7]);
+    });
+
     it('should parse multiple observations from response', async () => {
       const session = createMockSession();
       const responseText = `

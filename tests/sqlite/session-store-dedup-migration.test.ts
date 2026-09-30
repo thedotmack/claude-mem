@@ -50,9 +50,18 @@ describe('dedup schema migration (#3038)', () => {
     );
   });
 
-  it('starts candidates empty and records schema version 36', () => {
+  it('starts candidates empty and records schema version 53 (v36 belongs to the community-edge line)', () => {
     expect((store.db.query('SELECT COUNT(*) c FROM observation_dedup_candidates').get() as { c: number }).c).toBe(0);
-    expect(!!store.db.query('SELECT version FROM schema_versions WHERE version = 36').get()).toBe(true);
+    expect(!!store.db.query('SELECT version FROM schema_versions WHERE version = 53').get()).toBe(true);
+  });
+
+  it('still adds the dedup columns to a DB that already recorded v53 without them', () => {
+    const db = store.db;
+    db.run('DROP INDEX IF EXISTS idx_observations_title_norm');
+    db.run('ALTER TABLE observations DROP COLUMN title_norm_key');
+    expect(cols(store, 'observations')).not.toContain('title_norm_key');
+    new SessionStore(db);
+    expect(cols(store, 'observations')).toContain('title_norm_key');
   });
 
   it('is idempotent (re-running migrations on the same db does not throw)', () => {

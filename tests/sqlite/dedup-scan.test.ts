@@ -33,7 +33,7 @@ describe('dedup-scan: backfill + sweep (#3038)', () => {
     expect(dfCount()).toBeGreaterThan(0);
     const keyed = (store.db.prepare("SELECT COUNT(*) c FROM observations WHERE title_norm_key IS NOT NULL").get() as any).c;
     expect(keyed).toBe(3);
-    const buildKey = computeTitleNormKey('p', 'Build The Worker');
+    const buildKey = computeTitleNormKey('p', 'claude', 'Build The Worker');
     const row = store.db.prepare('SELECT title_norm_key FROM observations WHERE title = ?').get('Build The Worker') as any;
     expect(row.title_norm_key).toBe(buildKey);
 

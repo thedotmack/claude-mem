@@ -1,6 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -168,6 +168,9 @@ interface SdkSessionDetailRow {
   observed_billing: string | null;
 }
 
+/** #3038 near-duplicate dedup tables/columns. v50–52 are taken on main; bump if another migration lands first. */
+const DEDUP_SCHEMA_VERSION = 53;
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -275,7 +278,6 @@ export class SessionStore {
   // review-only candidates table. Pure DDL; the IDF model is filled forward on
   // insert and (re)built by the opt-in dedup-scan, never a JS backfill here.
   private addDedupTables(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(36) as SchemaVersion | undefined;
 
     const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     if (!obsCols.some(c => c.name === 'occurrence_count')) {
@@ -330,9 +332,9 @@ export class SessionStore {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_project ON observation_dedup_candidates(project, status)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_dedup_candidates_obs ON observation_dedup_candidates(observation_id)');
 
-    if (!applied) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(36, new Date().toISOString());
-    }
+    // Every statement above is PRAGMA/IF NOT EXISTS guarded, so the version row
+    // is bookkeeping only (v36 was consumed by the community-edge line).
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(DEDUP_SCHEMA_VERSION, new Date().toISOString());
   }
 
   private dropWorkerPidColumn(): void {
@@ -3110,18 +3112,20 @@ export class SessionStore {
     return result?.prompt_text ?? null;
   }
 
-  // #3038 — resolve the dedup knobs from settings (cheap; off by default).
+  // #3038 — resolve the dedup knobs from settings.json (env overrides apply);
+  // off by default. SettingsDefaultsManager.get() would read env/defaults only.
   // Garbage/NaN values fall back to the safe defaults rather than disabling guards.
   private dedupConfig(): DedupRuntimeConfig & { enabled: boolean; minProjectDocs: number } {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const num = (key: keyof SettingsDefaults, fallback: number): number => {
-      const v = Number(SettingsDefaultsManager.get(key));
+      const v = Number(settings[key]);
       return Number.isFinite(v) ? v : fallback;
     };
     // Integer knobs are truncated — maxScan is bound as a SQL `LIMIT ?`, so a
     // fractional misconfig must not reach the binding as a float (review N1).
     const int = (key: keyof SettingsDefaults, fallback: number): number => Math.trunc(num(key, fallback));
     return {
-      enabled: SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_ENABLED') === 'true',
+      enabled: settings.CLAUDE_MEM_DEDUP_ENABLED === 'true',
       cosineThreshold: num('CLAUDE_MEM_DEDUP_COSINE_THRESHOLD', 0.8),
       idfVetoDf: int('CLAUDE_MEM_DEDUP_IDF_VETO_DF', 10),
       minSharedTokens: int('CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS', 2),
@@ -3156,6 +3160,11 @@ export class SessionStore {
     return project
       ? this.db.prepare(`${select}WHERE c.project = ? ${order}`).all(project, limit) as Row[]
       : this.db.prepare(`${select}${order}`).all(limit) as Row[];
+  }
+
+  /** #3038 — whether CLAUDE_MEM_DEDUP_ENABLED is on (settings.json or env). */
+  isDedupEnabled(): boolean {
+    return this.dedupConfig().enabled;
   }
 
   // #3038 — opt-in dedup-scan: backfill the IDF model + sweep all projects for candidates.
@@ -3196,7 +3205,7 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string
-  ): { id: number; createdAtEpoch: number } {
+  ): { id: number; createdAtEpoch: number; mergedIntoExisting: boolean } {
     // storeObservations skips empty-title rows, which would leave no id to return here.
     // This wrapper stores exactly one observation, so require a title up front rather than
     // returning an undefined id.
@@ -3215,7 +3224,11 @@ export class SessionStore {
       generatedByModel
     );
 
-    return { id: result.observationIds[0], createdAtEpoch: result.createdAtEpoch };
+    return {
+      id: result.observationIds[0],
+      createdAtEpoch: result.createdAtEpoch,
+      mergedIntoExisting: result.mergedIntoExisting[0] ?? false,
+    };
   }
 
   storeSummary(
@@ -3298,13 +3311,26 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string
-  ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
+  ): {
+    observationIds: number[];
+    /** Parallel to observationIds: true where a Tier-0 merge reused an existing row (nothing new was stored). */
+    mergedIntoExisting: boolean[];
+    summaryId: number | null;
+    createdAtEpoch: number;
+  } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
     const dedup = this.dedupConfig();
+    // Context is platform-scoped, so Tier-0 must be too: a Codex observation
+    // merged into a Claude row would vanish from Codex context.
+    const sessionPlatform = normalizePlatformSource(
+      (this.db.prepare('SELECT platform_source FROM sdk_sessions WHERE memory_session_id = ? LIMIT 1')
+        .get(memorySessionId) as { platform_source: string | null } | undefined)?.platform_source
+    );
 
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
+      const mergedIntoExisting: boolean[] = [];
 
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
@@ -3328,20 +3354,21 @@ export class SessionStore {
         }
 
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const titleNormKey = computeTitleNormKey(project, observation.title);
+        const titleNormKey = computeTitleNormKey(project, sessionPlatform, observation.title);
 
         // Tier-0 (#3038): cross-session normalized-title duplicate (incl. earlier items
         // in THIS batch — already inserted and visible in-transaction) → bump + reuse.
         if (dedup.enabled) {
-          // Retry idempotency (see storeObservation): identical (session, content_hash)
-          // redelivery returns the existing row without bumping occurrence_count.
+          // Retry idempotency: identical (session, content_hash) redelivery returns
+          // the existing row without bumping occurrence_count (same as ON CONFLICT).
           const retry = lookupExistingStmt.get(memorySessionId, contentHash) as { id: number } | null;
-          if (retry) { observationIds.push(retry.id); continue; }
+          if (retry) { observationIds.push(retry.id); mergedIntoExisting.push(false); continue; }
 
           const canonical = findTier0Canonical(this.db, project, titleNormKey);
           if (canonical) {
             this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
             observationIds.push(canonical.id);
+            mergedIntoExisting.push(true);
             continue;
           }
         }
@@ -3372,6 +3399,7 @@ export class SessionStore {
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
           observationIds.push(inserted.id);
+          mergedIntoExisting.push(false);
           continue;
         }
 
@@ -3382,6 +3410,7 @@ export class SessionStore {
           );
         }
         observationIds.push(existing.id);
+        mergedIntoExisting.push(false);
       }
 
       let summaryId: number | null = null;
@@ -3415,7 +3444,7 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
-      return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
+      return { observationIds, mergedIntoExisting, summaryId, createdAtEpoch: timestampEpoch };
     });
 
     return storeTx();

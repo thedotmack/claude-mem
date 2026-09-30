@@ -34,9 +34,9 @@ describe('dedup settings defaults', () => {
     expect(d.CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS).toBe('50000');
   });
 
-  it('is disabled by default via getBool', () => {
+  it('is disabled by default', () => {
     delete process.env.CLAUDE_MEM_DEDUP_ENABLED;
-    expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_DEDUP_ENABLED' as never)).toBe(false);
+    expect(SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_ENABLED' as never)).toBe('false');
   });
 
   it('parses integer knobs via getInt', () => {
@@ -53,7 +53,7 @@ describe('dedup settings defaults', () => {
   it('honors env overrides', () => {
     process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
     process.env.CLAUDE_MEM_DEDUP_COSINE_THRESHOLD = '0.85';
-    expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_DEDUP_ENABLED' as never)).toBe(true);
+    expect(SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_ENABLED' as never)).toBe('true');
     expect(Number(SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_COSINE_THRESHOLD' as never))).toBeCloseTo(0.85, 5);
   });
 });
