@@ -546,21 +546,22 @@ export async function processAgentResponse(
       .map(message => message.toolUseId)
       .filter((id): id is string => typeof id === 'string' && id.length > 0)
   ));
-  if (claimedToolUseIds.length > 0 && result.observationIds.length > 0) {
+  const linkObservationId = firstStoredObservationId(result);
+  if (claimedToolUseIds.length > 0 && linkObservationId !== undefined) {
     try {
       const linked = sessionStore.linkToolUsesToObservation({
         contentSessionId: session.contentSessionId,
         toolUseIds: claimedToolUseIds,
-        observationId: result.observationIds[0],
+        observationId: linkObservationId,
         memorySessionId: session.memorySessionId,
       });
-      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${result.observationIds[0]}`, {
+      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${linkObservationId}`, {
         sessionId: session.sessionDbId
       });
     } catch (error) {
       logger.warn('DB', 'tool_uses observation link failed', {
         sessionId: session.sessionDbId,
-        observationId: result.observationIds[0],
+        observationId: linkObservationId,
       }, error instanceof Error ? error : new Error(String(error)));
     }
   }
@@ -645,16 +646,20 @@ export async function processAgentResponse(
   session.earliestPendingTimestamp = null;
   worker?.broadcastProcessingStatus?.();
 
+  // Alerts fire for newly stored observations only; a Tier-0 merge (#3038)
+  // re-confirms a row that already alerted.
+  const fresh = freshlyStoredObservations(labeledObservations, result);
+
   void notifyTelegram({
-    observations: labeledObservations,
-    observationIds: result.observationIds,
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
     project: context.project,
     memorySessionId: session.memorySessionId,
   });
 
   void notifyGrokBotAwareness({
-    observations: labeledObservations,
-    observationIds: result.observationIds,
+    observations: fresh.observations,
+    observationIds: fresh.observationIds,
     project: context.project,
     memorySessionId: session.memorySessionId,
     agentId: context.pendingAgentId,
@@ -754,6 +759,35 @@ export function attachObservationFilesToSummary(
   };
 }
 
+/**
+ * The batch's first newly stored observation id, for the tool_uses late link.
+ * A Tier-0 merge (#3038) reuses a row from another session, so prefer a fresh
+ * row; when every item merged, the re-confirmed canonical row is the pointer.
+ */
+function firstStoredObservationId(result: StorageResult): number | undefined {
+  const freshIndex = result.mergedIntoExisting?.findIndex(merged => !merged) ?? 0;
+  return result.observationIds[freshIndex >= 0 ? freshIndex : 0];
+}
+
+/** Parsed observations and ids for rows this batch actually stored (Tier-0 merges dropped). */
+function freshlyStoredObservations<T>(
+  observations: T[],
+  result: StorageResult,
+): { observations: T[]; observationIds: number[] } {
+  // Dedup off (the default) or nothing merged: pass through untouched.
+  if (!result.mergedIntoExisting?.some(Boolean)) {
+    return { observations, observationIds: result.observationIds };
+  }
+  const freshObservations: T[] = [];
+  const freshIds: number[] = [];
+  result.observationIds.forEach((id, index) => {
+    if (result.mergedIntoExisting?.[index]) return;
+    freshObservations.push(observations[index]);
+    freshIds.push(id);
+  });
+  return { observations: freshObservations, observationIds: freshIds };
+}
+
 async function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
@@ -773,10 +807,15 @@ async function syncAndBroadcastObservations(
   // multiple parsed observations onto the same row via content_hash, producing
   // duplicate IDs. Syncing them 1:1 triggers repeated Chroma "IDs already exist"
   // reconciles. See issue #2240.
-  const uniqueObservationIds = [...new Set(result.observationIds)];
+  // Skip Tier-0 dedup merges (#3038): a merge reuses an existing row, so syncing
+  // the new parsed content under that id would overwrite the canonical row's
+  // Chroma vector and broadcast text the row does not hold.
+  const handledObservationIds = new Set<number>();
 
-  for (const obsId of uniqueObservationIds) {
-    const observationIndex = result.observationIds.indexOf(obsId);
+  for (let observationIndex = 0; observationIndex < result.observationIds.length; observationIndex++) {
+    const obsId = result.observationIds[observationIndex];
+    if (result.mergedIntoExisting?.[observationIndex] || handledObservationIds.has(obsId)) continue;
+    handledObservationIds.add(obsId);
     const obs = observations[observationIndex];
     if (!obs) {
       logger.warn('DB', `${agentName} storage returned observation id without matching parsed observation`, {

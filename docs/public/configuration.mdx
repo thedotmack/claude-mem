@@ -111,9 +111,39 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data directory location               |
 | `CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
 | `CLAUDE_MEM_FETCH_VERBOSE`    | _(unset / off)_                 | Opt-in worker-IPC `fetch()` diagnostics (`1`/`true`/`on`/`yes`). Passes Node/undici `{ verbose: true }` and writes the error cause chain on socket-level hook failures. Default stays off. |
+| `CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS` | `10000`                   | Total time the UserPromptSubmit hook may spend reaching the worker for each prompt (startup check, session init, semantic context). When it runs out, the prompt goes through without memory for that turn. Accepts 500–14000; it has to stay under Claude Code's 15 s timeout for that hook. Codex keeps its own bounded worker-startup wait, and its requests stay within this budget. Also read from the environment. |
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
+| `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
+
+### Near-Duplicate Deduplication
+
+Opt-in (off by default) dedup of observations whose titles describe the same recurring
+work but are worded slightly differently, so `content_hash` (byte-identical only) misses them.
+Two deterministic tiers:
+
+- **Tier 0 — exact-normalized-title** → safe silent auto-merge: a new observation whose
+  title matches an existing one after lowercasing / whitespace-collapse / punctuation-strip
+  is collapsed onto the existing row and its `occurrence_count` is bumped (cross-session,
+  within the same project and the same host platform, since context is platform-scoped).
+- **Tier 1 — IDF-weighted similarity** → *review-only* near-duplicate **candidates** are
+  recorded in `observation_dedup_candidates` (never auto-merged), so distinct work that
+  differs only in one rare token (`rdlp-api` vs `rdlp-plugin`) is never silently destroyed.
+
+| Setting                              | Default | Description                           |
+|--------------------------------------|---------|---------------------------------------|
+| `CLAUDE_MEM_DEDUP_ENABLED`           | `false` | Master switch. Off = byte-identical legacy behavior |
+| `CLAUDE_MEM_DEDUP_COSINE_THRESHOLD`  | `0.80`  | Min IDF-weighted cosine for a Tier-1 candidate |
+| `CLAUDE_MEM_DEDUP_IDF_VETO_DF`       | `10`    | A title token in ≤ N project rows is "discriminating" and vetoes a merge |
+| `CLAUDE_MEM_DEDUP_MIN_SHARED_TOKENS` | `2`     | Require ≥ N shared tokens before scoring (kills sparse-vector noise) |
+| `CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS`  | `10`    | Cold-start gate: skip Tier-1 below N docs/project (IDF unreliable) |
+| `CLAUDE_MEM_DEDUP_MAX_SCAN`          | `2000`  | Per-insert Tier-1 candidate-scan cap |
+| `CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS` | `50000` | `dedup-scan` skips a project larger than this (memory safety) |
+
+After enabling on an existing database, run a one-time scan to backfill the IDF model and
+surface accumulated near-duplicates: `POST /api/dedup/scan` (worker, localhost-only).
+Review candidates via `GET /api/dedup/candidates?project=<name>`.
 
 ## Model Configuration
 
@@ -172,6 +202,7 @@ Configure the active workflow mode and language.
 claude-mem files every observation under a project name, and SessionStart injects the memory stored for the current project.
 
 - **Inside a git repository** the name is the repository root's folder name, so every subfolder shares it. A git worktree is stored as `<repo>/<worktree>` (a worktree whose folder has the repository's own name, like Codex's `~/.codex/worktrees/<id>/<repo>`, is stored as `<repo>`) and a git submodule as `<superproject>/<path>`; both also read their parent repository's memory. Memory a submodule stored under its own folder name before it was grouped this way stays readable from it. When a worktree or submodule checkout is deleted, the worker folds its memory into the parent repository at its next start (merged or not), so nothing is stranded.
+- **With `CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote`** a repository that has an `origin` remote is named by its `org/repo` slug instead (e.g. `thedotmack/claude-mem`), so renaming or re-cloning the folder keeps its memory, two repositories with the same folder name stay apart, and every worktree of the repository shares the slug (a submodule, being a repository of its own, is named by its own `origin`). Memory stored under the folder-based names stays readable, and a deleted worktree's memory from before the switch is still folded into the repository. Repositories without a usable `origin` (or with a local one) keep the folder-based name.
 - **Outside git** the name is the current folder's name. To give a non-git project one name across all of its subfolders, put an empty `.claude-mem-project` file (or a `.claude-mem.json`) in its root folder: every folder below it then uses the root folder's name. Memory stored under a subfolder's own name before you added the file stays readable from that subfolder. Marker files in your home directory, the system temp directory or Claude's config directory are ignored, so they can never fold unrelated folders together.
 
 ## Files and Directories

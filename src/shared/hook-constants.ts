@@ -1,6 +1,9 @@
 export const HOOK_TIMEOUTS = {
   HEALTH_CHECK: 3000,         // Worker health check (3s — healthy worker responds in <100ms)
   API_REQUEST: 30000,         // Hook API calls should outlive health probes but stay below hook caps
+  SESSION_INIT_HOOK_CAP: 15000, // Claude Code UserPromptSubmit timeout in hooks.json (15s)
+  SESSION_INIT_REQUEST: 10000, // One budget for the whole session-init round-trip (plan-17 step 3); never Windows-scaled, so shell + node + bun startup still fit under the 15s cap
+  SESSION_INIT_REQUEST_MAX: 14000, // Upper bound for CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: process-exit margin below the 15s cap
   HOOK_READINESS_WAIT: 10000, // Per-hook wait for an already-starting worker to finish DB/search init
   POST_SPAWN_WAIT: 15000,     // Wait for daemon to start after spawn (starts in <1s on Linux, 6-8s on macOS with Chroma)
   READINESS_WAIT: 30000,      // Wait for DB + search init after spawn (typically <5s)
