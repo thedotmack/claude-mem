@@ -33,6 +33,7 @@ const EXCLUDED_PATTERNS = [
   /npx-cli\/banner\.ts$/,  // npx CLI banner animation runs only on an interactive TTY; console.warn on frame-decode failure is user-visible terminal output
   /server\/runtime\/ServerService\.ts$/,  // server CLI entry point (status/usage output, process.exit)
   /integrations\/McpIntegrations\.ts$/,  // CLI installer for MCP integrations (interactive install output)
+  /integrations\/opencode-plugin\//,  // OpenCode host plugin: runs inside the OpenCode process, whose console is the plugin's log channel; the bundle must not import the worker logger
   /errors\.ts$/,  // Error class/type definitions (pure data, no logic to instrument)
   /worker\/provider-errors\.ts$/,  // Provider error classification (pure data structures)
   /worker\/agents\/FallbackErrorHandler\.ts$/,  // Pure isAbortError predicate after dead-code removal; no side effects (mirrors output-classifier)
