@@ -1,5 +1,8 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 
 describe('SearchManager platform-scoped Chroma hydration', () => {
   it('normalizes date_from/date_to filters into dateRange for worker search', async () => {
@@ -460,7 +463,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       result_count: 3,
       search_strategy: 'fts',
       chroma_available: true,
-      fallback_reason: 'chroma_error',
+      fallback_reason: 'chroma_zero_results',
     }));
   });
 
@@ -523,7 +526,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       result_count: 1,
       search_strategy: 'fts',
       chroma_available: true,
-      fallback_reason: 'chroma_error',
+      fallback_reason: 'chroma_zero_results',
     }));
   });
 
@@ -675,5 +678,174 @@ describe('SearchManager searchObservations date grouping', () => {
     const aprilHeaderIndex = text.indexOf('### Apr 10, 2026');
     expect(augustHeaderIndex).toBeGreaterThanOrEqual(0);
     expect(aprilHeaderIndex).toBeGreaterThan(augustHeaderIndex);
+  });
+});
+
+describe('SearchManager per-category SQLite supplement (unified /api/search path)', () => {
+  const observation = {
+    id: 21,
+    memory_session_id: 'memory-21',
+    project: 'supplement-project',
+    text: null,
+    type: 'discovery',
+    title: 'fts supplement observation',
+    subtitle: null,
+    facts: '[]',
+    narrative: 'found via fts supplement',
+    concepts: '[]',
+    files_read: '[]',
+    files_modified: '[]',
+    prompt_number: 1,
+    discovery_tokens: 0,
+    created_at: new Date().toISOString(),
+    created_at_epoch: Date.now(),
+  };
+  const userPrompt = {
+    id: 7,
+    content_session_id: 'session-7',
+    prompt_number: 1,
+    prompt_text: 'テストを実行して',
+    created_at: new Date().toISOString(),
+    created_at_epoch: Date.now(),
+  };
+
+  function chromaReturningOnlyPrompt(promptId: number) {
+    return mock(() => Promise.resolve({
+      ids: [promptId],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: promptId, doc_type: 'user_prompt', project: 'supplement-project', created_at_epoch: Date.now() }],
+    }));
+  }
+
+  it('supplements empty observations from SQLite FTS when Chroma only surfaces prompts (CJK query)', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+
+    const manager = new SearchManager(
+      { searchObservations, searchSessions, searchUserPrompts } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds,
+      } as any,
+      { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const telemetry = {};
+    const result = await manager.search({ query: 'テスト', format: 'json', limit: 10 }, telemetry);
+
+    expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({ limit: 10 }));
+    expect(result.observations).toEqual([observation]);
+    expect(result.prompts).toEqual([userPrompt]);
+    expect(result.totalResults).toBe(2);
+    expect(telemetry).toEqual(expect.objectContaining({
+      result_count: 2,
+      search_strategy: 'hybrid',
+      chroma_available: true,
+      fallback_reason: 'chroma_zero_results',
+    }));
+  });
+
+  it('does not touch SQLite when every requested category already has Chroma matches', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+
+    const manager = new SearchManager(
+      { searchObservations, searchSessions, searchUserPrompts } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds,
+      } as any,
+      { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await manager.search({ query: 'テスト', type: 'prompts', format: 'json', limit: 10 });
+
+    expect(searchObservations).not.toHaveBeenCalled();
+    expect(searchUserPrompts).not.toHaveBeenCalled();
+    expect(result.prompts).toEqual([userPrompt]);
+    expect(result.totalResults).toBe(1);
+  });
+
+  describe('against a real database', () => {
+    let db: Database;
+    let store: SessionStore;
+    let sdkSessionId: number;
+
+    function storeObservation(title: string, type: string): number {
+      return store.storeObservation('supplement-mem', 'supplement-project', {
+        type,
+        title,
+        subtitle: null,
+        facts: [],
+        narrative: `${title} narrative`,
+        concepts: [],
+        files_read: [],
+        files_modified: [],
+      }, 1).id;
+    }
+
+    function managerWithChroma(queryChroma: ReturnType<typeof mock>): SearchManager {
+      return new SearchManager(new SessionSearch(db), store, { queryChroma } as any, {} as any, {} as any);
+    }
+
+    beforeEach(() => {
+      db = new Database(':memory:');
+      store = new SessionStore(db);
+      sdkSessionId = store.createSDKSession('supplement-content', 'supplement-project', 'prompt');
+      store.ensureMemorySessionIdRegistered(sdkSessionId, 'supplement-mem');
+    });
+
+    afterEach(() => {
+      db.close();
+    });
+
+    // Plan-25's founding repro: Chroma's top-N for a CJK query is all prompts, so the
+    // observations bucket comes back empty although the substring path finds the row.
+    it('fills observations from the CJK substring path when Chroma only returns a prompt', async () => {
+      storeObservation('用户身份验证流程', 'discovery');
+      const promptId = store.saveUserPrompt('supplement-content', 2, '检查用户身份验证', sdkSessionId);
+
+      const result = await managerWithChroma(chromaReturningOnlyPrompt(promptId))
+        .search({ query: '用户身份', format: 'json' });
+
+      expect(result.observations.map((o: { title: string }) => o.title)).toEqual(['用户身份验证流程']);
+      expect(result.prompts.map((p: { id: number }) => p.id)).toEqual([promptId]);
+    });
+
+    it('refills observations when the obs_type filter excludes every Chroma candidate', async () => {
+      const discoveryId = storeObservation('cache eviction discovery', 'discovery');
+      storeObservation('cache eviction bugfix', 'bugfix');
+      const queryChroma = mock(() => Promise.resolve({
+        ids: [discoveryId],
+        distances: [0.1],
+        metadatas: [{ sqlite_id: discoveryId, doc_type: 'observation', project: 'supplement-project', created_at_epoch: Date.now() }],
+      }));
+
+      const result = await managerWithChroma(queryChroma)
+        .search({ query: 'cache eviction', obs_type: 'bugfix', format: 'json' });
+
+      expect(result.observations.map((o: { title: string }) => o.title)).toEqual(['cache eviction bugfix']);
+    });
+
+    it('caps the supplemented category at the requested limit', async () => {
+      for (let i = 1; i <= 8; i++) storeObservation(`队列积压排查 ${i}`, 'discovery');
+      const promptId = store.saveUserPrompt('supplement-content', 2, '队列为什么积压', sdkSessionId);
+
+      const result = await managerWithChroma(chromaReturningOnlyPrompt(promptId))
+        .search({ query: '队列', limit: 3, format: 'json' });
+
+      expect(result.observations).toHaveLength(3);
+      expect(result.prompts.map((p: { id: number }) => p.id)).toEqual([promptId]);
+    });
   });
 });

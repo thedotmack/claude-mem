@@ -9,7 +9,9 @@ import {
   resolveOpenRouterConfig,
 } from '../../src/services/worker/OpenRouterProvider.js';
 import { DEFAULT_OPENROUTER_API_URL } from '../../src/shared/openrouter-base-url.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
+const DEFAULT_MODEL = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
 const CMEM_BASE = 'https://cmem.ai/api/inference/v1';
 const ENV_KEYS = [
   'CLAUDE_MEM_OPENROUTER_API_KEY',
@@ -88,7 +90,7 @@ describe('OpenRouter credential tuple source coherence', () => {
 
     expect(config.apiKey).toBe('sk-or-personal');
     expect(config.apiUrl).toBe(DEFAULT_OPENROUTER_API_URL);
-    expect(config.model).toBe('xiaomi/mimo-v2-flash:free');
+    expect(config.model).toBe(DEFAULT_MODEL);
   });
 
   it('fails closed when the CMEM base is reset without a personal key', () => {
@@ -99,7 +101,7 @@ describe('OpenRouter credential tuple source coherence', () => {
 
     expect(config.apiKey).toBe('');
     expect(config.apiUrl).toBe(DEFAULT_OPENROUTER_API_URL);
-    expect(config.model).toBe('xiaomi/mimo-v2-flash:free');
+    expect(config.model).toBe(DEFAULT_MODEL);
     expect(isOpenRouterAvailable(settingsPath)).toBe(false);
   });
 
@@ -111,7 +113,7 @@ describe('OpenRouter credential tuple source coherence', () => {
     expect(resolveOpenRouterConfig(settingsPath)).toMatchObject({
       apiKey: 'personal-env-file-key',
       apiUrl: 'https://gateway.example/v1/chat/completions',
-      model: 'xiaomi/mimo-v2-flash:free',
+      model: DEFAULT_MODEL,
     });
   });
 
@@ -123,7 +125,7 @@ describe('OpenRouter credential tuple source coherence', () => {
 
     expect(config.apiKey).toBe('');
     expect(config.apiUrl).toBe('https://gateway.example/v1/chat/completions');
-    expect(config.model).toBe('xiaomi/mimo-v2-flash:free');
+    expect(config.model).toBe(DEFAULT_MODEL);
     expect(isOpenRouterAvailable(settingsPath)).toBe(false);
   });
 

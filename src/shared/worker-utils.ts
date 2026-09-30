@@ -1,22 +1,25 @@
 import path from "path";
 import { randomUUID } from "crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
-import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, getTimeout, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { viewerBaseUrl } from "./viewer-url.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
-import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
+import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
-import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
+import {
+  resolveWorkerRuntimePath,
+  spawnDetachedWorkerDaemon,
+} from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { sanitizeEnv } from "../supervisor/env-sanitizer.js";
 import { killProcessTree } from "./kill-process-tree.js";
 import { writeJsonFileAtomic } from "./atomic-json.js";
 
@@ -70,8 +73,8 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
  */
 const WEDGED_WORKER_UPTIME_S = readTimeoutEnv(
   'CLAUDE_MEM_WEDGED_WORKER_UPTIME_S',
-  300,
-  { min: 60, max: 86400 }
+  WEDGED_WORKER_UPTIME_DEFAULT_S,
+  WEDGED_WORKER_UPTIME_BOUNDS_S
 );
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
@@ -773,27 +776,25 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {
-        // A cwd that does not exist makes spawn fail with ENOENT, and paths.ts resolves
-        // DATA_DIR without creating it. Idempotent, so the usual case costs one stat.
-        mkdirSync(DATA_DIR, { recursive: true });
-        const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
-          detached: true,
-          stdio: ['ignore', 'ignore', 'ignore'],
-          // This spawn runs from a hook, so the inherited cwd is the user's project. A
-          // daemon holds its cwd open for its whole life, and on Windows that locks the
-          // folder against rename or move long after the session ends (#3706).
-          cwd: DATA_DIR,
-        });
-        // A bad runtime path (dangling npm/nvm shim, missing binary) is
-        // reported by Node as an asynchronous 'error' event, which the
-        // synchronous try/catch below can never see. Without this listener the
-        // ENOENT escapes as an uncaught exception and takes down the worker
-        // mid session-end, silently stopping summarization. Log and let the
-        // readiness wait below report the failure.
-        proc.on('error', (error: Error) => {
-          logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
-        });
-        proc.unref();
+        // Windows: Start-Process -WindowStyle Hidden (never Node detached —
+        // detached allocates its own console on win32, #3521). POSIX: setsid /
+        // detached. Either way the daemon's cwd is claude-mem's data dir, not
+        // the user's project that this hook inherited: a daemon holds its cwd
+        // open for its whole life, and on Windows that locks the folder against
+        // rename or move long after the session ends (#3706). The helper also
+        // listens for the async spawn 'error' (a dangling runtime shim), which
+        // would otherwise escape as an uncaught exception (#4039).
+        const spawned = spawnDetachedWorkerDaemon(
+          runtimePath,
+          scriptPath,
+          sanitizeEnv({
+            ...process.env,
+            CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
+          }),
+        );
+        if (spawned === undefined) {
+          return false;
+        }
       } catch (error: unknown) {
         if (error instanceof Error) {
           logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
@@ -898,14 +899,18 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
-      const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
-        detached: true,
-        stdio: ['ignore', 'ignore', 'ignore'],
-      });
-      proc.on('error', (error: Error) => {
-        logger.error('SYSTEM', 'Bounded worker startup spawn failed', { runtimePath, scriptPath }, error);
-      });
-      proc.unref();
+      // Same launch as ensureWorkerRunning: hidden on Windows (#3521) and
+      // with the daemon's cwd pinned to the data dir, not the caller's project
+      // (#3706). This path used to spawn with no cwd at all.
+      const spawned = spawnDetachedWorkerDaemon(
+        runtimePath,
+        scriptPath,
+        sanitizeEnv({
+          ...process.env,
+          CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
+        }),
+      );
+      if (spawned === undefined) return false;
     }
 
     while (Date.now() < deadline) {
@@ -930,9 +935,17 @@ interface HookFailureState {
   consecutiveFailures: number;
   lastFailureAt: number;
   thresholdTripped: boolean;
+  /**
+   * Sessions that already got this outage's user notice (see
+   * consumeWorkerOutageNotice). Cleared with the rest of the state when the
+   * worker answers again, so the next outage notifies every session anew.
+   */
+  notifiedSessionIds?: string[];
 }
 
 const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
+/** Bounds the notified-session list so the state file stays tiny in a long outage. */
+const MAX_NOTIFIED_SESSION_IDS = 20;
 const HOOK_FAILURE_LOCK_WAIT_MS = 1_000;
 const HOOK_FAILURE_LOCK_RETRY_MS = 10;
 const HOOK_FAILURE_LOCK_STALE_MS = 5_000;
@@ -1034,6 +1047,11 @@ function parseHookFailureState(raw: string): HookFailureState {
     // existed must still escalate once if their count already exceeds a
     // subsequently lowered threshold.
     thresholdTripped: parsed.thresholdTripped === true,
+    notifiedSessionIds: Array.isArray(parsed.notifiedSessionIds)
+      ? parsed.notifiedSessionIds
+        .filter((sessionId): sessionId is string => typeof sessionId === 'string')
+        .slice(-MAX_NOTIFIED_SESSION_IDS)
+      : undefined,
   };
 }
 
@@ -1108,6 +1126,28 @@ export function getActiveHookType(): TelemetryHookType | null {
   return activeHookType;
 }
 
+/**
+ * The worker-outage notice. The worker is an optional background service, so
+ * the notice only ever informs: it says memory is degraded, that nothing was
+ * blocked, and how to recover. When this hook process diagnosed an orphaned
+ * port, the port fix replaces the generic recovery hint.
+ */
+function buildWorkerOutageNotice(consecutiveFailures: number): string {
+  const recovery = orphanedPortDiagnosis !== null
+    ? `Port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims, so the worker cannot bind it. ${ORPHANED_PORT_REMEDIATION}.`
+    : 'Run `npx claude-mem restart`; if it keeps failing, run `npx claude-mem doctor`.';
+  return `claude-mem worker unreachable for ${consecutiveFailures} consecutive hooks — memory features are degraded, but your prompts are not blocked. ${recovery}`;
+}
+
+/**
+ * Count one worker-unreachable hook. Never blocks and never exits: a memory
+ * outage must not stop the user's prompt, Read or Stop (plan-17 step 2).
+ *
+ * When the count first reaches the fail-loud threshold, the latch trips once
+ * per outage: send hook_failed telemetry and write the notice to stderr as an
+ * operator diagnostic. The user sees the notice through
+ * consumeWorkerOutageNotice on the next synchronous hook.
+ */
 export async function recordWorkerUnreachable(): Promise<number> {
   const lockToken = await acquireHookFailureLock();
   if (lockToken === null) {
@@ -1122,6 +1162,7 @@ export async function recordWorkerUnreachable(): Promise<number> {
       consecutiveFailures: state.consecutiveFailures + 1,
       lastFailureAt: Date.now(),
       thresholdTripped: state.thresholdTripped,
+      notifiedSessionIds: state.notifiedSessionIds,
     };
     const threshold = getFailLoudThreshold();
     shouldEscalate = next.consecutiveFailures >= threshold && !next.thresholdTripped;
@@ -1135,31 +1176,54 @@ export async function recordWorkerUnreachable(): Promise<number> {
   if (shouldEscalate) {
     // hook_failed distress signal. The inter-process lock above makes the
     // read/check/latch/write transition exclusive, and the latched state is
-    // durable before telemetry or exit. The lock is deliberately released
-    // before either side effect.
-    // MUST be awaited BEFORE emitBlockingError — it calls
-    // process.exit(2) immediately, which would kill a fire-and-forget POST
-    // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
-    // this cannot hang the fail-loud path. Closed-enum/count props only —
-    // never error text. Transport is the direct CLI POST, never the worker
-    // API (the defining failure here IS "worker unreachable").
+    // durable before telemetry. The lock is deliberately released before any
+    // side effect. Awaited so the hook process cannot exit mid-POST;
+    // captureCliEvent never throws and is hard-capped at 2s, so this cannot
+    // hang the hook. Closed-enum/count props only — never error text.
+    // Transport is the direct CLI POST, never the worker API (the defining
+    // failure here IS "worker unreachable").
     await captureCliEvent('hook_failed', {
       ...(activeHookType !== null ? { hook_type: activeHookType } : {}),
       error_mode: 'worker_unavailable',
       consecutive_failures: next.consecutiveFailures,
       threshold_tripped: true,
     });
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      orphanedPortDiagnosis !== null
-        ? `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks: port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims, so the worker cannot bind it. ${ORPHANED_PORT_REMEDIATION}.`
-        : `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
-    );
+    // DIAGNOSTIC only (stderr, bypassing the hook's stderr buffer). This used
+    // to be emitBlockingError, whose exit 2 blocked the user's prompt on
+    // UserPromptSubmit and denied Read on PreToolUse (#2966, #3481, #3523).
+    emitDiagnostic(`${buildWorkerOutageNotice(next.consecutiveFailures)}\n`);
   }
   return next.consecutiveFailures;
+}
+
+/**
+ * The user-facing half of the fail-loud path. Call it from the worker-fallback
+ * branch of a SYNCHRONOUS hook (SessionStart context, UserPromptSubmit
+ * session-init) and put the result in HookResult.systemMessage. Async hooks
+ * must not call it: Claude Code hands an async hook's systemMessage to the
+ * model on the next turn instead of showing it to the user.
+ *
+ * Returns the notice once per session per outage: only after the fail-loud
+ * latch has tripped, and only if this session has not seen it yet. Returns
+ * null otherwise, including when the state cannot be locked or persisted (a
+ * notice that cannot be recorded as shown would repeat on every prompt).
+ */
+export async function consumeWorkerOutageNotice(sessionId: string | undefined): Promise<string | null> {
+  if (!sessionId) return null;
+  const lockToken = await acquireHookFailureLock();
+  if (lockToken === null) return null;
+  try {
+    const state = readHookFailureState();
+    const notifiedSessionIds = state.notifiedSessionIds ?? [];
+    if (!state.thresholdTripped || notifiedSessionIds.includes(sessionId)) return null;
+    const persisted = writeHookFailureStateAtomic({
+      ...state,
+      notifiedSessionIds: [...notifiedSessionIds, sessionId].slice(-MAX_NOTIFIED_SESSION_IDS),
+    });
+    return persisted ? buildWorkerOutageNotice(state.consecutiveFailures) : null;
+  } finally {
+    releaseHookFailureLock(lockToken);
+  }
 }
 
 async function resetWorkerFailureCounter(): Promise<void> {

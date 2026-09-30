@@ -1,6 +1,6 @@
 
 import { getCredential } from '../../shared/EnvManager.js';
-import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -65,6 +65,27 @@ function parseUpstreamErrorEnvelope(bodyText: string): UpstreamErrorEnvelope | n
   }
   return null;
 }
+
+/**
+ * OpenRouter's answers when the configured model id itself is gone: a retired
+ * model (404 "This model has been deprecated. It is recommended to migrate to
+ * …", #3659), an id that is not in the catalog (400 "… is not a valid model
+ * ID"), or one with no serving endpoint left (404 "No endpoints found for
+ * <id>."). Retrying never helps, and the generic "check the API key, spend
+ * limit and base URL" remedy points at the wrong setting, so these get their
+ * own code and remedy. Phrases only count on a 400/404 or an error envelope
+ * inside a 200; any other 400/404 stays a plain bad request.
+ */
+const MODEL_UNAVAILABLE_MARKERS = [
+  'model has been deprecated',
+  'not a valid model id',
+  'no endpoints found for',
+];
+
+const MODEL_UNAVAILABLE_ACTION =
+  'Set CLAUDE_MEM_OPENROUTER_MODEL in ~/.claude-mem/settings.json to a model your endpoint still serves (on OpenRouter, one from the model list).';
+
+const OPENROUTER_MODEL_LIST_URL = 'https://openrouter.ai/models';
 
 /**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
@@ -144,6 +165,23 @@ export function classifyOpenRouterError(input: {
     return new ClassifiedProviderError(
       describe('auth error'),
       { kind: 'auth_invalid', cause: input.cause, ...detail },
+    );
+  }
+
+  if (
+    (status === 400 || status === 404 || (status === 200 && envelope !== null))
+    && MODEL_UNAVAILABLE_MARKERS.some(marker => lower.includes(marker))
+  ) {
+    return new ClassifiedProviderError(
+      describe('model unavailable'),
+      {
+        kind: 'unrecoverable',
+        cause: input.cause,
+        code: 'model_unavailable',
+        action: MODEL_UNAVAILABLE_ACTION,
+        url: OPENROUTER_MODEL_LIST_URL,
+        ...detail,
+      },
     );
   }
 
@@ -265,22 +303,6 @@ export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fa
     };
   }
   return { model: unique[0], fallbackModels: unique.slice(1) };
-}
-
-/**
- * True only when the URL hostname is exactly `openrouter.ai`.
- *
- * Path text and lookalike hosts must not inherit OpenRouter-only body fields
- * (`models`, `usage`) — strict OpenAI-compatible gateways 400 on those.
- * Malformed URLs fail closed (treat as non-OpenRouter). Shared by the request
- * body and `session.endpointClass` so the two sites cannot drift.
- */
-export function isOpenRouterApiUrl(apiUrl: string): boolean {
-  try {
-    return new URL(apiUrl).hostname.toLowerCase() === 'openrouter.ai';
-  } catch {
-    return false;
-  }
 }
 
 /**
