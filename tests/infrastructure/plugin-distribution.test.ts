@@ -787,6 +787,71 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     }
   });
 
+  const winIt = process.platform === 'win32' ? it : it.skip;
+
+  winIt('hook command uses the Windows profile when HOME has no install', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-invoke-althome-'));
+    const profile = mkdtempSync(path.join(tmpdir(), 'cm-invoke-profile-'));
+    const cacheRoot = path.join(profile, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    writeRuntimeFixture(cacheRoot, "process.stdout.write('PROFILE\\n');\n");
+    try {
+      const { status, stdout, stderr } = shellEval(
+        buildClaudeHookInvocation('hook claude-code session-init'),
+        { HOME: home, USERPROFILE: profile },
+      );
+      expect(status).toBe(0);
+      expect(stdout).toBe('PROFILE\n');
+      expect(stderr).toBe('');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(profile, { recursive: true, force: true });
+    }
+  });
+
+  winIt('hook command prefers an install under HOME over the Windows profile', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-invoke-homewin-'));
+    const profile = mkdtempSync(path.join(tmpdir(), 'cm-invoke-profilewin-'));
+    writeRuntimeFixture(
+      path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '1.0.0'),
+      "process.stdout.write('HOME\\n');\n",
+    );
+    writeRuntimeFixture(
+      path.join(profile, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0'),
+      "process.stdout.write('PROFILE\\n');\n",
+    );
+    try {
+      const { status, stdout } = shellEval(
+        buildClaudeHookInvocation('hook claude-code session-init'),
+        { HOME: home, USERPROFILE: profile },
+      );
+      expect(status).toBe(0);
+      expect(stdout).toBe('HOME\n');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(profile, { recursive: true, force: true });
+    }
+  });
+
+  it('hook command keeps an explicit CLAUDE_CONFIG_DIR exclusive of HOME and the profile', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-invoke-cfghome-'));
+    const config = mkdtempSync(path.join(tmpdir(), 'cm-invoke-cfg-'));
+    writeRuntimeFixture(
+      path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0'),
+      "process.stdout.write('HOME\\n');\n",
+    );
+    const env: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: config };
+    if (process.platform === 'win32') env.USERPROFILE = home;
+    try {
+      const result = shellEval(buildClaudeHookInvocation('hook claude-code session-init'), env);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('claude-mem: plugin scripts not found');
+      expect(result.stdout).toBe('');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(config, { recursive: true, force: true });
+    }
+  });
+
   it('hook command resolves a plugin root that contains a space', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-invoke-space-'));
     const root = path.join(home, 'plugin dir');
@@ -806,12 +871,16 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
 
   it('hook command stays fail-loud for version-check and fail-open when nothing resolves', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-invoke-empty-'));
+    // Node's Windows os.homedir() still returns the real profile when
+    // USERPROFILE is unset, which would see this machine's install.
+    const env: Record<string, string> = { HOME: home };
+    if (process.platform === 'win32') env.USERPROFILE = home;
     try {
-      const setup = shellEval(buildClaudeHookInvocation('version-check'), { HOME: home });
+      const setup = shellEval(buildClaudeHookInvocation('version-check'), env);
       expect(setup.status).not.toBe(0);
       expect(setup.stderr).toContain('claude-mem: plugin scripts not found');
 
-      const runtime = shellEval(buildClaudeHookInvocation('hook claude-code session-init'), { HOME: home });
+      const runtime = shellEval(buildClaudeHookInvocation('hook claude-code session-init'), env);
       expect(runtime.status).toBe(0);
       expect(runtime.stderr).toContain('claude-mem: plugin scripts not found');
     } finally {

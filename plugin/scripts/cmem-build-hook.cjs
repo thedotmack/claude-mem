@@ -33,14 +33,16 @@ function rootIfComplete(candidate, files) {
   return base;
 }
 
-function resolveRoot(files) {
-  // $_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}". os.homedir() ignores HOME on
-  // Windows, so a set HOME (Git Bash, or a fixture) has to win.
-  const home = process.env.HOME || os.homedir();
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
-  const roots = [];
-  if (process.env.CLAUDE_PLUGIN_ROOT) roots.push(process.env.CLAUDE_PLUGIN_ROOT);
-  if (process.env.PLUGIN_ROOT) roots.push(process.env.PLUGIN_ROOT);
+function profileHome() {
+  try {
+    return os.homedir();
+  } catch (err) {
+    return '';
+  }
+}
+
+// Cache versions, then the marketplace install, under one config directory.
+function appendConfigRoots(roots, configDir) {
   const cache = path.join(configDir, 'plugins', 'cache', 'thedotmack', 'claude-mem');
   try {
     const versions = fs.readdirSync(cache)
@@ -62,6 +64,27 @@ function resolveRoot(files) {
     // cache directory missing
   }
   roots.push(path.join(configDir, 'plugins', 'marketplaces', 'thedotmack', 'plugin'));
+}
+
+function resolveRoot(files) {
+  const roots = [];
+  if (process.env.CLAUDE_PLUGIN_ROOT) roots.push(process.env.CLAUDE_PLUGIN_ROOT);
+  if (process.env.PLUGIN_ROOT) roots.push(process.env.PLUGIN_ROOT);
+  // POSIX order is CLAUDE_CONFIG_DIR, else $HOME/.claude. On Windows
+  // os.homedir() is USERPROFILE and ignores HOME, so an inherited HOME with
+  // no install must not hide the profile that contains the plugin. An
+  // explicit CLAUDE_CONFIG_DIR stays the only config directory.
+  const configDirs = [];
+  if (process.env.CLAUDE_CONFIG_DIR) {
+    configDirs.push(process.env.CLAUDE_CONFIG_DIR);
+  } else {
+    const profile = profileHome();
+    if (process.env.HOME) configDirs.push(path.join(process.env.HOME, '.claude'));
+    if (profile && (!process.env.HOME || path.resolve(profile) !== path.resolve(process.env.HOME))) {
+      configDirs.push(path.join(profile, '.claude'));
+    }
+  }
+  for (let i = 0; i < configDirs.length; i++) appendConfigRoots(roots, configDirs[i]);
   for (let i = 0; i < roots.length; i++) {
     const found = rootIfComplete(roots[i], files);
     if (found) return found;
