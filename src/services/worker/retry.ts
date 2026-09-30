@@ -123,8 +123,9 @@ function llmTimeoutRemedy(): string {
  * Deadline for one oversized-field condensation pass (field-optimizer.ts).
  *
  * The field pass races a bounded model call against this deadline; on expiry
- * the observation falls back to head/tail truncation, so a slow or proxied
- * backend that needs more than the default 30s silently loses field detail.
+ * the observation falls back to head/tail truncation, so a backend slower than
+ * the deadline silently loses field detail. The default is the observer
+ * request's (FIELD_OPTIMIZE_TIMEOUT_MS; see there for why).
  * Resolved with the same env-first, then settings.json, per-call rules as
  * resolveLlmTimeoutMs and sharing the same bounds, so it is reachable from
  * configuration instead of being frozen in the shipped bundle.
