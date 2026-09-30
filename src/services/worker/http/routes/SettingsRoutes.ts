@@ -6,6 +6,7 @@ import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
+import { MIN_CONTEXT_WINDOW_TOKENS } from '../../context-window.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
@@ -205,7 +206,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
       'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
-      'CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -288,6 +288,15 @@ export class SettingsRoutes extends BaseRouteHandler {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      }
+    }
+
+    // Empty = resolve the window automatically. Otherwise whole tokens, at
+    // least the floor the resolver would clamp a smaller value up to.
+    if (settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW).trim();
+      if (!/^\d+$/.test(raw) || Number(raw) < MIN_CONTEXT_WINDOW_TOKENS) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW must be empty (automatic) or a whole number of tokens, at least ${MIN_CONTEXT_WINDOW_TOKENS}` };
       }
     }
 

@@ -92,16 +92,16 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and rate
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
 
-### Observer Compaction Settings
+### Observer Budget Settings
 
-These apply to the Gemini and OpenRouter observer providers. When the observer's conversation history nears the model's context window, claude-mem replaces it with a continuation prompt and a recent-observations timeline to keep token usage bounded.
+These apply to every observer provider. The observer's conversation runs in generations. When one fills its budget, claude-mem retires it and starts a fresh one, briefed with the session's own observations. The budget is the smaller of `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` and half the observer model's context window (about 4 characters per token). Each tool call's parameters and outcome are capped at a tenth of the window, 16,000 characters at most.
 
 | Setting                                      | Default                     | Description                           |
 |----------------------------------------------|-----------------------------|---------------------------------------|
-| `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`         | —                           | Observer model context window in tokens. Empty = auto-resolve from the OpenRouter models catalogue (custom gateways fall back to `131072`). Set a positive integer to override (values below 8192 are clamped up to 8192) |
-| `CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED`     | `true`                      | Set to `false` to disable observer history compaction |
+| `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` | `400000`                    | Characters one observer generation may hold before it is retired |
+| `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`         | —                           | Observer model context window in tokens. Empty = resolve it: Claude models `200000` (`1000000` for a `[1m]` model id), Gemini models from a built-in map, OpenRouter models from the OpenRouter models catalogue. Any other OpenAI-compatible endpoint (a local server, a custom gateway) falls back to `131072`, so set this for a model with a smaller window, e.g. `16384`. Values below `8192` are clamped up to `8192` |
 
-**Note**: On custom OpenAI-compatible gateways that enforce strict user/assistant alternation, a compaction turn produces two consecutive user messages (valid on openrouter.ai); disable via `CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED` if a strict gateway rejects it.
+If the provider still rejects a request as too long for the model's window, the observer retires the generation and retries the same work in a fresh one, the same way it handles Claude's "Prompt is too long".
 
 ### Claude Gateway Settings
 

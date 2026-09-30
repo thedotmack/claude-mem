@@ -13,6 +13,8 @@ import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { resolveContextWindowTokens } from './context-window.js';
+import { isContextOverflowObserverOutput } from '../../sdk/output-classifier.js';
 
 /**
  * OpenAI-compatible client configuration.
@@ -88,6 +90,23 @@ const MODEL_UNAVAILABLE_ACTION =
 const OPENROUTER_MODEL_LIST_URL = 'https://openrouter.ai/models';
 
 /**
+ * Machine-readable context-length refusals from OpenAI-compatible servers:
+ * OpenAI's error code, and llama.cpp's error type and message. The prose forms
+ * ("maximum context length", "prompt is too long", "reduce the length of the
+ * messages") are the ones the observer-text classifier already recognizes.
+ */
+const CONTEXT_OVERFLOW_MARKERS = [
+  'context_length_exceeded',
+  'exceed_context_size_error',
+  'exceeds the available context size',
+];
+
+function isContextOverflowBody(body: string): boolean {
+  const lower = body.toLowerCase();
+  return CONTEXT_OVERFLOW_MARKERS.some(marker => lower.includes(marker)) || isContextOverflowObserverOutput(body);
+}
+
+/**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
  * at the boundary right after `fetch()` returns or throws.
  */
@@ -135,6 +154,17 @@ export function classifyOpenRouterError(input: {
   const detail = { ...(input.requestId ? { requestId: input.requestId } : {}) };
   const describe = (cls: string): string =>
     `OpenRouter ${cls}${status !== undefined ? ` (status ${status})` : ''}${upstreamMessage ? `: ${upstreamMessage}` : ''}`;
+
+  // The request did not fit the model's context window, or the server refused
+  // its size outright (413). Retiring the conversation fixes both, so neither
+  // may finalize the session as a bad request (#3625). Checked before the quota
+  // markers: "context limit exceeded" is not a spend limit.
+  if (status === 413 || (status === 400 && isContextOverflowBody(body))) {
+    return new ClassifiedProviderError(
+      describe('context overflow'),
+      { kind: 'context_overflow', cause: input.cause, ...detail },
+    );
+  }
 
   // Quota / insufficient credits — body marker takes precedence over status.
   if (
@@ -446,6 +476,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     // openrouter.ai responses carry real usage/cost; custom OpenAI-compatible
     // gateways often fabricate or omit usage — let telemetry segment the two.
     session.endpointClass = isOpenRouterApiUrl(config.apiUrl) ? 'openrouter' : 'custom';
+  }
+
+  protected resolveContextWindow(config: OpenRouterConfig): Promise<number> {
+    return resolveContextWindowTokens('openrouter', config.model, config.apiUrl);
   }
 
   protected estimateTokens(text: string): number {

@@ -86,8 +86,6 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
-  CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: string;  // Manual observer context-window override in tokens; '' = auto (OpenRouter catalogue / Gemini map)
-  CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED: string;  // 'true'/'false' — compact observer history when it nears the model context window
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -116,7 +114,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: string;
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
   CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: string;
-  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  
+  CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: string;  // Observer model context window in tokens; '' = resolve automatically
+  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;
   CLAUDE_MEM_REDACT_ENABLED: string;
   CLAUDE_MEM_REDACT_DISABLED_BUILTINS: string;
   CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: string;
@@ -268,8 +267,6 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
-    CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '',  // Observer context window in tokens. Empty = resolve automatically (see src/services/worker/context-window.ts)
-    CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED: 'true',  // Clear + re-seed observer history past 70% of the context window (OpenAICompatibleProvider.maybeCompactHistory)
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
@@ -297,6 +294,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
     CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: '400000',  // Retire an observer conversation past this size and start a fresh generation (#3800)
+    CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '',  // Observer model context window in tokens; '' = resolve it (OpenRouter catalogue, Gemini/Claude maps). Lowers the budget above to half the window (#3625)
     CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // After N consecutive worker-unreachable hook invocations, show the worker-outage notice once per session (never blocks; plan-17)
     CLAUDE_MEM_REDACT_ENABLED: 'false',                   // Opt-in auto-redaction of common secret patterns (see docs/public/usage/auto-redaction.mdx)
     CLAUDE_MEM_REDACT_DISABLED_BUILTINS: '',              // CSV of built-in pattern names to disable, e.g. 'jwt,slack_token'
