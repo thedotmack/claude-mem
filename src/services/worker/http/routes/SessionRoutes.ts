@@ -455,7 +455,7 @@ export class SessionRoutes extends BaseRouteHandler {
           // A structured quota refusal arms the breaker, so the next observation
           // does not immediately buy the same refusal again (#3634).
           if (isClassified(error) && error.kind === 'quota_exhausted') {
-            recordQuotaExhausted(provider, error.message);
+            recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile);
           }
           recordObserverFailure(provider, isClassified(error)
             ? { message: error.message, kind: error.kind, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
@@ -496,7 +496,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // per-observation request storm the classified path no longer has.
         if (normalizeAbortReason(reason) === 'quota') {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
-          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
+          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
           // Quota returned as assistant prose never throws, so it never reaches
           // the .catch above and never armed the health ledger. Without this the
           // session-start warning is structurally blind to an entire outage

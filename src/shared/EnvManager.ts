@@ -1,4 +1,5 @@
 
+import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { parseEnv } from 'util';
 import { basename } from 'path';
@@ -13,16 +14,30 @@ import {
   type OAuthTokenResult,
 } from './oauth-token.js';
 
-/**
- * #2753 — the effective config dir's profile label (never the token itself):
- * 'default' for ~/.claude, else its basename. Logged as `profile=` in the auth
- * method, and used to tell apart quota state recorded under different
- * accounts (RateLimitStore entries, the 'claude' quota-cooldown breaker).
- */
-export function resolveConfigDirProfileLabel(): string {
+/** #2753 — the effective config dir's profile label for logging (never the token itself): 'default' for ~/.claude, else its basename. */
+function resolveConfigDirProfileLabel(): string {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const effectiveConfigDir = resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
   return effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR ? 'default' : basename(effectiveConfigDir);
+}
+
+/**
+ * The account identity that quota state is keyed by (RateLimitStore entries,
+ * the 'claude' quota-cooldown breaker): 'default' for ~/.claude, else the
+ * basename plus a short hash of the full config dir. The hash keeps two dirs
+ * that share a basename (~/a/work, ~/b/work) apart without writing the path,
+ * and with it the username, into /api/health or quota-cooldown.json.
+ */
+export function configDirProfileKey(effectiveConfigDir: string): string {
+  if (effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR) return 'default';
+  const digest = createHash('sha256').update(effectiveConfigDir).digest('hex').slice(0, 8);
+  return `${basename(effectiveConfigDir)}#${digest}`;
+}
+
+/** The profile key for the config dir the next Claude spawn will use. */
+export function resolveConfigDirProfileKey(): string {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  return configDirProfileKey(resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR));
 }
 
 // Resolved lazily so tests (and any rare runtime path-overrides) can target a

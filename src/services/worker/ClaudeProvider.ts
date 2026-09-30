@@ -8,7 +8,7 @@ import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../
 import {
   buildIsolatedEnvWithFreshOAuth,
   getAuthMethodDescription,
-  resolveConfigDirProfileLabel,
+  resolveConfigDirProfileKey,
 } from '../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
@@ -287,8 +287,10 @@ export class ClaudeProvider {
       const authMethod = getAuthMethodDescription();
       // The account this generator bills for its whole life: its env (and so
       // its OAuth identity) is fixed at spawn, even if the setting changes
-      // while it runs. Quota snapshots are tagged with it and checked against it.
-      const observerProfile = resolveConfigDirProfileLabel();
+      // while it runs. Quota snapshots are tagged with it and checked against
+      // it, and a refusal it hits arms the breaker under it.
+      const observerProfile = resolveConfigDirProfileKey();
+      session.observerProfile = observerProfile;
 
       logger.info('SDK', 'Starting SDK query', {
         sessionDbId: session.sessionDbId,

@@ -40,7 +40,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
-import { resolveConfigDirProfileLabel } from './EnvManager.js';
+import { resolveConfigDirProfileKey } from './EnvManager.js';
 import {
   clearObserverQuotaCooldown,
   recordObserverQuotaCooldown,
@@ -67,10 +67,10 @@ interface PersistedQuotaCooldown {
  * every spawn, so a 'claude' breaker belongs to the profile that armed it and
  * must not withhold requests from a different one.
  */
-let resolveClaudeProfile: () => string = resolveConfigDirProfileLabel;
+let resolveClaudeProfile: () => string = resolveConfigDirProfileKey;
 
 export function setClaudeProfileResolverForTesting(resolver: (() => string) | null): void {
-  resolveClaudeProfile = resolver ?? resolveConfigDirProfileLabel;
+  resolveClaudeProfile = resolver ?? resolveConfigDirProfileKey;
 }
 
 function defaultCooldownFilePath(): string {
@@ -205,13 +205,19 @@ export function recordQuotaExhausted(
    * cooldown on every restart.
    */
   armedAtMs: number = Date.now(),
+  /**
+   * 'claude' only: the account the refused generator was spawned under. A
+   * late refusal from a generator started before an account switch belongs
+   * to that account, not the one selected now. Defaults to the current one.
+   */
+  profile?: string,
 ): QuotaCooldownState {
   hydrateFromDisk();
   const state: QuotaCooldownState = {
     provider,
     message,
     ...(window ? { window } : {}),
-    ...(provider === 'claude' ? { profile: resolveClaudeProfile() } : {}),
+    ...(provider === 'claude' ? { profile: profile ?? resolveClaudeProfile() } : {}),
     armedAtMs,
     // Re-arming ends whatever probe was in flight: this IS that probe failing.
     probeInFlightSinceMs: null,
@@ -282,6 +288,8 @@ export function tryAdmitQuotaProbe(
   // A 'claude' breaker armed under another account (or before breakers carried
   // one) says nothing about the account now selected: drop it and let this
   // request through, instead of pausing capture until that account resets.
+  // Switching back re-probes the first account once; one request is cheaper
+  // than keeping a breaker per account.
   if (state && provider === 'claude' && state.profile !== resolveClaudeProfile()) {
     clearQuotaCooldown(provider);
     state = undefined;
@@ -333,7 +341,7 @@ export function releaseQuotaProbe(provider: QuotaProvider, claimId: number | nul
 
 export function resetQuotaCooldownsForTesting(): void {
   cooldowns.clear();
-  resolveClaudeProfile = resolveConfigDirProfileLabel;
+  resolveClaudeProfile = resolveConfigDirProfileKey;
   // The latch must drop too, or a test that wrote a ledger would leak its
   // armed windows into the next test through a stale "already hydrated".
   hydrated = false;

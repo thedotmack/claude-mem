@@ -371,6 +371,45 @@ describe('shouldAbortForQuota — per-account profile scoping', () => {
     tagged.set({ rateLimitType: 'seven_day', utilization: 0.97, profile: 'work' });
     expect(shouldAbortForQuota(cliAuth, tagged, FIXED_NOW).abort).toBe(true);
   });
+
+  it('tags unifiedWindows siblings with the profile of the event that carried them', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      profile: 'work',
+      unifiedWindows: { seven_day: { utilization: 0.97, resetsAt: FIXED_NOW + 86_400_000 } },
+    });
+    expect(store.get('seven_day')?.profile).toBe('work');
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'personal').abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW, 'work').abort).toBe(true);
+  });
+
+  it('does not carry another profile\'s rejection or reset into a sibling refresh', () => {
+    const store = freshStore();
+    const now = Date.now();
+    const workReset = now + 60_000;
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: workReset, profile: 'work' });
+
+    // Account B reports the same reset-only sibling: nothing of A's carries.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      profile: 'personal',
+      unifiedWindows: { seven_day: { resetsAt: workReset } },
+    });
+    expect(store.get('seven_day')?.status).toBeUndefined();
+    expect(store.get('seven_day')?.profile).toBe('personal');
+
+    // Nor does a utilization-only sibling inherit the other account's reset.
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      profile: 'work',
+      unifiedWindows: { seven_day: { utilization: 0.2 } },
+    });
+    expect(store.get('seven_day')?.resetsAt).toBeUndefined();
+  });
 });
 
 // usage_limit_hit telemetry: one event per exhausted window, never one per

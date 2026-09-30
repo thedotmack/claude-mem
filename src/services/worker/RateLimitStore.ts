@@ -74,7 +74,7 @@ export interface RateLimitEntry extends RateLimitInfo {
   observedAt: number;
   /**
    * Not part of the SDK payload: the Claude config-dir profile whose
-   * credentials produced the snapshot (resolveConfigDirProfileLabel). Quota is
+   * credentials produced the snapshot (resolveConfigDirProfileKey). Quota is
    * per account, so a snapshot from one profile must not gate spawns billed to
    * another after CLAUDE_MEM_CLAUDE_CONFIG_DIR changes. Absent = unscoped.
    */
@@ -105,7 +105,12 @@ export class RateLimitStore {
     // reset-only snapshots preserve an unchanged active rejection.
     for (const [window, snapshot] of unified) {
       if (window === key) continue;
-      const previousWindow = this.entries.get(window);
+      // State carries forward only within one account: another account's
+      // reset time or rejection says nothing about this account's window.
+      const cachedWindow = this.entries.get(window);
+      const previousWindow = cachedWindow && !isOtherProfile(cachedWindow, info.profile)
+        ? cachedWindow
+        : undefined;
       // Carry the cached reset only while it is still ahead: an expired one
       // would make the guard skip this fresh reading as stale.
       const carriedResetsAt = isResetPending(previousWindow?.resetsAt, observedAt)
@@ -122,6 +127,8 @@ export class RateLimitStore {
         ...snapshot,
         resetsAt,
         ...(repeatsRejectedReset ? { status: 'rejected' as const } : {}),
+        // Siblings describe the same account as the event that carried them.
+        ...(info.profile !== undefined ? { profile: info.profile } : {}),
         observedAt,
       });
       const rejectedWindow = this.rejections.get(window);
