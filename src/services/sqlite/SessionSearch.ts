@@ -24,6 +24,53 @@ import { applySqliteConnectionPragmas } from './connection.js';
 const UNSEGMENTED_SCRIPT_RANGES =
   '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
 
+/**
+ * Sync triggers for the external-content FTS5 indexes, shared by FTS setup here and by the
+ * SessionStore migrations that rebuild these tables. The update triggers fire only when an
+ * indexed column is written: an unscoped AFTER UPDATE also fired for bookkeeping writes
+ * (sync_rev, merged_into_project, content_hash, ...), and every firing appended a delete
+ * marker plus a full re-insert of the row's text to the index (#2793).
+ */
+export const OBSERVATIONS_FTS_TRIGGERS_SQL = `
+  CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+    INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+    INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS observations_au
+  AFTER UPDATE OF title, subtitle, narrative, text, facts, concepts ON observations BEGIN
+    INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+    INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+    VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+  END;
+`;
+
+export const SESSION_SUMMARIES_FTS_TRIGGERS_SQL = `
+  CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS session_summaries_au
+  AFTER UPDATE OF request, investigated, learned, completed, next_steps, notes ON session_summaries BEGIN
+    INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+    INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+    VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+  END;
+`;
+
 export class SessionSearch {
   private db: Database;
 
@@ -99,24 +146,7 @@ export class SessionSearch {
       FROM observations;
     `);
 
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
-        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
-        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
-      END;
-    `);
+    this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
 
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
@@ -137,24 +167,7 @@ export class SessionSearch {
       FROM session_summaries;
     `);
 
-    this.db.run(`
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
-        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
-        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
-      END;
-    `);
+    this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
   }
 
   private buildFilterClause(

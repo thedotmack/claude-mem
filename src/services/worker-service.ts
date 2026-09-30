@@ -51,6 +51,7 @@ import {
   pinDaemonWorkingDirectory
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
+import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
@@ -215,6 +216,7 @@ export class WorkerService implements WorkerRef {
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
   private deferredSessionEndReplayTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
   private readonly deferredSessionEndQueue = new DeferredSessionEndQueue();
 
   private dbManager: DatabaseManager;
@@ -370,6 +372,22 @@ export class WorkerService implements WorkerRef {
     this.deferredSessionEndReplayTimer.unref?.();
   }
 
+  private startPendingSessionResume(sessionRoutes: SessionRoutes): void {
+    if (this.pendingSessionResumeTimer !== null || this.isShuttingDown) return;
+    this.pendingSessionResumeTimer = setInterval(() => {
+      if (!this.initializationCompleteFlag || this.isShuttingDown) return;
+      sessionRoutes.resumePendingSessions('periodic-resume');
+    }, 60_000);
+    this.pendingSessionResumeTimer.unref?.();
+  }
+
+  private stopPendingSessionResume(): void {
+    if (this.pendingSessionResumeTimer !== null) {
+      clearInterval(this.pendingSessionResumeTimer);
+      this.pendingSessionResumeTimer = null;
+    }
+  }
+
   private registerRoutes(): void {
 
     this.server.registerRoutes(new ChromaRoutes());
@@ -412,6 +430,7 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
     this.server.registerRoutes(sessionRoutes);
+    this.startPendingSessionResume(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
@@ -576,6 +595,11 @@ export class WorkerService implements WorkerRef {
       this.startDeferredSessionEndReplay();
 
       runOneTimeV12_4_3Cleanup();
+
+      // One-time, deferred and bounded: reclaim the FTS5 bloat an install already
+      // accumulated (#2793). Schema v54 stops new bloat at the source; the reclaim runs
+      // on an unref'd timer so startup and health checks never wait for it.
+      scheduleOneTimeFtsBloatReclaim(this.dbManager.getConnection());
 
       // Worktree adoption stays fire-and-forget (#2122) — init never awaits
       // it — but it is kicked only after dbManager.initialize() and the
@@ -890,6 +914,7 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        this.stopPendingSessionResume();
         if (this.deferredSessionEndReplayTimer !== null) {
           clearInterval(this.deferredSessionEndReplayTimer);
           this.deferredSessionEndReplayTimer = null;

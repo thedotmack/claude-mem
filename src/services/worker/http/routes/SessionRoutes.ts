@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -43,6 +44,7 @@ import {
   releaseQuotaProbe,
   recordQuotaExhausted,
   getQuotaCooldown,
+  isQuotaCooldownActive,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, ClassifiedProviderError, describeProviderError } from '../../provider-errors.js';
@@ -174,6 +176,32 @@ export class SessionRoutes extends BaseRouteHandler {
       releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
     }
   };
+
+  /** Schedule retries through the normal provider gates and per-session mutex.
+   * The count is attempts scheduled, not generators admitted by those gates.
+   *
+   * The automatic sweep is paced by the provider's quota breaker (read-only):
+   * nothing is scheduled while the breaker withholds requests, since every
+   * attempt would only log a skip (#4127 counted 159 of those). Once the window
+   * elapses, one session per tick goes through to carry the recovery probe; the
+   * rest follow after that probe succeeds and clears the breaker. The operator
+   * retry (`POST /api/processing`) is not paced.
+   */
+  public resumePendingSessions(source: string, includeOperatorOnly: boolean = false): number {
+    let sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
+    if (!includeOperatorOnly && sessionIds.length > 0) {
+      const provider = getSelectedProvider();
+      if (isQuotaCooldownActive(provider)) return 0;
+      if (getQuotaCooldown(provider)) sessionIds = sessionIds.slice(0, 1);
+    }
+    for (const sessionDbId of sessionIds) {
+      void this.ensureGeneratorRunning(sessionDbId, source).catch((error: unknown) => {
+        logger.warn('SESSION', 'Failed to resume buffered session', { sessionId: sessionDbId, source },
+          error instanceof Error ? error : new Error(String(error)));
+      });
+    }
+    return sessionIds.length;
+  }
 
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
@@ -407,6 +435,10 @@ export class SessionRoutes extends BaseRouteHandler {
       clearTimeout(session.stallResumeTimer);
       session.stallResumeTimer = undefined;
     }
+    // The last pause no longer describes this session; if this run pauses
+    // too, its exit records a fresh reason. Without this, one auth pause would
+    // keep the session out of every automatic sweep for good.
+    session.pausedReason = null;
 
     if (session.abortController.signal.aborted) {
       logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
@@ -447,6 +479,7 @@ export class SessionRoutes extends BaseRouteHandler {
         const errorMsg = error instanceof Error ? error.message : String(error);
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
+          session.pausedReason = 'setup_required';
           recordClaudeCliSetupRequired(error.message);
           this.maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
           logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
@@ -522,7 +555,7 @@ export class SessionRoutes extends BaseRouteHandler {
           // A structured quota refusal arms the breaker, so the next observation
           // does not immediately buy the same refusal again (#3634).
           if (isClassified(error) && error.kind === 'quota_exhausted') {
-            recordQuotaExhausted(provider, error.message);
+            recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile);
           }
           recordObserverFailure(provider, isClassified(error)
             ? { message: error.message, kind: error.kind, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
@@ -563,7 +596,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // per-observation request storm the classified path no longer has.
         if (normalizeAbortReason(reason) === 'quota') {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
-          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
+          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
           // Quota returned as assistant prose never throws, so it never reaches
           // the .catch above and never armed the health ledger. Without this the
           // session-start warning is structurally blind to an entire outage
@@ -632,6 +665,11 @@ export class SessionRoutes extends BaseRouteHandler {
               maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
             });
           } else {
+            // The delayed retry may hit a quota cooldown and return without
+            // starting a generator. Keep this pause eligible for the periodic
+            // sweep after the timer fires; ordinary transport pauses still
+            // require an explicit retry, and exhausted stalls keep their cap.
+            session.pausedReason = 'response_stall';
             const resume = setTimeout(() => {
               session.stallResumeTimer = undefined;
               void this.ensureGeneratorRunning(session.sessionDbId, 'response-stall')
@@ -650,6 +688,15 @@ export class SessionRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    // Operator repair route: it starts generators and retries auth/transport
+    // pauses that the automatic sweep leaves alone, so it is localhost-only
+    // like the other admin routes.
+    app.post(
+      '/api/processing',
+      requireLocalhost,
+      validateBody(SessionRoutes.processingSchema),
+      this.handleProcessing.bind(this)
+    );
     app.post(
       '/api/sessions/init',
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
@@ -671,6 +718,24 @@ export class SessionRoutes extends BaseRouteHandler {
       this.handleSessionEnd.bind(this)
     );
   }
+
+  private static readonly processingSchema = z.object({
+    isProcessing: z.boolean(),
+  });
+
+  private handleProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // Legacy callers request false to unstick processing. There is no global
+    // processing flag to reset: retry existing buffered sessions instead.
+    const scheduledSessions = req.body.isProcessing ? 0 : this.resumePendingSessions('processing-api', true);
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    res.json({
+      status: 'ok',
+      isProcessing: queueDepth > 0,
+      queueDepth,
+      activeSessions: this.sessionManager.getActiveSessionCount(),
+      scheduledSessions,
+    });
+  });
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
     contentSessionId: z.string().min(1),

@@ -39,11 +39,13 @@ describe('handleGeneratorExit — reasons that preserve claimed work', () => {
   for (const reason of ['transport:observer_text', 'quota:observer_text', 'auth:observer_text', 'overflow:observer_text', 'provider_switch']) {
     it(`leaves the session alive for ${reason}`, async () => {
       const { deps, finalizeSession, removeSessionImmediate } = buildDeps();
+      const session = buildSession(reason);
 
-      await handleGeneratorExit(buildSession(reason), reason, deps);
+      await handleGeneratorExit(session, reason, deps);
 
       expect(finalizeSession).not.toHaveBeenCalled();
       expect(removeSessionImmediate).not.toHaveBeenCalled();
+      expect(session.pausedReason).toBe(reason.split(':')[0]);
     });
   }
 

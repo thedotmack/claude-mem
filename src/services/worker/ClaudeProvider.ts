@@ -5,7 +5,11 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
-import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import {
+  buildIsolatedEnvWithFreshOAuth,
+  getAuthMethodDescription,
+  resolveConfigDirProfileKey,
+} from '../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
@@ -284,6 +288,12 @@ export class ClaudeProvider {
     try {
       const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
       const authMethod = getAuthMethodDescription();
+      // The account this generator bills for its whole life: its env (and so
+      // its OAuth identity) is fixed at spawn, even if the setting changes
+      // while it runs. Quota snapshots are tagged with it and checked against
+      // it, and a refusal it hits arms the breaker under it.
+      const observerProfile = resolveConfigDirProfileKey();
+      session.observerProfile = observerProfile;
 
       logger.info('SDK', 'Starting SDK query', {
         sessionDbId: session.sessionDbId,
@@ -357,7 +367,7 @@ export class ClaudeProvider {
           // so a `rejected` snapshot here means the user's own Claude Code
           // session is out of usage too. set() dedupes: one event per
           // exhausted window, not one per observer request against the wall.
-          if (globalRateLimitStore.set(info)) {
+          if (globalRateLimitStore.set({ ...info, profile: observerProfile })) {
             logger.warn('SDK', 'Subscription usage limit hit', {
               sessionDbId: session.sessionDbId,
               window: info.rateLimitType,
@@ -371,7 +381,7 @@ export class ClaudeProvider {
               observed_billing: session.observedBilling,
             });
           }
-          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore);
+          const decision = shouldAbortForQuota(authMethod, globalRateLimitStore, Date.now(), observerProfile);
           if (decision.abort) {
             logger.warn('SDK', `Aborting session for quota guard: ${decision.reason}`, {
               sessionDbId: session.sessionDbId,
