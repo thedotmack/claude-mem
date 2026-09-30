@@ -74,10 +74,13 @@ needed, even when the original session has ended.
 Check the worker logs for `Transport pause: scheduled buffered-work resume` and
 then `Generator auto-starting (transport-resume)`. If the provider remains
 unavailable, the worker keeps probing at a slower rate and admits one
-unattended transport resume at a time. On the cmem.ai memory gateway, unattended
-attempts stop after three consecutive timeouts so they do not spend your plan;
-the queued observations then wait for your next Claude Code activity.
-Authentication and quota pauses still require their existing recovery paths.
+unattended transport resume at a time. On the cmem.ai memory gateway, retries
+that run with no Claude Code activity behind them — after a timeout, after a
+rate limit's wait, or when memory moves to your Anthropic plan — stop after
+three in a row that get no answer, so they do not spend your plan; the queued
+observations then wait for your next Claude Code activity (the log says
+`Unattended resumes stopped on the cmem gateway`). Authentication and quota
+pauses still require their existing recovery paths.
 
 The queued observations in this path are held in worker memory. A worker restart
 before they are processed can still discard them; see the separate persistence

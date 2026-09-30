@@ -6,13 +6,14 @@ import {
   SessionManager,
   transportResumeDelayMs,
   MAX_TRANSPORT_RESUME_BASE_DELAY_MS,
-  MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES,
 } from '../../../../src/services/worker/SessionManager.js';
+import { MAX_UNATTENDED_GATEWAY_RESUMES } from '../../../../src/services/worker/session/response-pacer.js';
 import { handleGeneratorExit } from '../../../../src/services/worker/session/GeneratorExitHandler.js';
 import { startGeneratorWithProvider } from '../../../../src/services/worker/session/GeneratorRunner.js';
 import { ClassifiedProviderError } from '../../../../src/services/worker/provider-errors.js';
 import { resolveLlmTimeoutMs, withRetry } from '../../../../src/services/worker/retry.js';
-import { resetQuotaCooldownsForTesting } from '../../../../src/shared/quota-cooldown.js';
+import { getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../../../src/shared/quota-cooldown.js';
+import { clearProFallback } from '../../../../src/shared/cmem-gateway.js';
 import { getDependencyStatus, resetDependencyStatusesForTesting } from '../../../../src/shared/dependency-health.js';
 import * as realProviderDispatch from '../../../../src/services/worker/provider-dispatch.js';
 import * as realProcessRegistry from '../../../../src/supervisor/process-registry.js';
@@ -255,18 +256,18 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       // Settings apply env overrides last, so this pins memory on the gateway.
       process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
       process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
-      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES + 1);
+      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_RESUMES + 1);
       await harness.startInitial();
 
-      for (let index = 0; index < MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES; index++) {
+      for (let index = 0; index < MAX_UNATTENDED_GATEWAY_RESUMES; index++) {
         expect(scheduled).toHaveLength(index + 1);
         await harness.fireResume(index);
       }
 
       // The initial run and every unattended probe hit the deadline; no
       // further timer is armed, and the work stays buffered, not dropped.
-      expect(harness.stats().starts).toBe(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES + 1);
-      expect(scheduled).toHaveLength(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES);
+      expect(harness.stats().starts).toBe(MAX_UNATTENDED_GATEWAY_RESUMES + 1);
+      expect(scheduled).toHaveLength(MAX_UNATTENDED_GATEWAY_RESUMES);
       expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
       expect(harness.sessionManager.getSession(harness.session.sessionDbId)).toBe(harness.session);
       expect(harness.stats().finalizeCalls).toBe(0);
@@ -282,17 +283,154 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
     it('keeps resuming a user-owned OpenRouter key past the gateway cap', async () => {
       process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
       process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES + 1);
+      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_RESUMES + 1);
       await harness.startInitial();
 
-      for (let index = 0; index <= MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES; index++) {
+      for (let index = 0; index <= MAX_UNATTENDED_GATEWAY_RESUMES; index++) {
         expect(scheduled).toHaveLength(index + 1);
         await harness.fireResume(index);
       }
 
-      expect(harness.stats().starts).toBe(MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES + 2);
+      expect(harness.stats().starts).toBe(MAX_UNATTENDED_GATEWAY_RESUMES + 2);
       expect(harness.stats().confirmedCount).toBe(1);
       expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
+    });
+
+    // One run that pauses the way an OpenAI-compatible provider does on a
+    // classified error: label the pause, abort, and rethrow.
+    async function runPausedGeneration(
+      harness: ReturnType<typeof makeHarness>,
+      abortReason: string,
+      error: ClassifiedProviderError,
+    ): Promise<void> {
+      await startGeneratorWithProvider(harness.session, 'openrouter', 'observation', null, null, {
+        sessionManager: harness.sessionManager,
+        sdkAgent: {} as any,
+        geminiAgent: {} as any,
+        openRouterAgent: {
+          startSession: async (current: ActiveSession) => {
+            current.abortReason = abortReason;
+            current.abortController.abort();
+            throw error;
+          },
+        } as any,
+        workerService: {} as any,
+        completionHandler: { finalizeSession: async () => {} } as any,
+        ensureGeneratorRunning: (id, source) => harness.routes.ensureGeneratorRunning(id, source),
+        maybeSelfHealStaleClaudeSpawn: () => false,
+      });
+      await harness.session.generatorPromise;
+    }
+
+    function cancelScheduledResume(session: ActiveSession): void {
+      clearTimeout(session.scheduledResumeTimer);
+      session.scheduledResumeTimer = undefined;
+    }
+
+    it('shares one budget between transport and rate-limit resumes; spent, the breaker takes over', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
+      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_RESUMES + 5);
+      const rateLimited = () => new ClassifiedProviderError('Rate limited by the gateway', {
+        kind: 'rate_limit',
+        retryAfterMs: 60_000,
+      });
+      await harness.startInitial();
+      await harness.fireResume(0);
+      // Two unattended transport resumes are already scheduled...
+      expect(scheduled).toHaveLength(2);
+      expect(harness.session.consecutiveUnattendedGatewayResumes).toBe(2);
+
+      // ...so one Retry-After resume still fits the budget,
+      await runPausedGeneration(harness, 'rate_limit:rate_limit', rateLimited());
+      expect(harness.session.scheduledResumeTimer).toBeDefined();
+      expect(getQuotaCooldown('openrouter')).toBeNull();
+      cancelScheduledResume(harness.session);
+
+      // ...and the next does not: nothing is scheduled, and the breaker
+      // withholds requests instead, as when the rate-limit resumes run out.
+      await runPausedGeneration(harness, 'rate_limit:rate_limit', rateLimited());
+      expect(harness.session.scheduledResumeTimer).toBeUndefined();
+      expect(getQuotaCooldown('openrouter')?.window).toBe('rate_limit');
+      // Nothing buffered was dropped.
+      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
+      expect(harness.stats().finalizeCalls).toBe(0);
+    });
+
+    it('counts the move to the Anthropic plan after a cmem fallback against the same budget', async () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
+      const harness = makeHarness(0);
+      const allowanceSpent = () => new ClassifiedProviderError('Your memory allowance is used up', {
+        kind: 'quota_exhausted',
+        code: 'allowance_exhausted',
+      });
+      try {
+        harness.session.consecutiveUnattendedGatewayResumes = MAX_UNATTENDED_GATEWAY_RESUMES - 1;
+
+        // The last resume the budget allows moves the work to Claude at once...
+        await runPausedGeneration(harness, 'quota:quota_exhausted', allowanceSpent());
+        expect(harness.session.scheduledResumeTimer).toBeDefined();
+        cancelScheduledResume(harness.session);
+
+        // ...and past it the work waits for the next hook, still buffered.
+        await runPausedGeneration(harness, 'quota:quota_exhausted', allowanceSpent());
+        expect(harness.session.scheduledResumeTimer).toBeUndefined();
+        expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
+        expect(harness.sessionManager.getSession(harness.session.sessionDbId)).toBe(harness.session);
+      } finally {
+        clearProFallback();
+      }
+    });
+
+    it('keeps the periodic sweep off a session whose unattended gateway resumes are spent', () => {
+      process.env.CLAUDE_MEM_PROVIDER = 'openrouter';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
+      const harness = makeHarness(0);
+      const sessionDbId = harness.session.sessionDbId;
+      harness.session.pausedReason = 'quota';
+      expect(harness.sessionManager.getResumableSessionIds()).toEqual([sessionDbId]);
+
+      harness.session.consecutiveUnattendedGatewayResumes = MAX_UNATTENDED_GATEWAY_RESUMES;
+      expect(harness.sessionManager.getResumableSessionIds()).toEqual([]);
+      // The operator's explicit retry is not unattended.
+      expect(harness.sessionManager.getResumableSessionIds(true)).toEqual([sessionDbId]);
+
+      // Off the gateway the budget does not apply.
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+      expect(harness.sessionManager.getResumableSessionIds()).toEqual([sessionDbId]);
+    });
+  });
+
+  describe('which pauses resume on the transport backoff', () => {
+    function exitWith(reason: string) {
+      const calls: string[] = [];
+      const sessionManager = {
+        getMessageBuffer: () => ({ getPendingCount: () => 1 }),
+        scheduleTransportResume: () => { calls.push('schedule'); },
+        clearTransportResume: () => { calls.push('clear'); },
+      };
+      const completionHandler = { finalizeSession: async () => { calls.push('finalize'); } };
+      return handleGeneratorExit(makeSession(), reason, {
+        sessionManager: sessionManager as any,
+        completionHandler: completionHandler as any,
+      }).then(() => calls);
+    }
+
+    // A deadline keeps its own code once withRetry labels it; the Claude CLI's
+    // transport failure arrives as text. Both strand buffered work without this.
+    for (const reason of ['transport:transient', 'transport:deadline_exceeded', 'transport:observer_text']) {
+      it(`schedules a resume for ${reason}`, async () => {
+        expect(await exitWith(reason)).toEqual(['schedule']);
+      });
+    }
+
+    it('leaves a response stall to its own bounded resume', async () => {
+      expect(await exitWith('transport:response_stall')).toEqual(['clear']);
+    });
+
+    it('clears a pending transport resume when a later run pauses for another reason', async () => {
+      expect(await exitWith('rate_limit:rate_limit')).toEqual(['clear']);
     });
   });
 

@@ -13,11 +13,13 @@ import {
   RESPONSE_STALL_RESUME_DELAY_MS,
   planRateLimitResume,
   planResponseStallResume,
+  planUnattendedGatewayResume,
 } from './response-pacer.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
 import { recordObserverFailure } from '../../../shared/observer-health.js';
 import { recordClaudeCliSetupRequired } from '../../../shared/dependency-health.js';
+import { isMemoryOnCmemGateway } from '../../../shared/cmem-gateway.js';
 import {
   releaseQuotaProbe,
   recordAuthCooldown,
@@ -212,7 +214,12 @@ export async function startGeneratorWithProvider(
       // ledger nor given a breaker (a 30-min breaker over the marker's 15-min
       // window would leave memory on neither), and the finally resumes it.
       if (provider === 'openrouter' && recordCmemFallbackIfEligible(error, gatewayProbeClaimId)) {
-        scheduledResume = { afterMs: 0, source: 'cmem-fallback' };
+        // Moving the buffered work to the Anthropic plan is itself an
+        // unattended retry, so it draws on the gateway's unattended budget —
+        // a fallback only ever happens with memory on the gateway.
+        if (planUnattendedGatewayResume(session, 'cmem-fallback', true).resume) {
+          scheduledResume = { afterMs: 0, source: 'cmem-fallback' };
+        }
         // The gateway's words and request id, which its copy asks users to
         // quote to support.
         logger.warn('SESSION', 'cmem gateway is not serving this account; memory runs on the Anthropic plan provider', {
@@ -430,8 +437,12 @@ function bookClassifiedFailure(
       // With no Retry-After (OpenRouter's daily free-model limit is such a
       // 429) or once the resumes run out, the limit may last hours: withhold
       // requests behind the breaker instead of resuming into it.
+      // On the cmem gateway the resume also draws on the unattended budget it
+      // shares with transport and fallback resumes; once that is spent, the
+      // breaker takes over here too.
       const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
-      if (plan?.resume && error.retryAfterMs !== undefined) {
+      if (plan?.resume && error.retryAfterMs !== undefined
+        && planUnattendedGatewayResume(session, 'rate-limit', isMemoryOnCmemGateway()).resume) {
         resumeAfterMs = Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
       } else {
         recordQuotaExhausted(provider, error.message, 'rate_limit', undefined, session.observerProfile);

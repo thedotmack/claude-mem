@@ -3,7 +3,6 @@ import type { SessionManager } from '../SessionManager.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
-import { DEADLINE_EXCEEDED_CODE } from '../provider-errors.js';
 
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
@@ -61,11 +60,11 @@ export async function handleGeneratorExit(
   // Falling through to finalizeSession would remove the session and undo that
   // preservation — the second half of #3752.
   const PRESERVES_CLAIMED_WORK = ['quota', 'rate_limit', 'auth', 'overflow', 'provider_switch', 'transport'];
-  // A deadline pause resumes on the transport backoff: labelled with its own
-  // code since #4278, or as a generic transient fault that outlived the
-  // provider's retries.
-  const resumesOnTransportBackoff = reason === 'transport:transient'
-    || reason === `transport:${DEADLINE_EXCEEDED_CODE}`;
+  // Every transport pause resumes on the transport backoff — a deadline or an
+  // upstream fault that outlived the provider's retries, whatever code it
+  // carries, and a transport failure the Claude CLI returned as text — except a
+  // response stall, which the runner resumes on its own bounded schedule.
+  const resumesOnTransportBackoff = abortCategory === 'transport' && reason !== 'transport:response_stall';
   // A later run may finish for a different reason before an earlier transport
   // timer fires. Its old timer must not bypass the new pause decision.
   if (!resumesOnTransportBackoff) {

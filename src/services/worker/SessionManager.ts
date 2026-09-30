@@ -7,34 +7,10 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
 import { MAX_LLM_TIMEOUT_MS, resolveLlmTimeoutMs } from './retry.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
+import { isMemoryOnCmemGateway } from '../../shared/cmem-gateway.js';
+import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './session/response-pacer.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
-
-/**
- * An unattended transport resume re-sends the buffered batch with no user
- * activity behind it. On the cmem.ai gateway every one of those probes spends
- * plan tokens, and a gateway or model that keeps timing out would spend them
- * for as long as the worker runs. After this many consecutive unanswered
- * pauses the timer stops re-arming: the work stays buffered for the next
- * hook-driven start, and a confirmed answer resets the count.
- */
-export const MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES = 3;
-
-/**
- * Whether an unattended probe would be billed to the cmem.ai gateway. Settings
- * only, the same predicate dispatch uses: memory selected on OpenRouter with
- * the gateway base URL. Deliberately ignores the trial-expiry fallback window,
- * so a fallen-back session is capped too (the safe direction: fewer
- * unattended probes, never more).
- */
-function unattendedProbeUsesCmemGateway(): boolean {
-  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-  return settings.CLAUDE_MEM_PROVIDER === 'openrouter'
-    && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
-}
 
 export interface TransportResumeClock {
   setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>;
@@ -106,15 +82,12 @@ export class SessionManager {
     const prior = this.transportResumes.get(sessionDbId);
     if (prior?.timer) this.transportResumeClock.clearTimeout(prior.timer);
     const pauses = (prior?.pauses ?? 0) + 1;
-    if (pauses > MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES && unattendedProbeUsesCmemGateway()) {
-      // Keep the count without a timer, so later exits stay capped until a
-      // confirmed answer resets it; a hook-driven start still drains the buffer.
+    // Each unattended resume on the cmem gateway spends plan tokens; this one
+    // shares its budget with rate-limit and fallback resumes. Spent, the pause
+    // keeps its backoff position without a timer, and the next hook-driven
+    // start still drains the buffer.
+    if (!planUnattendedGatewayResume(session, 'transport-resume', isMemoryOnCmemGateway()).resume) {
       this.transportResumes.set(sessionDbId, { pauses });
-      logger.warn('SESSION', 'Transport pause: unattended resumes stopped on the cmem gateway; buffered work waits for the next hook', {
-        sessionId: sessionDbId,
-        pauses,
-        maxUnattendedResumes: MAX_UNATTENDED_GATEWAY_TRANSPORT_RESUMES,
-      });
       return;
     }
     const delayMs = transportResumeDelayMs(pauses);
@@ -707,15 +680,20 @@ export class SessionManager {
    * leaves a session to a resume it scheduled for itself, too: a rate limit
    * must not be retried before its Retry-After.
    * A rate-limit pause is retried like a quota pause: the breaker it armed paces it.
+   * With memory on the cmem gateway, a session whose unattended resumes are
+   * spent is left for its next hook as well: the sweep is one more unattended
+   * retry, and letting it through would make that budget meaningless.
    */
   getResumableSessionIds(includeOperatorOnly: boolean = false, nowMs: number = Date.now()): number[] {
     const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall', 'setup_required']);
+    const memoryOnCmemGateway = !includeOperatorOnly && isMemoryOnCmemGateway();
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0
         && (includeOperatorOnly || !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined))
         && (includeOperatorOnly || !(session.overflowPausedUntilMs !== undefined && nowMs < session.overflowPausedUntilMs))
         && (includeOperatorOnly || session.scheduledResumeTimer === undefined)
+        && (includeOperatorOnly || !(memoryOnCmemGateway && unattendedGatewayResumesSpent(session)))
         && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
       .map(session => session.sessionDbId);
   }

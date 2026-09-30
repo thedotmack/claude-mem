@@ -283,7 +283,7 @@ export function snapshotResponseContext(session: ActiveSession): ResponseContext
 
 /**
  * An accepted reply proves the conversation fits and the provider is alive, so
- * the overflow, stall, and rate-limit debts reset — but only when the reply answered queued
+ * the overflow, stall, rate-limit and unattended-gateway-resume debts reset — but only when the reply answered queued
  * work. The init prompt is answered on every fresh generation, so letting it
  * reset the debt meant an oversized message or a too-small budget went
  * init -> reset -> recycle -> restart forever and never reached the exhausted
@@ -295,6 +295,7 @@ function clearDebtForAnsweredWork(session: ActiveSession): void {
   session.consecutiveContextOverflows = 0;
   session.consecutiveResponseStalls = 0;
   session.consecutiveRateLimitResumes = 0;
+  session.consecutiveUnattendedGatewayResumes = 0;
 }
 
 export async function processAgentResponse(

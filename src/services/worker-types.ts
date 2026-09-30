@@ -70,6 +70,14 @@ export interface ActiveSession {
    */
   consecutiveRateLimitResumes?: number;
   /**
+   * Consecutive unattended resumes — transport backoff, rate-limit
+   * Retry-After, or the move to the Anthropic plan after a cmem fallback —
+   * scheduled while memory is on the cmem gateway. Bounds them at
+   * MAX_UNATTENDED_GATEWAY_RESUMES (plan tokens); reset when a queued-work turn
+   * is answered.
+   */
+  consecutiveUnattendedGatewayResumes?: number;
+  /**
    * The delayed resume a response stall scheduled. Any generator start cancels
    * it, so a stale timer never restarts a session a newer generation paused.
    */
