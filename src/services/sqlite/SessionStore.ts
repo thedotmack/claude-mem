@@ -216,6 +216,7 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
+    this.ensureProjectNocaseIndexes();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1961,16 +1962,21 @@ export class SessionStore {
     this.db.run(
       'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
     );
+  }
 
-    // #3531 — retrieval compares `project`/`merged_into_project` with COLLATE
-    // NOCASE so case-variant checkouts resolve to one bucket. The default BINARY
-    // indexes above cannot serve a NOCASE predicate, so add matching NOCASE
-    // indexes to keep those hot read paths on an index seek instead of a scan.
+  // v54 — #3531: retrieval compares `project`/`merged_into_project` with COLLATE
+  // NOCASE, so checkouts whose directory names differ only in case read one
+  // bucket. Stored keys are NOT rewritten (no re-key, nothing to remap for
+  // cloud sync). The BINARY indexes cannot serve a NOCASE predicate, so these
+  // keep the hot read paths on an index seek. Runs last: v33 rebuilds
+  // sdk_sessions and would drop an index created on the old table.
+  private ensureProjectNocaseIndexes(): void {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_project_nocase ON observations(project COLLATE NOCASE)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_merged_into_nocase ON observations(merged_into_project COLLATE NOCASE)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_project_nocase ON session_summaries(project COLLATE NOCASE)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_merged_into_nocase ON session_summaries(merged_into_project COLLATE NOCASE)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project_nocase ON sdk_sessions(project COLLATE NOCASE)');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(54, new Date().toISOString());
   }
 
   private addObservationSubagentColumns(): void {
@@ -2377,6 +2383,23 @@ export class SessionStore {
     }
 
     return session.memory_session_id ?? memorySessionId;
+  }
+
+  /**
+   * Every stored spelling of `project` that matches it case-insensitively,
+   * always including `project` itself (#3531). SQLite reads compare with
+   * COLLATE NOCASE, but Chroma metadata filters compare exactly, so semantic
+   * search hands Chroma each spelling it should accept.
+   */
+  getProjectKeyCaseVariants(project: string): string[] {
+    const rows = this.db.prepare(`
+      SELECT project AS key FROM sdk_sessions WHERE project = ? COLLATE NOCASE
+      UNION SELECT project FROM observations WHERE project = ? COLLATE NOCASE
+      UNION SELECT merged_into_project FROM observations WHERE merged_into_project = ? COLLATE NOCASE
+      UNION SELECT project FROM session_summaries WHERE project = ? COLLATE NOCASE
+      UNION SELECT merged_into_project FROM session_summaries WHERE merged_into_project = ? COLLATE NOCASE
+    `).all(project, project, project, project, project) as Array<{ key: string }>;
+    return Array.from(new Set([project, ...rows.map(row => row.key)]));
   }
 
   getAllProjects(platformSource?: string): string[] {

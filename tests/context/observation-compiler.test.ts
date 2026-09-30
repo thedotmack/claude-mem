@@ -311,6 +311,7 @@ describe('case-insensitive project retrieval (#3531)', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   it('resolves rows stored under a mixed-case key when queried with a different case', () => {
