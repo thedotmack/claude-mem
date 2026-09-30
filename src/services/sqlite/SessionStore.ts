@@ -3451,11 +3451,19 @@ export class SessionStore {
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
+      // Strict comparisons: rows tied exactly at anchorEpoch (routine, since
+      // storeObservations() stamps a turn's observations and its session
+      // summary with one shared timestamp) must not compete with real
+      // before/after rows for depth budget. They're picked up regardless by
+      // the final inclusive [startEpoch, endEpoch] range query below, so
+      // excluding them here at the boundary step is enough to guarantee
+      // exactly depthBefore/depthAfter real neighbors on each side, whether
+      // zero, one, or many rows tie the anchor.
       const beforeQuery = `
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.created_at_epoch <= ? ${observationScope.clause}
+        WHERE o.created_at_epoch < ? ${observationScope.clause}
         ORDER BY o.created_at_epoch DESC
         LIMIT ?
       `;
@@ -3463,19 +3471,19 @@ export class SessionStore {
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.created_at_epoch >= ? ${observationScope.clause}
+        WHERE o.created_at_epoch > ? ${observationScope.clause}
         ORDER BY o.created_at_epoch ASC
         LIMIT ?
       `;
 
       try {
         const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...observationScope.params, depthBefore) as Array<{created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter + 1) as Array<{created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...observationScope.params, depthAfter) as Array<{created_at_epoch: number}>;
 
-        if (beforeRecords.length === 0 && afterRecords.length === 0) {
-          return { observations: [], sessions: [], prompts: [] };
-        }
-
+        // No early return on "both empty" here: unlike the id-anchored branch,
+        // an empty before/after pair does not mean nothing matches, rows
+        // tied exactly at anchorEpoch are excluded from both by design (see
+        // above) and still need the final range query below to surface them.
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err) {
@@ -3488,12 +3496,14 @@ export class SessionStore {
       }
     }
 
+    // `id` breaks created_at_epoch ties so a turn's rows (which share one epoch) render in the
+    // order they were written instead of whatever order the index scan returns them in.
     const obsQuery = `
       SELECT o.*
       FROM observations o
       LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
       WHERE o.created_at_epoch >= ? AND o.created_at_epoch <= ? ${observationScope.clause}
-      ORDER BY o.created_at_epoch ASC
+      ORDER BY o.created_at_epoch ASC, o.id ASC
     `;
 
     const sessQuery = `
@@ -3501,7 +3511,7 @@ export class SessionStore {
       FROM session_summaries ss
       LEFT JOIN sdk_sessions src ON src.memory_session_id = ss.memory_session_id
       WHERE ss.created_at_epoch >= ? AND ss.created_at_epoch <= ? ${summaryScope.clause}
-      ORDER BY ss.created_at_epoch ASC
+      ORDER BY ss.created_at_epoch ASC, ss.id ASC
     `;
 
     const promptQuery = `
@@ -3509,7 +3519,7 @@ export class SessionStore {
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${promptScope.clause}
-      ORDER BY up.created_at_epoch ASC
+      ORDER BY up.created_at_epoch ASC, up.id ASC
     `;
 
     const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...observationScope.params) as ObservationRecord[];
