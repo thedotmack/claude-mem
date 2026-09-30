@@ -1103,7 +1103,7 @@ local opts = cmsgpack.unpack(ARGV[3])
 local parentDependenciesKey = args[6]
 local timestamp = args[4]
 if args[2] == "" then
-    jobId = jobCounter
+    jobId = jobCounter .. "" -- convert to string
     jobIdKey = args[1] .. jobId
 else
     jobId = args[2]
@@ -1562,6 +1562,7 @@ local function storeJobScheduler(schedulerId, schedulerKey, repeatKey, nextMilli
   rcall("HMSET", schedulerKey, "name", opts['name'], unpack(optionalValues))
 end
 local function getJobSchedulerEveryNextMillis(prevMillis, every, now, offset, startDate)
+    offset = tonumber(offset)
     local nextMillis
     if not prevMillis then
         if startDate then
@@ -1569,25 +1570,32 @@ local function getJobSchedulerEveryNextMillis(prevMillis, every, now, offset, st
             nextMillis = tonumber(startDate)
             nextMillis = nextMillis > now and nextMillis or now
         else
-            nextMillis = now
-            -- For the first iteration with no startDate and an explicit
-            -- offset, align nextMillis to the next offset slot strictly
-            -- after now. Without this the user-supplied offset is
-            -- recorded but ignored, and the first job fires at now
-            -- instead of the next aligned timestamp (issue #3705).
             if offset and offset > 0 then
-                local aligned = math.floor(nextMillis / every) * every + offset
-                if aligned <= nextMillis then
-                    aligned = aligned + every
+                -- Align to the next slot that respects the offset
+                nextMillis = math.floor(now / every) * every + offset
+                if nextMillis <= now then
+                    nextMillis = nextMillis + every
                 end
-                nextMillis = aligned
+            else
+                nextMillis = now
             end
         end
     else
         nextMillis = prevMillis + every
         -- check if we may have missed some iterations
         if nextMillis < now then
-            nextMillis = math.floor(now / every) * every + every + (offset or 0)
+            -- Use the same offset-aware alignment as the initial branch
+            -- above so a non-zero offset is preserved across catch-ups
+            -- instead of being flattened to (slot + every). When the
+            -- aligned slot is itself still in the past, advance by one
+            -- full interval; otherwise the aligned slot is the next
+            -- iteration.
+            local aligned = math.floor(now / every) * every + (offset or 0)
+            if aligned <= now then
+                nextMillis = aligned + every
+            else
+                nextMillis = aligned
+            end
         end
     end
     if not offset or offset == 0 then
@@ -1678,16 +1686,24 @@ local jobKey = prefixKey .. jobId
 local hasCollision = false
 if rcall("EXISTS", jobKey) == 1 then
     if every then
-        -- For 'every' case: try next time slot to avoid collision
-        local nextSlotMillis = nextMillis + every
-        local nextSlotJobId = "repeat:" .. jobSchedulerId .. ":" .. nextSlotMillis
-        local nextSlotJobKey = prefixKey .. nextSlotJobId
-        if rcall("EXISTS", nextSlotJobKey) == 0 then
-            -- Next slot is free, use it
-            nextMillis = nextSlotMillis
-            jobId = nextSlotJobId
-        else
-            -- Next slot also has a job, return error code
+        -- For 'every' case: walk forward through subsequent slots
+        -- until we find a free one. Stale completed/failed jobs from
+        -- a previous scheduler under the same id can occupy several
+        -- consecutive slots (issue #3063), so a single retry is not
+        -- enough. The scan is bounded so we don't spin if the
+        -- scheduler is genuinely contested.
+        local maxSlotScans = 32
+        local slotsScanned = 0
+        local jobExists
+        repeat
+            nextMillis = nextMillis + every
+            jobId = "repeat:" .. jobSchedulerId .. ":" .. nextMillis
+            jobKey = prefixKey .. jobId
+            slotsScanned = slotsScanned + 1
+            jobExists = rcall("EXISTS", jobKey)
+        until jobExists == 0 or slotsScanned >= maxSlotScans
+        if jobExists == 1 then
+            -- Every scanned slot still has a job, return error code
             return -11 -- SchedulerJobSlotsBusy
         end
     else
@@ -2172,7 +2188,7 @@ local maxEvents = getOrSetMaxEvents(metaKey)
 local parentDependenciesKey = args[6]
 local timestamp = args[4]
 if args[2] == "" then
-    jobId = jobCounter
+    jobId = jobCounter .. "" -- convert to string
     jobIdKey = args[1] .. jobId
 else
     jobId = args[2]
@@ -2712,7 +2728,7 @@ local maxEvents = getOrSetMaxEvents(metaKey)
 local parentDependenciesKey = args[6]
 local timestamp = args[4]
 if args[2] == "" then
-    jobId = jobCounter
+    jobId = jobCounter .. "" -- convert to string
     jobIdKey = args[1] .. jobId
 else
     jobId = args[2]
@@ -3484,7 +3500,7 @@ local maxEvents = getOrSetMaxEvents(metaKey)
 local parentDependenciesKey = args[6]
 local timestamp = args[4]
 if args[2] == "" then
-    jobId = jobCounter
+    jobId = jobCounter .. "" -- convert to string
     jobIdKey = args[1] .. jobId
 else
     jobId = args[2]
@@ -8834,7 +8850,7 @@ if rcall("EXISTS", jobKey) == 1 then
     if parentKey and rcall("EXISTS", parentKey) == 1 then
       if ARGV[4] == "failed" then
         if rcall("ZREM", parentKey .. ":unsuccessful", jobKey) == 1 or
-          rcall("ZREM", parentKey .. ":failed", jobKey) == 1 then
+          rcall("HDEL", parentKey .. ":failed", jobKey) == 1 then
           rcall("SADD", parentKey .. ":dependencies", jobKey)
         end
       else
@@ -9331,6 +9347,7 @@ local function getOrSetMaxEvents(metaKey)
   return maxEvents
 end
 local function getJobSchedulerEveryNextMillis(prevMillis, every, now, offset, startDate)
+    offset = tonumber(offset)
     local nextMillis
     if not prevMillis then
         if startDate then
@@ -9338,25 +9355,32 @@ local function getJobSchedulerEveryNextMillis(prevMillis, every, now, offset, st
             nextMillis = tonumber(startDate)
             nextMillis = nextMillis > now and nextMillis or now
         else
-            nextMillis = now
-            -- For the first iteration with no startDate and an explicit
-            -- offset, align nextMillis to the next offset slot strictly
-            -- after now. Without this the user-supplied offset is
-            -- recorded but ignored, and the first job fires at now
-            -- instead of the next aligned timestamp (issue #3705).
             if offset and offset > 0 then
-                local aligned = math.floor(nextMillis / every) * every + offset
-                if aligned <= nextMillis then
-                    aligned = aligned + every
+                -- Align to the next slot that respects the offset
+                nextMillis = math.floor(now / every) * every + offset
+                if nextMillis <= now then
+                    nextMillis = nextMillis + every
                 end
-                nextMillis = aligned
+            else
+                nextMillis = now
             end
         end
     else
         nextMillis = prevMillis + every
         -- check if we may have missed some iterations
         if nextMillis < now then
-            nextMillis = math.floor(now / every) * every + every + (offset or 0)
+            -- Use the same offset-aware alignment as the initial branch
+            -- above so a non-zero offset is preserved across catch-ups
+            -- instead of being flattened to (slot + every). When the
+            -- aligned slot is itself still in the past, advance by one
+            -- full interval; otherwise the aligned slot is the next
+            -- iteration.
+            local aligned = math.floor(now / every) * every + (offset or 0)
+            if aligned <= now then
+                nextMillis = aligned + every
+            else
+                nextMillis = aligned
+            end
         end
     end
     if not offset or offset == 0 then

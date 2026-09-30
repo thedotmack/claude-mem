@@ -114,19 +114,12 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
-    app.get('/api/facts', this.handleGetFacts.bind(this));
-    app.get('/api/facts/at', this.handleGetFactsAt.bind(this));
-    app.get('/api/facts/:id/provenance', this.handleGetFactProvenance.bind(this));
-    app.post('/api/facts/batch', validateBody(factsBatchSchema), this.handleGetFactsByIds.bind(this));
-    app.post('/api/facts/consolidate', validateBody(factsConsolidateSchema), this.handleConsolidateFacts.bind(this));
-    app.post('/api/maintenance/retention-sweep', validateBody(retentionSweepSchema), this.handleRetentionSweep.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/tool-uses', this.handleListToolUses.bind(this));
     app.post('/api/tool-uses/batch', validateBody(toolUsesBatchSchema), this.handleGetToolUsesByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
     app.delete('/api/observation/:id', this.handleDeleteObservation.bind(this));
-    app.delete('/api/facts/:id', this.handleDeleteFact.bind(this));
     app.delete('/api/summary/:id', this.handleDeleteSummary.bind(this));
     app.delete('/api/prompt/:id', this.handleDeletePrompt.bind(this));
 
@@ -208,18 +201,6 @@ export class DataRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
-
-    // ACT-R retrieval practice: the agent actively recalled these memories, so
-    // their traces get a real reinforcement date (same-day idempotent — a chatty
-    // agent can't inflate a note by re-fetching it). Best-effort: a missed
-    // reinforcement costs a little ranking accuracy, never a response.
-    try {
-      recordRetrieved(store.db, observations.map(o => o.id));
-    } catch (error) {
-      logger.debug('DB', 'Retrieval reinforcement skipped', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
 
     res.json(observations);
   });
@@ -341,26 +322,6 @@ export class DataRoutes extends BaseRouteHandler {
     this.deleteSyncedContent(req, res, 'observation', 'observations');
   });
 
-  /**
-   * Hard delete of a semantic fact (audit G5) — cascades to the rows
-   * tombstoned BY it (recursive superseded_by chain). Facts are not
-   * cloud-synced, so unlike deleteSyncedContent this is a plain local
-   * delete; the semantic_facts_ad FTS trigger cleans the index.
-   */
-  private handleDeleteFact = this.wrapHandler((req: Request, res: Response): void => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const store = this.dbManager.getSessionStore();
-    const result = eraseFactCascade(store.db, id);
-    if (result.deletedIds.length === 0) {
-      this.notFound(res, `fact #${id} not found`);
-      return;
-    }
-
-    res.json({ success: true, id, kind: 'fact', cascaded: result.cascaded });
-  });
-
   private handleDeleteSummary = this.wrapHandler((req: Request, res: Response): void => {
     this.deleteSyncedContent(req, res, 'summary', 'session_summaries');
   });
@@ -394,13 +355,6 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Erasure cascade (audit G5): a hard delete of an observation also removes
-    // the rows tombstoned BY it (recursive superseded_by chain) — otherwise
-    // the "erased" content survives in the DB as a marked row.
-    const chain = kind === 'observation'
-      ? observationErasureChain(store.db, Number(originLocalId))
-      : [Number(originLocalId)];
-
     const cloudSync = this.dbManager.getCloudSync();
     let entityRev: string | null = null;
     if (cloudSync?.isConfigured()) {
@@ -408,25 +362,21 @@ export class DataRoutes extends BaseRouteHandler {
         res.status(503).json({ error: 'cloud sync identity unavailable; refusing an unreplicated delete' });
         return;
       }
-      for (const chainId of chain) {
-        const rev = cloudSync.queueDelete(kind, String(chainId));
-        if (chainId === chain[0]) entityRev = rev;
-      }
+      entityRev = cloudSync.queueDelete(kind, originLocalId);
     } else {
       // A row with an acknowledged entity head must never be silently deleted
       // while its sync identity is unavailable: that would strand replicas.
-      const placeholders = chain.map(() => '?').join(',');
       const acknowledged = store.db.prepare(`
         SELECT 1 AS found FROM sync_entity_heads
-        WHERE kind = ? AND origin_local_id IN (${placeholders}) LIMIT 1
-      `).get(kind, ...chain.map(String)) as { found: number } | undefined;
+        WHERE kind = ? AND origin_local_id = ? LIMIT 1
+      `).get(kind, originLocalId) as { found: number } | undefined;
       if (acknowledged) {
         res.status(503).json({ error: 'cloud sync unavailable; refusing an unreplicated delete' });
         return;
       }
       store.db.prepare(
-        `DELETE FROM ${table} WHERE id IN (${placeholders}) AND origin_device_id IS NULL`
-      ).run(...chain);
+        `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
+      ).run(originLocalId);
     }
 
     // Only after the delete committed: open viewer tabs drop the row live.

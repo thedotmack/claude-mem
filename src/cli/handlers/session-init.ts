@@ -15,12 +15,6 @@ import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/sh
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
-import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
-import {
-  renderWorkingMemoryBlock,
-  WORKING_MEMORY_EMPTY_REMINDER,
-} from '../../services/working/render.js';
-import type { WorkingEntry, WorkingLimits } from '../../services/working/store.js';
 import {
   resolveRuntimeContext as defaultResolveRuntimeContext,
   logServerFallback as defaultLogServerFallback,
@@ -39,21 +33,6 @@ interface SessionInitResponse {
 interface SemanticContextResponse {
   context: string;
   count: number;
-  globalContext?: string;
-  globalCount?: number;
-  annotations?: {
-    attempted: boolean;
-    kept: number;
-    dropped: number;
-    durationMs: number;
-    timedOut: boolean;
-  };
-}
-
-interface WorkingMemoryResponse {
-  entries: WorkingEntry[];
-  tokens: number;
-  limits: WorkingLimits;
 }
 
 const defaultDependencies = {
@@ -181,41 +160,8 @@ export const sessionInitHandler: EventHandler = {
 
     let additionalContext = '';
 
-    // Kimi Code DISCARDS SessionStart hook results (verified in the installed
-    // CLI source, 0.29.1: triggerSessionStart() awaits the trigger and never
-    // reads the result; additionalContext is not in its hook schema at all).
-    // The only channel that reaches the model is UserPromptSubmit: stdout text
-    // (or a JSON `message` field) is appended to context. So the memory block
-    // rides the session's FIRST prompt — promptNumber === 1. (An earlier
-    // revision keyed on contextInjected === false, but the observer session is
-    // finalized on idle after every batch, so EVERY prompt looked "first" and
-    // the whole block re-injected each time.)
-    if (input.platform === 'kimi' && initResult.promptNumber === 1) {
-      const projectsParam = getProjectContext(cwd).allProjects.join(',');
-      // Same unified-memory switch as the SessionStart context handler:
-      // with the platform filter disabled the param must not be sent at all,
-      // otherwise Kimi sessions see only Kimi-era observations again.
-      const platformFilterEnabled = settings.CLAUDE_MEM_CONTEXT_PLATFORM_FILTER !== 'false';
-      const platformSourceParam = platformFilterEnabled ? '&platformSource=kimi' : '';
-      const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
-      const contextResult = await dependencies.executeWithWorkerFallback<string>(apiPath, 'GET');
-      if (!dependencies.isWorkerFallback(contextResult) && typeof contextResult === 'string' && contextResult.trim()) {
-        additionalContext = contextResult.trim();
-      }
-    }
-
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
-      // Cross-project injection (Palantir-in-`search`-needed-in-`kit` case):
-      // 0/absent = off, the worker answers with current-project context only.
-      const globalLimit = settings.CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT || '0';
-      // Unified memory applies here too: with the platform filter disabled the
-      // request must NOT carry platformSource — otherwise the semantic path
-      // where-filters Chroma to kimi-only observations and older (claude-era /
-      // null-platform) memories become invisible to injection. Observed live
-      // 2026-08-07: a GPU-shop query in project `search` never saw the RTX 3090
-      // research series because its platform_source was NULL.
-      const platformFilterEnabled = settings.CLAUDE_MEM_CONTEXT_PLATFORM_FILTER !== 'false';
       const semanticResult = await dependencies.executeWithWorkerFallback<SemanticContextResponse>(
         '/api/context/semantic',
         'POST',
@@ -226,51 +172,7 @@ export const sessionInitHandler: EventHandler = {
       );
       if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
         logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
-        additionalContext = additionalContext
-          ? `${additionalContext}\n\n${semanticResult.context}`
-          : semanticResult.context;
-      }
-      if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.annotations?.attempted) {
-        logger.debug('HOOK', `Semantic annotation: kept=${semanticResult.annotations.kept} dropped=${semanticResult.annotations.dropped} in ${semanticResult.annotations.durationMs}ms${semanticResult.annotations.timedOut ? ' (timed out)' : ''}`, { sessionId: sessionDbId, ...semanticResult.annotations });
-      }
-      if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.globalContext) {
-        logger.debug('HOOK', `Cross-project semantic injection: ${semanticResult.globalCount} memories for prompt`, { sessionId: sessionDbId, count: semanticResult.globalCount });
-        additionalContext = additionalContext
-          ? `${additionalContext}\n\n${semanticResult.globalContext}`
-          : semanticResult.globalContext;
-      }
-    }
-
-    // Working memory rides EVERY prompt (unlike the semantic block, no length
-    // gate): stale state must stay visible to the agent's eyes — that
-    // visibility is the structural defense against "forgot to write". When the
-    // set is empty and the prompt is substantial, a one-line reminder nudges
-    // the agent to record its hypothesis/plan. Fail-open: a worker hiccup
-    // must never break the hook.
-    const workingEnabled = String(settings.CLAUDE_MEM_WORKING_ENABLED ?? 'true').toLowerCase() === 'true';
-    if (workingEnabled) {
-      try {
-        const workingResult = await dependencies.executeWithWorkerFallback<WorkingMemoryResponse>(
-          `/api/working?project=${encodeURIComponent(project)}`,
-          'GET',
-        );
-        if (!dependencies.isWorkerFallback(workingResult) && workingResult) {
-          const block = renderWorkingMemoryBlock({ entries: workingResult.entries ?? [] });
-          const workingText = block ?? (
-            prompt && prompt.length >= 20 && prompt !== '[media prompt]'
-              ? WORKING_MEMORY_EMPTY_REMINDER
-              : ''
-          );
-          if (workingText) {
-            additionalContext = additionalContext
-              ? `${additionalContext}\n\n${workingText}`
-              : workingText;
-          }
-        }
-      } catch (error: unknown) {
-        logger.warn('HOOK', 'Working-memory injection failed (ignored)', {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        additionalContext = semanticResult.context;
       }
     }
 
@@ -284,10 +186,7 @@ export const sessionInitHandler: EventHandler = {
         suppressOutput: true,
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
-          // Wrapped so the strip-tags pass (tag-stripping.ts) removes injected
-          // memory from transcripts before distillation — otherwise an
-          // unverified working-memory hypothesis comes back as an observation.
-          additionalContext: `${CONTEXT_TAG_OPEN}\n${additionalContext}\n${CONTEXT_TAG_CLOSE}`
+          additionalContext
         }
       };
     }

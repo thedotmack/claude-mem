@@ -918,8 +918,8 @@ ${A.stack??""}
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata, reinforcement_dates, last_reinforced, echo_of)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `),A=this.db.prepare("SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?");for(let E of t){if(!E.title||E.title.trim()===""){_.debug("DB","Skipping observation with empty title");continue}let y=de(e,E.title,E.narrative),g=R.get(e,s,E.type,E.title,E.subtitle,JSON.stringify(E.facts),E.narrative,JSON.stringify(E.concepts),JSON.stringify(E.files_read),JSON.stringify(E.files_modified),o||null,r,E.agent_type??null,E.agent_id??null,y,l,u,d||null,E.metadata??null);if(g){T.push(g.id);continue}let C=A.get(e,y);if(!C)throw new Error(`storeObservations: ON CONFLICT without existing row for content_hash=${y}`);T.push(C.id)}let S=null;if(n){let E=ve(t),y=n.files_read??E.files_read,g=n.files_edited??E.files_edited,m=this.db.prepare(`

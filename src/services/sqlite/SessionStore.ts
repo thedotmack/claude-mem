@@ -14,6 +14,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
+import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
   upsertToolUse as upsertToolUseRow,
@@ -162,6 +163,12 @@ interface SdkSessionDetailRow {
   observed_billing: string | null;
 }
 
+/**
+ * ACT-R reinforcement columns. Main records up to v52 and #3063's dedup tables
+ * take v53; recheck the next free version before landing.
+ */
+const REINFORCEMENT_SCHEMA_VERSION = 54;
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -196,7 +203,6 @@ export class SessionStore {
     this.addSessionCustomTitleColumn();
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
-    this.ensureReinforcementTotalColumn();
     this.ensureMergedIntoProjectColumns();
     this.addObservationSubagentColumns();
     this.addObservationsUniqueContentHashIndex();
@@ -217,6 +223,7 @@ export class SessionStore {
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
+    this.ensureReinforcementColumns();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1942,6 +1949,27 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
   }
 
+  /**
+   * ACT-R reinforcement history for observations (opt-in ranking, see
+   * src/services/reinforcement):
+   *   - reinforcement_dates: JSON array of ISO `YYYY-MM-DD` days the
+   *     observation was (re-)confirmed, seeded with its creation day
+   *   - last_reinforced: the most recent of those days
+   * Device-local, like relevance_count. No backfill: a NULL history ranks on
+   * its creation time alone. The PRAGMA checks are the guard; the version row
+   * is bookkeeping, so a DB that already recorded it still gets the columns.
+   */
+  private ensureReinforcementColumns(): void {
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (!columns.some(col => col.name === 'reinforcement_dates')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN reinforcement_dates TEXT');
+    }
+    if (!columns.some(col => col.name === 'last_reinforced')) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_reinforced TEXT');
+    }
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(REINFORCEMENT_SCHEMA_VERSION, new Date().toISOString());
+  }
+
   private ensureMergedIntoProjectColumns(): void {
     const obsCols = this.db
       .query('PRAGMA table_info(observations)')
@@ -3146,13 +3174,6 @@ export class SessionStore {
       agent_type?: string | null;
       agent_id?: string | null;
       metadata?: string | null;
-      /**
-       * Echo marker (memory grounding, Layer 2): id of the near-duplicate
-       * observation this row retells. Echo rows are stored WITHOUT a
-       * reinforcement seed (reinforcement_dates / last_reinforced stay NULL)
-       * and are excluded from injection and dedup candidacy.
-       */
-      echo_of?: number | null;
     }>,
     summary: {
       request: string;
@@ -3171,8 +3192,7 @@ export class SessionStore {
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
-
-    const seed = seedReinforcement(timestampEpoch);
+    const reinforcementSeed = seedReinforcement(timestampEpoch);
 
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
@@ -3181,8 +3201,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata, reinforcement_dates, last_reinforced, echo_of)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata, reinforcement_dates, last_reinforced)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -3199,9 +3219,6 @@ export class SessionStore {
         }
 
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        // Echo rows (memory grounding, Layer 2) are stored for audit but get no
-        // reinforcement seed — an echo must never gain ACT-R strength.
-        const isEcho = observation.echo_of != null;
         const inserted = obsStmt.get(
           memorySessionId,
           project,
@@ -3222,9 +3239,8 @@ export class SessionStore {
           timestampEpoch,
           generatedByModel || null,
           observation.metadata ?? null,
-          isEcho ? null : seed.dates,
-          isEcho ? null : seed.lastReinforced,
-          observation.echo_of ?? null
+          reinforcementSeed.dates,
+          reinforcementSeed.lastReinforced
         ) as { id: number } | null;
 
         if (inserted) {
@@ -3238,6 +3254,8 @@ export class SessionStore {
             `storeObservations: ON CONFLICT without existing row for content_hash=${contentHash}`
           );
         }
+        // An exact duplicate re-confirms the stored observation: record the day
+        // (same-day repeats and retries are no-ops) instead of dropping it silently.
         reinforceObservation(this.db, existing.id, new Date(timestampEpoch));
         observationIds.push(existing.id);
       }

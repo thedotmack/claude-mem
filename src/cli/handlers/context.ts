@@ -154,11 +154,7 @@ export const contextHandler: EventHandler = {
     return {
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        // Same strip-tags protection as the per-prompt path (session-init.ts):
-        // injected memory must not come back as new observations.
-        additionalContext: additionalContext
-          ? `${CONTEXT_TAG_OPEN}\n${additionalContext}\n${CONTEXT_TAG_CLOSE}`
-          : additionalContext
+        additionalContext
       },
       systemMessage
     };

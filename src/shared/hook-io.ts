@@ -120,9 +120,7 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
   }
   moduleHasEmitted = true;
   const output = adapter.formatOutput(result);
-  // Adapters may return a pre-rendered string (Kimi: plain-text context —
-  // its CLI appends stdout verbatim and does not parse a JSON envelope).
-  console.log(typeof output === 'string' ? output : JSON.stringify(output));
+  console.log(JSON.stringify(output));
 }
 
 let moduleHasEmitted = false;

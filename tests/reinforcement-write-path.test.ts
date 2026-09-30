@@ -2,7 +2,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
-import { reinforceObservation, observationStrength } from '../src/services/reinforcement/persist.js';
+import { reinforceObservation } from '../src/services/reinforcement/persist.js';
+import { blendedScore } from '../src/services/reinforcement/rank.js';
 
 // The standalone storeObservation() helper is gone — SessionStore owns every
 // observation write now, so the write path is exercised through its methods.
@@ -17,7 +18,6 @@ type ObservationInput = {
   files_modified: string[];
 };
 
-const DAY = 86_400_000;
 const obs = (over: Partial<ObservationInput> = {}): ObservationInput => ({
   type: 'discovery',
   title: 'reddit warmup',
@@ -45,7 +45,7 @@ function datesOf(store: SessionStore, id: number): string[] {
   return JSON.parse(row.reinforcement_dates ?? '[]');
 }
 
-describe('Phase 1c — reinforcement on the write path', () => {
+describe('reinforcement on the write path', () => {
   let store: SessionStore;
   const day1 = Date.parse('2026-06-10T12:00:00Z');
   const day2 = Date.parse('2026-06-12T12:00:00Z');
@@ -77,38 +77,25 @@ describe('Phase 1c — reinforcement on the write path', () => {
     expect(datesOf(store, first.id)).toEqual(['2026-06-10']);
   });
 
-  it('reinforced duplicate has higher strength than a single-event note', () => {
+  it('a re-confirmed observation ranks above a same-day single-event one once ranking is on', () => {
     const today = new Date('2026-06-12T12:00:00Z');
     const a = store.storeObservation('s1', 'proj', obs({ title: 'a', narrative: 'a' }), 1, 0, day1);
     const b = store.storeObservation('s1', 'proj', obs({ title: 'b', narrative: 'b' }), 1, 0, day1);
     store.storeObservation('s1', 'proj', obs({ title: 'b', narrative: 'b' }), 2, 0, day2); // reinforce b
-    expect(observationStrength(store.db, b.id, today)).toBeGreaterThan(
-      observationStrength(store.db, a.id, today),
-    );
+    const rowOf = (id: number) => store.db
+      .prepare('SELECT created_at_epoch, reinforcement_dates FROM observations WHERE id = ?')
+      .get(id) as { created_at_epoch: number; reinforcement_dates: string };
+    expect(blendedScore(rowOf(b.id), today, 0.5)).toBeGreaterThan(blendedScore(rowOf(a.id), today, 0.5));
+    expect(blendedScore(rowOf(b.id), today, 0)).toBe(blendedScore(rowOf(a.id), today, 0));
   });
 
-  it('reinforceObservation can be called directly (retrieval-feedback path)', () => {
+  it('reinforceObservation appends a new day and reports missing rows', () => {
     const { id } = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
     const changed = reinforceObservation(store.db, id, new Date(day2));
     expect(changed).toBe(true);
     expect(datesOf(store, id)).toEqual(['2026-06-10', '2026-06-12']);
     // missing row → false
     expect(reinforceObservation(store.db, 9999, new Date(day2))).toBe(false);
-  });
-
-  it('reinforcement_total counts lifetime appends, never same-day no-ops', () => {
-    const totalOf = (id: number) =>
-      (store.db.prepare('SELECT reinforcement_total FROM observations WHERE id = ?').get(id) as any)?.reinforcement_total;
-    const { id } = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
-    expect(totalOf(id) ?? 0).toBe(0); // seed does not count as a reinforcement
-    expect(reinforceObservation(store.db, id, new Date(day2))).toBe(true);
-    expect(totalOf(id)).toBe(1);
-    // Same-day no-op: neither a new date nor a counter bump.
-    expect(reinforceObservation(store.db, id, new Date(day2))).toBe(false);
-    expect(totalOf(id)).toBe(1);
-    // Next real append keeps counting even as the FIFO window stays capped.
-    expect(reinforceObservation(store.db, id, new Date(day2 + 2 * DAY))).toBe(true);
-    expect(totalOf(id)).toBe(2);
   });
 
   // Regression: the worker writes observer output through the batch method,

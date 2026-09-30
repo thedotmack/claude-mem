@@ -96,24 +96,9 @@ export function expandTilde(
   return expandHome(filePath, platform, home);
 }
 
-/**
- * Per-worker-instance suffix for the PID file and supervisor registry. When
- * CLAUDE_MEM_WORKER_PORT is set in the environment (baked into Kimi hook
- * commands), the worker gets its own `worker-<port>.pid` / `supervisor-<port>.json`
- * so a second claude-mem worker can coexist with the default one (e.g. the
- * marketplace build serving Claude Code on 37777 and a dev build serving Kimi
- * on 37790) over the SAME database — without the two supervisors clobbering
- * each other's PID file. Env unset → legacy unsuffixed paths, byte-identical
- * to the old behavior.
- */
-function workerInstanceSuffix(): string {
-  const port = process.env.CLAUDE_MEM_WORKER_PORT;
-  return port ? `-${port}` : '';
-}
-
 export const paths = {
   dataDir: () => DATA_DIR,
-  workerPid: () => join(DATA_DIR, `worker${workerInstanceSuffix()}.pid`),
+  workerPid: () => join(DATA_DIR, 'worker.pid'),
   // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
   // remain `.server-beta.*` so existing installations keep finding their
   // pid/port/runtime state. Plan §1d will migrate the basenames.
@@ -127,7 +112,7 @@ export const paths = {
   transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),
   transcriptsState: () => join(DATA_DIR, 'transcript-watch-state.json'),
   corpora: () => join(DATA_DIR, 'corpora'),
-  supervisorRegistry: () => join(DATA_DIR, `supervisor${workerInstanceSuffix()}.json`),
+  supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
   envFile: () => join(DATA_DIR, '.env'),
   logsDir: () => LOGS_DIR,
 } as const;

@@ -1889,8 +1889,8 @@ For more info: https://docs.claude-mem.ai/antigravity-cli/setup
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata, reinforcement_dates, last_reinforced, echo_of)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `),m=this.db.prepare("SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ?");for(let y of n){if(!y.title||y.title.trim()===""){h.debug("DB","Skipping observation with empty title");continue}let v=iQ(e,y.title,y.narrative),b=f.get(e,r,y.type,y.title,y.subtitle,JSON.stringify(y.facts),y.narrative,JSON.stringify(y.concepts),JSON.stringify(y.files_read),JSON.stringify(y.files_modified),i||null,o,y.agent_type??null,y.agent_id??null,v,u,c,l||null,y.metadata??null);if(b){p.push(b.id);continue}let S=m.get(e,v);if(!S)throw new Error(`storeObservations: ON CONFLICT without existing row for content_hash=${v}`);p.push(S.id)}let _=null;if(s){let y=tje(n),v=s.files_read??y.files_read,b=s.files_edited??y.files_edited,w=this.db.prepare(`

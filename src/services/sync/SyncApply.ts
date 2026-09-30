@@ -47,7 +47,8 @@
 // Excluded from every row body: id (rides as op.origin_id), synced_at
 // (device-local push state), origin_device_id/origin_local_id/sync_rev (ride
 // as op.origin_device/op.origin_id/op.rev), relevance_count (device-local
-// usage counter).
+// usage counter), reinforcement_dates and last_reinforced (device-local ACT-R
+// reinforcement history; a replica ranks on its own confirmations).
 //
 // kind 'mutation'  (op.origin_id = op UUID minted at the mutation site):
 //   set_title:

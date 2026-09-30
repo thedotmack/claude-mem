@@ -101,10 +101,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_FULL_COUNT: string;
   CLAUDE_MEM_CONTEXT_FULL_FIELD: string;
   CLAUDE_MEM_CONTEXT_SESSION_COUNT: string;
-  CLAUDE_MEM_CONTEXT_PLATFORM_FILTER: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
   CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: string;
+  CLAUDE_MEM_REINFORCE_ALPHA: string;
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
@@ -118,45 +118,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;
   CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: string;
-  CLAUDE_MEM_SEMANTIC_INJECT: string;
-  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;
-  CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: string;
-  CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT: string;
-  // Relevance annotation layer over semantic injection (opt-in, default off):
-  // one batched cheap-model call per prompt annotates each candidate with a
-  // "why this helps now" hint and may drop inapplicable memories (critique
-  // stage). Lives here (not env-only) so settings.json can enable it —
-  // loadFromFile drops keys absent from DEFAULTS.
-  CLAUDE_MEM_SEMANTIC_ANNOTATE: string;
-  CLAUDE_MEM_SEMANTIC_ANNOTATE_TIMEOUT_MS: string;
-  CLAUDE_MEM_SEMANTIC_ANNOTATE_MODEL: string;
-  CLAUDE_MEM_SEMANTIC_ANNOTATE_ALLOW_DROP: string;
-  CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG: string;
-  // Working memory: task-scoped scratch state (separate table, no ACT-R /
-  // dedup / embeddings). Cost is ~0 (no LLM), so the master flag defaults on.
-  CLAUDE_MEM_WORKING_ENABLED: string;
-  CLAUDE_MEM_WORKING_MAX_KEYS: string;
-  CLAUDE_MEM_WORKING_MAX_TOKENS: string;
-  CLAUDE_MEM_WORKING_JOURNAL_SIZE: string;
-  CLAUDE_MEM_WORKING_TTL_DAYS: string;
-  // Semantic memory layer: episode→fact consolidation (opt-in, default off)
-  // and the `## Project Knowledge` injection block cap.
-  CLAUDE_MEM_CONSOLIDATION_ENABLED: string;
-  // Semantic dedup judge (opt-in, default off): LLM verdicts
-  // ADD/INCREMENT/FLAG_CONFLICT per observation batch. Lives here (not env-only)
-  // so settings.json can enable it — loadFromFile drops keys absent from DEFAULTS.
-  CLAUDE_MEM_DEDUP_JUDGE_ENABLED: string;
-  CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: string;
-  CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS: string;
-  CLAUDE_MEM_FACTS_INJECT_COUNT: string;
-  // Retention sweep (opt-in, default off): age/strength-threshold deletion of
-  // stale observations into the deleted_observations audit table. Lives here
-  // (not env-only) so settings.json can enable it — loadFromFile drops keys
-  // absent from DEFAULTS.
-  CLAUDE_MEM_RETENTION_ENABLED: string;
-  CLAUDE_MEM_RETENTION_MIN_AGE_DAYS: string;
-  CLAUDE_MEM_RETENTION_MIN_STRENGTH: string;
-  CLAUDE_MEM_RETENTION_MAX_DELETES_PER_RUN: string;
+  CLAUDE_MEM_SEMANTIC_INJECT: string;        
+  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;
@@ -309,13 +272,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_FULL_COUNT: '0',
     CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
     CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
-    // When 'false', context injection ignores platform_source — observations
-    // are shared across all clients (Claude Code, Kimi, Codex…) against one
-    // unified memory. Default 'true' keeps upstream's per-platform siloing.
-    CLAUDE_MEM_CONTEXT_PLATFORM_FILTER: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
     CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: 'true',
+    CLAUDE_MEM_REINFORCE_ALPHA: '0',  // ACT-R reinforcement weight for SessionStart ranking. 0 = off (the N most recent observations, unchanged); >0 lets re-confirmed older observations climb into the window
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
@@ -331,27 +291,6 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
-    CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: '0',       // Cosine floor for injected vector hits; OFF by default — measured 2026-08-05 on the live e5 corpus: the similarity band is too compressed for an absolute floor to separate (obvious nonsense scores within ~0.05 cos of genuine queries — both pass 0.90, both die at 0.95). Plumbing kept for other models/bands; the evidence-backed alternative is the LLM relevance filter over candidates, implemented behind CLAUDE_MEM_SEMANTIC_ANNOTATE.
-    CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT: '0',    // Cross-project semantic injection: how many OTHER-project hits (observations via Chroma + facts via FTS, combined cap) to add as a separate context section. '0' = off, current-project-only behavior.
-    CLAUDE_MEM_SEMANTIC_ANNOTATE: 'false',            // Relevance annotation: one batched LLM call per prompt adds a "Why now:" hint per injected memory and may drop inapplicable ones. Opt-in — this is the per-prompt-quota-cost filter previously deferred (see MIN_SCORE comment above), now implemented behind this flag.
-    CLAUDE_MEM_SEMANTIC_ANNOTATE_TIMEOUT_MS: '4000',  // Hard cap on the annotation call; on timeout the injection goes out unannotated (fail-open)
-    CLAUDE_MEM_SEMANTIC_ANNOTATE_MODEL: '$TIER:simple', // Critic model — resolves via model-aliases (default haiku)
-    CLAUDE_MEM_SEMANTIC_ANNOTATE_ALLOW_DROP: 'true',  // 'false' = hints only, never remove a memory from the injection
-    CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG: 'false',  // Opt-in JSONL dump of every annotation (full prompt text, verdicts, hints) to <dataDir>/logs/semantic-annotate.jsonl for manual quality review
-    CLAUDE_MEM_WORKING_ENABLED: 'true',              // Working memory master switch (task-scoped scratch state, no LLM cost)
-    CLAUDE_MEM_WORKING_MAX_KEYS: '8',                // Intent slots per task (eval knob: 3/6/12/24); overflow = 409 with the current key list
-    CLAUDE_MEM_WORKING_MAX_TOKENS: '1000',           // Render token budget (chars/4) over intent + journal values
-    CLAUDE_MEM_WORKING_JOURNAL_SIZE: '5',            // Observer journal ring length per task
-    CLAUDE_MEM_WORKING_TTL_DAYS: '7',                // Lazy expiry: expires_at = updated + TTL, filtered on read
-    CLAUDE_MEM_CONSOLIDATION_ENABLED: 'false',       // Distill episodes into durable semantic facts (one LLM call per run, opt-in)
-    CLAUDE_MEM_DEDUP_JUDGE_ENABLED: 'false',         // Semantic dedup judge per observation batch (one LLM call per kept observation, opt-in)
-    CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: '12', // Per-project throttle: min hours between consolidation runs
-    CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS: '20',   // Per-project throttle: min new observations since the last run
-    CLAUDE_MEM_FACTS_INJECT_COUNT: '15',             // Cap on the `## Project Knowledge` facts block above the timeline
-    CLAUDE_MEM_RETENTION_ENABLED: 'false',           // Retention sweep master switch (audit G2 — opt-in, apply gated on this)
-    CLAUDE_MEM_RETENTION_MIN_AGE_DAYS: '90',         // Candidates: observations older than this
-    CLAUDE_MEM_RETENTION_MIN_STRENGTH: '0.05',       // Candidates: ACT-R effectiveStrength below this
-    CLAUDE_MEM_RETENTION_MAX_DELETES_PER_RUN: '500', // Safety cap per sweep run
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
     CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries

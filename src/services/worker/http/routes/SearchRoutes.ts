@@ -64,7 +64,6 @@ const semanticContextSchema = z.object({
   q: z.string().optional(),
   project: z.string().optional(),
   limit: z.union([z.string(), z.number()]).optional(),
-  globalLimit: z.union([z.string(), z.number()]).optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
@@ -75,8 +74,6 @@ export class SearchRoutes extends BaseRouteHandler {
   // Scope this cache to the route instance so separate server/test instances do
   // not inherit each other's positive observation state through shared modules.
   private readonly projectsKnownNonEmpty = new Set<string>();
-  // Critique stage for semantic injection (CLAUDE_MEM_SEMANTIC_ANNOTATE).
-  private readonly relevanceAnnotator = new RelevanceAnnotator();
 
   constructor(
     private searchManager: SearchManager,
@@ -391,51 +388,15 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
-    // Cross-project semantic injection (CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT,
-    // passed by the session-init hook): after the project-scoped search, run a
-    // second, unscoped search and surface top-N OTHER-project hits as a
-    // separate section. 0 = off (default).
-    const globalLimit = Math.min(Math.max(parseInt(String(req.body?.globalLimit ?? req.query.globalLimit ?? '0'), 10) || 0, 0), 20);
-    let platformSource = this.getOptionalPlatformSourceFromRequest(req);
-
-    // Unified-memory mode: ignore platform scoping entirely when the operator
-    // disabled the platform filter — otherwise older (null/claude-era)
-    // memories are invisible to semantic injection regardless of the setting
-    // (observed live 2026-08-07 on project `search` GPU memories).
-    const platformFilterEnabled = SettingsDefaultsManager
-      .loadFromFile(USER_SETTINGS_PATH)
-      .CLAUDE_MEM_CONTEXT_PLATFORM_FILTER !== 'false';
-    if (!platformFilterEnabled) platformSource = undefined;
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });
       return;
     }
 
-    // Chroma is single-writer per data dir, so a secondary worker instance
-    // (e.g. the Kimi-dedicated worker on 37791) runs with Chroma disabled —
-    // leaving it with FTS-only search that cannot answer multi-word or
-    // cross-language queries (observed live 2026-08-01: Russian prompts got
-    // count:0 while the main worker answered them via e5). Both instances
-    // share the same SQLite and the same Chroma dir, so forward the semantic
-    // query to the main worker, which owns the vector index.
-    if (SettingsDefaultsManager.get('CLAUDE_MEM_CHROMA_ENABLED').trim().toLowerCase() === 'false') {
-      const forwarded = await this.forwardSemanticToMainWorker(req.body ?? { q: query, project, limit });
-      if (forwarded !== null) {
-        res.json(forwarded);
-        return;
-      }
-      // fall through to local FTS on forwarding failure
-    }
-
     let result: any;
     try {
-      // G4: relevance floor on the vector channel — weak semantic matches are
-      // how stale/misaligned experience gets replayed into the prompt
-      // (experience-following, C10 of the literature review).
-      const minScoreRaw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
-        .CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE;
-      const minSimilarity = Number(minScoreRaw);
       result = await this.searchManager.search({
         query,
         type: 'observations',
@@ -443,7 +404,6 @@ export class SearchRoutes extends BaseRouteHandler {
         limit: String(limit),
         format: 'json',
         ...(platformSource ? { platformSource } : {}),
-        ...(Number.isFinite(minSimilarity) && minSimilarity > 0 ? { minSimilarity } : {}),
       });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
@@ -453,280 +413,21 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const observations = result?.observations || [];
-
-    // Cross-project candidates are fetched BEFORE rendering so both sections
-    // can be critiqued by a single batched annotation call below.
-    const globalData = globalLimit > 0 && project
-      ? await this.searchGlobalContext(query, project, globalLimit, platformSource, observations)
-      : { globalObservations: [] as any[], facts: [] as any[] };
-
-    // Relevance annotation (CLAUDE_MEM_SEMANTIC_ANNOTATE): one batched
-    // cheap-model call critiques every candidate against the current prompt —
-    // each memory gets a "Why now:" hint or a drop verdict. Fail-open: any
-    // non-'ok' outcome leaves the injection exactly as retrieval produced it.
-    const settings = this.getCachedSettings();
-    let verdicts: Map<string, AnnotationVerdict> | null = null;
-    let annotationStats: { attempted: boolean; kept: number; dropped: number; durationMs: number; timedOut: boolean } | undefined;
-
-    const allCandidates = [...observations.slice(0, limit), ...globalData.globalObservations];
-    if (settings.CLAUDE_MEM_SEMANTIC_ANNOTATE === 'true' && allCandidates.length > 0) {
-      const annotation = await this.relevanceAnnotator.annotate(
-        query,
-        allCandidates.map(obs => ({
-          key: SearchRoutes.observationKey(obs),
-          title: obs.title || 'Observation',
-          narrative: obs.narrative,
-          project: obs.project,
-        })),
-        project,
-      );
-      let dropped = 0;
-      let kept = 0;
-      if (annotation.verdicts) {
-        verdicts = annotation.verdicts;
-        for (const verdict of annotation.verdicts.values()) {
-          if (verdict === 'drop') dropped++; else kept++;
-        }
-      }
-      annotationStats = {
-        attempted: true,
-        kept,
-        dropped,
-        durationMs: annotation.durationMs,
-        timedOut: annotation.outcome === 'timeout',
-      };
-      logger.info('HTTP', 'semantic_annotate', {
-        project,
-        outcome: annotation.outcome,
-        candidates_in: allCandidates.length,
-        kept,
-        dropped,
-        duration_ms: annotation.durationMs,
-        model: annotation.model,
-      });
-      // Hook-level event (no sessionDbId in scope) → null key, time-window rollup.
-      telemetryBuffer.record('context_injected', null, {
-        outcome: 'ok',
-        annotated_count: kept,
-        annotation_dropped: dropped,
-        annotation_ms: annotation.durationMs,
-        annotation_outcome: annotation.outcome,
-      });
-      if (settings.CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG === 'true') {
-        SearchRoutes.writeAnnotationDebugLog({
-          ts: new Date().toISOString(),
-          project,
-          query,
-          outcome: annotation.outcome,
-          model: annotation.model,
-          duration_ms: annotation.durationMs,
-          candidates: allCandidates.map(obs => ({
-            key: SearchRoutes.observationKey(obs),
-            title: obs.title,
-            project: obs.project,
-            verdict: verdicts?.get(SearchRoutes.observationKey(obs)) ?? null,
-          })),
-        });
-      }
+    if (!observations.length) {
+      res.json({ context: '', count: 0 });
+      return;
     }
-
-    // Render one observation; returns null when the critic dropped it. When
-    // the critic ran successfully the injection switches to COMPACT mode: the
-    // "Why now:" hint REPLACES the full narrative (a hint plus a fetchable id
-    // is the book cover + why-it-helps, not the whole book) — narratives stay
-    // available via get_observations([id]). Without a successful critique the
-    // legacy full format is kept (fail-open).
-    const compact = verdicts !== null;
-    const renderObservation = (obs: any, headerSuffix = ''): string[] | null => {
-      const verdict = verdicts?.get(SearchRoutes.observationKey(obs));
-      if (verdict === 'drop') return null;
-      const date = obs.created_at?.slice(0, 10) || '';
-      const idSuffix = obs.id != null ? ` #${obs.id}` : '';
-      const lines = [`### ${obs.title || 'Observation'} (${date})${headerSuffix}${idSuffix}`];
-      if (verdict) lines.push(`**Why now:** ${verdict.hint}`);
-      if (!compact && obs.narrative) lines.push(obs.narrative);
-      lines.push('');
-      return lines;
-    };
 
     const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
-    let keptCount = 0;
     for (const obs of observations.slice(0, limit)) {
-      const rendered = renderObservation(obs);
-      if (!rendered) continue;
-      lines.push(...rendered);
-      keptCount++;
-    }
-    if (compact && keptCount) {
-      lines.push('_Expand any memory via get_observations([id])._');
-    }
-
-    const context = keptCount ? lines.join('\n') : '';
-    const response: {
-      context: string;
-      count: number;
-      globalContext?: string;
-      globalCount?: number;
-      annotations?: { attempted: boolean; kept: number; dropped: number; durationMs: number; timedOut: boolean };
-    } = {
-      context,
-      count: keptCount,
-      ...(annotationStats ? { annotations: annotationStats } : {}),
-    };
-
-    const globalSection = SearchRoutes.renderGlobalSection(
-      globalData.globalObservations,
-      globalData.facts,
-      renderObservation,
-    );
-    if (globalSection.globalCount > 0) {
-      response.globalContext = globalSection.globalContext;
-      response.globalCount = globalSection.globalCount;
-    }
-
-    res.json(response);
-  });
-
-  /**
-   * Cross-project semantic search: same query without the project filter
-   * (observations via the Chroma path, facts via FTS — facts have no vectors
-   * yet, that is the v2 track). Hits from the current project and ids already
-   * in the main result set are dropped; the combined observation+fact budget
-   * is globalLimit. Returns RAW candidates — rendering lives in
-   * renderGlobalSection so the caller can run the relevance critic over both
-   * sections before anything is rendered. Best-effort: any failure yields
-   * empty lists, never a failed injection.
-   */
-  private async searchGlobalContext(
-    query: string,
-    project: string,
-    globalLimit: number,
-    platformSource: string | undefined,
-    mainObservations: any[],
-  ): Promise<{ globalObservations: any[]; facts: any[] }> {
-    const empty = { globalObservations: [] as any[], facts: [] as any[] };
-    try {
-      const minScoreRaw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
-        .CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE;
-      const minSimilarity = Number(minScoreRaw);
-
-      const mainKeys = new Set(
-        mainObservations.map(obs => SearchRoutes.observationKey(obs)),
-      );
-
-      // Overfetch: project-exclusion and id dedup shrink the candidate pool.
-      const globalResult = await this.searchManager.search({
-        query,
-        type: 'observations',
-        limit: String(Math.max(globalLimit * 3, 10)),
-        format: 'json',
-        ...(platformSource ? { platformSource } : {}),
-        ...(Number.isFinite(minSimilarity) && minSimilarity > 0 ? { minSimilarity } : {}),
-      });
-
-      const globalObservations = ((globalResult?.observations || []) as any[])
-        .filter(obs => obs.project && obs.project !== project)
-        .filter(obs => !mainKeys.has(SearchRoutes.observationKey(obs)))
-        .slice(0, globalLimit);
-
-      const remaining = globalLimit - globalObservations.length;
-      const facts = remaining > 0
-        ? this.searchManager.getSessionSearch()
-            .searchFacts(query, { limit: remaining * 3 })
-            .filter(fact => fact.project !== project)
-            .slice(0, remaining)
-        : [];
-
-      return { globalObservations, facts };
-    } catch (error) {
-      logger.warn('HTTP', 'Cross-project semantic search failed, skipping global section', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return empty;
-    }
-  }
-
-  /**
-   * Render the cross-project section from raw candidates. `renderObservation`
-   * is shared with the current-project section so critic verdicts (drop /
-   * "Why now:" hints) apply identically to global hits; facts carry no
-   * narrative and are never annotated.
-   */
-  private static renderGlobalSection(
-    globalObservations: any[],
-    facts: any[],
-    renderObservation: (obs: any, headerSuffix?: string) => string[] | null,
-  ): { globalContext: string; globalCount: number } {
-    const lines: string[] = ['## Relevant Past Work — other projects\n'];
-    let count = 0;
-    for (const obs of globalObservations) {
-      const rendered = renderObservation(obs, ` [project: ${obs.project}]`);
-      if (!rendered) continue;
-      lines.push(...rendered);
-      count++;
-    }
-    for (const fact of facts) {
-      lines.push(`#${fact.id} [${fact.project}/${fact.kind}] ${fact.fact}`);
+      const date = obs.created_at?.slice(0, 10) || '';
+      lines.push(`### ${obs.title || 'Observation'} (${date})`);
+      if (obs.narrative) lines.push(obs.narrative);
       lines.push('');
-      count++;
     }
-    if (!count) return { globalContext: '', globalCount: 0 };
-    return { globalContext: lines.join('\n'), globalCount: count };
-  }
 
-  /**
-   * Opt-in quality-inspection dump (CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG):
-   * one JSONL entry per annotated injection — full query text, candidates,
-   * verdicts. Local file, best-effort; never breaks the injection path.
-   */
-  private static writeAnnotationDebugLog(entry: Record<string, unknown>): void {
-    try {
-      fs.mkdirSync(LOGS_DIR, { recursive: true });
-      fs.appendFileSync(path.join(LOGS_DIR, 'semantic-annotate.jsonl'), JSON.stringify(entry) + '\n', 'utf8');
-    } catch {
-      // best-effort debug dump — never fail the injection over a log write
-    }
-  }
-
-  private static observationKey(obs: any): string {
-    return obs.id != null ? `id:${obs.id}` : `tn:${obs.title}|${obs.created_at}`;
-  }
-
-  /**
-   * Forward a semantic-context query to the main (Chroma-owning) worker when
-   * this instance runs with Chroma disabled. Returns the parsed JSON body, or
-   * null on any failure (caller falls back to local FTS). Peer URL defaults
-   * to the UID-derived default worker port and is overridable via
-   * CLAUDE_MEM_MAIN_WORKER_URL (env) for exotic layouts.
-   */
-  private async forwardSemanticToMainWorker(body: unknown): Promise<unknown | null> {
-    try {
-      // The main worker's port comes from settings.json — WITHOUT env
-      // overrides: this daemon itself carries CLAUDE_MEM_WORKER_PORT=37791 in
-      // env, and applying overrides would point the forward back at itself
-      // (recursive self-forward until timeout — observed live 2026-08-01).
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
-      const mainPort = settings.CLAUDE_MEM_WORKER_PORT;
-      const base = process.env.CLAUDE_MEM_MAIN_WORKER_URL ?? `http://127.0.0.1:${mainPort}`;
-      if (base.includes(`:${getWorkerPort()}`)) return null; // never self-forward
-      const response = await fetch(`${base}/api/context/semantic`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body ?? {}),
-        signal: AbortSignal.timeout(25_000),
-      });
-      if (!response.ok) {
-        logger.warn('HTTP', `Semantic forwarding to main worker failed: HTTP ${response.status}`);
-        return null;
-      }
-      return await response.json();
-    } catch (error) {
-      logger.warn('HTTP', 'Semantic forwarding to main worker failed, falling back to local FTS', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  }
+    res.json({ context: lines.join('\n'), count: observations.length });
+  });
 
   private queryWithPlatformSource(req: Request): Record<string, any> {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);

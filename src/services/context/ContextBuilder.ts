@@ -4,8 +4,6 @@ import { homedir } from 'os';
 import { existsSync, unlinkSync } from 'fs';
 import { Database } from 'bun:sqlite';
 import { DB_PATH } from '../../shared/paths.js';
-import { recordSurfaced } from '../reinforcement/persist.js';
-import { recordFactSurfaced } from '../sqlite/facts/store.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -18,7 +16,6 @@ import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
-  queryActiveFactsMulti,
   querySummariesMulti,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
@@ -84,34 +81,6 @@ function initializeDatabase(): Database | null {
   }
 }
 
-/**
- * Surfacing counts are soft signal, not correctness. The read connection above
- * is deliberately read-only and has to survive a missing database or an
- * EXCLUSIVE lock held by the worker (tests/context/context-builder-readonly),
- * so the Phase 4 write-back gets its own short-lived writable connection with a
- * tight busy timeout instead. Every failure is swallowed: a missed count costs
- * a little ranking accuracy, never an injection.
- */
-const SURFACING_WRITE_TIMEOUT_MS = 250;
-
-function recordSurfacedBestEffort(observationIds: number[], factIds: number[] = []): void {
-  if (observationIds.length === 0 && factIds.length === 0) return;
-
-  let writable: Database | null = null;
-  try {
-    writable = new Database(DB_PATH, { readonly: false, create: false });
-    writable.run(`PRAGMA busy_timeout = ${SURFACING_WRITE_TIMEOUT_MS}`);
-    if (observationIds.length > 0) recordSurfaced(writable, observationIds);
-    if (factIds.length > 0) recordFactSurfaced(writable, factIds);
-  } catch (error: unknown) {
-    logger.debug('DB', 'Surfacing count skipped', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  } finally {
-    writable?.close();
-  }
-}
-
 function renderEmptyState(project: string, forHuman: boolean): string {
   return forHuman ? renderHumanEmptyState(project) : renderAgentEmptyState(project);
 }
@@ -129,7 +98,6 @@ function buildContextOutput(
   project: string,
   observations: Observation[],
   summaries: SessionSummary[],
-  facts: SemanticFact[],
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
@@ -140,9 +108,6 @@ function buildContextOutput(
   const economics = calculateTokenEconomics(observations);
 
   output.push(...renderHeader(project, economics, config, forHuman));
-
-  // Semantic memory layer: durable knowledge sits above the episode timeline.
-  output.push(...renderFactsBlock(facts));
 
   const displaySummaries = summaries.slice(0, config.sessionCount);
   const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
@@ -465,7 +430,6 @@ export async function generateContextWithStats(
     const queryProjects = projects.length > 1 ? projects : [project];
     const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
-    const facts = queryActiveFactsMulti(db, queryProjects, config);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: appendObserverHealthWarning(healthWarningForContext(input, forHuman), renderEmptyState(project, forHuman)), stats: null };
@@ -476,7 +440,6 @@ export async function generateContextWithStats(
     return fitContextForDelivery(
       observations,
       summaries,
-      facts,
       config,
       // The model's form: selection is fitted on the model render, and the
       // terminal preview paints this same warning red after truncating (#4252).

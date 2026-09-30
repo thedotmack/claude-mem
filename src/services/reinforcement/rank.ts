@@ -1,117 +1,105 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-  ageDays,
-  parseReinforcementDates,
-  readTunables,
-  type ReinforcementTunables,
-} from './strength.js';
+import { ACT_R_DECAY, ageDays, parseReinforcementDates } from './strength.js';
 
 /**
- * Strength-weighted ranking for context injection (Phase 2).
+ * Strength-weighted selection for SessionStart context injection (opt-in).
  *
- * claude-mem's SessionStart injection has no user prompt to keyword-match
- * against, so instead of webdev's prompt-keyword prefetch we rank by ACT-R
- * base-level activation, in which recency and reinforcement are the *same*
- * signal: the observation's creation is its first "presentation", and each
- * reinforcement is another. A note re-confirmed yesterday is current even if it
- * was created months ago — exactly the durable knowledge pure recency buries.
+ * SessionStart has no prompt to match against, so candidates are ranked by
+ * ACT-R base-level activation, where recency and reinforcement are the same
+ * signal: an observation's creation is its first "presentation" and each
+ * reinforcement day is another. A note re-confirmed yesterday stays current
+ * even if it was created months ago — the durable knowledge pure recency buries.
  *
  *   score = ln(1 + age_created^-d + ALPHA * Σ age_reinforcement^-d)
- *           + BETA * log1p(relevance_count)
  *
- * The creation term is taken from created_at_epoch (always present); the
- * reinforcement terms are the *additional* dates beyond creation; the BETA term
- * is a small self-reinforcement of observations that keep surfacing (Phase 4).
- * With ALPHA = 0 and BETA = 0 the score is ln(1 + age_created^-d) — monotonic in
- * recency — so the selection collapses to the legacy "top-N most recent"
- * behaviour exactly.
+ * ALPHA comes from CLAUDE_MEM_REINFORCE_ALPHA (settings.json, default 0). With
+ * ALPHA = 0 ranking is off: the candidate pool is exactly the configured count
+ * and the selection is the legacy "N most recent", unchanged.
  */
 
 const MS_PER_DAY = 86_400_000;
 
+/** How much wider than the final count the candidate pool is when ranking is on. */
+const POOL_MULTIPLIER = 5;
+/** Upper bound on the pool, keeping the in-JS rank cheap. */
+const POOL_CAP = 500;
+
 export interface Rankable {
   created_at_epoch: number;
   reinforcement_dates?: string | null;
-  relevance_count?: number | null;
-}
-
-const POOL_MULT_DEFAULT = 5;
-const POOL_CAP = 500;
-
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === '') return fallback;
-  const v = Number(raw);
-  return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
 }
 
 /**
- * How many candidates to fetch before ranking. Wider than the final count so
- * reinforced older observations have something to climb past. Bounded by
- * POOL_CAP to keep the in-JS rank cheap. A sentinel "show all" count (very
- * large) is passed through untouched.
+ * How many recency-ordered candidates to fetch. Wider than `count` when ranking
+ * is on, so reinforced older observations have something to climb past;
+ * exactly `count` when it is off. A count at or above the cap (a "show all"
+ * sentinel) passes through untouched.
  */
-export function poolSize(count: number): number {
-  if (count >= POOL_CAP) return count; // "show all" / already huge — don't shrink
-  const mult = envInt('CLAUDE_MEM_REINFORCE_POOL_MULT', POOL_MULT_DEFAULT);
-  return Math.min(POOL_CAP, Math.max(count, count * mult));
+export function poolSize(count: number, alpha: number): number {
+  if (!(alpha > 0) || count >= POOL_CAP) return count;
+  return Math.min(POOL_CAP, Math.max(count, count * POOL_MULTIPLIER));
 }
 
 /** Power-law decay of an epoch-ms timestamp's age in days (today ≈ 1). */
-function recencyWeight(epochMs: number, today: Date, powerD: number): number {
+function recencyWeight(epochMs: number, today: Date): number {
   const age = Math.max(1, Math.floor((today.getTime() - epochMs) / MS_PER_DAY));
-  return Math.pow(age, -powerD);
+  return Math.pow(age, -ACT_R_DECAY);
 }
 
-export function blendedScore(
-  item: Rankable,
-  today: Date,
-  tunables: ReinforcementTunables,
-): number {
-  const created = recencyWeight(item.created_at_epoch, today, tunables.powerD);
+export function blendedScore(item: Rankable, today: Date, alpha: number): number {
+  const created = recencyWeight(item.created_at_epoch, today);
 
-  // Reinforcement terms = dates beyond the seeded creation day (the first entry).
-  // created_at_epoch already supplies the creation term, so we skip dates[0] to
-  // avoid double-counting it.
+  // Reinforcement terms are the dates beyond the seeded creation day (the
+  // first entry): created_at_epoch already supplies the creation term.
   const dates = parseReinforcementDates(item.reinforcement_dates);
   let reinforcementSum = 0;
   for (let k = 1; k < dates.length; k++) {
-    reinforcementSum += Math.pow(ageDays(dates[k], today), -tunables.powerD);
+    reinforcementSum += Math.pow(ageDays(dates[k], today), -ACT_R_DECAY);
   }
 
-  const surfacings = Math.max(0, item.relevance_count ?? 0);
-  return (
-    Math.log(1 + created + tunables.alpha * reinforcementSum) +
-    tunables.beta * Math.log1p(surfacings)
-  );
+  return Math.log(1 + created + alpha * reinforcementSum);
 }
 
 /**
- * Re-rank a recency-ordered candidate pool by blended score, keep the top
- * `count`, and return them re-sorted newest-first so downstream consumers
- * (mostRecentObservation, timeline, prior-message lookup) see the ordering they
- * expect.
+ * Rows at the head of the window that are always kept, newest first. The
+ * last-summary check compares the newest summary with the newest observation,
+ * and the prior-session lookup walks the newest rows; if reinforced older rows
+ * could displace them, a stale summary would render as current. So
+ * reinforcement only re-ranks the older part of the window.
+ */
+export function recencyHeadSize(count: number): number {
+  return Math.max(1, Math.ceil(count / 4));
+}
+
+/**
+ * Select `count` observations from a pool ordered newest first (the query's
+ * `ORDER BY created_at_epoch DESC`): the recency head is kept as is, the
+ * remaining slots go to the highest blended scores, and the result is
+ * returned newest first so downstream consumers (timeline, summary check,
+ * prior-session lookup) see the ordering they expect.
  *
- * Stable: ties break by recency, then original pool position.
+ * Stable: ties break by recency, then pool position.
  */
 export function rankByStrength<T extends Rankable>(
   pool: T[],
   count: number,
+  alpha: number,
   today: Date = new Date(),
-  tunables: ReinforcementTunables = readTunables(),
 ): T[] {
-  // Nothing to drop, and no reordering when reinforcement is disabled.
-  if (pool.length <= count && tunables.alpha === 0) return pool;
+  if (pool.length <= count) return pool;
+  if (!(alpha > 0)) return pool.slice(0, count);
 
-  const scored = pool.map((item, i) => ({ item, i, score: blendedScore(item, today, tunables) }));
+  const head = pool.slice(0, Math.min(count, recencyHeadSize(count)));
+  const scored = pool
+    .slice(head.length)
+    .map((item, i) => ({ item, i, score: blendedScore(item, today, alpha) }));
   scored.sort(
     (a, b) =>
       b.score - a.score ||
       b.item.created_at_epoch - a.item.created_at_epoch ||
       a.i - b.i,
   );
-  const top = scored.slice(0, count).map(s => s.item);
-  top.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
-  return top;
+  const kept = [...head, ...scored.slice(0, count - head.length).map(s => s.item)];
+  return kept.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
 }
