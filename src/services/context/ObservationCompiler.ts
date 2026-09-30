@@ -8,6 +8,8 @@ import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import type {
   ContextConfig,
+  LocalObservation,
+  LocalSessionSummary,
   Observation,
   SessionSummary,
   SummaryTimelineItem,
@@ -41,7 +43,7 @@ export function queryObservationsMulti(
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): Observation[] {
+): LocalObservation[] {
   return queryObservationsNewest(db, config, {
     limit: config.totalObservationCount,
     platformSource,
@@ -73,7 +75,7 @@ export function queryObservationsNewest(
     includeManualSaves?: boolean;
     excludeSubagents?: boolean;
   }
-): Observation[] {
+): LocalObservation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
@@ -118,7 +120,7 @@ export function queryObservationsNewest(
     ...typeArray,
     ...conceptArray,
     options.limit
-  ) as Observation[];
+  ) as LocalObservation[];
 }
 
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
@@ -140,7 +142,7 @@ export function querySummariesMulti(
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): SessionSummary[] {
+): LocalSessionSummary[] {
   const projectPlaceholders = projects.map(() => '?').join(',');
 
   return db.db.prepare(`
@@ -169,7 +171,7 @@ export function querySummariesMulti(
     platformSource ?? null,
     platformSource ?? null,
     config.sessionCount + SUMMARY_LOOKAHEAD
-  ) as SessionSummary[];
+  ) as LocalSessionSummary[];
 }
 
 export function cwdToDashed(cwd: string): string {
@@ -288,7 +290,7 @@ export function buildTimeline(
   return timeline;
 }
 
-export function getFullObservationIds(observations: Observation[], count: number): Set<number> {
+export function getFullObservationIds(observations: Observation[], count: number): Set<Observation['id']> {
   return new Set(
     observations
       .slice(0, count)

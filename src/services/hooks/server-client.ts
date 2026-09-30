@@ -175,9 +175,17 @@ export interface ServerSearchObservationsResponse {
 // matched observations AND a pre-joined `context` string.
 export interface ServerContextObservationsRequest {
   projectId: string;
-  query: string;
+  // OPTIONAL, and the whole session-start read depends on it being optional.
+  // With a query the route is FTS and answers by relevance; with the key ABSENT
+  // it answers by recency, which is what a session-start block is. An empty
+  // STRING is not the same thing -- the route's schema requires >=1 character
+  // and rejects `""` -- so the key must be omitted, never blanked.
+  query?: string;
   limit?: number;
   platformSource?: string | null;
+  // Folder labels (observations.metadata.project) to scope the read to. Omitted
+  // or empty means every folder in the server project.
+  folderProjects?: string[];
 }
 
 export interface ServerContextObservationsResponse {
@@ -258,16 +266,26 @@ export class ServerClient {
     );
   }
 
-  // Phase 8 — MCP `observation_context`. Same FTS surface as search, but
-  // returns a pre-joined context string suitable for direct prompt injection.
+  // Phase 8 — MCP `observation_context` and the server-runtime session-start
+  // read. With a query this is the same FTS surface as search; without one the
+  // route returns the most recent rows. Either way it also returns a pre-joined
+  // context string.
   async contextObservations(
     input: ServerContextObservationsRequest,
   ): Promise<ServerContextObservationsResponse> {
-    return this.request<ServerContextObservationsResponse>(
-      'POST',
-      '/v1/context',
-      this.buildSearchPayload(input),
-    );
+    // Built here rather than through buildSearchPayload(): that helper is the
+    // /v1/search contract, where a query is genuinely required, and widening it
+    // would let a search ship without one.
+    const payload: Record<string, unknown> = { projectId: input.projectId };
+    if (input.query !== undefined) payload.query = input.query;
+    if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.platformSource !== undefined) {
+      payload.platformSource = normalizePlatformSourceField(input.platformSource);
+    }
+    if (input.folderProjects && input.folderProjects.length > 0) {
+      payload.folderProjects = input.folderProjects;
+    }
+    return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload);
   }
 
   // Phase 8 — MCP `observation_generation_status`. Server returns the same
