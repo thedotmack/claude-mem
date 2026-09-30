@@ -1,5 +1,5 @@
 /**
- * cmem Pro 7-day-trial promo copy — the single source of truth for every place
+ * cmem Pro trial promo copy — the single source of truth for every place
  * claude-mem tells an existing user the trial exists.
  *
  * Almost nobody running the free plugin knows the trial is there, so the pitch
@@ -27,16 +27,32 @@ export type ProPromoSource =
   | 'context-banner'
   | 'welcome-hint'
   | 'viewer'
+  /** One-time session-start notice after the free trial ends and memory falls back on-plan. */
+  | 'fallback'
   /** Hand-written links in the cursor-hooks setup docs — no TS caller. */
   | 'docs';
+
+/**
+ * Longest free trial cmem.ai grants, in days. The server picks each user's
+ * actual length (3, 7, or 14 days, by usage tier; new users get 14) at claim
+ * time, so client copy only ever promises "up to" this many days and promo
+ * links no longer carry a `?trial=` hint (the server ignores it).
+ */
+export const PRO_TRIAL_MAX_DAYS = 14;
 
 /** Trial landing URL tagged with the surface the user clicked from. */
 export function proTrialUrl(source: ProPromoSource): string {
   return `${PRO_TRIAL_URL}?from=${source}`;
 }
 
+/**
+ * How much more plan usage running memory off-plan buys, as a "% more" figure.
+ * Shared so every surface quotes the same number.
+ */
+export const PLAN_USAGE_GAIN_PERCENT = 100;
+
 /** The offer itself, without a URL — for surfaces that link separately. */
-export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (7-day trial, $30/mo)';
+export const PRO_TRIAL_PITCH = `Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan — memory runs off-plan, free for up to ${PRO_TRIAL_MAX_DAYS} days`;
 
 /**
  * One-line pitch + link, for plain-text surfaces (hook banners, welcome hint).

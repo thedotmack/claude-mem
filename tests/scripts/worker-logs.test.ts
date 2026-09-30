@@ -20,12 +20,10 @@ import { join } from 'path';
 const SCRIPT = join(import.meta.dir, '..', '..', 'scripts', 'worker-logs.cjs');
 
 function logStamp(): string {
-  const now = new Date();
-  return [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-  ].join('-');
+  // Bun's test process and the spawned Node process can resolve different
+  // default time zones around UTC midnight. Pin the child to UTC and build the
+  // fixture with that same calendar so the test verifies tailing, not host TZ.
+  return new Date().toISOString().slice(0, 10);
 }
 
 describe('worker-logs', () => {
@@ -49,7 +47,7 @@ describe('worker-logs', () => {
     return spawnSync('node', [...nodeArgs, SCRIPT], {
       encoding: 'utf-8',
       // os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env: { ...process.env, HOME: home, USERPROFILE: home, TZ: 'UTC' },
     });
   }
 
@@ -124,7 +122,7 @@ describe('worker-logs', () => {
     writeFileSync(logPath, 'old line 1\n');
 
     const child = spawn('node', [SCRIPT, '--follow'], {
-      env: { ...process.env, HOME: home, USERPROFILE: home },
+      env: { ...process.env, HOME: home, USERPROFILE: home, TZ: 'UTC' },
     });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
