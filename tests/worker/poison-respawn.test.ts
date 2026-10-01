@@ -539,4 +539,38 @@ describe('a batch asked for again resumes at once, in a fresh generation (#3624)
     await new Promise(resolve => setTimeout(resolve, 5));
     expect(ensureGeneratorRunning).toHaveBeenCalledWith(16, 'output-retry');
   });
+
+  it('starts a fresh generation on the next tick after a schema-drift pause (#3461)', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(17, 'do the thing', 1);
+    session.memorySessionId = 'mem-17';
+    await queueAndClaimOne(sm, 17);
+    const ensureGeneratorRunning = mock(async () => {});
+    const finalizeSession = mock(() => Promise.resolve());
+
+    await startGeneratorWithProvider(session, 'claude', 'observation', null, null, {
+      sessionManager: sm,
+      // What ResponseProcessor leaves behind after the third drifted reply in a
+      // row: the batch was stored and confirmed, the generation ended.
+      sdkAgent: {
+        startSession: async (current: ActiveSession) => {
+          current.abortReason = 'drift:observer_schema';
+          current.abortController.abort();
+        },
+      } as any,
+      geminiAgent: {} as any,
+      openRouterAgent: {} as any,
+      workerService: {} as any,
+      completionHandler: { finalizeSession } as any,
+      ensureGeneratorRunning,
+      maybeSelfHealStaleClaudeSpawn: () => false,
+    });
+    await session.generatorPromise;
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(session.pausedReason).toBe('drift');
+    expect(sm.getSession(17)).toBe(session);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(ensureGeneratorRunning).toHaveBeenCalledWith(17, 'schema-drift');
+  });
 });

@@ -193,7 +193,9 @@ describe('provider-dispatch', () => {
       pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsedFallbackAt() });
       // The start gate would refuse any gateway run while this breaker is live.
       const armedAt = Date.now() - 20 * 60_000;
-      recordQuotaExhausted('openrouter', 'rate limited', 'rate_limit', armedAt);
+      // The full quota cooldown: a rate limit's short window cannot outlive
+      // the fallback window.
+      recordQuotaExhausted('openrouter', 'spend cap reached', undefined, armedAt);
 
       expect(select()).toEqual({ provider: 'claude', gatewayProbeClaimId: null });
       expect(getSelectedProvider()).toBe('claude');

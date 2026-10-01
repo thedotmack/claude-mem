@@ -158,9 +158,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
+  CLAUDE_MEM_GEMINI_API_KEYS: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
+  CLAUDE_MEM_OPENROUTER_API_KEYS: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
@@ -356,9 +358,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CODEX_REASONING_EFFORT: '',
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_GEMINI_API_KEYS: '',  // Optional extra keys (newline/comma separated). Rotates on rate_limit/quota_exhausted/auth_invalid — see src/shared/api-key-pool.ts.
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_OPENROUTER_API_KEYS: '',  // Optional extra keys (newline/comma separated). Rotates on rate_limit/quota_exhausted/auth_invalid — see src/shared/api-key-pool.ts.
     // Default OpenRouter model (free tier). The same id is hard-coded in
     // src/ui/viewer/constants/settings.ts (DEFAULT_SETTINGS) and three times in
     // openclaw/install.sh (settings defaults, openrouter override, completion

@@ -292,7 +292,12 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
  * `fieldMaxChars` caps each of <parameters> and <outcome>; callers pass the
  * observer model's window-aware cap (observationFieldMaxChars).
  */
-export function buildObservationPrompt(obs: Observation, fieldMaxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
+export function buildObservationPrompt(
+  obs: Observation,
+  fieldMaxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
+  /** The previous reply drifted off the schema (#3461): restate it once. */
+  restateSchema: boolean = false,
+): string {
   let toolInput: any;
   let toolOutput: any;
 
@@ -329,8 +334,12 @@ If a <parameters> or <outcome> block above contains an "<elided chars=... />" ma
 ${redactionHint}
 Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" /> if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
-Never reply with an empty response, or with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Only <observation> blocks or the <skip_summary /> sentinel complete this tool use; anything else is asked again once, then discarded.`;
+Never reply with an empty response, or with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Only <observation> blocks or the <skip_summary /> sentinel complete this tool use; anything else is asked again once, then discarded.${restateSchema ? `\n${OBSERVATION_SCHEMA_REMINDER}` : ''}`;
 }
+
+/** Restated once after a reply that used tags outside the observation schema (#3461). */
+export const OBSERVATION_SCHEMA_REMINDER =
+  'Your previous reply used tags outside the observation format. Use only <type>, <title>, <subtitle>, <facts>, <narrative>, <concepts>, <files_read> and <files_modified> inside each <observation>.';
 
 export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
   const lastAssistantMessage = session.last_assistant_message || (() => {

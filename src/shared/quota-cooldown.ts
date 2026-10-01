@@ -132,6 +132,12 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         probeClaimId: null,
       });
     }
+    // The mirror on disk was written by whichever build armed these windows.
+    // Each window's length is resolved by the current rule
+    // (resolveQuotaCooldownMs), so restate the mirror from it once: a build
+    // that held a rate limit for the quota cooldown left a half-hour `until`
+    // behind that the breaker no longer honors.
+    syncObserverHealthQuotaCooldown();
   } catch (err) {
     // A corrupt ledger must not stop the worker; it only costs one extra
     // request to re-arm the breaker.
@@ -171,6 +177,43 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
  * reset window (or a plan upgrade) is picked up without restarting the worker.
  */
 export const QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS = 30 * 60_000;
+
+/**
+ * How long to withhold requests when the provider named a window that clears on
+ * its own. A rate limit is a throttle, not a spent allowance, yet one that
+ * outlasts its Retry-After resumes (or names no Retry-After) arms this same
+ * breaker under the 'rate_limit' window (GeneratorRunner's
+ * bookClassifiedFailure). Holding a throttle for the quota cooldown turns a
+ * six-second refusal into a half-hour outage, and with a backlog already queued
+ * every expiry buys the same refusal again — a window that cannot be waited
+ * out. A limit that names a day or longer is a spent allowance and is
+ * classified as one (quota_exhausted), so it keeps the full quota cooldown.
+ */
+export const RATE_LIMIT_RECHECK_COOLDOWN_MS = 90_000;
+
+/**
+ * Windows that come back without the billing period turning over. An unlisted
+ * or absent window keeps the full quota cooldown, so an unfamiliar provider is
+ * never treated as transient by accident.
+ */
+const TRANSIENT_QUOTA_WINDOWS = new Set(['rate_limit']);
+
+/**
+ * The cooldown an armed window is entitled to. Read from the window rather than
+ * stored, so a window armed by an older build is resolved by the current rule.
+ *
+ * Deliberately takes no duration parameter: the whole point is that the window
+ * is the only thing that decides, so a caller cannot reintroduce the mismatch
+ * this replaced. Admission (`tryAdmitQuotaProbe`), the read-only check
+ * (`isQuotaCooldownActive`) and the observer-health mirror all ask it; tests
+ * that need to pin a duration pass one to `isQuotaCooldownActive` or
+ * `syncObserverHealthQuotaCooldown`, where it overrides this.
+ */
+export function resolveQuotaCooldownMs(window: string | undefined): number {
+  return window !== undefined && TRANSIENT_QUOTA_WINDOWS.has(window)
+    ? RATE_LIMIT_RECHECK_COOLDOWN_MS
+    : QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS;
+}
 
 /**
  * How long a claimed probe may stay unresolved before another caller may take
@@ -314,12 +357,12 @@ export function getQuotaCooldown(provider: QuotaProvider): QuotaCooldownState | 
 export function isQuotaCooldownActive(
   provider: QuotaProvider,
   nowMs: number = Date.now(),
-  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  cooldownMs?: number,
 ): boolean {
   hydrateFromDisk();
   const state = cooldowns.get(provider);
   if (!state || !cooldownAppliesToCurrentAccount(state)) return false;
-  return nowMs - state.armedAtMs < cooldownMs;
+  return nowMs - state.armedAtMs < (cooldownMs ?? resolveQuotaCooldownMs(state.window));
 }
 
 /**
@@ -356,7 +399,7 @@ export function tryAdmitQuotaProbe(
   }
   if (!state) return { admitted: true, claimId: null };
 
-  if (nowMs - state.armedAtMs < QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS) {
+  if (nowMs - state.armedAtMs < resolveQuotaCooldownMs(state.window)) {
     return { admitted: false, claimId: null };
   }
 
@@ -463,21 +506,32 @@ export function resetQuotaCooldownsForTesting(): void {
  * concurrent caller at once — the request burst the breaker exists to prevent.
  * It leaves the map only on a successful generation (`clearQuotaCooldown`).
  *
+ * Each window lasts what its own kind is entitled to (`resolveQuotaCooldownMs`),
+ * so the mirror carries the pause that holds LONGEST, not the one armed last: a
+ * fresh ninety-second throttle must not hide a spent allowance that still has
+ * half an hour to run.
+ *
  * Exported for tests: the elapsed-window paths need a controllable clock, which
- * the internal callers (always "now") cannot supply.
+ * the internal callers (always "now") cannot supply. `cooldownMs` pins one
+ * duration for every window, for tests only.
  */
 export function syncObserverHealthQuotaCooldown(
   nowMs: number = Date.now(),
-  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  cooldownMs?: number,
 ): void {
   try {
     let latest: QuotaCooldownState | null = null;
+    let latestUntil = 0;
     for (const state of cooldowns.values()) {
       // Neither the gateway's claim holder nor a refused credential is a quota
       // pause to announce (see isClaimOnly and QuotaCooldownState.cause).
       if (isClaimOnly(state) || state.cause === 'auth') continue;
-      if (nowMs - state.armedAtMs >= cooldownMs) continue;
-      if (!latest || state.armedAtMs > latest.armedAtMs) latest = state;
+      const until = state.armedAtMs + (cooldownMs ?? resolveQuotaCooldownMs(state.window));
+      if (until <= nowMs) continue;
+      if (!latest || until > latestUntil) {
+        latest = state;
+        latestUntil = until;
+      }
     }
 
     if (!latest) {
@@ -491,7 +545,7 @@ export function syncObserverHealthQuotaCooldown(
       // that account is selected (cooldownAppliesToCurrentAccount).
       ...(latest.profile ? { profile: latest.profile } : {}),
       armedAt: latest.armedAtMs,
-      until: latest.armedAtMs + cooldownMs,
+      until: latestUntil,
       ...(latest.window ? { window: latest.window } : {}),
       message: latest.message,
     });

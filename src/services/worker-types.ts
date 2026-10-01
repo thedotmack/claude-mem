@@ -49,6 +49,14 @@ export interface ActiveSession {
   /** The claimed message ids `consecutiveInvalidOutputs` counts against. */
   invalidOutputBatchKey?: string | null;
   /**
+   * Replies in a row that drifted off the observation schema and were salvaged
+   * (#3461). Reaching ResponseProcessor's limit ends the generation so the next
+   * one starts clean; a clean reply resets it.
+   */
+  consecutiveSchemaDrifts?: number;
+  /** Set by a drifted reply: the next observation prompt restates the schema once. */
+  observerSchemaReminder?: boolean;
+  /**
    * Consecutive "prompt too long" rejections on this session's conversation.
    *
    * Unlike a skip, an overflow rejection is not a no-op: the conversation has
