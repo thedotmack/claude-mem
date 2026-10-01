@@ -9,7 +9,7 @@ import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
 import { logger } from '../../../../utils/logger.js';
 
-const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note'] as const;
+const ALLOWED_CORPUS_TYPES = ['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'security_alert', 'security_note', 'sensitive'] as const;
 const ALLOWED_CORPUS_TYPE_SET = new Set<string>(ALLOWED_CORPUS_TYPES);
 
 const stringArrayLike = z.preprocess((value) => {
@@ -51,8 +51,14 @@ const buildCorpusSchema = z.object({
   concepts: stringArrayLike,
   files: stringArrayLike,
   query: z.string().optional(),
+  // Accept both the snake_case names this route reads and the camelCase names
+  // the MCP tool sends. Without the camelCase aliases the dates passed by
+  // `build_corpus` slipped through `.passthrough()` unread, so the stored
+  // filter kept no date range at all.
   date_start: z.string().optional(),
   date_end: z.string().optional(),
+  dateStart: z.string().optional(),
+  dateEnd: z.string().optional(),
   limit: positiveIntegerLike,
 }).passthrough();
 
@@ -89,8 +95,10 @@ export class CorpusRoutes extends BaseRouteHandler {
   }
 
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { name, description, project, types, concepts, files, query, date_start, date_end, limit } =
-      req.body as z.infer<typeof buildCorpusSchema>;
+    const body = req.body as z.infer<typeof buildCorpusSchema>;
+    const { name, description, project, types, concepts, files, query, limit } = body;
+    const dateStart = body.date_start ?? body.dateStart;
+    const dateEnd = body.date_end ?? body.dateEnd;
 
     const filter: CorpusFilter = {};
     if (project) filter.project = project;
@@ -98,8 +106,8 @@ export class CorpusRoutes extends BaseRouteHandler {
     if (concepts && concepts.length > 0) filter.concepts = concepts;
     if (files && files.length > 0) filter.files = files;
     if (query) filter.query = query;
-    if (date_start) filter.date_start = date_start;
-    if (date_end) filter.date_end = date_end;
+    if (dateStart) filter.date_start = dateStart;
+    if (dateEnd) filter.date_end = dateEnd;
     if (limit !== undefined) filter.limit = limit;
 
     logger.info('SEARCH', 'Building corpus', { name, project, filterKeys: Object.keys(filter) });
@@ -143,18 +151,45 @@ export class CorpusRoutes extends BaseRouteHandler {
 
   private handleRebuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const name = this.toStringParam(req.params.name);
-    const existingCorpus = this.corpusStore.read(name);
+    const previousCorpus = this.corpusStore.read(name);
 
-    if (!existingCorpus) {
+    if (!previousCorpus) {
       this.corpusNotFound(res, name);
       return;
     }
 
-    const corpus = await this.corpusBuilder.build(name, existingCorpus.description, existingCorpus.filter);
+    const force = req.body?.force === true;
+    const previousCount = previousCorpus.stats.observation_count;
 
+    // Build without writing, decide, then write: a rebuild that would shrink the corpus
+    // never touches the stored file unless the caller confirms it with force, so a stale
+    // or wrong filter cannot silently destroy user-created state.
+    const corpus = await this.corpusBuilder.build(name, previousCorpus.description, previousCorpus.filter, { writeFile: false });
+    const newCount = corpus.stats.observation_count;
+
+    if (!force && this.isDestructiveShrink(previousCount, newCount)) {
+      res.status(409).json({
+        error: `Rebuild would shrink corpus "${name}" from ${previousCount} to ${newCount} observations`,
+        fix: 'The previous corpus was kept. Re-run with force=true to accept the smaller result, or check the stored date filter.',
+        filter: previousCorpus.filter,
+        previous_count: previousCount,
+        rebuilt_count: newCount,
+      });
+      return;
+    }
+
+    this.corpusStore.write(corpus);
     const { observations, ...metadata } = corpus;
     res.json(metadata);
   });
+
+  // A rebuild that keeps more than half of a non-trivial corpus is treated as a
+  // routine refresh; keeping half or less is a destructive shrink that must be
+  // confirmed. The floor keeps tiny corpora from tripping the guard on normal
+  // churn.
+  private isDestructiveShrink(previousCount: number, newCount: number): boolean {
+    return previousCount >= 4 && newCount <= previousCount / 2;
+  }
 
   private handlePrimeCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const name = this.toStringParam(req.params.name);
