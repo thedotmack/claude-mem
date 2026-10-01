@@ -11,7 +11,6 @@ import {
 } from '../../src/services/worker/OpenAICompatProvider.js';
 import {
   OPENAI_COMPAT_PRESETS,
-  openAICompatPresetIds,
   resolveOpenAICompatPreset,
 } from '../../src/shared/openai-compat-presets.js';
 import { getSelectedProvider } from '../../src/services/worker/provider-dispatch.js';
@@ -61,7 +60,7 @@ describe('openai-compatible presets', () => {
   });
 
   it('has unique ids and a custom escape hatch', () => {
-    const ids = openAICompatPresetIds();
+    const ids = OPENAI_COMPAT_PRESETS.map(preset => preset.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toContain('custom');
   });

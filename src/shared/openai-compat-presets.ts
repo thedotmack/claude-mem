@@ -180,8 +180,3 @@ function getPreset(id: string): OpenAICompatPreset {
   if (!preset) throw new Error(`Unknown openai-compatible preset "${id}"`);
   return preset;
 }
-
-/** Preset ids, for validation messages and the installer list. */
-export function openAICompatPresetIds(): string[] {
-  return OPENAI_COMPAT_PRESETS.map(preset => preset.id);
-}

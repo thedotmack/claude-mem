@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, `openrouter`, or `openai-compatible` |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_LLM_TIMEOUT_MS`   | `180000`                        | Per-request deadline (ms, 500–300000) for the Gemini and OpenRouter / OpenAI-compatible observer, including the cmem.ai gateway. It exists to catch a hung request; a slow backend just needs a higher value. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
 | `CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS` | `180000` | Deadline (ms, 500–300000) for condensing one oversized tool field before its observation is sent; on expiry the field is truncated instead. It is a request to the same backend as the observer request, so it has the same default. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
@@ -82,6 +82,7 @@ Both default to off, so existing behavior is preserved.
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_GEMINI_API_KEY`   | —                               | Gemini API key ([get free key](https://aistudio.google.com/app/apikey)) |
+| `CLAUDE_MEM_GEMINI_API_KEYS`  | —                               | Optional: more keys (newline-, comma- or space-separated) to rotate through when one is rate-limited, spent or refused ([Multi-Key Rotation](usage/multi-key-rotation)) |
 | `CLAUDE_MEM_GEMINI_MODEL`     | `gemini-flash-latest`          | Gemini model: `gemini-flash-latest`, `gemini-flash-lite-latest`, `gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` |
 
 See [Gemini Provider](usage/gemini-provider) for detailed configuration and rate-limit information.
@@ -108,6 +109,7 @@ The worker uses an isolated `codex app-server` session for observations and summ
 | Setting                                      | Default                     | Description                           |
 |----------------------------------------------|-----------------------------|---------------------------------------|
 | `CLAUDE_MEM_OPENROUTER_API_KEY`              | —                           | OpenRouter API key ([get key](https://openrouter.ai/keys)) |
+| `CLAUDE_MEM_OPENROUTER_API_KEYS`             | —                           | Optional: more keys to rotate through when one is rate-limited, spent or refused ([Multi-Key Rotation](usage/multi-key-rotation)). Never used on the cmem.ai gateway |
 | `CLAUDE_MEM_OPENROUTER_MODEL`                | `cohere/north-mini-code:free` | Model identifier (supports 100+ models) |
 | `CLAUDE_MEM_OPENROUTER_BASE_URL`             | —                           | Optional: custom OpenAI-compatible base URL (DeepSeek, LM Studio, [IO Intelligence](https://io.net)) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL`             | —                           | Optional: URL for analytics           |
@@ -116,6 +118,29 @@ The worker uses an isolated `codex app-server` session for observations and summ
 | `CLAUDE_MEM_OPENROUTER_EXTRA_BODY`           | —                           | Optional: JSON object of extra request fields, e.g. `{"reasoning":{"enabled":false}}` ([details](usage/openrouter-provider#extra-request-fields)) |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+
+### OpenAI-Compatible Provider Settings
+
+For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/completions`, hosted or local.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | — | Named endpoint preset ([list](usage/openai-compatible-provider)). Empty = `custom`: set the base URL yourself |
+| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | — | OpenAI-compatible base URL. Overrides the preset's |
+| `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | — | Model id, sent as-is. Empty = the preset's default model |
+| `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | — | The key this endpoint issued. Settings file or environment, or `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env`; the viewer cannot set it. A local server needs none |
+| `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | — | Optional: more keys to rotate through ([Multi-Key Rotation](usage/multi-key-rotation)). Settings file or environment, or `OPENAI_COMPAT_API_KEYS` in `~/.claude-mem/.env` |
+
+See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets and setup.
+
+### Quota Fallback Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | — (off) | Where observer work goes while the selected provider's quota breaker holds (a spent allowance, or rate limits that outlast their retries): `claude`, `gemini`, `openrouter`, or `openai-compatible`. Empty = off |
+| `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | — | Claude model for a Claude fallback run. Empty = `CLAUDE_MEM_MODEL` and tier routing. Ignored for other fallbacks |
+
+See [Quota Fallback](usage/quota-fallback) for how the fallback starts and ends.
 
 ### Observer Budget Settings
 
