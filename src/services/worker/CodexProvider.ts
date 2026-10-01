@@ -71,10 +71,18 @@ const CODEX_ERROR_INFO_KINDS: Record<string, CodexErrorKind | typeof CODEX_REFUS
 
 /**
  * Refused by the app-server or the CLI itself before any model saw the
- * request: JSON-RPC validation (-32600..-32609: an unknown method, a
- * parameter it cannot take), or an older CLI rejecting our flags.
+ * request: a JSON-RPC rejection of its shape (-32600 invalid request, -32601
+ * method not found, -32602 invalid params), or an older CLI rejecting our
+ * flags.
  */
-const CODEX_PROTOCOL_REFUSAL = /RPC error -3260\d\b|unexpected argument|unrecognized subcommand|unknown variant/i;
+const CODEX_PROTOCOL_REFUSAL = /RPC error -3260[0-2]\b|unexpected argument|unrecognized subcommand|unknown variant/i;
+
+/**
+ * The app-server's own JSON-RPC faults (-32603 internal error, -32700 parse
+ * error): nothing about the request to fix, whatever the text quotes, so they
+ * stay transient.
+ */
+const CODEX_SERVER_FAULT = /RPC error -(?:32603|32700)\b/;
 
 const CODEX_REQUEST_REMEDY =
   'Check CLAUDE_MEM_CODEX_MODEL and CLAUDE_MEM_CODEX_REASONING_EFFORT in ~/.claude-mem/settings.json '
@@ -123,7 +131,8 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     kind = 'rate_limit';
   } else if (/context (length|window)|prompt (is )?too long/i.test(message)) {
     kind = 'context_overflow';
-  } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(message)) {
+  } else if (structuredKind === CODEX_REFUSED_REQUEST
+    || (CODEX_PROTOCOL_REFUSAL.test(message) && !CODEX_SERVER_FAULT.test(message))) {
     // Refused the same way until the settings or the CLI change: a setup
     // failure, held behind the codex_cli gate and shown at SessionStart,
     // never a transport blip resumed forever.
@@ -180,6 +189,8 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   protected readonly providerName = 'Codex';
   protected readonly syntheticIdPrefix = 'codex';
   protected readonly forwardEmptyMessageResponse = true;
+  /** App-server internal faults since the last served request (see query). */
+  private consecutiveServerFaults = 0;
   private readonly appServer = new CodexAppServerPool(boundedInteger(
     SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS, 2, 8,
   ));
@@ -286,6 +297,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     try {
       result = await this.runTurnWithRetry(prompt, config, timeoutMs, abortSignal);
     } catch (error) {
+      this.noteServerFault(error);
       // A turn that completes without any agent message gets withRetry's one
       // retry. A second one is passed on as an empty reply, for the skip
       // contract to settle, rather than pausing the batch as a transport fault
@@ -298,11 +310,28 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       });
       return { content: '' };
     }
+    this.consecutiveServerFaults = 0;
     // A served request is the recovery probe succeeding.
     const quota = getQuotaCooldown('codex');
     if (quota && quota === admittedQuota) clearQuotaCooldown('codex');
     if (getDependencyStatus('codex_cli') === admittedSetup) clearDependencyStatus('codex_cli');
     return result;
+  }
+
+  /**
+   * An app-server internal fault is transient: the session resumes on the
+   * transport backoff, which has no cap off the cmem gateway. From the second
+   * in a row, say at WARN what keeps failing and how many times, so a fault
+   * that never clears is not lost among routine retry lines.
+   */
+  private noteServerFault(error: unknown): void {
+    if (!isClassified(error) || error.kind !== 'transient' || !CODEX_SERVER_FAULT.test(error.message)) return;
+    this.consecutiveServerFaults += 1;
+    if (this.consecutiveServerFaults < 2) return;
+    logger.warn('SDK', 'Codex app-server keeps failing with an internal error; retrying on the transport backoff', {
+      consecutive: this.consecutiveServerFaults,
+      message: error.message,
+    });
   }
 
   private runTurnWithRetry(
