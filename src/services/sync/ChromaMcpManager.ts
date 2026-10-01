@@ -1784,15 +1784,7 @@ export class ChromaMcpManager {
       }
 
       try {
-        if (process.platform === 'win32') {
-          try {
-            execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
-          } catch {
-            process.kill(pid, 'SIGKILL');
-          }
-        } else {
-          process.kill(pid, 'SIGKILL');
-        }
+        process.kill(pid, 'SIGKILL');
         logger.debug('CHROMA_MCP', 'Reaped orphaned chroma-mcp descendant', { pid });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;

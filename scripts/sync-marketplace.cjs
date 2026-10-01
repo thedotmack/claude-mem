@@ -85,18 +85,14 @@ function main() {
   console.log('Syncing to marketplace...');
   try {
     const rootDir = path.join(__dirname, '..');
-    const homeBun = path.join(os.homedir(), '.bun', 'bin', process.platform === 'win32' ? 'bun.exe' : 'bun');
-    const bunCmd = existsSync(homeBun) ? `"${homeBun}"` : 'bun';
 
-    if (path.resolve(rootDir).toLowerCase() !== path.resolve(INSTALLED_PATH).toLowerCase()) {
-      const marketplace = mirrorDirectory(rootDir, INSTALLED_PATH, {
-        exclude: getMarketplaceExcludes(rootDir)
-      });
-      console.log(`Marketplace: ${marketplace.copied} copied, ${marketplace.metadata} metadata reconciled, ${marketplace.deleted} stale removed`);
+    const marketplace = mirrorDirectory(rootDir, INSTALLED_PATH, {
+      exclude: getMarketplaceExcludes(rootDir)
+    });
+    console.log(`Marketplace: ${marketplace.copied} copied, ${marketplace.metadata} metadata reconciled, ${marketplace.deleted} stale removed`);
 
-      console.log('Running bun install in marketplace...');
-      execSync(`${bunCmd} install`, { cwd: INSTALLED_PATH, stdio: 'inherit' });
-    }
+    console.log('Running bun install in marketplace...');
+    execSync('bun install', { cwd: INSTALLED_PATH, stdio: 'inherit' });
 
     const version = getPluginVersion();
     const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
@@ -110,7 +106,7 @@ function main() {
     console.log(`Cache: ${cache.copied} copied, ${cache.metadata} metadata reconciled, ${cache.deleted} stale removed`);
 
     console.log(`Running bun install in cache folder (version ${version})...`);
-    execSync(`${bunCmd} install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+    execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
 
     console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 

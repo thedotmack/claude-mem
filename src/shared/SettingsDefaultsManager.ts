@@ -164,7 +164,6 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GEMINI_API_KEYS: string;
   CLAUDE_MEM_GEMINI_MODEL: string;
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
-  CLAUDE_MEM_GEMINI_AUTO_FALLBACK: string;
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_API_KEYS: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
@@ -377,7 +376,6 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_API_KEYS: '',  // Optional extra keys (newline/comma separated). Rotates on rate_limit/quota_exhausted/auth_invalid — see src/shared/api-key-pool.ts.
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
-    CLAUDE_MEM_GEMINI_AUTO_FALLBACK: 'true',  // Auto-cascade to fallback models on rate limits
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_API_KEYS: '',  // Optional extra keys (newline/comma separated). Rotates on rate_limit/quota_exhausted/auth_invalid — see src/shared/api-key-pool.ts.
     // Default OpenRouter model (free tier). The same id is hard-coded in

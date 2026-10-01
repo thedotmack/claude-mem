@@ -14,7 +14,6 @@ interface UseContextPreviewResult {
 }
 
 function getPreferredSource(sources: string[]): string | null {
-  if (sources.includes('antigravity-cli')) return 'antigravity-cli';
   if (sources.includes('claude')) return 'claude';
   if (sources.includes('codex')) return 'codex';
   return sources[0] || null;
