@@ -52,9 +52,48 @@ export function planRateLimitResume(session: ActiveSession): { resume: boolean; 
   return planBoundedResume(session, 'consecutiveRateLimitResumes', MAX_CONSECUTIVE_RATE_LIMIT_RESUMES);
 }
 
+/**
+ * Unattended resumes allowed in a row while memory is on the cmem.ai gateway,
+ * whichever pause scheduled them: a transport pause's backoff (#4204), a rate
+ * limit's Retry-After, or the move to the Anthropic plan after a cmem fallback.
+ * Each one re-sends buffered work with no user activity behind it, and on the
+ * gateway each spends plan tokens, so a gateway or model that keeps failing
+ * would otherwise be retried for as long as the worker runs. An answered
+ * queued-work turn resets the count; the next captured event still starts a
+ * generator, and nothing buffered is dropped.
+ */
+export const MAX_UNATTENDED_GATEWAY_RESUMES = 3;
+
+/**
+ * Count one unattended resume and decide whether it may run. Off the gateway
+ * nothing is counted: those resumes keep their own bounds (or backoff).
+ */
+export function planUnattendedGatewayResume(
+  session: ActiveSession,
+  source: string,
+  memoryOnCmemGateway: boolean,
+): { resume: boolean; attempts: number } {
+  if (!memoryOnCmemGateway) return { resume: true, attempts: 0 };
+  const plan = planBoundedResume(session, 'consecutiveUnattendedGatewayResumes', MAX_UNATTENDED_GATEWAY_RESUMES);
+  if (!plan.resume) {
+    logger.warn('SESSION', 'Unattended resumes stopped on the cmem gateway; buffered work waits for the next hook', {
+      sessionId: session.sessionDbId,
+      source,
+      attempts: plan.attempts,
+      maxUnattendedResumes: MAX_UNATTENDED_GATEWAY_RESUMES,
+    });
+  }
+  return plan;
+}
+
+/** Read-only: whether this session's unattended gateway resumes are spent (the periodic sweep honours it). */
+export function unattendedGatewayResumesSpent(session: ActiveSession): boolean {
+  return (session.consecutiveUnattendedGatewayResumes ?? 0) >= MAX_UNATTENDED_GATEWAY_RESUMES;
+}
+
 function planBoundedResume(
   session: ActiveSession,
-  counter: 'consecutiveResponseStalls' | 'consecutiveRateLimitResumes',
+  counter: 'consecutiveResponseStalls' | 'consecutiveRateLimitResumes' | 'consecutiveUnattendedGatewayResumes',
   maxResumes: number,
 ): { resume: boolean; attempts: number } {
   const attempts = (session[counter] ?? 0) + 1;

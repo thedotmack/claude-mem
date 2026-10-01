@@ -21,6 +21,7 @@ import * as realRuntimeSelector from '../../src/services/hooks/runtime-selector.
 const realSnapshot = { ...realRuntimeSelector };
 
 let contextCalls: Array<Record<string, unknown>> = [];
+let contextCallOptions: Array<Record<string, unknown> | undefined> = [];
 let runtimeStub: unknown = { runtime: 'worker' };
 let respond: (request: Record<string, unknown>) => Promise<unknown> = async () => ({ observations: [] });
 
@@ -31,7 +32,7 @@ mock.module('../../src/services/hooks/runtime-selector.js', () => ({
 
 const { fetchServerContextRows, toLocalObservationShape, toLocalSummaryShape } =
   await import('../../src/services/context/ServerContextRows.js');
-const { generateContextWithStats, generateServerContextWithStats } =
+const { generateContextWithStats, generateServerContextWithStats, generateServerSessionStartContext } =
   await import('../../src/services/context/ContextBuilder.js');
 const { CONTEXT_OUTPUT_LIMIT } = await import('../../src/services/context/ContextBudget.js');
 const { ModeManager } = await import('../../src/services/domain/ModeManager.js');
@@ -41,8 +42,9 @@ const serverRuntime = () => ({
   projectId: 'demo-project',
   serverBaseUrl: 'http://memory.example:37878',
   client: {
-    contextObservations: async (request: Record<string, unknown>) => {
+    contextObservations: async (request: Record<string, unknown>, options?: Record<string, unknown>) => {
       contextCalls.push(request);
+      contextCallOptions.push(options);
       return respond(request);
     },
   },
@@ -78,6 +80,7 @@ beforeAll(() => {
 
 afterEach(() => {
   contextCalls = [];
+  contextCallOptions = [];
   runtimeStub = { runtime: 'worker' };
   respond = async () => ({ observations: [] });
 });
@@ -125,6 +128,22 @@ describe('the shared store as a row source', () => {
     }));
     expect(contextCalls[0].folderProjects).toEqual(['parent', 'demo']);
     expect(contextCalls[0].platformSource).toBe('claude');
+  });
+
+  it('asks the store to leave subagent rows out exactly when CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY is on', async () => {
+    await fetchServerContextRows(serverRuntime(), rowsRequest({
+      config: { totalObservationCount: 20, sessionCount: 10, mainAgentOnly: true },
+    }));
+    await fetchServerContextRows(serverRuntime(), rowsRequest({
+      config: { totalObservationCount: 20, sessionCount: 10, mainAgentOnly: false },
+    }));
+    expect(contextCalls.map(call => call.excludeSubagents)).toEqual([true, false]);
+  });
+
+  it('bounds the request by the caller\'s timeout, and leaves the client default alone without one', async () => {
+    await fetchServerContextRows(serverRuntime(), rowsRequest({ timeoutMs: 15_000 }));
+    await fetchServerContextRows(serverRuntime(), rowsRequest());
+    expect(contextCallOptions).toEqual([{ timeoutMs: 15_000 }, {}]);
   });
 
   it('returns null when the store cannot answer', async () => {
@@ -241,6 +260,31 @@ describe('session-start context from the shared store', () => {
     const { text } = await generateContextWithStats(input);
     expect(contextCalls).toHaveLength(1);
     expect(text).toContain('Observation 7');
+  });
+
+  it('reads the store ONCE for a SessionStart that also renders the colored terminal copy (#3227 read twice)', async () => {
+    respond = async () => ({ observations: [observationRow(1), observationRow(2)] });
+    const { model, terminal } = await generateServerSessionStartContext(serverRuntime(), input, {
+      withTerminalRender: true,
+      timeoutMs: 12_000,
+    });
+    expect(contextCalls).toHaveLength(1);
+    expect(contextCallOptions).toEqual([{ timeoutMs: 12_000 }]);
+    expect(model).toContain('Observation 1');
+    expect(terminal).toContain('Observation 1');
+    // The terminal copy is its own (colored) rendering of the same rows.
+    expect(terminal).not.toBe(model);
+  });
+
+  it('renders only the model block when no terminal copy is wanted', async () => {
+    respond = async () => ({ observations: [observationRow(1)] });
+    const { model, terminal } = await generateServerSessionStartContext(serverRuntime(), input, {
+      withTerminalRender: false,
+      timeoutMs: 12_000,
+    });
+    expect(contextCalls).toHaveLength(1);
+    expect(model).toContain('Observation 1');
+    expect(terminal).toBeNull();
   });
 
   it('never consults the store in worker runtime', async () => {

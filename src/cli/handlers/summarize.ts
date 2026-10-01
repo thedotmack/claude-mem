@@ -104,6 +104,8 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    // Only the Codex adapter maps stop_hook_active; claude-code.ts explains why
+    // Claude Code's flag must never suppress a summary.
     if (input.stopHookActive === true) {
       logger.debug('HOOK', 'Skipping summary: Stop hook re-entry detected (stop_hook_active)', {
         sessionId: input.sessionId,

@@ -1,5 +1,6 @@
 
 import { logger } from '../../../utils/logger.js';
+import { hasStorableTitle } from '../../sqlite/observations/store.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
@@ -16,9 +17,10 @@ import { notifyGrokBotBrainbeat } from '../../integrations/GrokBotBrainbeat.js';
 import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
-import { recordObserverSuccess } from '../../../shared/observer-health.js';
+import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
 import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
+import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession, PendingMessage } from '../../worker-types.js';
@@ -283,7 +285,7 @@ export function snapshotResponseContext(session: ActiveSession): ResponseContext
 
 /**
  * An accepted reply proves the conversation fits and the provider is alive, so
- * the overflow, stall, and rate-limit debts reset — but only when the reply answered queued
+ * the overflow, stall, rate-limit and unattended-gateway-resume debts reset — but only when the reply answered queued
  * work. The init prompt is answered on every fresh generation, so letting it
  * reset the debt meant an oversized message or a too-small budget went
  * init -> reset -> recycle -> restart forever and never reached the exhausted
@@ -295,6 +297,7 @@ function clearDebtForAnsweredWork(session: ActiveSession): void {
   session.consecutiveContextOverflows = 0;
   session.consecutiveResponseStalls = 0;
   session.consecutiveRateLimitResumes = 0;
+  session.consecutiveUnattendedGatewayResumes = 0;
 }
 
 export async function processAgentResponse(
@@ -360,8 +363,6 @@ export async function processAgentResponse(
     }
 
     if (isQuotaLimitedObserverOutput(text)) {
-      session.consecutiveInvalidOutputs = 0;
-
       logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
         sessionId: session.sessionDbId,
         outputClass: 'prose',
@@ -380,8 +381,6 @@ export async function processAgentResponse(
     }
 
     if (isAuthFailureObserverOutput(text)) {
-      session.consecutiveInvalidOutputs = 0;
-
       await sessionManager.resetProcessingToPending(session.sessionDbId);
       session.abortReason = 'auth:observer_text';
       try {
@@ -408,8 +407,6 @@ export async function processAgentResponse(
     // it here would turn a transient network fault into permanent data loss
     // (#3752).
     if (isTransportFailureObserverOutput(text)) {
-      session.consecutiveInvalidOutputs = 0;
-
       await sessionManager.resetProcessingToPending(session.sessionDbId);
       session.abortReason = 'transport:observer_text';
       try {
@@ -426,12 +423,9 @@ export async function processAgentResponse(
       return;
     }
 
-    // Classify the non-XML output so a dropped batch is visible, not silent.
-    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
-    // any respawn debt from repeated skip acknowledgements.
+    // Classify the non-XML output so a rejected batch is visible, not silent.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
-    session.consecutiveInvalidOutputs = 0;
     // The overflow/quota/auth rejections returned above, so reaching here means
     // the provider accepted this prompt and answered it. That is proof the
     // conversation fits, whether or not the answer parsed — so the recycle
@@ -439,26 +433,59 @@ export async function processAgentResponse(
     // that answered "idle" twice in a row trip the exhausted branch and wedge.
     // An init reply does not count (#4066).
     clearDebtForAnsweredWork(session);
-
-    // consecutiveInvalidOutputs is deliberately always 0 here (see worker-types),
-    // so logging it read as "the breaker is fine" on every rejection and hid
-    // #3800 for a full day of failures. Report the counter that can actually be
-    // non-zero instead.
-    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
-      sessionId: session.sessionDbId,
-      outputClass,
-      preview,
+    const replyDiagnostics = {
       // An HTTP reply cut off at the output-token cap reads as xml/prose here;
       // name it, so a truncation is not mistaken for a skip (#3868).
       ...(finishReason ? { finishReason, truncated: finishReason === 'length' || finishReason === 'MAX_TOKENS' } : {}),
-      consecutiveContextOverflows: session.consecutiveContextOverflows,
       // Only an idle turn has a shape worth naming: blank text, thinking or
       // tool_use blocks only, or no content blocks at all (#3454).
       ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
-    });
+    };
 
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried.
+    // Every mode now names the <skip_summary /> sentinel, so a reply to queued
+    // work that is neither XML nor the sentinel did not answer the batch, and
+    // confirming it lost the batch silently. It earns the batch one more try,
+    // in a fresh generation (the reply stays out of the next request); a second
+    // rejection of the same batch drops it with an error, so one stubborn batch
+    // can neither loop nor stall the queue behind it. An init reply has no
+    // batch, and is confirmed as before.
+    const answersQueuedWork = session.lastGeneratorSource !== 'init' && session.claimedMessageIds.length > 0;
+    if (answersQueuedWork && recordRejectedOutput(session) === 'retry') {
+      logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — asking for the queued batch again in a fresh generation`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        ...replyDiagnostics,
+      });
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = `output_retry:${outputClass}`;
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
+
+    if (answersQueuedWork) {
+      clearRejectedOutput(session);
+      logger.error('PARSER', `${agentName} returned non-XML ${outputClass} response again for the same queued batch — dropping it`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        ...replyDiagnostics,
+      });
+      recordObserverFailure(providerName, `The observer answered a queued batch twice without observation XML (${outputClass}); the batch was dropped`);
+    } else {
+      logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response to a prompt with no queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        ...replyDiagnostics,
+        consecutiveContextOverflows: session.consecutiveContextOverflows,
+      });
+    }
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;
@@ -468,7 +495,7 @@ export async function processAgentResponse(
   // accumulate toward a respawn across a healthy session, and clear the overflow
   // counter so recycles only ever trip on *consecutive* failures (not on an
   // init reply, #4066).
-  session.consecutiveInvalidOutputs = 0;
+  clearRejectedOutput(session);
   clearDebtForAnsweredWork(session);
 
   if (!session.memorySessionId) {
@@ -522,7 +549,18 @@ export async function processAgentResponse(
     memorySessionId: registeredMemorySessionId
   });
 
-  const labeledObservations = sanitizedObservations.map(obs => ({
+  // Storage skips an observation without a title, and everything after it pairs
+  // parsed observations with stored ids by position (Chroma sync, SSE, alerts,
+  // the brainbeat webhook). Drop them here so one list feeds both sides: a
+  // skipped row in the middle would shift every later id onto the wrong one.
+  const storableObservations = sanitizedObservations.filter(obs => hasStorableTitle(obs.title));
+  if (storableObservations.length < sanitizedObservations.length) {
+    logger.debug('DB', 'Dropped observations without a title before storage', {
+      sessionId: session.sessionDbId,
+      dropped: sanitizedObservations.length - storableObservations.length,
+    });
+  }
+  const labeledObservations = storableObservations.map(obs => ({
     ...obs,
     agent_type: context.pendingAgentType,
     agent_id: context.pendingAgentId
@@ -549,6 +587,13 @@ export async function processAgentResponse(
     sessionId: session.sessionDbId,
     memorySessionId: registeredMemorySessionId
   });
+
+  // Storage is the irreversible step: confirm the batch at once, before the
+  // telemetry and integration side effects below, so an exception in any of
+  // them cannot replay an already-stored batch as duplicate observations.
+  await sessionManager.confirmClaimedMessages(session.sessionDbId);
+  session.earliestPendingTimestamp = null;
+  worker?.broadcastProcessingStatus?.();
 
   // The provider that produced THIS response (the session's), not whichever
   // provider the settings name right now.
@@ -665,10 +710,6 @@ export async function processAgentResponse(
           : undefined,
     });
   }
-
-  await sessionManager.confirmClaimedMessages(session.sessionDbId);
-  session.earliestPendingTimestamp = null;
-  worker?.broadcastProcessingStatus?.();
 
   // Alerts fire for newly stored observations only; a Tier-0 merge (#3038)
   // re-confirms a row that already alerted.

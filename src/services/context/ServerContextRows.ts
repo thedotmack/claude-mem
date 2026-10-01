@@ -39,6 +39,10 @@ type ServerRow = Record<string, unknown>;
  * recency read returns both. It asks for enough rows to fill the observation
  * count plus the summary count, capped at the route's SERVER_CONTEXT_MAX_LIMIT.
  * That cap also bounds `full` mode, which asks for everything.
+ *
+ * `config.mainAgentOnly` (CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY) asks the server to
+ * leave out rows generated from subagent events, as the SQLite read does.
+ * `timeoutMs` bounds the request; a hook passes what its host's limit leaves.
  */
 export async function fetchServerContextRows(
   runtime: ServerRuntimeContext,
@@ -47,9 +51,10 @@ export async function fetchServerContextRows(
     project: string;
     folderProjects: string[];
     platformSource: string | undefined;
+    timeoutMs?: number;
   },
 ): Promise<ServerContextRows | null> {
-  const { config, project, folderProjects, platformSource } = request;
+  const { config, project, folderProjects, platformSource, timeoutMs } = request;
   const wanted = config.totalObservationCount + config.sessionCount + SUMMARY_LOOKAHEAD;
   const limit = Math.max(1, Math.min(SERVER_CONTEXT_MAX_LIMIT, wanted));
   if (wanted > SERVER_CONTEXT_MAX_LIMIT) {
@@ -68,8 +73,9 @@ export async function fetchServerContextRows(
       // is not a third option -- the route's schema rejects it (min 1 char).
       limit,
       folderProjects,
+      excludeSubagents: config.mainAgentOnly,
       ...(platformSource ? { platformSource } : {}),
-    });
+    }, timeoutMs === undefined ? {} : { timeoutMs });
     rows = Array.isArray(result?.observations) ? result.observations : [];
   } catch (error) {
     logger.warn('HOOK', '[server-fallback] session-start context unavailable from the server', {

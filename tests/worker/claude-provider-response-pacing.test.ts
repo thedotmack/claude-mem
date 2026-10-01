@@ -179,7 +179,9 @@ const {
 const { MAX_CONSECUTIVE_RECYCLES } = await import('../../src/services/worker/session/recycle-conversation.js');
 
 const SESSION_ID = 4066;
-const SKIP_REPLY = 'Nothing worth recording in this tool call.';
+// The sanctioned no-op answer: every mode names this sentinel, and prose in
+// reply to queued work is asked for again (#3624).
+const SKIP_REPLY = '<skip_summary reason="noise" />';
 
 function createSession(): ActiveSession {
   return {

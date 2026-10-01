@@ -34,6 +34,7 @@ function mockSettingsDefaults(): Record<string, string> {
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_WORKER_PORT: '37777',
+    ...extraMockSettings,
   };
 }
 
@@ -55,7 +56,8 @@ function mockSettingsFromFile(settingsPath?: string, applyEnvOverrides = true): 
   }
   settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED = mockFolderClaudeMdEnabled;
 
-  return settings;
+  // A test's own settings win over whatever settings.json holds on this machine.
+  return { ...settings, ...extraMockSettings };
 }
 
 mock.module('../../../src/services/worker-service.js', () => ({
@@ -113,6 +115,8 @@ import type { SessionManager } from '../../../src/services/worker/SessionManager
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 let mockFolderClaudeMdEnabled = false;
+// Per-test settings on top of the stub defaults (reset in beforeEach).
+let extraMockSettings: Record<string, string> = {};
 let mockUpdateFolderClaudeMdFiles: ReturnType<typeof mock>;
 let claimedMessages: Array<{
   type: 'observation' | 'summarize';
@@ -140,6 +144,7 @@ describe('ResponseProcessor', () => {
       spyOn(logger, 'error').mockImplementation(() => {}),
     ];
     mockFolderClaudeMdEnabled = false;
+    extraMockSettings = {};
     claimedMessages = [];
     mockUpdateFolderClaudeMdFiles = mock(() => Promise.resolve());
     mockGetClaimedMessages = mock(() => claimedMessages);
@@ -294,6 +299,55 @@ describe('ResponseProcessor', () => {
         .filter(event => event.type === 'new_observation')
         .map(event => event.observation?.id);
       expect(broadcastIds).toEqual([7]);
+    });
+
+    it('drops a title-less observation before storing, so Chroma and the brainbeat webhook get the right ids', async () => {
+      // Like the real store: one id per TITLED observation it is handed. Before
+      // the fix the untitled one was handed over too, and every later id shifted
+      // onto the wrong parsed observation.
+      mockStoreObservations.mockImplementation((_memorySessionId: string, _project: string, observations: Array<{ title: string | null }>) => {
+        const titled = observations.filter(observation => observation.title);
+        return {
+          observationIds: titled.map((_observation, index) => 101 + index),
+          mergedIntoExisting: titled.map(() => false),
+          summaryId: null,
+          createdAtEpoch: 1700000000000,
+        } as StorageResult;
+      });
+      extraMockSettings = {
+        CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/hook',
+        CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'discovery',
+      };
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 202 }));
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>First finding</title>
+          <narrative>A</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+        <observation>
+          <type>discovery</type>
+          <narrative>A narrative with no title</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+        <observation>
+          <type>discovery</type>
+          <title>Third finding</title>
+          <narrative>C</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(responseText, createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      const stored = mockStoreObservations.mock.calls[0][2] as Array<{ title: string | null }>;
+      expect(stored.map(observation => observation.title)).toEqual(['First finding', 'Third finding']);
+      expect(mockChromaSyncObservation.mock.calls.map(call => [call[0], (call[3] as { title: string }).title]))
+        .toEqual([[101, 'First finding'], [102, 'Third finding']]);
+      const webhookPayloads = fetchSpy.mock.calls.map(call => JSON.parse(String((call[1] as RequestInit).body)));
+      expect(webhookPayloads.map(payload => [payload.observation_id, payload.title]))
+        .toEqual([[101, 'First finding'], [102, 'Third finding']]);
     });
 
     it('should parse multiple observations from response', async () => {

@@ -227,7 +227,9 @@ export function parseOriginUrlToSlug(url: string): string | null {
   const pathPart = urlFormMatch?.[1] ?? scpFormMatch?.[1];
   if (!pathPart) return null;
 
-  const segments = pathPart.split('/').filter(Boolean);
+  // Azure DevOps puts `_git` between the project and the repository
+  // (`dev.azure.com/<org>/<project>/_git/<repo>`); it is not part of the name.
+  const segments = pathPart.split('/').filter(segment => segment && segment !== '_git');
   if (segments.length >= 2) return segments.slice(-2).join('/');
   if (segments.length === 1) return segments[0];
   return null;

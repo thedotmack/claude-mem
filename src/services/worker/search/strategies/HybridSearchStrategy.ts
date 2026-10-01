@@ -10,7 +10,7 @@ import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
-import { buildProjectWhereFilter } from '../project-where-filter.js';
+import { buildProjectWhereFilter, projectReadKeysFor } from '../project-where-filter.js';
 
 export class HybridSearchStrategy {
   constructor(
@@ -27,7 +27,7 @@ export class HybridSearchStrategy {
     sessions: SessionSummarySearchResult[];
     usedChroma: boolean;
   }> {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy, isFolder } = options;
+    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, projects, platformSource, dateRange, orderBy, isFolder } = options;
     const filterOptions = { limit, project, platformSource, dateRange, orderBy, isFolder };
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
@@ -41,20 +41,22 @@ export class HybridSearchStrategy {
 
     const ids = metadataResults.observations.map(obs => obs.id);
 
-    return await this.rankAndHydrateForFile(filePath, ids, metadataResults.observations, { limit, project, platformSource, orderBy }, sessions);
+    return await this.rankAndHydrateForFile(filePath, ids, metadataResults.observations, { limit, project, projects, platformSource, orderBy }, sessions);
   }
 
   private async rankAndHydrateForFile(
     filePath: string,
     metadataIds: number[],
     fallbackObservations: ObservationSearchResult[],
-    options: { limit: number; project?: string; platformSource?: string; orderBy?: StrategySearchOptions['orderBy'] },
+    options: { limit: number; project?: string; projects?: unknown; platformSource?: string; orderBy?: StrategySearchOptions['orderBy'] },
     sessions: SessionSummarySearchResult[]
   ): Promise<{ observations: ObservationSearchResult[]; sessions: SessionSummarySearchResult[]; usedChroma: boolean }> {
     const chromaResults = await this.chromaSync.queryChroma(
       filePath,
       Math.min(metadataIds.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE),
-      this.buildObservationWhereFilter(options.project, options.platformSource)
+      // Ranks only: the file matches came from SQLite. The same read keys
+      // SearchManager scopes by, or case-variant and merged rows drop out.
+      this.buildObservationWhereFilter(projectReadKeysFor(this.sessionStore, options.project, options.projects), options.platformSource)
     );
 
     const rankedIds = this.intersectWithRanking(metadataIds, chromaResults.ids);
@@ -100,12 +102,10 @@ export class HybridSearchStrategy {
     return sorted.slice(0, limit);
   }
 
-  private buildObservationWhereFilter(project?: string, platformSource?: string): Record<string, any> {
+  private buildObservationWhereFilter(readKeys: string[], platformSource?: string): Record<string, any> {
     const filters: Array<Record<string, any>> = [{ doc_type: 'observation' }];
-    if (project) {
-      // The same scoping SQLite matched the file by, or merged and case-variant
-      // rows drop out of the ranking.
-      filters.push(buildProjectWhereFilter(this.sessionStore, project));
+    if (readKeys.length > 0) {
+      filters.push(buildProjectWhereFilter(readKeys));
     }
     if (platformSource) {
       filters.push({ platform_source: normalizePlatformSource(platformSource) });

@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
+import { projectReadKeys } from '../sqlite/project-read-keys.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
@@ -40,9 +41,10 @@ import {
   renderObserverHealthWarning,
   renderObserverQuotaCooldownNotice,
 } from '../../shared/observer-health.js';
+import { cooldownAppliesToCurrentAccount } from '../../shared/quota-cooldown.js';
 import { readSyncHealth, renderSyncHealthWarning } from '../../shared/sync-health.js';
 import { resolveRuntimeContext, type ServerRuntimeContext } from '../hooks/runtime-selector.js';
-import { fetchServerContextRows } from './ServerContextRows.js';
+import { fetchServerContextRows, type ServerContextRows } from './ServerContextRows.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -241,11 +243,14 @@ export function observerHealthWarning(forHuman: boolean = false): string {
   // says capture is paused, and a cooldown is not a second outage. Cooldown
   // alone (consecutiveFailures still below the unhealthy threshold) is the
   // gap this notice exists to close — the breaker withholds the generator
-  // without ever incrementing the failure streak.
+  // without ever incrementing the failure streak. A Claude breaker pauses only
+  // the account it was armed under; after a switch to another account it
+  // withholds nothing, so announcing it would be false.
+  const cooldown = health?.quotaCooldown;
   let notice: string | null = null;
   if (isObserverUnhealthy(health)) {
     notice = renderObserverHealthWarning(health);
-  } else if (isObserverQuotaCooldownActive(health)) {
+  } else if (isObserverQuotaCooldownActive(health) && cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
     notice = renderObserverQuotaCooldownNotice(health);
   }
   // Cloud sync health rides the same slot: a paused (401/403) or long-failing
@@ -468,23 +473,18 @@ export function renderContextFromRows(
   );
 }
 
-/**
- * Session-start context for the server runtime, read from the shared store.
- *
- * Never opens the local SQLite file: in server runtime the writes go to the
- * server, so the local corpus is stale. A successful empty answer renders the
- * empty state. When the server cannot answer, the result is empty (plus any
- * health warning) and a `[server-fallback]` line is logged; stale local rows are
- * never substituted. Rows are scoped to this cwd's project keys through the
- * route's folder filter.
- *
- * Exported so the SessionStart hook can call it directly, with no worker.
- */
-export async function generateServerContextWithStats(
+interface ServerContextRead {
+  scope: ContextScope;
+  /** Null when the server could not answer. */
+  rows: ServerContextRows | null;
+}
+
+/** One /v1/context read, scoped to this cwd's project keys through the route's folder filter. */
+async function readServerContext(
   runtime: ServerRuntimeContext,
-  input?: ContextInput,
-  forHuman: boolean = false
-): Promise<{ text: string; stats: ContextInjectStats | null }> {
+  input: ContextInput | undefined,
+  timeoutMs?: number,
+): Promise<ServerContextRead> {
   const scope = resolveContextScope(input);
   // Server ids are UUIDs that no tool can fetch by id (get_observations reads
   // the local SQLite store), so the block prints 8-char display refs and points
@@ -495,11 +495,57 @@ export async function generateServerContextWithStats(
     project: scope.project,
     folderProjects: scope.projects,
     platformSource: scope.platformSource,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
-  if (!rows) {
+  return { scope, rows };
+}
+
+function renderServerContext(
+  read: ServerContextRead,
+  input: ContextInput | undefined,
+  forHuman: boolean,
+): { text: string; stats: ContextInjectStats | null } {
+  if (!read.rows) {
     return { text: healthWarningForContext(input, forHuman), stats: null };
   }
-  return renderContextFromRows(rows, input, forHuman, scope);
+  return renderContextFromRows(read.rows, input, forHuman, read.scope);
+}
+
+/**
+ * Session-start context for the server runtime, read from the shared store.
+ *
+ * Never opens the local SQLite file: in server runtime the writes go to the
+ * server, so the local corpus is stale. A successful empty answer renders the
+ * empty state. When the server cannot answer, the result is empty (plus any
+ * health warning) and a `[server-fallback]` line is logged; stale local rows are
+ * never substituted. Rows are scoped to this cwd's project keys through the
+ * route's folder filter.
+ */
+export async function generateServerContextWithStats(
+  runtime: ServerRuntimeContext,
+  input?: ContextInput,
+  forHuman: boolean = false
+): Promise<{ text: string; stats: ContextInjectStats | null }> {
+  return renderServerContext(await readServerContext(runtime, input), input, forHuman);
+}
+
+/**
+ * The SessionStart hook's server-runtime block, called straight from the hook
+ * process with no worker. ONE /v1/context read per session start: the model
+ * block and, when asked, the colored terminal copy both render from its rows
+ * (#3227 read the store once per rendering). `timeoutMs` is what the host's
+ * SessionStart limit leaves for the read (serverSessionStartBudgetMs).
+ */
+export async function generateServerSessionStartContext(
+  runtime: ServerRuntimeContext,
+  input: ContextInput,
+  options: { withTerminalRender: boolean; timeoutMs: number },
+): Promise<{ model: string; terminal: string | null }> {
+  const read = await readServerContext(runtime, input, options.timeoutMs);
+  return {
+    model: renderServerContext(read, input, false).text,
+    terminal: options.withTerminalRender ? renderServerContext(read, input, true).text : null,
+  };
 }
 
 export async function generateContextWithStats(
@@ -519,7 +565,9 @@ export async function generateContextWithStats(
 
   try {
     const db = { db: rawDb };
-    const queryProjects = scope.projects.length > 1 ? scope.projects : [scope.project];
+    // Every key these projects are stored under, including one hop of a merge
+    // chain, so a `project merge` brings the merged project's adopted rows along.
+    const queryProjects = projectReadKeys(rawDb, scope.projects.length > 1 ? scope.projects : [scope.project]);
     const observations = queryObservationsMulti(db, queryProjects, scope.config, scope.platformSource);
     const summaries = querySummariesMulti(db, queryProjects, scope.config, scope.platformSource);
     return renderContextFromRows({ observations, summaries }, input, forHuman, scope);

@@ -37,16 +37,17 @@ export interface ActiveSession {
   observerProfile?: string;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
-   * observer output is confirmed as a no-op and resets this so benign skip
-   * acknowledgements never accumulate respawn debt.
-   *
-   * It is deliberately NOT the breaker for repeated hard rejections — counting
-   * skips and rejections on one counter is what produced the respawn storm this
-   * reset was added to stop. Hard rejections are counted by
-   * `consecutiveContextOverflows` instead.
+   * Rejected replies (neither observation/summary XML nor the
+   * `<skip_summary />` sentinel) to the batch named by `invalidOutputBatchKey`.
+   * The first earns the batch one retry in a fresh generation; the second drops
+   * it with an error (OutputRecovery). A skip is a valid answer and is never
+   * counted, so skip acknowledgements cannot accumulate the respawn debt this
+   * counter once caused. Hard rejections (overflow, quota, auth, transport) are
+   * not counted here either; they pause on their own terms.
    */
   consecutiveInvalidOutputs: number;
+  /** The claimed message ids `consecutiveInvalidOutputs` counts against. */
+  invalidOutputBatchKey?: string | null;
   /**
    * Consecutive "prompt too long" rejections on this session's conversation.
    *
@@ -74,6 +75,14 @@ export interface ActiveSession {
    * breaker takes over; reset when a queued-work turn is answered.
    */
   consecutiveRateLimitResumes?: number;
+  /**
+   * Consecutive unattended resumes — transport backoff, rate-limit
+   * Retry-After, or the move to the Anthropic plan after a cmem fallback —
+   * scheduled while memory is on the cmem gateway. Bounds them at
+   * MAX_UNATTENDED_GATEWAY_RESUMES (plan tokens); reset when a queued-work turn
+   * is answered.
+   */
+  consecutiveUnattendedGatewayResumes?: number;
   /**
    * The delayed resume a response stall scheduled. Any generator start cancels
    * it, so a stale timer never restarts a session a newer generation paused.

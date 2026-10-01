@@ -40,6 +40,15 @@ import {
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
 import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
+import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
+import { withCheckoutProjects } from './checkout-search-scope.js';
+
+/** This server's checkout (Claude Code starts it in the workspace), resolved once. */
+let workspaceCheckout: ProjectContext | null = null;
+function currentCheckout(): ProjectContext {
+  workspaceCheckout ??= getProjectContext(process.cwd());
+  return workspaceCheckout;
+}
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -528,7 +537,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         };
         return formatJsonResult(await sb.client.searchObservations(request));
       }
-      return await callWorker('/api/search', { query: args });
+      return await callWorker('/api/search', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {

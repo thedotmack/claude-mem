@@ -66,8 +66,8 @@ describe('case-insensitive project keys (#3531)', () => {
       seed(store, 'content-b', 'memory-b', 'pasteypal', 'MACHINE_B');
       seed(store, 'content-c', 'memory-c', 'other-project', 'UNRELATED');
 
-      expect(store.getProjectKeyCaseVariants('PASTEYPAL').sort()).toEqual(['PASTEYPAL', 'PasteyPal', 'pasteypal']);
-      expect(store.getProjectKeyCaseVariants('never-seen')).toEqual(['never-seen']);
+      expect(store.getProjectReadKeys(['PASTEYPAL']).sort()).toEqual(['PASTEYPAL', 'PasteyPal', 'pasteypal']);
+      expect(store.getProjectReadKeys(['never-seen'])).toEqual(['never-seen']);
     } finally {
       store.close();
     }

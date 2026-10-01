@@ -125,6 +125,11 @@ export function chromaCmdlineMatchesDataDir(cmdline: string | null, dataDir: str
   );
 }
 
+/** A read's own timeout, cut to `capMs` (what is left of a caller's deadline) when there is one. */
+function cappedTimeoutMs(ownTimeoutMs: number, capMs: number | undefined): number {
+  return capMs === undefined ? ownTimeoutMs : Math.max(1, Math.min(ownTimeoutMs, capMs));
+}
+
 /**
  * One CIM query returning pid, parent pid, executable name, command line and
  * creation token per row. Identity and ancestry come from the SAME
@@ -133,7 +138,7 @@ export function chromaCmdlineMatchesDataDir(cmdline: string | null, dataDir: str
  * kill-process-tree.ts). Command lines may contain commas and quotes, so the
  * rows are transported as JSON rather than CSV.
  */
-async function readWindowsProcessTableWithNames(): Promise<WindowsProcessRow[] | null> {
+async function readWindowsProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[] | null> {
   try {
     const result = await execFileAsync(
       'powershell.exe',
@@ -143,7 +148,7 @@ async function readWindowsProcessTableWithNames(): Promise<WindowsProcessRow[] |
         '-Command',
         "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{Name='StartToken';Expression={$_.CreationDate.ToString('yyyyMMddHHmmss.ffffff')}} | ConvertTo-Json -Compress",
       ],
-      { timeout: 30_000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
+      { timeout: cappedTimeoutMs(30_000, capMs), windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
     );
     const parsed = JSON.parse(result.stdout) as unknown;
     const rawRows = Array.isArray(parsed) ? parsed : parsed === null ? [] : [parsed];
@@ -174,10 +179,10 @@ async function readWindowsProcessTableWithNames(): Promise<WindowsProcessRow[] |
 }
 
 /** Owner PIDs currently LISTENING on `port`, or null when netstat failed. */
-async function listListeningOwnerPids(port: number): Promise<number[] | null> {
+async function listListeningOwnerPids(port: number, capMs?: number): Promise<number[] | null> {
   try {
     const result = await execFileAsync('netstat', ['-ano'], {
-      timeout: 15_000,
+      timeout: cappedTimeoutMs(15_000, capMs),
       windowsHide: true,
       maxBuffer: 16 * 1024 * 1024,
     });
@@ -198,10 +203,10 @@ async function listListeningOwnerPids(port: number): Promise<number[] | null> {
  * is an answer ("no listener"), not a failure. Null when lsof is unavailable or
  * failed — callers must then refuse to kill, never guess.
  */
-async function listListeningOwnerPidsPosix(port: number): Promise<number[] | null> {
+async function listListeningOwnerPidsPosix(port: number, capMs?: number): Promise<number[] | null> {
   try {
     const result = await execFileAsync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], {
-      timeout: 10_000,
+      timeout: cappedTimeoutMs(10_000, capMs),
       maxBuffer: 1024 * 1024,
     });
     return parsePidLines(result.stdout);
@@ -229,9 +234,9 @@ export function parsePidLines(output: string): number[] {
 }
 
 /** Full command line of a POSIX process, or null when it cannot be read. */
-async function readPosixCommandLine(pid: number): Promise<string | null> {
+async function readPosixCommandLine(pid: number, capMs?: number): Promise<string | null> {
   try {
-    const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'command='], { timeout: 5_000 });
+    const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'command='], { timeout: cappedTimeoutMs(5_000, capMs) });
     const cmdline = result.stdout.trim();
     return cmdline.length > 0 ? cmdline : null;
   } catch {
@@ -278,7 +283,8 @@ export type GhostPortReclaimResult =
         // Wedged-worker path refusals — our worker is alive but not provably wedged:
         | 'owner-booting' // inside its boot/migration grace (pid-file age)
         | 'owner-responding' // answered a health re-probe
-        | 'owner-identity-mismatch'; // start token or command line is not our worker
+        | 'owner-identity-mismatch' // start token or command line is not our worker
+        | 'out-of-budget'; // a caller's hook deadline leaves too little to finish (RECLAIM_MIN_BUDGET_MS)
       killedPids?: number[];
     };
 
@@ -301,15 +307,32 @@ const WEDGED_HEALTH_PROBE_TIMEOUT_MS = 1_500;
 const WEDGED_HEALTH_PROBE_SPACING_MS = 1_000;
 
 /**
+ * A caller spending a hook deadline (the UserPromptSubmit session-init, whose
+ * host kills it at 15 s) gets a reclaim only when one can finish in time:
+ * - before anything runs, RECLAIM_MIN_BUDGET_MS must be left: the two spaced
+ *   health probes at full length (a probe cut short would read a slow but
+ *   healthy worker as wedged) plus a tree-kill;
+ * - before any kill, RECLAIM_KILL_BUDGET_MS must still be left (taskkill /T /F
+ *   allows itself 5 s; a POSIX graceful kill settles 500 ms);
+ * - every process read is cut to what is left, and a read cut short refuses
+ *   to kill, like any unreadable owner list or process table.
+ * Otherwise the reclaim declines with 'out-of-budget' and the next launcher
+ * without a deadline (the MCP server, SessionStart, the daemon gate) does it.
+ */
+const RECLAIM_KILL_BUDGET_MS = 5_500;
+const RECLAIM_MIN_BUDGET_MS = 2 * WEDGED_HEALTH_PROBE_TIMEOUT_MS + WEDGED_HEALTH_PROBE_SPACING_MS + RECLAIM_KILL_BUDGET_MS;
+
+/**
  * Injectable seams for tests. Defaults are the real Windows implementations;
  * the suite injects fakes to exercise every decision branch on every CI
  * platform (the real netstat/CIM/taskkill path is covered by the Windows
- * integration gate).
+ * integration gate). `capMs` on a read is what is left of the caller's
+ * deadline (see RECLAIM_MIN_BUDGET_MS), or undefined without one.
  */
 export interface GhostPortReclaimDeps {
   isWin32?: () => boolean;
-  listOwners?: (port: number) => Promise<number[] | null>;
-  readTable?: () => Promise<WindowsProcessRow[] | null>;
+  listOwners?: (port: number, capMs?: number) => Promise<number[] | null>;
+  readTable?: (capMs?: number) => Promise<WindowsProcessRow[] | null>;
   killTree?: (pid: number, options: KillTreeOptions) => Promise<void>;
   dataDir?: () => string | null;
   /** The live worker our PID file claims (start-token verified), or null. */
@@ -317,11 +340,13 @@ export interface GhostPortReclaimDeps {
   /** One bounded /api/health probe; true when the worker answered. */
   probeHealth?: (port: number) => Promise<boolean>;
   /** Start token + command line of `pid`, read together. */
-  readIdentity?: (pid: number) => Promise<ProcessIdentity>;
+  readIdentity?: (pid: number, capMs?: number) => Promise<ProcessIdentity>;
   /** Minimum worker age (seconds) before a silent worker may count as wedged. */
   minOwnerAgeSeconds?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Deadline (read with `now`) of a caller spending a hook budget; absent or null for none. */
+  deadlineAt?: number | null;
 }
 
 interface WedgedReclaimDeps {
@@ -333,6 +358,8 @@ interface WedgedReclaimDeps {
   minOwnerAgeSeconds: number;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
+  /** False when a kill could no longer finish inside the caller's deadline. */
+  hasKillBudget: () => boolean;
 }
 
 /**
@@ -370,7 +397,7 @@ async function reclaimWedgedOwnedWorker(
   const owned = deps.readOwnedWorker();
   if (owned === null || owned.port !== port) return null;
   const refuse = (
-    reason: 'owner-booting' | 'owner-responding' | 'owner-identity-mismatch' | 'netstat-unreadable',
+    reason: 'owner-booting' | 'owner-responding' | 'owner-identity-mismatch' | 'netstat-unreadable' | 'out-of-budget',
     details: Record<string, unknown> = {},
   ): GhostPortReclaimResult => {
     logger.info('PROCESS', 'Wedged-worker reclaim declined', { port, pid: owned.pid, reason, ...details });
@@ -408,6 +435,7 @@ async function reclaimWedgedOwnedWorker(
   if (tokenMismatch || identity.cmdline === null || !WORKER_CMDLINE_PATTERN.test(identity.cmdline)) {
     return refuse('owner-identity-mismatch', { tokenMismatch, hasCmdline: identity.cmdline !== null });
   }
+  if (!deps.hasKillBudget()) return refuse('out-of-budget');
 
   logger.warn('PROCESS', 'Reclaiming wedged worker: past its boot grace, silent on two health probes, and still holding the port', {
     port,
@@ -459,12 +487,13 @@ async function reclaimWedgedOwnedWorker(
 async function readProcessIdentity(
   pid: number,
   isWin32: boolean,
-  readTable: () => Promise<WindowsProcessRow[] | null>,
+  readTable: (capMs?: number) => Promise<WindowsProcessRow[] | null>,
+  capMs?: number,
 ): Promise<ProcessIdentity> {
   const startToken = captureProcessStartToken(pid);
   const cmdline = isWin32
-    ? (await readTable())?.find(row => row.pid === pid)?.cmdline ?? null
-    : await readPosixCommandLine(pid);
+    ? (await readTable(capMs))?.find(row => row.pid === pid)?.cmdline ?? null
+    : await readPosixCommandLine(pid, capMs);
   if (!isSameProcess(pid, startToken)) return { startToken: null, cmdline: null };
   return { startToken, cmdline };
 }
@@ -497,11 +526,29 @@ export async function reclaimGhostListeningPort(
   deps: GhostPortReclaimDeps = {}
 ): Promise<GhostPortReclaimResult> {
   const isWin32 = deps.isWin32 ?? (() => process.platform === 'win32');
-  const listOwners = deps.listOwners
-    ?? ((p: number) => (isWin32() ? listListeningOwnerPids(p) : listListeningOwnerPidsPosix(p)));
-  const readTable = deps.readTable ?? readWindowsProcessTableWithNames;
+  const now = deps.now ?? Date.now;
+  const deadlineAt = deps.deadlineAt ?? null;
+  const lacksBudget = (needMs: number): boolean => deadlineAt !== null && deadlineAt - now() < needMs;
+  // What is left of the caller's deadline caps every process read (see RECLAIM_MIN_BUDGET_MS).
+  const readCapMs = (): number | undefined => (deadlineAt === null ? undefined : Math.max(1, deadlineAt - now()));
+  if (lacksBudget(RECLAIM_MIN_BUDGET_MS)) {
+    logger.info('PROCESS', 'Port reclaim skipped: not enough of the hook budget is left to finish one', {
+      port,
+      remainingMs: readCapMs(),
+      neededMs: RECLAIM_MIN_BUDGET_MS,
+    });
+    return { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+  }
+
+  const readOwners = deps.listOwners
+    ?? ((p: number, capMs?: number) => (isWin32() ? listListeningOwnerPids(p, capMs) : listListeningOwnerPidsPosix(p, capMs)));
+  const listOwners = (p: number) => readOwners(p, readCapMs());
+  const readProcessTable = deps.readTable ?? readWindowsProcessTableWithNames;
+  const readTable = () => readProcessTable(readCapMs());
   const killTree = deps.killTree ?? ((pid, options) => killProcessTree(pid, options));
   const dataDir = deps.dataDir ?? (() => DATA_DIR);
+  const readIdentity = deps.readIdentity
+    ?? ((pid: number, capMs?: number) => readProcessIdentity(pid, isWin32(), readProcessTable, capMs));
 
   // Wedged-worker reclaim runs on every platform, before the Windows-only
   // ghost-listener path: a live worker we own that has stopped answering
@@ -511,10 +558,11 @@ export async function reclaimGhostListeningPort(
     killTree,
     readOwnedWorker: deps.readOwnedWorker ?? readOwnedWorkerPidInfo,
     probeHealth: deps.probeHealth ?? ((p: number) => waitForHealth(p, WEDGED_HEALTH_PROBE_TIMEOUT_MS)),
-    readIdentity: deps.readIdentity ?? ((pid: number) => readProcessIdentity(pid, isWin32(), readTable)),
+    readIdentity: (pid: number) => readIdentity(pid, readCapMs()),
     minOwnerAgeSeconds: deps.minOwnerAgeSeconds ?? readWedgedWorkerUptimeSeconds(),
-    now: deps.now ?? Date.now,
+    now,
     sleep: deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))),
+    hasKillBudget: () => !lacksBudget(RECLAIM_KILL_BUDGET_MS),
   });
   if (wedged !== null) return wedged;
 
@@ -587,7 +635,6 @@ export async function reclaimGhostListeningPort(
     });
     return { reclaimed: false, reason: 'no-chroma-descendants', killedPids: [] };
   }
-
   logger.warn('PROCESS', 'Reclaiming ghost listener: killing dead worker\'s surviving chroma sidecar chain', {
     port,
     deadOwners: owners,
@@ -596,6 +643,12 @@ export async function reclaimGhostListeningPort(
 
   const killedPids: number[] = [];
   for (const target of killTargets.values()) {
+    // Each tree-kill can take its full taskkill timeout, so a caller's
+    // deadline is checked before every one, not once for the whole chain.
+    if (lacksBudget(RECLAIM_KILL_BUDGET_MS)) {
+      logger.info('PROCESS', 'Ghost-listener reclaim stopped before a kill: the hook budget is spent', { port, killedPids });
+      return { reclaimed: false, reason: 'out-of-budget', killedPids };
+    }
     try {
       await killTree(target.pid, {
         // Identity from the discovery read — never re-probed against a

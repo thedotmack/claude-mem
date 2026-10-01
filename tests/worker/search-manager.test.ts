@@ -75,7 +75,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds,
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -138,7 +138,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         searchSessions: mock(() => []),
         searchUserPrompts: mock(() => []),
       } as any,
-      {} as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
       null,
       {
         formatSearchTableHeader: mock(() => '| h |'),
@@ -336,7 +336,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds,
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       {
         queryChroma: mock(() => Promise.resolve({
@@ -417,7 +417,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds,
-        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -444,6 +444,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       orderBy: 'date_desc',
       limit: 10,
       project: 'search-project',
+      projects: ['search-project'],
       platformSource: 'cursor',
     });
     expect(result.sessions).toEqual([session]);
@@ -482,7 +483,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -502,6 +503,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       orderBy: 'date_desc',
       limit: 10,
       project: 'search-project',
+      projects: ['search-project'],
       platformSource: 'cursor',
     });
     expect(result.prompts).toEqual([prompt]);
@@ -542,7 +544,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
         getTimelineAroundObservation,
       } as any,
       null,
@@ -636,7 +638,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -715,7 +717,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -787,7 +789,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -824,7 +826,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
-        getProjectKeyCaseVariants: () => ['pasteypal', 'PasteyPal'],
+        getProjectReadKeys: () => ['pasteypal', 'PasteyPal'],
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -842,6 +844,50 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     });
   });
 
+  // Gate P2-5: a checkout's search covers every key it reads (its current key
+  // and the ones it wrote under before a re-key), in Chroma and in the SQLite
+  // hydration alike.
+  it('searches every project of a checkout and hydrates with the same keys', async () => {
+    const observation = { id: 7, title: 'from the folder key', created_at_epoch: Date.now() };
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [observation.id],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: observation.id, doc_type: 'observation', project: 'api', created_at_epoch: Date.now() }],
+    }));
+    const getProjectReadKeys = mock((projects: string[]) => [...projects, 'old-folder']);
+    const getObservationsByIds = mock(() => [observation]);
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds,
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys,
+      } as any,
+      { queryChroma } as any,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.search({ query: 'overlap', type: 'observations', project: 'acme/api', projects: 'api,acme/api', format: 'json', limit: 10 });
+
+    expect(getProjectReadKeys).toHaveBeenCalledWith(['acme/api', 'api']);
+    const keys = { $in: ['acme/api', 'api', 'old-folder'] };
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
+      $and: [
+        { doc_type: 'observation' },
+        { $or: [{ project: keys }, { merged_into_project: keys }] },
+      ],
+    });
+    expect(getObservationsByIds).toHaveBeenCalledWith([observation.id], expect.objectContaining({
+      projects: ['acme/api', 'api', 'old-folder'],
+    }));
+  });
+
   // Gate P2-14: the keyword fallback after a Chroma error was the one search
   // path without a catch, so a query that broke both surfaced as a failed
   // request instead of an empty answer (the Chroma-less path already caught).
@@ -856,7 +902,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
-        getProjectKeyCaseVariants: (project: string) => [project],
+        getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma: mock(() => Promise.reject(new Error('chroma-mcp tool "chroma_query_documents" returned error'))) } as any,
       {} as any,
@@ -997,7 +1043,7 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
       {} as any,
@@ -1030,7 +1076,7 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,         getProjectKeyCaseVariants: (project: string) => [project],
+        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
       {} as any,

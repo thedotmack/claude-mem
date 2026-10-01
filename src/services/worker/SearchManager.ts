@@ -21,7 +21,7 @@ import type { SearchResults, StrategySearchResult } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
-import { buildProjectWhereFilter } from './search/project-where-filter.js';
+import { buildProjectWhereFilter, projectReadKeysFor } from './search/project-where-filter.js';
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
@@ -84,7 +84,7 @@ export class SearchManager {
   private buildDocTypeWhereFilter(docType: string, project?: string, platformSource?: string): Record<string, any> {
     const filters: Array<Record<string, any>> = [{ doc_type: docType }];
     if (project) {
-      filters.push(buildProjectWhereFilter(this.sessionStore, project));
+      filters.push(buildProjectWhereFilter(projectReadKeysFor(this.sessionStore, project, undefined)));
     }
     if (platformSource) {
       filters.push({ platform_source: normalizePlatformSource(platformSource) });
@@ -431,6 +431,7 @@ export class SearchManager {
           orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
+          projects: options.projects,
           platformSource: options.platformSource
         });
       }
@@ -439,6 +440,7 @@ export class SearchManager {
           orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
+          projects: options.projects,
           platformSource: options.platformSource
         });
       }
@@ -488,6 +490,15 @@ export class SearchManager {
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    // Gate P2-5: every key the requested projects are stored under, so a
+    // checkout's search reaches what it wrote before a re-key. The SQLite paths
+    // receive the same list (scopedProjects prefers `projects` over `project`).
+    const projectReadKeys = projectReadKeysFor(this.sessionStore, options.project, options.projects);
+    if (projectReadKeys.length > 0) {
+      options.projects = projectReadKeys;
+    } else {
+      delete options.projects;
+    }
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -506,7 +517,7 @@ export class SearchManager {
     const { category, effectiveObsType } = this.resolveTypeFilters(type, obs_type);
     assertSearchHasQueryOrFilter({
       query,
-      project: options.project,
+      project: options.project ?? options.projects?.[0],
       platformSource: options.platformSource,
       dateRange: options.dateRange,
       obsType: effectiveObsType,
@@ -545,8 +556,8 @@ export class SearchManager {
         whereFilters.push({ doc_type: 'user_prompt' });
       }
 
-      if (options.project) {
-        whereFilters.push(buildProjectWhereFilter(this.sessionStore, options.project));
+      if (projectReadKeys.length > 0) {
+        whereFilters.push(buildProjectWhereFilter(projectReadKeys));
       }
 
       if (options.platformSource) {
