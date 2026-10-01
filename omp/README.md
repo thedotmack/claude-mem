@@ -15,8 +15,8 @@ OMP-side plugin or modification is required.
 | OMP event | claude-mem endpoint | Purpose |
 |---|---|---|
 | `session_start` | — | Mint a process-stable `contentSessionId` |
-| `before_agent_start` | `POST /api/sessions/init` | Create/continue the claude-mem session (records the real user prompt) |
-| `tool_result` | `POST /api/sessions/observations` | Record each tool call (fire-and-forget) |
+| `before_agent_start` | `POST /api/sessions/init` | Record every user prompt, in order (creates the claude-mem session on the first) |
+| `tool_result` | `POST /api/sessions/observations` | Record each tool call after its prompt (fire-and-forget; never posts an init) |
 | `context` | `GET /api/context/inject` | Inject memory from past sessions into the prompt (60s cache) |
 | `session_shutdown` | `POST /api/sessions/summarize` | Finalize the session summary |
 
@@ -28,7 +28,10 @@ Behavioral notes (matching the OpenClaw adapter's conventions):
   dispatch (the extension runner's 30s handler cap is never approached).
 - `memory_*` tool results are skipped to avoid recursion.
 - `tool_response` is capped at 1000 characters; `tool_input` is passed raw.
-- A circuit breaker opens for 30s after 3 consecutive worker failures.
+- Every worker request times out after 5s, so a hung worker cannot stall the
+  `context` handler that OMP awaits before each model call.
+- A circuit breaker opens for 30s after 3 consecutive worker failures
+  (timeouts count).
 - The worker address resolves the way claude-mem's own clients resolve it:
   `CLAUDE_MEM_WORKER_PORT` / `CLAUDE_MEM_WORKER_HOST` from the environment, then
   `settings.json` in the data dir (`CLAUDE_MEM_DATA_DIR`, default `~/.claude-mem`),
@@ -37,7 +40,11 @@ Behavioral notes (matching the OpenClaw adapter's conventions):
   and the worker resolves the project key with the same resolver the Claude Code
   hooks use, so OMP and Claude Code sessions in one checkout share one project.
   Excluded projects (`CLAUDE_MEM_EXCLUDED_PROJECTS`) are skipped.
-- A session is finalized only after the worker accepted its init.
+- Each prompt's init waits for the previous one, so the worker records prompts
+  in order. A tool result waits for its prompt's init and is dropped when the
+  worker did not record that prompt; one that arrives before any prompt is sent
+  at once.
+- A session is finalized only after the worker recorded one of its prompts.
 - The `context` handler always preserves the original conversation — it
   re-spreads `event.messages` and appends exactly one system message.
 

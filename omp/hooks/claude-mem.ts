@@ -21,10 +21,14 @@
  *  - contentSessionId is process-stable and regenerated only on session_compact
  *    (one claude-mem session per omp session, not per prompt — before_agent_start
  *    fires once per user prompt, so we never mint a new id there).
- *  - init is fired exactly once per contentSessionId; observations await its
- *    promise so the first observation never lands before the session row exists.
+ *  - every user prompt posts init (the worker de-duplicates a repeated prompt),
+ *    as the Claude Code hooks do, each after the previous one so prompts are
+ *    recorded in order. Observations wait for the latest prompt's init and are
+ *    dropped when the worker did not record it. A tool result never inits on
+ *    its own: a prompt-less init would pin the session to "[media prompt]".
  *  - All POSTs are fire-and-forget via detached chains; the handler returns
- *    synchronously and never blocks the tool dispatch (30s handler cap).
+ *    synchronously and never blocks the tool dispatch (30s handler cap). Every
+ *    request is bounded by a timeout, which counts as a breaker failure.
  *  - The project is never named here: every request carries the session's cwd
  *    and the worker resolves the project key from it, the same resolver the
  *    Claude Code hooks use (worktrees, markers, environments).
@@ -41,6 +45,10 @@ import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 
 const MAX_LEN = 1000; // tool_response hard cap (OpenClaw)
 const CTX_CACHE_MS = 60_000; // /api/context/inject cache TTL (OpenClaw)
+// A hung worker must not hold OMP's handlers: the context handler is awaited
+// before every model call, so an unbounded fetch added up to OMP's 30 s handler
+// cap per call, and the breaker never saw a failure.
+const REQUEST_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Worker endpoint
@@ -118,18 +126,25 @@ function onOk(): void {
 // Session state (process-stable contentSessionId)
 // ---------------------------------------------------------------------------
 
-let sid: string | undefined;
-let initialized = false;
-// Resolves true once the worker accepted init for `sid`, false if it failed.
-let initPromise: Promise<boolean> | undefined;
+interface OmpSession {
+  id: string;
+  // The tail of the session's init chain: the latest prompt's init, which
+  // resolves true once the worker recorded that prompt. Observations and the
+  // summary wait on it so they land after the prompts they belong to.
+  lastInit?: Promise<boolean>;
+  // The worker recorded at least one prompt for this id (finalize needs one).
+  anchored: boolean;
+  // The worker skipped this checkout as excluded: nothing more is sent.
+  excluded: boolean;
+}
+
+let session: OmpSession | undefined;
 let ctxCache: { at: number; cwd: string; md: string } | null = null;
 let lastAssistant = ""; // captured on agent_end, sent at summarize
 
-function newSid(): string {
-  sid = `omp-${process.pid}-${Date.now().toString(36)}`;
-  initialized = false;
-  initPromise = undefined;
-  return sid;
+function newSession(): OmpSession {
+  session = { id: `omp-${process.pid}-${Date.now().toString(36)}`, anchored: false, excluded: false };
+  return session;
 }
 
 function textFromContent(content: unknown): string {
@@ -155,67 +170,71 @@ function lastMessageText(messages: unknown[], role: string): string {
   return "";
 }
 
-// Fire /api/sessions/init exactly once per contentSessionId (observer awaits this).
-function fireInit(cwd: string | undefined, prompt?: string): Promise<boolean> {
-  if (breakerOpen()) return Promise.resolve(false);
-  if (sid === undefined) newSid();
-  if (initialized) return initPromise ?? Promise.resolve(false);
-  initialized = true;
-  const body: Record<string, unknown> = {
-    contentSessionId: sid,
-    prompt: prompt ?? "",
-    platformSource: "omp",
-  };
-  if (cwd) body.cwd = cwd;
-  // On any failure (network or HTTP) trip the breaker and release the init lock
-  // so the next before_agent_start/tool_result can retry; observers awaiting this
-  // promise proceed and the subsequent observation POST is gated by the breaker.
-  initPromise = fetch(`${worker()}/api/sessions/init`, {
+/** One bounded worker request; a timeout or an HTTP error rejects. */
+async function request(path: string, init: RequestInit = {}): Promise<Response> {
+  const r = await fetch(`${worker()}${path}`, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (!r.ok) throw new Error(`${path} ${r.status}`);
+  return r;
+}
+
+function postJson(path: string, body: unknown): Promise<Response> {
+  return request(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-  })
-    .then(async r => {
-      if (!r.ok) throw new Error(`init ${r.status}`);
-      onOk();
-      // An excluded project is skipped before its session row exists, so it is
-      // not an init: finalizing that id would make the worker create one.
-      const reply = await r.json().catch(() => ({}));
-      return reply?.reason !== "project_excluded";
-    })
-    .catch(() => {
-      onFail();
-      initialized = false;
-      initPromise = undefined;
-      return false;
-    });
-  return initPromise;
+  });
 }
 
 function post(path: string, body: unknown): Promise<void> {
   if (breakerOpen()) return Promise.resolve();
-  return fetch(`${worker()}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  })
-    .then(r => {
-      if (!r.ok) throw new Error(`${path} ${r.status}`);
-      onOk();
-    })
-    .catch(() => onFail());
+  return postJson(path, body).then(() => onOk(), () => onFail());
 }
 
-// Finalize a session, but only once its init has succeeded: summarizing an id
-// the worker never initialized makes it create an empty-project sdk_sessions
-// row with an empty user_prompt. Chained onto the captured init promise, since
-// `initialized` flips synchronously inside fireInit, before the POST settles.
-function finalize(id: string | undefined, pendingInit: Promise<boolean> | undefined, assistantMessage: string): void {
-  if (!id || !pendingInit) return;
-  void pendingInit.then(initSucceeded => {
-    if (!initSucceeded) return;
+/**
+ * Record one user prompt for `target`. Every prompt posts init, so prompts 2+
+ * are recorded too (the worker de-duplicates a repeated prompt). Each init
+ * waits for the previous one, so overlapping prompts reach the worker in order
+ * and finalize, which waits for the chain's tail, covers all of them. A failed
+ * init is counted by the breaker, and a later prompt simply tries again.
+ */
+function sendPrompt(target: OmpSession, cwd: string | undefined, prompt: string): void {
+  const body: Record<string, unknown> = { contentSessionId: target.id, prompt, platformSource: "omp" };
+  if (cwd) body.cwd = cwd;
+  target.lastInit = (target.lastInit ?? Promise.resolve(true)).then(() => recordPrompt(target, body));
+}
+
+// Resolves true once the worker recorded the prompt. Success is counted only
+// after the reply is read: a body that stalls until the timeout is a failure,
+// not a recorded prompt.
+async function recordPrompt(target: OmpSession, body: Record<string, unknown>): Promise<boolean> {
+  if (target.excluded || breakerOpen()) return false;
+  try {
+    const r = await postJson("/api/sessions/init", body);
+    const reply = (await r.json()) as { reason?: unknown } | null;
+    onOk();
+    // An excluded checkout is skipped before any session row exists.
+    if (reply?.reason === "project_excluded") {
+      target.excluded = true;
+      return false;
+    }
+    target.anchored = true;
+    return true;
+  } catch {
+    onFail();
+    return false;
+  }
+}
+
+// Finalize a session the worker recorded a prompt for. Chained after its latest
+// init, so the summary never overtakes the prompts it summarizes; a session
+// with no recorded prompt (every init failed, or the checkout is excluded) is
+// left alone.
+function finalize(target: OmpSession | undefined, assistantMessage: string): void {
+  if (!target) return;
+  void (target.lastInit ?? Promise.resolve(false)).then(() => {
+    if (!target.anchored || target.excluded) return;
     return post("/api/sessions/summarize", {
-      contentSessionId: id,
+      contentSessionId: target.id,
       last_assistant_message: assistantMessage,
       platformSource: "omp",
     });
@@ -232,43 +251,49 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // and privacy-filters on it).
   pi.on("session_start", async () => {
     workerBase = undefined;
-    newSid();
+    newSession();
   });
 
   // Compaction starts a new logical session in claude-mem too (matches Claude
   // Code's SessionStart clear/compact path): finalize the session that is
-  // ending, then rotate the id. The next before_agent_start re-inits with the
-  // post-compact prompt.
+  // ending, then rotate the id. The next before_agent_start inits the new id
+  // with the post-compact prompt.
   pi.on("session_compact", async () => {
-    finalize(sid, initPromise, lastAssistant);
-    newSid();
-    // lastAssistant belongs to the logical session that just ended. newSid()
-    // resets sid/initialized/initPromise but not this field, so without the
-    // reset a compact followed directly by session_shutdown would attribute the
+    finalize(session, lastAssistant);
+    newSession();
+    // lastAssistant belongs to the logical session that just ended, so a
+    // compact followed directly by session_shutdown must not attribute the
     // pre-compaction response to the replacement id.
     lastAssistant = "";
   });
 
-  // before_agent_start fires once per user prompt — init for the current session
-  // id (exactly once via the `initialized` lock) and send the latest user prompt.
-  // The prompt is a direct `event.prompt` string (BeforeAgentStartEvent in both
+  // before_agent_start fires once per user prompt: record it, every time. The
+  // prompt is a direct `event.prompt` string (BeforeAgentStartEvent in both
   // hooks/types.ts:281 and extensions/types.ts:705) — NOT in event.messages.
   // Never mint a new id here.
   pi.on("before_agent_start", async (event, ctx) => {
-    fireInit(ctx?.cwd, event?.prompt);
+    const prompt = typeof event?.prompt === "string" ? event.prompt : "";
+    sendPrompt(session ?? newSession(), ctx?.cwd, prompt);
   });
 
   // tool_result: the observation pipeline. Fire-and-forget; handler returns void
-  // immediately. Awaits init, then POSTs the observation on a detached chain.
+  // immediately. Waits for the latest prompt's init, then POSTs the observation
+  // on a detached chain, unless the worker did not record that prompt or
+  // excluded the checkout. It never inits: a tool result before the first
+  // prompt would otherwise pin the session to "[media prompt]" (the worker
+  // creates the session row from the observation itself when no prompt came
+  // first).
   pi.on("tool_result", async (event, ctx) => {
     const toolName = String(event?.toolName ?? "");
     if (!toolName || toolName.startsWith("memory_")) return; // avoid claude-mem recursion
 
+    const target = session ?? newSession();
+    if (target.excluded) return;
     const response = textFromContent(event?.content);
     // isError rows are valuable — never skip them. tool_input is sent raw (the
     // worker serializes it once); tool_response is capped to MAX_LEN.
     const body: Record<string, unknown> = {
-      contentSessionId: sid ?? newSid(),
+      contentSessionId: target.id,
       tool_name: toolName,
       tool_input: event?.input,
       tool_response: response.length > MAX_LEN ? response.slice(0, MAX_LEN) : response,
@@ -276,9 +301,10 @@ export default function claudeMemBridge(pi: HookAPI): void {
     };
     if (ctx?.cwd) body.cwd = ctx.cwd;
 
-    // Race-safe: wait for session init before the first observation lands.
-    const dep = initPromise ?? fireInit(ctx?.cwd);
-    void dep.then(() => post("/api/sessions/observations", body));
+    void (target.lastInit ?? Promise.resolve(true)).then(recorded => {
+      if (!recorded || target.excluded) return;
+      return post("/api/sessions/observations", body);
+    });
   });
 
   // agent_end: remember the last assistant message so summarize has an anchor.
@@ -298,9 +324,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
 
     if (!ctxCache || ctxCache.cwd !== cwd || now - ctxCache.at > CTX_CACHE_MS) {
       try {
-        const url = `${worker()}/api/context/inject?cwd=${encodeURIComponent(cwd)}&platformSource=omp`;
-        const r = await fetch(url);
-        if (!r.ok) throw new Error(`inject ${r.status}`);
+        const r = await request(`/api/context/inject?cwd=${encodeURIComponent(cwd)}&platformSource=omp`);
         const md = (await r.text()) ?? "";
         onOk();
         // Only cache non-empty — an empty result means "no memory yet", caching it
@@ -321,16 +345,12 @@ export default function claudeMemBridge(pi: HookAPI): void {
   });
 
   // session_shutdown: finalize the claude-mem session and drop in-memory state.
-  // id / pendingInit / previousAssistant are captured BEFORE the reset below:
-  // the detached chain runs after this handler has returned and cleared the
-  // module fields, so reading them inside the callback would send an empty
-  // last_assistant_message.
+  // finalize captures the session and assistant message before the reset
+  // below: its detached chain runs after this handler has cleared them.
   pi.on("session_shutdown", async () => {
-    finalize(sid, initPromise, lastAssistant);
+    finalize(session, lastAssistant);
 
-    sid = undefined;
-    initialized = false;
-    initPromise = undefined;
+    session = undefined;
     ctxCache = null;
     lastAssistant = "";
   });
