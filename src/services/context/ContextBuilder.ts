@@ -44,7 +44,7 @@ import {
 import { cooldownAppliesToCurrentAccount } from '../../shared/quota-cooldown.js';
 import { readSyncHealth, renderSyncHealthWarning } from '../../shared/sync-health.js';
 import { resolveRuntimeContext, type ServerRuntimeContext } from '../hooks/runtime-selector.js';
-import { fetchServerContextRows } from './ServerContextRows.js';
+import { fetchServerContextRows, type ServerContextRows } from './ServerContextRows.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -473,23 +473,18 @@ export function renderContextFromRows(
   );
 }
 
-/**
- * Session-start context for the server runtime, read from the shared store.
- *
- * Never opens the local SQLite file: in server runtime the writes go to the
- * server, so the local corpus is stale. A successful empty answer renders the
- * empty state. When the server cannot answer, the result is empty (plus any
- * health warning) and a `[server-fallback]` line is logged; stale local rows are
- * never substituted. Rows are scoped to this cwd's project keys through the
- * route's folder filter.
- *
- * Exported so the SessionStart hook can call it directly, with no worker.
- */
-export async function generateServerContextWithStats(
+interface ServerContextRead {
+  scope: ContextScope;
+  /** Null when the server could not answer. */
+  rows: ServerContextRows | null;
+}
+
+/** One /v1/context read, scoped to this cwd's project keys through the route's folder filter. */
+async function readServerContext(
   runtime: ServerRuntimeContext,
-  input?: ContextInput,
-  forHuman: boolean = false
-): Promise<{ text: string; stats: ContextInjectStats | null }> {
+  input: ContextInput | undefined,
+  timeoutMs?: number,
+): Promise<ServerContextRead> {
   const scope = resolveContextScope(input);
   // Server ids are UUIDs that no tool can fetch by id (get_observations reads
   // the local SQLite store), so the block prints 8-char display refs and points
@@ -500,11 +495,57 @@ export async function generateServerContextWithStats(
     project: scope.project,
     folderProjects: scope.projects,
     platformSource: scope.platformSource,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
-  if (!rows) {
+  return { scope, rows };
+}
+
+function renderServerContext(
+  read: ServerContextRead,
+  input: ContextInput | undefined,
+  forHuman: boolean,
+): { text: string; stats: ContextInjectStats | null } {
+  if (!read.rows) {
     return { text: healthWarningForContext(input, forHuman), stats: null };
   }
-  return renderContextFromRows(rows, input, forHuman, scope);
+  return renderContextFromRows(read.rows, input, forHuman, read.scope);
+}
+
+/**
+ * Session-start context for the server runtime, read from the shared store.
+ *
+ * Never opens the local SQLite file: in server runtime the writes go to the
+ * server, so the local corpus is stale. A successful empty answer renders the
+ * empty state. When the server cannot answer, the result is empty (plus any
+ * health warning) and a `[server-fallback]` line is logged; stale local rows are
+ * never substituted. Rows are scoped to this cwd's project keys through the
+ * route's folder filter.
+ */
+export async function generateServerContextWithStats(
+  runtime: ServerRuntimeContext,
+  input?: ContextInput,
+  forHuman: boolean = false
+): Promise<{ text: string; stats: ContextInjectStats | null }> {
+  return renderServerContext(await readServerContext(runtime, input), input, forHuman);
+}
+
+/**
+ * The SessionStart hook's server-runtime block, called straight from the hook
+ * process with no worker. ONE /v1/context read per session start: the model
+ * block and, when asked, the colored terminal copy both render from its rows
+ * (#3227 read the store once per rendering). `timeoutMs` is what the host's
+ * SessionStart limit leaves for the read (serverSessionStartBudgetMs).
+ */
+export async function generateServerSessionStartContext(
+  runtime: ServerRuntimeContext,
+  input: ContextInput,
+  options: { withTerminalRender: boolean; timeoutMs: number },
+): Promise<{ model: string; terminal: string | null }> {
+  const read = await readServerContext(runtime, input, options.timeoutMs);
+  return {
+    model: renderServerContext(read, input, false).text,
+    terminal: options.withTerminalRender ? renderServerContext(read, input, true).text : null,
+  };
 }
 
 export async function generateContextWithStats(

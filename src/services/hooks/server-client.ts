@@ -190,6 +190,8 @@ export interface ServerContextObservationsRequest {
   // Folder labels (observations.metadata.project) to scope the read to. Omitted
   // or empty means every folder in the server project.
   folderProjects?: string[];
+  // Leave out rows generated from subagent events (CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY).
+  excludeSubagents?: boolean;
 }
 
 export interface ServerContextObservationsResponse {
@@ -279,6 +281,7 @@ export class ServerClient {
   // context string.
   async contextObservations(
     input: ServerContextObservationsRequest,
+    options: ServerRequestOptions = {},
   ): Promise<ServerContextObservationsResponse> {
     // Built here rather than through buildSearchPayload(): that helper is the
     // /v1/search contract, where a query is genuinely required, and widening it
@@ -292,7 +295,8 @@ export class ServerClient {
     if (input.folderProjects && input.folderProjects.length > 0) {
       payload.folderProjects = input.folderProjects;
     }
-    return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload);
+    if (input.excludeSubagents !== undefined) payload.excludeSubagents = input.excludeSubagents;
+    return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload, options);
   }
 
   // Phase 8 — MCP `observation_generation_status`. Server returns the same
