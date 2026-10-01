@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   AgentEventsRepository,
@@ -10,6 +10,8 @@ import {
   ensureServerStorageSchema
 } from '../../../src/storage/sqlite/index.js';
 import { parseJsonArray, parseJsonObject } from '../../../src/storage/sqlite/serde.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
+import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 
 interface TableNameRow {
   name: string;
@@ -38,6 +40,33 @@ describe('server-owned sqlite storage boundary', () => {
         expect(tables).toContain(table);
       }
     });
+  });
+
+  it('redacts secrets in an event payload before storing it while redaction is on (#2616)', () => {
+    const openAiKey = 'sk-ABCDEFGHIJ1234567890abcdef';
+    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_REDACT_ENABLED: 'true',
+    }));
+    _resetRedactionConfigCache();
+    try {
+      withDb(db => {
+        const project = new ProjectsRepository(db).create({ name: 'Redacted', rootPath: '/tmp/redacted' });
+        const event = new AgentEventsRepository(db).create({
+          projectId: project.id,
+          sourceType: 'hook',
+          eventType: 'tool_use',
+          payload: { tool_input: { command: `curl -H "Authorization: Bearer ${openAiKey}"` } },
+          occurredAtEpoch: Date.now()
+        });
+        const stored = db.prepare('SELECT payload FROM agent_events WHERE id = ?').get(event.id) as { payload: string };
+        expect(stored.payload).not.toContain(openAiKey);
+        expect(JSON.parse(stored.payload).tool_input.command).toBe(`curl -H "Authorization: Bearer <redacted type='openai_key'/>"`);
+      });
+    } finally {
+      loadSpy.mockRestore();
+      _resetRedactionConfigCache();
+    }
   });
 
   it('round-trips repository records using JSON-as-TEXT fields', () => {

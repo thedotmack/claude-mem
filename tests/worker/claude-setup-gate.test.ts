@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
+import { OBSERVER_SESSIONS_DIR, ensureObserverSessionsDir } from '../../src/shared/paths.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
   getDependencyStatus,
@@ -49,7 +51,7 @@ afterAll(() => {
 });
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
-const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
+const { ClaudeProvider, classifyClaudeError } = await import('../../src/services/worker/ClaudeProvider.js');
 
 function makeSession(): ActiveSession {
   return {
@@ -86,6 +88,8 @@ describe('Claude setup-required generator gate', () => {
 
   afterEach(() => {
     Date.now = realDateNow;
+    // A status left behind gates every later Claude start in this process.
+    resetDependencyStatusesForTesting();
   });
 
   it('skips immediate repeat starts, then rechecks and clears status after cooldown repair', async () => {
@@ -95,10 +99,12 @@ describe('Claude setup-required generator gate', () => {
     let findAttempts = 0;
     let finalizerCalls = 0;
     let removeSessionImmediateCalls = 0;
+    let clearTransportResumeCalls = 0;
     let repairedRunResolve: (() => void) | null = null;
 
     const sessionManager = {
       getSession: () => activeSession,
+      clearTransportResume: () => { clearTransportResumeCalls += 1; },
       getMessageBuffer: () => ({
         getPendingCount: () => 1,
         peekTypes: () => [],
@@ -149,6 +155,7 @@ describe('Claude setup-required generator gate', () => {
     });
     expect(activeSession).toBe(session);
     expect(session.generatorPromise).toBeNull();
+    expect(clearTransportResumeCalls).toBe(1);
     expect(finalizerCalls).toBe(0);
     expect(removeSessionImmediateCalls).toBe(0);
 
@@ -179,33 +186,36 @@ describe('Claude setup-required generator gate', () => {
     expect(removeSessionImmediateCalls).toBe(1);
   });
 
-  it('does not re-run when discovery still resolves the same unspawnable executable', async () => {
+  it('books an unusable observer directory as its own dependency and rechecks the directory, not the CLI', async () => {
+    // Booked as a Claude CLI problem, the CLI probe passed, the status cleared,
+    // and every recheck spawned a generator only to fail on the directory again.
     const session = makeSession();
-    let activeSession: ActiveSession | undefined = session;
     let starts = 0;
     let findAttempts = 0;
-
-    const sessionManager = {
-      getSession: () => activeSession,
-      getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
-      removeSessionImmediate: () => {
-        activeSession = undefined;
-      },
+    let repairedRunResolve: (() => void) | null = null;
+    findClaudeExecutableImpl = () => {
+      findAttempts += 1;
+      return '/mock/claude';
     };
-
-    // A .cmd shim that passes discovery/version probing but throws EINVAL when
-    // the SDK spawns it — carried on the classified error as executablePath.
+    const sessionManager = {
+      getSession: () => session,
+      clearTransportResume: () => {},
+      getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+      removeSessionImmediate: () => {},
+    };
     const claudeProvider = {
       startSession: async () => {
         starts += 1;
-        throw new ClassifiedProviderError('spawn C:/tools/codex.cmd EINVAL', {
-          kind: 'setup_required',
-          cause: new Error('EINVAL'),
-          executablePath: '/mock/claude',
+        try {
+          ensureObserverSessionsDir(); // what building the SDK options does first
+        } catch (error) {
+          throw classifyClaudeError(error);
+        }
+        await new Promise<void>(resolve => {
+          repairedRunResolve = resolve;
         });
       },
     };
-
     const routes = new SessionRoutes(
       sessionManager as any,
       {} as any,
@@ -217,31 +227,41 @@ describe('Claude setup-required generator gate', () => {
       { finalizeSession: async () => {} } as any,
     );
 
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
+    // The data directory holds a file where the observer directory should be.
+    rmSync(OBSERVER_SESSIONS_DIR, { recursive: true, force: true });
+    writeFileSync(OBSERVER_SESSIONS_DIR, 'not a directory');
+    try {
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
 
-    expect(starts).toBe(1);
-    expect(getDependencyStatus('claude_cli')).toMatchObject({
-      kind: 'setup_required',
-      executablePath: '/mock/claude',
-    });
+      expect(starts).toBe(1);
+      expect(session.pausedReason).toBe('setup_required');
+      expect(getDependencyStatus('observer_dir')).toMatchObject({
+        kind: 'setup_required',
+        remediation: expect.stringContaining('data directory'),
+      });
+      expect(getDependencyStatus('claude_cli')).toBeNull();
 
-    // Cooldown elapses and discovery still resolves the same shim: the gate must
-    // NOT clear the status or re-run the doomed query.
-    findClaudeExecutableImpl = () => {
-      findAttempts += 1;
-      return '/mock/claude';
-    };
-    Date.now = () => realDateNow() + CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS + 1;
+      // Still unusable: the directory is rechecked and nothing is spawned.
+      findAttempts = 0;
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      expect(starts).toBe(1);
+      expect(findAttempts).toBe(0);
+      expect(session.generatorPromise).toBeNull();
 
-    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      // Repaired: the next start goes through and clears the status.
+      rmSync(OBSERVER_SESSIONS_DIR, { force: true });
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      expect(starts).toBe(2);
+      expect(getDependencyStatus('observer_dir')).toBeNull();
+      expect(session.generatorPromise).not.toBeNull();
 
-    expect(findAttempts).toBe(1);
-    expect(starts).toBe(1);
-    expect(getDependencyStatus('claude_cli')).toMatchObject({
-      kind: 'setup_required',
-      executablePath: '/mock/claude',
-    });
+      repairedRunResolve?.();
+      await session.generatorPromise;
+    } finally {
+      rmSync(OBSERVER_SESSIONS_DIR, { recursive: true, force: true });
+      mkdirSync(OBSERVER_SESSIONS_DIR, { recursive: true });
+    }
   });
 
   it('records Claude CLI remediation when provider startup cannot find the executable', async () => {

@@ -6,7 +6,21 @@ export type ProviderErrorClass =
   | 'quota_exhausted'
   | 'auth_invalid'
   | 'setup_required'
+  // The request did not fit the model's context window. Retiring the
+  // conversation fixes it, so the observer recycles instead of finalizing.
+  | 'context_overflow'
   | (string & {}); // open union: providers may emit custom kinds
+
+/**
+ * Code on the `transient` error withRetry throws when a request outlives its
+ * per-attempt deadline (CLAUDE_MEM_LLM_TIMEOUT_MS). The request was abandoned by
+ * us, not failed by the backend — which may still have completed and billed it —
+ * so it is kept countable apart from network faults: as the
+ * `transport:deadline_exceeded` abort reason, the `deadline_exceeded` telemetry
+ * abort_reason, and the observer-health ledger's lastErrorCode (observer-health
+ * compares the same string as a literal, to stay free of worker imports).
+ */
+export const DEADLINE_EXCEEDED_CODE = 'deadline_exceeded';
 
 /**
  * Optional structured detail carried alongside a classified error. Populated
