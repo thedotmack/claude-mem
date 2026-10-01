@@ -1,4 +1,3 @@
-
 import { SessionSearch } from '../../sqlite/SessionSearch.js';
 import { SessionStore } from '../../sqlite/SessionStore.js';
 import { ChromaSync } from '../../sync/ChromaSync.js';
@@ -115,12 +114,12 @@ export class SearchOrchestrator {
       return await this.supplementEmptyCategories(options, chromaResult);
     }
 
-    logger.debug('SEARCH', 'Orchestrator: Chroma not configured', {});
-    return {
-      results: { observations: [], sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
+    // No Chroma strategy: Chroma is turned off (CLAUDE_MEM_CHROMA_ENABLED=false).
+    // Answer from SQLite/FTS5, as SearchManager.search() does without Chroma,
+    // instead of an empty result that reads as "no matches" (#4284). Knowledge
+    // corpus builds with a query filter reach this path.
+    logger.debug('SEARCH', 'Orchestrator: Chroma not configured, falling back to SQLite', {});
+    return await this.sqliteStrategy.search(options);
   }
 
   /**

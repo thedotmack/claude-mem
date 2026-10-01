@@ -90,7 +90,43 @@ function makeStore(project: string, observationIds: number[]) {
   return makeStoreFromRows(project, observationRows);
 }
 
-function makeStoreFromRows(project: string, observationRows: ReturnType<typeof makeObservationRow>[]) {
+function makeSummaryRow(id: number, project: string) {
+  return {
+    id,
+    memory_session_id: `mem-${id}`,
+    project,
+    merged_into_project: null,
+    platform_source: 'claude',
+    request: `Request ${id}`,
+    investigated: null,
+    learned: null,
+    completed: null,
+    next_steps: null,
+    notes: null,
+    prompt_number: id,
+    created_at_epoch: 1_700_000_000_000 + id,
+  };
+}
+
+function makePromptRow(id: number, project: string) {
+  return {
+    id,
+    content_session_id: `sess-${id}`,
+    prompt_number: id,
+    prompt_text: `Prompt ${id}`,
+    created_at_epoch: 1_700_000_000_000 + id,
+    memory_session_id: `mem-${id}`,
+    project,
+    platform_source: 'claude',
+  };
+}
+
+function makeStoreFromRows(
+  project: string,
+  observationRows: ReturnType<typeof makeObservationRow>[],
+  summaryRows: ReturnType<typeof makeSummaryRow>[] = [],
+  promptRows: ReturnType<typeof makePromptRow>[] = [],
+) {
 
   return {
     db: {
@@ -122,11 +158,21 @@ function makeStoreFromRows(project: string, observationRows: ReturnType<typeof m
             }
 
             if (query.includes('FROM session_summaries')) {
-              return [];
+              const pendingSummaryIds = params.slice(1).filter((value): value is number => typeof value === 'number');
+              if (query.includes('IN (')) {
+                return summaryRows.filter(row => pendingSummaryIds.includes(row.id));
+              }
+              const watermark = Number(params[1] ?? 0);
+              return summaryRows.filter(row => row.id > watermark);
             }
 
             if (query.includes('FROM user_prompts')) {
-              return [];
+              const pendingPromptIds = params.slice(1).filter((value): value is number => typeof value === 'number');
+              if (query.includes('IN (')) {
+                return promptRows.filter(row => pendingPromptIds.includes(row.id));
+              }
+              const watermark = Number(params[1] ?? 0);
+              return promptRows.filter(row => row.id > watermark);
             }
 
             return [];
@@ -137,11 +183,11 @@ function makeStoreFromRows(project: string, observationRows: ReturnType<typeof m
             }
 
             if (query.includes('COUNT(*) as count FROM session_summaries')) {
-              return { count: 0 };
+              return { count: summaryRows.length };
             }
 
             if (query.includes('COUNT(*) as count') && query.includes('FROM user_prompts')) {
-              return { count: 0 };
+              return { count: promptRows.length };
             }
 
             return { count: 0 };
@@ -767,6 +813,65 @@ describe('ChromaSync title-only rows and truthful backfill outcomes (#4069)', ()
     // Nothing landed: the watermark must not advance past unwritten rows.
     expect(ChromaSyncState.get(project).observations).toBe(0);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 3]);
+  });
+
+  it('reports rows_pending when an isolated row fails but later rows succeed', async () => {
+    const store = makeStoreFromRows(project, [1, 2, 3].map(id => makeObservationRow(id, project)));
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let calls = 0;
+    // Only the first row's batch fails; the rest land. The failed row stays
+    // pending for the next run, and the project must not be claimed complete.
+    sync.addDocuments = async (documents) => {
+      calls += 1;
+      return calls === 1 ? 0 : documents.length;
+    };
+
+    expect(await sync.ensureBackfilled(project, store)).toBe('rows_pending');
+    expect(ChromaSyncState.get(project).observations).toBe(3);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1]);
+  });
+
+  it('still backfills summaries and prompts after an isolated observation write failure', async () => {
+    const store = makeStoreFromRows(
+      project,
+      [1, 2, 3].map(id => makeObservationRow(id, project)),
+      [1, 2].map(id => makeSummaryRow(id, project)),
+      [1, 2].map(id => makePromptRow(id, project)),
+    );
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let failFirstBatch = true;
+    let calls = 0;
+    const attemptedIds: string[] = [];
+    // Only the first batch (observation row 1) fails; every later batch lands,
+    // including the summary and prompt batches that follow it in the pipeline.
+    sync.addDocuments = async (documents) => {
+      calls += 1;
+      attemptedIds.push(...documents.map(document => document.id));
+      if (failFirstBatch && calls === 1) {
+        return 0;
+      }
+      return documents.length;
+    };
+
+    expect(await sync.ensureBackfilled(project, store)).toBe('rows_pending');
+    expect(ChromaSyncState.get(project).observations).toBe(3);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1]);
+    // The isolated observation failure must not stop the rest of the pipeline.
+    expect(ChromaSyncState.get(project).summaries).toBe(2);
+    expect(ChromaSyncState.get(project).prompts).toBe(2);
+    expect(attemptedIds).toContain('summary_1_request');
+    expect(attemptedIds).toContain('prompt_1');
+
+    // The next sweep retries the failed observation; with writes healthy the
+    // project then reports completed.
+    failFirstBatch = false;
+    expect(await sync.ensureBackfilled(project, store)).toBe('completed');
+    expect(ChromaSyncState.get(project).observations).toBe(3);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
   });
 
   it('keeps one project\'s write failures from stopping another project running alongside it', async () => {
