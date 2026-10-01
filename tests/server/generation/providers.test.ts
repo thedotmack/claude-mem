@@ -594,6 +594,32 @@ describe('OpenRouterObservationProvider', () => {
     expect(calls).toBe(1);
   });
 
+  // Wave 3 gate R4-10: a gateway that streams unless told otherwise answers
+  // with text/event-stream, which response.json() cannot read, so every server
+  // job failed. The worker sends stream:false since #3668; the server now does
+  // too, except to the cmem gateway, which never streams unasked. `stream` is
+  // protected from CLAUDE_MEM_OPENROUTER_EXTRA_BODY, so this was the only fix.
+  it('asks for one JSON body (stream:false), except from the cmem gateway', async () => {
+    const bodyFor = async (baseUrl?: string): Promise<Record<string, unknown>> => {
+      let body: Record<string, unknown> = {};
+      const provider = new OpenRouterObservationProvider({
+        apiKey: 'fake',
+        ...(baseUrl ? { baseUrl } : {}),
+        extraBody: { stream: true },
+        fetchImpl: async (_input, init) => {
+          body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return jsonResponse(200, { choices: [{ message: { content: '<observation>ok</observation>' } }] });
+        },
+      });
+      await provider.generate(makeContext());
+      return body;
+    };
+
+    expect((await bodyFor()).stream).toBe(false);
+    expect((await bodyFor('https://gateway.example.test/v1')).stream).toBe(false);
+    expect('stream' in await bodyFor('https://cmem.ai/api/inference/v1')).toBe(false);
+  });
+
   it('parses OpenAI-style response and reports tokensUsed', async () => {
     const fakeFetch = new FakeFetch(
       jsonResponse(200, {

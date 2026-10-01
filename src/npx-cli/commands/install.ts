@@ -400,23 +400,37 @@ export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescrip
           message('Loading OpenCode installer…');
           const {
             installOpenCodeIntegration,
+            getOpenCodeAgentsMdPath,
             OPENCODE_MCP_REGISTRATION_INCOMPLETE,
+            OPENCODE_OLD_CONTEXT_BLOCK_LEFT,
           } = await import('../../services/integrations/OpenCodeInstaller.js');
           message('Installing OpenCode plugin…');
           const { result, output } = await bufferConsole(() => installOpenCodeIntegration());
           if (result === OPENCODE_MCP_REGISTRATION_INCOMPLETE) {
-            // The plugin and AGENTS.md context are installed; only the MCP entry
-            // is missing. That is a partial install, not a failed IDE: record a
-            // WARN_CONTINUE warning (exit 0) and keep the integration's captured
-            // output so its remediation reaches the user after the spinners.
+            // The plugin is installed; only the MCP entry is missing. That is a
+            // partial install, not a failed IDE: record a WARN_CONTINUE warning
+            // (exit 0) and keep the integration's captured output so its
+            // remediation reaches the user after the spinners.
             installerError(ErrorSeverity.WARN_CONTINUE, {
               component: 'opencode',
               phase: 'ide-install',
-              cause: new Error('OpenCode plugin + context installed, but MCP registration is incomplete (mcp-server.cjs not found).'),
+              cause: new Error('OpenCode plugin installed, but MCP registration is incomplete (mcp-server.cjs not found).'),
               remediation: 'Restore the plugin build, then re-run `npx claude-mem install --ide=opencode` to register the MCP server.',
               details: output,
             }, summary);
-            return `OpenCode: plugin + context installed; MCP registration incomplete ${styleText('yellow', '!')}`;
+            return `OpenCode: plugin installed; MCP registration incomplete ${styleText('yellow', '!')}`;
+          }
+          if (result === OPENCODE_OLD_CONTEXT_BLOCK_LEFT) {
+            // Installed, but the stale memory block an older install wrote into
+            // the global AGENTS.md is still there: a warning with the remedy.
+            installerError(ErrorSeverity.WARN_CONTINUE, {
+              component: 'opencode',
+              phase: 'ide-install',
+              cause: new Error(`OpenCode plugin installed, but the old claude-mem memory block in ${getOpenCodeAgentsMdPath()} could not be removed; OpenCode shows it in every project.`),
+              remediation: 'Delete the <claude-mem-context> block from that file (or fix its permissions and re-run `npx claude-mem install --ide=opencode`).',
+              details: output,
+            }, summary);
+            return `OpenCode: plugin installed; old AGENTS.md memory block left in place ${styleText('yellow', '!')}`;
           }
           if (result !== 0) {
             recordFailure('OpenCode: plugin installation failed', output);

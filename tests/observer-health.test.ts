@@ -296,6 +296,15 @@ describe('isObserverUnhealthy', () => {
     expect(isObserverUnhealthy(unhealthyState({ consecutiveFailures: 1, lastErrorKind: 'transient' }))).toBe(false);
   });
 
+  it('treats one setup failure as unhealthy, until a success clears it', () => {
+    // A missing CLI, or a model or effort the provider does not serve, fails
+    // every request until the user acts, and the setup gate re-checks only
+    // every few minutes: the threshold would hide the remedy that long.
+    const setup = unhealthyState({ consecutiveFailures: 1, lastErrorKind: 'setup_required' });
+    expect(isObserverUnhealthy(setup)).toBe(true);
+    expect(isObserverUnhealthy({ ...setup, consecutiveFailures: 0, lastSuccessAt: (setup.lastErrorAt ?? 0) + 1 })).toBe(false);
+  });
+
   it('does not treat an armed quota cooldown as unhealthy', () => {
     expect(isObserverUnhealthy(unhealthyState({
       consecutiveFailures: 0,

@@ -4,6 +4,7 @@ import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-
 import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE } from '../../../shared/openrouter-attribution.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../../shared/openrouter-token-compatibility.js';
 import { withOpenRouterExtraBody } from '../../../shared/openrouter-extra-body.js';
+import { isCmemGatewayUrl } from '../../../shared/cmem-gateway.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../utils/logger.js';
 import {
@@ -175,6 +176,12 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       model: this.model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
+      // Ask for one JSON body, as the worker does (#3668). A gateway that
+      // streams by default answers with text/event-stream, which
+      // response.json() cannot read, and `stream` is protected from the extra
+      // body. The cmem gateway never streams unasked; its requests stay as
+      // they are.
+      ...(isCmemGatewayUrl(this.apiUrl) ? {} : { stream: false }),
     }, this.extraBody, this.apiUrl), this.maxOutputTokens);
   }
 }

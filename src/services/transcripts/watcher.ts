@@ -46,6 +46,12 @@ function zstdResumeOffset(filePath: string, size: number): number {
   }
 }
 
+/**
+ * How far into a rollout its first line may end for a resumed tail to read it.
+ * A Codex session_meta line carries the base instructions (about 20 KB).
+ */
+const FIRST_LINE_MAX_BYTES = 1024 * 1024;
+
 function readByteRange(filePath: string, start: number, length: number): Buffer {
   const fd = openSync(filePath, 'r');
   try {
@@ -426,10 +432,18 @@ export class TranscriptWatcher {
       }
     }
 
+    // A subagent-only watch learns the rollout's marker from its first line.
+    // A tail that resumes past it reads that line once, before the first new
+    // one, for its context only.
+    let primeFirstLine = offset > 0 && Boolean(watch.subagentSource) && !isZstd;
     const tailer = new FileTailer(
       filePath,
       offset,
       async (line: string) => {
+        if (primeFirstLine) {
+          primeFirstLine = false;
+          await this.primeFromFirstLine(filePath, offset, watch, schema, sessionIdOverride);
+        }
         await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
       },
       (newOffset: number, partial = '') => {
@@ -451,6 +465,26 @@ export class TranscriptWatcher {
       watch: watch.name,
       schema: schema.name
     });
+  }
+
+  private async primeFromFirstLine(
+    filePath: string,
+    resumedAt: number,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride: string | null
+  ): Promise<void> {
+    try {
+      const head = readByteRange(filePath, 0, Math.min(resumedAt, FIRST_LINE_MAX_BYTES)).toString('utf8');
+      const newline = head.indexOf('\n');
+      if (newline < 0) return;
+      await this.processor.primeSessionContext(JSON.parse(head.slice(0, newline)), watch, schema, sessionIdOverride);
+    } catch (error: unknown) {
+      logger.debug('TRANSCRIPT', 'Could not read the first line of a resumed transcript', {
+        watch: watch.name,
+        file: basename(filePath),
+      }, error instanceof Error ? error : undefined);
+    }
   }
 
   private async handleLine(
