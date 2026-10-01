@@ -5,6 +5,7 @@ import { SessionRoutes } from '../../../../src/services/worker/http/routes/Sessi
 import * as providerDispatch from '../../../../src/services/worker/provider-dispatch.js';
 import {
   clearQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  RATE_LIMIT_RECHECK_COOLDOWN_MS,
 } from '../../../../src/shared/quota-cooldown.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
 import { logger } from '../../../../src/utils/logger.js';
@@ -227,13 +228,15 @@ describe('paused in-memory session recovery', () => {
     manager.getSession(1)!.pausedReason = 'rate_limit';
     const now = Date.now();
     spyOn(Date, 'now').mockReturnValue(now);
-    recordQuotaExhausted('openrouter', 'Rate limit exceeded: free-models-per-day', 'rate_limit');
+    recordQuotaExhausted('openrouter', 'Rate limit exceeded: free-models-per-min', 'rate_limit');
 
     expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
     await flushStarts();
     expect(agent.startSession).not.toHaveBeenCalled();
 
-    spyOn(Date, 'now').mockReturnValue(now + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
+    // A throttle's window is the short one: the probe goes through after ninety
+    // seconds, not after the half-hour quota cooldown.
+    spyOn(Date, 'now').mockReturnValue(now + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1);
     expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
     await flushStarts();
     expect(agent.startSession).toHaveBeenCalledTimes(1);

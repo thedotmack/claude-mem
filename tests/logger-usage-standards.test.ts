@@ -37,6 +37,7 @@ const EXCLUDED_PATTERNS = [
   /worker\/provider-errors\.ts$/,  // Provider error classification (pure data structures)
   /worker\/agents\/FallbackErrorHandler\.ts$/,  // Pure isAbortError predicate after dead-code removal; no side effects (mirrors output-classifier)
   /worker\/search\/ResultFormatter\.ts$/,  // Pure static Chroma-failure message builder; no side effects (mirrors CorpusRenderer)
+  /worker\/search\/project-where-filter\.ts$/,  // Pure Chroma project where-clause builder; logging happens at the search call sites
   /worker\/knowledge\/CorpusRenderer\.ts$/,  // Pure string/markdown rendering, no side effects
   /worker\/http\/middleware\/validateBody\.ts$/,  // Trivial zod validation middleware factory
   /worker\/RateLimitStore\.ts$/,  // Side-effect-free in-memory rate-limit store
@@ -46,6 +47,7 @@ const EXCLUDED_PATTERNS = [
   /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
   /worker\/observer-usage\.ts$/,  // Pure observer token accumulation helpers; logging happens at provider/session completion call sites (#3508)
   /worker\/session\/OutputRecovery\.ts$/,  // Pure per-batch rejection counter; the retry and drop are logged at the ResponseProcessor call site (#3624)
+  /worker\/session\/abort-reason\.ts$/,  // Pure abort-category authority (enum + preserve set); exits are logged by the handler and runner (#3475)
   /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
   /sqlite\/project-read-keys\.ts$/,  // Pure project-scope SQL builders plus one read query; logging happens at the search/context call sites
   /servers\/checkout-search-scope\.ts$/,  // Pure MCP search-args transform; no side effects or error paths

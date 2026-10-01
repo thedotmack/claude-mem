@@ -25,6 +25,7 @@ import {
   formatTime,
   formatDateTime,
   formatHeaderDateTime,
+  formatSystemLocaleDateTime,
 } from '../../src/shared/timeline-formatting.js';
 
 afterEach(() => {
@@ -303,6 +304,16 @@ describe('locale formatter fallbacks', () => {
   it('formatHeaderDateTime falls back to a date-time with UTC', () => {
     breakFormatters();
     expect(formatHeaderDateTime(new Date(ts))).toBe('2025-01-04 9:34 PM UTC');
+  });
+
+  it('formatSystemLocaleDateTime prints what a bare toLocaleString prints while the formatter works', () => {
+    expect(formatSystemLocaleDateTime(ts)).toBe(new Date(ts).toLocaleString());
+  });
+
+  it('formatSystemLocaleDateTime falls back to an ISO date and a UTC clock, keeping the year', () => {
+    breakFormatters();
+    expect(formatSystemLocaleDateTime(ts)).toBe('2025-01-04 9:34 PM UTC');
+    expect(formatSystemLocaleDateTime(Date.parse(ts))).toBe('2025-01-04 9:34 PM UTC');
   });
 
   it('returns Invalid Date for unparseable input when the formatter throws', () => {

@@ -292,6 +292,95 @@ export function snapshotResponseContext(session: ActiveSession): ResponseContext
  * pause (#4066). With the Claude feed paced to one unanswered prompt,
  * lastGeneratorSource names the prompt this reply answers.
  */
+/**
+ * Drifted replies allowed in a row before the generation is ended so the next
+ * one starts from the schema. A clean reply resets the count.
+ */
+const MAX_CONSECUTIVE_SCHEMA_DRIFTS = 3;
+
+/**
+ * A reply that drifted off the observation schema (#3461: `<kind>`/`<detail>`
+ * for `<type>`/`<title>`). Its rows were salvaged and stored, so nothing is
+ * asked again; what must not survive is the drifted turn itself — left in the
+ * conversation, it is the example the model copies for the rest of the
+ * generation. Replace it with the canonical XML of what was stored, remind the
+ * next observation prompt of the schema, and after
+ * MAX_CONSECUTIVE_SCHEMA_DRIFTS in a row end the generation (abort reason
+ * 'drift', preserved) so the next one starts clean.
+ */
+function correctSchemaDrift(
+  session: ActiveSession,
+  text: string,
+  observations: ParsedObservation[],
+  driftedTags: string[],
+  agentName: string,
+): void {
+  session.consecutiveSchemaDrifts = (session.consecutiveSchemaDrifts ?? 0) + 1;
+  const history = session.conversationHistory;
+  for (let index = history.length - 1; index >= 0; index--) {
+    if (history[index].role === 'assistant' && history[index].content === text) {
+      history[index] = { role: 'assistant', content: observations.map(renderObservationXml).join('\n') };
+      break;
+    }
+  }
+  session.observerSchemaReminder = true;
+  logger.warn('PARSER', `${agentName} reply used tags outside the observation schema; stored the salvaged rows and corrected the turn`, {
+    sessionId: session.sessionDbId,
+    driftedTags,
+    consecutiveSchemaDrifts: session.consecutiveSchemaDrifts,
+  });
+
+  if (session.consecutiveSchemaDrifts >= MAX_CONSECUTIVE_SCHEMA_DRIFTS) {
+    logger.error('PARSER', `${agentName} drifted off the observation schema ${session.consecutiveSchemaDrifts} times in a row; starting a fresh generation`, {
+      sessionId: session.sessionDbId,
+      driftedTags,
+    });
+    session.consecutiveSchemaDrifts = 0;
+    session.abortReason = 'drift:observer_schema';
+    try {
+      session.abortController.abort();
+    } catch {
+      // best-effort; AbortController.abort() should not throw in normal use.
+    }
+  }
+}
+
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** One stored observation in the schema's own XML, for the corrected turn. */
+function renderObservationXml(observation: ParsedObservation): string {
+  const field = (name: string, value: string | null) =>
+    value ? `  <${name}>${escapeXmlText(value)}</${name}>` : null;
+  const list = (wrapper: string, element: string, values: string[]) =>
+    values.length > 0
+      ? `  <${wrapper}>${values.map(value => `<${element}>${escapeXmlText(value)}</${element}>`).join('')}</${wrapper}>`
+      : null;
+  return [
+    '<observation>',
+    field('type', observation.type),
+    field('title', observation.title),
+    field('subtitle', observation.subtitle),
+    list('facts', 'fact', observation.facts),
+    field('narrative', observation.narrative),
+    list('concepts', 'concept', observation.concepts),
+    list('files_read', 'file', observation.files_read),
+    list('files_modified', 'file', observation.files_modified),
+    '</observation>',
+  ].filter((line): line is string => line !== null).join('\n');
+}
+
+/**
+ * Whether the next observation prompt should restate the schema, after a
+ * drifted reply. Reading it consumes it: one reminder per drift.
+ */
+export function takeObserverSchemaReminder(session: ActiveSession): boolean {
+  const remind = session.observerSchemaReminder === true;
+  session.observerSchemaReminder = false;
+  return remind;
+}
+
 function clearDebtForAnsweredWork(session: ActiveSession): void {
   if (session.lastGeneratorSource === 'init') return;
   session.consecutiveContextOverflows = 0;
@@ -594,6 +683,12 @@ export async function processAgentResponse(
   await sessionManager.confirmClaimedMessages(session.sessionDbId);
   session.earliestPendingTimestamp = null;
   worker?.broadcastProcessingStatus?.();
+
+  if (parsed.schemaDrift) {
+    correctSchemaDrift(session, text, labeledObservations, parsed.schemaDrift, agentName);
+  } else {
+    session.consecutiveSchemaDrifts = 0;
+  }
 
   // The provider that produced THIS response (the session's), not whichever
   // provider the settings name right now.

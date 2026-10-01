@@ -17,6 +17,7 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
+import { MEDIA_PROMPT_PLACEHOLDER } from '../../../sqlite/prompt-storage.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
 import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
@@ -40,7 +41,7 @@ import {
   getQuotaCooldown,
   isQuotaCooldownActive,
   cooldownAppliesToCurrentAccount,
-  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  resolveQuotaCooldownMs,
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, type ClassifiedProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
@@ -463,8 +464,11 @@ export class SessionRoutes extends BaseRouteHandler {
           ...(cooldown?.cause ? { cause: cooldown.cause } : {}),
           ...(cooldown?.window ? { window: cooldown.window } : {}),
           probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+          // Asked of the window for the same reason the breaker is: a throttle
+          // resolves in ninety seconds, and reporting the quota cooldown here
+          // would log a half-hour wait that nobody is actually serving.
           retryInMs: cooldown
-            ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+            ? Math.max(0, resolveQuotaCooldownMs(cooldown.window) - (Date.now() - cooldown.armedAtMs))
             : 0,
         });
         return;
@@ -726,7 +730,6 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
 
-    const project = req.body.project || 'unknown';
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
     const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
@@ -736,6 +739,15 @@ export class SessionRoutes extends BaseRouteHandler {
       res.json({ skipped: true, reason: 'internal_protocol' });
       return;
     }
+
+    // A host that runs inside another process (the OpenCode plugin) sends only
+    // its checkout: key it here with the resolver observation ingest uses for
+    // the same host, so init and capture agree (#3803). A hook that resolved
+    // the key itself sends `project` and `projectKeySource`, and those win.
+    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
+    const checkoutContext = !req.body.project && checkoutCwd.trim() ? getProjectContext(checkoutCwd) : null;
+    const project = req.body.project || checkoutContext?.primary || 'unknown';
+    const projectKeySource = checkoutContext ? checkoutContext.keySource : req.body.projectKeySource;
 
     const slashSkillId = firstPartySkillFromSlashPrompt(rawPrompt);
     if (slashSkillId) {
@@ -747,7 +759,7 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    let prompt = rawPrompt || '[media prompt]';
+    let prompt = rawPrompt || MEDIA_PROMPT_PLACEHOLDER;
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {
@@ -776,13 +788,12 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
 
-    // The checkout the hook resolved `project` from, and how it derived it, so a
+    // The checkout `project` was resolved from, and how it was derived, so a
     // session that never reports an observation still leaves evidence for
     // worktree adoption (gate P1-2). An unknown key source is not recorded as
     // anything: the next observation's ingest records the checkout itself.
-    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
-    if (checkoutCwd.trim() && isProjectKeySource(req.body.projectKeySource)) {
-      store.setSessionCwd(sessionDbId, checkoutCwd, req.body.projectKeySource);
+    if (checkoutCwd.trim() && isProjectKeySource(projectKeySource)) {
+      store.setSessionCwd(sessionDbId, checkoutCwd, projectKeySource);
     }
 
     const dbSession = store.getSessionById(sessionDbId);

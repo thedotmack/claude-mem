@@ -216,16 +216,17 @@ type MetadataPredicate = (metadata: Record<string, unknown>) => boolean;
  * Build a client-side equivalent of a chroma `where` clause, or null if the
  * clause uses anything we do not evaluate identically to chroma.
  *
- * Deliberately narrow: equality (a literal or `$eq`) on a string, number or
- * boolean, combined with `$and` / `$or`. That covers every clause the search
- * paths build, including the dual-project scoping
+ * Deliberately narrow: equality (a literal or `$eq`) or membership (`$in`) on
+ * strings, numbers or booleans, combined with `$and` / `$or`. That covers every
+ * clause the search paths build, including the dual-project scoping
  * `{ $or: [{ project }, { merged_into_project: project }] }` that scopes nearly
- * every project search. Everything else returns null so the query goes to
- * chroma unchanged: other operators ($in, $ne, ranges), and the shapes chroma
- * itself rejects (a clause with more than one key, an `$and` / `$or` with fewer
- * than two clauses), so an invalid filter still fails the way it did. A wrong
- * client-side filter would silently drop results, which is far worse than a
- * slow query.
+ * every project search, in every stored spelling of the project (an `$in` once
+ * a project has more than one, #3531). Everything else returns null so the
+ * query goes to chroma unchanged: other operators ($ne, $nin, ranges), and the
+ * shapes chroma itself rejects (a clause with more than one key, an `$and` /
+ * `$or` with fewer than two clauses, an `$in` that is empty or mixes types), so
+ * an invalid filter still fails the way it did. A wrong client-side filter
+ * would silently drop results, which is far worse than a slow query.
  */
 function buildClientSidePredicate(where: unknown): MetadataPredicate | null {
   if (!where || typeof where !== 'object' || Array.isArray(where)) return null;
@@ -246,14 +247,30 @@ function buildClientSidePredicate(where: unknown): MetadataPredicate | null {
   if (key.startsWith('$')) return null;
 
   const isOperatorObject = value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (isOperatorObject && Object.keys(value).length === 1 && '$in' in value) {
+    const allowed = (value as { $in: unknown }).$in;
+    if (
+      !Array.isArray(allowed) ||
+      allowed.length === 0 ||
+      !allowed.every(candidate => isMetadataScalar(candidate) && typeof candidate === typeof allowed[0])
+    ) {
+      return null;
+    }
+    // A document without the key never matches, exactly as in chroma.
+    return metadata => allowed.includes(metadata[key]);
+  }
   const expected = isOperatorObject && Object.keys(value).length === 1 && '$eq' in value
     ? (value as { $eq: unknown }).$eq
     : value;
-  if (typeof expected !== 'string' && typeof expected !== 'number' && typeof expected !== 'boolean') {
+  if (!isMetadataScalar(expected)) {
     return null;
   }
   // A document without the key never matches, exactly as in chroma.
   return metadata => metadata[key] === expected;
+}
+
+function isMetadataScalar(value: unknown): value is string | number | boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
 export class ChromaSync {
@@ -301,6 +318,16 @@ export class ChromaSync {
    * than drop and rebuild in a loop.
    */
   private static droppedCollections = new Set<string>();
+
+  /**
+   * Drop attempts whose delete call rejected, per collection, in this process.
+   * A rejection can follow a delete that committed (a request deadline) or a
+   * delete that never reached chroma-mcp (no connection yet), so a few are
+   * retried. Each one restarts the backfill sweep; once the budget is spent the
+   * collection counts as dropped, so a delete that keeps failing cannot loop.
+   */
+  private static failedDropAttempts = new Map<string, number>();
+  private static readonly MAX_FAILED_DROP_ATTEMPTS = 3;
 
   private static lastCollectionDrop: ChromaCollectionDrop | null = null;
 
@@ -398,7 +425,7 @@ export class ChromaSync {
       return;
     }
     if (ChromaSync.droppedCollections.has(this.collectionName)) {
-      logger.error('CHROMA_SYNC', 'Rebuilt collection still has a corrupt HNSW segment; not dropping it again in this process', {
+      logger.error('CHROMA_SYNC', 'Collection still has a corrupt HNSW segment after this process dropped it (or tried to); not dropping it again in this process', {
         collection: this.collectionName
       }, cause);
       return;
@@ -422,6 +449,17 @@ export class ChromaSync {
    * the generation stops backfill runs still writing into the old collection;
    * a running sweep then starts over, otherwise a new sweep starts here. If
    * the worker stops first, the persisted flags make the next start rebuild.
+   *
+   * The rebuild is booked before the delete is sent, and the generation moves
+   * whether or not the call resolves: chroma-mcp can commit the delete and
+   * still reject the call (a request deadline on a large collection). Booked
+   * afterwards, a rejection left the watermarks claiming every row the
+   * dropped collection took with it, and semantic search lost them silently.
+   * A rejected delete is retried on a later failing batch, since it may never
+   * have reached chroma-mcp, but only MAX_FAILED_DROP_ATTEMPTS times, so a
+   * delete that keeps failing cannot restart the backfill sweep forever.
+   * chroma-mcp serves requests one at a time, so the rebuild's writes only
+   * run after a slow delete has finished.
    */
   private async dropCorruptCollection(cause: Error): Promise<void> {
     const chromaMcp = ChromaMcpManager.getInstance();
@@ -445,21 +483,33 @@ export class ChromaSync {
       chromaDataDir: settings.CLAUDE_MEM_CHROMA_MODE === 'remote' ? undefined : paths.chroma()
     }, cause);
 
-    await chromaMcp.callTool('chroma_delete_collection', {
-      collection_name: this.collectionName
-    });
-
-    ChromaSync.droppedCollections.add(this.collectionName);
-    ChromaSync.corruptSegmentBatches.delete(this.collectionName);
-    ChromaSync.lastCollectionDrop = {
-      collection: this.collectionName,
-      droppedAt: new Date().toISOString(),
-      documentCount,
-      error: cause.message
-    };
     ChromaSyncState.markAllForRebuild();
-    ChromaSync.collectionGeneration += 1;
+    try {
+      await chromaMcp.callTool('chroma_delete_collection', {
+        collection_name: this.collectionName
+      });
+      ChromaSync.droppedCollections.add(this.collectionName);
+      ChromaSync.corruptSegmentBatches.delete(this.collectionName);
+      ChromaSync.lastCollectionDrop = {
+        collection: this.collectionName,
+        droppedAt: new Date().toISOString(),
+        documentCount,
+        error: cause.message
+      };
+    } catch (error) {
+      const failedAttempts = (ChromaSync.failedDropAttempts.get(this.collectionName) ?? 0) + 1;
+      ChromaSync.failedDropAttempts.set(this.collectionName, failedAttempts);
+      if (failedAttempts >= ChromaSync.MAX_FAILED_DROP_ATTEMPTS) {
+        ChromaSync.droppedCollections.add(this.collectionName);
+      }
+      throw error;
+    } finally {
+      ChromaSync.collectionGeneration += 1;
+      this.startRebuildSweep();
+    }
+  }
 
+  private startRebuildSweep(): void {
     if (ChromaSync.backfillInProgress) {
       return;
     }
