@@ -8,8 +8,12 @@ import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
 import * as realHookIo from '../../src/shared/hook-io.js';
 import * as realCliTelemetry from '../../src/services/telemetry/cli-telemetry.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
+import * as realPortReclaim from '../../src/shared/port-reclaim.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
+const realPortReclaimSnapshot = { ...realPortReclaim };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
 // emitDiagnostic is mocked to a collector below; restoring it in afterAll
@@ -38,9 +42,32 @@ let portOccupied = true;
 // `false` = connection refused, `true` = healthy worker.
 let healthSequence: boolean[] = [];
 
-mock.module('../../src/services/infrastructure/index.js', () => ({
+// The pre-spawn check is the one place ensureWorkerRunning touches a real port:
+// a bind probe (classifyPortOccupancy), then a reclaim attempt when the probe
+// finds it held. Unmocked, the outcome depended on whatever held the port, and
+// the reclaim could aim at a live worker. Here the port is free, as on a clean
+// CI runner, and nothing is ever reclaimed.
+//
+// One set of probe mocks serves both entry points: infrastructure/index.js
+// re-exports HealthMonitor.js, and patching HealthMonitor.js re-links those
+// re-exports, so a mock missing from either one would fall back to the real
+// probe.
+const portProbes = {
   checkVersionMatch: () => Promise.resolve({ matches: true, pluginVersion: '13.16.0', workerVersion: '13.16.0' }),
   isPortInUse: () => Promise.resolve(portOccupied),
+  classifyPortOccupancy: () => Promise.resolve('free'),
+};
+
+mock.module('../../src/services/infrastructure/index.js', () => portProbes);
+
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+  ...realHealthMonitorSnapshot,
+  ...portProbes,
+}));
+
+mock.module('../../src/shared/port-reclaim.js', () => ({
+  ...realPortReclaimSnapshot,
+  reclaimGhostListeningPort: () => Promise.resolve({ reclaimed: false, reason: 'owner-alive', killedPids: [] }),
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
@@ -69,11 +96,10 @@ mock.module('../../src/services/telemetry/cli-telemetry.js', () => ({
 }));
 
 /**
- * A port the OS just handed out and nothing holds. The default worker port
- * (37700 + uid % 100) is the machine's real worker whenever one runs, and the
- * pre-spawn check probes it for real (classifyPortOccupancy) and may try to
- * reclaim it (reclaimGhostListeningPort), so the result depended on whatever
- * held that port.
+ * A port the OS just handed out and nothing holds, so no path in this test can
+ * target the default worker port (37700 + uid % 100), which is the machine's
+ * real worker whenever one runs. Nothing binds it for real: the port probes
+ * above are mocked, so it is never raced either.
  */
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -149,6 +175,8 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
     mock.module('../../src/shared/hook-io.js', () => realHookIoSnapshot);
     mock.module('../../src/services/telemetry/cli-telemetry.js', () => realCliTelemetrySnapshot);
+    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+    mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
   });
 
   // Regression guard for the warming-worker race: a worker that has bound the
