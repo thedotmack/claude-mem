@@ -1,22 +1,7 @@
 ---
 name: standup
 version: 1.0.0
-description: |
-  Convene the recently-active git worktrees as named agents in a markdown group
-  chat, have them reconcile what each changed, and converge on ONE consolidated
-  worktree. Each branch is an agent that posts to a shared STANDUP.md (YAML front
-  matter holds the GOAL + PROMPT; the body is the chat log), then the room agrees
-  on a merge order and a single consolidation plan in the SUMMATION. The room is
-  filled either by time window (past 1h / 4h / 24h / 7d / all — only worktrees
-  active in it join, so a 40-worktree machine collapses to the handful you
-  actually touched) or by hand-picking specific worktrees and/or open GitHub PRs
-  from a checkbox-style list. Use this skill whenever the user says "standup",
-  "run the standup", "reconcile my worktrees", "consolidate worktrees", "merge
-  these branches together", "merge these PRs", "combine these worktrees and pull
-  requests", "what's everyone at", "have my worktrees check in", or wants several
-  branch-named agents to coordinate / resolve overlapping work into one
-  deliverable through a shared chat file — even if they don't say the word
-  "standup".
+description: Facilitate a read-only standup across git worktrees, branches, or PRs to compare changes and produce one consolidation plan.
 allowed-tools:
   - Bash
   - Read

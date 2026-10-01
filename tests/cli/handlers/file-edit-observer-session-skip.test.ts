@@ -1,6 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
+import * as realHookSettings from '../../../src/shared/hook-settings.js';
+import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+
+const realSettingsSnapshot = { ...realSettingsDefaultsManager };
+const realHookSettingsSnapshot = { ...realHookSettings };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const dataDir = join(tmpdir(), 'claude-mem-file-edit-observer-test');
 const workerCallLog: Array<{ path: string; method: string; body: unknown }> = [];
@@ -43,6 +50,12 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+});
+
+afterAll(() => {
+  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
+  mock.module('../../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
 describe('fileEditHandler internal observer sessions', () => {

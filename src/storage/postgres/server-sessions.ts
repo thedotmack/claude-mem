@@ -3,6 +3,7 @@
 import type { JsonObject, PostgresQueryable } from './utils.js';
 import { assertProjectOwnership, deterministicKey, newId, queryOne, toDate, toEpoch, toJsonObject } from './utils.js';
 import type { PostgresAgentEvent } from './agent-events.js';
+import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 
 export interface PostgresServerSession {
   id: string;
@@ -59,7 +60,11 @@ export class PostgresServerSessionsRepository {
   }): Promise<PostgresServerSession> {
     await assertProjectOwnership(this.client, input.projectId, input.teamId);
     const id = input.id ?? newId();
-    const idempotencyKey = buildServerSessionIdempotencyKey(input);
+    const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+    const idempotencyKey = buildServerSessionIdempotencyKey({
+      ...input,
+      platformSource,
+    });
     const row = await queryOne<ServerSessionRow>(
       this.client,
       `
@@ -88,7 +93,7 @@ export class PostgresServerSessionsRepository {
         input.contentSessionId ?? null,
         input.agentId ?? null,
         input.agentType ?? null,
-        input.platformSource ?? null,
+        platformSource,
         input.generationStatus ?? 'idle',
         JSON.stringify(input.metadata ?? {})
       ]
@@ -125,14 +130,26 @@ export class PostgresServerSessionsRepository {
     externalSessionId: string;
     projectId: string;
     teamId: string;
+    platformSource?: string | null;
   }): Promise<PostgresServerSession | null> {
+    const hasPlatformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource');
+    const platformSource = hasPlatformScope
+      ? normalizePlatformSourceOrNull(input.platformSource)
+      : null;
     const row = await queryOne<ServerSessionRow>(
       this.client,
       `
         SELECT * FROM server_sessions
         WHERE external_session_id = $1 AND project_id = $2 AND team_id = $3
+          AND (
+            $4::boolean = false
+            OR ($5::text IS NULL AND platform_source IS NULL)
+            OR platform_source = $5
+          )
+        ORDER BY started_at DESC
+        LIMIT 1
       `,
-      [input.externalSessionId, input.projectId, input.teamId]
+      [input.externalSessionId, input.projectId, input.teamId, hasPlatformScope, platformSource]
     );
     return row ? mapServerSessionRow(row) : null;
   }
@@ -144,16 +161,26 @@ export class PostgresServerSessionsRepository {
     contentSessionId: string;
     projectId: string;
     teamId: string;
+    platformSource?: string | null;
   }): Promise<string | null> {
+    const hasPlatformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource');
+    const platformSource = hasPlatformScope
+      ? normalizePlatformSourceOrNull(input.platformSource)
+      : null;
     const row = await queryOne<{ id: string }>(
       this.client,
       `
         SELECT id FROM server_sessions
         WHERE content_session_id = $1 AND project_id = $2 AND team_id = $3
+          AND (
+            $4::boolean = false
+            OR ($5::text IS NULL AND platform_source IS NULL)
+            OR platform_source = $5
+          )
         ORDER BY started_at DESC
         LIMIT 1
       `,
-      [input.contentSessionId, input.projectId, input.teamId]
+      [input.contentSessionId, input.projectId, input.teamId, hasPlatformScope, platformSource]
     );
     return row ? row.id : null;
   }
@@ -247,42 +274,52 @@ export class PostgresServerSessionsRepository {
   }
 
   /**
-   * List events tied to this server_session that do NOT yet have a completed
-   * observation_generation_jobs row. Tenant-scoped: rows are filtered by
-   * (project_id, team_id) before any join.
+   * Every event of the session, in order — the input a SESSION SUMMARY needs.
+   * Tenant-scoped: rows are filtered by (project_id, team_id).
+   *
+   * Never only the events the per-event lane has not collapsed yet: that lane
+   * normally finishes first, so a summary fed those arrived at an empty list
+   * and the model was asked to summarise nothing (#4137).
+   *
+   * Bounded by count at BOTH ends, never only at the head: a session longer
+   * than 2 x `eventsPerEnd` returns its first and last `eventsPerEnd` events,
+   * so the summary always sees the opening (the goal) and the close (the
+   * outcome and what was left pending). The count bound only caps memory; the
+   * caller's byte budget (`capSummaryInput`) does the real sizing.
    */
-  async listUnprocessedEvents(input: {
+  async listSessionEvents(input: {
     serverSessionId: string;
     projectId: string;
     teamId: string;
-    limit?: number;
+    eventsPerEnd?: number;
   }): Promise<PostgresAgentEvent[]> {
-    const limit = input.limit ?? 500;
-    const result = await this.client.query<UnprocessedEventRow>(
+    const eventsPerEnd = input.eventsPerEnd ?? 500;
+    const result = await this.client.query<SessionEventRow>(
       `
         SELECT e.*
         FROM agent_events e
-        WHERE e.server_session_id = $1
-          AND e.project_id = $2
+        WHERE e.project_id = $2
           AND e.team_id = $3
-          AND NOT EXISTS (
-            SELECT 1 FROM observation_generation_jobs j
-            WHERE j.agent_event_id = e.id
-              AND j.project_id = e.project_id
-              AND j.team_id = e.team_id
-              AND j.source_type = 'agent_event'
-              AND j.status = 'completed'
+          AND e.id IN (
+            (SELECT head.id FROM agent_events head
+              WHERE head.server_session_id = $1 AND head.project_id = $2 AND head.team_id = $3
+              ORDER BY head.occurred_at ASC, head.id ASC
+              LIMIT $4)
+            UNION
+            (SELECT tail.id FROM agent_events tail
+              WHERE tail.server_session_id = $1 AND tail.project_id = $2 AND tail.team_id = $3
+              ORDER BY tail.occurred_at DESC, tail.id DESC
+              LIMIT $4)
           )
-        ORDER BY e.occurred_at ASC
-        LIMIT $4
+        ORDER BY e.occurred_at ASC, e.id ASC
       `,
-      [input.serverSessionId, input.projectId, input.teamId, limit]
+      [input.serverSessionId, input.projectId, input.teamId, eventsPerEnd]
     );
-    return result.rows.map(mapUnprocessedEventRow);
+    return result.rows.map(mapSessionEventRow);
   }
 }
 
-interface UnprocessedEventRow {
+interface SessionEventRow {
   id: string;
   project_id: string;
   team_id: string;
@@ -299,7 +336,7 @@ interface UnprocessedEventRow {
   created_at: Date;
 }
 
-function mapUnprocessedEventRow(row: UnprocessedEventRow): PostgresAgentEvent {
+function mapSessionEventRow(row: SessionEventRow): PostgresAgentEvent {
   return {
     id: row.id,
     projectId: row.project_id,
@@ -327,13 +364,19 @@ export function buildServerSessionIdempotencyKey(input: {
   agentType?: string | null;
   platformSource?: string | null;
 }): string | null {
+  const platformSource = normalizePlatformSourceOrNull(input.platformSource);
+
   if (input.externalSessionId) {
-    return `server_session:v1:${deterministicKey([
+    const parts = [
       input.teamId,
       input.projectId,
       'external',
-      input.externalSessionId
-    ])}`;
+    ];
+    if (platformSource) {
+      parts.push(platformSource);
+    }
+    parts.push(input.externalSessionId);
+    return `server_session:v1:${deterministicKey(parts)}`;
   }
 
   if (input.contentSessionId) {
@@ -341,18 +384,18 @@ export function buildServerSessionIdempotencyKey(input: {
       input.teamId,
       input.projectId,
       'content',
-      input.platformSource ?? null,
+      platformSource,
       input.agentId ?? null,
       input.contentSessionId
     ])}`;
   }
 
-  if (input.agentId && input.platformSource) {
+  if (input.agentId && platformSource) {
     return `server_session:v1:${deterministicKey([
       input.teamId,
       input.projectId,
       'agent',
-      input.platformSource,
+      platformSource,
       input.agentId,
       input.agentType ?? null
     ])}`;

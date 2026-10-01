@@ -4,15 +4,18 @@
  * This module is the ONLY place in the hook execution path that calls
  * console.log / process.stderr.write / process.exit. Every emit point declares
  * an intent and routes through here so stdout (MODEL_CONTEXT), stderr
- * (DIAGNOSTIC / USER_HINT), and exit codes (EXIT_SIGNAL / BLOCKING_FEEDBACK)
- * never get conflated.
+ * (DIAGNOSTIC) and the exit code (EXIT_SIGNAL) never get conflated.
  *
  * Intent vocabulary:
  *  - DIAGNOSTIC        operator-visible logs, never reaches the model. stderr.
  *  - MODEL_CONTEXT     content the assistant consumes. stdout JSON only.
  *  - USER_HINT         short advisory shown to the human, via HookResult.systemMessage.
- *  - BLOCKING_FEEDBACK error message the model must see (stderr + exit 2).
  *  - EXIT_SIGNAL       pure status, no payload (exit 0).
+ *
+ * Nothing here exits 2. Claude Code treats exit 2 as "block" (a dropped
+ * prompt, a denied tool, a re-woken Stop), and claude-mem is an optional
+ * background service, so no failure of its own may block the user
+ * (plan-17 step 2).
  *
  * Lives in src/shared/ (not src/cli/) so that src/shared/worker-utils.ts and
  * src/utils/logger.ts can route their stderr through emitDiagnostic without a
@@ -33,8 +36,8 @@ export interface HookStderrBuffer {
 type StderrWriter = (chunk: string | Uint8Array) => boolean;
 
 /**
- * The bypass channel: emitDiagnostic, emitBlockingError, and the buffer's
- * flush() all write through this so they skip the buffered window.
+ * The bypass channel: emitDiagnostic and the buffer's flush() write through
+ * this so they skip the buffered window.
  *
  * - When NO buffer is installed it resolves to the live process.stderr.write
  *   (so non-hook callers — worker daemon, CLI — write straight to stderr).
@@ -56,9 +59,8 @@ let bufferInstalled = false;
 /**
  * Replace process.stderr.write with a buffered writer. Direct
  * process.stderr.write calls (including unsolicited third-party library noise)
- * are captured into a buffer; emitDiagnostic / emitBlockingError write through
- * the bypass channel (realStderrWrite). The buffer is flushed when claude-mem
- * chooses to surface, and dropped on graceful success.
+ * are captured into a buffer; emitDiagnostic writes through the bypass channel
+ * (realStderrWrite). exitGraceful drops the buffer.
  */
 export function installHookStderrBuffer(): HookStderrBuffer {
   // Pin the currently-active stderr writer as the bypass channel BEFORE we
@@ -125,37 +127,8 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
 
 let moduleHasEmitted = false;
 
-/**
- * USER_HINT routed via the HookResult.systemMessage path. Does NOT write to a
- * stream — returns a HookResult the caller merges before emitModelContext.
- * systemMessage is platform-specific (claude-code surfaces it; codex ignores
- * it) so it must flow through the adapter, not raw stderr. If a systemMessage
- * already exists, the hint is appended with a blank line between.
- */
-export function withUserHint(result: HookResult, hint: string): HookResult {
-  const merged = result.systemMessage ? `${result.systemMessage}\n\n${hint}` : hint;
-  return { ...result, systemMessage: merged };
-}
-
 export interface ExitOptions {
   skipExit?: boolean;
-}
-
-/**
- * BLOCKING_FEEDBACK: flush buffered stderr (so preceding diagnostics reach the
- * operator/model), write `msg` to real stderr, then exit 2 so the model
- * receives it per Claude Code's hook contract. `skipExit` is the test seam
- * that mirrors HookCommandOptions.skipExit.
- */
-export function emitBlockingError(msg: string, options: ExitOptions = {}): void {
-  if (bufferedChunks && bufferedChunks.length > 0) {
-    bypassWrite(bufferedChunks.join(''));
-    bufferedChunks = [];
-  }
-  bypassWrite(msg.endsWith('\n') ? msg : `${msg}\n`);
-  if (!options.skipExit) {
-    process.exit(2);
-  }
 }
 
 /**

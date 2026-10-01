@@ -5,6 +5,13 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import type { PostgresApiKey } from '../../storage/postgres/auth.js';
 import type { AuthContext } from './auth.js';
+import {
+  hasForwardedClientHeaders,
+  hasLoopbackHostHeader,
+  isLocalhost,
+  parseBearerToken,
+} from './request-auth-helpers.js';
+import { logger } from '../../utils/logger.js';
 
 // Postgres-backed auth middleware for the server-beta runtime.
 //
@@ -32,67 +39,79 @@ export function requirePostgresServerAuth(
 ): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const authMode = options.authMode ?? process.env.CLAUDE_MEM_AUTH_MODE ?? 'api-key';
-      const authorization = req.header('authorization') ?? '';
-      const xApiKey = req.header('x-api-key')?.trim() ?? '';
-      // Bearer is canonical; raw X-Api-Key is a fallback so clients using
-      // @better-auth/api-key defaults (e.g. the worker bundle shipped from the
-      // Windows-canary line) authenticate without a per-client custom config.
-      const rawKey = parseBearerToken(authorization) || xApiKey || null;
-
-      const allowLocalDevBypass = options.allowLocalDevBypass
-        ?? process.env.CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS === '1';
-      if (
-        !rawKey
-        && authMode === 'local-dev'
-        && allowLocalDevBypass
-        && isLocalhost(req)
-        && hasLoopbackHostHeader(req)
-        && !hasForwardedClientHeaders(req)
-      ) {
-        const ctx: AuthContext = {
-          userId: null,
-          organizationId: null,
-          teamId: options.localDevTeamId ?? null,
-          projectId: null,
-          scopes: ['local-dev'],
-          apiKeyId: null,
-          mode: 'local-dev',
-        };
-        req.authContext = ctx;
-        next();
-        return;
-      }
-
-      if (!rawKey) {
-        res.status(401).json({
-          error: 'Unauthorized',
-          message: 'Missing API key (Authorization: Bearer <key> or X-Api-Key: <key>)',
-        });
-        return;
-      }
-
-      const verified = await verifyPostgresApiKey(pool, rawKey, options.requiredScopes ?? []);
-      if (!verified) {
-        res.status(403).json({ error: 'Forbidden', message: 'Invalid API key or insufficient scope' });
-        return;
-      }
-
-      const ctx: AuthContext = {
-        userId: null,
-        organizationId: null,
-        teamId: verified.teamId,
-        projectId: verified.projectId,
-        scopes: verified.scopes,
-        apiKeyId: verified.apiKeyId,
-        mode: 'api-key',
-      };
-      req.authContext = ctx;
-      next();
+      await authenticatePostgresRequest(pool, options, req, res, next);
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('HTTP', 'postgres auth middleware failed', { path: req.path }, err);
       next(error);
     }
   };
+}
+
+async function authenticatePostgresRequest(
+  pool: PostgresPool,
+  options: PostgresRequireAuthOptions,
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const authMode = options.authMode ?? process.env.CLAUDE_MEM_AUTH_MODE ?? 'api-key';
+  const authorization = req.header('authorization') ?? '';
+  const xApiKey = req.header('x-api-key')?.trim() ?? '';
+  // Bearer is canonical; raw X-Api-Key is a fallback so clients using
+  // @better-auth/api-key defaults (e.g. the worker bundle shipped from the
+  // Windows-canary line) authenticate without a per-client custom config.
+  const rawKey = parseBearerToken(authorization) || xApiKey || null;
+
+  const allowLocalDevBypass = options.allowLocalDevBypass
+    ?? process.env.CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS === '1';
+  if (
+    !rawKey
+    && authMode === 'local-dev'
+    && allowLocalDevBypass
+    && isLocalhost(req)
+    && hasLoopbackHostHeader(req)
+    && !hasForwardedClientHeaders(req)
+  ) {
+    const ctx: AuthContext = {
+      userId: null,
+      organizationId: null,
+      teamId: options.localDevTeamId ?? null,
+      projectId: null,
+      scopes: ['local-dev'],
+      apiKeyId: null,
+      mode: 'local-dev',
+    };
+    req.authContext = ctx;
+    next();
+    return;
+  }
+
+  if (!rawKey) {
+    res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Missing API key (Authorization: Bearer <key> or X-Api-Key: <key>)',
+    });
+    return;
+  }
+
+  const verified = await verifyPostgresApiKey(pool, rawKey, options.requiredScopes ?? []);
+  if (!verified) {
+    res.status(403).json({ error: 'Forbidden', message: 'Invalid API key or insufficient scope' });
+    return;
+  }
+
+  const ctx: AuthContext = {
+    userId: null,
+    organizationId: null,
+    teamId: verified.teamId,
+    projectId: verified.projectId,
+    scopes: verified.scopes,
+    apiKeyId: verified.apiKeyId,
+    mode: 'api-key',
+  };
+  req.authContext = ctx;
+  next();
 }
 
 interface VerifiedPostgresApiKey {
@@ -160,47 +179,4 @@ function hasRequiredScopes(grantedScopes: string[], requiredScopes: string[]): b
     return true;
   }
   return requiredScopes.every(scope => grantedScopes.includes(scope));
-}
-
-function parseBearerToken(header: string): string | null {
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return match?.[1]?.trim() || null;
-}
-
-function isLocalhost(req: Request): boolean {
-  const clientIp = req.ip || req.socket.remoteAddress || '';
-  return clientIp === '127.0.0.1'
-    || clientIp === '::1'
-    || clientIp === '::ffff:127.0.0.1'
-    || clientIp === 'localhost';
-}
-
-function hasLoopbackHostHeader(req: Request): boolean {
-  const host = parseHostWithoutPort(req.header('host') ?? '');
-  return host === '127.0.0.1'
-    || host === 'localhost'
-    || host === '::1';
-}
-
-function parseHostWithoutPort(rawHost: string): string {
-  const host = rawHost.trim().toLowerCase();
-  if (host.startsWith('[')) {
-    const closeBracketIndex = host.indexOf(']');
-    return closeBracketIndex === -1 ? host : host.slice(1, closeBracketIndex);
-  }
-
-  const lastColonIndex = host.lastIndexOf(':');
-  if (lastColonIndex > -1 && /^\d+$/.test(host.slice(lastColonIndex + 1))) {
-    return host.slice(0, lastColonIndex);
-  }
-  return host;
-}
-
-function hasForwardedClientHeaders(req: Request): boolean {
-  return Boolean(
-    req.header('forwarded')
-      || req.header('x-forwarded-for')
-      || req.header('x-forwarded-host')
-      || req.header('x-real-ip'),
-  );
 }

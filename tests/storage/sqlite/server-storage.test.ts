@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   AgentEventsRepository,
@@ -7,10 +7,11 @@ import {
   ProjectsRepository,
   SERVER_OWNED_TABLES,
   ServerSessionsRepository,
-  TeamsRepository,
   ensureServerStorageSchema
 } from '../../../src/storage/sqlite/index.js';
 import { parseJsonArray, parseJsonObject } from '../../../src/storage/sqlite/serde.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
+import { _resetRedactionConfigCache } from '../../../src/utils/redaction.js';
 
 interface TableNameRow {
   name: string;
@@ -41,13 +42,39 @@ describe('server-owned sqlite storage boundary', () => {
     });
   });
 
+  it('redacts secrets in an event payload before storing it while redaction is on (#2616)', () => {
+    const openAiKey = 'sk-ABCDEFGHIJ1234567890abcdef';
+    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_REDACT_ENABLED: 'true',
+    }));
+    _resetRedactionConfigCache();
+    try {
+      withDb(db => {
+        const project = new ProjectsRepository(db).create({ name: 'Redacted', rootPath: '/tmp/redacted' });
+        const event = new AgentEventsRepository(db).create({
+          projectId: project.id,
+          sourceType: 'hook',
+          eventType: 'tool_use',
+          payload: { tool_input: { command: `curl -H "Authorization: Bearer ${openAiKey}"` } },
+          occurredAtEpoch: Date.now()
+        });
+        const stored = db.prepare('SELECT payload FROM agent_events WHERE id = ?').get(event.id) as { payload: string };
+        expect(stored.payload).not.toContain(openAiKey);
+        expect(JSON.parse(stored.payload).tool_input.command).toBe(`curl -H "Authorization: Bearer <redacted type='openai_key'/>"`);
+      });
+    } finally {
+      loadSpy.mockRestore();
+      _resetRedactionConfigCache();
+    }
+  });
+
   it('round-trips repository records using JSON-as-TEXT fields', () => {
     withDb(db => {
       const projects = new ProjectsRepository(db);
       const sessions = new ServerSessionsRepository(db);
       const events = new AgentEventsRepository(db);
       const memories = new MemoryItemsRepository(db);
-      const teams = new TeamsRepository(db);
       const auth = new AuthRepository(db);
 
       const project = projects.create({
@@ -83,17 +110,17 @@ describe('server-owned sqlite storage boundary', () => {
         legacyTable: 'observations',
         legacyId: 42
       });
-      const team = teams.create({ name: 'Core' });
-      const member = teams.addMember({ teamId: team.id, userId: 'user-1', role: 'owner' });
+      const teamId = 'team-core';
+      db.prepare("INSERT INTO teams (id, name, created_at_epoch, updated_at_epoch) VALUES (?, 'Core', 0, 0)").run(teamId);
       const key = auth.createApiKey({
-        teamId: team.id,
+        teamId,
         projectId: project.id,
         name: 'placeholder',
         keyHash: 'hash-1',
         scopes: ['memory:read']
       });
       const audit = auth.createAuditLog({
-        teamId: team.id,
+        teamId,
         projectId: project.id,
         actorType: 'api_key',
         actorId: key.id,
@@ -105,7 +132,6 @@ describe('server-owned sqlite storage boundary', () => {
       expect(event.payload).toEqual({ type: 'learned' });
       expect(memory.facts).toEqual(['JSON text is decoded']);
       expect(source.legacyTable).toBe('observations');
-      expect(member.role).toBe('owner');
       expect(key.scopes).toEqual(['memory:read']);
       expect(audit.action).toBe('memory.read');
     });

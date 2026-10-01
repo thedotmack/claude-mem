@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { toBmpSafe, hasAstral } from '../src/utils/bmp-safe';
+import { toBmpSafe } from '../src/utils/bmp-safe';
 
 function hasSurrogate(s: string): boolean {
   for (let i = 0; i < s.length; i++) {
@@ -33,7 +33,6 @@ describe('toBmpSafe (issue #2787)', () => {
     const messy = '🔴 a 🟣 b 🔄 c 🦄 d 🎯 e 💬 f ✅ g ⚖️ h 🧠';
     const safe = toBmpSafe(messy);
     expect(hasSurrogate(safe)).toBe(false);
-    expect(hasAstral(safe)).toBe(false);
   });
 
   it('drops pre-existing lone surrogates', () => {
