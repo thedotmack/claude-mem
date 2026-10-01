@@ -3595,6 +3595,12 @@ export class SessionStore {
     observationIds: number[];
     /** Parallel to observationIds: true where a Tier-0 merge reused an existing row (nothing new was stored). */
     mergedIntoExisting: boolean[];
+    /**
+     * The rows this call actually inserted: not exact duplicates or Tier-0
+     * merges, which are earlier turns' rows. Only these may take a later
+     * correction to this turn's discovery_tokens.
+     */
+    insertedObservationIds: number[];
     summaryId: number | null;
     createdAtEpoch: number;
   } {
@@ -3616,6 +3622,7 @@ export class SessionStore {
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
       const mergedIntoExisting: boolean[] = [];
+      const insertedObservationIds: number[] = [];
 
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
@@ -3698,6 +3705,7 @@ export class SessionStore {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
           observationIds.push(inserted.id);
           mergedIntoExisting.push(false);
+          insertedObservationIds.push(inserted.id);
           continue;
         }
 
@@ -3745,10 +3753,28 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
-      return { observationIds, mergedIntoExisting, summaryId, createdAtEpoch: timestampEpoch };
+      return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
     return storeTx();
+  }
+
+  /**
+   * Set discovery_tokens on rows a turn stored, after the fact. The Claude path
+   * derives it from the turn's streamed assistant frames, which a gateway that
+   * synthesizes streaming reports with zero input tokens (#3664); the turn's
+   * result message carries the real usage. Callers pass only rows the turn
+   * inserted, never ones it merged into from earlier turns.
+   */
+  updateDiscoveryTokens(observationIds: number[], summaryId: number | null, discoveryTokens: number): void {
+    if (observationIds.length === 0 && summaryId === null) return;
+    this.db.transaction(() => {
+      const observationStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
+      for (const id of observationIds) observationStmt.run(discoveryTokens, id);
+      if (summaryId !== null) {
+        this.db.prepare('UPDATE session_summaries SET discovery_tokens = ? WHERE id = ?').run(discoveryTokens, summaryId);
+      }
+    })();
   }
 
   getSessionSummariesByIds(

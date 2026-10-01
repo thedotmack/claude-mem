@@ -469,6 +469,11 @@ export function buildOpenRouterRequestBody(input: {
     messages: input.messages,
     temperature: 0.3,  // Lower temperature for structured extraction
     max_tokens: input.maxOutputTokens ?? DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS,
+    // Ask for one JSON body. A gateway that streams by default answers with
+    // text/event-stream, which response.json() cannot read, so every
+    // observation fails (#3664). false is the OpenAI default. The cmem gateway
+    // never streams unasked, and its requests stay exactly as they are.
+    ...(isCmemGatewayUrl(input.apiUrl) ? {} : { stream: false }),
     // Keep the same model, but ask for an answer instead of spending this
     // short rewrite's budget on reasoning. Only known OpenRouter endpoints
     // accept the vendor-specific reasoning control (cmem forwards it).

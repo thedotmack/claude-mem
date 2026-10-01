@@ -84,7 +84,7 @@ describe('buildOpenRouterRequestBody with an extra body', () => {
     });
     expect(body.model).toBe('vendor/model');
     expect(body.messages).toEqual(MESSAGES);
-    expect(body.stream).toBeUndefined();
+    expect(body.stream).toBe(false);
     expect(body.max_tokens).toBe(4096);
     expect(body.max_completion_tokens).toBeUndefined();
   });
