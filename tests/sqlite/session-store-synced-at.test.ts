@@ -449,14 +449,20 @@ describe('SessionStore prompt re-push hooks (memory id lands after first sync)',
     expect(stampedCount(db, 'user_prompts')).toBe(3);
   });
 
-  it('ensureMemorySessionIdRegistered requeues on change and no-ops when already registered', () => {
+  it('ensureMemorySessionIdRegistered requeues on first register and no-ops when already registered', () => {
     store.ensureMemorySessionIdRegistered(1, 'mem-a');
     expect(stampedCount(db, 'user_prompts')).toBe(3);
 
+    // Offered id differs, but the session already has an identity — no rewrite, no requeue.
     store.ensureMemorySessionIdRegistered(1, 'mem-a3');
+    expect(stampedCount(db, 'user_prompts')).toBe(3);
+
+    // First register (stored id is NULL) is the one-time repair.
+    db.prepare(`UPDATE sdk_sessions SET memory_session_id = NULL WHERE id = 2`).run();
+    store.ensureMemorySessionIdRegistered(2, 'mem-b2');
     const prompts = syncedAtById(db, 'user_prompts');
-    expect(prompts.get(1)).toBeNull();
-    expect(prompts.get(2)).toBeNull();
-    expect(prompts.get(3)).toBe(1751234567890);
+    expect(prompts.get(1)).toBe(1751234567890);
+    expect(prompts.get(2)).toBe(1751234567890);
+    expect(prompts.get(3)).toBeNull();
   });
 });

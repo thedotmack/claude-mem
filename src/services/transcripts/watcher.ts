@@ -1,80 +1,79 @@
-import { existsSync, statSync, watch as fsWatch, createReadStream, readFileSync } from 'fs';
+import { existsSync, statSync, watch as fsWatch, createReadStream } from 'fs';
 import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
 import { TranscriptEventProcessor } from './processor.js';
-import { decompressZstdFrame, scanZstdFrames, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
   offset: number;
+  readOffset: number;
   partial: string;
 }
+
+// Coarse filesystem clocks (HFS+ 1 s, FAT 2 s) can stamp a file written just
+// after startup with an mtime just before it.
+const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
 
 class FileTailer {
   private watcher: ReturnType<typeof fsWatch> | null = null;
   private tailState: TailState;
-  private reading = false;
-  private readQueued = false;
-  private closed = false;
+  private readTask: Promise<void> | null = null;
+  private readPending = false;
 
   constructor(
     private filePath: string,
     initialOffset: number,
     private onLine: (line: string) => Promise<void>,
-    private onOffset: (offset: number, partial: string) => void,
-    private isZstd = false,
-    initialPartial = ''
+    private onOffset: (offset: number) => void
   ) {
-    this.tailState = { offset: initialOffset, partial: initialPartial };
+    this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: '' };
   }
 
   start(): void {
-    this.readNewData().catch(() => undefined);
-    this.watcher = fsWatch(this.filePath, { persistent: true }, () => {
-      this.readNewData().catch(() => undefined);
-    });
+    this.requestRead();
+    try {
+      this.watcher = fsWatch(this.filePath, { persistent: true }, () => {
+        this.requestRead();
+      });
+    } catch (error: unknown) {
+      // The file can disappear between the glob scan and this watch call. A file
+      // that is already gone needs no tailer, so log and leave the watcher null.
+      logger.debug('WORKER', 'Failed to watch transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
+      this.watcher = null;
+    }
   }
 
   close(): void {
-    this.closed = true;
     this.watcher?.close();
     this.watcher = null;
   }
 
   poke(): void {
-    this.readNewData().catch(() => undefined);
+    this.requestRead();
   }
 
-  /**
-   * Serialized read entry point. A notification or poke received while a read
-   * is still dispatching lines (and has not yet committed its offset) would
-   * otherwise start a second read from the same offset, duplicating side
-   * effects. Instead the re-entrant call is coalesced and re-runs after the
-   * current pass commits, so each byte range is dispatched exactly once. Once
-   * the tailer is closed, queued passes and line dispatch are suppressed so a
-   * retiring worker never races the replacement's initial replay.
-   */
-  private async readNewData(): Promise<void> {
-    if (this.closed) return;
-    if (this.reading) {
-      this.readQueued = true;
+  private requestRead(): void {
+    if (this.readTask) {
+      this.readPending = true;
       return;
     }
-    this.reading = true;
-    try {
-      do {
-        this.readQueued = false;
-        await this.readNewDataOnce();
-      } while (this.readQueued && !this.closed);
-    } finally {
-      this.reading = false;
-    }
+
+    this.readTask = this.drainReads().finally(() => {
+      this.readTask = null;
+    });
   }
 
-  private async readNewDataOnce(): Promise<void> {
-    if (this.closed || !existsSync(this.filePath)) return;
+  private async drainReads(): Promise<void> {
+    do {
+      this.readPending = false;
+      await this.readNewData().catch(() => undefined);
+    } while (this.readPending);
+  }
+
+  private async readNewData(): Promise<void> {
+    if (!existsSync(this.filePath)) return;
 
     let size = 0;
     try {
@@ -84,20 +83,16 @@ class FileTailer {
       return;
     }
 
-    if (size < this.tailState.offset) {
+    if (size < this.tailState.readOffset) {
       this.tailState.offset = 0;
+      this.tailState.readOffset = 0;
+      this.tailState.partial = '';
     }
 
-    if (size === this.tailState.offset) return;
+    if (size === this.tailState.readOffset) return;
 
-    if (this.isZstd) {
-      await this.readZstdNewData(size);
-      return;
-    }
-
-    const startOffset = this.tailState.offset;
     const stream = createReadStream(this.filePath, {
-      start: startOffset,
+      start: this.tailState.readOffset,
       end: size - 1,
       encoding: 'utf8'
     });
@@ -106,110 +101,22 @@ class FileTailer {
     for await (const chunk of stream) {
       data += chunk as string;
     }
+    this.tailState.readOffset = size;
 
-    const priorPartial = this.tailState.partial;
-    let pending = priorPartial;
-    let dataLineStart = 0;
-    for (let newline = data.indexOf('\n'); newline !== -1; newline = data.indexOf('\n', dataLineStart)) {
-      if (this.closed) break;
-      const line = pending + data.slice(dataLineStart, newline);
-      const nextOffset = startOffset + Buffer.byteLength(data.slice(0, newline + 1), 'utf8');
-      pending = '';
-      dataLineStart = newline + 1;
+    const combined = this.tailState.partial + data;
+    const lines = combined.split('\n');
+    this.tailState.partial = lines.pop() ?? '';
+
+    // Keep live reads at EOF while restart recovery resumes before any partial record.
+    for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed) {
-        await this.onLine(trimmed);
-      }
-      this.tailState.offset = nextOffset;
-      this.onOffset(nextOffset, '');
+      if (!trimmed) continue;
+      await this.onLine(trimmed);
     }
 
-    if (!this.closed) {
-      this.tailState.partial = pending + data.slice(dataLineStart);
-      this.tailState.offset = size;
-    }
-  }
-
-  /**
-   * Incremental read for concatenated-frame Zstandard session logs (e.g.
-   * DeepSeek Harness `*.jsonl.zstd`). Every durable write appends one
-   * independently decodable frame, so the tail offset always lands on a frame
-   * boundary. Only complete frames past the stored offset are decoded; a torn
-   * (incomplete) trailing frame is left for the next change event.
-   */
-  private async readZstdNewData(size: number): Promise<void> {
-    let buffer: Buffer;
-    try {
-      buffer = readFileSync(this.filePath);
-    } catch (error: unknown) {
-      logger.debug('WORKER', 'Failed to read zstd transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
-      return;
-    }
-
-    let scan: ZstdScanResult;
-    try {
-      scan = scanZstdFrames(buffer);
-    } catch (error: unknown) {
-      logger.warn('TRANSCRIPT', 'Failed to scan zstd transcript frames', {
-        file: this.filePath,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return;
-    }
-
-    let processedEnd = this.tailState.offset;
-    let stoppedBeforeTorn = false;
-    for (const frame of scan.frames) {
-      if (frame.end <= this.tailState.offset) continue;
-      let plain: string;
-      try {
-        plain = decompressZstdFrame(buffer, frame);
-      } catch (error: unknown) {
-        // Stop at the first failed complete frame instead of skipping it. The
-        // durable offset only advances through the last consecutively decoded
-        // frame, so a corrupted frame is retried on the next change event
-        // rather than being permanently skipped (its events would otherwise be
-        // silently lost once a later frame advanced the offset past it).
-        logger.warn('TRANSCRIPT', 'Failed to decompress zstd transcript frame; retrying on next change', {
-          file: this.filePath,
-          start: frame.start,
-          end: frame.end,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        stoppedBeforeTorn = true;
-        break;
-      }
-
-      const combined = this.tailState.partial + plain;
-      const lines = combined.split('\n');
-      this.tailState.partial = lines.pop() ?? '';
-      let frameCompleted = true;
-      for (const line of lines) {
-        if (this.closed) {
-          frameCompleted = false;
-          break;
-        }
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        await this.onLine(trimmed);
-      }
-      if (!frameCompleted || this.closed) {
-        stoppedBeforeTorn = true;
-        break;
-      }
-      processedEnd = frame.end;
-    }
-
-    const nextOffset = !stoppedBeforeTorn && scan.tornStart !== null && scan.tornStart > processedEnd ? scan.tornStart : processedEnd;
-    if (nextOffset > this.tailState.offset) {
-      this.tailState.offset = nextOffset;
-      // A complete zstd frame can end mid-JSONL-record; the durable offset is
-      // only resumable at frame boundaries, so persist the unterminated prefix
-      // with the offset. Without it a replacement tailer would parse the
-      // suffix from the next frame as a standalone (malformed) line and the
-      // record spanning the two frames would be lost.
-      this.onOffset(nextOffset, this.tailState.partial);
-    }
+    const checkpointOffset = size - Buffer.byteLength(this.tailState.partial, 'utf8');
+    this.tailState.offset = checkpointOffset;
+    this.onOffset(checkpointOffset);
   }
 }
 
@@ -218,12 +125,14 @@ export class TranscriptWatcher {
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
+  private startedAtMs = 0;
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
   }
 
   async start(): Promise<void> {
+    this.startedAtMs = Date.now();
     for (const watch of this.config.watches) {
       await this.setupWatch(watch);
     }
@@ -291,7 +200,9 @@ export class TranscriptWatcher {
     const matches = this.resolveWatchFiles(resolvedPath);
     for (const filePath of matches) {
       if (!this.tailers.has(filePath)) {
-        void this.addTailer(filePath, watch, schema);
+        void this.addTailer(filePath, watch, schema, true).catch(error => {
+          logger.debug('TRANSCRIPT', 'Failed to add transcript tailer', { file: filePath, watch: watch.name }, error instanceof Error ? error : undefined);
+        });
       }
     }
   }
@@ -339,12 +250,8 @@ export class TranscriptWatcher {
       try {
         const stat = statSync(inputPath);
         if (stat.isDirectory()) {
-          const jsonlPattern = join(inputPath, '**', '*.jsonl');
-          const zstdPattern = join(inputPath, '**', '*.jsonl.zstd');
-          return [
-            ...this.scanGlob(this.normalizeGlobPattern(jsonlPattern)),
-            ...this.scanGlob(this.normalizeGlobPattern(zstdPattern)),
-          ];
+          const pattern = join(inputPath, '**', '*.jsonl');
+          return this.scanGlob(this.normalizeGlobPattern(pattern));
         }
         return [inputPath];
       } catch (error: unknown) {
@@ -357,7 +264,7 @@ export class TranscriptWatcher {
   }
 
   private scanGlob(pattern: string): string[] {
-    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true }));
+    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true, dot: true }));
   }
 
   private normalizeGlobPattern(inputPath: string): string {
@@ -371,16 +278,31 @@ export class TranscriptWatcher {
   private async addTailer(
     filePath: string,
     watch: WatchTarget,
-    schema: TranscriptSchema
+    schema: TranscriptSchema,
+    discoveredAfterStartup: boolean = false
   ): Promise<void> {
+    // Expand a leading tilde here, the single point every path feeds through.
+    // Some path sources skip expandHomePath, so a literal '~' can reach fs.watch
+    // and can never resolve to a real file.
+    filePath = expandHomePath(filePath);
     if (this.tailers.has(filePath)) return;
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
+    // `startAtEnd` means "do not replay history that predates this worker".
+    // A transcript created after startup is read from byte 0: by the time the
+    // recursive root watch reports it, session_meta and the opening turns are
+    // already on disk, and jumping to EOF drops the user prompt the schema
+    // exists to capture (#4211). A historical file moved in after startup is
+    // still history: a rename keeps its old mtime (it does bump ctime, so ctime
+    // cannot tell the two apart), so it starts at EOF like the initial scan.
     if (offset === 0 && watch.startAtEnd) {
       try {
-        offset = statSync(filePath).size;
+        const stat = statSync(filePath);
+        const writtenSinceStartup =
+          discoveredAfterStartup && stat.mtimeMs >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
+        if (!writtenSinceStartup) offset = stat.size;
       } catch (error: unknown) {
         logger.debug('WORKER', 'Failed to stat file for startAtEnd offset', { file: filePath }, error instanceof Error ? error : undefined);
         offset = 0;
@@ -393,18 +315,10 @@ export class TranscriptWatcher {
       async (line: string) => {
         await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
       },
-      (newOffset: number, partial: string) => {
+      (newOffset: number) => {
         this.state.offsets[filePath] = newOffset;
-        const partials = (this.state.partials ??= {});
-        if (partial) {
-          partials[filePath] = partial;
-        } else {
-          delete partials[filePath];
-        }
         saveWatchState(this.statePath, this.state);
-      },
-      filePath.endsWith('.jsonl.zstd'),
-      this.state.partials?.[filePath] ?? ''
+      }
     );
 
     tailer.start();

@@ -74,11 +74,98 @@ export function extractLastAssistantTurn(
 }
 
 /**
+ * Antigravity CLI (`agy`) transcript node types → chat roles. Its
+ * `brain/<session>/.system_generated/logs/transcript.jsonl` lines are shaped
+ * `{step_index, source, type, content}` with the text at the TOP LEVEL
+ * (`content`), not under `message.content` (issue #4057). Only PLANNER_RESPONSE
+ * carries the assistant's final text — RUN_COMMAND / VIEW_FILE / etc. also
+ * carry `source: 'MODEL'`, so we discriminate on `type`, never on `source`.
+ */
+const ANTIGRAVITY_TYPE_TO_ROLE: Record<string, 'user' | 'assistant'> = {
+  USER_INPUT: 'user',
+  PLANNER_RESPONSE: 'assistant',
+};
+
+/**
+ * Reduce a message content value to plain text. Returns `null` for an unknown
+ * shape so callers can skip the line (rather than treating it as empty text).
+ * Handles a top-level string, a Claude-style content array (`{type:'text',text}`),
+ * and a generic `{text}` array (Antigravity, when content isn't a bare string).
+ */
+function contentToText(msgContent: unknown): string | null {
+  if (typeof msgContent === 'string') return msgContent;
+  if (Array.isArray(msgContent)) {
+    return msgContent
+      .filter(
+        (c: any): c is { text: string } =>
+          !!c && typeof c === 'object' && typeof c.text === 'string' &&
+          (c.type === undefined || c.type === 'text')
+      )
+      .map((c) => c.text)
+      .join('\n');
+  }
+  return null;
+}
+
+/**
+ * Kimi Code wire.jsonl is event-sourced; role is carried by envelope type:
+ * - user:      {"type":"context.append_message","message":{"role":"user",...}}
+ * - assistant: {"type":"context.append_loop_event","event":{"type":"content.part",
+ *              ...,"part":{"type":"text","text":"..."}}}  (part.type "think" is reasoning — skipped)
+ */
+function kimiWireRole(line: any): 'user' | 'assistant' | undefined {
+  if (line?.type === 'context.append_message') {
+    const role = line.message?.role;
+    return role === 'user' || role === 'assistant' ? role : undefined;
+  }
+  if (
+    line?.type === 'context.append_loop_event' &&
+    line.event?.type === 'content.part' &&
+    line.event?.part?.type === 'text'
+  ) {
+    return 'assistant';
+  }
+  return undefined;
+}
+
+function kimiWireText(line: any, role: 'user' | 'assistant'): string {
+  if (role === 'user' && line?.type === 'context.append_message') {
+    return contentToText(line.message?.content) ?? '';
+  }
+  if (role === 'assistant' && line?.type === 'context.append_loop_event') {
+    const text = line.event?.part?.text;
+    return typeof text === 'string' ? text : '';
+  }
+  return '';
+}
+
+/**
+ * Last-resort stand-in for a tool-only assistant turn: names the tools it
+ * called, so a session that ended mid-tool-call (every assistant turn is
+ * tool_use only) still has something to summarize. A Bash command is clipped
+ * to 60 characters; the observer already saw the full tool inputs.
+ */
+function synthesizeToolDescription(msgContent: any[]): string {
+  const toolUses = msgContent.filter((c: any) => c?.type === 'tool_use');
+  if (toolUses.length === 0) return '';
+  const labels = toolUses.map((t: any) => {
+    const name: string = t.name ?? 'unknown';
+    const input = t.input ?? {};
+    if (input.file_path) return `${name}(${input.file_path})`;
+    if (input.command) return `${name}(${String(input.command).slice(0, 60)})`;
+    return name;
+  });
+  return `[Session ended mid-task. Last tools used: ${labels.join(', ')}]`;
+}
+
+/**
  * Extract last message from a JSONL transcript.
  *
- * Supports two field conventions for the per-line role marker:
- * - Claude Code:  `{"type":"assistant",...}`
- * - Cursor:       `{"role":"assistant",...}`
+ * Supports four field conventions for the per-line role marker:
+ * - Claude Code:      `{"type":"assistant","message":{"content":...}}`
+ * - Cursor:           `{"role":"assistant","message":{"content":...}}`
+ * - Antigravity CLI:  `{"type":"PLANNER_RESPONSE","content":"..."}` (top-level)
+ * - Kimi Code:        wire.jsonl `context.append_message` / `context.append_loop_event`
  *
  * The most recent assistant turn is often a pure tool_use block with no text
  * content (especially in Cursor, where the agent's last action before the
@@ -95,31 +182,32 @@ export function extractLastMessageFromJsonl(
   let lastEmptyText: string | null = null;
 
   for (const line of parseJsonlLinesBackward(content)) {
-    const lineRole = line.type ?? line.role;
+    const kimiRole = kimiWireRole(line);
+    const antigravityRole = typeof line.type === 'string'
+      ? ANTIGRAVITY_TYPE_TO_ROLE[line.type]
+      : undefined;
+    const lineRole = kimiRole ?? antigravityRole ?? line.type ?? line.role;
     if (lineRole !== role) continue;
     foundMatchingRole = true;
 
-    if (!line.message?.content) continue;
-
-    let text = '';
-    const msgContent = line.message.content;
-    if (typeof msgContent === 'string') {
-      text = msgContent;
-    } else if (Array.isArray(msgContent)) {
-      text = msgContent
-        .filter(
-          (c: any): c is { type: 'text'; text: string } =>
-            !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
-        )
-        .map((c) => c.text)
-        .join('\n');
+    let text: string;
+    let msgContent: unknown;
+    if (kimiRole !== undefined) {
+      text = kimiWireText(line, role);
     } else {
-      // Unknown content shape (null, number, plain object, etc.) — skip rather
-      // than throw. A single weird line should not crash the entire summary
-      // pipeline; we already tolerate malformed JSONL in parseJsonlLinesBackward,
-      // and this is the same class of defensive forward compat
-      // (CodeRabbit / Greptile review on PR #2282).
-      continue;
+      // Antigravity nodes carry text at the top level; Claude/Cursor nest it under
+      // `message.content`.
+      msgContent = antigravityRole !== undefined ? line.content : line.message?.content;
+      if (msgContent === undefined || msgContent === null) continue;
+
+      // Unknown content shape (number, plain object, etc.) — skip rather than
+      // throw. A single weird line should not crash the entire summary pipeline;
+      // we already tolerate malformed JSONL in parseJsonlLinesBackward, and this
+      // is the same class of defensive forward compat (CodeRabbit / Greptile
+      // review on PR #2282).
+      const extracted = contentToText(msgContent);
+      if (extracted === null) continue;
+      text = extracted;
     }
 
     if (stripSystemReminders) {
@@ -135,6 +223,12 @@ export function extractLastMessageFromJsonl(
     // tool-only turns" if every later turn is empty.
     if (lastEmptyText === null) {
       lastEmptyText = text;
+      // If this turn was tool-only, synthesize a description as a last resort
+      // so the summarizer has something rather than silently skipping the session.
+      if (!lastEmptyText.trim() && Array.isArray(msgContent)) {
+        const toolSummary = synthesizeToolDescription(msgContent);
+        if (toolSummary) lastEmptyText = toolSummary;
+      }
     }
   }
 

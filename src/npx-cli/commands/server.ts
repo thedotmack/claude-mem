@@ -120,32 +120,100 @@ async function runServerKeysRotateCommand(): Promise<void> {
     console.error('Configure Postgres first, then re-run this command.');
     process.exit(1);
   }
-  const { rotateServerApiKey, persistServerSettings } = await import(
+  const { rotateServerApiKey, revokeServerApiKey, persistServerSettings, readServerKeyRotationState } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
-  const { SettingsDefaultsManager } = await import('../../shared/SettingsDefaultsManager.js');
-  const { join } = await import('path');
+  const { USER_SETTINGS_PATH: settingsPath } = await import('../../shared/paths.js');
 
-  const settingsPath = join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-  let previousApiKeyId: string | null = null;
+  let state = readServerKeyRotationState(null);
   try {
-    const flat = readFlatSettings(settingsPath);
-    // Phase 1d: read the new canonical key first, fall back to the
-    // legacy `CLAUDE_MEM_SERVER_BETA_API_KEY` so rotations work for
-    // both fresh installs and pre-rename installs.
-    const previousKey = flat?.CLAUDE_MEM_SERVER_API_KEY ?? flat?.CLAUDE_MEM_SERVER_BETA_API_KEY;
-    if (typeof previousKey === 'string' && previousKey.length > 0) {
-      previousApiKeyId = await lookupApiKeyIdByPlaintext(previousKey);
-    }
+    state = readServerKeyRotationState(readFlatSettings(settingsPath));
   } catch {
     // ignore — we'll just generate a new key without revoking the old one
   }
+  const { pendingRevocationKeyId, currentApiKey, currentProjectId } = state;
 
-  const result = await rotateServerApiKey({ previousApiKeyId });
-  persistServerSettings(settingsPath, {
-    apiKey: result.rawKey,
-    projectId: result.projectId,
-  });
+  // A prior rotation may have saved the current credential while its old-key
+  // revocation failed (its retry marker is still in settings.json). Resolve
+  // that pending revocation in place; creating a third key would leave the
+  // saved current key active but untracked.
+  if (pendingRevocationKeyId) {
+    if (!currentApiKey || !currentProjectId) {
+      console.error(styleText('red', 'Cannot resume rotation: the pending retry marker has no current credential.'));
+      console.error('Repair or restore settings.json before rotating again.');
+      process.exit(1);
+    }
+    try {
+      await revokeServerApiKey(pendingRevocationKeyId);
+    } catch {
+      console.error(styleText('red', 'Cannot finish the pending rotation: the previous API key could not be revoked.'));
+      console.error('The current API key remains active and is still recorded in settings.json. Retry after confirming Postgres is available.');
+      process.exit(1);
+    }
+    if (!persistServerSettings(settingsPath, { apiKey: currentApiKey, projectId: currentProjectId })) {
+      console.error(styleText('red', 'The previous API key was revoked, but the retry marker could not be removed from settings.json.'));
+      console.error('Repair settings.json before rotating again.');
+      process.exit(1);
+    }
+    console.log(JSON.stringify({
+      rotated: true,
+      retryResolved: true,
+      settingsPath,
+    }, null, 2));
+    return;
+  }
+
+  // Ordinary rotation: the current key is revoked only after its replacement
+  // is saved (beforeRevoke below), and is recorded as the retry marker until then.
+  let previousApiKeyId: string | null = null;
+  if (currentApiKey) {
+    try {
+      previousApiKeyId = await lookupApiKeyIdByPlaintext(currentApiKey);
+    } catch {
+      // ignore — we'll just generate a new key without revoking the old one
+    }
+  }
+
+  let result: Awaited<ReturnType<typeof rotateServerApiKey>>;
+  let settingsPersisted = false;
+  try {
+    result = await rotateServerApiKey({
+      previousApiKeyId,
+      beforeRevoke: next => {
+        if (!persistServerSettings(settingsPath, {
+          apiKey: next.rawKey,
+          projectId: next.projectId,
+          previousApiKeyId,
+        })) {
+          throw new Error('settings.json could not be updated');
+        }
+        settingsPersisted = true;
+      },
+    });
+  } catch {
+    if (settingsPersisted) {
+      console.error(styleText('red', 'A new API key was saved, but revoking the previous key failed.'));
+      console.error('Retry the rotation after confirming Postgres is available.');
+    } else {
+      console.error(styleText('red', 'Cannot rotate: settings.json was not updated, so the existing API key remains active.'));
+      console.error('Repair or restore the file, then re-run this command.');
+    }
+    process.exit(1);
+  }
+  let cleanupPersisted = false;
+  try {
+    cleanupPersisted = persistServerSettings(settingsPath, {
+      apiKey: result.rawKey,
+      projectId: result.projectId,
+    });
+  } catch {
+    cleanupPersisted = false;
+  }
+  if (!cleanupPersisted) {
+    console.error(styleText('red', 'The new API key is active, but its cleanup marker could not be removed from settings.json.'));
+    console.error('Repair settings.json and retry; the existing pending marker will be resolved without minting another key.');
+    process.exit(1);
+  }
   console.log(JSON.stringify({
     rotated: true,
     apiKeyId: result.apiKeyId,

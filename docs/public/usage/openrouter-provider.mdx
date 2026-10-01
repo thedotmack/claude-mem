@@ -32,22 +32,19 @@ OpenRouter actively supports democratizing AI access by offering free models. Th
 
 | Model | ID | Parameters | Context | Best For |
 |-------|------|------------|---------|----------|
-| **Xiaomi MiMo-V2-Flash** | `xiaomi/mimo-v2-flash:free` | 309B (15B active, MoE) | 256K | Reasoning, coding, agents |
-| **Gemini 2.0 Flash** | `google/gemini-2.0-flash-exp:free` | — | 1M | General purpose |
-| **Gemini 2.5 Flash** | `google/gemini-2.5-flash-preview:free` | — | 1M | Latest capabilities |
-| **DeepSeek R1** | `deepseek/deepseek-r1:free` | 671B | 64K | Reasoning, analysis |
-| **Llama 3.1 70B** | `meta-llama/llama-3.1-70b-instruct:free` | 70B | 128K | General purpose |
-| **Llama 3.1 8B** | `meta-llama/llama-3.1-8b-instruct:free` | 8B | 128K | Fast, lightweight |
-| **Mistral Nemo** | `mistralai/mistral-nemo:free` | 12B | 128K | Efficient performance |
+| **Cohere North Mini Code** | `cohere/north-mini-code:free` | 30B (3B active, MoE) | 256K | Default; agentic coding |
+| **Poolside Laguna XS 2.1** | `poolside/laguna-xs-2.1:free` | 33B (3B active, MoE) | 256K | Coding agents |
+| **NVIDIA Nemotron 3 Ultra** | `nvidia/nemotron-3-ultra-550b-a55b:free` | 550B (55B active, MoE) | 1M | Reasoning, orchestration |
 
 <Note>
-**Default Model**: Claude-mem uses `xiaomi/mimo-v2-flash:free` by default—a 309B parameter mixture-of-experts model that ranks #1 on SWE-bench Verified and excels at coding and reasoning tasks.
+**Default Model**: Claude-mem uses `cohere/north-mini-code:free` by default, a sparse mixture-of-experts coding model with a 256K context window.
 </Note>
 
 ### Free Model Considerations
 
 - **Rate limits**: Free models may have stricter rate limits than paid models
 - **Availability**: Free capacity depends on provider partnerships and demand
+- **Retirement**: OpenRouter retires free model ids regularly. If the default is retired, claude-mem moves stored settings off it automatically. If a model you picked is retired, the observer reports "OpenRouter model unavailable" (see [Troubleshooting](#model-unavailable))
 - **Queue times**: During peak usage, requests may be queued briefly
 - **Max tokens**: Most free models support 65,536 completion tokens
 
@@ -77,9 +74,11 @@ All free models support:
 |---------|--------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_OPENROUTER_API_KEY` | string | — | Your OpenRouter API key |
-| `CLAUDE_MEM_OPENROUTER_MODEL` | string | `xiaomi/mimo-v2-flash:free` | Model identifier (see list above) |
+| `CLAUDE_MEM_OPENROUTER_MODEL` | string or array | `cohere/north-mini-code:free` | Model identifier, or a list to fall back through (see [Model fallbacks](#model-fallbacks)) |
+| `CLAUDE_MEM_OPENROUTER_BASE_URL` | string | — | Optional: custom OpenAI-compatible base URL (see [Custom OpenAI-compatible gateways](#custom-openai-compatible-gateways)) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
+| `CLAUDE_MEM_OPENROUTER_EXTRA_BODY` | JSON object | — | Optional: extra request fields (see [Extra request fields](#extra-request-fields)). Settings file or environment only |
 
 ### Using the Settings UI
 
@@ -99,9 +98,34 @@ Edit `~/.claude-mem/settings.json`:
 {
   "CLAUDE_MEM_PROVIDER": "openrouter",
   "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-v1-your-key-here",
-  "CLAUDE_MEM_OPENROUTER_MODEL": "xiaomi/mimo-v2-flash:free"
+  "CLAUDE_MEM_OPENROUTER_MODEL": "cohere/north-mini-code:free"
 }
 ```
+
+### Model fallbacks
+
+`CLAUDE_MEM_OPENROUTER_MODEL` also accepts a **list** of model ids. The first is
+the one normally used; the rest are handed to OpenRouter's native `models`
+fallback array, which tries them in order when the one before it errors.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-v1-your-key-here",
+  "CLAUDE_MEM_OPENROUTER_MODEL": [
+    "vendor/fast-model:free",
+    "vendor/backup-model:free",
+    "vendor/paid-model"
+  ]
+}
+```
+
+A comma- or space-separated string works too, so
+`"vendor/a, vendor/b"` means the same thing as the two-entry array.
+
+Fallbacks are sent only to `openrouter.ai`. A custom
+`CLAUDE_MEM_OPENROUTER_BASE_URL` gateway speaks plain OpenAI, which has no
+`models` field, so it receives the **first** id and ignores the rest.
 
 Alternatively, set the API key via environment variable:
 
@@ -111,27 +135,63 @@ export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
 
 The settings file takes precedence over the environment variable.
 
+### Custom OpenAI-compatible gateways
+
+The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to any server that speaks `/chat/completions`, such as DeepSeek (`https://api.deepseek.com`), LM Studio (`http://localhost:1234/v1`) or [IO Intelligence](https://io.net) by io.net. The model id is sent as-is, and the first id of a fallback list is used (plain OpenAI has no `models` field). Use the key that endpoint issued: a claude-mem observer key (`cm_pro_…`) is only ever sent to the claude-mem observer.
+
+<Tip>
+The [OpenAI-compatible provider](/usage/openai-compatible-provider) does the same job on settings of its own, with presets for common endpoints, and sends none of OpenRouter's attribution headers. Prefer it for an endpoint that is not OpenRouter.
+</Tip>
+
+For example, IO Intelligence:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://api.intelligence.io.solutions/api/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "meta-llama/Llama-3.3-70B-Instruct",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_IO_INTELLIGENCE_API_KEY"
+}
+```
+
+Model ids are org/name pairs from the [IO Intelligence model list](https://api.intelligence.io.solutions/api/v1/models), for example `deepseek-ai/DeepSeek-R1-0528` or `zai-org/GLM-4.6`. A trailing slash on the base URL is fine; `/chat/completions` is appended automatically.
+
+### Extra request fields
+
+`CLAUDE_MEM_OPENROUTER_EXTRA_BODY` merges a JSON object into every request, for provider-specific fields claude-mem does not set itself. The common case is a reasoning model that spends the whole output budget thinking and answers with nothing. Turn its reasoning off:
+
+```json
+{
+  "CLAUDE_MEM_OPENROUTER_EXTRA_BODY": { "reasoning": { "enabled": false } }
+}
+```
+
+As an environment variable it is the same object as a string: `CLAUDE_MEM_OPENROUTER_EXTRA_BODY='{"reasoning":{"enabled":false}}'`. A custom gateway may use its vendor's own field instead, for example `{"thinking":{"type":"disabled"}}`.
+
+- The value must be a JSON object. Anything else is ignored with a warning in the worker log.
+- It cannot replace `model`, `models`, `messages`, `stream`, `max_tokens` or `max_completion_tokens`. Those fields are dropped with a warning. Set the output cap with `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS`.
+- It is never sent to the claude-mem observer.
+- Set it in `~/.claude-mem/settings.json` or the environment. The settings UI and API do not write it.
+
 ## Model Selection Guide
 
 ### Free Models
 
-**Recommended**: `xiaomi/mimo-v2-flash:free`
-- Best-in-class performance on coding benchmarks
+**Recommended**: `cohere/north-mini-code:free` (the default)
 - 256K context window handles large observations
-- 65K max completion tokens
-- Mixture-of-experts architecture (15B active parameters)
+- 64K max completion tokens
+- Sparse mixture-of-experts architecture (3B active parameters)
 
 **Alternatives**:
-- `google/gemini-2.0-flash-exp:free` - 1M context, Google's flagship
-- `deepseek/deepseek-r1:free` - Excellent reasoning capabilities
-- `meta-llama/llama-3.1-70b-instruct:free` - Strong general purpose
+- `poolside/laguna-xs-2.1:free` - Coding-agent model, 256K context
+- `nvidia/nemotron-3-ultra-550b-a55b:free` - 1M context, strong reasoning
 
 ### Premium Models (Higher Quality/Speed)
 
 | Model | Best For |
 |-------|----------|
-| `anthropic/claude-3.5-sonnet` | Highest quality observations |
-| `google/gemini-2.0-flash` | Fast responses |
+| `anthropic/claude-haiku-4.5` | Same model as the Claude provider's default |
+| `google/gemini-2.5-flash` | Fast responses |
 | `openai/gpt-4o` | GPT-4 quality |
 
 Premium models draw on your OpenRouter credit — still off-plan, so they never touch your Claude plan usage.
@@ -149,7 +209,7 @@ Logs include detailed usage information:
 
 ```
 OpenRouter API usage: {
-  model: "xiaomi/mimo-v2-flash:free",
+  model: "cohere/north-mini-code:free",
   inputTokens: 2500,
   outputTokens: 1200,
   totalTokens: 3700,
@@ -230,12 +290,14 @@ Free models may have rate limits during peak usage. If you hit rate limits:
 - Consider switching to a different free model
 - Add credits for premium model access
 
-### Model Not Found
+### Model unavailable
 
-Verify the model ID is correct:
-- Check [OpenRouter Models](https://openrouter.ai/models) for current availability
+The observer reports `OpenRouter model unavailable` when OpenRouter says the configured model is retired ("This model has been deprecated"), unknown ("is not a valid model ID"), or has no endpoint left ("No endpoints found for …"). Retrying cannot fix that, so it is not retried; the worker log and the session-start warning tell you to change the model:
+- Pick a model from [OpenRouter Models](https://openrouter.ai/models) and set it as `CLAUDE_MEM_OPENROUTER_MODEL` in `~/.claude-mem/settings.json` (or in the viewer's Settings). The next observation uses it
 - Use the `:free` suffix for free model variants
 - Model IDs are case-sensitive
+
+If you were still on the retired `xiaomi/mimo-v2-flash:free` default, claude-mem already moved you to `cohere/north-mini-code:free` the first time it loaded your settings.
 
 ### High Token Usage
 
@@ -268,7 +330,7 @@ Content-Type: application/json
 **Request Format**:
 ```json
 {
-  "model": "xiaomi/mimo-v2-flash:free",
+  "model": "cohere/north-mini-code:free",
   "messages": [
     {"role": "system", "content": "..."},
     {"role": "user", "content": "..."}
@@ -290,7 +352,7 @@ Content-Type: application/json
 | **Setup** | Automatic | API key required | API key required |
 
 <Tip>
-**Recommendation**: The claude-mem observer (chosen at install) is the easiest way to run memory off-plan. Bringing your own key? Start with the free `xiaomi/mimo-v2-flash:free` model. If you need higher quality or encounter rate limits, switch to a premium model or the Claude provider.
+**Recommendation**: The claude-mem observer (chosen at install) is the easiest way to run memory off-plan. Bringing your own key? Start with the free `cohere/north-mini-code:free` model. If you need higher quality or encounter rate limits, switch to a premium model or the Claude provider.
 </Tip>
 
 ## Next Steps
@@ -299,3 +361,10 @@ Content-Type: application/json
 - [Gemini Provider](/usage/gemini-provider) - Alternative free provider
 - [Getting Started](/usage/getting-started) - Basic usage guide
 - [Troubleshooting](/troubleshooting) - Common issues
+
+## Multiple keys
+
+`CLAUDE_MEM_OPENROUTER_API_KEYS` accepts additional keys (newline- or comma-separated) alongside
+`CLAUDE_MEM_OPENROUTER_API_KEY`. When a key hits a rate limit, spends its quota, or is rejected as
+invalid, OpenRouter requests rotate to the next key instead of failing for the
+rest of the window. See [Multi-Key Rotation](/usage/multi-key-rotation).

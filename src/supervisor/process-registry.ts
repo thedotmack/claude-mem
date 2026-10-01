@@ -1,15 +1,16 @@
 import { ChildProcess, spawnSync } from 'child_process';
 import { spawnHidden } from '../shared/spawn.js';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
+import { writeJsonFileAtomic } from '../shared/atomic-json.js';
 import { sanitizeEnv } from './env-sanitizer.js';
-import { paths } from '../shared/paths.js';
+import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
-import { captureProcessStartToken, isSameProcess } from '../shared/process-identity.js';
-export { captureProcessStartToken, isSameProcess };
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName } from '../shared/process-identity.js';
+export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName };
 import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
@@ -31,6 +32,21 @@ export interface ManagedProcessRecord extends ManagedProcessInfo {
 
 interface PersistedRegistry {
   processes: Record<string, ManagedProcessInfo>;
+}
+
+/**
+ * Optional reporter for a supervisor-registry persist failure. process-registry
+ * lives under src/supervisor/, which must not import src/services/ (telemetry) —
+ * so, exactly like logger.setErrorSink, the worker injects a reporter at startup
+ * that forwards to captureEvent. Absent (tests, CLI, telemetry off) it is a
+ * no-op, so a persist failure still degrades cleanly without telemetry.
+ */
+export type RegistryDegradedReporter = (info: { errorCategory: string }) => void;
+let degradedReporter: RegistryDegradedReporter | null = null;
+
+/** Installs (or clears, with null) the persist-failure reporter. Never throws. */
+export function setRegistryDegradedReporter(reporter: RegistryDegradedReporter | null): void {
+  degradedReporter = reporter;
 }
 
 export function isPidAlive(pid: number): boolean {
@@ -91,11 +107,31 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   return match;
 }
 
+/**
+ * The verified-owner PID info from the worker PID file, or null when the file
+ * is missing, unparseable, or names a process that is not a live claude-mem
+ * worker. Read-only sibling of validateWorkerPidFile for callers that need
+ * the pid itself (the hook's stale-worker kill in shared/worker-utils.ts, the
+ * installer's cache prune and pre-overwrite stop). Lives here, beside
+ * verifyPidFileOwnership, so npx-cli callers need not import the supervisor.
+ */
+export function readOwnedWorkerPidInfo(pidFilePath: string = paths.workerPid()): PidInfo | null {
+  if (!existsSync(pidFilePath)) return null;
+  let pidInfo: PidInfo | null;
+  try {
+    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo | null;
+  } catch {
+    return null;
+  }
+  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
+}
+
 export class ProcessRegistry {
   private readonly registryPath: string;
   private readonly entries = new Map<string, ManagedProcessInfo>();
   private readonly runtimeProcesses = new Map<string, ChildProcess>();
   private initialized = false;
+  private persistDegraded = false;
 
   constructor(registryPath: string = DEFAULT_REGISTRY_PATH) {
     this.registryPath = registryPath;
@@ -105,7 +141,9 @@ export class ProcessRegistry {
     if (this.initialized) return;
     this.initialized = true;
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
+    // No mkdir here: persist() writes through writeJsonFileAtomic, which
+    // creates the parent directory itself and — unlike a bare mkdirSync — never
+    // propagates an EACCES/EROFS out of initialize() into worker/session start.
 
     if (!existsSync(this.registryPath)) {
       this.persist();
@@ -139,8 +177,50 @@ export class ProcessRegistry {
     this.persist();
   }
 
+  /**
+   * Keep a still-running process that is about to lose its registry id.
+   *
+   * Ids are caller-supplied and some are fixed for the life of the product —
+   * chroma always registers under `chroma-mcp` — so a new generation's
+   * `register()` replaced the previous generation's record while that
+   * process was still running. Nothing signals a pid that is not in the map:
+   * `runShutdownCascade` walks `getAll()` and `pruneDeadEntries` only visits
+   * entries, so the process went unreachable by every reaper at once. That is
+   * the cross-generation orphan of #3301.
+   *
+   * It is re-keyed rather than killed here. `register()` is synchronous and
+   * `killProcessTree()` is not, and a setter is the wrong place to start a
+   * kill nobody awaits. Under an id of its own the process stays visible to
+   * the reapers that already exist: shutdown verifies identity with
+   * `isSameProcess` before it signals anything, and `pruneDeadEntries` drops
+   * the record as soon as it exits.
+   */
+  private retainSupersededEntry(id: string, incomingPid: number): void {
+    const superseded = this.entries.get(id);
+    if (!superseded || superseded.pid === incomingPid || !isPidAlive(superseded.pid)) return;
+
+    // Keyed by pid, so re-registering over the same survivor twice records it
+    // once rather than growing the registry.
+    const supersededId = `${id}#superseded:${superseded.pid}`;
+    this.entries.set(supersededId, superseded);
+
+    const runtimeRef = this.runtimeProcesses.get(id);
+    if (runtimeRef) {
+      this.runtimeProcesses.set(supersededId, runtimeRef);
+      this.runtimeProcesses.delete(id);
+    }
+
+    logger.warn('SYSTEM', 'Registry id reused while the previous process was still alive; kept it for reaping', {
+      id,
+      supersededId,
+      supersededPid: superseded.pid,
+      incomingPid,
+    });
+  }
+
   register(id: string, processInfo: ManagedProcessInfo, processRef?: ChildProcess): void {
     this.initialize();
+    this.retainSupersededEntry(id, processInfo.pid);
     this.entries.set(id, processInfo);
     if (processRef) {
       this.runtimeProcesses.set(id, processRef);
@@ -339,8 +419,38 @@ export class ProcessRegistry {
       processes: Object.fromEntries(this.entries.entries())
     };
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
-    writeFileSync(this.registryPath, JSON.stringify(payload, null, 2));
+    try {
+      writeJsonFileAtomic(this.registryPath, payload);
+      this.persistDegraded = false;
+    } catch (error: unknown) {
+      // An unwritable data directory (EACCES/EROFS/ENOSPC) must degrade, not
+      // crash. this.entries stays the source of truth in memory, so the worker
+      // still starts and the 30s health-check timer keeps pruning. Before this
+      // guard the throw propagated out of persist() into worker/session start
+      // and, every 30s, out of the health-check timer callback.
+      this.reportPersistFailure(error);
+    }
+  }
+
+  private reportPersistFailure(error: unknown): void {
+    // Log and report only on the transition INTO a degraded episode. A
+    // persistent permission failure is hit by every register/unregister/reap
+    // and by the 30s health-check timer, so logging (and rebuilding an Error
+    // for the stack) on each one would storm the warn log while only the first
+    // occurrence is worth surfacing. Reset again on the next successful persist.
+    if (this.persistDegraded) return;
+    this.persistDegraded = true;
+
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to persist supervisor registry; keeping it in memory', {
+      path: this.registryPath,
+    }, err);
+    try {
+      degradedReporter?.({ errorCategory: (err as NodeJS.ErrnoException).code ?? 'unknown' });
+    } catch {
+      // Reporting is best-effort: never let it turn a degraded-but-running
+      // supervisor back into a crash.
+    }
   }
 }
 
@@ -463,7 +573,23 @@ export async function ensureSdkProcessExit(
 
 const TOTAL_PROCESS_HARD_CAP = 10;
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
-const slotWaiters: Array<() => void> = [];
+
+// #2756: a session parked here for longer than this gets one WARN log line
+// via the recheck timer below. Deliberately duplicated from
+// SessionMessageBuffer's IDLE_TIMEOUT_MS (180_000ms) rather than imported —
+// no file under src/supervisor/ imports from src/services/, and importing it
+// here would create that layering violation. If IDLE_TIMEOUT_MS ever
+// changes, update this twin constant too.
+const PARKED_WARN_THRESHOLD_MS = 3 * 60 * 1000;
+
+interface SlotWaiterRecord {
+  sessionId?: number | string;
+  parkedSince: number;
+  warnedParked: boolean;
+  notify: () => void;
+}
+
+const slotWaiters: SlotWaiterRecord[] = [];
 
 /**
  * Slots granted by waitForSlot() that are not yet visible as registry
@@ -498,7 +624,31 @@ function getActiveSdkCount(): number {
 
 function notifySlotAvailable(): void {
   const waiter = slotWaiters.shift();
-  if (waiter) waiter();
+  if (waiter) waiter.notify();
+}
+
+/** Number of sessions currently parked waiting for a concurrency slot — exposed on GET /api/processing-status (#2756). */
+export function getParkedSlotWaiterCount(): number {
+  return slotWaiters.length;
+}
+
+/**
+ * Slots granted by waitForSlot() but not yet visible as a registry 'sdk'
+ * record (or already released). Exported so tests that share this
+ * module-level singleton across files in the same `bun test` process (see
+ * tests/supervisor/process-registry-singleton-guard.ts) can assert this
+ * back to zero between tests too — a leaked reservation is invisible to
+ * getParkedSlotWaiterCount() and to a registry.getAll() scan, but still
+ * inflates getActiveSdkCount() for every later test in the same process.
+ */
+export function getReservedSlotCount(): number {
+  return reservedSlots;
+}
+
+/** Whether `sessionId` currently has a generator parked in waitForSlot (never acquired a slot / never spawned) (#2756). */
+export function isSessionParkedForSlot(sessionId: number | string): boolean {
+  const normalized = String(sessionId);
+  return slotWaiters.some(w => w.sessionId !== undefined && String(w.sessionId) === normalized);
 }
 
 /**
@@ -508,32 +658,56 @@ function notifySlotAvailable(): void {
  * reservation once the spawned process is registered (the registry record
  * takes over the accounting) or when the spawn fails or never happens:
  * a leaked reservation would occupy the slot until the worker restarts.
+ *
+ * `maxConcurrent` may be a plain number (frozen for this call) or a thunk
+ * that is re-read on every recheck — pass a thunk so a mid-wait settings
+ * change (raising CLAUDE_MEM_MAX_CONCURRENT_AGENTS) can release an
+ * already-parked waiter without a worker restart (#2756). `sessionId`, when
+ * provided, lets callers (SessionRoutes) detect via isSessionParkedForSlot()
+ * whether this specific session is currently parked here, to distinguish a
+ * provider-switch onto a parked generator from one that is already
+ * mid-response.
  */
-export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): Promise<SlotReservation> {
+export async function waitForSlot(
+  maxConcurrent: number | (() => number),
+  signal?: AbortSignal,
+  sessionId?: number | string
+): Promise<SlotReservation> {
+  const getMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
   if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
   }
 
-  if (activeCount < maxConcurrent) return takeSlotReservation();
+  if (activeCount < getMax()) return takeSlotReservation();
 
   if (signal?.aborted) {
     throw new Error('waitForSlot aborted before queuing');
   }
 
-  logger.info('PROCESS', `Pool limit reached (${activeCount}/${maxConcurrent}), waiting for slot...`);
+  logger.info('PROCESS', `Pool limit reached (${activeCount}/${getMax()}), waiting for slot...`);
 
   return new Promise<SlotReservation>((resolve, reject) => {
     let recheckTimer: ReturnType<typeof setInterval> | null = null;
     let abortHandler: (() => void) | null = null;
+    const record: SlotWaiterRecord = {
+      sessionId,
+      parkedSince: Date.now(),
+      warnedParked: false,
+      notify: () => {},
+    };
     const cleanup = () => {
       if (recheckTimer) clearInterval(recheckTimer);
       if (abortHandler && signal) signal.removeEventListener('abort', abortHandler);
-      const idx = slotWaiters.indexOf(onSlot);
+      const idx = slotWaiters.indexOf(record);
       if (idx >= 0) slotWaiters.splice(idx, 1);
     };
     const onSlot = () => {
+      // Re-read getMax() here (not a frozen value) so a settings raise
+      // reaches an already-parked waiter the next time it's poked — either
+      // by this recheck timer or by another slot freeing up via unregister().
       const count = getActiveSdkCount();
       if (count >= TOTAL_PROCESS_HARD_CAP) {
         cleanup();
@@ -541,13 +715,14 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
         return;
       }
 
-      if (count < maxConcurrent) {
+      if (count < getMax()) {
         cleanup();
         resolve(takeSlotReservation());
       } else {
-        slotWaiters.push(onSlot);
+        slotWaiters.push(record);
       }
     };
+    record.notify = onSlot;
 
     if (signal) {
       abortHandler = () => {
@@ -557,14 +732,22 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
       signal.addEventListener('abort', abortHandler, { once: true });
     }
 
-    slotWaiters.push(onSlot);
+    slotWaiters.push(record);
     recheckTimer = setInterval(() => {
       const removed = getProcessRegistry().pruneDeadEntries();
       if (removed > 0) {
         logger.info('PROCESS', 'Pruned stale process registry entries while waiting for agent slot', { removed });
-        return;
+      } else {
+        notifySlotAvailable();
       }
-      notifySlotAvailable();
+
+      if (!record.warnedParked && Date.now() - record.parkedSince >= PARKED_WARN_THRESHOLD_MS) {
+        record.warnedParked = true;
+        logger.warn('PROCESS', `Session parked waiting for an agent slot for over ${Math.round(PARKED_WARN_THRESHOLD_MS / 1000)}s`, {
+          sessionId: record.sessionId,
+          parkedForMs: Date.now() - record.parkedSince,
+        });
+      }
     }, SLOT_RECHECK_INTERVAL_MS);
     recheckTimer.unref?.();
   });
@@ -586,6 +769,8 @@ export interface SpawnSdkOptions {
   command: string;
   args: string[];
   extraArgs?: string[];
+  // Part of the Claude SDK callback contract. Accepted at this trust boundary
+  // so callers remain compatible, but deliberately ignored for isolation.
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
@@ -595,11 +780,17 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   const filteredArgs: string[] = [];
   for (const arg of args) {
     if (arg === '') {
-      // The SDK encodes optional flag/value pairs as `--flag ''` when the
-      // value is absent. Strip the whole pair, but only when the preceding
-      // token is a long option so positional args are left untouched.
-      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
-        filteredArgs.pop();
+      // The SDK encodes an explicitly empty value as the pair `--flag ''`:
+      // `tools: []` becomes `--tools ''`, which tells the CLI "no built-in
+      // tools". cmd.exe drops empty arguments (#3317), but stripping the pair
+      // changed its meaning: without `--tools` the CLI loads its full default
+      // tool set. Fold the pair into the single token `--flag=` instead, which
+      // carries the same empty value and survives cmd.exe. An empty positional
+      // argument is still dropped.
+      const previousIndex = filteredArgs.length - 1;
+      const previousArg = filteredArgs[previousIndex];
+      if (previousArg !== undefined && previousArg.startsWith('--') && !previousArg.includes('=')) {
+        filteredArgs[previousIndex] = `${previousArg}=`;
       }
       continue;
     }
@@ -615,6 +806,10 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   return filteredArgs;
 }
 
+export function normalizeSpawnSdkCwd(sessionDbId: number): string {
+  return path.join(OBSERVER_SESSIONS_DIR, String(sessionDbId));
+}
+
 export function spawnSdkProcess(
   sessionDbId: number,
   options: SpawnSdkOptions
@@ -624,11 +819,22 @@ export function spawnSdkProcess(
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
   const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
+  const cwd = normalizeSpawnSdkCwd(sessionDbId);
+  try {
+    ensureDir(cwd);
+  } catch (error: unknown) {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    logger.error('SDK_SPAWN', `[session-${sessionDbId}] failed to create observer session directory`, {
+      sessionDbId,
+      cwd,
+    }, cause);
+    return null;
+  }
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
     ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
-        cwd: options.cwd,
+        cwd,
         env,
         detached: !isWin,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -636,7 +842,7 @@ export function spawnSdkProcess(
         windowsHide: true,
       })
     : spawnHidden(options.command, filteredArgs, {
-        cwd: options.cwd,
+        cwd,
         env,
         detached: !isWin,
         stdio: ['pipe', 'pipe', 'pipe'],

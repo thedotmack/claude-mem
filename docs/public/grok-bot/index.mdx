@@ -28,14 +28,18 @@ This install path ships in **claude-mem 13.24** ([PR #3842](https://github.com/t
 
 ## How it works
 
-Grok Bot has no session-start, file-read, or tool-use hooks. Claude-mem wires up four pieces instead:
+Grok Bot has no session-start, file-read, or tool-use hooks. Claude-mem wires up these pieces instead:
 
 1. **Transcript watcher** tails `agent-transcripts/*/*.jsonl` and stamps `platformSource=grok-bot`.
 2. **Local worker** stores sessions and serves search (default port `37700 + uid % 100` on `127.0.0.1`).
 3. **Observer (CMEM Pro by default)** — observation extraction runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. Opt in to a **host observer** with `--provider host` (this Grok login over a local OpenAI-compatible loopback, no API key).
 4. **MCP** exposes search to the bot (`search` → `timeline` → `get_observations`).
+5. **Live timeline INDEX** — as observations land, the worker rewrites `agents/<agent_id>/memory/log/zz-claude-mem-inject.md`. The host already mid-attaches that file as Memory facts. The file keeps growing (newest IDs slide on; oldest slide off). Thin per-seat diaries are filled from the newest house observations so a seat with only a handful of its own rows still gets a useful INDEX.
+6. **Awareness push (pilot)** — after an observation is stored, needle types are appended as one dated fact line into that bot's Grok memory log (`YYYY-MM.md`). That is not the INDEX.
 
 Do not install Claude CLI for this host. Do not pass an xAI API key. There is no `--provider grok` flag.
+
+Grok Bot does **not** use Claude Code hook stdin, so the `#2188` empty-stdin / `CAPTURE_BROKEN` path does not apply. Capture is the transcript watcher. Each watch now carries `agentId` into ingest so observations stay labeled with the bot they came from.
 
 ## Install
 
@@ -107,6 +111,47 @@ When using `--provider host`, the worker parser only accepts three roots.
 
 **Finished searchable unit:** one `<observation>` covering the whole pile — real title, 4–10 facts with paths, a short narrative. Never title with a tool name. Do not mix `skip_summary` and `<observation>`. Timeouts must return `skip_summary` XML, not an HTTP 504.
 
+## Live timeline INDEX (Memory mid-attach)
+
+Grok Bot has no SessionStart hook. The worker writes the same compact ID INDEX Claude Code gets at session start into a file the host already re-reads:
+
+```
+agents/<uuid>/memory/log/zz-claude-mem-inject.md
+```
+
+What writes it: the worker, after it stores observations (debounced) and once at worker start. The file is overwritten in place when the newest rows change. It is not a one-shot dump.
+
+How it grows: newest observation IDs at the top, oldest slide off at `CLAUDE_MEM_GROK_BOT_INJECT_WINDOW` (default 80). Each fact line keeps the observation ID so `get_observations([IDs])` still works.
+
+Thin seat diaries: `/api/context/inject?projects=<cmem_work_seat>` stays project-scoped (Claude Code / Cursor hooks are unchanged). The Grok Bot writer additionally fills remaining slots from the newest observations on this worker (house feed) so a seat with five of its own rows still gets a useful INDEX.
+
+Enable / disable (settings.json or env; env wins):
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED` | `true` | Worker live-writes the INDEX. `false` turns it off. No-op when no Grok Bot seats exist. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS` | `*` | All live seats with `agents/<uuid>/profile.json`, or a UUID list. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_FALLBACK` | `house` | `house` fills thin diaries from newest worker observations. `off` = seat project only. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_TIER` | `episode` | Host Memory rank prefix. Keep `episode` or plain-tier lines can lose the 4000-char recall budget. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_WINDOW` | `80` | Slide-off size (clamped to 100). |
+| `CLAUDE_MEM_GROK_BOT_INJECT_PLATFORM_SOURCE` | empty | Unset = do not drop Cursor / other-host rows. Set only for a grok-only feed. |
+
+Do not write `profile.md`. The host owns `YYYY-MM.md`. CCS `TIMELINE.md` buckets are not the source of truth.
+
+Prove it on a Grok Bot box:
+
+```bash
+# After the worker is healthy and a new observation has landed:
+seat=YOUR-SEAT-UUID
+root="${GROK_BOT_AGENT_DATA:-$HOME/.grok-bot}"
+# If the seat lives under /home/box or Application Support, use that root.
+wc -l "$root/agents/$seat/memory/log/zz-claude-mem-inject.md"
+grep -n '\[claude-mem\]' "$root/agents/$seat/memory/log/zz-claude-mem-inject.md" | head
+# Do more work, wait ~2s, confirm a newer ID appeared at the top.
+```
+
+The optional `scripts/grok-bot-session-inject.mjs` daemon is not required. The worker is the live writer.
+
 ## Using memory
 
 At the start of a real task, call MCP `session_start_context` for the project with `platformSource` `grok-bot`.
@@ -125,6 +170,8 @@ Writes from this host stamp `platformSource=grok-bot`. When reading, do not drop
 2. Memory viewer: open the worker URL printed at install.
 3. Do a small unit of work in Grok Bot, then search. New observations should show `platformSource=grok-bot`.
 4. Default observer: first real observation stores via model `cmem-observer`. Host observer: if the queue sits idle, the reply is probably prose instead of `skip_summary`.
+5. Live INDEX: after an observation is stored (any project on this worker), `agents/<this-seat-uuid>/memory/log/zz-claude-mem-inject.md` should gain a new newest row (`- (YYYY-MM-DD) [episode] [claude-mem] <id> …`) without anyone hand-writing the file. A thin seat project still fills from the newest house rows. Turn off with `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED=false`.
+6. Awareness push pilot (LFG + Orifice): a needle observation (`decision`, `bugfix`, `security_alert`, `sensitive`) should append `- YYYY-MM-DD [awareness] …` to `agents/<agent_id>/memory/log/YYYY-MM.md`. Nothing is written to `profile.md`. Turn off with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=false`.
 
 ## Troubleshooting
 

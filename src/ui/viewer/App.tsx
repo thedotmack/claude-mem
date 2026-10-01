@@ -1,15 +1,54 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
+import { ViewTabs, type ViewTab } from './components/ViewTabs';
+import { SessionList } from './components/SessionList';
+import { SessionDetailPage } from './components/SessionDetailPage';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
 import { WelcomeCard, getStoredWelcomeDismissed, setStoredWelcomeDismissed } from './components/WelcomeCard';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { usePagination } from './hooks/usePagination';
+import { useSessionCatalog } from './hooks/useSessionCatalog';
 import { useTheme } from './hooks/useTheme';
-import { Observation, Summary, UserPrompt } from './types';
-import { mergeAndDeduplicateByProject } from './utils/data';
+import { Observation, Summary, UserPrompt, FeedItemType } from './types';
+import { buildFeedItems, mergeAndDeduplicateByProject } from './utils/data';
+import { removeLoadedRow } from './utils/feed-deletion';
+import {
+  catalogEntryRef,
+  deleteSession,
+  parseViewRoute,
+  removeSessionRows,
+  sameSession,
+  sessionHash,
+  sessionKey,
+  sessionRefOf,
+  sessionsHash,
+  type SessionRef,
+  type SessionScopedRow,
+  type ViewRoute,
+} from './utils/sessions';
+
+/** What the feed shows: the project timeline, or one session's rows. */
+interface FeedScope {
+  project: string;
+  session: SessionRef | null;
+}
+
+function feedScopeKey(scope: FeedScope): string {
+  return `${scope.project}|${scope.session ? sessionKey(scope.session) : ''}`;
+}
+
+function scopeForRoute(route: ViewRoute, project: string): FeedScope | null {
+  if (route.view === 'sessions') return null;
+  if (route.view === 'session') return { project: '', session: route.session };
+  return { project, session: null };
+}
+
+function navigate(hash: string): void {
+  window.location.hash = hash;
+}
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
@@ -19,15 +58,43 @@ export function App() {
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
+  const [route, setRoute] = useState<ViewRoute>(() => parseViewRoute(window.location.hash));
+  // The Sessions list keeps the last timeline/session scope, so switching back
+  // does not reload pages that are still correct.
+  const [feedScope, setFeedScope] = useState<FeedScope>(
+    () => scopeForRoute(route, currentFilter) ?? { project: currentFilter, session: null }
+  );
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth } = useSSE();
+  const catalog = useSessionCatalog();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem, removeLiveSession } = useSSE({
+    onItemDeleted: removeDeletedItem,
+    onSessionDeleted: removeDeletedSession,
+    onLiveItem: catalog.touch,
+  });
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { preference, setThemePreference } = useTheme();
-  const pagination = usePagination(currentFilter);
+  const pagination = usePagination(feedScope.project, feedScope.session);
 
-  const matchesSelection = useCallback((item: { project: string }) => {
-    return !currentFilter || item.project === currentFilter;
-  }, [currentFilter]);
+  useEffect(() => {
+    const onHashChange = () => setRoute(parseViewRoute(window.location.hash));
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  useEffect(() => {
+    const next = scopeForRoute(route, currentFilter);
+    if (next) setFeedScope(prev => (feedScopeKey(prev) === feedScopeKey(next) ? prev : next));
+  }, [route, currentFilter]);
+
+  const refreshCatalog = catalog.refresh;
+  useEffect(() => {
+    if (route.view === 'sessions') void refreshCatalog(currentFilter);
+  }, [route.view, currentFilter, refreshCatalog]);
+
+  const matchesScope = useCallback((item: SessionScopedRow & { project: string }) => {
+    if (feedScope.session) return sameSession(sessionRefOf(item), feedScope.session);
+    return !feedScope.project || item.project === feedScope.project;
+  }, [feedScope]);
 
   useEffect(() => {
     if (currentFilter && !projects.includes(currentFilter)) {
@@ -36,22 +103,33 @@ export function App() {
   }, [projects, currentFilter]);
 
   const allObservations = useMemo(() => {
-    const live = observations.filter(matchesSelection);
-    const paginated = paginatedObservations.filter(matchesSelection);
+    const live = observations.filter(matchesScope);
+    const paginated = paginatedObservations.filter(matchesScope);
     return mergeAndDeduplicateByProject(live, paginated);
-  }, [observations, paginatedObservations, matchesSelection]);
+  }, [observations, paginatedObservations, matchesScope]);
 
   const allSummaries = useMemo(() => {
-    const live = summaries.filter(matchesSelection);
-    const paginated = paginatedSummaries.filter(matchesSelection);
+    const live = summaries.filter(matchesScope);
+    const paginated = paginatedSummaries.filter(matchesScope);
     return mergeAndDeduplicateByProject(live, paginated);
-  }, [summaries, paginatedSummaries, matchesSelection]);
+  }, [summaries, paginatedSummaries, matchesScope]);
 
   const allPrompts = useMemo(() => {
-    const live = prompts.filter(matchesSelection);
-    const paginated = paginatedPrompts.filter(matchesSelection);
+    const live = prompts.filter(matchesScope);
+    const paginated = paginatedPrompts.filter(matchesScope);
     return mergeAndDeduplicateByProject(live, paginated);
-  }, [prompts, paginatedPrompts, matchesSelection]);
+  }, [prompts, paginatedPrompts, matchesScope]);
+
+  const feedItems = useMemo(
+    () => buildFeedItems(allObservations, allSummaries, allPrompts),
+    [allObservations, allSummaries, allPrompts]
+  );
+
+  const visibleSessions = useMemo(() => {
+    return catalog.sessions
+      .filter(session => !currentFilter || session.project === currentFilter)
+      .sort((a, b) => b.started_at_epoch - a.started_at_epoch);
+  }, [catalog.sessions, currentFilter]);
 
   const toggleContextPreview = useCallback(() => {
     setContextPreviewOpen(prev => !prev);
@@ -83,13 +161,123 @@ export function App() {
     }
   }, [pagination.observations, pagination.summaries, pagination.prompts]);
 
+  // One removal path for a deleted row, whether this tab deleted it or another
+  // tab did (item_deleted SSE, which also reaches this tab): drop it from the
+  // live and loaded lists once, and move a loaded page's offset back by one so
+  // the next page does not skip a row.
+  const handledDeletionsRef = useRef(new Set<string>());
+  const loadedRowsRef = useRef({ observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts });
+  loadedRowsRef.current = { observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts };
+
+  function removeDeletedItem(itemType: FeedItemType, id: number): void {
+    const key = `${itemType}:${id}`;
+    if (handledDeletionsRef.current.has(key)) return;
+    handledDeletionsRef.current.add(key);
+
+    removeLiveItem(itemType, id);
+    if (itemType === 'observation') {
+      if (removeLoadedRow(loadedRowsRef.current.observation, id).wasLoaded) pagination.observations.noteRemoved();
+      setPaginatedObservations(prev => removeLoadedRow(prev, id).rows);
+    } else if (itemType === 'summary') {
+      if (removeLoadedRow(loadedRowsRef.current.summary, id).wasLoaded) pagination.summaries.noteRemoved();
+      setPaginatedSummaries(prev => removeLoadedRow(prev, id).rows);
+    } else {
+      if (removeLoadedRow(loadedRowsRef.current.prompt, id).wasLoaded) pagination.prompts.noteRemoved();
+      setPaginatedPrompts(prev => removeLoadedRow(prev, id).rows);
+    }
+  }
+
+  // Same single path for a whole deleted session (this tab or session_deleted
+  // SSE): drop it from the catalog and every list, rebase each loaded page's
+  // offset by the rows it lost, and leave its detail view if it is open.
+  function removeDeletedSession(session: SessionRef): void {
+    const key = `session:${sessionKey(session)}`;
+    if (handledDeletionsRef.current.has(key)) return;
+    handledDeletionsRef.current.add(key);
+
+    catalog.remove(session);
+    removeLiveSession(session);
+    const loaded = loadedRowsRef.current;
+    const lostObservations = removeSessionRows(loaded.observation, session).removedCount;
+    const lostSummaries = removeSessionRows(loaded.summary, session).removedCount;
+    const lostPrompts = removeSessionRows(loaded.prompt, session).removedCount;
+    if (lostObservations > 0) pagination.observations.noteRemoved(lostObservations);
+    if (lostSummaries > 0) pagination.summaries.noteRemoved(lostSummaries);
+    if (lostPrompts > 0) pagination.prompts.noteRemoved(lostPrompts);
+    setPaginatedObservations(prev => removeSessionRows(prev, session).rows);
+    setPaginatedSummaries(prev => removeSessionRows(prev, session).rows);
+    setPaginatedPrompts(prev => removeSessionRows(prev, session).rows);
+
+    if (route.view === 'session' && sameSession(route.session, session)) {
+      navigate(sessionsHash());
+    }
+  }
+
+  /** Rejects with a user-facing reason; the card shows it. */
+  async function handleDeleteSession(session: SessionRef): Promise<void> {
+    await deleteSession(session);
+    removeDeletedSession(session);
+  }
+
   useEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFilter]);
+  }, [feedScopeKey(feedScope)]);
+
+  const isLoading = pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading;
+  const hasMore = pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore;
+  const activeTab: ViewTab = route.view === 'timeline' ? 'timeline' : 'sessions';
+  const tabs = (
+    <ViewTabs
+      active={activeTab}
+      onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
+    />
+  );
+
+  let content: React.ReactNode;
+  if (route.view === 'sessions') {
+    content = (
+      <SessionList
+        header={tabs}
+        sessions={visibleSessions}
+        isLoading={catalog.isLoading}
+        hasMore={catalog.hasMore}
+        loadError={catalog.loadError}
+        onOpen={session => navigate(sessionHash(session))}
+        onDelete={handleDeleteSession}
+        onLoadMore={catalog.loadMore}
+      />
+    );
+  } else if (route.view === 'session') {
+    const catalogEntry = catalog.sessions.find(entry => sameSession(catalogEntryRef(entry), route.session));
+    content = (
+      <SessionDetailPage
+        tabs={tabs}
+        session={route.session}
+        title={catalogEntry?.custom_title ?? catalogEntry?.project ?? null}
+        items={feedItems}
+        isLoading={isLoading}
+        hasMore={hasMore}
+        onLoadMore={handleLoadMore}
+        onDeleted={removeDeletedItem}
+        onBack={() => navigate(sessionsHash())}
+      />
+    );
+  } else {
+    content = (
+      <Feed
+        header={tabs}
+        items={feedItems}
+        onLoadMore={handleLoadMore}
+        onDeleted={removeDeletedItem}
+        isLoading={isLoading}
+        hasMore={hasMore}
+      />
+    );
+  }
 
   return (
     <>
@@ -108,14 +296,7 @@ export function App() {
         }}
       />
 
-      <Feed
-        observations={allObservations}
-        summaries={allSummaries}
-        prompts={allPrompts}
-        onLoadMore={handleLoadMore}
-        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
-        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
-      />
+      {content}
 
       {!welcomeDismissed && (
         <WelcomeCard onDismiss={() => setWelcomeDismissed(true)} />

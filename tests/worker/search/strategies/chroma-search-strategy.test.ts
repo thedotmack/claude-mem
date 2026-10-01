@@ -71,7 +71,8 @@ describe('ChromaSearchStrategy', () => {
     mockSessionStore = {
       getObservationsByIds: mock(() => [mockObservation]),
       getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [mockPrompt])
+      getUserPromptsByIds: mock(() => [mockPrompt]),
+      getProjectReadKeys: mock((projects: string[]) => projects)
     };
 
     strategy = new ChromaSearchStrategy(mockChromaSync, mockSessionStore);
@@ -102,6 +103,26 @@ describe('ChromaSearchStrategy', () => {
 
       expect(result.usedChroma).toBe(true);
       expect(result.strategy).toBe('chroma');
+    });
+
+    it('should preserve requested date ordering in SQLite hydration', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        orderBy: 'date_asc',
+        limit: 10
+      };
+
+      await strategy.search(options);
+
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+      expect(mockSessionStore.getSessionSummariesByIds).toHaveBeenCalledWith([2], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+      expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalledWith([3], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
     });
 
     it('should hydrate observations from SQLite', async () => {
@@ -216,6 +237,25 @@ describe('ChromaSearchStrategy', () => {
         100,
         { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
       );
+    });
+
+    it('should scope the project to every key it reads, in Chroma and in the hydration (#3531, gate P2-5)', async () => {
+      mockSessionStore.getProjectReadKeys = mock(() => ['my-project', 'My-Project', 'old-folder']);
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        project: 'my-project'
+      };
+
+      await strategy.search(options);
+
+      const readKeys = ['my-project', 'My-Project', 'old-folder'];
+      expect(mockSessionStore.getProjectReadKeys).toHaveBeenCalledWith(['my-project']);
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { $or: [{ project: { $in: readKeys } }, { merged_into_project: { $in: readKeys } }] }
+      );
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({ projects: readKeys }));
     });
 
     it('should combine doc_type and project with $and when both specified', async () => {

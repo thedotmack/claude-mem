@@ -25,6 +25,7 @@ import {
   OBSERVER_HEALTH_FILENAME,
   OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
 } from '../../../../src/shared/observer-health.js';
+import { resolveConfigDirProfileKey } from '../../../../src/shared/EnvManager.js';
 
 // The route reads the ledger from paths.dataDir() (CLAUDE_MEM_DATA_DIR, set to a
 // per-run temp dir by tests/preload.ts), so write it there for the health case.
@@ -162,6 +163,45 @@ describe('SearchRoutes Welcome Hint', () => {
     // Hint first, warning second — same order as normal context, so the
     // warning is the last thing on screen rather than the first thing scrolled off.
     expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('What to do:'));
+    expect(generateContextStub).not.toHaveBeenCalled();
+  });
+
+  it('appends the quota-cooldown pause notice to the welcome hint when the breaker is armed', async () => {
+    mkdirSync(realPaths.paths.dataDir(), { recursive: true });
+    writeFileSync(observerHealthPath, JSON.stringify({
+      consecutiveFailures: 0,
+      failingSinceAt: null,
+      lastErrorAt: null,
+      lastErrorMessage: null,
+      lastErrorProvider: null,
+      lastSuccessAt: Date.now(),
+      quotaCooldown: {
+        active: true,
+        provider: 'claude',
+        profile: resolveConfigDirProfileKey(), // pauses the account selected now
+        armedAt: Date.now() - 60_000,
+        until: Date.now() + 20 * 60_000,
+        window: 'five_hour',
+        message: 'Weekly limit reached',
+      },
+    }));
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain('paused while a provider quota cooldown is active');
+    expect(body).toContain('This is not a failure');
+    expect(body).toContain('# claude-mem status');
+    expect(body).not.toContain("can't save memories");
+    expect(body.indexOf('# claude-mem status')).toBeLessThan(body.indexOf('quota cooldown'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 
