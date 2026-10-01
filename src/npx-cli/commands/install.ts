@@ -187,6 +187,9 @@ import { prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
+import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
+import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
+import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
@@ -792,7 +795,9 @@ async function copyPluginToCache(version: string): Promise<void> {
   // stayed a runnable old-version worker source (#4105). The safe prune keeps
   // the just-written version plus N-1 and protects any live worker's version —
   // the repair path reaches here without stopping the worker, so a running
-  // older worker must never lose its source directory.
+  // older worker must never lose its source directory. It also keeps the
+  // newest version whose dependencies are complete: the one just copied has
+  // none until "Setting up runtime" installs them, and that step can fail.
   // Pruning is housekeeping: it runs inside runTasks, before the sign-in/trial
   // step, so any failure (a corrupt installed_plugins.json, say) only warns.
   try {
@@ -2051,44 +2056,141 @@ export interface InstallOptions {
 }
 
 /**
- * How the installer reacts when the worker port is not free. A claude-mem
- * worker that will not stop fails closed: its in-memory configuration would
- * outlive the overwrite. A port held by some other process only warns: there
- * is no claude-mem worker to protect, and this runs before the sign-in/trial
- * step, which the install must still reach. Exported for tests.
+ * How the installer reacts when the worker port is not free. This runs before
+ * the sign-in/trial step, which the install must still reach, so it aborts only
+ * when a live claude-mem worker demonstrably holds the port: the verified owner
+ * of the PID file, the worker the stop targeted, is still alive. Its in-memory
+ * configuration would outlive the overwrite. A port some other process holds,
+ * or one taken again after that worker exited, only warns. Exported for tests.
  */
 export function workerShutdownFailure(
-  blocker: ShutdownBlocker | undefined,
+  blocker: ShutdownBlocker,
   port: number | string,
 ): { severity: ErrorSeverity; cause: string; remediation: string } {
-  if (blocker?.kind === 'port-held-by-other-process') {
-    return {
-      severity: ErrorSeverity.WARN_CONTINUE,
-      cause: `Port ${port} is held by a process that is not a claude-mem worker (no live claude-mem worker owns it), so the worker cannot listen there.`,
-      remediation: `Stop the process using port ${port}, or set CLAUDE_MEM_WORKER_PORT to a free port in ${USER_SETTINGS_PATH}, then run \`npx claude-mem start\`.`,
-    };
+  switch (blocker.kind) {
+    case 'port-held-by-other-process':
+      return {
+        severity: ErrorSeverity.WARN_CONTINUE,
+        cause: `Port ${port} is held by a process that is not a claude-mem worker (no live claude-mem worker owns it), so the worker cannot listen there.`,
+        remediation: `Stop the process using port ${port}, or set CLAUDE_MEM_WORKER_PORT to a free port in ${USER_SETTINGS_PATH}, then run \`npx claude-mem start\`.`,
+      };
+    case 'port-rebound': {
+      const owner = blocker.ownerPid === null ? 'another process' : `another claude-mem worker (PID ${blocker.ownerPid})`;
+      return {
+        severity: ErrorSeverity.WARN_CONTINUE,
+        cause: `The claude-mem worker stopped, but ${owner} took port ${port} again before the install finished: a hook, the MCP server or a process manager started it, or a leftover process still holds the socket.`,
+        remediation: 'When the install finishes, run `npx claude-mem restart` (or restart the worker with whatever manages it) so it runs the new version.',
+      };
+    }
+    case 'worker-still-running': {
+      if (blocker.pid === null) {
+        // Identified only by its /api/health answers: never name that PID in
+        // a kill command (it may belong to a container, or be reused).
+        return {
+          severity: ErrorSeverity.ABORT,
+          cause: 'The running claude-mem worker accepted the shutdown request but was still serving after 10 seconds.',
+          remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+        };
+      }
+      // The PID was verified as ours (PID file plus start token) at the
+      // deadline, so naming it cannot point the user at an unrelated process.
+      const killCommand = process.platform === 'win32' ? `taskkill /PID ${blocker.pid} /F` : `kill ${blocker.pid}`;
+      return {
+        severity: ErrorSeverity.ABORT,
+        cause: `The claude-mem worker (PID ${blocker.pid}) did not stop within 10 seconds.`,
+        remediation: `Run \`npx claude-mem stop\`, or end PID ${blocker.pid} (\`${killCommand}\`), then run \`npx claude-mem install\` again.`,
+      };
+    }
   }
-  const pid = blocker?.kind === 'worker-still-running' ? blocker.pid : null;
-  if (pid === null) {
-    return {
-      severity: ErrorSeverity.ABORT,
-      cause: 'The existing worker did not stop within 10 seconds.',
-      remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
-    };
-  }
-  const killCommand = process.platform === 'win32' ? `taskkill /PID ${pid} /F` : `kill ${pid}`;
-  return {
-    severity: ErrorSeverity.ABORT,
-    cause: `The claude-mem worker (PID ${pid}) did not stop within 10 seconds.`,
-    remediation: `Run \`npx claude-mem stop\`, or end PID ${pid} (\`${killCommand}\`), then run \`npx claude-mem install\` again.`,
-  };
 }
 
-async function requireWorkerStopped(
+/** Evidence sources for the installer's worker stop, injectable so tests never touch a real worker. */
+export interface WorkerStopDeps {
+  stopWorker?: typeof shutdownWorkerAndWait;
+  /** The live, verified PID-file owner, or null. */
+  readOwnedWorker?: () => PidInfo | null;
+  /** How long to wait for the spawn lock; defaults to the lock's staleness window. */
+  spawnLockWaitMs?: number;
+}
+
+/**
+ * How long the installer waits for the spawn lock: a launcher normally holds
+ * it for seconds, and any lock not refreshed within the staleness window can
+ * be broken, so waiting that long gets it from a stuck or crashed holder too.
+ */
+const INSTALL_SPAWN_LOCK_WAIT_MS = SPAWN_LOCK_STALE_MS + 5_000;
+
+/**
+ * Stop the running worker, then overwrite the plugin files, holding the spawn
+ * lock from before the stop until the overwrite is done. Without it a hook or
+ * the MCP server could lazily start a worker from half-copied files the moment
+ * the old one exited; the stop then found the port taken again. Exported for
+ * tests.
+ */
+export async function overwriteWithWorkerStopped(
+  port: number | string,
+  summary: InstallSummary,
+  overwrite: () => Promise<void>,
+  deps: WorkerStopDeps = {},
+): Promise<void> {
+  let releaseSpawnLock = await holdSpawnLock(0);
+  if (!releaseSpawnLock) {
+    log.info('Waiting for another claude-mem launcher to finish starting the worker…');
+    releaseSpawnLock = await holdSpawnLock(deps.spawnLockWaitMs ?? INSTALL_SPAWN_LOCK_WAIT_MS);
+  }
+  if (!releaseSpawnLock) {
+    // Only a holder that keeps refreshing the lock (another install running
+    // now) gets here. Aborting is not an option before sign-in, so overwrite
+    // and say how to recover if a worker started from the half-copied files.
+    installerError(ErrorSeverity.WARN_CONTINUE, {
+      component: 'worker-shutdown',
+      phase: 'pre-overwrite',
+      cause: new Error('Another claude-mem process held the worker spawn lock, so the plugin files were overwritten without it.'),
+      remediation: 'When the install finishes, run `npx claude-mem restart` so the worker runs the new files.',
+    }, summary);
+  }
+  try {
+    await requireWorkerStopped(port, 'pre-overwrite', summary, deps);
+    await overwrite();
+  } finally {
+    releaseSpawnLock?.();
+  }
+}
+
+/** The verified PID-file owner on `port`, or null; never throws. */
+function readOwnedWorkerOnPort(port: number | string, readOwnedWorker: () => PidInfo | null): PidInfo | null {
+  try {
+    const owner = readOwnedWorker();
+    return owner && (!owner.port || Number(owner.port) === Number(port)) ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Exported for tests. */
+export async function requireWorkerStopped(
   port: number | string,
   phase: 'pre-overwrite' | 'provider-cutover',
   summary: InstallSummary,
+  deps: WorkerStopDeps = {},
 ): Promise<void> {
+  const stopWorker = deps.stopWorker ?? shutdownWorkerAndWait;
+  // CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally
+  // (#2828). claude-mem never stops, kills or recycles it, and its manager
+  // would restart it the moment it exited, so leave it running and say once
+  // how to load the new version.
+  if (isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART') })) {
+    if (phase === 'pre-overwrite') {
+      installerError(ErrorSeverity.WARN_CONTINUE, {
+        component: 'worker-shutdown',
+        phase,
+        cause: new Error('CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally, so the installer did not stop it.'),
+        remediation: 'When the install finishes, restart the worker with whatever manages it so it runs the new version.',
+      }, summary);
+    }
+    return;
+  }
+
   const spinner = isInteractive ? p.spinner() : null;
   const action = phase === 'pre-overwrite'
     ? 'Stopping running worker (so we can overwrite cleanly)…'
@@ -2096,7 +2198,7 @@ async function requireWorkerStopped(
   spinner?.start(action);
 
   try {
-    const result = await shutdownWorkerAndWait(port, 10000);
+    const result = await stopWorker(port, 10000);
     if (!result.stopped) {
       const failure = workerShutdownFailure(result.blocker, port);
       if (failure.severity === ErrorSeverity.ABORT) {
@@ -2111,10 +2213,12 @@ async function requireWorkerStopped(
       }, summary);
     }
 
-    const stopMessage = result.workerWasRunning
-      ? 'Stopped running worker before configuration cutover.'
-      : result.stopped
-        ? 'No worker running — proceeding.'
+    const stopMessage = result.stopped
+      ? result.workerWasRunning
+        ? 'Stopped running worker before configuration cutover.'
+        : 'No worker running — proceeding.'
+      : result.blocker.kind === 'port-rebound'
+        ? `Stopped the running worker, but port ${port} was taken again — proceeding.`
         : `Port ${port} is held by another process, not a claude-mem worker — proceeding.`;
     if (spinner) spinner.stop(stopMessage);
     else if (result.workerWasRunning) log.info(stopMessage);
@@ -2122,12 +2226,22 @@ async function requireWorkerStopped(
     if (error instanceof InstallAbortError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     if (spinner) spinner.error(`Worker shutdown failed: ${message}`);
-    else console.warn('[install] Worker shutdown failed:', message);
-    installerError(ErrorSeverity.ABORT, {
+    // The stop itself failed, so decide from the ownership record alone: a
+    // live, verified worker on this port must not have its files overwritten;
+    // with none, nothing shows a claude-mem worker holds the port, and the
+    // install must still reach sign-in.
+    const owner = readOwnedWorkerOnPort(port, deps.readOwnedWorker ?? readOwnedWorkerPidInfo);
+    if (owner) {
+      const failure = workerShutdownFailure({ kind: 'worker-still-running', pid: owner.pid }, port);
+      // ABORT: throws.
+      installerError(failure.severity, { component: 'worker-shutdown', phase, cause: error, remediation: failure.remediation }, summary);
+      return;
+    }
+    installerError(ErrorSeverity.WARN_CONTINUE, {
       component: 'worker-shutdown',
       phase,
       cause: error,
-      remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+      remediation: 'When the install finishes, run `npx claude-mem restart` so the worker runs the new version.',
     }, summary);
   }
 }
@@ -2343,11 +2457,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const needsMarketplace = selectedIDEs.length > 0;
 
   {
-    if (needsMarketplace) {
-      const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
-      await requireWorkerStopped(installPort, 'pre-overwrite', summary);
-    }
-
     const tasks: TaskDescriptor[] = [
       {
         title: 'Caching plugin version',
@@ -2448,7 +2557,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       });
     }
 
-    await runTasks(tasks);
+    if (needsMarketplace) {
+      await overwriteWithWorkerStopped(getSetting('CLAUDE_MEM_WORKER_PORT'), summary, () => runTasks(tasks));
+    } else {
+      await runTasks(tasks);
+    }
   }
 
   const failedIDEs = await setupIDEs(selectedIDEs, summary);

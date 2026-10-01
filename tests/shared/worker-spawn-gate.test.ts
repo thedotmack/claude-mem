@@ -194,3 +194,60 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
     expect(acquireSpawnLock()).toBe(true);
   });
 });
+
+describe('worker-spawn-gate — holdSpawnLock (a long hold, e.g. the installer overwrite)', () => {
+  let tempDir: string;
+  let lockPath: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-spawn-hold-'));
+    process.env.CLAUDE_MEM_DATA_DIR = tempDir;
+    lockPath = join(tempDir, 'spawn.lock');
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_DATA_DIR === undefined) {
+      delete process.env.CLAUDE_MEM_DATA_DIR;
+    } else {
+      process.env.CLAUDE_MEM_DATA_DIR = ORIGINAL_DATA_DIR;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('keeps the held lock fresh, so the staleness breaker never hands it to a launcher', async () => {
+    const { acquireSpawnLock, holdSpawnLock } = await importGateFresh();
+
+    const release = await holdSpawnLock(0, 20);
+    expect(release).not.toBeNull();
+    // Age the lock past the 90s breaker, as a long dependency install would.
+    const longAgo = new Date(Date.now() - 5 * 60_000);
+    utimesSync(lockPath, longAgo, longAgo);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    // A hook's acquire must still see a live holder and skip its spawn.
+    expect(acquireSpawnLock()).toBe(false);
+    expect(JSON.parse(readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
+
+    release!();
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('waits for a launcher that is mid-spawn to release the lock', async () => {
+    const { holdSpawnLock } = await importGateFresh();
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    setTimeout(() => rmSync(lockPath, { force: true }), 100);
+
+    const release = await holdSpawnLock(5_000);
+    expect(release).not.toBeNull();
+    release!();
+  });
+
+  it('gives up after waitMs and leaves the other launcher its lock', async () => {
+    const { holdSpawnLock } = await importGateFresh();
+    const holderPayload = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+    writeFileSync(lockPath, holderPayload);
+
+    expect(await holdSpawnLock(300)).toBeNull();
+    expect(readFileSync(lockPath, 'utf-8')).toBe(holderPayload);
+  });
+});

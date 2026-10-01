@@ -5,6 +5,7 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
+import { redactForLog } from '../../utils/redaction.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { shouldSkipAgentObservation } from '../../shared/should-skip-agent-observation.js';
@@ -50,7 +51,8 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const toolStr = logger.formatTool(toolName, toolInput);
+    // A Bash command line or URL can carry a secret; logs get the redacted form.
+    const toolStr = redactForLog(logger.formatTool(toolName, toolInput));
 
     logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {});
 

@@ -255,7 +255,7 @@ claude-mem files every observation under a project name, and SessionStart inject
 - **Inside a git repository** the name is the repository root's folder name, so every subfolder shares it. A git worktree is stored as `<repo>/<worktree>` (a worktree whose folder has the repository's own name, like Codex's `~/.codex/worktrees/<id>/<repo>`, is stored as `<repo>`) and a git submodule as `<superproject>/<path>`; both also read their parent repository's memory. Memory a submodule stored under its own folder name before it was grouped this way stays readable from it. When a worktree or submodule checkout is deleted, the worker folds its memory into the parent repository at its next start (merged or not), so nothing is stranded.
 - **With `CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote`** a repository that has an `origin` remote is named by its `org/repo` slug instead (e.g. `thedotmack/claude-mem`), so renaming or re-cloning the folder keeps its memory, two repositories with the same folder name stay apart, and every worktree of the repository shares the slug (a submodule, being a repository of its own, is named by its own `origin`). Memory stored under the folder-based names stays readable, and a deleted worktree's memory from before the switch is still folded into the repository. Repositories without a usable `origin` (or with a local one) keep the folder-based name.
 - **Outside git** the name is the current folder's name. To give a non-git project one name across all of its subfolders, put an empty `.claude-mem-project` file (or a `.claude-mem.json`) in its root folder: every folder below it then uses the root folder's name. Memory stored under a subfolder's own name before you added the file stays readable from that subfolder. Marker files in your home directory, the system temp directory or Claude's config directory are ignored, so they can never fold unrelated folders together.
-- **Named environments** (`CLAUDE_MEM_PROJECT_ENVIRONMENTS`) group several folders, git or not, into one project and win over every rule above. For example, `[{"name": "acme", "patterns": ["~/work/acme/**"]}]` files everything under `~/work/acme` as `acme`, and SessionStart labels it as an environment. Memory those folders stored under their own names stays readable from them; to fold it into the environment for good, run `npx claude-mem project merge <old-name> acme`. The merge rewrites nothing (rows are marked as merged, the way a worktree folds into its repository), reaches your other devices through cloud sync, and updates semantic search.
+- **Named environments** (`CLAUDE_MEM_PROJECT_ENVIRONMENTS`) group several folders, git or not, into one project and win over every rule above. For example, `[{"name": "acme", "patterns": ["~/work/acme/**"]}]` files everything under `~/work/acme` as `acme`, and SessionStart labels it as an environment. Memory those folders stored under their own names stays readable from them; to fold it into the environment for good, run `npx claude-mem project merge <old-name> acme` (it runs inside claude-mem's worker whenever the worker is running). The merge rewrites nothing (rows are marked as merged, the way a worktree folds into its repository) and brings along memory already folded into the old name, such as a merged worktree's. It reaches your other devices through cloud sync and updates semantic search; if that last step fails, the command says so, and running it again retries it.
 
 ## Files and Directories
 
@@ -285,7 +285,7 @@ ${CLAUDE_PLUGIN_ROOT}/
 ├── hooks/
 │   └── hooks.json          # Hook configuration
 ├── scripts/                # Built executables
-│   ├── version-check.js    # Sub-100ms Setup-hook version marker check
+│   ├── version-check.js    # Setup hook: completes missing dependencies, records the install marker
 │   ├── context-hook.js     # Context injection hook
 │   ├── new-hook.js         # Session creation hook
 │   ├── save-hook.js        # Observation capture hook
@@ -302,7 +302,7 @@ ${CLAUDE_PLUGIN_ROOT}/
 
 Hooks are registered in `plugin/hooks/hooks.json`. The current shape uses a single dispatcher (`worker-service.cjs hook claude-code <event>`) launched through `bun-runner.js`, plus a fast Setup-phase `version-check.js`. The events wired up are:
 
-- `Setup` → `version-check.js` (sub-100ms `.install-version` check)
+- `Setup` → `version-check.js` (installs missing plugin dependencies, records `.install-version`)
 - `SessionStart` → start the worker, then `hook claude-code context` (context injection)
 - `UserPromptSubmit` → `hook claude-code session-init`
 - `PreToolUse` (matcher `Read`) → `hook claude-code file-context`
@@ -613,14 +613,14 @@ Changes take effect on the next tool execution (no worker restart needed).
 
 Hook timeouts are written into `plugin/hooks/hooks.json` by the installer. The current defaults match the shape of the workload at each lifecycle stage:
 
-- Setup (`version-check.js`): 300s ceiling but normally < 100ms — only reads `.install-version`
+- Setup (`version-check.js`): 300s ceiling; fast when the plugin's dependencies are complete, up to 120s when it has to run `bun install`
 - SessionStart (worker-start + context): 60s
 - UserPromptSubmit: 60s
 - PreToolUse (file-context, Read matcher): 60s
 - PostToolUse (observation): 120s
 - Stop (summary): 120s
 
-The Setup hook never installs anything — runtime install (Bun, uv, `bun install`) happens in `npx claude-mem install` / `npx claude-mem repair` outside the session lifecycle.
+`npx claude-mem install` / `npx claude-mem repair` install the runtime (Bun, uv, `bun install`) outside the session lifecycle. The Setup hook only runs `bun install` when the loaded plugin's dependencies are missing — typically a plugin-marketplace install or `claude plugin update` — and writes the `.install-version` marker once they are complete.
 
 ### Worker Memory Limit
 
