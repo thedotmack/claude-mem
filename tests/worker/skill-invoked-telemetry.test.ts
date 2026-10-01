@@ -290,42 +290,33 @@ describe('skill_invoked from session-init slash prompts', () => {
     expect(skillInvokedCalls()).toHaveLength(0);
   });
 
-  it('does not persist or number the media prompt placeholder', async () => {
-    const initialResponse = await postInit({
-      contentSessionId: 'promptless-session',
+  // #928: Claude Code sends the placeholder for an image-only turn. That turn
+  // keeps its prompt row and number for every host; the session's durable
+  // first prompt is repaired once real text arrives (#3803).
+  it('numbers an image-only turn and repairs the session prompt on the first real one', async () => {
+    const mediaResponse = await postInit({
+      contentSessionId: 'image-first-session',
       project: 'claude-mem',
       prompt: '[media prompt]',
       platformSource: 'cursor',
     });
-    const initialResult = await initialResponse.json() as {
-      sessionDbId: number;
-      promptNumber: number;
-      skipped: boolean;
-      reason: string;
-    };
+    const mediaResult = await mediaResponse.json() as { sessionDbId: number; promptNumber: number };
 
-    expect(initialResponse.ok).toBe(true);
-    expect(initialResult).toMatchObject({
-      promptNumber: 0,
-      skipped: true,
-      reason: 'no_prompt',
-    });
-    expect(store!.getSessionById(initialResult.sessionDbId)?.user_prompt).toBe('');
-    expect(store!.getPromptNumberFromUserPrompts('promptless-session', initialResult.sessionDbId)).toBe(0);
+    expect(mediaResponse.ok).toBe(true);
+    expect(mediaResult.promptNumber).toBe(1);
+    expect(store!.getUserPrompt('image-first-session', 1, mediaResult.sessionDbId)).toBe('[media prompt]');
 
     const realPromptResponse = await postInit({
-      contentSessionId: 'promptless-session',
+      contentSessionId: 'image-first-session',
       project: 'claude-mem',
       prompt: 'the first real prompt',
       platformSource: 'cursor',
     });
-    const realPromptResult = await realPromptResponse.json() as {
-      sessionDbId: number;
-      promptNumber: number;
-    };
+    const realPromptResult = await realPromptResponse.json() as { sessionDbId: number; promptNumber: number };
 
     expect(realPromptResponse.ok).toBe(true);
-    expect(realPromptResult.promptNumber).toBe(1);
-    expect(store!.getUserPrompt('promptless-session', 1, realPromptResult.sessionDbId)).toBe('the first real prompt');
+    expect(realPromptResult.promptNumber).toBe(2);
+    expect(store!.getUserPrompt('image-first-session', 2, realPromptResult.sessionDbId)).toBe('the first real prompt');
+    expect(store!.getSessionById(realPromptResult.sessionDbId)?.user_prompt).toBe('the first real prompt');
   });
 });

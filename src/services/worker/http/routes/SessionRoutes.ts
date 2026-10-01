@@ -720,12 +720,7 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    // Some clients use the media placeholder when session initialization has
-    // no user prompt yet. Keep that sentinel out of both durable session
-    // metadata and prompt history so the first real prompt remains #1.
-    let prompt = rawPrompt && rawPrompt.trim() && rawPrompt.trim() !== MEDIA_PROMPT_PLACEHOLDER
-      ? rawPrompt
-      : '';
+    let prompt = rawPrompt || MEDIA_PROMPT_PLACEHOLDER;
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {
@@ -770,17 +765,6 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
-
-    if (!prompt) {
-      res.json({
-        sessionDbId,
-        promptNumber: currentCount,
-        skipped: true,
-        reason: 'no_prompt'
-      });
-      return;
-    }
-
     const promptNumber = currentCount + 1;
 
     const memorySessionId = dbSession?.memory_session_id || null;
