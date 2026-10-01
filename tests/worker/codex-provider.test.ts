@@ -23,6 +23,28 @@ import {
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' };
+
+function stubCompletedAppServerTurns(provider: any, contents: Array<string | null>): string[] {
+  const methods: string[] = [];
+  let turn = 0;
+  provider.appServer.ensureStarted = async () => {};
+  provider.appServer.workspace = 'private-test-workspace';
+  provider.appServer.readInheritedMcpServerNames = async () => [];
+  provider.appServer.attestMcpServersDisabled = async () => {};
+  provider.appServer.request = async (method: string) => {
+    methods.push(method);
+    if (method === 'thread/start') return { thread: { id: `thread-${turn + 1}` }, instructionSources: [] };
+    if (method === 'turn/start') {
+      const content = contents[turn++];
+      return { turn: { id: `turn-${turn}`, status: 'completed', items: content === null ? [] : [
+        { type: 'agentMessage', phase: 'final_answer', text: JSON.stringify({ content }) },
+      ] } };
+    }
+    if (method === 'thread/unsubscribe') return {};
+    throw new Error(`Unexpected request: ${method}`);
+  };
+  return methods;
+}
 let savedProvider: string | undefined;
 beforeEach(() => {
   savedProvider = process.env.CLAUDE_MEM_PROVIDER;
@@ -78,6 +100,59 @@ function failingLikeCodex(error: ClassifiedProviderError) {
 }
 
 describe('Codex provider integration', () => {
+  it('accepts an empty structured initialization reply without retrying', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, ['']);
+    const result = await provider.query([{ role: 'user', content: 'initialize' }], config);
+    expect(result.content).toBe('');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('retries a completed app-server turn without an agent message once', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, [null, 'Recovered memory']);
+    const result = await provider.query([{ role: 'user', content: 'input' }], config);
+    expect(result.content).toBe('Recovered memory');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
+  });
+
+  it('passes blank structured output on as the reply, without a second turn', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, [' ', '<observation/>']);
+    const result = await provider.query([{ role: 'user', content: 'input' }], config);
+    expect(result.content).toBe('');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('passes an empty reply on after a second turn without an agent message', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, [null, null, '<observation/>']);
+    const result = await provider.query([{ role: 'user', content: 'input' }], config);
+    expect(result.content).toBe('');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
+  });
+
+  it('cancels a compression request while the session signal remains active', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const sessionController = new AbortController();
+    const compressionController = new AbortController();
+    const c = { ...config, signal: sessionController.signal };
+    let started!: () => void;
+    let nativeSignal: AbortSignal | undefined;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
+      nativeSignal = options.signal;
+      options.signal.addEventListener('abort', () => reject(new Error('compression aborted')), { once: true });
+      started();
+    });
+    const result = provider.query([{ role: 'user', content: 'compress payload' }], c, compressionController.signal);
+    await ready;
+    compressionController.abort();
+    await expect(result).rejects.toThrow('Aborted');
+    expect(nativeSignal?.aborted).toBe(true);
+    expect(sessionController.signal.aborted).toBe(false);
+  });
+
   it('accepts Codex settings without changing the default provider or pinning a model', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
     expect(defaults.CLAUDE_MEM_PROVIDER).toBe('claude');
