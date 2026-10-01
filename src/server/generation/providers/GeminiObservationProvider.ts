@@ -8,7 +8,7 @@ import {
 } from './shared/error-classification.js';
 import { buildServerGenerationPrompt } from './shared/prompt-builder.js';
 import { readGeminiAnswerText, type GeminiPart } from '../../../shared/gemini-answer-text.js';
-import { parseGeminiErrorDetails } from '../../../shared/gemini-error-details.js';
+import { geminiRegionRefusalMessage, isGeminiRegionRefusal, parseGeminiErrorDetails } from '../../../shared/gemini-error-details.js';
 import type {
   ServerGenerationContext,
   ServerGenerationProvider,
@@ -112,6 +112,15 @@ function isQuotaBody(bodyText: string): boolean {
 export function classifyGeminiServerError(input: ClassifyGeminiServerErrorInput): ServerClassifiedProviderError {
   const status = input.status;
   const bodyText = input.bodyText ?? '';
+
+  // Outside the regions Google serves, the worker's refusal too
+  // (gemini-error-details.ts): not a malformed request, and no retry helps.
+  if (status !== undefined && isGeminiRegionRefusal(status, bodyText)) {
+    return new ServerClassifiedProviderError(geminiRegionRefusalMessage(status), {
+      kind: 'auth_invalid',
+      cause: new Error(`Gemini HTTP error (status ${status})`),
+    });
+  }
 
   if (status === 400 && !isQuotaBody(bodyText)) {
     const category = categorizeGeminiBadRequest(bodyText);
