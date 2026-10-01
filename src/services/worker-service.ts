@@ -918,7 +918,7 @@ export class WorkerService implements WorkerRef {
     if (scoped > 0) {
       logger.info('TRANSCRIPT', 'Scoped Codex transcript watch to subagent sessions; native hooks own top-level sessions', {
         scoped,
-        optInSetting: 'CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION=true',
+        enabledBy: 'CLAUDE_MEM_CODEX_SUBAGENT_INGESTION=true',
         skipSetting: 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS=true',
       });
     }
