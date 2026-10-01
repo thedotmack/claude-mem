@@ -14,7 +14,10 @@ Optional settings:
 | `CLAUDE_MEM_CODEX_MODEL` | empty | Use Codex's default model, or name a model available to your subscription. |
 | `CLAUDE_MEM_CODEX_REASONING_EFFORT` | empty | Use Codex's default effort, or an effort supported by the selected model. |
 | `CLAUDE_MEM_CODEX_PATH` | `codex` | CLI executable, resolved through PATH unless an explicit path is supplied. Set it in `settings.json` or the environment; the settings API does not accept executable paths. |
-| `CLAUDE_MEM_CODEX_TIMEOUT_MS` | `120000` | Per-request timeout in milliseconds. |
+
+Each request uses the observer's shared deadline, `CLAUDE_MEM_LLM_TIMEOUT_MS`
+(180 seconds by default); oversized-field condensation uses
+`CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS`, as it does for every provider.
 
 The provider uses `codex app-server` over stdio. It reuses claude-mem's existing
 observation, summary, payload compression and persistence workflow. Requests
@@ -28,10 +31,17 @@ to that user. API-key login is rejected. Use a Codex CLI version that supports
 app-server ephemeral threads and instruction-source attestation; unsupported
 protocol responses fail rather than silently relaxing isolation.
 
-Quota failures use the existing provider cooldown. Failed Codex batches remain
-pending for recovery after authentication, quota or transport problems are
-resolved. Changing providers, installation and service management retain their
-existing behavior.
+Failures are handled like every other observer provider's, and buffered work is
+kept for the next attempt:
+
+- A spent usage limit or a refused login pauses Codex requests behind the
+  provider breaker; one request re-probes every 30 minutes, and a served
+  request clears it. A request already waiting for the app-server is withheld
+  while the breaker is armed instead of earning the same refusal.
+- A missing CLI or ChatGPT login (or an auth file other users can read) is
+  reported as `codex_cli` setup in `/api/health`; Codex starts wait 5 minutes
+  between recovery probes.
+- Timeouts and connection faults resume on the observer's transport backoff.
 
 When testing from source, build the worker with `node scripts/build-hooks.js`
 before starting it. Release versions and generated distribution files are not
@@ -43,8 +53,6 @@ changed by this contribution.
 
 ### Observation backlog batching
 
-Codex immediately combines up to `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE=8` observations (integer 1-32). The rendered observation turn is capped by `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS=32000` (integer 4000-128000); invalid settings use defaults. This budget excludes prior conversation history. There is no wait to fill a batch. FIFO summaries, prompt numbers, working directories, and agent attribution changes stop a batch. Each input retains its timestamp, tool fields, tool-use ID and pending ID. Oversized next items run separately through existing field compression; an oversized first item uses explicit field elision after compression to respect the cap. Metadata too large to fit pauses with the item retained.
+Codex immediately combines up to `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE=8` observations (integer 1-32). The rendered observation turn is capped by `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS=32000` (integer 4000-128000); invalid settings use defaults. This budget excludes prior conversation history. There is no wait to fill a batch. FIFO summaries, prompt numbers, working directories, and agent attribution changes stop a batch. Each input retains its timestamp, tool fields, tool-use ID and pending ID. Oversized next items run separately through existing field compression; an oversized first item uses explicit field elision after compression to respect the cap (if even its metadata does not fit, both fields are elided).
 
-Only included items are claimed, and the existing response/storage path acknowledges them after an accepted response (including an explicit skip). Errors, quota pauses, aborts and conversation recycling retain buffered work. Other providers keep single-observation requests. The queue remains in RAM: process crashes still require transcript replay.
-
-Validation: the focused Codex pool/client/provider/batch, session-buffer, shared init/summary, and recycle suites pass (78 tests; 16 POSIX-only transport tests skipped on Windows). `bun run typecheck` checks both worker and viewer. Live Codex throughput and POSIX subprocess behavior still need validation on their target runtime.
+Only included items are claimed, and the existing response/storage path acknowledges them after an accepted response (including an explicit `<skip_summary />`). A reply that is neither XML nor the skip sentinel asks for the whole batch once more, like any provider's. Quota and transport pauses, aborts and conversation recycling retain buffered work. Other providers keep single-observation requests. The queue remains in RAM: process crashes still require transcript replay.

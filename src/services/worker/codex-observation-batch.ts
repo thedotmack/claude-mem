@@ -1,7 +1,6 @@
 import { buildObservationPrompt, renderObservationPrompt, type ObservationPromptParts } from '../../sdk/prompts.js';
 import { logger } from '../../utils/logger.js';
 import type { PendingMessageWithId } from '../worker-types.js';
-import { ClassifiedProviderError } from './provider-errors.js';
 
 export function observationMetadata(message: PendingMessageWithId): string {
   return `Observation metadata: ${JSON.stringify({ pendingId: message._persistentId,
@@ -28,7 +27,13 @@ export function boundObservationPrompt(parts: ObservationPromptParts, maxChars: 
   const shrink = (budget: number) => metadata + renderObservationPrompt({ ...parts,
     parameters: shrinkField(parts.parameters, budget), outcome: shrinkField(parts.outcome, budget) });
   if (shrink(0).length > maxChars) {
-    throw new ClassifiedProviderError('Codex observation metadata exceeds batch character limit', { kind: 'transient', cause: null });
+    // The wrapper alone (tool name, cwd, metadata) is over budget. That is the
+    // same on every retry, so send it with both fields elided rather than
+    // fail a turn that can never fit; the budget only bounds batching.
+    logger.warn('SDK', 'Codex observation metadata exceeds the batch character limit; sending it with both fields elided', {
+      boundedChars: shrink(0).length, maxChars,
+    });
+    return shrink(0);
   }
   let low = 0, high = maxChars;
   while (low < high) {

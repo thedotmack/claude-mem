@@ -4,6 +4,11 @@ import type { Response } from 'express';
 export interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * Set on a generation's init or continuation prompt (openObserverGeneration).
+   * HTTP providers send its instructions as the system message (#3868).
+   */
+  framing?: boolean;
 }
 
 export interface ActiveSession {
@@ -23,22 +28,34 @@ export interface ActiveSession {
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
   currentProvider: 'claude' | 'gemini' | 'openrouter' | 'codex' | null;
-  /** Claim owned by the current generator; Codex shares it with request admission. */
-  quotaProbeClaimId?: number | null;
-  /** Codex setup recovery probe owned by this generator. */
-  codexSetupProbeClaimId?: number | null;
+  /**
+   * Claude account (config-dir profile key) the latest Claude generator was
+   * spawned under. Its env, and so its billing account, is fixed at spawn, so
+   * a quota refusal it hits is armed under this account even if the setting
+   * changed while it ran.
+   */
+  observerProfile?: string;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
-   * observer output is confirmed as a no-op and resets this so benign skip
-   * acknowledgements never accumulate respawn debt.
-   *
-   * It is deliberately NOT the breaker for repeated hard rejections — counting
-   * skips and rejections on one counter is what produced the respawn storm this
-   * reset was added to stop. Hard rejections are counted by
-   * `consecutiveContextOverflows` instead.
+   * Rejected replies (neither observation/summary XML nor the
+   * `<skip_summary />` sentinel) to the batch named by `invalidOutputBatchKey`.
+   * The first earns the batch one retry in a fresh generation; the second drops
+   * it with an error (OutputRecovery). A skip is a valid answer and is never
+   * counted, so skip acknowledgements cannot accumulate the respawn debt this
+   * counter once caused. Hard rejections (overflow, quota, auth, transport) are
+   * not counted here either; they pause on their own terms.
    */
   consecutiveInvalidOutputs: number;
+  /** The claimed message ids `consecutiveInvalidOutputs` counts against. */
+  invalidOutputBatchKey?: string | null;
+  /**
+   * Replies in a row that drifted off the observation schema and were salvaged
+   * (#3461). Reaching ResponseProcessor's limit ends the generation so the next
+   * one starts clean; a clean reply resets it.
+   */
+  consecutiveSchemaDrifts?: number;
+  /** Set by a drifted reply: the next observation prompt restates the schema once. */
+  observerSchemaReminder?: boolean;
   /**
    * Consecutive "prompt too long" rejections on this session's conversation.
    *
@@ -61,10 +78,30 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Consecutive rate-limit pauses this session resumed from on its own, after
+   * the provider's Retry-After. Bounds those resumes before the provider
+   * breaker takes over; reset when a queued-work turn is answered.
+   */
+  consecutiveRateLimitResumes?: number;
+  /**
+   * Consecutive unattended resumes — transport backoff, rate-limit
+   * Retry-After, or the move to the Anthropic plan after a cmem fallback —
+   * scheduled while memory is on the cmem gateway. Bounds them at
+   * MAX_UNATTENDED_GATEWAY_RESUMES (plan tokens); reset when a queued-work turn
+   * is answered.
+   */
+  consecutiveUnattendedGatewayResumes?: number;
+  /**
    * The delayed resume a response stall scheduled. Any generator start cancels
    * it, so a stale timer never restarts a session a newer generation paused.
    */
   stallResumeTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The resume a pause scheduled for itself: after a rate limit's Retry-After,
+   * or at once after a cmem fallback or a recycle. The periodic sweep leaves
+   * the session to it while it is pending, and any generator start cancels it.
+   */
+  scheduledResumeTimer?: ReturnType<typeof setTimeout>;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
@@ -73,6 +110,8 @@ export interface ActiveSession {
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
+  /** Why buffered work was last parked after a generator exit. */
+  pausedReason?: string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;
@@ -89,6 +128,28 @@ export interface ActiveSession {
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
   endpointClass?: 'openrouter' | 'custom';
   /**
+   * The observer model's context window in tokens, resolved once per
+   * generation at generator start (#3625). The generation budget and the
+   * per-field cap scale with it.
+   */
+  observerContextWindowTokens?: number;
+  /**
+   * The context the model actually read on the last answered turn of this
+   * generation, in tokens, as the provider reported it: the Claude result
+   * frame's input + cache writes + cache reads, or an HTTP provider's prompt
+   * tokens. Unlike the character proxy it counts the system prompt and tool
+   * schemas a provider adds. Reset at every generation start; an init turn's
+   * reading is never recorded (#2957).
+   */
+  lastContextTokens?: number;
+  /**
+   * The finish reason an HTTP provider reported for the reply about to be
+   * processed ('length' / 'MAX_TOKENS' = cut off at the output-token cap).
+   * processAgentResponse consumes and clears it, so it never outlives the
+   * reply that set it (#3868).
+   */
+  lastFinishReason?: string | null;
+  /**
    * session_compressed properties stashed by ResponseProcessor on the claude
    * path: the streamed assistant message's output_tokens is an early-streaming
    * placeholder, so the event waits for the SDK result message's finalized
@@ -97,6 +158,14 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /**
+   * Cumulative cache_read_input_tokens across the session. Kept apart from
+   * cumulativeInputTokens because discovery_tokens is the delta of that
+   * counter; on a long observer session this is where most of the context the
+   * model re-reads shows up, so it is the number that makes resend growth
+   * visible.
+   */
+  cumulativeCacheReadTokens?: number;
   /** SessionEnd requested one Telegram wrap-up after the latest summary lands. */
   telegramWrapupRequestedAt?: number | null;
   /** One-shot grace timer for a SessionEnd wrap-up request. */
@@ -155,7 +224,8 @@ export interface ViewerSettings {
 
 export interface Observation {
   id: number;
-  memory_session_id: string;  
+  memory_session_id: string;
+  content_session_id: string;
   project: string;
   merged_into_project: string | null;
   platform_source: string;

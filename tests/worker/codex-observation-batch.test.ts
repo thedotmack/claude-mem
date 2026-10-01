@@ -113,22 +113,33 @@ describe('Codex observation batching', () => {
     expect(h.first()._persistentId).toBe(ids[1]);
   });
 
-  it('preserves queued work when metadata alone cannot fit', async () => {
+  it('sends an item whose metadata alone cannot fit with both fields elided, instead of failing every retry', async () => {
     const h = harness(8, 4000);
     const ids = [h.enqueue({ toolUseId: 'metadata'.repeat(1000) }), h.enqueue()];
-    h.provider.query = async () => { throw new Error('must not send'); };
-    await expect(h.process(h.first())).rejects.toThrow('metadata exceeds');
-    expect(h.session.claimedMessageIds).toEqual([ids[0]]);
-    expect(h.buffer.getPendingCount(1)).toBe(2);
-    await h.manager.resetProcessingToPending(1);
-    expect(h.first()._persistentId).toBe(ids[0]);
+    let sent = '';
+    h.provider.query = async (history: any[]) => { sent = history.at(-1).content; return { content: '<skip_summary reason="noise" />' }; };
+    await h.process(h.first());
+    expect(sent).toContain('metadatametadata');
+    expect(sent).toMatch(/<parameters><elided chars="\d+" \/><\/parameters>/);
+    expect(sent).toMatch(/<outcome><elided chars="\d+" \/><\/outcome>/);
+    expect(h.buffer.getPendingCount(1)).toBe(1);
+    expect(h.buffer.getMessagesByIds(1, ids).map(m => m._persistentId)).toEqual([ids[1]]);
   });
   it('acknowledges exactly the included batch after successful accepted skip', async () => {
     const h = harness(2); const ids = [h.enqueue(), h.enqueue(), h.enqueue()];
-    h.provider.query = async () => ({ content: 'Skipping' });
+    h.provider.query = async () => ({ content: '<skip_summary reason="noise" />' });
     await h.process(h.first());
     expect(h.buffer.getPendingCount(1)).toBe(1);
     expect(h.buffer.getMessagesByIds(1, ids).map(m => m._persistentId)).toEqual([ids[2]]);
+  });
+  it('asks for the whole batch again when the reply is neither XML nor the skip sentinel', async () => {
+    const h = harness(2); const ids = [h.enqueue(), h.enqueue(), h.enqueue()];
+    h.provider.query = async () => ({ content: 'Skipping' });
+    await h.process(h.first());
+    // main's skip contract (#3624): one more try in a fresh generation, batch intact
+    expect(h.session.abortReason).toBe('output_retry:prose');
+    expect(h.buffer.getPendingCount(1)).toBe(3);
+    expect(h.buffer.claimNextMatching(1, () => true)?._persistentId).toBe(ids[0]);
   });
   for (const kind of ['transient', 'quota_exhausted'] as const) {
     it(`retains failed batch and restores FIFO after ${kind}`, async () => {
@@ -163,10 +174,12 @@ describe('Codex observation batching', () => {
     }
   });
 
-  it('preserves the session after an unexpected storage failure', () => {
+  it('leaves an unexpected storage failure to the shared exit handling, not a transport pause', () => {
     const h = harness(); h.enqueue(); h.render(h.first());
-    expect(() => h.provider.handleSessionError(new Error('storage failed'), h.session)).toThrow('processing failed');
-    expect(h.session.abortReason).toBe('transport:transient');
+    // A deterministic failure resumed on the transport backoff would be re-sent
+    // without bound; like every provider's, it is not turned into a pause.
+    expect(() => h.provider.handleSessionError(new Error('storage failed'), h.session)).toThrow('storage failed');
+    expect(h.session.abortReason).toBeUndefined();
     expect(h.buffer.getPendingCount(1)).toBe(1);
   });
 
