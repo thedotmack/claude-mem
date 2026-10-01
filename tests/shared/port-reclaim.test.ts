@@ -602,6 +602,34 @@ describe('reclaimGhostListeningPort under a hook deadline (UserPromptSubmit, 15 
     expect(killed).toEqual([]);
   });
 
+  it('re-checks the budget before every sidecar kill, not once for the whole chain', async () => {
+    // Each taskkill may take its full 5 s timeout: four in a row would blow a
+    // hook deadline that only covered the first.
+    const { deps: testDeps } = ghostDeps({
+      owners: [DEAD_OWNER],
+      table: [
+        { pid: 3001, ppid: DEAD_OWNER, name: 'uvx.exe', token: 't-uvx' },
+        { pid: 3002, ppid: 3001, name: 'uv.exe', token: 't-uv' },
+        { pid: 3003, ppid: 3002, name: 'python.exe', token: 't-py' },
+        { pid: 3004, ppid: 3003, name: 'chroma-mcp.exe', token: 't-cm' },
+      ],
+    });
+    let clock = NOW_MS;
+    const killed: number[] = [];
+    const result = await reclaimGhostListeningPort(37777, {
+      ...testDeps,
+      now: () => clock,
+      // Enough to start (9.5 s), and for one kill; after it 5 s are left, under the 5.5 s a kill needs.
+      deadlineAt: NOW_MS + 10_000,
+      killTree: async (pid) => {
+        killed.push(pid);
+        clock += 5_000; // a slow taskkill
+      },
+    });
+    expect(result).toEqual({ reclaimed: false, reason: 'out-of-budget', killedPids: [3004] });
+    expect(killed).toEqual([3004]);
+  });
+
   it('keeps the unbounded reclaim for callers without a deadline', async () => {
     const { deps: testDeps, killed } = wedgedDeps({ isWin32: false });
     const result = await reclaimGhostListeningPort(37777, { ...testDeps, deadlineAt: null });

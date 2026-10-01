@@ -2,7 +2,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, maxSessionInitRequestTimeoutMs, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
@@ -282,18 +282,22 @@ export function getWorkerApiRequestTimeoutMs(): number {
  * The UserPromptSubmit session-init budget (#3434, plan-17 step 3): one
  * deadline for the whole worker round-trip, kept inside the 15 s host timeout.
  * Never Windows-scaled up — the cap it has to fit under is not scaled — and
- * its Windows default is shorter, because hook start-up there eats seconds
- * the budget's clock never sees (defaultSessionInitRequestTimeoutMs).
+ * on Windows both its default and its ceiling are shorter, because hook
+ * start-up there eats seconds the budget's clock never sees
+ * (defaultSessionInitRequestTimeoutMs, maxSessionInitRequestTimeoutMs).
  */
 export function getSessionInitRequestTimeoutMs(): number {
   if (cachedSessionInitRequestTimeoutMs !== null) {
     return cachedSessionInitRequestTimeoutMs;
   }
 
-  cachedSessionInitRequestTimeoutMs = readSettingsBackedTimeout(
-    'CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS',
-    defaultSessionInitRequestTimeoutMs(),
-    SESSION_INIT_REQUEST_TIMEOUT_BOUNDS
+  cachedSessionInitRequestTimeoutMs = Math.min(
+    readSettingsBackedTimeout(
+      'CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS',
+      defaultSessionInitRequestTimeoutMs(),
+      SESSION_INIT_REQUEST_TIMEOUT_BOUNDS
+    ),
+    maxSessionInitRequestTimeoutMs(),
   );
   return cachedSessionInitRequestTimeoutMs;
 }

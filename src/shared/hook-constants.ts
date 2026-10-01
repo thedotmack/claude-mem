@@ -103,6 +103,17 @@ export function defaultSessionInitRequestTimeoutMs(platform: NodeJS.Platform = p
   return HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP - hookProcessOverheadMs(platform);
 }
 
+/**
+ * The longest session-init budget that still ends the hook under the cap. On
+ * Windows the hook's overhead leaves exactly the default, so any longer value
+ * (a settings.json seeded with the old flat 10 s default, or a user override)
+ * is cut to it. Elsewhere start-up is well under a second, so overrides up to
+ * SESSION_INIT_REQUEST_MAX still fit.
+ */
+export function maxSessionInitRequestTimeoutMs(platform: NodeJS.Platform = process.platform): number {
+  return platform === 'win32' ? defaultSessionInitRequestTimeoutMs(platform) : HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX;
+}
+
 export function getTimeout(baseTimeout: number): number {
   return process.platform === 'win32'
     ? Math.round(baseTimeout * HOOK_TIMEOUTS.WINDOWS_MULTIPLIER)

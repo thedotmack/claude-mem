@@ -635,11 +635,6 @@ export async function reclaimGhostListeningPort(
     });
     return { reclaimed: false, reason: 'no-chroma-descendants', killedPids: [] };
   }
-  if (lacksBudget(RECLAIM_KILL_BUDGET_MS)) {
-    logger.info('PROCESS', 'Ghost-listener reclaim stopped before the kill: the hook budget is spent', { port });
-    return { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
-  }
-
   logger.warn('PROCESS', 'Reclaiming ghost listener: killing dead worker\'s surviving chroma sidecar chain', {
     port,
     deadOwners: owners,
@@ -648,6 +643,12 @@ export async function reclaimGhostListeningPort(
 
   const killedPids: number[] = [];
   for (const target of killTargets.values()) {
+    // Each tree-kill can take its full taskkill timeout, so a caller's
+    // deadline is checked before every one, not once for the whole chain.
+    if (lacksBudget(RECLAIM_KILL_BUDGET_MS)) {
+      logger.info('PROCESS', 'Ghost-listener reclaim stopped before a kill: the hook budget is spent', { port, killedPids });
+      return { reclaimed: false, reason: 'out-of-budget', killedPids };
+    }
     try {
       await killTree(target.pid, {
         // Identity from the discovery read — never re-probed against a
