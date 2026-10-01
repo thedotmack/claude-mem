@@ -35,6 +35,7 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
       CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
       CLAUDE_MEM_TELEGRAM_ENABLED: 'false',
       CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'false',
+      CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false',
     }),
   },
 }));
@@ -242,7 +243,7 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
       100,
       null,
       'TestAgent',
-    )).resolves.toBeUndefined();
+    )).resolves.toMatchObject({ summaryId: 99 });
     await flushBackgroundWork();
 
     expect(warnSpy).toHaveBeenCalledWith(

@@ -3,20 +3,23 @@ import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
 import type { HookResult } from './types.js';
-import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, isToolHookDisabledByEnv } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
   emitModelContext,
-  emitBlockingError,
+  emitDiagnostic,
   exitGraceful,
   resetHookIoState,
 } from '../shared/hook-io.js';
 import {
   recordWorkerUnreachable,
+  resetWorkerUnreachableState,
   setActiveHookType,
   getActiveHookType,
+  isWorkerUnavailableError,
 } from '../shared/worker-utils.js';
 import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
+import { canonicalIntegrationId } from '../shared/integration-id.js';
 import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
@@ -39,42 +42,6 @@ export function buildNoOpResult(event: string): HookResult {
     result.hookSpecificOutput = { hookEventName: 'SessionStart', additionalContext: '' };
   }
   return result;
-}
-
-export function isWorkerUnavailableError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
-
-  const transportPatterns = [
-    'econnrefused',
-    'econnreset',
-    'epipe',
-    'etimedout',
-    'enotfound',
-    'econnaborted',
-    'enetunreach',
-    'ehostunreach',
-    'fetch failed',
-    'unable to connect',
-    'socket hang up',
-    'socket connection was closed',
-    'connection closed',
-  ];
-  if (transportPatterns.some(p => lower.includes(p))) return true;
-
-  if (lower.includes('timed out') || lower.includes('timeout')) return true;
-
-  if (/failed:\s*5\d{2}/.test(message) || /status[:\s]+5\d{2}/.test(message)) return true;
-
-  if (/failed:\s*429/.test(message) || /status[:\s]+429/.test(message)) return true;
-
-  if (/failed:\s*4\d{2}/.test(message) || /status[:\s]+4\d{2}/.test(message)) return false;
-
-  if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError) {
-    return false;
-  }
-
-  return false;
 }
 
 export function isNonBlockingHookInputError(error: unknown): boolean {
@@ -107,22 +74,31 @@ async function executeHookPipeline(
   return exitCode;
 }
 
-export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
+export async function hookCommand(rawPlatform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
+  const platform = canonicalIntegrationId(rawPlatform);
   resetHookIoState();
+  resetWorkerUnreachableState();
   // Register the hook event for the threshold-gated hook_failed telemetry
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
 
+  // #3106: env opt-out for the high-frequency tool hooks. Checked before stdin
+  // and handler work, and still emits the no-op envelope so the host gets
+  // valid JSON.
+  if (isToolHookDisabledByEnv(event)) {
+    const adapter = getPlatformAdapter(platform);
+    emitModelContext(adapter, buildNoOpResult(event));
+    exitGraceful(options);
+    return HOOK_EXIT_CODES.SUCCESS;
+  }
+
   // Hook IO Discipline (issue #2292):
   // We BUFFER stderr during handler execution so that unsolicited writes from
-  // third-party libraries don't leak into model context. The buffer is FLUSHED
-  // only when we choose to surface (logger errors at the catch-all branch,
-  // fail-loud counter from worker-utils, blocking-error path). Successful exits
-  // drop the buffer — preserving the original "quiet on success" behavior.
+  // third-party libraries don't leak into model context. Every exit path drops
+  // the buffer — preserving the original "quiet on success" behavior.
   //
-  // To bypass the buffer for a specific write, use emitDiagnostic /
-  // emitBlockingError from src/shared/hook-io.ts. Direct process.stderr.write
-  // calls are buffered.
+  // To bypass the buffer for a specific write, use emitDiagnostic from
+  // src/shared/hook-io.ts. Direct process.stderr.write calls are buffered.
   const stderrBuffer = installHookStderrBuffer();
 
   const adapter = getPlatformAdapter(platform);
@@ -147,20 +123,26 @@ export async function hookCommand(platform: string, event: string, options: Hook
       logger.warn('HOOK', `Worker unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
       // EXIT_SIGNAL per CLAUDE.md: transient worker errors exit 0 to avoid
       // Windows Terminal tab accumulation. The fail-loud counter (worker-utils
-      // recordWorkerUnreachable) handles the surface-after-N-failures path and
-      // emits the threshold-gated hook_failed telemetry internally. Awaited:
-      // when the count JUST reaches the threshold it sends the event and then
-      // exits 2; exitGraceful below would kill a pending POST mid-flight.
+      // recordWorkerUnreachable) never exits; when the count JUST reaches the
+      // threshold it sends the hook_failed telemetry and writes a diagnostic.
+      // Awaited: exitGraceful below would kill a pending POST mid-flight.
       await recordWorkerUnreachable();
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
 
-    logger.error('HOOK', `Hook error: ${error instanceof Error ? error.message : error}`, {}, error instanceof Error ? error : undefined);
-    // hook_failed telemetry MUST be awaited BEFORE emitBlockingError — it
-    // calls process.exit(2), which would kill a fire-and-forget POST
-    // mid-flight. captureCliEvent never throws and is hard-capped at 2s.
-    // Closed-enum props only: the error message itself is never sent.
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('HOOK', `Hook error: ${errorMessage}`, {}, error instanceof Error ? error : undefined);
+    // plan-17 step 2 (#3161): an unexpected claude-mem error never blocks the
+    // user. This path used to exit 2, which Claude Code reads as "block":
+    // UserPromptSubmit dropped the prompt, PreToolUse denied the tool, and Stop
+    // re-woke the agent in a loop. Every event now gets the no-op envelope and
+    // exit 0; the error reaches the log, one stderr diagnostic line, and
+    // telemetry. The telemetry is awaited because exitGraceful would kill a
+    // pending POST mid-flight; captureCliEvent never throws and is hard-capped
+    // at 2s. Closed-enum props only: the error message itself is never sent.
+    // error_mode keeps its documented 'blocking_error' value so the series
+    // stays continuous, even though the hook no longer blocks.
     {
       const hookType = getActiveHookType();
       await captureCliEvent('hook_failed', {
@@ -169,14 +151,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
         threshold_tripped: false,
       });
     }
-    // BLOCKING_FEEDBACK: flush the buffered logger.error line to stderr and
-    // exit 2 so the model receives it per Claude Code's hook contract.
-    emitBlockingError(
-      `Hook error: ${error instanceof Error ? error.message : String(error)}`,
-      options,
-    );
-    return HOOK_EXIT_CODES.BLOCKING_ERROR;
+    emitDiagnostic(`claude-mem: hook error, continuing without memory: ${errorMessage}\n`);
+    emitModelContext(adapter, buildNoOpResult(event));
+    exitGraceful(options);
+    return HOOK_EXIT_CODES.SUCCESS;
   } finally {
     stderrBuffer.restore();
   }
 }
+
+export { isWorkerUnavailableError } from '../shared/worker-utils.js';

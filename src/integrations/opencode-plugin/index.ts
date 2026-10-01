@@ -1,58 +1,48 @@
 import { z } from "zod";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
-import {
-  buildSpawnSyncInvocation,
-  lookupWindowsCommand,
-  type SpawnSyncInvocation,
-} from "../../shared/spawn.js";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import {
+  parseSearchResponse,
+  type RealOpenCodeEventType,
+} from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
+// Dependency-free, so it stays bundle-safe for the plugin (no worker-only imports).
+import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 
 /**
- * OpenCode plugin event contract.
+ * OpenCode plugin entry module.
  *
- * A plugin is an async function that receives a context object and returns an
- * object whose keys are OpenCode's real hook names. The hooks claude-mem binds
- * to are (authoritative source: plans/08-opencode-integration.md "Fix sequence"
- * step 1, cross-checked against OpenCode's documented plugin API):
- *
- *   - `tool.execute.after`            (input, output) — fires after every tool run
- *   - `chat.message`                  ({}, output)    — fires on each chat message
- *   - `event`                         ({ event })     — generic bus; event.type carries the name
- *   - `experimental.session.compacting`               — fires when a session compacts
- *
- * The generic `event` hook delivers bus events whose discriminant is
- * `event.type`. The only bus event types claude-mem reacts to are
- * `session.deleted` (forget the session mapping) and `session.idle` (best-effort
- * summarize). Session creation/observation capture is driven by the dedicated
- * `tool.execute.after` / `chat.message` hooks above, not by bus events — that is
- * the #2435 fix: the old code subscribed to non-existent bus types
- * (`session.created`, `message.updated`, `session.compacted`, `file.edited`)
- * and therefore captured nothing.
- *
- * REAL_OPENCODE_EVENT_TYPES is the allowlist of bus `event.type` values the
- * plugin is permitted to switch on. The contract test asserts the plugin only
- * references names in this list so a future typo fails CI.
+ * IMPORTANT: this module must export ONLY the default plugin factory.
+ * OpenCode's plugin loader imports the entry module and treats EVERY export as
+ * a plugin factory: each one must be a function, and each one gets INVOKED.
+ * Non-function exports fail the whole plugin load with
+ * "Plugin export is not a function"; extra function exports would be called as
+ * plugins a second time. The event-contract constants and the search-response
+ * parser therefore live in `contract.ts` (#3330).
  */
-export const REAL_OPENCODE_EVENT_TYPES = [
-  "session.idle",
-  "session.deleted",
-] as const;
-
-type RealOpenCodeEventType = (typeof REAL_OPENCODE_EVENT_TYPES)[number];
-
-/** The hook keys this plugin returns. The contract test asserts these are the real OpenCode hook names. */
-export const REGISTERED_OPENCODE_HOOKS = [
-  "tool.execute.after",
-  "chat.message",
-  "event",
-  "experimental.session.compacting",
-] as const;
 
 interface OpenCodeProject {
   name?: string;
   path?: string;
+}
+
+interface OpenCodeMessageSnapshot {
+  info?: {
+    role?: string;
+    summary?: boolean;
+    time?: { completed?: number };
+  };
+  parts?: Array<{ type: string; text?: string; ignored?: boolean }>;
+}
+
+// The slice of OpenCode's SDK client this plugin reads (session message list).
+interface OpenCodeClient {
+  session?: {
+    messages?(options: {
+      path: { id: string };
+      query?: { directory?: string };
+    }): Promise<{ data?: OpenCodeMessageSnapshot[] }>;
+  };
 }
 
 interface OpenCodePluginContext {
@@ -68,6 +58,10 @@ interface ToolExecuteAfterInput {
   tool: string;
   sessionID: string;
   callID: string;
+  // OpenCode passes the tool arguments here, on the hook's FIRST argument —
+  // the output object never carries them (#3678 diagnosis by kevinchiha;
+  // cross-checked against OpenCode 1.18's Hooks type, where the output is
+  // only { title, output, metadata }).
   args?: Record<string, unknown>;
 }
 
@@ -75,7 +69,6 @@ interface ToolExecuteAfterOutput {
   title: string;
   output: string;
   metadata: Record<string, unknown>;
-  args?: Record<string, unknown>;
 }
 
 interface ChatMessageOutput {
@@ -114,48 +107,127 @@ function resolveWorkerHost(): string {
 const WORKER_BASE_URL = `http://${resolveWorkerHost()}:${resolveWorkerPort()}`;
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
+// Identifies these POSTs as coming from OpenCode. Without it the worker
+// attributes OpenCode sessions to its default platform source ("claude"), so
+// viewer badges and source-scoped session lookups are wrong (#3678).
+const PLATFORM_SOURCE = "opencode";
+
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
-function workerPostFireAndForget(
+// Every worker request is bounded, so a hung worker can neither hold a hook
+// open nor pile up pending requests inside OpenCode's process (plan-23 step 2).
+const WORKER_REQUEST_TIMEOUT_MS = 5_000;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// A refused connection means the worker is simply not running and must stay
+// quiet. isConnectionRefusedError recognizes Bun's and undici's shapes, which a
+// message.includes('ECONNREFUSED') check misses (OpenCode hosts plugins under Bun).
+async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({
-      ...body,
-      platformSource: normalizePlatformSource("opencode"),
-    }),
-  }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
-      console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+): Promise<void> {
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        ...body,
+        platformSource: normalizePlatformSource(PLATFORM_SOURCE),
+      }),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     }
-  });
+  } catch (error: unknown) {
+    if (!isConnectionRefusedError(error)) {
+      console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
+    }
+  }
 }
 
 async function workerGetText(path: string): Promise<string | null> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      headers: JSON_HEADERS,
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
     }
     return await response.text();
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
-      console.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
+    if (!isConnectionRefusedError(error)) {
+      console.warn(`[claude-mem] Worker GET ${path} failed: ${errorMessage(error)}`);
     }
     return null;
   }
 }
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-const initializedSessionIds = new Set<string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
+
+// Memory context per OpenCode session: fetched on the session's first system
+// prompt build and reused for its later turns, as Claude Code injects once per
+// session. Compaction clears it, so the next build carries fresh context.
+const contextByOpenCodeSessionId = new Map<string, Promise<string | null>>();
+
+function memoryContextFor(openCodeSessionId: string, cwd: string): Promise<string | null> {
+  const cached = contextByOpenCodeSessionId.get(openCodeSessionId);
+  if (cached) return cached;
+
+  while (contextByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+    const oldestKey = contextByOpenCodeSessionId.keys().next().value;
+    if (oldestKey === undefined) break;
+    contextByOpenCodeSessionId.delete(oldestKey);
+  }
+  // The worker resolves the project keys from the checkout, as it does for init.
+  const request = workerGetText(
+    `/api/context/inject?cwd=${encodeURIComponent(cwd)}&platformSource=${PLATFORM_SOURCE}`,
+  );
+  contextByOpenCodeSessionId.set(openCodeSessionId, request);
+  // A failed fetch is retried on the next build instead of being cached.
+  void request.then((context) => {
+    if (!context && contextByOpenCodeSessionId.get(openCodeSessionId) === request) {
+      contextByOpenCodeSessionId.delete(openCodeSessionId);
+    }
+  });
+  return request;
+}
+
+/**
+ * The text of the session's latest completed assistant reply, for summarize's
+ * last_assistant_message. OpenCode fires chat.message for the user's message,
+ * so the reply is read from OpenCode's own message list when the session idles
+ * or compacts. Empty when the client offers no message list or it fails.
+ */
+async function latestAssistantText(client: unknown, openCodeSessionId: string, directory: string): Promise<string> {
+  const session = (client as OpenCodeClient | undefined)?.session;
+  if (typeof session?.messages !== "function") return "";
+  try {
+    const { data } = await session.messages({ path: { id: openCodeSessionId }, query: { directory } });
+    let latest: { completed: number; text: string } | null = null;
+    for (const message of data ?? []) {
+      const completed = message.info?.time?.completed;
+      if (message.info?.role !== "assistant" || message.info.summary === true || typeof completed !== "number") continue;
+      const text = (message.parts ?? [])
+        .filter((part) => part.type === "text" && part.ignored !== true && typeof part.text === "string")
+        .map((part) => part.text as string)
+        .join("\n")
+        .trim();
+      if (text && (!latest || completed >= latest.completed)) latest = { completed, text };
+    }
+    return latest?.text ?? "";
+  } catch (error: unknown) {
+    console.warn(`[claude-mem] OpenCode message list failed for ${openCodeSessionId}: ${errorMessage(error)}`);
+    return "";
+  }
+}
 
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
@@ -163,7 +235,6 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-        initializedSessionIds.delete(oldestKey);
       } else {
         break;
       }
@@ -177,21 +248,41 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
 }
 
 /**
- * The worker has no "session.created" event in OpenCode, so we lazily initialize
- * the session the first time we see any activity for it (tool run or chat
- * message). This guarantees a session row exists before observations arrive.
+ * Resolves the stable local ID for all OpenCode activity without contacting the
+ * worker. Session init means "a user prompt happened", not "ensure a session
+ * row exists": observations and summarize create their own rows. Posting init
+ * without a prompt manufactures a "[media prompt]" at prompt #1 and attributes
+ * a preceding tool observation to it (#3803).
  */
-function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
-  const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
-    initializedSessionIds.add(openCodeSessionId);
-    workerPostFireAndForget("/api/sessions/init", {
-      contentSessionId,
-      project: projectName,
-      prompt: "",
-    });
-  }
-  return contentSessionId;
+function resolveContentSessionId(openCodeSessionId: string): string {
+  return getOrCreateContentSessionId(openCodeSessionId);
+}
+
+/**
+ * Records a real user prompt with the worker. Every user prompt posts init,
+ * matching the Claude Code path; the worker de-duplicates identical prompts
+ * within its time window (#3803).
+ *
+ * The body carries the checkout, not a project key. `ctx.project?.name` is not
+ * the repository (it resolves to "opencode" for every project), and resolving
+ * the key here would mean a second copy of the identity rules (markers,
+ * environments, git-remote slugs, worktree and submodule composites) inside
+ * OpenCode's process. The worker keys the session with the same shared
+ * resolver it applies to this plugin's observations, so init and capture
+ * always agree.
+ */
+async function initializeSessionForUserPrompt(
+  openCodeSessionId: string,
+  cwd: string,
+  prompt: string,
+): Promise<void> {
+  const contentSessionId = resolveContentSessionId(openCodeSessionId);
+  await workerPost("/api/sessions/init", {
+    contentSessionId,
+    prompt,
+    cwd,
+    platform_source: PLATFORM_SOURCE,
+  });
 }
 
 function truncate(text: string): string {
@@ -200,10 +291,8 @@ function truncate(text: string): string {
     : text;
 }
 
-export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
-  const projectName = ctx.project?.name || "opencode";
-
-  console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
+const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
+  console.log(`[claude-mem] OpenCode plugin loading (directory: ${ctx.directory})`);
 
   return {
     // Capture every tool execution as an observation. This is the primary
@@ -212,38 +301,60 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: ToolExecuteAfterInput,
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/observations", {
+      const contentSessionId = resolveContentSessionId(input.sessionID);
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
-        tool_input: input.args || output.args || {},
+        // OpenCode passes the tool arguments on the hook input; the output
+        // object only carries { title, output, metadata }. Reading output.args
+        // instead shipped an empty tool_input for every observation, and the
+        // compressor dismissed them all — the "loads but captures nothing"
+        // symptom of #3678.
+        tool_input: input.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
+        platform_source: PLATFORM_SOURCE,
       });
     },
 
-    // Capture assistant chat messages as observations.
+    // Capture each real user prompt with session init, and assistant messages
+    // as observations.
     "chat.message": async (
       _input: Record<string, unknown>,
       output: ChatMessageOutput,
     ): Promise<void> => {
       const sessionID = output.message?.sessionID;
       if (!sessionID) return;
+
+      if (output.message?.role === "user") {
+        const promptText = (output.parts || [])
+          .filter((part) => part.type === "text" && typeof part.text === "string")
+          .map((part) => part.text as string)
+          .join("\n")
+          .trim();
+        if (promptText) {
+          await initializeSessionForUserPrompt(sessionID, ctx.directory, promptText);
+        } else {
+          resolveContentSessionId(sessionID);
+        }
+        return;
+      }
       if (output.message?.role !== "assistant") return;
 
-      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
+      const contentSessionId = resolveContentSessionId(sessionID);
       const messageText = (output.parts || [])
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
         .join("\n");
       if (!messageText) return;
 
-      workerPostFireAndForget("/api/sessions/observations", {
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: "assistant_message",
         tool_input: {},
         tool_response: truncate(messageText),
         cwd: ctx.directory,
+        platform_source: PLATFORM_SOURCE,
       });
     },
 
@@ -252,11 +363,23 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/summarize", {
+      const contentSessionId = resolveContentSessionId(input.sessionID);
+      contextByOpenCodeSessionId.delete(input.sessionID);
+      await workerPost("/api/sessions/summarize", {
         contentSessionId,
-        last_assistant_message: "",
+        last_assistant_message: await latestAssistantText(ctx.client, input.sessionID, ctx.directory),
+        platform_source: PLATFORM_SOURCE,
       });
+    },
+
+    // Inject memory context into the system prompt OpenCode builds for each
+    // request (the static AGENTS.md written at install time goes stale).
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string },
+      output: { system: string[] },
+    ): Promise<void> => {
+      const context = await memoryContextFor(input.sessionID ?? "", ctx.directory);
+      if (context?.trim()) output.system.push(context);
     },
 
     // Generic bus events. Only `session.idle` and `session.deleted` are real
@@ -268,17 +391,21 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
       switch (eventType) {
         case "session.idle": {
-          // Best-effort summarize once a session goes idle.
-          const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-          workerPostFireAndForget("/api/sessions/summarize", {
+          // Best-effort summarize once a session goes idle. The platform
+          // source must match the one session-init used, or the worker's
+          // source-scoped session lookup misses and summarizes into a fresh,
+          // mis-attributed session row (#3678).
+          const contentSessionId = resolveContentSessionId(sessionID);
+          await workerPost("/api/sessions/summarize", {
             contentSessionId,
-            last_assistant_message: "",
+            last_assistant_message: await latestAssistantText(ctx.client, sessionID, ctx.directory),
+            platform_source: PLATFORM_SOURCE,
           });
           break;
         }
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
-          initializedSessionIds.delete(sessionID);
+          contextByOpenCodeSessionId.delete(sessionID);
           break;
         }
         default:
@@ -315,190 +442,4 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
   };
 };
 
-/**
- * The worker returns Claude-style `{ content: [{ type: 'text', text: '...' }] }`
- * blocks, NOT `{ items: [...] }` (#2406). Concatenate the text blocks and return
- * them verbatim; an empty block list or a "No observations found" body becomes a
- * clear no-results message.
- */
-export function parseSearchResponse(text: string, query: string): string {
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch (error: unknown) {
-    console.warn(
-      "[claude-mem] Failed to parse search results:",
-      error instanceof Error ? error.message : String(error),
-    );
-    return "Failed to parse search results.";
-  }
-
-  const content = (data as { content?: Array<{ type?: string; text?: string }> }).content;
-  if (!Array.isArray(content) || content.length === 0) {
-    return `No results found for "${query}".`;
-  }
-
-  const rendered = content
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string)
-    .join("\n")
-    .trim();
-
-  if (!rendered) {
-    return `No results found for "${query}".`;
-  }
-
-  return rendered;
-}
-
-const WORKER_READY_TIMEOUT_MS = 10_000;
-const WORKER_READY_POLL_INTERVAL_MS = 250;
-
-/** Reports a launch failure (spawn `error` event or a non-zero start exit) to the ensure loop. */
-type MarkLaunchFailed = () => void;
-
-/**
- * Spawns `npx claude-mem start`; the default starter reports spawn errors and
- * non-zero exits via `markLaunchFailed`, so a start command that dies on its
- * own (missing CLI, missing Bun, ...) fails the wait immediately instead of
- * burning the full readiness timeout with the one-shot guard left latched.
- */
-type WorkerStarter = (markLaunchFailed: MarkLaunchFailed) => void;
-
-/**
- * Build the Windows-aware `npx claude-mem start` invocation. On Windows `npx`
- * is the npm `npx.cmd` PATH shim and a plain `spawn("npx", ...)` without a
- * shell never consults PATHEXT, so resolve the shim first; `.cmd`/`.bat`
- * shims are wrapped in `cmd.exe /d /s /c` with verbatim arguments (see
- * src/shared/spawn.ts).
- */
-export function resolveWorkerStartInvocation(
-  platform: NodeJS.Platform = process.platform,
-  windowsLookup: () => string | null = () => lookupWindowsCommand("npx"),
-): SpawnSyncInvocation {
-  const command =
-    platform === "win32" ? windowsLookup() ?? "npx.cmd" : "npx";
-  return buildSpawnSyncInvocation(
-    command,
-    ["claude-mem", "start"],
-    { encoding: "utf-8", stdio: "ignore" },
-    platform,
-  );
-}
-
-const spawnWorkerStartCommand: WorkerStarter = (markLaunchFailed) => {
-  const invocation = resolveWorkerStartInvocation();
-  const child = spawn(invocation.command, invocation.args, {
-    ...invocation.options,
-    detached: true,
-  });
-  child.on("error", (err: Error) => {
-    markLaunchFailed();
-    console.warn("[claude-mem] failed to start worker:", err.message);
-  });
-  child.on("exit", (code: number | null) => {
-    // The start command daemonizes the worker and exits 0 on success (see
-    // `start` in src/services/worker-service.ts), so any non-zero exit — or a
-    // signal kill — means the launch itself failed.
-    if (code !== 0) {
-      markLaunchFailed();
-      console.warn(`[claude-mem] worker start process exited with code ${code}`);
-    }
-  });
-  child.unref();
-};
-
-/**
- * Liveness probe against the worker's dedicated /health endpoint (served by
- * ViewerRoutes, always 200 JSON `{ status: "ok", ... }` while the worker's
- * HTTP layer answers). Probing "/" would mark any service bound to the port
- * as healthy and suppress the auto-start.
- */
-async function workerAlive(): Promise<boolean> {
-  try {
-    const response = await fetch(`${WORKER_BASE_URL}/health`, {
-      signal: AbortSignal.timeout(1000),
-    });
-    if (!response.ok) return false;
-    const body = (await response.json()) as { status?: unknown };
-    return body?.status === "ok";
-  } catch {
-    return false;
-  }
-}
-
-async function waitForWorkerReady(
-  isLaunchFailed: () => boolean,
-  timeoutMs: number,
-  pollIntervalMs: number,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await workerAlive()) return true;
-    if (isLaunchFailed() || Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-}
-
-let workerEnsurePromise: Promise<boolean> | null = null;
-
-interface WorkerEnsureOptions {
-  startWorker?: WorkerStarter;
-  timeoutMs?: number;
-  pollIntervalMs?: number;
-}
-
-/**
- * Make the claude-mem worker available before capture hooks are exposed.
- *
- * OpenCode loads this plugin automatically at startup, but the claude-mem
- * worker is a separate long-running process. If it is down, spawn
- * `npx claude-mem start` and wait (bounded) until it responds, so the first
- * capture events are not dropped on ECONNREFUSED. Returns true once the
- * worker is verified healthy.
- *
- * The attempt is memoized per process so later plugin initializations never
- * spawn duplicate workers; on launch failure the memo is reset so a later
- * initialization can retry.
- */
-export function ensureWorkerRunning(options: WorkerEnsureOptions = {}): Promise<boolean> {
-  if (!workerEnsurePromise) {
-    const startWorker = options.startWorker ?? spawnWorkerStartCommand;
-    const timeoutMs = options.timeoutMs ?? WORKER_READY_TIMEOUT_MS;
-    const pollIntervalMs = options.pollIntervalMs ?? WORKER_READY_POLL_INTERVAL_MS;
-    workerEnsurePromise = (async () => {
-      if (await workerAlive()) return true;
-      console.log("[claude-mem] worker not running — starting");
-      let launchFailed = false;
-      try {
-        startWorker(() => {
-          launchFailed = true;
-        });
-      } catch (error: unknown) {
-        launchFailed = true;
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn("[claude-mem] failed to start worker:", message);
-      }
-      const ready = await waitForWorkerReady(
-        () => launchFailed,
-        timeoutMs,
-        pollIntervalMs,
-      );
-      if (!ready) {
-        if (launchFailed) {
-          workerEnsurePromise = null;
-        }
-        console.warn(
-          "[claude-mem] worker not ready — capture resumes once it responds (npx claude-mem start)",
-        );
-      }
-      return ready;
-    })();
-  }
-  return workerEnsurePromise;
-}
-
-export default async (ctx: OpenCodePluginContext) => {
-  await ensureWorkerRunning();
-  return ClaudeMemPlugin(ctx);
-};
+export default ClaudeMemPlugin;
