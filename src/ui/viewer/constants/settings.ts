@@ -15,9 +15,6 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_OPENROUTER_BASE_URL: '',
   CLAUDE_MEM_OPENROUTER_SITE_URL: '',
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
-  CLAUDE_MEM_OPENCODE_API_KEY: '',
-  CLAUDE_MEM_OPENCODE_MODEL: 'kimi-k3',
-  CLAUDE_MEM_OPENCODE_BASE_URL: 'https://opencode.ai/zen/go/v1',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
 
   // The generic OpenAI-compatible provider (NVIDIA NIM and friends).
