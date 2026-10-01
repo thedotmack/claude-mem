@@ -3325,6 +3325,14 @@ export class SessionStore {
     ).run(cwd, projectKeySource ?? null, sessionDbId);
   }
 
+  /** The checkout the session was launched in, or null when none was recorded. */
+  getSessionCwd(sessionDbId: number): string | null {
+    const row = this.db.prepare('SELECT cwd FROM sdk_sessions WHERE id = ?').get(sessionDbId) as
+      | { cwd: string | null }
+      | null;
+    return row?.cwd ?? null;
+  }
+
   /**
    * Custom-title mutation op (plan Phase 3 task 2). sdk_sessions rows do not
    * sync, so there is no sync_rev to bump and no synced_at to null — the

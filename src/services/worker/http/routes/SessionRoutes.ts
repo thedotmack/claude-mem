@@ -706,18 +706,6 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    // A host that cannot check the user's exclusions itself (OpenCode, the
-    // transcript watcher) sends its checkout: an excluded one is never
-    // summarized (R5-1).
-    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
-    if (checkoutCwd.trim()) {
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
-        res.json({ status: 'skipped', reason: 'project_excluded' });
-        return;
-      }
-    }
-
     const store = this.dbManager.getSessionStore();
 
     // Summarize only a session the worker knows. Creating a row here gave every
@@ -727,6 +715,20 @@ export class SessionRoutes extends BaseRouteHandler {
     if (sessionDbId === null) {
       res.json({ status: 'skipped', reason: 'unknown_session' });
       return;
+    }
+
+    // An excluded checkout is never summarized, even one excluded after its
+    // session began (R5-1). A host that cannot check the user's exclusions
+    // itself sends its checkout; without one, the checkout the session was
+    // recorded in is checked.
+    const requestCwd = typeof req.body.cwd === 'string' ? req.body.cwd.trim() : '';
+    const checkoutCwd = requestCwd || store.getSessionCwd(sessionDbId);
+    if (checkoutCwd) {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+        res.json({ status: 'skipped', reason: 'project_excluded' });
+        return;
+      }
     }
 
     if (observedModel || observedBilling) {

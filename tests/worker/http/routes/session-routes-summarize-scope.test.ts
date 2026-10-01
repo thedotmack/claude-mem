@@ -20,8 +20,11 @@ let port = 0;
 let queueSummarize: ReturnType<typeof mock>;
 let checkout: string;
 let loggerSpies: Array<ReturnType<typeof spyOn>> = [];
+let savedExcludedProjects: string | undefined;
 
 beforeEach(async () => {
+  savedExcludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+  delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
   loggerSpies = [
     spyOn(logger, 'info').mockImplementation(() => {}),
     spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -61,7 +64,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   loggerSpies.forEach(spy => spy.mockRestore());
-  delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+  if (savedExcludedProjects === undefined) delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+  else process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = savedExcludedProjects;
   await new Promise<void>((resolve, reject) => {
     if (!server) {
       resolve();
@@ -111,6 +115,22 @@ describe('POST /api/sessions/summarize scope (R5-1)', () => {
       last_assistant_message: 'reply',
       platformSource: 'opencode',
       cwd: checkout,
+    });
+
+    expect(reply).toEqual({ status: 'skipped', reason: 'project_excluded' });
+    expect(queueSummarize).not.toHaveBeenCalled();
+  });
+
+  it('checks the checkout the session was recorded in when the request has no cwd', async () => {
+    const sessionDbId = store!.createSDKSession('transcript-excluded', 'secret-project', 'prompt', undefined, 'claude-code');
+    store!.setSessionCwd(sessionDbId, checkout);
+    // Excluded after the session began, as when a user excludes a checkout mid-session.
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = path.basename(checkout);
+
+    const reply = await postSummarize({
+      contentSessionId: 'transcript-excluded',
+      last_assistant_message: 'reply',
+      platformSource: 'claude-code',
     });
 
     expect(reply).toEqual({ status: 'skipped', reason: 'project_excluded' });

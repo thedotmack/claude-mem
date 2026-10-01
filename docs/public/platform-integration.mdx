@@ -209,12 +209,12 @@ Content-Type: application/json
 { "status": "skipped", "reason": "private" }
 // or, for a session the worker has no row for
 { "status": "skipped", "reason": "unknown_session" }
-// or, when an optional "cwd" names an excluded project
+// or, when the session's checkout is an excluded project
 { "status": "skipped", "reason": "project_excluded" }
 ```
 </CodeGroup>
 
-A host that cannot check `CLAUDE_MEM_EXCLUDED_PROJECTS` itself should send its checkout as `cwd`.
+The checkout checked against `CLAUDE_MEM_EXCLUDED_PROJECTS` is the optional `cwd`, or else the one the session was recorded in. A host that cannot check exclusions itself should send its checkout as `cwd`.
 
 #### Complete Session (New API)
 
