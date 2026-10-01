@@ -5,7 +5,9 @@ import {
   claudeProjectsDir,
   type MemoryIngestReport,
 } from './ingest.js';
+import { resolve } from 'path';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { expandHome } from '../../shared/expand-home.js';
 
 function getArgValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
@@ -24,13 +26,19 @@ const USAGE =
   '  --dry-run:     zero-spend scan + count (do this first)\n' +
   '  --require-cwd: skip orphaned dirs whose cwd cannot be resolved';
 
-/** Resolve the effective source dir from flags (default = current repo's memory). */
+/**
+ * Resolve the effective source dir from flags (default = the caller's repo
+ * memory). The npx CLI runs this from the plugin root and passes the directory
+ * the user ran it in as --cwd, as it does for adopt; process.cwd() is only the
+ * fallback for a direct invocation. A relative --source is relative to it too.
+ */
 function resolveSource(args: string[]): { source: string; all: boolean } {
   const all = hasFlag(args, '--all');
   if (all) return { source: claudeProjectsDir(), all: true };
+  const callerCwd = resolve(getArgValue(args, '--cwd') ?? process.cwd());
   const explicit = getArgValue(args, '--source');
-  if (explicit) return { source: explicit, all: false };
-  return { source: memoryDirForCwd(process.cwd()), all: false };
+  if (explicit) return { source: resolve(callerCwd, expandHome(explicit)), all: false };
+  return { source: memoryDirForCwd(callerCwd), all: false };
 }
 
 export async function runMemoryCommand(subcommand: string | undefined, args: string[]): Promise<number> {
@@ -50,7 +58,7 @@ export async function runMemoryCommand(subcommand: string | undefined, args: str
       }
 
       // Real ingest stores into the SQLite observation DB, which lives in the
-      // worker. Drive it over HTTP (mirroring transcript ingest + summaries).
+      // worker. Drive it over HTTP, as summaries reach it.
       const workerReady = await ensureWorkerRunning();
       if (!workerReady) {
         console.error('Worker is not running and could not be started. Cannot ingest.');

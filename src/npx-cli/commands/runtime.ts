@@ -286,6 +286,9 @@ export function runTranscriptWatchCommand(): void {
   spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], pluginRoot, 'transcript watcher');
 }
 
+// The worker script runs from the plugin root, so the directory the user ran
+// this in travels as --cwd, as it does for adopt. Another checkout is chosen
+// with --source, which resolves against this directory.
 export function runMemoryIngestCommand(extraArgs: string[] = []): void {
-  spawnBunWorkerCommand('memory', ['ingest', ...extraArgs]);
+  spawnBunWorkerCommand('memory', ['ingest', '--cwd', process.cwd(), ...extraArgs]);
 }
