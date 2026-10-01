@@ -65,31 +65,17 @@ describe("OpenCode plugin event contract", () => {
     //
     // This must exercise the GENERATED bundle (the file users receive), not
     // the TypeScript entry: importing the entry cannot catch exports the
-    // bundler itself introduces or leaks. Same build config as the OpenCode
-    // stanza in scripts/build-hooks.js, but into a temp dir so the test stays
-    // self-contained. #3803 moves the entry module to a default-only export;
-    // this test pins the shipped artifact to that contract.
-    //
-    // NOTE: this test is red until #3803 lands — it is a follow-up to that
-    // PR, not a standalone fix.
+    // bundler itself introduces or leaks. It builds with the options
+    // scripts/build-hooks.js uses (scripts/opencode-plugin-build-options.js),
+    // into a temp dir so the test stays self-contained. #3803 moved the entry
+    // module to a default-only export; this test pins the shipped artifact to
+    // that contract.
     const { buildSync } = await import("esbuild");
+    const { OPENCODE_PLUGIN_BUILD_OPTIONS } = await import("../../scripts/opencode-plugin-build-options.js");
     const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-"));
     const outfile = join(dir, "index.js");
     try {
-      buildSync({
-        entryPoints: ["src/integrations/opencode-plugin/index.ts"],
-        bundle: true,
-        platform: "node",
-        target: "node18",
-        format: "esm",
-        outfile,
-        minify: true,
-        logLevel: "error",
-        external: [
-          "fs", "fs/promises", "path", "os", "child_process", "url",
-          "crypto", "http", "https", "net", "stream", "util", "events",
-        ],
-      });
+      buildSync({ ...OPENCODE_PLUGIN_BUILD_OPTIONS, outfile });
       const bundle = await import(pathToFileURL(outfile).href);
       const exportNames = Object.keys(bundle).sort();
       expect(exportNames).toEqual(["default"]);
