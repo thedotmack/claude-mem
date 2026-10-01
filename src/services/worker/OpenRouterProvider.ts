@@ -282,8 +282,8 @@ export function classifyOpenRouterError(input: {
   // errors inside 200 envelopes, which must stay non-transient.
   if (lower.includes('unable to get json') || lower.includes('expecting value')) {
     return new ClassifiedProviderError(
-      `OpenRouter transient upstream parse failure (status ${status})${body ? ` - ${body.substring(0, 200)}` : ''}`,
-      { kind: 'transient', cause: input.cause },
+      describe('transient upstream parse failure'),
+      { kind: 'transient', cause: input.cause, ...detail },
     );
   }
 
