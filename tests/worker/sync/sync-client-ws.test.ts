@@ -418,6 +418,24 @@ describe('SyncClient advisory WebSocket', () => {
     expect(state.requests.length).toBe(baseline);
   });
 
+  it('socket catch-up and advance hints honor a failed HTTP pull retry deadline', async () => {
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
+    state.failStatus = 502;
+    const { ctor, sockets } = makeWsFactory();
+    makeClient(impl, ctor, { backoffInitialMs: 200, backoffMaxMs: 200 }).start();
+    await sleep(25);
+    expect(state.requests).toHaveLength(1);
+    state.failStatus = null;
+    sockets[0].open();
+    sockets[0].message(advanceFrame('1', 1));
+    await sleep(50);
+    expect(state.requests).toHaveLength(1);
+    expect(apply.getCursor()).toBe('0');
+    await sleep(200);
+    expect(state.requests).toHaveLength(2);
+    expect(apply.getCursor()).toBe('1');
+  });
+
   it('reconnects with bounded full-jitter backoff and keeps HTTP polling alive', async () => {
     const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const { ctor, attempts } = makeWsFactory({ failConstruct: () => true });
