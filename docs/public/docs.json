@@ -37,7 +37,6 @@
           "installation",
           "usage/getting-started",
           "usage/openrouter-provider",
-          "usage/orcarouter-provider",
           "usage/gemini-provider",
           "usage/openai-compatible-provider",
           "usage/multi-key-rotation",
