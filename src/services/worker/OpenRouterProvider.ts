@@ -362,6 +362,31 @@ export interface OpenRouterConfig {
   appName?: string;
   /** Per-call output mode for the wrap-up; never a persisted setting. */
   plainText?: boolean;
+  /** CLAUDE_MEM_OPENROUTER_REASONING_EFFORT; sent to openrouter.ai only. */
+  reasoningEffort?: OpenRouterReasoningEffort;
+}
+
+/**
+ * CLAUDE_MEM_OPENROUTER_REASONING_EFFORT values (OpenRouter's documented
+ * effort scale, the token-saving end of it). Unset sends nothing.
+ */
+export const OPENROUTER_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'] as const;
+export type OpenRouterReasoningEffort = typeof OPENROUTER_REASONING_EFFORTS[number];
+
+/** The setting as an effort, or undefined when unset or not one of the values. */
+export function parseOpenRouterReasoningEffort(raw: unknown): OpenRouterReasoningEffort | undefined {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return (OPENROUTER_REASONING_EFFORTS as readonly string[]).includes(value)
+    ? value as OpenRouterReasoningEffort
+    : undefined;
+}
+
+/**
+ * OpenRouter's `reasoning` field for an effort. `none` is sent as
+ * `{ enabled: false }`, the shape the wrap-up already uses.
+ */
+function reasoningControl(effort: OpenRouterReasoningEffort): Record<string, unknown> {
+  return effort === 'none' ? { enabled: false } : { effort };
 }
 
 function hasProcessEnvOverride(key: string): boolean {
@@ -423,6 +448,8 @@ export function buildOpenRouterRequestBody(input: {
   plainText?: boolean;
   /** CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS; the #4003 retry resends it as max_completion_tokens. */
   maxOutputTokens?: number;
+  /** CLAUDE_MEM_OPENROUTER_REASONING_EFFORT; openrouter.ai only. */
+  reasoningEffort?: OpenRouterReasoningEffort;
 }): Record<string, unknown> {
   const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
@@ -440,6 +467,12 @@ export function buildOpenRouterRequestBody(input: {
       response_format: { type: 'text' },
       reasoning: { enabled: false },
     } : {}),
+    // The reasoning-effort setting, for openrouter.ai only: a custom gateway's
+    // strict schema rejects the field, and the cmem gateway sets its own
+    // reasoning policy. A wrap-up keeps its own control above.
+    ...(isOpenRouter && !input.plainText && input.reasoningEffort
+      ? { reasoning: reasoningControl(input.reasoningEffort) }
+      : {}),
     // Ask openrouter.ai for usage accounting (token counts + cost).
     // Only sent to openrouter.ai — strict custom gateways may reject
     // unknown body fields.
@@ -550,7 +583,32 @@ export function resolveOpenRouterConfig(
       : settings.CLAUDE_MEM_OPENROUTER_API_KEYS || getCredential('OPENROUTER_API_KEYS') || '',
   ).filter(key => !isCmemMemoryKey(key));
 
-  return { apiKey: apiKey || apiKeys[0] || '', apiKeys, model, fallbackModels, apiUrl, siteUrl, appName };
+  const reasoningEffort = resolveReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
+
+  return {
+    apiKey: apiKey || apiKeys[0] || '',
+    apiKeys,
+    model,
+    fallbackModels,
+    apiUrl,
+    siteUrl,
+    appName,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
+}
+
+/** The reasoning-effort value a warning was last logged for: once per value, not per status poll. */
+let lastWarnedReasoningEffort: string | null = null;
+
+/** The configured effort, warning once about a value that is not one. Never throws. */
+function resolveReasoningEffort(raw: unknown): OpenRouterReasoningEffort | undefined {
+  const effort = parseOpenRouterReasoningEffort(raw);
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!effort && text && lastWarnedReasoningEffort !== text) {
+    lastWarnedReasoningEffort = text;
+    logger.warn('SDK', `Ignoring CLAUDE_MEM_OPENROUTER_REASONING_EFFORT "${text}": use one of ${OPENROUTER_REASONING_EFFORTS.join(', ')}, or leave it empty`);
+  }
+  return effort;
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -615,7 +673,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter' },
       ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
         history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
-        signal, config.plainText, perAttemptTimeoutMs,
+        signal, config.plainText, perAttemptTimeoutMs, config.reasoningEffort,
       ),
     );
   }
@@ -633,8 +691,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     attemptSignal: AbortSignal,
     maxOutputTokens: number,
     plainText?: boolean,
+    reasoningEffort?: OpenRouterReasoningEffort,
   ): Promise<Response> {
-    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens });
+    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, reasoningEffort });
     return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
@@ -660,6 +719,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     signal?: AbortSignal,
     plainText?: boolean,
     perAttemptTimeoutMs?: number,
+    reasoningEffort?: OpenRouterReasoningEffort,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -682,7 +742,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, reasoningEffort);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
