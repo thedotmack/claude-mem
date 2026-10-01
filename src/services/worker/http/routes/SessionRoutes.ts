@@ -641,6 +641,8 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     observedModel: z.string().min(1).max(200).optional(),
     observedBilling: z.string().min(1).max(40).optional(),
+    // The checkout, from hosts that cannot check exclusions themselves.
+    cwd: z.string().optional(),
   }).passthrough();
 
   private static readonly sessionEndSchema = z.object({
@@ -704,9 +706,28 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // A host that cannot check the user's exclusions itself (OpenCode, the
+    // transcript watcher) sends its checkout: an excluded one is never
+    // summarized (R5-1).
+    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
+    if (checkoutCwd.trim()) {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+        res.json({ status: 'skipped', reason: 'project_excluded' });
+        return;
+      }
+    }
+
     const store = this.dbManager.getSessionStore();
 
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
+    // Summarize only a session the worker knows. Creating a row here gave every
+    // idle turn of a session nothing else recorded (an excluded checkout, a
+    // skipped init) an empty-project row and a paid observer call (R5-1).
+    const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+    if (sessionDbId === null) {
+      res.json({ status: 'skipped', reason: 'unknown_session' });
+      return;
+    }
 
     if (observedModel || observedBilling) {
       store.setSessionObservedMetadata(sessionDbId, observedModel, observedBilling);
