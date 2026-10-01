@@ -50,7 +50,7 @@ import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { captureEvent } from '../telemetry/telemetry.js';
-import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
+import { clearDependencyStatus, recordClaudeCliSetupRequired, OBSERVER_DIR_UNUSABLE_CODE } from '../../shared/dependency-health.js';
 import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 
 /**
@@ -97,7 +97,7 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   // across 13.10-13.25), so parking Claude starts behind the setup cooldown
   // for it would cost more than the retry.
   if (message.startsWith(`${OBSERVER_WORKING_DIRECTORY_ERROR_PREFIX}: `)) {
-    return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
+    return new ClassifiedProviderError(message, { kind: 'setup_required', code: OBSERVER_DIR_UNUSABLE_CODE, cause: err });
   }
 
   // Anthropic auth failures.

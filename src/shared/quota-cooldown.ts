@@ -85,6 +85,25 @@ export function setClaudeProfileResolverForTesting(resolver: (() => string) | nu
   resolveClaudeProfile = resolver ?? resolveConfigDirProfileKey;
 }
 
+/**
+ * Whether a cooldown withholds requests from the account selected now. A
+ * 'claude' cooldown, a spent allowance or a refused credential alike, belongs
+ * to the config-dir profile its generator was spawned under, so it says
+ * nothing about any other account, including one selected since (or a breaker
+ * armed before they carried one). Other providers have one account.
+ *
+ * Every reader that decides whether requests wait goes through this one
+ * predicate: admission (tryAdmitQuotaProbe), the resume sweep's pacing
+ * (isQuotaCooldownActive, SessionRoutes.resumePendingSessions) and the
+ * SessionStart pause notice, which reads the cooldown mirrored into
+ * observer-health.json with its profile. A reader that skipped it held a
+ * switched-to account's backlog behind the old account's breaker and told it
+ * capture was paused.
+ */
+export function cooldownAppliesToCurrentAccount(cooldown: { provider: string; profile?: string }): boolean {
+  return cooldown.provider !== 'claude' || cooldown.profile === resolveClaudeProfile();
+}
+
 function defaultCooldownFilePath(): string {
   return join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME);
 }
@@ -284,8 +303,9 @@ export function getQuotaCooldown(provider: QuotaProvider): QuotaCooldownState | 
 }
 
 /**
- * True while requests to `provider` should be withheld. Read-only — it never
- * claims the probe, so it is safe for logging and diagnostics.
+ * True while requests to `provider` should be withheld from the account
+ * selected now. Read-only — it never claims the probe, so it is safe for
+ * logging and diagnostics.
  *
  * Callers deciding whether to actually send must use `tryAdmitQuotaProbe`
  * instead: this returning false only means the window elapsed, and on a machine
@@ -298,7 +318,7 @@ export function isQuotaCooldownActive(
 ): boolean {
   hydrateFromDisk();
   const state = cooldowns.get(provider);
-  if (!state) return false;
+  if (!state || !cooldownAppliesToCurrentAccount(state)) return false;
   return nowMs - state.armedAtMs < cooldownMs;
 }
 
@@ -325,12 +345,12 @@ export function tryAdmitQuotaProbe(
   // the herd returns at exactly the moment the breaker should be strongest.
   hydrateFromDisk();
   let state = cooldowns.get(provider);
-  // A 'claude' breaker armed under another account (or before breakers carried
-  // one) says nothing about the account now selected: drop it and let this
-  // request through, instead of pausing capture until that account resets.
-  // Switching back re-probes the first account once; one request is cheaper
-  // than keeping a breaker per account.
-  if (state && provider === 'claude' && state.profile !== resolveClaudeProfile()) {
+  // A breaker armed under another Claude account says nothing about the
+  // account now selected: drop it and let this request through, instead of
+  // pausing capture until that account resets. Switching back re-probes the
+  // first account once; one request is cheaper than keeping a breaker per
+  // account.
+  if (state && !cooldownAppliesToCurrentAccount(state)) {
     clearQuotaCooldown(provider);
     state = undefined;
   }
@@ -467,6 +487,9 @@ export function syncObserverHealthQuotaCooldown(
     recordObserverQuotaCooldown({
       active: true,
       provider: latest.provider,
+      // The account it pauses: the SessionStart notice shows it only while
+      // that account is selected (cooldownAppliesToCurrentAccount).
+      ...(latest.profile ? { profile: latest.profile } : {}),
       armedAt: latest.armedAtMs,
       until: latest.armedAtMs + cooldownMs,
       ...(latest.window ? { window: latest.window } : {}),

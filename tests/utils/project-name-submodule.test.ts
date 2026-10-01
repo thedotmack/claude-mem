@@ -15,6 +15,11 @@ import { realpathSync } from 'node:fs';
 
 import { getProjectContext } from '../../src/utils/project-name.js';
 
+// The fixtures shell out to git a few dozen times (about 12 for the shared one,
+// 28 for the nested one). Under load that outran the 5s default, so both get
+// the 30s the sibling worktree-adoption git fixtures use.
+const GIT_FIXTURE_TIMEOUT_MS = 30_000;
+
 let tempRoot: string;
 let superproject: string;
 let submodule: string;
@@ -51,7 +56,7 @@ beforeAll(() => {
   submodule = path.join(superproject, 'peerless');
   submoduleSubdir = path.join(submodule, 'src', 'nested');
   mkdirSync(submoduleSubdir, { recursive: true });
-});
+}, GIT_FIXTURE_TIMEOUT_MS);
 
 afterAll(() => {
   if (tempRoot) {
@@ -130,7 +135,7 @@ describe('#2842 — submodule folds into the superproject', () => {
     expect(alpha.primary).not.toBe(beta.primary);
     expect(alpha.parent).toBe('outer');
     expect(beta.parent).toBe('outer');
-  });
+  }, GIT_FIXTURE_TIMEOUT_MS);
 
   it('leaves the superproject itself a plain top-level project', () => {
     const ctx = getProjectContext(superproject);

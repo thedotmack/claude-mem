@@ -18,7 +18,7 @@ import {
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
 import { recordObserverFailure } from '../../../shared/observer-health.js';
-import { recordClaudeCliSetupRequired } from '../../../shared/dependency-health.js';
+import { recordClaudeSetupRequired } from '../../../shared/dependency-health.js';
 import { isMemoryOnCmemGateway } from '../../../shared/cmem-gateway.js';
 import {
   releaseQuotaProbe,
@@ -182,7 +182,7 @@ export async function startGeneratorWithProvider(
       if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
         skipGeneratorExitFinalization = true;
         session.pausedReason = 'setup_required';
-        recordClaudeCliSetupRequired(error.message);
+        recordClaudeSetupRequired(error);
         maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
         logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
           sessionId: session.sessionDbId,

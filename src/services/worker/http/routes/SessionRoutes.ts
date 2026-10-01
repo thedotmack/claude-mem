@@ -17,7 +17,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
 import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
 import { startGeneratorWithProvider } from '../../session/GeneratorRunner.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -37,6 +37,7 @@ import {
   releaseQuotaProbe,
   getQuotaCooldown,
   isQuotaCooldownActive,
+  cooldownAppliesToCurrentAccount,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, type ClassifiedProviderError } from '../../provider-errors.js';
@@ -165,15 +166,20 @@ export class SessionRoutes extends BaseRouteHandler {
    * nothing is scheduled while the breaker withholds requests, since every
    * attempt would only log a skip (#4127 counted 159 of those). Once the window
    * elapses, one session per tick goes through to carry the recovery probe; the
-   * rest follow after that probe succeeds and clears the breaker. The operator
-   * retry (`POST /api/processing`) is not paced.
+   * rest follow after that probe succeeds and clears the breaker. A breaker
+   * armed under another Claude account paces nothing: admission would drop it
+   * and admit, so holding this account's backlog behind it only delays it.
+   * The operator retry (`POST /api/processing`) is not paced.
    */
   public resumePendingSessions(source: string, includeOperatorOnly: boolean = false): number {
     let sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
     if (!includeOperatorOnly && sessionIds.length > 0) {
       const provider = getSelectedProvider();
-      if (isQuotaCooldownActive(provider)) return 0;
-      if (getQuotaCooldown(provider)) sessionIds = sessionIds.slice(0, 1);
+      const cooldown = getQuotaCooldown(provider);
+      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
+        if (isQuotaCooldownActive(provider)) return 0;
+        sessionIds = sessionIds.slice(0, 1);
+      }
     }
     for (const sessionDbId of sessionIds) {
       void this.ensureGeneratorRunning(sessionDbId, source).catch((error: unknown) => {
@@ -306,6 +312,29 @@ export class SessionRoutes extends BaseRouteHandler {
             releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
             return;
           }
+        }
+
+        // An unusable observer working directory has its own recheck (#4117):
+        // until the directory can be created, a start only repeats the slot
+        // wait, the keychain read and the same failure. Creating it is the
+        // whole probe.
+        if (getDependencyStatus('observer_dir')) {
+          try {
+            ensureObserverSessionsDir();
+          } catch (error) {
+            logger.warn('SESSION', 'Skipping Claude generator start until the observer working directory is usable', {
+              sessionId: sessionDbId,
+              source,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+            return;
+          }
+          clearDependencyStatus('observer_dir');
+          logger.info('SESSION', 'Observer working directory repaired; resuming generator start', {
+            sessionId: sessionDbId,
+            source,
+          });
         }
       }
       await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
