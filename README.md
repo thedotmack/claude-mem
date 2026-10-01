@@ -335,6 +335,8 @@ To include observations from every harness in Claude Code and Codex SessionStart
 
 Codex native hooks preserve `tool_use_id` for tool-call deduplication and durable tool-use records. They also preserve `agent_id` and `agent_type`, so subagent capture settings apply to Codex activity and saved records retain agent attribution. Agent fields accept non-empty strings up to 128 characters, matching the Claude Code adapter. Codex writes retain `platform_source=codex`.
 
+SessionStart requests a Claude credential refresh only when the observer uses Claude as its primary provider, a configured quota fallback, or the active fallback from the primary cmem gateway. A Codex-only observer no longer receives a stale Claude login hint from an earlier configuration.
+
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
 ### Mode & Language Configuration

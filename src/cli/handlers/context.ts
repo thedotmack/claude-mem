@@ -153,7 +153,13 @@ export const contextHandler: EventHandler = {
     // Issue #2215: surface stale OAuth token marker as a session-start hint.
     // Marker is written by EnvManager.buildIsolatedEnvWithFreshOAuth() when
     // a previous worker spawn detected an expired keychain entry.
-    const staleReason = readStaleMarker();
+    // Other observer providers do not use Claude credentials. Keep the hint
+    // for a configured Claude route, including the gateway's active fallback.
+    const gatewayRole = cmemGatewayRole(settings);
+    const usesClaudeCredentials = (settings.CLAUDE_MEM_PROVIDER || 'claude') === 'claude'
+      || String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim() === 'claude'
+      || (gatewayRole === 'primary' && Boolean(settings.CLAUDE_MEM_PRO_FALLBACK_AT));
+    const staleReason = usesClaudeCredentials ? readStaleMarker() : null;
     if (staleReason) {
       // The observer authenticates with the Claude Code CLI credentials
       // (keychain service "Claude Code-credentials", see oauth-token.ts), not
@@ -178,7 +184,6 @@ export const contextHandler: EventHandler = {
     // The gateway as the opt-in quota fallback gets the same notice with its
     // own consequence: dispatch skips it while it turns the account away, and
     // without this the user would never learn why the fallback stopped.
-    const gatewayRole = cmemGatewayRole(settings);
     const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== '' && gatewayRole !== null;
     if (fallbackActive && !hasShownProFallbackNotice()) {
       const fallbackNotice = proFallbackNotice({
