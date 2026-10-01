@@ -51,7 +51,7 @@ export interface GeneratorRunnerDependencies {
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | typeof DEADLINE_EXCEEDED_CODE | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | 'output_retry' | typeof DEADLINE_EXCEEDED_CODE | 'none' {
   // The one transport pause that is ours: a request abandoned at the LLM
   // deadline, possibly already billed upstream. Every other transport pause
   // stays 'none', as before.
@@ -65,6 +65,7 @@ function normalizeAbortReason(
     case 'rate_limit': return 'rate_limit';
     case 'auth': return 'auth';
     case 'provider_switch': return 'provider_switch';
+    case 'output_retry': return 'output_retry';
     default: return 'none';
   }
 }
@@ -389,6 +390,12 @@ export async function startGeneratorWithProvider(
       }
       if (reason === 'overflow:recycle') {
         resumeGeneratorLater(session, 0, 'overflow-recycle', ensureGeneratorRunning);
+      }
+      // A queued batch answered with neither XML nor the skip sentinel gets its
+      // one more try now, in a fresh generation; ResponseProcessor bounds it to
+      // one retry per batch, so this cannot loop.
+      if (normalizedReason === 'output_retry') {
+        resumeGeneratorLater(session, 0, 'output-retry', ensureGeneratorRunning);
       }
 
       // A response stall preserved its claimed batch but, like a recycle, has
