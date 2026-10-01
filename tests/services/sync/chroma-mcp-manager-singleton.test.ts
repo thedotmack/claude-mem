@@ -646,6 +646,31 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(1);
   });
 
+  it('never restarts chroma-mcp while a write that timed out may still be committing', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    let answering = false;
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_list_collections' && answering) {
+        return { content: [{ type: 'text', text: '[]' }] };
+      }
+      throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+    };
+
+    // chroma-mcp serves one request at a time: a write past its deadline may
+    // still be committing, and a read queued behind it times out as well.
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['slow'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['queued'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    expect(transportInstances[0].closed).toBe(false);
+
+    // Any answer from chroma-mcp means the write finished; a hung read then restarts it.
+    answering = true;
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['hung'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    expect(transportInstances[0].closed).toBe(true);
+  });
+
   it('never restarts chroma-mcp on a read timeout while a remote-mode write is in flight', async () => {
     mockedSettings = {
       CLAUDE_MEM_CHROMA_MODE: 'remote',

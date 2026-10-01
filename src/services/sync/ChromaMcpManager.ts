@@ -257,6 +257,13 @@ export class ChromaMcpManager {
   private pendingMutationCalls = 0;
   /** Mutation requests sent to chroma-mcp and not yet answered, in either Chroma mode. */
   private mutationCallsInFlight = 0;
+  /**
+   * The transport on which a write outlived its deadline. chroma-mcp runs one
+   * request at a time (its tools call the blocking Chroma client), so that
+   * write may still be committing until chroma-mcp answers anything else on
+   * the same transport; until then a read timeout never restarts it.
+   */
+  private timedOutWriteTransport: unknown = null;
   private readonly maxPendingMutationCalls: number;
   private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
@@ -1352,16 +1359,22 @@ export class ChromaMcpManager {
         name: toolName,
         arguments: toolArguments
       }, undefined, requestOptions);
+      if (this.timedOutWriteTransport === callTransport) {
+        // chroma-mcp answered again, so the write that timed out has finished.
+        this.timedOutWriteTransport = null;
+      }
     } catch (transportError) {
       if (ChromaMcpManager.isRequestTimeout(transportError)) {
         const cause = transportError instanceof Error ? transportError : undefined;
-        if (!isMutation && this.mutationCallsInFlight === 0) {
+        if (isMutation) {
+          this.timedOutWriteTransport = callTransport;
+        } else if (this.mutationCallsInFlight === 0 && this.timedOutWriteTransport !== callTransport) {
           await this.restartHungSubprocess(toolName, callTransport);
           throw new ChromaUnavailableError(`chroma-mcp did not answer "${toolName}" in time and was restarted`, cause);
         }
-        // A request that outlived its deadline while a write is in flight
-        // means chroma-mcp is slow, not gone: the SDK has already sent
-        // notifications/cancelled, and a write may still be committing.
+        // A request that outlived its deadline while a write is, or may still
+        // be, in flight means chroma-mcp is slow, not gone: the SDK has already
+        // sent notifications/cancelled, and the write may still be committing.
         // Tree-killing it here is what leaves a persistent index malformed,
         // and a retry would repeat the same slow work, so neither happens.
         // The caller keeps the row pending.
@@ -1481,9 +1494,10 @@ export class ChromaMcpManager {
   }
 
   /**
-   * A read outlived the SDK's deadline while no write was in flight. Reads
-   * are short, so chroma-mcp is hung rather than busy, and left running it
-   * makes every later read wait out the same deadline. Take it down so the
+   * A read outlived the SDK's deadline while no write was in flight or still
+   * possibly committing after its own deadline. Reads are short, so chroma-mcp
+   * is hung rather than busy, and left running it makes every later read wait
+   * out the same deadline. Take it down so the
    * next call reconnects to a fresh subprocess. The teardown is published as
    * the close cleanup: ensureConnected() and stop() wait for it, and a call
    * it cuts off joins it instead of disposing a second time.

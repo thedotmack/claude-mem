@@ -35,6 +35,7 @@ const statics = ChromaSync as unknown as {
   collectionGeneration: number;
   corruptSegmentBatches: Map<string, Set<string>>;
   droppedCollections: Set<string>;
+  failedDropAttempts: Map<string, number>;
   lastCollectionDrop: unknown;
   backfillAllProjects(store: unknown): Promise<boolean>;
 };
@@ -75,6 +76,7 @@ beforeEach(() => {
   statics.backfillInProgress = false;
   statics.corruptSegmentBatches.clear();
   statics.droppedCollections.clear();
+  statics.failedDropAttempts.clear();
   statics.lastCollectionDrop = null;
   statics.backfillAllProjects = async () => {
     backfillSweeps += 1;
@@ -266,7 +268,28 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(calls('chroma_create_collection')).toBe(createsBefore + 1);
   });
 
-  it('counts a rejected delete as the one drop, so a delete that keeps failing is never retried in a loop', async () => {
+  it('retries a drop whose delete never reached chroma-mcp', async () => {
+    let deleteAttempts = 0;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new ChromaUnavailableError('chroma-mcp connection in backoff (8s remaining)');
+      }
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('backoff');
+    // The connection is back: the next batch the segment fails drops the collection.
+    await expect(sync.addDocuments([makeDoc('d3')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+
+    expect(calls('chroma_delete_collection')).toBe(2);
+    expect(ChromaSync.getLastCollectionDrop()).toMatchObject({ collection: 'cm__claude-mem' });
+  });
+
+  it('gives up on a delete that keeps failing after a few attempts, so it never loops', async () => {
     installCallTool(async (tool) => {
       if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
       if (tool === 'chroma_delete_collection') {
@@ -274,15 +297,19 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
       }
       return {};
     });
+    statics.backfillStore = {};
     const sync = new ChromaSync('claude-mem');
 
     await sync.addDocuments([makeDoc('d1')]);
-    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('transport error');
-    // Later batches still hit the segment: ordinary failed writes, no second drop.
-    expect(await sync.addDocuments([makeDoc('d3')])).toBe(0);
-    expect(await sync.addDocuments([makeDoc('d4')])).toBe(0);
+    for (const id of ['d2', 'd3', 'd4']) {
+      await expect(sync.addDocuments([makeDoc(id)])).rejects.toThrow('transport error');
+    }
+    // Out of attempts: later batches are ordinary failed writes, and no more sweeps restart.
+    expect(await sync.addDocuments([makeDoc('d5')])).toBe(0);
+    expect(await sync.addDocuments([makeDoc('d6')])).toBe(0);
 
-    expect(calls('chroma_delete_collection')).toBe(1);
+    expect(calls('chroma_delete_collection')).toBe(3);
+    expect(backfillSweeps).toBe(3);
   });
 
   it('starts a rebuild sweep when none is running, and leaves a running sweep to restart itself', async () => {
