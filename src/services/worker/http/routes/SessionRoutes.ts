@@ -11,6 +11,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
+import type { CodexProvider } from '../../CodexProvider.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -27,6 +28,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS,
   clearDependencyStatus,
   getDependencyStatus,
   isDependencyStatusInCooldown,
@@ -80,6 +82,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
+    private codexAgent?: CodexProvider,
   ) {
     super();
     this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
@@ -140,6 +143,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
     try {
       switch (selection.provider) {
+        case 'codex':
+          if (!this.codexAgent) throw new Error('Codex provider is not available');
+          return await this.codexAgent.formatTelegramWrapup(
+            input, activeModelId === 'codex-default' ? undefined : activeModelId,
+          );
         case 'gemini':
           return await this.geminiAgent.formatTelegramWrapup(input, activeModelId);
         case 'openrouter':
@@ -400,7 +408,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private async admitAndStartGenerator(
     session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
     sessionDbId: number,
-    selectedProvider: 'claude' | 'gemini' | 'openrouter',
+    selectedProvider: 'claude' | 'gemini' | 'openrouter' | 'codex',
     source: string,
     gatewayProbeClaimId: number | null,
     /** The parked generator a provider switch is replacing, if any. */
@@ -415,6 +423,25 @@ export class SessionRoutes extends BaseRouteHandler {
       // cleanup stomp the freshly-started generator's state.
       if (previousGenerator) {
         await previousGenerator;
+      }
+
+      // A missing Codex CLI or ChatGPT login (codex_cli) has its own recheck,
+      // like the Claude CLI's: until it is repaired, a start only fails the same
+      // way. Once the window elapses, the start is the probe: if setup is still
+      // broken its first request records the status again, and every request
+      // queued behind it is withheld (CodexProvider's beforeSend).
+      if (selectedProvider === 'codex') {
+        const codexStatus = getDependencyStatus('codex_cli');
+        if (codexStatus && isDependencyStatusInCooldown(codexStatus, CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS)) {
+          releaseCmemGatewayProbe(gatewayProbeClaimId);
+          logger.warn('SESSION', 'Skipping Codex generator start until setup is repaired', {
+            sessionId: sessionDbId,
+            source,
+            message: codexStatus.message,
+          });
+          return;
+        }
+        if (codexStatus) clearDependencyStatus('codex_cli');
       }
 
       // Quota breaker (#3634). Without this, an exhausted allowance produced one
@@ -476,7 +503,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
     source: string,
     /** The quota probe this run claimed, or null when it was admitted without one. */
     quotaProbeClaimId: number | null,
@@ -488,6 +515,7 @@ export class SessionRoutes extends BaseRouteHandler {
       sdkAgent: this.sdkAgent,
       geminiAgent: this.geminiAgent,
       openRouterAgent: this.openRouterAgent,
+      codexAgent: this.codexAgent,
       workerService: this.workerService,
       completionHandler: this.completionHandler,
       ensureGeneratorRunning: (id, trigger) => this.ensureGeneratorRunning(id, trigger),
