@@ -349,13 +349,14 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), OpenRouter (also used by the claude-mem observer), or any OpenAI-compatible endpoint"
+                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Codex (your ChatGPT subscription), Gemini (via REST API), OpenRouter (also used by the claude-mem observer), or any OpenAI-compatible endpoint"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="codex">Codex (uses your ChatGPT subscription)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
                   <option value="openai-compatible">OpenAI-compatible endpoint (BYOK)</option>
@@ -375,6 +376,20 @@ export function ContextSettingsModal({
                     <option value="sonnet">sonnet (balanced)</option>
                     <option value="opus">opus (highest quality)</option>
                   </select>
+                </FormField>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'codex' && (
+                <FormField
+                  label="Codex Model"
+                  tooltip="Optional model available through your Codex subscription; leave empty for the Codex default. Run codex login before starting the worker."
+                >
+                  <input
+                    type="text"
+                    value={formState.CLAUDE_MEM_CODEX_MODEL || ''}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MODEL', e.target.value)}
+                    placeholder="Codex default (e.g. gpt-6-luna)"
+                  />
                 </FormField>
               )}
 

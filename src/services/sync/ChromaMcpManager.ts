@@ -511,7 +511,7 @@ export class ChromaMcpManager {
         dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
       });
       this.connected = false;
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      if (currentTrackedPid) getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, currentTrackedPid);
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
@@ -1703,7 +1703,7 @@ export class ChromaMcpManager {
     ChromaMcpManager.reapOrphanedDescendants([...descendantsBeforeClose, ...descendantsAfterClose]);
 
     if (trackedPid) {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, trackedPid);
     }
     this.releaseChromaWriterLock();
 
@@ -2169,7 +2169,8 @@ export class ChromaMcpManager {
 
   private registerManagedProcess(): void {
     const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })._process;
-    if (!chromaProcess?.pid) {
+    const chromaPid = chromaProcess?.pid;
+    if (!chromaProcess || !chromaPid) {
       return;
     }
 
@@ -2185,17 +2186,17 @@ export class ChromaMcpManager {
     // On POSIX the pgid recorded here is used by killProcessTree() in
     // stop() for explicit tree teardown rather than negative-PID signaling.
     getSupervisor().registerProcess(CHROMA_SUPERVISOR_ID, {
-      pid: chromaProcess.pid,
+      pid: chromaPid,
       type: 'chroma',
       startedAt: new Date().toISOString(),
       // Store pid as pgid — shutdown.ts will attempt kill(-pgid) on POSIX.
       // If the child isn't actually its own group leader, the ESRCH is caught
       // and shutdown falls back to single-PID kill (see signalProcess()).
-      pgid: chromaProcess.pid
+      pgid: chromaPid
     }, chromaProcess);
 
     chromaProcess.once('exit', () => {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, chromaPid);
     });
   }
 }

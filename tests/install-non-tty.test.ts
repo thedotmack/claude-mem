@@ -128,6 +128,15 @@ describe('Install Non-TTY Support', () => {
       expect(branch).not.toContain('configuredCmemKey');
     });
 
+    it('keeps a persisted codex provider instead of defaulting it to claude', () => {
+      const fnStart = installSource.indexOf('export function validateNonInteractiveProvider(');
+      const persistedAssign = installSource.indexOf("options.providerSource = 'persisted'", fnStart);
+      const branch = installSource.slice(fnStart, persistedAssign);
+      expect(branch).toContain("persistedProvider === 'codex'");
+      // Codex uses the local `codex login`, so it must skip the API-key check.
+      expect(branch).toContain("if (persistedProvider !== 'claude' && persistedProvider !== 'codex') {");
+    });
+
     it('offers a deferred login-only sign-in link at the end of a non-interactive install', () => {
       expect(installSource).toContain("'npx-installer-deferred'");
       expect(installSource).toContain('AGENT: show this link to the user so they can finish signing in.');
