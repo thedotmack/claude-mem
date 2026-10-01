@@ -95,7 +95,7 @@ Reinstalling without `--model` keeps the saved Codex model. On a first install t
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `CLAUDE_MEM_CODEX_MODEL` | empty | Codex chooses its default model when empty; otherwise use a model available to your subscription. |
-| `CLAUDE_MEM_CODEX_REASONING_EFFORT` | `low` | Reasoning effort. Advanced override in `settings.json` or the environment, subject to model support. |
+| `CLAUDE_MEM_CODEX_REASONING_EFFORT` | `low` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `ultra`, subject to model support; empty uses Codex's default. Advanced override in `settings.json` or the environment. An effort or model Codex refuses stops Codex memory until it is changed, and SessionStart says so. |
 | `CLAUDE_MEM_CODEX_PATH` | `codex` | CLI executable or path. File or environment only; the viewer settings API cannot change it. |
 | `CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS` | `2` | App-server clients that serve requests in parallel (1–8). File only; restart the worker after changing it. |
 | `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE` | `8` | Queued observations Codex may combine into one request (1–32). |

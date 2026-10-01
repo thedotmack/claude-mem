@@ -382,6 +382,8 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       await workerPost("/api/sessions/summarize", {
         contentSessionId,
         last_assistant_message: await latestAssistantText(ctx.client, input.sessionID, ctx.directory),
+        // The worker skips an excluded checkout; the plugin cannot check it.
+        cwd: ctx.directory,
         platform_source: PLATFORM_SOURCE,
       });
     },
@@ -413,6 +415,7 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           await workerPost("/api/sessions/summarize", {
             contentSessionId,
             last_assistant_message: await latestAssistantText(ctx.client, sessionID, ctx.directory),
+            cwd: ctx.directory,
             platform_source: PLATFORM_SOURCE,
           });
           break;

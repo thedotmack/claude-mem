@@ -68,8 +68,10 @@ export async function runMemoryCommand(subcommand: string | undefined, args: str
       }
 
       const report = (await response.json()) as MemoryIngestReport;
+      // Every file but an already-imported one is listed, so a skipped note
+      // (a symlink, or one over the size cap) is named with its reason.
       for (const f of report.files) {
-        if (f.status === 'stored' || f.status === 'failed') {
+        if (f.status !== 'deduped') {
           console.log(`${f.project}/${f.file}: ${f.status}${f.reason ? ` (${f.reason})` : ''}` +
             (f.observationId ? ` -> obs #${f.observationId}` : ''));
         }

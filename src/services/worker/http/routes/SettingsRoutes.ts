@@ -16,6 +16,7 @@ import { snapshotDependencyHealth } from '../../../../shared/dependency-health.j
 import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
 import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
+import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -311,6 +312,19 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (settings[key] !== undefined && typeof settings[key] !== 'string') {
         return { valid: false, error: `${key} must be a string` };
       }
+    }
+
+    // An effort Codex does not know fails every Codex request, and the
+    // app-server takes any string. Checked only when this request changes it:
+    // the viewer posts the whole settings object back, so a value already in
+    // settings.json must not turn every unrelated save into a 400.
+    const codexEffort = settings.CLAUDE_MEM_CODEX_REASONING_EFFORT;
+    if (typeof codexEffort === 'string' && codexEffort.trim() && !isCodexReasoningEffort(codexEffort.trim())
+      && codexEffort !== SettingsDefaultsManager.loadFromFile(paths.settings()).CLAUDE_MEM_CODEX_REASONING_EFFORT) {
+      return {
+        valid: false,
+        error: `CLAUDE_MEM_CODEX_REASONING_EFFORT must be empty (Codex's default) or one of: ${CODEX_REASONING_EFFORTS.join(', ')}`,
+      };
     }
 
     if (settings.CLAUDE_MEM_PROVIDER) {

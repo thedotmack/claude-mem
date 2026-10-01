@@ -10,12 +10,16 @@ export type RejectedOutputDisposition = 'retry' | 'drop';
 /**
  * Count one rejected reply against the batch it answered.
  *
- * Counted against the stable claimed batch (its message ids), not the reply
- * text: a reset to pending keeps the ids, so the restarted generator cannot
- * earn the same batch a second retry. A different batch starts a fresh count.
+ * Counted against the batch, not the reply text, and keyed on its head (the
+ * oldest claimed message): a reset to pending keeps it at the front of the
+ * queue, so the restarted generator cannot earn the same batch a second retry.
+ * Keyed on every claimed id, a retry that folded in observations queued since
+ * the first try (Codex batches them) counted as a new batch, and a batch that
+ * kept growing was retried once per growth. A different head starts a fresh
+ * count: the old one was answered or dropped, and is gone from the queue.
  */
 export function recordRejectedOutput(session: ActiveSession): RejectedOutputDisposition {
-  const batchKey = session.claimedMessageIds.join(',');
+  const batchKey = String(session.claimedMessageIds[0] ?? '');
   if (session.invalidOutputBatchKey !== batchKey) {
     session.invalidOutputBatchKey = batchKey;
     session.consecutiveInvalidOutputs = 0;
