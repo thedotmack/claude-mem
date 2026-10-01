@@ -76,7 +76,7 @@ import {
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdoptionErrors } from './infrastructure/WorktreeAdoption.js';
-import { mergeProjectInto } from './infrastructure/ProjectMerge.js';
+import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
 import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
@@ -1614,14 +1614,15 @@ async function main() {
 
     case 'project': {
       // `project merge <from> <into> [--dry-run]` (plan-20 step 2): fold one
-      // project's memory into another, sync-safe and non-destructive.
+      // project's memory into another, sync-safe and non-destructive. Runs
+      // inside the worker when one is up, so the Chroma patch can land.
       const [projectSubcommand, from, into] = process.argv.slice(3).filter(arg => !arg.startsWith('--'));
       if (projectSubcommand !== 'merge' || !from || !into) {
         console.error('Usage: project merge <from> <into> [--dry-run]');
         process.exit(1);
       }
-      const merge = await mergeProjectInto({ from, into, dryRun: process.argv.includes('--dry-run') });
-      console.log(`\nProject merge ${merge.dryRun ? '(dry-run, no changes made)' : '(applied)'}`);
+      const merge = await runProjectMergeCommand({ from, into, dryRun: process.argv.includes('--dry-run') });
+      console.log(`\nProject merge ${merge.dryRun ? '(dry-run, no changes made)' : '(applied)'}${merge.ranIn === 'worker' ? ' by the running worker' : ''}`);
       console.log(`  From:                 ${merge.from}`);
       console.log(`  Into:                 ${merge.into}`);
       console.log(`  Observations merged:  ${merge.mergedObservations}`);

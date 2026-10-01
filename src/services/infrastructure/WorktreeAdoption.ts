@@ -11,6 +11,11 @@ import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
 const DEFAULT_DATA_DIR = paths.dataDir();
 
+/** Let pending I/O callbacks (HTTP requests) run before more synchronous work. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
 export interface AdoptionResult {
   repoPath: string;
   parentProject: string;
@@ -606,7 +611,12 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
     return results;
   }
 
-  const uniqueParents = new Set<string>();
+  // The worker starts this sweep fire-and-forget at boot, and everything below
+  // (git spawns, SQLite) is synchronous: yield before starting and between
+  // repositories so the worker keeps serving requests meanwhile (gate P2-3).
+  await yieldToEventLoop();
+
+  let recordedCwds: string[] = [];
   let db: import('bun:sqlite').Database | null = null;
   try {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
@@ -637,13 +647,18 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
     const cwdRows = db.prepare(
       `SELECT DISTINCT cwd FROM (${cwdSources.join(' UNION ')})`
     ).all() as Array<{ cwd: string }>;
-
-    for (const { cwd } of cwdRows) {
-      const mainRepo = resolveMainRepoPath(cwd);
-      if (mainRepo) uniqueParents.add(mainRepo);
-    }
+    recordedCwds = cwdRows.map(row => row.cwd);
   } finally {
     db?.close();
+  }
+
+  // A checkout that no longer exists cannot lead to a repository; asking git
+  // anyway cost a process spawn each (~5 s of blocked worker per 300).
+  const uniqueParents = new Set<string>();
+  for (const cwd of recordedCwds) {
+    if (!existsSync(cwd)) continue;
+    const mainRepo = resolveMainRepoPath(cwd);
+    if (mainRepo) uniqueParents.add(mainRepo);
   }
 
   if (uniqueParents.size === 0) {
@@ -652,6 +667,7 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
   }
 
   for (const repoPath of uniqueParents) {
+    await yieldToEventLoop();
     try {
       const result = await adoptMergedWorktrees({
         repoPath,
