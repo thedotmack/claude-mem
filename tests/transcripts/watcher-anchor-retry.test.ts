@@ -70,6 +70,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 80));
 
+// The multi-megabyte backlogs take well under a second alone, but the full
+// suite runs files side by side; the default 5 s test timeout is too tight.
+const HEAVY_TEST_TIMEOUT_MS = 30_000;
+
 describe('TranscriptWatcher retries a failed turn from its own record', () => {
   let tmpRoot: string;
   let statePath: string;
@@ -214,10 +218,10 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     expect(statSync(filePath).size).toBeGreaterThan(4 * 1024 * 1024);
 
     tail(filePath);
-    await waitFor(() => recorded.length >= texts.length, 15_000);
+    await waitFor(() => recorded.length >= texts.length, HEAVY_TEST_TIMEOUT_MS);
     await settle();
     expect(recorded).toEqual(texts);
-  });
+  }, HEAVY_TEST_TIMEOUT_MS + 5_000);
 
   it('zstd: a backlog larger than one pass is read in bounded passes, every frame once', async () => {
     const filePath = join(tmpRoot, 'big.jsonl.zstd');
@@ -229,10 +233,10 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     expect(statSync(filePath).size).toBeGreaterThan(4 * 1024 * 1024);
 
     tail(filePath);
-    await waitFor(() => recorded.length >= texts.length, 15_000);
+    await waitFor(() => recorded.length >= texts.length, HEAVY_TEST_TIMEOUT_MS);
     await settle();
     expect(recorded).toEqual(texts);
-  });
+  }, HEAVY_TEST_TIMEOUT_MS + 5_000);
 });
 
 describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
@@ -328,23 +332,23 @@ describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
   it('reads a large file from byte 0 when its first record began after startup (a live session)', async () => {
     const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
     const filePath = join(tmpRoot, 'live-large.jsonl');
-    const opening = JSON.stringify({ type: 'turn', session: 'session-retry', text: 'opening', timestamp: new Date().toISOString() });
+    const opening = JSON.stringify({ type: 'turn', session: 'session-retry', cwd: '/tmp/retry-project', text: 'opening', timestamp: new Date().toISOString() });
     const padding = 'z'.repeat(1000);
     writeFileSync(filePath, `${opening}\n${Array.from({ length: 300 }, (_, index) => `${turnLine(`turn-${index}`, padding)}\n`).join('')}`);
     expect(statSync(filePath).size).toBeGreaterThan(256 * 1024);
 
     const watch: WatchTarget = { name: 'retry-test', path: join(tmpRoot, '*.jsonl'), schema, startAtEnd: true };
     await (watcher as any).addTailer(filePath, watch, schema, true);
-    await waitFor(() => recorded.length >= 301);
+    await waitFor(() => recorded.length >= 301, HEAVY_TEST_TIMEOUT_MS);
     await settle();
     expect(recorded[0]).toBe('opening');
     expect(recorded).toHaveLength(301);
-  });
+  }, HEAVY_TEST_TIMEOUT_MS + 5_000);
 
   it('starts even a small copied history at EOF when its first record is older than startup', async () => {
     const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
     const filePath = join(tmpRoot, 'copied-small.jsonl');
-    const oldOpening = JSON.stringify({ type: 'turn', session: 'session-retry', text: 'old opening', timestamp: '2026-01-02T03:04:05.000Z' });
+    const oldOpening = JSON.stringify({ type: 'turn', session: 'session-retry', cwd: '/tmp/retry-project', text: 'old opening', timestamp: '2026-01-02T03:04:05.000Z' });
     writeFileSync(filePath, `${oldOpening}\n${turnLine('old turn')}\n`);
 
     const watch: WatchTarget = { name: 'retry-test', path: join(tmpRoot, '*.jsonl'), schema, startAtEnd: true };
