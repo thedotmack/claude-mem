@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  OPENROUTER_REASONING_EFFORTS,
   buildOpenRouterRequestBody,
   parseOpenRouterReasoningEffort,
   resolveOpenRouterConfig,
@@ -146,6 +147,22 @@ describe('resolveOpenRouterConfig reads the reasoning effort', () => {
       CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: 'none',
     });
     expect(resolveOpenRouterConfig(settingsPath).reasoningEffort).toBeUndefined();
+  });
+});
+
+describe('the viewer reasoning-effort select', () => {
+  const modal = readFileSync('src/ui/viewer/components/ContextSettingsModal.tsx', 'utf-8');
+  const select = modal.slice(modal.indexOf('label="Reasoning effort"'), modal.indexOf('</select>', modal.indexOf('label="Reasoning effort"')));
+
+  it('offers exactly the accepted values, defaulting to sending nothing', () => {
+    const values = [...select.matchAll(/<option value="([^"]*)"/g)].map(match => match[1]);
+    expect(values).toEqual(['', ...OPENROUTER_REASONING_EFFORTS]);
+  });
+
+  it('is hidden for the claude-mem observer, which sets its own reasoning policy', () => {
+    const gate = modal.lastIndexOf('{!observerManagesBaseUrl && (', modal.indexOf('label="Reasoning effort"'));
+    expect(gate).toBeGreaterThan(-1);
+    expect(modal.indexOf('label="Reasoning effort"') - gate).toBeLessThan(200);
   });
 });
 

@@ -456,6 +456,24 @@ export function ContextSettingsModal({
                       readOnly={observerManagesBaseUrl}
                     />
                   </FormField>
+                  {!observerManagesBaseUrl && (
+                    <FormField
+                      label="Reasoning effort"
+                      tooltip="openrouter.ai models only. None turns reasoning off, for models that spend the output budget thinking. Default sends nothing."
+                    >
+                      <select
+                        value={formState.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT || ''}
+                        onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_REASONING_EFFORT', e.target.value)}
+                      >
+                        <option value="">Model default</option>
+                        <option value="none">None (reasoning off)</option>
+                        <option value="minimal">Minimal</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </select>
+                    </FormField>
+                  )}
                   <FormField
                     label="Site URL (Optional)"
                     tooltip="Your site URL for OpenRouter analytics (optional)"
