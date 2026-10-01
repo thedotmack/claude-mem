@@ -8,6 +8,7 @@ import {
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 // Dependency-free, so it stays bundle-safe for the plugin (no worker-only imports).
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
+import { retryWhileRefused } from "./worker-retry.js";
 
 /**
  * OpenCode plugin entry module.
@@ -125,27 +126,40 @@ function errorMessage(error: unknown): string {
 // A refused connection means the worker is simply not running and must stay
 // quiet. isConnectionRefusedError recognizes Bun's and undici's shapes, which a
 // message.includes('ECONNREFUSED') check misses (OpenCode hosts plugins under Bun).
-async function workerPost(
-  path: string,
-  body: Record<string, unknown>,
-): Promise<void> {
+/** One POST attempt. Resolves true when the worker refused the connection (not running yet). */
+async function postToWorker(fetchImpl: typeof fetch, path: string, payload: string): Promise<boolean> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+    const response = await fetchImpl(`${WORKER_BASE_URL}${path}`, {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({
-        ...body,
-        platformSource: normalizePlatformSource(PLATFORM_SOURCE),
-      }),
+      body: payload,
       signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     }
+    return false;
   } catch (error: unknown) {
-    if (!isConnectionRefusedError(error)) {
-      console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
-    }
+    if (isConnectionRefusedError(error)) return true;
+    console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
+    return false;
+  }
+}
+
+async function workerPost(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const payload = JSON.stringify({
+    ...body,
+    platformSource: normalizePlatformSource(PLATFORM_SOURCE),
+  });
+  // Retries reuse the fetch of the first attempt.
+  const fetchImpl = fetch;
+  if (await postToWorker(fetchImpl, path, payload)) {
+    // The worker may still be starting (see worker-retry.ts): retry in the
+    // background so no hook waits on it.
+    void retryWhileRefused(() => postToWorker(fetchImpl, path, payload));
   }
 }
 
