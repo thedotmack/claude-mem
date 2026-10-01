@@ -454,9 +454,22 @@ export interface KeyPoolAttempt {
  * `rate_limit` still reaches the pause path, so a fully-spent pool behaves
  * exactly like today's single spent key rather than surfacing a new error type
  * the callers upstream do not handle.
+ *
+ * The exception is a pool that is not fully spent: the sweep ended on a spent
+ * or refused key, but another key leaves cooldown within a rate-limit window
+ * (it was only throttled). Rethrowing the spent key's error would hold the
+ * whole provider for that key's window, so the caller's
+ * `rateLimitUntilNextKey` builds a rate limit lasting until the other key is
+ * back instead.
  */
 export async function withKeyPool<T>(
-  opts: { poolId: KeyPoolId; keys: string[]; label?: string },
+  opts: {
+    poolId: KeyPoolId;
+    keys: string[];
+    label?: string;
+    /** Builds that rate limit. The provider owns its error class (see ClassifiedLike). */
+    rateLimitUntilNextKey?: (retryAfterMs: number, lastError: unknown) => unknown;
+  },
   body: (attempt: KeyPoolAttempt) => Promise<T>,
 ): Promise<T> {
   const { poolId, label } = opts;
@@ -504,7 +517,29 @@ export async function withKeyPool<T>(
     }
   }
 
+  const lastKind = asClassified(lastRotateError)?.kind;
+  if (opts.rateLimitUntilNextKey && lastKind !== undefined && lastKind !== 'rate_limit') {
+    const nextKeyFreeMs = soonestKeyFreeWithinRateLimitWindow(poolId, keys);
+    if (nextKeyFreeMs !== null) throw opts.rateLimitUntilNextKey(nextKeyFreeMs, lastRotateError);
+  }
+
   throw lastRotateError ?? new Error(`${label ?? poolId} key pool exhausted without an attempt`);
+}
+
+/**
+ * How soon the first cooling key in the pool is back, when that is within a
+ * rate-limit window (RATE_LIMIT_COOLDOWN_MAX_MS, the longest a throttle parks a
+ * key); otherwise null. A key spent or refused just now sits out 30 minutes or
+ * more, so it never counts.
+ */
+function soonestKeyFreeWithinRateLimitWindow(poolId: KeyPoolId, keys: string[]): number | null {
+  let soonest: number | null = null;
+  for (const key of keys) {
+    const remaining = keyCooldownRemainingMs(poolId, key);
+    if (remaining <= 0 || remaining > RATE_LIMIT_COOLDOWN_MAX_MS) continue;
+    if (soonest === null || remaining < soonest) soonest = remaining;
+  }
+  return soonest;
 }
 
 /**

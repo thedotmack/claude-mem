@@ -16,7 +16,7 @@ import {
   withKeyPool,
 } from '../../src/shared/api-key-pool.js';
 import { withRetry } from '../../src/services/worker/retry.js';
-import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
+import { ClassifiedProviderError, rateLimitUntilNextKey } from '../../src/services/worker/provider-errors.js';
 
 /**
  * Preload (tests/preload.ts) pins CLAUDE_MEM_DATA_DIR to a per-run temp dir, so
@@ -425,6 +425,47 @@ describe('withKeyPool', () => {
     expect((thrown as ClassifiedProviderError).kind).toBe('quota_exhausted');
     expect(keyCooldownRemainingMs('gemini', 'a')).toBeGreaterThan(0);
     expect(keyCooldownRemainingMs('gemini', 'b')).toBeGreaterThan(0);
+  });
+
+  // Wave 3 gate R4-8: a quota error arms the provider breaker for 30 minutes.
+  // A pool whose other key frees in a minute is not spent, so it must not.
+  it('reports a rate limit until the next key frees, not the last key\'s quota error', async () => {
+    const pool = { poolId: 'gemini' as const, keys: ['a', 'b'], rateLimitUntilNextKey };
+    // Request 1: a is throttled for a minute, b serves.
+    await withKeyPool(pool, async ({ key }) => {
+      if (key === 'a') throw classified('rate_limit', 60_000);
+      return 'ok';
+    });
+    // Request 2: only b is offered, and its allowance is now spent.
+    let thrown: unknown;
+    try {
+      await withKeyPool(pool, async () => {
+        throw classified('quota_exhausted');
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(ClassifiedProviderError);
+    expect((thrown as ClassifiedProviderError).kind).toBe('rate_limit');
+    expect((thrown as ClassifiedProviderError).retryAfterMs).toBeGreaterThan(55_000);
+    expect((thrown as ClassifiedProviderError).retryAfterMs).toBeLessThanOrEqual(60_000);
+    expect((thrown as ClassifiedProviderError).message).toContain('test quota_exhausted');
+    // b still sits out its own quota window.
+    expect(keyCooldownRemainingMs('gemini', 'b')).toBeGreaterThan(29 * 60_000);
+  });
+
+  it('keeps the quota error when no other key frees within a rate-limit window', async () => {
+    markKeyCooldown('gemini', 'a', 'auth_invalid');
+    let thrown: unknown;
+    try {
+      await withKeyPool({ poolId: 'gemini', keys: ['a', 'b'], rateLimitUntilNextKey }, async () => {
+        throw classified('quota_exhausted');
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect((thrown as ClassifiedProviderError).kind).toBe('quota_exhausted');
   });
 
   it('skips a key that is already cooling from an earlier request', async () => {

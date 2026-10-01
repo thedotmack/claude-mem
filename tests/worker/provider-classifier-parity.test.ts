@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'bun:test';
 import { classifyGeminiError } from '../../src/services/worker/GeminiProvider.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import { classifyOpenAICompatError } from '../../src/services/worker/OpenAICompatProvider.js';
 import { classifyGeminiServerError } from '../../src/server/generation/providers/GeminiObservationProvider.js';
 import { classifyHttpProviderError } from '../../src/server/generation/providers/shared/error-classification.js';
 
@@ -36,10 +37,13 @@ describe('worker and server agree on provider refusals', () => {
     ['a per-minute free-model limit', 'Rate limit exceeded: free-models-per-min.', 'rate_limit'],
   ];
   for (const [name, message, kind] of openRouterCases) {
-    it(`OpenRouter 429: ${name} is ${kind} on both`, () => {
+    it(`OpenRouter 429: ${name} is ${kind} on both, and on openai-compatible`, () => {
       const bodyText = openRouterBody(message);
       expect(classifyOpenRouterError({ status: 429, bodyText, cause: new Error('429') }).kind).toBe(kind);
       expect(classifyHttpProviderError({ status: 429, bodyText, cause: new Error('429'), providerLabel: 'OpenRouter' }).kind).toBe(kind);
+      // The same answer through the openai-compatible provider (R4-9): as a
+      // rate limit, a daily cap was re-probed every 90 seconds until it reset.
+      expect(classifyOpenAICompatError({ status: 429, bodyText, cause: new Error('429') }).kind).toBe(kind);
     });
   }
 

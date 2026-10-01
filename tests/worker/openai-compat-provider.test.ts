@@ -330,6 +330,47 @@ describe('classifyOpenAICompatError', () => {
 });
 
 /**
+ * Wave 3 gate R4-2: Groq and OpenAI end a per-minute throttle with a link to
+ * their billing page. The loose "billing" marker read those as a spent
+ * allowance, which parks the key for 30 minutes and arms the provider breaker
+ * over a limit that clears in seconds.
+ */
+describe('a throttle that links to a billing page stays a rate limit', () => {
+  const headers = (retryAfter: string) => ({ get: (name: string) => (name.toLowerCase() === 'retry-after' ? retryAfter : null) });
+  const groqTpm = JSON.stringify({ error: {
+    message: 'Rate limit reached for model `llama-3.3-70b-versatile` in organization `org_01abc` service tier `on_demand` on tokens per minute (TPM): Limit 12000, Used 11679, Requested 1462. Please try again in 5.705s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing',
+    type: 'tokens', code: 'rate_limit_exceeded',
+  } });
+  const openaiRpm = JSON.stringify({ error: {
+    message: 'Rate limit reached for gpt-4o-mini in organization org-abc on requests per min (RPM): Limit 3, Used 3, Requested 1. Please try again in 20s. You can increase your rate limit by adding a payment method to your account at https://platform.openai.com/account/billing.',
+    type: 'requests', param: null, code: 'rate_limit_exceeded',
+  } });
+
+  it('reads Groq and OpenAI per-minute throttles as rate limits, with their Retry-After', () => {
+    const groq = classifyOpenAICompatError({ status: 429, bodyText: groqTpm, headers: headers('6'), cause: new Error('x') });
+    expect(groq.kind).toBe('rate_limit');
+    expect(groq.retryAfterMs).toBe(6_000);
+
+    const openai = classifyOpenAICompatError({ status: 429, bodyText: openaiRpm, headers: headers('20'), cause: new Error('x') });
+    expect(openai.kind).toBe('rate_limit');
+    expect(openai.retryAfterMs).toBe(20_000);
+  });
+
+  it('still reads a spent allowance as quota, on a 429 too', () => {
+    const openaiQuota = JSON.stringify({ error: {
+      message: 'You exceeded your current quota, please check your plan and billing details.',
+      type: 'insufficient_quota', param: null, code: 'insufficient_quota',
+    } });
+    expect(classifyOpenAICompatError({ status: 429, bodyText: openaiQuota, cause: new Error('x') }).kind).toBe('quota_exhausted');
+  });
+
+  it('keeps reading a billing refusal that is not a throttle as quota', () => {
+    const hardLimit = JSON.stringify({ error: { message: 'Billing hard limit has been reached', type: 'invalid_request_error', code: 'billing_hard_limit_reached' } });
+    expect(classifyOpenAICompatError({ status: 400, bodyText: hardLimit, cause: new Error('x') }).kind).toBe('quota_exhausted');
+  });
+});
+
+/**
  * Several OpenAI-compatible gateways report a throttle in a 200 body rather
  * than a 429 — the shape #3263 hit through OpenRouter. A status-only
  * classifier calls that `unrecoverable`, which neither retries nor rotates the

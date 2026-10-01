@@ -12,7 +12,7 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
-import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
+import { ClassifiedProviderError, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { OpenAICompatibleProvider, assistantText, type OpenAIChatMessage as OpenAIMessage, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
@@ -126,7 +126,7 @@ const CONTEXT_OVERFLOW_MARKERS = [
   'exceeds the available context size',
 ];
 
-function isContextOverflowBody(body: string): boolean {
+export function isContextOverflowBody(body: string): boolean {
   const lower = body.toLowerCase();
   return CONTEXT_OVERFLOW_MARKERS.some(marker => lower.includes(marker)) || isContextOverflowObserverOutput(body);
 }
@@ -721,7 +721,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     // every install that has not opted in, and every cmem-gateway install — is
     // a pass-through.
     return withKeyPool(
-      { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter' },
+      { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter', rateLimitUntilNextKey },
       ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
         history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
         signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort,
