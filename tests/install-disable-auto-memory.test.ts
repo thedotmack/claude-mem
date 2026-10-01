@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { disableClaudeAutoMemory } from '../src/npx-cli/commands/install.js';
@@ -7,11 +7,12 @@ import { disableClaudeAutoMemory } from '../src/npx-cli/commands/install.js';
 /**
  * Tests for auto-memory disable behavior in the install command.
  *
- * Closes anthropics/claude-code#23544 from claude-mem's side: any install that
- * targets claude-code must set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in
+ * Closes anthropics/claude-code#23544 from claude-mem's side: installs now
+ * require explicit consent before setting CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in
  * ~/.claude/settings.json `env` block. The built-in MEMORY.md system creates
  * shadow state outside the user's control and competes with claude-mem's
- * hook-based memory for context-window tokens.
+ * hook-based memory for context-window tokens, but we should not disable it
+ * without the user's opt-in.
  *
  * Source-inspection style mirrors install-non-tty.test.ts — disableClaudeAutoMemory
  * is a private module-level helper that can't be imported directly.
@@ -34,12 +35,10 @@ describe('Install: disable Claude Code auto-memory', () => {
     });
 
     it('writes CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 to settings.json env block', () => {
-      // The string '1' (not boolean true) is required — env vars are always strings.
       expect(installSource).toMatch(/CLAUDE_CODE_DISABLE_AUTO_MEMORY:\s*['"]1['"]/);
     });
 
     it('reads existing settings via readJsonSafe (preserves other keys)', () => {
-      // Must round-trip through readJsonSafe + writeJsonFileAtomic, never overwrite blindly.
       const helperBody = installSource.match(
         /function disableClaudeAutoMemory\(\)[\s\S]*?\n\}/,
       )?.[0];
@@ -49,8 +48,6 @@ describe('Install: disable Claude Code auto-memory', () => {
     });
 
     it('merges with existing env vars instead of replacing the env block', () => {
-      // Spread of existing env into new env is what preserves user-set vars
-      // like ANTHROPIC_AUTH_TOKEN, AWS_REGION, etc.
       const helperBody = installSource.match(
         /function disableClaudeAutoMemory\(\)[\s\S]*?\n\}/,
       )?.[0];
@@ -74,75 +71,72 @@ describe('Install: disable Claude Code auto-memory', () => {
   });
 
   describe('runInstallCommand integration', () => {
-    it('calls disableClaudeAutoMemory after setupIDEs', () => {
-      // setupIDEs returns first; we need its result before deciding what to do,
-      // and the disable step shouldn't run if claude-code wasn't installed.
-      // Use lastIndexOf for the call so we match the call site, not the helper definition.
+    it('resolves auto-memory choice after setupIDEs', () => {
       const setupCallIdx = installSource.indexOf('await setupIDEs(selectedIDEs');
-      const disableCallIdx = installSource.lastIndexOf('disableClaudeAutoMemory()');
+      const choiceCallIdx = installSource.indexOf('await resolveClaudeAutoMemoryChoice(selectedIDEs, options)');
       expect(setupCallIdx).toBeGreaterThan(-1);
-      expect(disableCallIdx).toBeGreaterThan(-1);
-      expect(disableCallIdx).toBeGreaterThan(setupCallIdx);
+      expect(choiceCallIdx).toBeGreaterThan(-1);
+      expect(choiceCallIdx).toBeGreaterThan(setupCallIdx);
     });
 
-    it("only runs the disable step when claude-code is in selectedIDEs", () => {
-      // Cursor/Codex/Windsurf installs shouldn't touch ~/.claude/settings.json
-      // for an env var that doesn't apply to them.
+    it('skips the consent helper entirely when claude-code is not selected', () => {
       expect(installSource).toMatch(
-        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,200}disableClaudeAutoMemory\(\)/,
+        /if \(!selectedIDEs\.includes\(['"]claude-code['"]\)\) \{\s*return ['"]not-applicable['"]/
+      );
+    });
+
+    it('only calls disableClaudeAutoMemory after an explicit disable decision', () => {
+      expect(installSource).toMatch(
+        /if \(autoMemoryChoice === ['"]disable['"]\)[\s\S]{0,300}disableClaudeAutoMemory\(\)/
+      );
+    });
+
+    it('leaves auto-memory enabled in non-interactive installs unless the explicit flag is present', () => {
+      expect(installSource).toMatch(
+        /if \(!isInteractive\) \{\s*return ['"]leave-enabled['"]/
+      );
+      expect(installSource).toMatch(
+        /if \(options\.disableAutoMemory\) \{\s*return ['"]disable['"]/
       );
     });
 
     it('catches errors from disableClaudeAutoMemory and continues', () => {
-      // Settings.json is the user's file — a write failure (permissions, disk
-      // full, etc.) must surface as a warning, not abort the install.
       const integrationBlock = installSource.match(
-        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,800}/,
+        /if \(autoMemoryChoice === ['"]disable['"]\)[\s\S]{0,800}/
       )?.[0];
       expect(integrationBlock).toBeDefined();
       expect(integrationBlock).toContain('try {');
       expect(integrationBlock).toMatch(/const wrote = disableClaudeAutoMemory\(\)/);
       expect(integrationBlock).toContain('catch');
-      // Phase 3 of plans/04-installer-transparency.md: warnings no longer log
-      // live (a clack spinner clobbers them). They route through the central
-      // installerError(WARN_CONTINUE) decision point and are flushed at the end.
       expect(integrationBlock).toMatch(/installerError\(ErrorSeverity\.WARN_CONTINUE/);
     });
 
-    it('tracks a tri-state autoMemoryStatus (disabled / already-disabled / failed)', () => {
-      // A boolean would conflate the error path with "already set", so a write
-      // failure mid-install would silently render "already disabled" in the
-      // summary while the warning above said the opposite. Tri-state keeps the
-      // log line and the summary line truthful and consistent.
+    it('tracks a four-state autoMemoryStatus (disabled / already-disabled / left-enabled / failed)', () => {
       expect(installSource).toMatch(
-        /let autoMemoryStatus:\s*['"]disabled['"]\s*\|\s*['"]already-disabled['"]\s*\|\s*['"]failed['"]\s*\|\s*null/,
+        /let autoMemoryStatus:\s*['"]disabled['"]\s*\|\s*['"]already-disabled['"]\s*\|\s*['"]left-enabled['"]\s*\|\s*['"]failed['"]\s*\|\s*null/
       );
-      const integrationBlock = installSource.match(
-        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,800}/,
-      )?.[0];
+      const integrationBlock = installSource.match(/autoMemoryChoice[\s\S]{0,1200}/)?.[0];
       expect(integrationBlock).toMatch(/autoMemoryStatus = wrote \? ['"]disabled['"] : ['"]already-disabled['"]/);
+      expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]left-enabled['"]/);
       expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]failed['"]/);
     });
 
-    it('surfaces all three states in the install summary distinctly', () => {
-      // The error case must NOT render as "already disabled" — that would
-      // contradict the warn line above it and falsely imply the env var is set.
+    it('surfaces disabled, already-disabled, left-enabled, and failed states in the install summary distinctly', () => {
       expect(installSource).toMatch(
-        /autoMemoryStatus === ['"]disabled['"][\s\S]{0,200}CLAUDE_CODE_DISABLE_AUTO_MEMORY=1/,
+        /autoMemoryStatus === ['"]disabled['"][\s\S]{0,200}CLAUDE_CODE_DISABLE_AUTO_MEMORY=1/
       );
       expect(installSource).toMatch(
-        /autoMemoryStatus === ['"]already-disabled['"][\s\S]{0,200}already disabled/,
+        /autoMemoryStatus === ['"]already-disabled['"][\s\S]{0,200}already disabled/
       );
       expect(installSource).toMatch(
-        /autoMemoryStatus === ['"]failed['"][\s\S]{0,200}write failed/,
+        /autoMemoryStatus === ['"]left-enabled['"][\s\S]{0,200}left enabled/
+      );
+      expect(installSource).toMatch(
+        /autoMemoryStatus === ['"]failed['"][\s\S]{0,200}write failed/
       );
     });
   });
 
-  // Behavioral test that exercises real file I/O against a temp Claude config dir.
-  // Complements the source-inspection tests above: catches runtime bugs (overwriting
-  // env block, dropping existing keys, non-string values, etc.) that string matching
-  // can't see. Uses CLAUDE_CONFIG_DIR override so we don't touch the user's settings.
   describe('disableClaudeAutoMemory runtime behavior', () => {
     let tempDir: string;
     let originalConfigDir: string | undefined;
@@ -209,8 +203,6 @@ describe('Install: disable Claude Code auto-memory', () => {
     });
 
     it('writes the literal string "1", not boolean true', () => {
-      // Env vars are always strings — boolean true would be coerced unpredictably
-      // by Claude Code's env loader.
       disableClaudeAutoMemory();
       const raw = readFileSync(join(tempDir, 'settings.json'), 'utf-8');
       expect(raw).toMatch(/"CLAUDE_CODE_DISABLE_AUTO_MEMORY":\s*"1"/);
@@ -218,8 +210,6 @@ describe('Install: disable Claude Code auto-memory', () => {
     });
 
     it('replaces a non-object env value with a fresh env block', () => {
-      // Defensive: if settings.env is malformed (string, null, array), the helper
-      // still has to land on a valid object containing the env var.
       writeFileSync(
         join(tempDir, 'settings.json'),
         JSON.stringify({ env: 'not-an-object', theme: 'dark' }),

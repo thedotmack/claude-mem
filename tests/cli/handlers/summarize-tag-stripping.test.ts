@@ -30,12 +30,16 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
 }));
 
 let mockExtractedMessage: string = '';
+// Counts transcript reads: the Stop hook reads the transcript exactly once via
+// extractLastAssistantTurn (text + model together), never via extractLastMessage.
 let extractCallCount = 0;
 mock.module('../../../src/shared/transcript-parser.js', () => ({
-  extractLastMessage: () => {
+  extractLastMessage: () => mockExtractedMessage,
+  extractLastAssistantTurn: () => {
     extractCallCount += 1;
-    return mockExtractedMessage;
+    return { text: mockExtractedMessage, model: 'claude-test-model' };
   },
+  extractLastAssistantModel: () => 'claude-test-model',
 }));
 
 const workerCallLog: Array<{ path: string; method: string; body: any }> = [];
@@ -112,6 +116,30 @@ describe('summarizeHandler — privacy tag stripping', () => {
     expect(body.platformSource).toBe('codex');
   });
 
+  it('summarizes a Claude Code turn that continued after another plugin blocked the stop', async () => {
+    // Claude Code sends stop_hook_active: true once ANY Stop hook blocked the
+    // stop. claude-mem's never does, so the turn Claude kept working on still
+    // needs its summary (and the advisor capture that runs before it).
+    const { claudeCodeAdapter } = await import('../../../src/cli/adapters/claude-code.js');
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    mockExtractedMessage = 'Finished the work the other plugin asked for';
+    const input = {
+      ...claudeCodeAdapter.normalizeInput({
+        session_id: 'sess-cc-continued',
+        cwd: '/tmp',
+        transcript_path: '/tmp/fake.jsonl',
+        stop_hook_active: true,
+      }),
+      platform: 'claude-code' as const,
+    };
+
+    const result = await summarizeHandler.execute(input);
+
+    expect(result.continue).toBe(true);
+    expect(extractCallCount).toBe(1);
+    expect(postedBody().last_assistant_message).toBe('Finished the work the other plugin asked for');
+  });
+
   it('short-circuits Codex stop hook re-entry', async () => {
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
     const result = await summarizeHandler.execute({
@@ -136,6 +164,7 @@ describe('summarizeHandler — privacy tag stripping', () => {
     const result = await summarizeHandler.execute(baseInput as any);
 
     expect(result.continue).toBe(true);
+    expect(extractCallCount).toBe(1);
     const body = postedBody();
     expect(body.last_assistant_message).not.toContain('SECRET-VALUE-42');
     expect(body.last_assistant_message).not.toContain('<private>');
@@ -211,4 +240,24 @@ describe('summarizeHandler — privacy tag stripping', () => {
       expect(body.last_assistant_message).toContain('after');
     });
   }
+});
+
+// Migrated from the now-deleted Gemini CLI host-integration compat test file
+// (Phase A removal) — these two checks are unrelated to that integration, they
+// just happened to live in the same file. Preserved here so the platformSource
+// plumbing in summarize.ts keeps regression coverage.
+describe('Summarize handler - platformSource in request body', () => {
+  it('should include platformSource import in summarize.ts', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
+    expect(src).toContain('normalizePlatformSource');
+    expect(src).toContain('platform-source');
+  });
+
+  it('should pass platformSource in the summarize request body', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
+    expect(src).toContain('platformSource');
+    expect(src).toContain('/api/sessions/summarize');
+  });
 });

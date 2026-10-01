@@ -168,7 +168,8 @@ If you run the import again on the same file, duplicates are automatically skipp
 
 4. **Verify import** by searching:
    ```bash
-   curl "http://localhost:37777/api/search?query=windows&format=index&limit=10"
+   WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+   curl "http://127.0.0.1:$WORKER_PORT/api/search?query=windows&format=index&limit=10"
    ```
 
 ## JSON Export Format

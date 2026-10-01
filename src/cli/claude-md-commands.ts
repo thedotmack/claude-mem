@@ -14,6 +14,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
+import { getProjectContext } from '../utils/project-name.js';
 import { paths } from '../shared/paths.js';
 
 const DB_PATH = paths.database();
@@ -34,19 +35,21 @@ interface ObservationRow {
   discovery_tokens: number | null;
 }
 
+// BMP-only markers (issue #2787): astral emoji can be split into a lone
+// surrogate by a Claude Code context truncation and brick the session.
 const TYPE_ICONS: Record<string, string> = {
-  'bugfix': '🔴',
-  'feature': '🟣',
-  'refactor': '🔄',
-  'change': '✅',
-  'discovery': '🔵',
-  'decision': '⚖️',
-  'session': '🎯',
-  'prompt': '💬'
+  'bugfix': '●',
+  'feature': '◆',
+  'refactor': '↻',
+  'change': '✓',
+  'discovery': '○',
+  'decision': '⚖',
+  'session': '◎',
+  'prompt': '”'
 };
 
 function getTypeIcon(type: string): string {
-  return TYPE_ICONS[type] || '📝';
+  return TYPE_ICONS[type] || '•';
 }
 
 function estimateTokens(obs: ObservationRow): number {
@@ -137,7 +140,7 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
-    WHERE o.project = ?
+    WHERE o.project COLLATE NOCASE = ?
       AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
@@ -381,7 +384,7 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
     observationLimit
   });
 
-  const project = path.basename(workingDir);
+  const project = getProjectContext(workingDir).primary;
   const trackedFolders = getTrackedFolders(workingDir);
 
   if (trackedFolders.size === 0) {

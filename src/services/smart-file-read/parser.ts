@@ -1,10 +1,12 @@
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { logger } from "../../utils/logger.js";
+import { resolveDataDir } from "../../shared/paths.js";
+import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
 
 const _require = typeof __filename !== 'undefined'
   ? createRequire(__filename)
@@ -55,8 +57,6 @@ const LANG_MAP: Record<string, string> = {
   ".kts": "kotlin",
   ".swift": "swift",
   ".php": "php",
-  ".ex": "elixir",
-  ".exs": "elixir",
   ".lua": "lua",
   ".scala": "scala",
   ".sc": "scala",
@@ -75,109 +75,9 @@ const LANG_MAP: Record<string, string> = {
   ".mdx": "markdown",
 };
 
-function detectLanguageWithUserGrammars(filePath: string, userConfig: UserGrammarConfig): string {
+function detectLanguage(filePath: string): string {
   const ext = filePath.slice(filePath.lastIndexOf("."));
-  if (LANG_MAP[ext]) return LANG_MAP[ext];
-  if (userConfig.extensionToLanguage[ext]) return userConfig.extensionToLanguage[ext];
-  return "unknown";
-}
-
-function getUserAwareQueryKey(language: string, userConfig: UserGrammarConfig): string {
-  if (userConfig.languageToQueryKey[language]) {
-    return userConfig.languageToQueryKey[language];
-  }
-  return getQueryKey(language);
-}
-
-export interface UserGrammarEntry {
-  package: string;
-  extensions: string[];
-  query?: string;
-}
-
-export interface UserGrammarConfig {
-  grammars: Record<string, UserGrammarEntry>;
-  extensionToLanguage: Record<string, string>;
-  languageToQueryKey: Record<string, string>;
-}
-
-const userGrammarCache = new Map<string, UserGrammarConfig>();
-
-const EMPTY_USER_GRAMMAR_CONFIG: UserGrammarConfig = {
-  grammars: {},
-  extensionToLanguage: {},
-  languageToQueryKey: {},
-};
-
-export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
-  if (userGrammarCache.has(projectRoot)) return userGrammarCache.get(projectRoot)!;
-
-  const configPath = join(projectRoot, ".claude-mem.json");
-  let rawConfig: Record<string, unknown>;
-
-  try {
-    const content = readFileSync(configPath, "utf-8");
-    rawConfig = JSON.parse(content);
-  } catch {
-    userGrammarCache.set(projectRoot, EMPTY_USER_GRAMMAR_CONFIG);
-    return EMPTY_USER_GRAMMAR_CONFIG;
-  }
-
-  const grammarsRaw = rawConfig.grammars;
-  if (!grammarsRaw || typeof grammarsRaw !== "object" || Array.isArray(grammarsRaw)) {
-    userGrammarCache.set(projectRoot, EMPTY_USER_GRAMMAR_CONFIG);
-    return EMPTY_USER_GRAMMAR_CONFIG;
-  }
-
-  const config: UserGrammarConfig = {
-    grammars: {},
-    extensionToLanguage: {},
-    languageToQueryKey: {},
-  };
-
-  for (const [language, entry] of Object.entries(grammarsRaw as Record<string, unknown>)) {
-    if (GRAMMAR_PACKAGES[language]) continue;
-
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const typedEntry = entry as Record<string, unknown>;
-
-    const pkg = typedEntry.package;
-    const extensions = typedEntry.extensions;
-    const queryPath = typedEntry.query;
-
-    if (typeof pkg !== "string" || !Array.isArray(extensions)) continue;
-    if (!extensions.every((e: unknown) => typeof e === "string")) continue;
-
-    config.grammars[language] = {
-      package: pkg,
-      extensions: extensions as string[],
-      query: typeof queryPath === "string" ? queryPath : undefined,
-    };
-
-    for (const ext of extensions as string[]) {
-      if (!LANG_MAP[ext]) {
-        config.extensionToLanguage[ext] = language;
-      }
-    }
-
-    if (typeof queryPath === "string") {
-      const fullQueryPath = join(projectRoot, queryPath);
-      try {
-        const queryContent = readFileSync(fullQueryPath, "utf-8");
-        const queryKey = `user_${language}`;
-        QUERIES[queryKey] = queryContent;
-        config.languageToQueryKey[language] = queryKey;
-      } catch {
-        logger.warn('PARSER', 'Custom query file not found, falling back to generic', { fullQueryPath });
-        config.languageToQueryKey[language] = "generic";
-      }
-    } else {
-      config.languageToQueryKey[language] = "generic";
-    }
-  }
-
-  userGrammarCache.set(projectRoot, config);
-  return config;
+  return LANG_MAP[ext] ?? "unknown";
 }
 
 const GRAMMAR_PACKAGES: Record<string, string> = {
@@ -194,7 +94,6 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   kotlin: "tree-sitter-kotlin",
   swift: "tree-sitter-swift",
   php: "tree-sitter-php/php",
-  elixir: "tree-sitter-elixir",
   lua: "@tree-sitter-grammars/tree-sitter-lua",
   scala: "tree-sitter-scala",
   bash: "tree-sitter-bash",
@@ -232,32 +131,9 @@ function resolveGrammarPath(language: string): string | null {
     const packageJsonPath = _require.resolve(pkg + "/package.json");
     return dirname(packageJsonPath);
   } catch {
+    // [ANTI-PATTERN IGNORED]: grammar package not installed is expected for unsupported languages; caller falls back to user grammars or a symbol-less folded view
     return null;
   }
-}
-
-export function resolveGrammarPathWithFallback(language: string, projectRoot?: string): string | null {
-  const bundled = resolveGrammarPath(language);
-  if (bundled) return bundled;
-
-  if (!projectRoot) return null;
-
-  const userConfig = loadUserGrammars(projectRoot);
-  const entry = userConfig.grammars[language];
-  if (!entry) return null;
-
-  try {
-    const packageJsonPath = join(projectRoot, "node_modules", entry.package, "package.json");
-    if (existsSync(packageJsonPath)) {
-      const grammarDir = dirname(packageJsonPath);
-      if (existsSync(join(grammarDir, "src"))) return grammarDir;
-    }
-  } catch {
-    // Grammar package not installed
-  }
-
-  logger.warn('PARSER', 'Grammar package not found', { language, package: entry.package });
-  return null;
 }
 
 const QUERIES: Record<string, string> = {
@@ -269,6 +145,19 @@ const QUERIES: Record<string, string> = {
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
+(import_statement) @imp
+(export_statement) @exp
+`,
+
+  // Plain JavaScript: the tree-sitter-javascript grammar has no type_identifier,
+  // interface_declaration, type_alias_declaration or enum_declaration nodes, so it
+  // cannot share the jsts query — tree-sitter aborts query compilation on the first
+  // unknown node type. Class names are (identifier) here, not (type_identifier).
+  js: `
+(function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(class_declaration name: (identifier) @name) @cls
+(method_definition name: (property_identifier) @name) @method
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -422,6 +311,7 @@ const QUERIES: Record<string, string> = {
 function getQueryKey(language: string): string {
   switch (language) {
     case "javascript":
+      return "js";
     case "typescript":
     case "tsx":
       return "jsts";
@@ -433,7 +323,6 @@ function getQueryKey(language: string): string {
     case "kotlin": return "kotlin";
     case "swift": return "swift";
     case "php": return "php";
-    case "elixir": return "generic";
     case "lua": return "lua";
     case "scala": return "scala";
     case "bash": return "bash";
@@ -465,24 +354,116 @@ function getQueryFile(queryKey: string): string {
   return filePath;
 }
 
-let cachedBinPath: string | null = null;
-
-function getTreeSitterBin(): string {
-  if (cachedBinPath) return cachedBinPath;
+// tree-sitter-cli installs `tree-sitter.exe` on Windows, not a bare `tree-sitter`
+// (see ChromaMcpManager.resolveUvxCommand for the same platform-suffix idiom).
+// Without the `.exe` suffix the existsSync check below always misses on Windows,
+// silently falling through to a bare `tree-sitter` that may not be on PATH —
+// smart file parsing then returns empty results with no error.
+export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
+  const binName = treeSitterBinaryName(platform);
 
   try {
     const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), "tree-sitter");
+    const binPath = join(dirname(pkgPath), binName);
     if (existsSync(binPath)) {
-      cachedBinPath = binPath;
       return binPath;
     }
   } catch {
     // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
   }
 
-  cachedBinPath = "tree-sitter";
+  return binName;
+}
+
+let cachedBinPath: string | null = null;
+
+function getTreeSitterBin(): string {
+  if (cachedBinPath) return cachedBinPath;
+  cachedBinPath = resolveTreeSitterBinPath();
   return cachedBinPath;
+}
+
+// `tree-sitter query -p <grammar-dir>` implies --rebuild (#3926): the CLI
+// recompiles the grammar from source on EVERY invocation, so each smart_outline
+// / smart_search / smart_unfold call paid a full C compile before it could match
+// a single node. Building the grammar once and passing the artifact with
+// `-l <lib> --lang-name <language>` turns the same call into a library load.
+// Grammar libraries live in the data dir, not in node_modules: a plugin update
+// replaces node_modules wholesale, and writing into a package directory that the
+// installer owns is not ours to do.
+const GRAMMAR_LIB_DIR = join(resolveDataDir(), "tree-sitter-libs");
+
+// dlopen does not care about the suffix, but the platform-native one keeps the
+// directory readable and matches what `tree-sitter build` emits elsewhere.
+const GRAMMAR_LIB_EXTENSION = process.platform === "win32"
+  ? ".dll"
+  : process.platform === "darwin" ? ".dylib" : ".so";
+
+// A grammar is `src/parser.c` plus an optional external scanner. Both are
+// generated artifacts shipped in the npm package, so their mtimes are the
+// cheapest available proxy for "this grammar changed".
+const GRAMMAR_SOURCE_FILES = ["parser.c", "scanner.c", "scanner.cc"];
+
+// Languages whose artifact could not be built or would not bind. Falling back to
+// `-p` per call is correct but slow, so the decision is remembered rather than
+// re-derived for every file batch.
+const grammarLibOptOut = new Set<string>();
+
+/** @internal — test-only: clear the build opt-out set so a prior failure does
+ *  not permanently poison subsequent test cases running in the same process. */
+export function _resetGrammarLibOptOut(): void {
+  grammarLibOptOut.clear();
+}
+
+function newestGrammarSourceMtime(grammarPath: string): number {
+  let newest = 0;
+  for (const file of GRAMMAR_SOURCE_FILES) {
+    try {
+      const stats = statSync(join(grammarPath, "src", file));
+      if (stats.mtimeMs > newest) newest = stats.mtimeMs;
+    } catch {
+      // [ANTI-PATTERN IGNORED]: an absent scanner is the normal case for most
+      // grammars; only parser.c is guaranteed to exist.
+    }
+  }
+  return newest;
+}
+
+/**
+ * Compile `grammarPath` into a reusable dynamic library, or return null when the
+ * caller should stay on the `--grammar-path` path.
+ *
+ * A library older than the grammar sources is rebuilt: a plugin update ships new
+ * grammar packages, and silently querying with the previous grammar would return
+ * wrong symbols instead of an error.
+ */
+function ensureGrammarLib(language: string, grammarPath: string): string | null {
+  if (grammarLibOptOut.has(language)) return null;
+
+  const libPath = join(GRAMMAR_LIB_DIR, `${language}${GRAMMAR_LIB_EXTENSION}`);
+
+  try {
+    // Deliberately re-stated per call instead of memoized: four stats cost
+    // nothing next to the process spawn they guard, and a memo would pin a
+    // long-lived MCP server to the grammar that was current at boot.
+    const needsBuild = !existsSync(libPath)
+      || statSync(libPath).mtimeMs < newestGrammarSourceMtime(grammarPath);
+
+    if (needsBuild) {
+      mkdirSync(GRAMMAR_LIB_DIR, { recursive: true });
+      execFileSync(getTreeSitterBin(), ["build", "-o", libPath, grammarPath], {
+        encoding: "utf-8",
+        timeout: 120000,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    }
+
+    return libPath;
+  } catch (error) {
+    logger.debug('WORKER', `tree-sitter build failed for ${language}; falling back to --grammar-path`, undefined, error instanceof Error ? error : undefined);
+    grammarLibOptOut.add(language);
+    return null;
+  }
 }
 
 interface RawCapture {
@@ -499,26 +480,36 @@ interface RawMatch {
   captures: RawCapture[];
 }
 
-function runQuery(queryFile: string, sourceFile: string, grammarPath: string): RawMatch[] {
-  const result = runBatchQuery(queryFile, [sourceFile], grammarPath);
+function runQuery(queryFile: string, sourceFile: string, grammarPath: string, language: string): RawMatch[] {
+  const result = runBatchQuery(queryFile, [sourceFile], grammarPath, language);
   return result.get(sourceFile) || [];
 }
 
-function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: string): Map<string, RawMatch[]> {
+function execQuery(execArgs: string[], sourceFileCount: number): string | null {
+  try {
+    return execFileSync(getTreeSitterBin(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+  } catch (error) {
+    logger.debug('WORKER', `tree-sitter query failed for ${sourceFileCount} file(s)`, undefined, error instanceof Error ? error : undefined);
+    return null;
+  }
+}
+
+function runBatchQuery(queryFile: string, sourceFiles: string[], grammarPath: string, language: string): Map<string, RawMatch[]> {
   if (sourceFiles.length === 0) return new Map();
 
-  const bin = getTreeSitterBin();
-  const execArgs = ["query", "-p", grammarPath, queryFile, ...sourceFiles];
+  const libPath = ensureGrammarLib(language, grammarPath);
+  if (libPath) {
+    const output = execQuery(["query", "-l", libPath, "--lang-name", language, queryFile, ...sourceFiles], sourceFiles.length);
+    if (output !== null) return parseMultiFileQueryOutput(output);
 
-  let output: string;
-  try {
-    output = execFileSync(bin, execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
-  } catch (error) {
-    logger.debug('WORKER', `tree-sitter query failed for ${sourceFiles.length} file(s)`, undefined, error instanceof Error ? error : undefined);
-    return new Map();
+    // The artifact exists but will not bind — a grammar whose language function
+    // is not named after our language key would fail here on every call. Drop
+    // back to --grammar-path permanently rather than paying two spawns per batch.
+    grammarLibOptOut.add(language);
   }
 
-  return parseMultiFileQueryOutput(output);
+  const output = execQuery(["query", "-p", grammarPath, queryFile, ...sourceFiles], sourceFiles.length);
+  return output === null ? new Map() : parseMultiFileQueryOutput(output);
 }
 
 function parseMultiFileQueryOutput(output: string): Map<string, RawMatch[]> {
@@ -759,12 +750,11 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   return { symbols: symbols.filter(s => !nested.has(s)), imports };
 }
 
-export function parseFile(content: string, filePath: string, projectRoot?: string): FoldedFile {
-  const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
-  const language = detectLanguageWithUserGrammars(filePath, userConfig);
+export function parseFile(content: string, filePath: string): FoldedFile {
+  const language = detectLanguage(filePath);
   const lines = content.split("\n");
 
-  const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
+  const grammarPath = resolveGrammarPath(language);
   if (!grammarPath) {
     return {
       filePath, language, symbols: [], imports: [],
@@ -772,8 +762,7 @@ export function parseFile(content: string, filePath: string, projectRoot?: strin
     };
   }
 
-  const queryKey = getUserAwareQueryKey(language, userConfig);
-  const queryFile = getQueryFile(queryKey);
+  const queryFile = getQueryFile(getQueryKey(language));
 
   const ext = filePath.slice(filePath.lastIndexOf(".")) || ".txt";
   const tmpDir = mkdtempSync(join(tmpdir(), "smart-src-"));
@@ -781,7 +770,7 @@ export function parseFile(content: string, filePath: string, projectRoot?: strin
   writeFileSync(tmpFile, content);
 
   try {
-    const matches = runQuery(queryFile, tmpFile, grammarPath);
+    const matches = runQuery(queryFile, tmpFile, grammarPath, language);
     const result = buildSymbols(matches, lines, language);
 
     const folded = formatFoldedView({
@@ -802,21 +791,19 @@ export function parseFile(content: string, filePath: string, projectRoot?: strin
 }
 
 export function parseFilesBatch(
-  files: Array<{ absolutePath: string; relativePath: string; content: string }>,
-  projectRoot?: string
+  files: Array<{ absolutePath: string; relativePath: string; content: string }>
 ): Map<string, FoldedFile> {
   const results = new Map<string, FoldedFile>();
-  const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
 
   const languageGroups = new Map<string, typeof files>();
   for (const file of files) {
-    const language = detectLanguageWithUserGrammars(file.relativePath, userConfig);
+    const language = detectLanguage(file.relativePath);
     if (!languageGroups.has(language)) languageGroups.set(language, []);
     languageGroups.get(language)!.push(file);
   }
 
   for (const [language, groupFiles] of languageGroups) {
-    const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
+    const grammarPath = resolveGrammarPath(language);
     if (!grammarPath) {
       for (const file of groupFiles) {
         const lines = file.content.split("\n");
@@ -828,11 +815,10 @@ export function parseFilesBatch(
       continue;
     }
 
-    const queryKey = getUserAwareQueryKey(language, userConfig);
-    const queryFile = getQueryFile(queryKey);
+    const queryFile = getQueryFile(getQueryKey(language));
 
     const absolutePaths = groupFiles.map(f => f.absolutePath);
-    const batchResults = runBatchQuery(queryFile, absolutePaths, grammarPath);
+    const batchResults = runBatchQuery(queryFile, absolutePaths, grammarPath, language);
 
     for (const file of groupFiles) {
       const lines = file.content.split("\n");

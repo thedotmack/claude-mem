@@ -1,15 +1,10 @@
-import { execFile } from 'child_process';
-import { rmSync } from 'fs';
-import { promisify } from 'util';
+import { existsSync, readFileSync, rmSync } from 'fs';
 import { logger } from '../utils/logger.js';
-import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { isPidAlive, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
+import { captureProcessStartToken, isSameProcess, isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
 import { paths } from '../shared/paths.js';
+import { killProcessTree, collectDescendantIdentities } from '../shared/kill-process-tree.js';
 
-const execFileAsync = promisify(execFile);
 const PID_FILE = paths.workerPid();
-
-type TreeKillFn = (pid: number, signal?: string, callback?: (error?: Error | null) => void) => void;
 
 export interface ShutdownCascadeOptions {
   registry: ProcessRegistry;
@@ -25,11 +20,34 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     .filter(record => record.pid !== currentPid)
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 
+  // Descendants snapshotted BEFORE the SIGTERM phase.
+  //
+  // The survivor scan below used to test `isPidAlive(record.pid)` — the ROOT
+  // only. When uvx accepts the initial SIGTERM and exits cleanly, the record
+  // stops looking like a survivor, so the SIGKILL phase never runs even though
+  // uv/python/chroma-mcp have re-parented and are still alive. That made the
+  // force phase unreachable in exactly the case it exists for (#3482), so
+  // liveness has to be evaluated over the whole tree, and the tree has to be
+  // recorded while the root is still around to enumerate it from.
+  const descendantsByRecord = new Map<string, Array<{ pid: number; startToken: string | null }>>();
+  // The ROOT's identity, captured alongside its descendants. The force phase
+  // below can run after the root has already exited (a live descendant keeps
+  // the record in `survivors`), and by then the OS may have reissued the root's
+  // PID — tree-killing from a reused root would take an unrelated process AND
+  // its children with it.
+  const rootTokenByRecord = new Map<string, string | null>();
+
   for (const record of childRecords) {
     if (!isPidAlive(record.pid)) {
       options.registry.unregister(record.id);
       continue;
     }
+
+    rootTokenByRecord.set(record.id, captureProcessStartToken(record.pid));
+    // Identity from the same table read that found the PID — see
+    // collectDescendantIdentities. Probing tokens after enumeration would risk
+    // binding to a replacement process and then validating it.
+    descendantsByRecord.set(record.id, await collectDescendantIdentities(record.pid));
 
     try {
       await signalProcess(record, 'SIGTERM');
@@ -53,10 +71,32 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
 
   await waitForExit(childRecords, 5000);
 
-  const survivors = childRecords.filter(record => isPidAlive(record.pid));
+  // A record survives if its root OR any of its snapshotted descendants is
+  // still alive — a dead root with live descendants is precisely the orphan
+  // case the force phase must handle.
+  const survivors = childRecords.filter(record =>
+    isPidAlive(record.pid) ||
+    (descendantsByRecord.get(record.id) ?? []).some(entry => isPidAlive(entry.pid))
+  );
+
   for (const record of survivors) {
+    // Only tree-kill from a root that is still the process we recorded. When
+    // the PID has been reused, the replacement is an unrelated process and
+    // signalProcess would take its whole subtree down; the identity-validated
+    // descendant reap in the finally block still runs, which is the part that
+    // actually matters once the real root is gone.
+    const rootIsSame = isSameProcess(record.pid, rootTokenByRecord.get(record.id) ?? null);
+    if (!rootIsSame) {
+      logger.warn('SYSTEM', 'Skipping tree-kill: root PID was reused during the grace window', {
+        pid: record.pid,
+        type: record.type,
+      });
+    }
+
     try {
-      await signalProcess(record, 'SIGKILL');
+      if (rootIsSame) {
+        await signalProcess(record, 'SIGKILL');
+      }
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.debug('SYSTEM', 'Failed to force kill child process', {
@@ -72,6 +112,13 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
           error: String(error)
         });
       }
+    } finally {
+      // MUST run even when signalProcess threw: a Windows taskkill failure
+      // (access denied) raises ProcessTreeKillError, and skipping the per-pid
+      // fallback there would strand exactly the descendants this reap exists
+      // for. signalProcess tree-kills from the ROOT, so a root that is already
+      // gone leaves its re-parented children reachable only this way.
+      reapSnapshotDescendants(descendantsByRecord.get(record.id) ?? [], record.pid);
     }
   }
 
@@ -84,31 +131,113 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     options.registry.unregister(record.id);
   }
 
+  removeOwnedPidFile(pidFilePath, currentPid);
+
+  options.registry.pruneDeadEntries();
+}
+
+/**
+ * Owner-guarded PID-file removal (Phase 5, worker-restart plan).
+ *
+ * The shutdown cascade is the dying worker's LAST act — during a restart the
+ * successor worker has typically already written its OWN PID file by the time
+ * this runs. Blindly rmSync'ing here clobbered that file and made
+ * `worker status` report a healthy worker as not running. Deletion therefore
+ * requires proof of ownership: the recorded pid must equal `currentPid`.
+ *
+ * With `deleteIfDead` (the CLI stop/restart cleanup policy — see
+ * removePidFileIfOwner in ProcessManager.ts) a dead or missing recorded pid is
+ * also deleted: a pid-less file can't belong to a live successor
+ * (writePidFile always records a pid), so it is treated as a dead owner.
+ * Without it, only the caller's own file is ever deleted.
+ *
+ * A missing file is a no-op. An unreadable/corrupt file cannot prove
+ * ownership, so it is left in place (the safe default): readPidFile() and
+ * validateWorkerPidFile() both treat unparseable files as ownerless, so a
+ * leftover corrupt file never blocks a successor's boot and is cleaned up by
+ * the next worker start.
+ */
+export function removeOwnedPidFile(pidFilePath: string, currentPid: number | null, deleteIfDead = false): void {
+  if (!existsSync(pidFilePath)) return;
+
+  let recordedPid: number | null = null;
+  try {
+    const parsed = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as { pid?: unknown };
+    recordedPid = typeof parsed.pid === 'number' ? parsed.pid : null;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'PID file unreadable — leaving it (cannot prove ownership)', {
+      pidFilePath,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+
+  const owned = currentPid !== null && recordedPid === currentPid;
+  const dead = recordedPid === null || !isPidAlive(recordedPid);
+  if (!owned && !(deleteIfDead && dead)) {
+    logger.debug('SYSTEM', 'PID file not owned by this process — leaving it for its owner (restart successor?)', {
+      pidFilePath,
+      recordedPid,
+      currentPid
+    });
+    return;
+  }
+
   try {
     rmSync(pidFilePath, { force: true });
   } catch (error: unknown) {
     if (error instanceof Error) {
-      logger.debug('SYSTEM', 'Failed to remove PID file during shutdown', { pidFilePath }, error);
+      logger.debug('SYSTEM', 'Failed to remove PID file', { pidFilePath }, error);
     } else {
-      logger.warn('SYSTEM', 'Failed to remove PID file during shutdown (non-Error)', {
+      logger.warn('SYSTEM', 'Failed to remove PID file (non-Error)', {
         pidFilePath,
         error: String(error)
       });
     }
   }
-
-  options.registry.pruneDeadEntries();
 }
 
-async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+/**
+ * SIGKILL descendants that outlived the root of their tree.
+ *
+ * Only reached in the force phase, after the caller's full SIGTERM grace
+ * window has already elapsed, so there is nothing left to be graceful about.
+ *
+ * Identity is re-verified before every kill. A snapshotted descendant can exit
+ * DURING the 5s grace window and have its PID reissued by the OS; `isPidAlive`
+ * would then report the number as live and we would SIGKILL a stranger. Only a
+ * start token that was read successfully AND differs proves reuse, so a token
+ * that cannot be re-read leaves the entry eligible (matching the snapshot-side
+ * bias, and preserving the reap this function exists for).
+ */
+function reapSnapshotDescendants(
+  entries: Array<{ pid: number; startToken: string | null }>,
+  rootPid: number
+): void {
+  for (const { pid, startToken } of entries) {
+    if (pid === rootPid || !isPidAlive(pid)) continue;
 
-  while (Date.now() < deadline) {
-    const survivors = records.filter(record => isPidAlive(record.pid));
-    if (survivors.length === 0) {
-      return;
+    if (!isSameProcess(pid, startToken)) {
+      logger.debug('SYSTEM', 'Skipping reap: PID was recycled during the grace window', {
+        pid,
+        rootPid,
+      });
+      continue;
     }
-    await new Promise(resolve => setTimeout(resolve, 100));
+
+    try {
+      process.kill(pid, 'SIGKILL');
+      logger.debug('SYSTEM', 'Reaped orphaned descendant during shutdown cascade', { pid, rootPid });
+    } catch (error: unknown) {
+      const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (errno !== 'ESRCH') {
+        logger.warn('SYSTEM', 'Failed to reap orphaned descendant during shutdown cascade', {
+          pid,
+          rootPid,
+          errno,
+        });
+      }
+    }
   }
 }
 
@@ -134,6 +263,22 @@ async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | '
       }
     }
 
+    // Per-pid fallback. This is NOT hypothetical for the chroma record: its
+    // pgid is recorded as the child's own pid, but chroma-mcp is spawned
+    // WITHOUT `detached`, so it shares the worker's group and is not a group
+    // leader — kill(-pid) therefore ESRCHes and always lands here. A bare
+    // per-pid signal orphans the uvx -> uv -> python chain exactly like the
+    // recycle path did (#3482).
+    //
+    // The SIGTERM phase stays a single signal so the caller's 5s grace window
+    // means something. The SIGKILL phase is the force phase — that window has
+    // already elapsed by the time it runs — so it tree-kills instead, reaping
+    // descendants rather than stranding them. 'immediate' keeps it SIGKILL-only.
+    if (signal === 'SIGKILL') {
+      await killProcessTree(pid, { signalMode: 'immediate' });
+      return;
+    }
+
     try {
       process.kill(pid, signal);
     } catch (error: unknown) {
@@ -145,60 +290,12 @@ async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | '
     return;
   }
 
-  if (signal === 'SIGTERM') {
-    try {
-      process.kill(pid, signal);
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        const errno = (error as NodeJS.ErrnoException).code;
-        if (errno === 'ESRCH') {
-          return;
-        }
-      }
-      throw error;
-    }
-    return;
-  }
-
-  const treeKill = await loadTreeKill();
-  if (treeKill) {
-    await new Promise<void>((resolve, reject) => {
-      treeKill(pid, signal, (error) => {
-        if (!error) {
-          resolve();
-          return;
-        }
-
-        const errno = (error as NodeJS.ErrnoException).code;
-        if (errno === 'ESRCH') {
-          resolve();
-          return;
-        }
-        reject(error);
-      });
-    });
-    return;
-  }
-
-  const args = ['/PID', String(pid), '/T'];
-  if (signal === 'SIGKILL') {
-    args.push('/F');
-  }
-
-  await execFileAsync('taskkill', args, {
-    timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND,
-    windowsHide: true
-  });
-}
-
-async function loadTreeKill(): Promise<TreeKillFn | null> {
-  const moduleName = 'tree-kill';
-
-  try {
-    const treeKillModule = await import(moduleName);
-    return (treeKillModule.default ?? treeKillModule) as TreeKillFn;
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'tree-kill module not available, using fallback', {}, error instanceof Error ? error : undefined);
-    return null;
-  }
+  // Windows: both phases tree-kill. process.kill(pid, 'SIGTERM') is a
+  // single-PID TerminateProcess — never a graceful signal — so the old
+  // SIGTERM branch bought no grace period, it just left the descendants
+  // running. Once the root exits, waitForExit() sees it gone and the
+  // survivor scan never escalates to the SIGKILL taskkill branch, so the
+  // orphans were never reaped at all. killProcessTree() runs the same
+  // `taskkill /PID n /T /F` the SIGKILL branch used to build inline.
+  await killProcessTree(pid);
 }

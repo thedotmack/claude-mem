@@ -1,7 +1,8 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
-import { join, basename } from 'path';
+import { join } from 'path';
 import { logger } from './logger.js';
+import { toBmpSafe } from './bmp-safe.js';
 
 export interface CursorProjectRegistry {
   [projectName: string]: {
@@ -76,7 +77,7 @@ description: "Claude-mem context from past sessions (auto-updated)"
 
 The following context is from claude-mem, a persistent memory system that tracks your coding sessions.
 
-${context}
+${toBmpSafe(context)}
 
 ---
 *Updated after last session. Use claude-mem's MCP search tools for more detailed queries.*
@@ -84,12 +85,6 @@ ${context}
 
   writeFileSync(tempFile, content);
   renameSync(tempFile, rulesFile);
-}
-
-export function readContextFile(workspacePath: string): string | null {
-  const rulesFile = join(workspacePath, '.cursor', 'rules', 'claude-mem-context.mdc');
-  if (!existsSync(rulesFile)) return null;
-  return readFileSync(rulesFile, 'utf-8');
 }
 
 export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: string): void {
@@ -118,76 +113,4 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
   };
 
   writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
-}
-
-export function removeMcpConfig(mcpJsonPath: string): void {
-  if (!existsSync(mcpJsonPath)) return;
-
-  try {
-    const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-    if (config.mcpServers && config.mcpServers['claude-mem']) {
-      delete config.mcpServers['claude-mem'];
-      writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
-    }
-  } catch (e) {
-    logger.warn('CURSOR', 'Failed to remove MCP config during cleanup', {
-      mcpJsonPath,
-      error: e instanceof Error ? e.message : String(e)
-    });
-  }
-}
-
-export function parseArrayField(field: string): { field: string; index: number } | null {
-  const match = field.match(/^(.+)\[(\d+)\]$/);
-  if (!match) return null;
-  return {
-    field: match[1],
-    index: parseInt(match[2], 10)
-  };
-}
-
-export function jsonGet(json: Record<string, unknown>, field: string, fallback: string = ''): string {
-  const arrayAccess = parseArrayField(field);
-
-  if (arrayAccess) {
-    const arr = json[arrayAccess.field];
-    if (!Array.isArray(arr)) return fallback;
-    const value = arr[arrayAccess.index];
-    if (value === undefined || value === null) return fallback;
-    return String(value);
-  }
-
-  const value = json[field];
-  if (value === undefined || value === null) return fallback;
-  return String(value);
-}
-
-export function getProjectName(workspacePath: string): string {
-  if (!workspacePath) return 'unknown-project';
-
-  const driveMatch = workspacePath.match(/^([A-Za-z]):[\\\/]?$/);
-  if (driveMatch) {
-    return `drive-${driveMatch[1].toUpperCase()}`;
-  }
-
-  const normalized = workspacePath.replace(/\\/g, '/');
-  const name = basename(normalized);
-
-  if (!name) {
-    return 'unknown-project';
-  }
-
-  return name;
-}
-
-export function isEmpty(str: string | null | undefined): boolean {
-  if (str === null || str === undefined) return true;
-  if (str === '') return true;
-  if (str === 'null') return true;
-  if (str === 'empty') return true;
-  return false;
-}
-
-export function urlEncode(str: string): string {
-  return encodeURIComponent(str);
 }

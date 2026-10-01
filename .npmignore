@@ -15,7 +15,6 @@ antipattern-czar/
 
 plugin/node_modules/
 plugin/scripts/claude-mem
-plugin/bun.lock
 plugin/data/
 plugin/data.backup/
 

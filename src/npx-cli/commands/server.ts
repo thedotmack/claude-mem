@@ -1,10 +1,11 @@
-import pc from 'picocolors';
+import { styleText } from 'node:util';
+import { readFlatSettings } from '../utils/settings.js';
 import {
-  runServerBetaRestartCommand,
-  runServerBetaStartCommand,
-  runServerBetaStatusCommand,
-  runServerBetaStopCommand,
-  runServerBetaWorkerStartCommand,
+  runServerRestartCommand,
+  runServerStartCommand,
+  runServerStatusCommand,
+  runServerStopCommand,
+  runServerWorkerStartCommand,
   runRestartCommand,
   runServerApiKeyCommand,
   runStartCommand,
@@ -12,23 +13,9 @@ import {
   runStopCommand,
 } from './runtime.js';
 
-const UNSUPPORTED_SERVER_COMMANDS = new Set([
-  'logs',
-  'doctor',
-  'migrate',
-  'export',
-  'import',
-]);
-
 function printServerUsage(): void {
-  console.error(`Usage: ${pc.bold('npx claude-mem server <command>')}`);
-  console.error('Commands: start, stop, restart, status, logs, doctor, migrate, export, import, api-key create|list|revoke, keys rotate, worker start, jobs status|failed|retry|cancel');
-}
-
-function failUnsupported(command: string): never {
-  console.error(pc.red(`Server command not implemented yet: ${command}`));
-  console.error('This CLI route is reserved for the server runtime, but no backend API exists for it yet.');
-  process.exit(1);
+  console.error(`Usage: ${styleText('bold', 'npx claude-mem server <command>')}`);
+  console.error('Commands: start, stop, restart, status, api-key create|list|revoke, keys rotate, worker start, jobs status|failed|retry|cancel');
 }
 
 function runWorkerLifecycleCommand(command: string): boolean {
@@ -50,19 +37,19 @@ function runWorkerLifecycleCommand(command: string): boolean {
   }
 }
 
-function runServerBetaLifecycleCommand(command: string): boolean {
+function runServerLifecycleCommand(command: string): boolean {
   switch (command) {
     case 'start':
-      runServerBetaStartCommand();
+      runServerStartCommand();
       return true;
     case 'stop':
-      runServerBetaStopCommand();
+      runServerStopCommand();
       return true;
     case 'restart':
-      runServerBetaRestartCommand();
+      runServerRestartCommand();
       return true;
     case 'status':
-      runServerBetaStatusCommand();
+      runServerStatusCommand();
       return true;
     default:
       return false;
@@ -77,11 +64,7 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
     process.exit(1);
   }
 
-  if (UNSUPPORTED_SERVER_COMMANDS.has(subCommand)) {
-    failUnsupported(`server ${subCommand}`);
-  }
-
-  if (runServerBetaLifecycleCommand(subCommand)) {
+  if (runServerLifecycleCommand(subCommand)) {
     return;
   }
 
@@ -91,7 +74,7 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
       runServerApiKeyCommand(argv.slice(1));
       return;
     }
-    console.error(pc.red(`Unknown server api-key subcommand: ${apiKeyCommand ?? '(none)'}`));
+    console.error(styleText('red', `Unknown server api-key subcommand: ${apiKeyCommand ?? '(none)'}`));
     console.error('Usage: npx claude-mem server api-key create|list|revoke');
     process.exit(1);
   }
@@ -99,10 +82,10 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
   if (subCommand === 'worker') {
     const workerCommand = argv[1]?.toLowerCase();
     if (workerCommand === 'start') {
-      runServerBetaWorkerStartCommand();
+      runServerWorkerStartCommand();
       return;
     }
-    console.error(pc.red(`Unknown server worker subcommand: ${workerCommand ?? '(none)'}`));
+    console.error(styleText('red', `Unknown server worker subcommand: ${workerCommand ?? '(none)'}`));
     console.error('Usage: npx claude-mem server worker start');
     process.exit(1);
   }
@@ -110,10 +93,10 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
   if (subCommand === 'keys') {
     const keysCommand = argv[1]?.toLowerCase();
     if (keysCommand === 'rotate') {
-      await runServerBetaKeysRotateCommand();
+      await runServerKeysRotateCommand();
       return;
     }
-    console.error(pc.red(`Unknown server keys subcommand: ${keysCommand ?? '(none)'}`));
+    console.error(styleText('red', `Unknown server keys subcommand: ${keysCommand ?? '(none)'}`));
     console.error('Usage: npx claude-mem server keys rotate');
     process.exit(1);
   }
@@ -126,44 +109,111 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
     return;
   }
 
-  console.error(pc.red(`Unknown server command: ${subCommand}`));
+  console.error(styleText('red', `Unknown server command: ${subCommand}`));
   printServerUsage();
   process.exit(1);
 }
 
-async function runServerBetaKeysRotateCommand(): Promise<void> {
+async function runServerKeysRotateCommand(): Promise<void> {
   if (!process.env.CLAUDE_MEM_SERVER_DATABASE_URL) {
-    console.error(pc.red('Cannot rotate server-beta API key: CLAUDE_MEM_SERVER_DATABASE_URL is not set.'));
+    console.error(styleText('red', 'Cannot rotate server API key: CLAUDE_MEM_SERVER_DATABASE_URL is not set.'));
     console.error('Configure Postgres first, then re-run this command.');
     process.exit(1);
   }
-  const { rotateServerBetaApiKey, persistServerBetaSettings } = await import(
-    '../../services/hooks/server-beta-bootstrap.js'
+  const { rotateServerApiKey, revokeServerApiKey, persistServerSettings, readServerKeyRotationState } = await import(
+    '../../services/hooks/server-bootstrap.js'
   );
-  const { SettingsDefaultsManager } = await import('../../shared/SettingsDefaultsManager.js');
-  const { join } = await import('path');
-  const { existsSync, readFileSync } = await import('fs');
+  const { USER_SETTINGS_PATH: settingsPath } = await import('../../shared/paths.js');
 
-  const settingsPath = join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-  let previousApiKeyId: string | null = null;
-  if (existsSync(settingsPath)) {
+  let state = readServerKeyRotationState(null);
+  try {
+    state = readServerKeyRotationState(readFlatSettings(settingsPath));
+  } catch {
+    // ignore — we'll just generate a new key without revoking the old one
+  }
+  const { pendingRevocationKeyId, currentApiKey, currentProjectId } = state;
+
+  // A prior rotation may have saved the current credential while its old-key
+  // revocation failed (its retry marker is still in settings.json). Resolve
+  // that pending revocation in place; creating a third key would leave the
+  // saved current key active but untracked.
+  if (pendingRevocationKeyId) {
+    if (!currentApiKey || !currentProjectId) {
+      console.error(styleText('red', 'Cannot resume rotation: the pending retry marker has no current credential.'));
+      console.error('Repair or restore settings.json before rotating again.');
+      process.exit(1);
+    }
     try {
-      const raw = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
-      const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
-      const previousKey = flat.CLAUDE_MEM_SERVER_BETA_API_KEY;
-      if (typeof previousKey === 'string' && previousKey.length > 0) {
-        previousApiKeyId = await lookupApiKeyIdByPlaintext(previousKey);
-      }
+      await revokeServerApiKey(pendingRevocationKeyId);
+    } catch {
+      console.error(styleText('red', 'Cannot finish the pending rotation: the previous API key could not be revoked.'));
+      console.error('The current API key remains active and is still recorded in settings.json. Retry after confirming Postgres is available.');
+      process.exit(1);
+    }
+    if (!persistServerSettings(settingsPath, { apiKey: currentApiKey, projectId: currentProjectId })) {
+      console.error(styleText('red', 'The previous API key was revoked, but the retry marker could not be removed from settings.json.'));
+      console.error('Repair settings.json before rotating again.');
+      process.exit(1);
+    }
+    console.log(JSON.stringify({
+      rotated: true,
+      retryResolved: true,
+      settingsPath,
+    }, null, 2));
+    return;
+  }
+
+  // Ordinary rotation: the current key is revoked only after its replacement
+  // is saved (beforeRevoke below), and is recorded as the retry marker until then.
+  let previousApiKeyId: string | null = null;
+  if (currentApiKey) {
+    try {
+      previousApiKeyId = await lookupApiKeyIdByPlaintext(currentApiKey);
     } catch {
       // ignore — we'll just generate a new key without revoking the old one
     }
   }
 
-  const result = await rotateServerBetaApiKey({ previousApiKeyId });
-  persistServerBetaSettings(settingsPath, {
-    apiKey: result.rawKey,
-    projectId: result.projectId,
-  });
+  let result: Awaited<ReturnType<typeof rotateServerApiKey>>;
+  let settingsPersisted = false;
+  try {
+    result = await rotateServerApiKey({
+      previousApiKeyId,
+      beforeRevoke: next => {
+        if (!persistServerSettings(settingsPath, {
+          apiKey: next.rawKey,
+          projectId: next.projectId,
+          previousApiKeyId,
+        })) {
+          throw new Error('settings.json could not be updated');
+        }
+        settingsPersisted = true;
+      },
+    });
+  } catch {
+    if (settingsPersisted) {
+      console.error(styleText('red', 'A new API key was saved, but revoking the previous key failed.'));
+      console.error('Retry the rotation after confirming Postgres is available.');
+    } else {
+      console.error(styleText('red', 'Cannot rotate: settings.json was not updated, so the existing API key remains active.'));
+      console.error('Repair or restore the file, then re-run this command.');
+    }
+    process.exit(1);
+  }
+  let cleanupPersisted = false;
+  try {
+    cleanupPersisted = persistServerSettings(settingsPath, {
+      apiKey: result.rawKey,
+      projectId: result.projectId,
+    });
+  } catch {
+    cleanupPersisted = false;
+  }
+  if (!cleanupPersisted) {
+    console.error(styleText('red', 'The new API key is active, but its cleanup marker could not be removed from settings.json.'));
+    console.error('Repair settings.json and retry; the existing pending marker will be resolved without minting another key.');
+    process.exit(1);
+  }
   console.log(JSON.stringify({
     rotated: true,
     apiKeyId: result.apiKeyId,
@@ -176,7 +226,7 @@ async function runServerBetaKeysRotateCommand(): Promise<void> {
 async function lookupApiKeyIdByPlaintext(rawKey: string): Promise<string | null> {
   const { createPostgresPool } = await import('../../storage/postgres/pool.js');
   const { parsePostgresConfig } = await import('../../storage/postgres/config.js');
-  const { hashApiKey } = await import('../../services/hooks/server-beta-bootstrap.js');
+  const { hashApiKey } = await import('../../services/hooks/server-bootstrap.js');
   const config = parsePostgresConfig({ requireDatabaseUrl: true });
   if (!config) return null;
   const pool = createPostgresPool(config);
@@ -195,7 +245,7 @@ export function runWorkerAliasCommand(argv: string[] = []): void {
   const subCommand = argv[0]?.toLowerCase();
 
   if (!subCommand || !runWorkerLifecycleCommand(subCommand)) {
-    console.error(pc.red(`Unknown worker command: ${subCommand ?? '(none)'}`));
+    console.error(styleText('red', `Unknown worker command: ${subCommand ?? '(none)'}`));
     console.error('Usage: npx claude-mem worker start|stop|restart|status');
     process.exit(1);
   }
