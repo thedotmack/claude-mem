@@ -23,6 +23,19 @@ export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
   return match?.[1];
 }
 
+/**
+ * The worker did not record a transcript turn's user prompt. The watcher stops
+ * the pass on it, before checkpointing, so the turn is replayed rather than its
+ * observations being filed under no prompt.
+ */
+export class TranscriptAnchorError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`session init failed for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptAnchorError';
+    this.cause = cause;
+  }
+}
+
 interface SessionState {
   sessionId: string;
   platformSource: string;
@@ -167,9 +180,14 @@ export class TranscriptEventProcessor {
           await this.updateContext(session, watch);
         }
         break;
-      case 'user_message':
-        session.lastUserMessage = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt) ?? session.lastUserMessage;
+      case 'user_message': {
+        // A user turn is anchored like a hook-captured prompt. Kept only in
+        // memory, it left the session at prompt 0, so the observer got a
+        // continuation with no user request and the batch was dropped (#3653).
+        const prompt = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt);
+        if (prompt) await this.anchorUserPrompt(session, prompt);
         break;
+      }
       case 'assistant_message':
         session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
         break;
@@ -219,17 +237,32 @@ export class TranscriptEventProcessor {
 
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
+    await this.anchorUserPrompt(session, prompt);
+  }
+
+  /**
+   * Record the turn's user prompt through the init path the hooks use, so the
+   * worker has a user_prompts row for it. A failure throws
+   * TranscriptAnchorError: the watcher then stops before checkpointing past
+   * the turn, so it is replayed instead of its observations being filed under
+   * no prompt.
+   */
+  private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
     const cwd = session.cwd ?? process.cwd();
     if (prompt) {
       session.lastUserMessage = prompt;
     }
 
-    await sessionInitHandler.execute({
-      sessionId: session.sessionId,
-      cwd,
-      prompt,
-      platform: session.platformSource
-    });
+    try {
+      await sessionInitHandler.execute({
+        sessionId: session.sessionId,
+        cwd,
+        prompt,
+        platform: session.platformSource
+      });
+    } catch (error: unknown) {
+      throw new TranscriptAnchorError(session.sessionId, error);
+    }
   }
 
   private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
