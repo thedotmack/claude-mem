@@ -13,6 +13,13 @@
  * plan, as the installer promised. It then permits a periodic gateway probe
  * so subscribing can recover automatically. User-owned openrouter.ai (or any
  * non-gateway) base URLs ignore the fallback marker entirely.
+ *
+ * Quota fallback (CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER, opt-in): while the
+ * selected provider's breaker holds for its quota (a spent allowance, or a
+ * rate limit that outlasted its retries), every plain return is routed to the
+ * configured fallback, provided it can serve and is not itself held. Empty —
+ * the default — leaves dispatch exactly as it was. The cmem-gateway branch
+ * keeps its own marker and runs first, untouched.
  */
 
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -25,7 +32,17 @@ import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvide
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
 import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
-import { isQuotaCooldownActive, releaseQuotaProbe, tryAdmitCmemGatewayProbe } from '../../shared/quota-cooldown.js';
+import {
+  cooldownAppliesToCurrentAccount,
+  getQuotaCooldown,
+  isQuotaCooldownActive,
+  isQuotaCooldownHolding,
+  releaseQuotaProbe,
+  setQuotaFallbackResolver,
+  tryAdmitCmemGatewayProbe,
+  type QuotaCooldownState,
+  type QuotaProvider,
+} from '../../shared/quota-cooldown.js';
 
 /**
  * Every provider dispatch can name. `openai-compatible` is the generic
@@ -69,6 +86,164 @@ function staysOnClaudeInFallback(fallbackAt: string): boolean {
 export interface ProviderSelection {
   provider: SelectableProvider;
   gatewayProbeClaimId: number | null;
+  /**
+   * The provider this selection stands in for when the quota fallback routed
+   * around it, else null. Optional so callers and test doubles that build a
+   * selection by hand stay valid — read it loosely (`?? null`).
+   */
+  fallbackFrom?: SelectableProvider | null;
+}
+
+/** What CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER may name. */
+export const QUOTA_FALLBACK_PROVIDERS = ['claude', 'gemini', 'openrouter', 'openai-compatible'] as const;
+export type QuotaFallbackProvider = typeof QUOTA_FALLBACK_PROVIDERS[number];
+
+/** The configured quota fallback, or null when the setting is empty or unrecognised. */
+export function readQuotaFallbackProvider(): QuotaFallbackProvider | null {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const raw = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
+  return (QUOTA_FALLBACK_PROVIDERS as readonly string[]).includes(raw) ? raw as QuotaFallbackProvider : null;
+}
+
+/**
+ * Whether a fallback has what it needs to run. Claude counts as available:
+ * when dispatch returns it, the Claude setup check in SessionRoutes runs
+ * exactly as it does for a Claude primary. The cmem gateway is not a fallback
+ * while it is turning this account away (its trial-expiry marker is set):
+ * its own dispatch branch owns that window and its single re-probe, and a
+ * fallback must not send it traffic around them.
+ */
+function isFallbackAvailable(provider: QuotaFallbackProvider): boolean {
+  switch (provider) {
+    case 'gemini': return isGeminiAvailable();
+    case 'openai-compatible': return isOpenAICompatAvailable();
+    case 'claude': return true;
+    case 'openrouter': {
+      if (!isOpenRouterAvailable()) return false;
+      const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+      return !(settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL));
+    }
+  }
+}
+
+/**
+ * `provider`'s breaker when it is a quota hold on the account selected now: a
+ * spent allowance or a rate limit that outlasted its retries. A refused
+ * credential (an auth cooldown) is not one. Another provider cannot fix the
+ * key, and its successes would clear the warning that says it is broken.
+ */
+function quotaBreakerOf(provider: SelectableProvider): QuotaCooldownState | null {
+  const state = getQuotaCooldown(provider);
+  return state && state.cause !== 'auth' && cooldownAppliesToCurrentAccount(state) ? state : null;
+}
+
+function isHeldForQuota(provider: SelectableProvider, nowMs: number): boolean {
+  return quotaBreakerOf(provider) !== null && isQuotaCooldownHolding(provider, nowMs);
+}
+
+/**
+ * Where work for `primary` may go while `primary` is held: the configured
+ * fallback, when it is a different provider, can serve, and is not itself
+ * withholding requests (for any reason). Null otherwise — including when
+ * nothing is configured.
+ *
+ * Read-only: it never claims a probe. Keyed on the provider being routed
+ * around, so a provider can never be offered as its own fallback.
+ */
+export function quotaFallbackTarget(
+  primary: QuotaProvider,
+  nowMs: number = Date.now(),
+): QuotaFallbackProvider | null {
+  const fallback = readQuotaFallbackProvider();
+  if (fallback === null || fallback === primary) return null;
+  if (!isFallbackAvailable(fallback)) return null;
+  if (isQuotaCooldownHolding(fallback, nowMs)) return null;
+  return fallback;
+}
+
+interface RoutedProvider {
+  provider: SelectableProvider;
+  fallbackFrom: SelectableProvider | null;
+}
+
+/**
+ * The shared rule for every plain dispatch return: keep `primary` unless its
+ * breaker holds for its quota AND the fallback can serve. When neither can,
+ * this returns `primary`, and admission withholds it exactly as it does today.
+ */
+function applyQuotaFallback(primary: SelectableProvider, nowMs: number = Date.now()): RoutedProvider {
+  if (!isHeldForQuota(primary, nowMs)) return { provider: primary, fallbackFrom: null };
+  const fallback = quotaFallbackTarget(primary, nowMs);
+  return fallback === null
+    ? { provider: primary, fallbackFrom: null }
+    : { provider: fallback, fallbackFrom: primary };
+}
+
+type QuotaFallbackState = 'primary' | 'fallback' | 'probing' | 'blocked';
+
+/**
+ * Last state logged by `selectProviderForGenerator`. Module-level because
+ * dispatch runs on every generator start and on the Telegram wrap-up: the log
+ * is one line per CHANGE, never one per call.
+ */
+let quotaFallbackState: QuotaFallbackState = 'primary';
+
+function noteQuotaFallbackTransition(primary: SelectableProvider, routed: RoutedProvider, nowMs: number): void {
+  let next: QuotaFallbackState;
+  if (routed.fallbackFrom != null) next = 'fallback';
+  else if (isHeldForQuota(primary, nowMs)) next = 'blocked';
+  else if (quotaBreakerOf(primary) !== null) next = 'probing';
+  else next = 'primary';
+  if (next === quotaFallbackState) return;
+  quotaFallbackState = next;
+
+  switch (next) {
+    case 'fallback':
+      logger.warn('SESSION', 'Primary in quota cooldown; dispatching to fallback', {
+        primary,
+        fallback: routed.provider,
+      });
+      return;
+    case 'probing':
+      logger.info('SESSION', 'Primary quota cooldown elapsed; probing primary', { primary });
+      return;
+    case 'blocked': {
+      // Distinct from probing: nothing is being probed and nothing can take
+      // the work. Name the real cause — the fallback may be held too, or it may
+      // simply be unable to serve (no credentials, or equal to the primary).
+      const fallback = readQuotaFallbackProvider();
+      if (fallback !== null && fallback !== primary && isQuotaCooldownHolding(fallback, nowMs)) {
+        logger.warn('SESSION', 'Primary and fallback both in quota cooldown; capture waits until one clears', { primary, fallback });
+      } else {
+        logger.warn('SESSION', 'Primary in quota cooldown and the quota fallback cannot serve; capture waits until it clears', { primary, fallback });
+      }
+      return;
+    }
+    case 'primary':
+      logger.info('SESSION', 'Primary recovered from quota cooldown', { primary });
+      return;
+  }
+}
+
+/**
+ * A plain (non-gateway-fallback) selection for a caller about to send. The
+ * transition log is only kept when a fallback is configured, so an install
+ * that configures nothing logs nothing new.
+ */
+function selectWithQuotaFallback(primary: SelectableProvider): ProviderSelection {
+  const nowMs = Date.now();
+  const routed = applyQuotaFallback(primary, nowMs);
+  if (readQuotaFallbackProvider() !== null) {
+    noteQuotaFallbackTransition(primary, routed, nowMs);
+  }
+  return routed.fallbackFrom === null
+    ? { provider: routed.provider, gatewayProbeClaimId: null }
+    : { provider: routed.provider, gatewayProbeClaimId: null, fallbackFrom: routed.fallbackFrom };
+}
+
+/** Test seam: forget the last logged quota-fallback state. */
+export function resetQuotaFallbackStateForTesting(): void {
+  quotaFallbackState = 'primary';
 }
 
 /**
@@ -77,7 +252,7 @@ export interface ProviderSelection {
  * `selectProviderForGenerator` instead, or it becomes part of the herd.
  */
 export function getSelectedProvider(): SelectableProvider {
-  if (isCodexSelected()) return 'codex';
+  if (isCodexSelected()) return applyQuotaFallback('codex').provider;
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     if (
@@ -87,12 +262,41 @@ export function getSelectedProvider(): SelectableProvider {
     ) {
       return 'claude';
     }
-    return 'openrouter';
+    return applyQuotaFallback('openrouter').provider;
   }
-  if (isGeminiSelected() && isGeminiAvailable()) return 'gemini';
-  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return 'openai-compatible';
-  return 'claude';
+  if (isGeminiSelected() && isGeminiAvailable()) return applyQuotaFallback('gemini').provider;
+  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return applyQuotaFallback('openai-compatible').provider;
+  return applyQuotaFallback('claude').provider;
 }
+
+/**
+ * Where memory capture runs while `held` is in a quota cooldown: the provider
+ * dispatch is using, when that is a different one and not itself holding.
+ * Null otherwise, and always null with no quota fallback configured, so a
+ * default install is unchanged.
+ *
+ * Read by the session-start notice, through the mirrored cooldown. It asks
+ * dispatch rather than `quotaFallbackTarget(held)` because the held provider
+ * can be either one: after the fallback hits its own quota while the primary
+ * has recovered, capture is back on the primary. It also follows dispatch
+ * through the cmem-gateway branch, which ignores the quota fallback rule.
+ *
+ * Paused work does not need a resume of its own: the periodic sweep
+ * (SessionRoutes.resumePendingSessions) paces itself on the provider dispatch
+ * returns here, so it restarts quota-paused sessions on whichever provider can
+ * take them.
+ */
+export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.now()): SelectableProvider | null {
+  if (readQuotaFallbackProvider() === null) return null;
+  const serving = getSelectedProvider();
+  if (serving === held || isQuotaCooldownHolding(serving, nowMs)) return null;
+  return serving;
+}
+
+// The session-start notice reads the serving provider from the mirrored
+// cooldown in observer-health.json. See setQuotaFallbackResolver for why the
+// answer is injected from here rather than imported there.
+setQuotaFallbackResolver(quotaServingProvider);
 
 /**
  * Dispatch for a caller that is about to start a generator, claiming the single
@@ -116,7 +320,7 @@ export function getSelectedProvider(): SelectableProvider {
  * is not a pause.
  */
 export function selectProviderForGenerator(): ProviderSelection {
-  if (isCodexSelected()) return { provider: 'codex', gatewayProbeClaimId: null };
+  if (isCodexSelected()) return selectWithQuotaFallback('codex');
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
@@ -132,15 +336,11 @@ export function selectProviderForGenerator(): ProviderSelection {
       }
       return { provider: 'openrouter', gatewayProbeClaimId: admission.claimId };
     }
-    return { provider: 'openrouter', gatewayProbeClaimId: null };
+    return selectWithQuotaFallback('openrouter');
   }
-  if (isGeminiSelected() && isGeminiAvailable()) {
-    return { provider: 'gemini', gatewayProbeClaimId: null };
-  }
-  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) {
-    return { provider: 'openai-compatible', gatewayProbeClaimId: null };
-  }
-  return { provider: 'claude', gatewayProbeClaimId: null };
+  if (isGeminiSelected() && isGeminiAvailable()) return selectWithQuotaFallback('gemini');
+  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return selectWithQuotaFallback('openai-compatible');
+  return selectWithQuotaFallback('claude');
 }
 
 /** Release a gateway re-probe claim taken by `selectProviderForGenerator`. */

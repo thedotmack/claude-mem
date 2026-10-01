@@ -213,6 +213,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
       'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
+      'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
+      'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -286,6 +288,15 @@ export class SettingsRoutes extends BaseRouteHandler {
     const validProviders = ['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
       return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", "codex", or "openai-compatible"' };
+      }
+    }
+
+    // Empty is valid: it turns the fallback off.
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER) {
+      // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts.
+      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible'];
+      if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (off), "claude", "gemini", "openrouter", or "openai-compatible"' };
       }
     }
 

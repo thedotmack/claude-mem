@@ -352,7 +352,9 @@ export class SessionRoutes extends BaseRouteHandler {
           });
         }
       }
-      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      await this.admitAndStartGenerator(
+        session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, null, selection.fallbackFrom ?? null,
+      );
       return;
     }
 
@@ -383,6 +385,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
       await this.admitAndStartGenerator(
         session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, oldGeneratorPromise,
+        selection.fallbackFrom ?? null,
       );
       return;
     }
@@ -419,6 +422,8 @@ export class SessionRoutes extends BaseRouteHandler {
     gatewayProbeClaimId: number | null,
     /** The parked generator a provider switch is replacing, if any. */
     previousGenerator: Promise<void> | null = null,
+    /** The provider this run stands in for when dispatch took the quota fallback, else null. */
+    fallbackFrom: SelectableProvider | null = null,
   ): Promise<void> {
     let quotaProbeClaimId: number | null = null;
     try {
@@ -492,6 +497,7 @@ export class SessionRoutes extends BaseRouteHandler {
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         return;
       }
+      this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
       // The claim travels with the run that took it: only that run may release
       // it, or an earlier generator's exit would clear a later session's probe.
       await this.startGeneratorWithProvider(
@@ -1005,5 +1011,28 @@ export class SessionRoutes extends BaseRouteHandler {
     } else {
       session.modelOverride = undefined;
     }
+  }
+
+  /**
+   * On a quota-fallback run, run Claude on CLAUDE_MEM_QUOTA_FALLBACK_MODEL.
+   * Applied after tier routing so it wins for this run only; a deliberate
+   * Claude-primary run, or an empty setting, keeps whatever tier routing and
+   * CLAUDE_MEM_MODEL chose. Only ClaudeProvider reads modelOverride, which is
+   * why the setting does nothing for any other fallback.
+   */
+  private applyQuotaFallbackModel(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    provider: SelectableProvider,
+    fallbackFrom: SelectableProvider | null,
+  ): void {
+    if (fallbackFrom === null || provider !== 'claude') return;
+    const model = (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_QUOTA_FALLBACK_MODEL ?? '').trim();
+    if (!model) return;
+    session.modelOverride = model;
+    logger.info('SESSION', 'Quota fallback run uses the configured fallback model', {
+      sessionId: session.sessionDbId,
+      model,
+      fallbackFrom,
+    });
   }
 }

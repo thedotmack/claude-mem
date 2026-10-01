@@ -527,6 +527,36 @@ export function ContextSettingsModal({
               )}
 
               <FormField
+                label="Quota Fallback"
+                tooltip="While the selected provider is in a quota cooldown (allowance spent, or rate limits that outlast their retries), send observation work here instead. Off keeps today's behavior: work waits for the cooldown."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', e.target.value)}
+                >
+                  <option value="">Off (wait for the cooldown)</option>
+                  <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="gemini">Gemini (uses API key)</option>
+                  <option value="openrouter">OpenRouter / claude-mem observer</option>
+                  <option value="openai-compatible">OpenAI-compatible endpoint</option>
+                </select>
+              </FormField>
+
+              {formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER === 'claude' && (
+                <FormField
+                  label="Fallback Claude Model"
+                  tooltip="Claude model for fallback runs only. Blank uses the Claude Model setting and tier routing."
+                >
+                  <input
+                    type="text"
+                    value={formState.CLAUDE_MEM_QUOTA_FALLBACK_MODEL || ''}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_MODEL', e.target.value)}
+                    placeholder="e.g., claude-haiku-4-5-20251001"
+                  />
+                </FormField>
+              )}
+
+              <FormField
                 label="Claude Code CLI path"
                 tooltip="Executable path for the Claude Code CLI. File/env only — edit ~/.claude-mem/settings.json or set CLAUDE_CODE_PATH in the environment, then restart the worker."
               >
