@@ -6,6 +6,7 @@ import path from 'path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
+import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -764,18 +765,8 @@ async function buildHooks() {
         fs.mkdirSync(opencodeOutDir, { recursive: true });
       }
       await build({
-        entryPoints: ['src/integrations/opencode-plugin/index.ts'],
-        bundle: true,
-        platform: 'node',
-        target: 'node18',
-        format: 'esm',
+        ...OPENCODE_PLUGIN_BUILD_OPTIONS,
         outfile: `${opencodeOutDir}/index.js`,
-        minify: true,
-        logLevel: 'error',
-        external: [
-          'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
-          'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
-        ],
       });
 
       const opencodeStats = fs.statSync(`${opencodeOutDir}/index.js`);

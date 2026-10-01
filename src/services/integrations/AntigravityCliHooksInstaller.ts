@@ -14,24 +14,52 @@ import { readJsonSafe } from '../../utils/json-utils.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { ANTIGRAVITY_HOOK_TIMEOUT_MS } from '../../shared/host-hook-limits.js';
 
-interface AntigravityHookEntry {
-  name: string;
-  type: 'command';
+// agy hook schema (builtin `agy-customizations/docs/hooks.md`): each top-level
+// key of hooks.json is a hook NAME, mapping to an object of event keys. Only
+// PreToolUse/PostToolUse use the grouped { matcher, hooks } shape; the remaining
+// events are flat arrays of handlers. Handlers carry type/command/timeout only
+// (no per-handler `name`; `timeout` is seconds).
+interface AntigravityHookHandler {
+  type?: 'command';
   command: string;
-  timeout: number;
+  timeout?: number;
 }
 
 interface AntigravityHookGroup {
   matcher: string;
-  hooks: AntigravityHookEntry[];
+  hooks: AntigravityHookHandler[];
+}
+
+interface AntigravityNamedHook {
+  enabled?: boolean;
+  PreToolUse?: AntigravityHookGroup[];
+  PostToolUse?: AntigravityHookGroup[];
+  PreInvocation?: AntigravityHookHandler[];
+  PostInvocation?: AntigravityHookHandler[];
+  Stop?: AntigravityHookHandler[];
 }
 
 interface AntigravityHooksConfig {
-  [eventName: string]: AntigravityHookGroup[];
+  [hookName: string]: AntigravityNamedHook;
+}
+
+// Legacy shape written by pre-#4196 installers: top-level keys are EVENT names,
+// every event is wrapped in a {matcher, hooks} group, and the hook is identified
+// by a handler-level `name`. Retained only so merge/uninstall can migrate it.
+interface LegacyAntigravityHookEntry {
+  name?: string;
+  type?: string;
+  command: string;
+  timeout?: number;
+}
+
+interface LegacyAntigravityHookGroup {
+  matcher?: string;
+  hooks: LegacyAntigravityHookEntry[];
 }
 
 interface AntigravitySettingsJson {
-  hooks?: AntigravityHooksConfig;
+  hooks?: Record<string, LegacyAntigravityHookGroup[]>;
   [key: string]: unknown;
 }
 
@@ -70,6 +98,15 @@ const ANTIGRAVITY_MCP_CONFIG_PATHS = [
 const RULES_CONTEXT_PATH = path.join(homedir(), '.agents', 'rules', 'claude-mem-context.md');
 
 const HOOK_NAME = 'claude-mem';
+// agy hook timeouts are in SECONDS ("Execution timeout in seconds. Defaults to
+// 30"). The pre-#4196 installer wrote 10000 here as if it were milliseconds,
+// which agy read as ~2.7 hours instead of 10 seconds. The limit itself lives in
+// host-hook-limits.ts, where the server-runtime SessionStart budget reads it.
+const HOOK_TIMEOUT_SECONDS = ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000;
+// PreToolUse/PostToolUse are the only events that use the grouped
+// { matcher, hooks } shape; the rest are flat handler arrays (agy 1.2.13
+// builtin docs/hooks.md, "Supported Event Types").
+const ANTIGRAVITY_GROUPED_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse']);
 
 // The 5 hook events `agy` 1.2.1 actually fires (issue #4057), mapped to
 // claude-mem's internal handlers:
@@ -147,16 +184,37 @@ function buildHookCommand(
   return `${formattedBunPath} ${formattedWorkerPath} hook antigravity-cli ${internalEvent}`;
 }
 
-function createHookGroup(hookCommand: string): AntigravityHookGroup {
+function createHookHandler(
+  bunPath: string,
+  workerServicePath: string,
+  antigravityEventName: string,
+): AntigravityHookHandler {
   return {
-    matcher: '*',
-    hooks: [{
-      name: HOOK_NAME,
-      type: 'command',
-      command: hookCommand,
-      timeout: ANTIGRAVITY_HOOK_TIMEOUT_MS,
-    }],
+    type: 'command',
+    command: buildHookCommand(bunPath, workerServicePath, antigravityEventName),
+    timeout: HOOK_TIMEOUT_SECONDS,
   };
+}
+
+// Build the canonical agy hooks.json fragment for claude-mem. Top-level key is
+// the hook NAME (`claude-mem`); each event uses the shape agy expects — grouped
+// (matcher + hooks) for PreToolUse/PostToolUse, flat handler arrays for
+// PreInvocation/PostInvocation/Stop. Exported for the schema contract tests
+// (issue #4196).
+export function buildAntigravityHooksConfig(
+  bunPath: string,
+  workerServicePath: string,
+): AntigravityHooksConfig {
+  const namedHook: Record<string, unknown> = {};
+
+  for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+    const handler = createHookHandler(bunPath, workerServicePath, event);
+    namedHook[event] = ANTIGRAVITY_GROUPED_EVENTS.has(event)
+      ? [{ matcher: '*', hooks: [handler] }]
+      : [handler];
+  }
+
+  return { [HOOK_NAME]: namedHook as AntigravityNamedHook };
 }
 
 function readAntigravitySettings(): AntigravitySettingsJson {
@@ -182,9 +240,11 @@ function writeAntigravitySettings(settings: AntigravitySettingsJson): void {
   writeFileSync(GEMINI_SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
 }
 
-// Read the standalone `hooks.json` agy loads. Returns the event→groups map
-// (the whole file). Empty/missing file → {}. Genuinely corrupt (non-empty,
+// Read the standalone `hooks.json` agy loads. Returns the whole file (named
+// hooks → event config). Empty/missing file → {}. Genuinely corrupt (non-empty,
 // unparseable) content throws so we never clobber a user's hand-edited hooks.
+// The on-disk value may still be the legacy event-keyed shape; callers migrate
+// or strip that via stripLegacyEventHooks().
 function readAntigravityHooksConfig(): AntigravityHooksConfig {
   if (!existsSync(GEMINI_HOOKS_CONFIG_PATH)) {
     return {};
@@ -211,37 +271,69 @@ function writeAntigravityHooksConfig(hooksConfig: AntigravityHooksConfig): void 
   writeFileSync(GEMINI_HOOKS_CONFIG_PATH, JSON.stringify(hooksConfig, null, 2) + '\n');
 }
 
-// Generic JSON-group merge — merges claude-mem's hook groups into an existing
-// event→groups map (keyed on the `claude-mem` hook name), preserving any hooks
-// the user or other tools registered. Event-name agnostic.
-function mergeHooksIntoConfig(
+// Merge claude-mem's named hook into an existing hooks.json, preserving other
+// named hooks the user or other tools registered. For the `claude-mem` hook the
+// event dimensions we own are replaced (idempotent re-installs), while any
+// other event keys on that named hook are left intact.
+function mergeNamedHook(
+  existing: AntigravityNamedHook | undefined,
+  incoming: AntigravityNamedHook,
+): AntigravityNamedHook {
+  const merged: Record<string, unknown> = { ...(existing ?? {}) };
+
+  for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+    const value = (incoming as Record<string, unknown>)[event];
+    if (value !== undefined) {
+      merged[event] = value;
+    }
+  }
+
+  return merged as AntigravityNamedHook;
+}
+
+// Remove entries written by the pre-#4196 event-keyed layout (top-level keys are
+// event names, handlers carry `name: 'claude-mem'`). Returns the number of
+// handlers removed. The new layout never has arrays at the top level, so an
+// Array value is unambiguously legacy.
+export function stripLegacyEventHooks(config: AntigravityHooksConfig): number {
+  const loose = config as unknown as Record<string, unknown>;
+  let removed = 0;
+
+  for (const [eventName, value] of Object.entries(loose)) {
+    if (!Array.isArray(value)) continue;
+
+    const filteredGroups = (value as LegacyAntigravityHookGroup[])
+      .map(group => {
+        if (!group || !Array.isArray(group.hooks)) return group;
+        const remainingHooks = group.hooks.filter(hook => hook?.name !== HOOK_NAME);
+        removed += group.hooks.length - remainingHooks.length;
+        return { ...group, hooks: remainingHooks };
+      })
+      .filter(group => !group || !Array.isArray(group.hooks) || group.hooks.length > 0);
+
+    if (filteredGroups.length > 0) {
+      loose[eventName] = filteredGroups;
+    } else {
+      delete loose[eventName];
+    }
+  }
+
+  return removed;
+}
+
+export function mergeHooksIntoConfig(
   existingConfig: AntigravityHooksConfig,
   newHooks: AntigravityHooksConfig,
 ): AntigravityHooksConfig {
   const config: AntigravityHooksConfig = { ...existingConfig };
 
-  for (const [eventName, newGroups] of Object.entries(newHooks)) {
-    const existingGroups: AntigravityHookGroup[] = config[eventName] ?? [];
+  // Migrate any legacy event-keyed claude-mem entries first so the old and new
+  // layouts never coexist after an upgrade. stripLegacyEventHooks replaces the
+  // affected top-level keys, so the caller's object is left untouched.
+  stripLegacyEventHooks(config);
 
-    for (const newGroup of newGroups) {
-      const existingGroupIndex = existingGroups.findIndex((group: AntigravityHookGroup) =>
-        group.hooks.some((hook: AntigravityHookEntry) => hook.name === HOOK_NAME)
-      );
-
-      if (existingGroupIndex >= 0) {
-        const existingGroup: AntigravityHookGroup = existingGroups[existingGroupIndex];
-        const hookIndex = existingGroup.hooks.findIndex((hook: AntigravityHookEntry) => hook.name === HOOK_NAME);
-        if (hookIndex >= 0) {
-          existingGroup.hooks[hookIndex] = newGroup.hooks[0];
-        } else {
-          existingGroup.hooks.push(newGroup.hooks[0]);
-        }
-      } else {
-        existingGroups.push(newGroup);
-      }
-    }
-
-    config[eventName] = existingGroups;
+  for (const [hookName, incoming] of Object.entries(newHooks)) {
+    config[hookName] = mergeNamedHook(config[hookName], incoming);
   }
 
   return config;
@@ -320,11 +412,7 @@ export async function installAntigravityCliHooks(): Promise<number> {
   console.log(`  Worker service: ${workerServicePath}`);
 
   try {
-    const hooksConfig: AntigravityHooksConfig = {};
-    for (const antigravityEvent of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
-      const command = buildHookCommand(bunPath, workerServicePath, antigravityEvent);
-      hooksConfig[antigravityEvent] = [createHookGroup(command)];
-    }
+    const hooksConfig = buildAntigravityHooksConfig(bunPath, workerServicePath);
 
     const existingHooks = readAntigravityHooksConfig();
     const mergedHooks = mergeHooksIntoConfig(existingHooks, hooksConfig);
@@ -457,27 +545,9 @@ function removeAntigravityHooksFromHooksConfig(): void {
     return;
   }
 
-  let removedCount = 0;
+  const { config: cleanedConfig, removed: removedCount } = removeClaudeMemHooks(config);
 
-  for (const [eventName, groups] of Object.entries(config)) {
-    if (!Array.isArray(groups)) continue;
-    const filteredGroups = groups
-      .map(group => {
-        if (!group || !Array.isArray(group.hooks)) return group;
-        const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
-        removedCount += group.hooks.length - remainingHooks.length;
-        return { ...group, hooks: remainingHooks };
-      })
-      .filter(group => !group || !Array.isArray(group.hooks) || group.hooks.length > 0);
-
-    if (filteredGroups.length > 0) {
-      config[eventName] = filteredGroups;
-    } else {
-      delete config[eventName];
-    }
-  }
-
-  writeAntigravityHooksConfig(config);
+  writeAntigravityHooksConfig(cleanedConfig);
   console.log(`  Removed ${removedCount} claude-mem hook(s) from ${GEMINI_HOOKS_CONFIG_PATH}`);
 
   if (removeContextTagBlock(GEMINI_MD_PATH)) {
@@ -521,6 +591,71 @@ function removeAntigravityHooksFromSettings(): void {
   }
 }
 
+// Count the underlying handler objects in a named hook (used for the uninstall
+// summary so grouped and flat events are both counted).
+function countNamedHookHandlers(namedHook: AntigravityNamedHook): number {
+  let count = 0;
+
+  for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+    const value = (namedHook as Record<string, unknown>)[event];
+    if (!Array.isArray(value)) continue;
+
+    for (const item of value) {
+      const grouped = item as AntigravityHookGroup;
+      if (grouped && Array.isArray(grouped.hooks)) {
+        count += grouped.hooks.length;
+      } else {
+        count += 1;
+      }
+    }
+  }
+
+  return count;
+}
+
+// Remove every claude-mem trace from hooks.json — the named `claude-mem` hook
+// plus any legacy event-keyed entries — while preserving other hooks/handlers.
+// Exported for tests (issue #4196).
+export function removeClaudeMemHooks(
+  config: AntigravityHooksConfig,
+): { config: AntigravityHooksConfig; removed: number } {
+  const result: AntigravityHooksConfig = { ...config };
+  let removed = 0;
+
+  const namedHook = result[HOOK_NAME];
+  if (namedHook && typeof namedHook === 'object' && !Array.isArray(namedHook)) {
+    removed += countNamedHookHandlers(namedHook);
+    delete result[HOOK_NAME];
+  }
+
+  removed += stripLegacyEventHooks(result);
+
+  return { config: result, removed };
+}
+
+// What `status` reports for a hooks.json: the events the named `claude-mem`
+// hook covers, and how many claude-mem handlers a pre-#4196 install left under
+// top-level event keys. Other tools' entries there are not counted, because
+// re-running install only migrates claude-mem's. Exported for tests (#4196).
+export function describeAntigravityHooks(
+  config: AntigravityHooksConfig,
+): { installedEvents: string[]; legacyHandlerCount: number } {
+  const installedEvents: string[] = [];
+  const namedHook = config[HOOK_NAME];
+  if (namedHook && typeof namedHook === 'object' && !Array.isArray(namedHook)) {
+    for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+      const value = (namedHook as Record<string, unknown>)[event];
+      if (Array.isArray(value) && value.length > 0) {
+        installedEvents.push(event);
+      }
+    }
+  }
+
+  // stripLegacyEventHooks replaces top-level keys on the copy only.
+  const legacyHandlerCount = stripLegacyEventHooks({ ...config });
+  return { installedEvents, legacyHandlerCount };
+}
+
 export function checkAntigravityCliHooksStatus(): number {
   console.log('\nClaude-Mem Antigravity CLI Status\n');
 
@@ -541,16 +676,7 @@ export function checkAntigravityCliHooksStatus(): number {
     return 0;
   }
 
-  const installedEvents: string[] = [];
-  for (const [eventName, groups] of Object.entries(hooksConfig)) {
-    if (!Array.isArray(groups)) continue;
-    const hasClaudeMem = groups.some(group =>
-      Array.isArray(group?.hooks) && group.hooks.some(hook => hook.name === HOOK_NAME)
-    );
-    if (hasClaudeMem) {
-      installedEvents.push(eventName);
-    }
-  }
+  const { installedEvents, legacyHandlerCount } = describeAntigravityHooks(hooksConfig);
 
   if (installedEvents.length === 0) {
     console.log('Hooks: Not installed');
@@ -563,6 +689,13 @@ export function checkAntigravityCliHooksStatus(): number {
       const internalEvent = ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT[event] ?? 'unknown';
       console.log(`  ${event} → ${internalEvent}`);
     }
+  }
+
+  // A pre-#4196 install leaves claude-mem under top-level event keys, which agy
+  // ignores. Point at the migration whenever any are left, including next to a
+  // current install.
+  if (legacyHandlerCount > 0) {
+    console.log(`Legacy hooks: ${legacyHandlerCount} pre-#4196 event-keyed claude-mem hook(s) found. Re-run install to migrate them.\n`);
   }
 
   if (existsSync(GEMINI_MD_PATH)) {

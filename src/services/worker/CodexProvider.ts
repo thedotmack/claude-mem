@@ -1,13 +1,13 @@
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import {
-  CodexAppServerClient,
   CODEX_NO_AGENT_MESSAGE_CODE,
   CODEX_SETUP_REQUIRED_CODE,
   type CodexAppServerTurnResult,
 } from './CodexAppServerClient.js';
+import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
 import { resolveLlmTimeoutMs, withRetry } from './retry.js';
 import {
@@ -25,6 +25,8 @@ import {
   isDependencyStatusInCooldown,
   recordCodexCliSetupRequired,
 } from '../../shared/dependency-health.js';
+import { OBS_PROMPT_FIELD_MAX_CHARS, type ObservationPromptParts } from '../../sdk/prompts.js';
+import { observationMetadata, queuedObservationPrompt, boundObservationPrompt, sameObservationContext } from './codex-observation-batch.js';
 import { logger } from '../../utils/logger.js';
 
 interface CodexConfig {
@@ -134,7 +136,9 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   protected readonly providerName = 'Codex';
   protected readonly syntheticIdPrefix = 'codex';
   protected readonly forwardEmptyMessageResponse = true;
-  private readonly appServer = new CodexAppServerClient();
+  private readonly appServer = new CodexAppServerPool(boundedInteger(
+    SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS, 2, 8,
+  ));
 
   async close(): Promise<void> {
     await this.appServer.close();
@@ -153,6 +157,39 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       codexPath,
       reasoningEffort: settings.CLAUDE_MEM_CODEX_REASONING_EFFORT.trim() || null,
     };
+  }
+
+  protected override readonly rejectAbortedObservation = true;
+
+  /**
+   * A Codex backlog would pay one round trip, and one full history replay on
+   * a fresh ephemeral thread, per observation. Claim the queued observations
+   * already at the FIFO head that share this one's prompt number, agent and
+   * cwd into the same turn, within a count and character budget, without
+   * waiting for more. The claimed ids ride on the session, so the normal
+   * confirm/reset acknowledges or preserves the whole batch.
+   */
+  protected override observationTurnPrompt(session: ActiveSession, first: PendingMessageWithId, prompt: ObservationPromptParts): string {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const count = boundedInteger(settings.CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE, 8, 32);
+    const configuredChars = boundedInteger(settings.CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS, 32_000, 128_000);
+    const maxChars = configuredChars >= 4_000 ? configuredChars : 32_000;
+    let combined = boundObservationPrompt(prompt, maxChars, observationMetadata(first));
+    for (let size = 1; size < count; size++) {
+      let addition = '';
+      const next = this.sessionManager.claimNextObservation(session.sessionDbId, candidate => {
+        if (!sameObservationContext(first, candidate)) return false;
+        // Do not add an oversized field that would need its own compression pass.
+        if ([candidate.tool_input, candidate.tool_response].some(field =>
+          (JSON.stringify(field, null, 2) ?? '').length > OBS_PROMPT_FIELD_MAX_CHARS)) return false;
+        const rawChars = JSON.stringify([candidate.tool_input, candidate.tool_response]).length;
+        addition = queuedObservationPrompt(candidate);
+        return Math.max(rawChars, addition.length) + combined.length + 2 <= maxChars;
+      });
+      if (!next) break;
+      combined += '\n\n' + addition;
+    }
+    return combined;
   }
 
   protected missingApiKeyError(): Error {
@@ -196,6 +233,11 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       'Follow the latest user request: XML for observations/summaries, plain text for payload compression.',
       ...history.map(message => `${message.role.toUpperCase()}:\n${message.content}`),
     ].join('\n\n');
+    // Pool slots run concurrently: a success may only clear the breaker or
+    // setup status it was admitted under, never a newer failure another slot
+    // recorded meanwhile (each record installs a new object).
+    const admittedQuota = getQuotaCooldown('codex');
+    const admittedSetup = getDependencyStatus('codex_cli');
     let result: CodexAppServerTurnResult;
     try {
       result = await this.runTurnWithRetry(prompt, config, timeoutMs, abortSignal);
@@ -212,10 +254,10 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       });
       return { content: '' };
     }
-    // A served request is the recovery probe succeeding. The guard skips the
-    // breaker's disk write when nothing was armed.
-    if (getQuotaCooldown('codex')) clearQuotaCooldown('codex');
-    clearDependencyStatus('codex_cli');
+    // A served request is the recovery probe succeeding.
+    const quota = getQuotaCooldown('codex');
+    if (quota && quota === admittedQuota) clearQuotaCooldown('codex');
+    if (getDependencyStatus('codex_cli') === admittedSetup) clearDependencyStatus('codex_cli');
     return result;
   }
 

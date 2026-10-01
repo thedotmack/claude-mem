@@ -51,6 +51,7 @@ const EXCLUDED_PATTERNS = [
   /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
   /sqlite\/project-read-keys\.ts$/,  // Pure project-scope SQL builders plus one read query; logging happens at the search/context call sites
   /servers\/checkout-search-scope\.ts$/,  // Pure MCP search-args transform; no side effects or error paths
+  /sync\/prompt-text-clamp\.ts$/,  // Pure prompt_text bound (SQL column fragment + clamp); CloudSync logs and quarantines at the drain (#3537)
 ];
 
 const HIGH_PRIORITY_PATTERNS = [
@@ -92,12 +93,12 @@ async function findTypeScriptFiles(dir: string): Promise<string[]> {
 }
 
 function shouldExclude(filePath: string): boolean {
-  const relativePath = relative(SRC_DIR, filePath);
+  const relativePath = relative(SRC_DIR, filePath).replaceAll("\\", "/");
   return EXCLUDED_PATTERNS.some(pattern => pattern.test(relativePath));
 }
 
 function isHighPriority(filePath: string): boolean {
-  const relativePath = relative(SRC_DIR, filePath);
+  const relativePath = relative(SRC_DIR, filePath).replaceAll("\\", "/");
 
   if (isUIFile(relativePath)) {
     return false;
@@ -109,7 +110,7 @@ function isHighPriority(filePath: string): boolean {
 function analyzeFile(filePath: string): FileAnalysis {
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
-  const relativePath = relative(PROJECT_ROOT, filePath);
+  const relativePath = relative(PROJECT_ROOT, filePath).replaceAll("\\", "/");
 
   const hasLoggerImport = /import\s+.*logger.*from\s+['"].*logger(\.(js|ts))?['"]/.test(content);
 

@@ -7,6 +7,8 @@ import {
   parseRetryAfterMs,
 } from './shared/error-classification.js';
 import { buildServerGenerationPrompt } from './shared/prompt-builder.js';
+import { readGeminiAnswerText, type GeminiPart } from '../../../shared/gemini-answer-text.js';
+import { parseGeminiErrorDetails } from '../../../shared/gemini-error-details.js';
 import type {
   ServerGenerationContext,
   ServerGenerationProvider,
@@ -29,7 +31,7 @@ export interface GeminiObservationProviderOptions {
 
 interface GeminiResponse {
   candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
+    content?: { parts?: GeminiPart[] };
   }>;
   usageMetadata?: { totalTokenCount?: number };
   error?: { code?: number; status?: string; message?: string };
@@ -117,6 +119,28 @@ export function classifyGeminiServerError(input: ClassifyGeminiServerErrorInput)
       kind: 'unrecoverable',
       cause: new Error('Gemini HTTP error (status 400)'),
     });
+  }
+
+  // A 429 is decided BEFORE the shared body markers, because every Gemini 429
+  // carries `RESOURCE_EXHAUSTED` whatever it is actually refusing. Letting the
+  // marker decide made a per-minute throttle indistinguishable from a spent
+  // allowance here, and dropped the retry hint on the floor with it.
+  // The window and the retry hint come from the body's structured details,
+  // read by the same parser as the worker (src/shared/gemini-error-details.ts).
+  if (status === 429) {
+    const details = parseGeminiErrorDetails(bodyText);
+    const retryAfterMs =
+      (input.headers ? parseRetryAfterMs(input.headers.get('retry-after')) : undefined)
+      ?? details.retryDelayMs;
+    const exhausted = details.periodQuotaExhausted;
+    return new ServerClassifiedProviderError(
+      exhausted ? 'Gemini quota exhausted (status 429)' : 'Gemini rate limit (429)',
+      {
+        kind: exhausted ? 'quota_exhausted' : 'rate_limit',
+        cause: new Error('Gemini HTTP error (status 429)'),
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      },
+    );
   }
 
   return classifyHttpProviderError({
@@ -210,7 +234,7 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+    const rawText = readGeminiAnswerText(data.candidates?.[0]?.content?.parts).trim();
     if (!rawText) {
       logger.warn('SDK', 'Gemini returned empty content', { provider: 'gemini', model: this.model });
     }

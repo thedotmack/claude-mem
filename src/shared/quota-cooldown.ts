@@ -46,7 +46,7 @@ import {
   recordObserverQuotaCooldown,
 } from './observer-health.js';
 
-export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'cmem-gateway';
+export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'cmem-gateway';
 
 export const QUOTA_COOLDOWN_FILENAME = 'quota-cooldown.json';
 
@@ -366,6 +366,30 @@ export function isQuotaCooldownActive(
 }
 
 /**
+ * True while dispatch should route AROUND `provider` (the quota fallback): the
+ * account selected now is inside the provider's window
+ * (resolveQuotaCooldownMs), or past it while the single post-window probe is
+ * still in flight and not yet stale.
+ *
+ * The read-only twin of `tryAdmitQuotaProbe`: the same account check and the
+ * same two conditions, but it never claims a probe or drops a breaker.
+ * `isQuotaCooldownActive` reads the window alone, which would send every
+ * session back to a provider whose one permitted probe is still running — the
+ * herd this breaker exists to stop.
+ */
+export function isQuotaCooldownHolding(
+  provider: QuotaProvider,
+  nowMs: number = Date.now(),
+): boolean {
+  hydrateFromDisk();
+  const state = cooldowns.get(provider);
+  if (!state || !cooldownAppliesToCurrentAccount(state)) return false;
+  if (nowMs - state.armedAtMs < resolveQuotaCooldownMs(state.window)) return true;
+  const inFlight = state.probeInFlightSinceMs;
+  return inFlight !== null && nowMs - inFlight < QUOTA_PROBE_STALE_MS;
+}
+
+/**
  * Decide whether this caller may send to `provider`, claiming the single
  * post-expiry probe if so.
  *
@@ -487,6 +511,27 @@ export function resetQuotaCooldownsForTesting(): void {
 }
 
 /**
+ * Where memory capture runs while `provider` is held — another provider that
+ * dispatch is actually using and that is not itself held — or null.
+ *
+ * Injected rather than imported: the answer needs dispatch and the provider
+ * credential checks, and provider-dispatch already imports this module, so
+ * importing it back would be a cycle. provider-dispatch registers the real
+ * answer when it loads; in any process that never loads it, this stays null
+ * and the mirror carries no serving provider.
+ */
+export type QuotaFallbackResolver = (provider: QuotaProvider, nowMs: number) => QuotaProvider | null;
+
+let quotaFallbackResolver: QuotaFallbackResolver | null = null;
+
+/** Install the resolver; returns the previous one so a caller can restore it. */
+export function setQuotaFallbackResolver(resolver: QuotaFallbackResolver | null): QuotaFallbackResolver | null {
+  const previous = quotaFallbackResolver;
+  quotaFallbackResolver = resolver;
+  return previous;
+}
+
+/**
  * Mirror the in-memory breaker into observer-health.json so session-start
  * and external monitors can see an intentional pause. Best-effort: a health
  * write failure must not change admission or drain-on-clear.
@@ -510,6 +555,12 @@ export function resetQuotaCooldownsForTesting(): void {
  * so the mirror carries the pause that holds LONGEST, not the one armed last: a
  * fresh ninety-second throttle must not hide a spent allowance that still has
  * half an hour to run.
+ *
+ * When another provider is serving (a quota fallback), the mirror names it, so
+ * the session-start notice says capture continues instead of saying it is
+ * paused. The answer is recomputed on every arm and clear; between those
+ * events it can go stale (a settings edit, a login change, a window elapsing
+ * into a probe).
  *
  * Exported for tests: the elapsed-window paths need a controllable clock, which
  * the internal callers (always "now") cannot supply. `cooldownMs` pins one
@@ -538,6 +589,14 @@ export function syncObserverHealthQuotaCooldown(
       clearObserverQuotaCooldown();
       return;
     }
+    let servingProvider: QuotaProvider | null = null;
+    try {
+      servingProvider = quotaFallbackResolver?.(latest.provider, nowMs) ?? null;
+    } catch {
+      // A resolver fault must never cost the mirror itself; with no serving
+      // provider the notice says paused, which is the safe reading.
+      servingProvider = null;
+    }
     recordObserverQuotaCooldown({
       active: true,
       provider: latest.provider,
@@ -548,6 +607,7 @@ export function syncObserverHealthQuotaCooldown(
       until: latestUntil,
       ...(latest.window ? { window: latest.window } : {}),
       message: latest.message,
+      ...(servingProvider ? { servingProvider } : {}),
     });
   } catch (err) {
     logger.warn('SESSION', 'Failed to mirror quota cooldown into observer-health', {}, err as Error);

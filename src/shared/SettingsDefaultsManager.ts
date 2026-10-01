@@ -156,10 +156,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CODEX_MODEL: string;
   CLAUDE_MEM_CODEX_PATH: string;
   CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
+  CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS: string;
+  CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE: string;
+  CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_API_KEYS: string;
-  CLAUDE_MEM_GEMINI_MODEL: string;  
+  CLAUDE_MEM_GEMINI_MODEL: string;
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_API_KEYS: string;
@@ -167,6 +170,15 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
+  CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
+  CLAUDE_MEM_OPENAI_COMPAT_PRESET: string;
+  CLAUDE_MEM_OPENAI_COMPAT_API_KEY: string;
+  CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: string;
+  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
+  // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
+  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_MODEL: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -356,6 +368,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CODEX_MODEL: '', // Empty uses the Codex default model.
     CLAUDE_MEM_CODEX_PATH: 'codex',
     CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low',
+    CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS: '2',
+    CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE: '8',
+    CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS: '32000',
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_API_KEYS: '',  // Optional extra keys (newline/comma separated). Rotates on rate_limit/quota_exhausted/auth_invalid — see src/shared/api-key-pool.ts.
@@ -373,6 +388,16 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
+    // JSON object of provider-specific request fields, e.g. {"reasoning":{"enabled":false}}.
+    // Settings file or env only (never the HTTP settings API); never sent to the cmem gateway.
+    CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',
+    CLAUDE_MEM_OPENAI_COMPAT_PRESET: '',  // Named endpoint preset for the openai-compatible provider (nvidia-nim, deepseek, groq, together, vllm, ollama, lmstudio). Empty = 'custom', configure the base URL by hand.
+    CLAUDE_MEM_OPENAI_COMPAT_API_KEY: '',  // Key for the openai-compatible provider. Never shares the OpenRouter key or its attribution headers.
+    CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: '',  // Optional extra keys (newline/comma separated) for the openai-compatible provider.
+    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
+    CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '',  // '' = off | 'claude' | 'gemini' | 'openrouter' | 'openai-compatible': where observer work goes while the selected provider's quota breaker holds (a spent allowance, or rate limits that outlast their retries)
+    CLAUDE_MEM_QUOTA_FALLBACK_MODEL: '',     // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

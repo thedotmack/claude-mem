@@ -10,6 +10,8 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
+import { parseGeminiErrorDetails } from '../../shared/gemini-error-details.js';
+import { readGeminiAnswerText, type GeminiPart } from '../../shared/gemini-answer-text.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
 
@@ -17,35 +19,6 @@ import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './co
 // `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
 // models 404 ("no longer available to new users") for freshly created API keys.
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-
-/**
- * A `QuotaFailure` violation naming a window longer than a day. Gemini answers
- * a spent allowance and a momentary throttle identically — 429 with
- * `RESOURCE_EXHAUSTED` — and lists both a per-minute and a per-day violation
- * whenever the period quota is the one that ran out. The named window is what
- * separates "retry shortly" from "stop until the period turns over", so match
- * it on the `quotaId` rather than anywhere in the body.
- */
-const PERIOD_QUOTA_WINDOW = /"quotaid"\s*:\s*"[^"]*per(day|week|month)/;
-
-function namesPeriodQuotaWindow(lowerBody: string): boolean {
-  return PERIOD_QUOTA_WINDOW.test(lowerBody);
-}
-
-/**
- * The retry hint Gemini actually sends. Google omits `Retry-After` on these
- * responses and puts the same information in the body as
- * `google.rpc.RetryInfo.retryDelay` (e.g. "6s"), so the header alone is
- * undefined on every real 429 from this provider.
- */
-const BODY_RETRY_DELAY = /"retryDelay"\s*:\s*"([0-9.]+)s"/;
-
-function parseGeminiRetryDelayMs(body: string): number | undefined {
-  const match = BODY_RETRY_DELAY.exec(body);
-  if (!match) return undefined;
-  const seconds = Number(match[1]);
-  return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined;
-}
 
 /**
  * Classify a Gemini fetch failure into ClassifiedProviderError. Called at
@@ -64,8 +37,6 @@ export function classifyGeminiError(input: {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
   const headers = input.headers;
-  const retryAfterMs = (headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined)
-    ?? parseGeminiRetryDelayMs(body);
   const cause = status === undefined
     ? input.cause
     : new Error(`Gemini HTTP error (status ${status}${input.requestId ? `, request ${input.requestId}` : ''})`);
@@ -76,7 +47,13 @@ export function classifyGeminiError(input: {
   // never produced `kind: 'rate_limit'` and never populated `retryAfterMs` —
   // the two things `withRetry` and the quota breaker key on.
   if (status === 429) {
-    if (namesPeriodQuotaWindow(lower)) {
+    // Read from the body's structured details (gemini-error-details.ts): the
+    // QuotaFailure names the window, and RetryInfo carries the retry hint
+    // Google sends instead of a Retry-After header. A header still wins.
+    const details = parseGeminiErrorDetails(body);
+    const retryAfterMs = (headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined)
+      ?? details.retryDelayMs;
+    if (details.periodQuotaExhausted) {
       // A whole day/week/month is spent: the breaker's long cooldown is the
       // right answer. Carry the hint anyway — it is the reset time.
       return new ClassifiedProviderError(
@@ -246,9 +223,7 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
 interface GeminiResponse {
   candidates?: Array<{
     content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
+      parts?: GeminiPart[];
     };
     /** 'STOP', 'MAX_TOKENS', 'SAFETY', … */
     finishReason?: string;
@@ -470,7 +445,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const candidate = data.candidates?.[0];
     const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : undefined;
-    const text = candidate?.content?.parts?.[0]?.text;
+    // The answer parts, joined — never a leading reasoning part (gemini-answer-text.ts).
+    const text = readGeminiAnswerText(candidate?.content?.parts);
     // MAX_TOKENS: the output-token cap cut the reply off. A block cut mid-tag
     // never closes, so the parser drops it. Named before the empty-reply exit
     // so a reply cut off before any text is named too (parity with OpenRouter).

@@ -5,14 +5,15 @@ import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
+import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
-import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -83,6 +84,8 @@ export class SessionRoutes extends BaseRouteHandler {
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
     private codexAgent?: CodexProvider,
+    // After codexAgent, so every existing positional caller keeps its argument order.
+    private openAICompatAgent?: OpenAICompatProvider,
   ) {
     super();
     this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
@@ -152,6 +155,9 @@ export class SessionRoutes extends BaseRouteHandler {
           return await this.geminiAgent.formatTelegramWrapup(input, activeModelId);
         case 'openrouter':
           return await this.openRouterAgent.formatTelegramWrapup(input, activeModelId);
+        case 'openai-compatible':
+          if (!this.openAICompatAgent) throw new Error('OpenAI-compatible provider is not available');
+          return await this.openAICompatAgent.formatTelegramWrapup(input, activeModelId);
         default:
           return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
       }
@@ -346,7 +352,9 @@ export class SessionRoutes extends BaseRouteHandler {
           });
         }
       }
-      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      await this.admitAndStartGenerator(
+        session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, null, selection.fallbackFrom ?? null,
+      );
       return;
     }
 
@@ -377,6 +385,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
       await this.admitAndStartGenerator(
         session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, oldGeneratorPromise,
+        selection.fallbackFrom ?? null,
       );
       return;
     }
@@ -408,11 +417,13 @@ export class SessionRoutes extends BaseRouteHandler {
   private async admitAndStartGenerator(
     session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
     sessionDbId: number,
-    selectedProvider: 'claude' | 'gemini' | 'openrouter' | 'codex',
+    selectedProvider: SelectableProvider,
     source: string,
     gatewayProbeClaimId: number | null,
     /** The parked generator a provider switch is replacing, if any. */
     previousGenerator: Promise<void> | null = null,
+    /** The provider this run stands in for when dispatch took the quota fallback, else null. */
+    fallbackFrom: SelectableProvider | null = null,
   ): Promise<void> {
     let quotaProbeClaimId: number | null = null;
     try {
@@ -486,6 +497,7 @@ export class SessionRoutes extends BaseRouteHandler {
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         return;
       }
+      this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
       // The claim travels with the run that took it: only that run may release
       // it, or an earlier generator's exit would clear a later session's probe.
       await this.startGeneratorWithProvider(
@@ -503,7 +515,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
+    provider: SelectableProvider,
     source: string,
     /** The quota probe this run claimed, or null when it was admitted without one. */
     quotaProbeClaimId: number | null,
@@ -516,6 +528,7 @@ export class SessionRoutes extends BaseRouteHandler {
       geminiAgent: this.geminiAgent,
       openRouterAgent: this.openRouterAgent,
       codexAgent: this.codexAgent,
+      openAICompatAgent: this.openAICompatAgent,
       workerService: this.workerService,
       completionHandler: this.completionHandler,
       ensureGeneratorRunning: (id, trigger) => this.ensureGeneratorRunning(id, trigger),
@@ -737,6 +750,14 @@ export class SessionRoutes extends BaseRouteHandler {
     if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_protocol' });
+      return;
+    }
+
+    // Codex's own helper threads (task titles, memory consolidation,
+    // suggestions) arrive like a user turn; Codex only (see the hook handler).
+    if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_system_prompt' });
       return;
     }
 
@@ -990,5 +1011,28 @@ export class SessionRoutes extends BaseRouteHandler {
     } else {
       session.modelOverride = undefined;
     }
+  }
+
+  /**
+   * On a quota-fallback run, run Claude on CLAUDE_MEM_QUOTA_FALLBACK_MODEL.
+   * Applied after tier routing so it wins for this run only; a deliberate
+   * Claude-primary run, or an empty setting, keeps whatever tier routing and
+   * CLAUDE_MEM_MODEL chose. Only ClaudeProvider reads modelOverride, which is
+   * why the setting does nothing for any other fallback.
+   */
+  private applyQuotaFallbackModel(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    provider: SelectableProvider,
+    fallbackFrom: SelectableProvider | null,
+  ): void {
+    if (fallbackFrom === null || provider !== 'claude') return;
+    const model = (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_QUOTA_FALLBACK_MODEL ?? '').trim();
+    if (!model) return;
+    session.modelOverride = model;
+    logger.info('SESSION', 'Quota fallback run uses the configured fallback model', {
+      sessionId: session.sessionDbId,
+      model,
+      fallbackFrom,
+    });
   }
 }

@@ -111,6 +111,7 @@ The worker uses an isolated `codex app-server` session for observations and summ
 | `CLAUDE_MEM_OPENROUTER_BASE_URL`             | —                           | Optional: custom OpenAI-compatible base URL (DeepSeek, LM Studio, [IO Intelligence](https://io.net)) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL`             | —                           | Optional: URL for analytics           |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
+| `CLAUDE_MEM_OPENROUTER_EXTRA_BODY`           | —                           | Optional: JSON object of extra request fields, e.g. `{"reasoning":{"enabled":false}}` ([details](usage/openrouter-provider#extra-request-fields)) |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
 
