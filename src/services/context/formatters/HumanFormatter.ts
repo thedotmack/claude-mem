@@ -8,18 +8,8 @@ import type {
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-
-function formatHeaderDateTime(): string {
-  const now = new Date();
-  const date = now.toLocaleDateString('en-CA'); 
-  const time = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }).toLowerCase().replace(' ', '');
-  const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-  return `${date} ${time} ${tz}`;
-}
+import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
+import { formatContextReferenceId } from './id-display.js';
 
 function formatActiveMode(): string {
   const manager = ModeManager.getInstance();
@@ -56,13 +46,23 @@ export function renderHumanColumnKey(): string[] {
   ];
 }
 
-export function renderHumanContextIndex(): string[] {
+export function renderHumanContextIndex(fetchByIdSupported: boolean = true): string[] {
+  // Server runtime: ids are UUIDs shown as 8-char display refs, and neither
+  // get_observations nor the mem-search skill's worker tools exist there; the
+  // server's own search tool covers both drill-down and history.
+  const drilldownLines = fetchByIdSupported
+    ? [
+        `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`,
+        `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
+      ]
+    : [
+        `${colors.dim}  - Search: observation_search by title or topic (short refs are display-only; server runtime has no fetch by ID)${colors.reset}`,
+      ];
   return [
     `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`,
     '',
     `${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`,
-    `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`,
-    `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
+    ...drilldownLines,
     `${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`,
     ''
   ];
@@ -121,7 +121,7 @@ export function renderHumanTableRow(
   const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  return `  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
+  return `  ${colors.dim}#${formatContextReferenceId(obs.id, config)}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
 }
 
 export function renderHumanFullObservation(
@@ -140,7 +140,7 @@ export function renderHumanFullObservation(
   const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
+  output.push(`  ${colors.dim}#${formatContextReferenceId(obs.id, config)}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
   if (detailField) {
     output.push(`    ${colors.dim}${detailField}${colors.reset}`);
   }
@@ -153,12 +153,13 @@ export function renderHumanFullObservation(
 }
 
 export function renderHumanSummaryItem(
-  summary: { id: number; request: string | null },
-  formattedTime: string
+  summary: { id: number | string; request: string | null },
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
   return [
-    `${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`,
+    `${colors.yellow}#S${formatContextReferenceId(summary.id, config)}${colors.reset} ${summaryTitle}`,
     ''
   ];
 }

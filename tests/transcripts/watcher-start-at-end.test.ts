@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import type { NormalizedHookInput } from '../../src/cli/types.js';
@@ -107,7 +107,7 @@ describe('TranscriptWatcher startAtEnd', () => {
     expect(matches.map(match => resolve(match))).toEqual([resolve(transcriptPath)]);
   });
 
-  it('does not replay history from transcript files discovered after startup', async () => {
+  it('does not replay history from transcript files present at startup', async () => {
     const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763a';
     const filePath = join(tmpRoot, `${sessionId}.jsonl`);
     const statePath = join(tmpRoot, 'state.json');
@@ -172,6 +172,73 @@ describe('TranscriptWatcher startAtEnd', () => {
     const prompts = sessionInitCalls.map(call => call.prompt);
     expect(prompts).toContain('live prompt');
     expect(prompts).not.toContain('historical prompt that must not be replayed');
+  });
+
+  it('reads a file discovered by the root watcher from byte 0, keeping its opening turns', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e576e';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+    const schema = createSchema();
+    const watch: WatchTarget = {
+      name: 'codex',
+      path: join(tmpRoot, '*.jsonl'),
+      schema,
+      startAtEnd: true,
+    };
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
+    await watcher.start();
+
+    // A rollout created after startup. By the time the recursive root watcher
+    // reports it, session_meta and the opening turns are already on disk, so
+    // startAtEnd must not apply to it - jumping to EOF drops the head of the
+    // transcript, including the user prompt (#4211).
+    writeFileSync(filePath, `${createUserMessage(sessionId, 'opening prompt')}\n`, 'utf8');
+
+    await (watcher as any).addTailer(filePath, watch, schema, true);
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['opening prompt']);
+  });
+
+  it('starts a historical transcript moved in after startup at EOF', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e576f0';
+    const archivedPath = join(tmpRoot, 'archive', `${sessionId}.jsonl`);
+    const sessionsDir = join(tmpRoot, 'sessions');
+    const movedPath = join(sessionsDir, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+    const schema = createSchema();
+    const watch: WatchTarget = {
+      name: 'codex',
+      path: join(sessionsDir, '*.jsonl'),
+      schema,
+      startAtEnd: true,
+    };
+
+    mkdirSync(join(archivedPath, '..'), { recursive: true });
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(archivedPath, `${createUserMessage(sessionId, 'historical prompt')}\n`, 'utf8');
+    const lastWrittenAnHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(archivedPath, lastWrittenAnHourAgo, lastWrittenAnHourAgo);
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
+    await watcher.start();
+
+    // A rename keeps the old mtime (and bumps ctime), which is what tells this
+    // file apart from a rollout created after startup.
+    renameSync(archivedPath, movedPath);
+    await (watcher as any).addTailer(movedPath, watch, schema, true);
+    await waitForAsyncTail();
+
+    expect(sessionInitCalls).toHaveLength(0);
+
+    appendFileSync(movedPath, `${createUserMessage(sessionId, 'live prompt')}\n`, 'utf8');
+    (watcher as any).tailers.get(movedPath)?.poke();
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['live prompt']);
   });
 
   it('serializes overlapping poke calls for the same appended data', async () => {
