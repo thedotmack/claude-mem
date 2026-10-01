@@ -3,12 +3,13 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import {
+  CODEX_ISOLATION_UNATTESTED_CODE,
   CODEX_NO_AGENT_MESSAGE_CODE,
   CODEX_SETUP_REQUIRED_CODE,
   type CodexAppServerTurnResult,
 } from './CodexAppServerClient.js';
 import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
-import { ClassifiedProviderError, isClassified } from './provider-errors.js';
+import { ClassifiedProviderError, CODEX_COOLDOWN_REFUSAL_CODE, isClassified } from './provider-errors.js';
 import { resolveLlmTimeoutMs, withRetry } from './retry.js';
 import {
   clearQuotaCooldown,
@@ -39,28 +40,61 @@ interface CodexConfig {
 
 type CodexErrorKind = ConstructorParameters<typeof ClassifiedProviderError>[1]['kind'];
 
-const CODEX_ERROR_INFO_KINDS: Record<string, CodexErrorKind> = {
+/**
+ * Every reasoning effort a Codex release has accepted. The app-server passes
+ * the value through untyped, so the settings boundary checks it; an older CLI
+ * or a model that serves fewer refuses the rest, which is classified as setup.
+ */
+export const CODEX_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+
+export function isCodexReasoningEffort(value: string): boolean {
+  return (CODEX_REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
+/**
+ * A 4xx Codex answers the same way every time: the model, the effort, or the
+ * shape of the request is wrong for this account or this CLI.
+ */
+const CODEX_REFUSED_REQUEST = 'refused_request';
+
+const CODEX_ERROR_INFO_KINDS: Record<string, CodexErrorKind | typeof CODEX_REFUSED_REQUEST> = {
   usageLimitExceeded: 'quota_exhausted',
   unauthorized: 'auth_invalid',
   rateLimitExceeded: 'rate_limit',
   contextWindowExceeded: 'context_overflow',
+  badRequest: CODEX_REFUSED_REQUEST,
+  // Refusals of this request's content: the next batch may well pass, so
+  // drop this one instead of holding every Codex request behind it.
+  cyberPolicy: 'unrecoverable',
+  misalignmentPolicyViolation: 'unrecoverable',
 };
 
 /**
- * `code` on a request that was never sent because the Codex breaker or the
- * codex_cli setup gate is armed. It repeats a failure another request already
- * earned, so it is not published a second time.
+ * Refused by the app-server or the CLI itself before any model saw the
+ * request: JSON-RPC validation (-32600..-32609: an unknown method, a
+ * parameter it cannot take), or an older CLI rejecting our flags.
  */
-const CODEX_COOLDOWN_REFUSAL_CODE = 'codex_cooldown_active';
+const CODEX_PROTOCOL_REFUSAL = /RPC error -3260\d\b|unexpected argument|unrecognized subcommand|unknown variant/i;
+
+const CODEX_REQUEST_REMEDY =
+  'Check CLAUDE_MEM_CODEX_MODEL and CLAUDE_MEM_CODEX_REASONING_EFFORT in ~/.claude-mem/settings.json '
+  + "(leave them empty for Codex's defaults) and update the Codex CLI.";
+
+const CODEX_ISOLATION_REMEDY =
+  'Codex loaded instructions or MCP servers that the memory observer cannot switch off. Remove them from '
+  + 'your Codex configuration, update the Codex CLI, or choose another observer provider.';
 
 /** Maps the app-server's structured CodexErrorInfo, which is more stable than its display text. */
-function classifyCodexErrorInfo(info: unknown): CodexErrorKind | null {
+function classifyCodexErrorInfo(info: unknown): CodexErrorKind | typeof CODEX_REFUSED_REQUEST | null {
   if (typeof info === 'string') return CODEX_ERROR_INFO_KINDS[info] ?? null;
   if (!info || typeof info !== 'object') return null;
   const [detail] = Object.values(info as Record<string, unknown>);
   const status = (detail as { httpStatusCode?: unknown } | null)?.httpStatusCode;
+  if (typeof status !== 'number') return null;
   if (status === 401 || status === 403) return 'auth_invalid';
   if (status === 429) return 'rate_limit';
+  // A request timeout is the one 4xx a retry can clear.
+  if (status >= 400 && status < 500 && status !== 408) return CODEX_REFUSED_REQUEST;
   return null;
 }
 
@@ -69,10 +103,14 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
   const code = (cause as { code?: unknown } | null)?.code;
   const structuredKind = classifyCodexErrorInfo((cause as { codexErrorInfo?: unknown } | null)?.codexErrorInfo);
   let kind: CodexErrorKind = 'transient';
+  let action: string | undefined;
   if (code === CODEX_NO_AGENT_MESSAGE_CODE) {
     // Its diagnostic counts must not be read as an HTTP status.
     kind = 'transient';
-  } else if (structuredKind) {
+  } else if (code === CODEX_ISOLATION_UNATTESTED_CODE) {
+    kind = 'setup_required';
+    action = CODEX_ISOLATION_REMEDY;
+  } else if (structuredKind && structuredKind !== CODEX_REFUSED_REQUEST) {
     kind = structuredKind;
   } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
     // Fixed on this machine (install the CLI, `codex login`), never by retrying.
@@ -85,8 +123,14 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     kind = 'rate_limit';
   } else if (/context (length|window)|prompt (is )?too long/i.test(message)) {
     kind = 'context_overflow';
+  } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(message)) {
+    // Refused the same way until the settings or the CLI change: a setup
+    // failure, held behind the codex_cli gate and shown at SessionStart,
+    // never a transport blip resumed forever.
+    kind = 'setup_required';
+    action = CODEX_REQUEST_REMEDY;
   }
-  return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, { kind, cause });
+  return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, { kind, cause, ...(action ? { action } : {}) });
 }
 
 /**
@@ -123,7 +167,7 @@ function publishCodexFailure(error: ClassifiedProviderError): void {
       });
       break;
     case 'setup_required':
-      recordCodexCliSetupRequired(error.message);
+      recordCodexCliSetupRequired(error.message, error.action);
       logger.warn('SDK', 'Codex CLI or login is not set up; pausing Codex starts until a recovery probe succeeds', {
         message: error.message,
       });

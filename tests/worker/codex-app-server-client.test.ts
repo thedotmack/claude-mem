@@ -8,6 +8,7 @@ import {
   buildCodexAppServerEnv,
   buildCodexAppServerThreadConfig,
   CodexAppServerClient,
+  CODEX_ISOLATION_UNATTESTED_CODE,
   CODEX_NO_AGENT_MESSAGE_CODE,
 } from '../../src/services/worker/CodexAppServerClient.js';
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
@@ -360,13 +361,16 @@ describe('CodexAppServerClient transport', () => {
     const fake = createFakeCodex({ instructionSources: ['/unexpected/AGENTS.md'] });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     try {
-      await expect(client.runTurn({
+      const error = await client.runTurn({
         codexPath: fake.executable,
         model: 'test-model',
         reasoningEffort: 'low',
         prompt: 'Return one durable observation.',
         timeoutMs: 5_000,
-      })).rejects.toThrow(/unexpected instruction sources/);
+      }).then(() => null, (rejection: unknown) => rejection as Error & { code?: string });
+      expect(error?.message).toMatch(/unexpected instruction sources/);
+      // Coded, so it is classified as setup the user fixes, not a transport blip.
+      expect(error?.code).toBe(CODEX_ISOLATION_UNATTESTED_CODE);
     } finally {
       await client.close();
       rmSync(fake.root, { recursive: true, force: true });

@@ -23,6 +23,14 @@ export type ProviderErrorClass =
 export const DEADLINE_EXCEEDED_CODE = 'deadline_exceeded';
 
 /**
+ * `code` on a Codex request that was never sent because the Codex breaker or
+ * the codex_cli setup gate is armed. It repeats a failure another request
+ * already booked, so nothing books it again: not the breaker (re-arming would
+ * end the probe that clears it), not the setup gate, not observer-health.
+ */
+export const CODEX_COOLDOWN_REFUSAL_CODE = 'codex_cooldown_active';
+
+/**
  * Optional structured detail carried alongside a classified error. Populated
  * when the upstream (e.g. the cmem.ai gateway) returns a taxonomy envelope
  * `{ code, message, action, url, request_id }`; the worker carries these
@@ -79,6 +87,22 @@ export class ClassifiedProviderError extends Error {
       this.executablePath = opts.executablePath;
     }
   }
+}
+
+/**
+ * What a key pool reports when its last key is spent or refused while another
+ * key frees within a rate-limit window (api-key-pool's withKeyPool): a rate
+ * limit lasting until that key is back. As the spent key's own error it would
+ * hold the whole provider for that key's window (the quota breaker arms for 30
+ * minutes) although the pool can serve again in seconds. Keeps the spent
+ * key's words.
+ */
+export function rateLimitUntilNextKey(retryAfterMs: number, lastError: unknown): ClassifiedProviderError {
+  const words = lastError instanceof Error ? lastError.message : String(lastError);
+  return new ClassifiedProviderError(
+    `${words}; another key in the pool frees in ${Math.ceil(retryAfterMs / 1000)}s`,
+    { kind: 'rate_limit', retryAfterMs, cause: lastError },
+  );
 }
 
 export function isClassified(err: unknown): err is ClassifiedProviderError {

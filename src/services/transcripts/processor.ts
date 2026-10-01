@@ -59,8 +59,17 @@ export interface TranscriptFileContext {
   cwd?: string;
 }
 
+/** How many subagent rollouts the processor remembers past their last turn. */
+const MAX_REMEMBERED_SUBAGENT_SESSIONS = 4096;
+
 export class TranscriptEventProcessor {
   private sessions = new Map<string, SessionState>();
+  /**
+   * Session keys of confirmed subagent rollouts. Codex ends a session per
+   * turn but marks the rollout only on its first line, so the marker has to
+   * outlive the turn state session_end drops. Oldest forgotten first.
+   */
+  private subagentSessionKeys = new Set<string>();
 
   async processEntry(
     entry: unknown,
@@ -86,10 +95,39 @@ export class TranscriptEventProcessor {
       session = {
         sessionId,
         platformSource: normalizePlatformSource(watch.name),
+        ...(this.subagentSessionKeys.has(key) ? { isSubagent: true } : {}),
       };
       this.sessions.set(key, session);
     }
     return session;
+  }
+
+  private rememberSubagentSession(key: string): void {
+    this.subagentSessionKeys.delete(key);
+    this.subagentSessionKeys.add(key);
+    if (this.subagentSessionKeys.size > MAX_REMEMBERED_SUBAGENT_SESSIONS) {
+      const oldest = this.subagentSessionKeys.values().next().value;
+      if (oldest !== undefined) this.subagentSessionKeys.delete(oldest);
+    }
+  }
+
+  /**
+   * Learn a rollout's session context (cwd, subagent marker) from its first
+   * line without ingesting anything. A tail that resumes past that line (a
+   * worker restart, or startAtEnd on a rollout already running) never reads
+   * it otherwise, and a subagent-only watch would drop the whole rollout.
+   */
+  async primeSessionContext(
+    entry: unknown,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride?: string | null,
+    file?: TranscriptFileContext
+  ): Promise<void> {
+    for (const event of schema.events) {
+      if (event.action !== 'session_context' || !matchesRule(entry, event.match, schema)) continue;
+      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined, file);
+    }
   }
 
   private resolveSessionId(
@@ -169,6 +207,7 @@ export class TranscriptEventProcessor {
       const marker = getValueByPath(entry, watch.subagentSource.path);
       if (marker !== undefined && marker !== null) {
         session.isSubagent = true;
+        this.rememberSubagentSession(this.getSessionKey(watch, sessionId));
       }
     }
 
