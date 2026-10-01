@@ -1,8 +1,9 @@
 /**
  * One sanitizer for every writer that puts recalled observation text into a
- * Grok Bot host file the host reads as instructions: the live Memory INDEX
- * (grok-bot-index-format.ts), the awareness pusher (GrokBotAwarenessPusher.ts)
- * and the optional repo daemon (scripts/grok-bot-session-inject.mjs).
+ * host file an agent reads as instructions: the live Memory INDEX
+ * (grok-bot-index-format.ts), the awareness pusher (GrokBotAwarenessPusher.ts),
+ * the CCS Align middle cache (CcsAlignMiddleCache.ts) and the optional repo
+ * daemon (scripts/grok-bot-session-inject.mjs).
  *
  * Observation titles, subtitles and facts are LLM-written from untrusted tool
  * output, so they are treated as data: invisible and direction-hijacking
@@ -54,4 +55,21 @@ export function fencedLine(lead, recalled, maxChars) {
   const inner = sanitizeUntrustedText(String(recalled ?? '').replace(/[«»]/g, ''));
   const budget = Math.max(maxChars - Array.from(String(lead)).length - 2, 1);
   return `${lead}«${truncateCodePoints(inner, budget)}»`;
+}
+
+/**
+ * `- YYYY-MM-DD <tag> <type> — «<title>: <subtitle>. <first fact>»` in at most
+ * `maxChars` code points: the one line format for a recalled observation that
+ * is written into a file a host agent reads (the Grok Bot awareness log, the
+ * CCS Align middle cache), so no writer can skip the sanitizer or the fence.
+ */
+export function formatRecalledObservationLine(tag, observation, now, maxChars) {
+  const date = now.toISOString().slice(0, 10);
+  const title = sanitizeUntrustedText(observation.title ?? '');
+  const subtitle = sanitizeUntrustedText(observation.subtitle ?? '');
+  const fact = sanitizeUntrustedText((observation.facts ?? [])[0] ?? '');
+  const headline = [title, subtitle].filter(Boolean).join(': ');
+  const detail = [headline, fact].filter(Boolean).join('. ');
+  const lead = `- ${date} ${tag} ${sanitizeUntrustedText(observation.type)}`;
+  return detail ? fencedLine(`${lead} — `, detail, maxChars) : lead;
 }
