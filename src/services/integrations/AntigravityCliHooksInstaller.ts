@@ -12,6 +12,7 @@ import {
 import { writeMcpJsonConfig, PLACEHOLDER_CONTEXT } from './McpIntegrations.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
+import { ANTIGRAVITY_HOOK_TIMEOUT_MS } from '../../shared/host-hook-limits.js';
 
 // agy hook schema (builtin `agy-customizations/docs/hooks.md`): each top-level
 // key of hooks.json is a hook NAME, mapping to an object of event keys. Only
