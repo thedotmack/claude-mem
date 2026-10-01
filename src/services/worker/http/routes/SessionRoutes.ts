@@ -36,6 +36,7 @@ import {
   isDependencyStatusInCooldown,
   recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
+import { executableFingerprint } from '../../../../shared/executable-fingerprint.js';
 import { findClaudeExecutable, isClaudeExecutableUnspawnable } from '../../../../shared/find-claude-executable.js';
 import {
   tryAdmitQuotaProbe,
@@ -295,7 +296,23 @@ export class SessionRoutes extends BaseRouteHandler {
           }
 
           try {
-            findClaudeExecutable('SDK');
+            const resolvedPath = findClaudeExecutable('SDK');
+            // A spawn failure recorded the executable it could not launch (a
+            // .cmd/.bat shim passes discovery but not the SDK's spawn). While
+            // discovery still resolves that same, unchanged file, a start would
+            // fail the same way: keep skipping. A repair in place (reinstalling
+            // over the same path) changes the fingerprint and gets one start.
+            if (claudeStatus.executablePath === resolvedPath
+              && claudeStatus.executableFingerprint === executableFingerprint(resolvedPath)) {
+              recordClaudeCliSetupRequired(claudeStatus.message, resolvedPath);
+              logger.warn('SESSION', 'Claude executable still cannot be launched; skipping until it changes', {
+                sessionId: sessionDbId,
+                source,
+                executablePath: resolvedPath,
+              });
+              releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+              return;
+            }
             clearDependencyStatus('claude_cli');
             clearClaudeCliSelfHealAttempts();
             logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {

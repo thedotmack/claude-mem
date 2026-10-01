@@ -26,6 +26,7 @@ import { execSync, execFileSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { isWindowsNativeExecutable } from './spawn.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, expandTilde } from './paths.js';
 import { logger, type Component } from '../utils/logger.js';
@@ -278,11 +279,13 @@ function discoverCandidates(): string[] {
   const candidates: string[] = [];
 
   if (_internals.platform() === 'win32') {
-    // claude.cmd first: spawning the .cmd wrapper avoids spawn issues with
-    // spaces in the .exe path (long-standing Windows preference).
-    // Use where.exe argv (not a shell string) so PATH lookups do not flash a
-    // console and binary names with spaces stay argv-safe.
-    for (const name of ['claude.cmd', 'claude']) {
+    // Gather every PATH hit through where.exe argv (not a shell string), so the
+    // lookup does not flash a console and names with spaces stay argv-safe.
+    // `claude` already lists the native binary and any shim (PATHEXT covers
+    // .exe and .cmd); `claude.cmd` is kept so a shim on a PATH entry the bare
+    // lookup misses is still found. Native-before-shim preference is applied
+    // after dedupe below.
+    for (const name of ['claude', 'claude.cmd']) {
       try {
         const output = _internals.execFileSync('where.exe', [name], {
           encoding: 'utf8',
@@ -334,6 +337,18 @@ function discoverCandidates(): string[] {
     seenRealPaths.add(realPath);
     deduped.push(candidate);
   }
+
+  // The agent SDK spawns this path directly on the field-compression calls the
+  // observer makes with no cmd.exe wrapper, and modern Node refuses to launch a
+  // .cmd/.bat shim without a shell (EINVAL). When a native .exe/.com and a shim
+  // resolve to the same install, hand back the native one so the SDK never gets
+  // a shim it cannot spawn. Stable native-first tie-break only: the newest
+  // capable version still wins over it (see findClaudeExecutable), sharing the
+  // native-vs-shim rule with selectWindowsCommandCandidate.
+  if (_internals.platform() === 'win32') {
+    deduped.sort((a, b) => Number(isWindowsNativeExecutable(b)) - Number(isWindowsNativeExecutable(a)));
+  }
+
   return deduped;
 }
 

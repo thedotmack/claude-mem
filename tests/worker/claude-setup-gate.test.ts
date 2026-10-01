@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import { OBSERVER_SESSIONS_DIR, ensureObserverSessionsDir } from '../../src/shared/paths.js';
 import {
@@ -275,6 +277,86 @@ describe('Claude setup-required generator gate', () => {
     expect(getDependencyStatus('claude_cli')).toMatchObject({
       kind: 'setup_required',
       remediation: expect.stringContaining('Claude Code CLI'),
+    });
+  });
+
+  describe('an executable discovery finds but the SDK cannot launch (a .cmd shim, EINVAL)', () => {
+    let dir: string;
+    let shim: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'claude-mem-shim-'));
+      shim = join(dir, 'claude.cmd');
+      writeFileSync(shim, '@echo off\r\n');
+      findClaudeExecutableImpl = () => shim;
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    function harness() {
+      const session = makeSession();
+      const state = { starts: 0, shutdowns: 0 };
+      const sessionManager = {
+        getSession: () => session,
+        clearTransportResume: () => {},
+        getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+        removeSessionImmediate: () => {},
+      };
+      const claudeProvider = {
+        startSession: async () => {
+          state.starts += 1;
+          if (state.starts === 1) {
+            throw new ClassifiedProviderError(`spawn ${shim} EINVAL`, {
+              kind: 'setup_required',
+              cause: Object.assign(new Error(`spawn ${shim} EINVAL`), { code: 'EINVAL' }),
+              executablePath: shim,
+            });
+          }
+          await new Promise<void>(() => {});
+        },
+      };
+      const routes = new SessionRoutes(
+        sessionManager as any, {} as any, claudeProvider as any,
+        { startSession: async () => {} } as any, { startSession: async () => {} } as any,
+        {} as any, { shutdown: async () => { state.shutdowns += 1; } } as any,
+        { finalizeSession: async () => {} } as any,
+      );
+      return { session, state, routes };
+    }
+
+    it('keeps skipping while discovery still resolves the same, unchanged file', async () => {
+      const { session, state, routes } = harness();
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      expect(getDependencyStatus('claude_cli')).toMatchObject({ executablePath: shim });
+
+      Date.now = () => realDateNow() + CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS + 1;
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+
+      expect(state.starts).toBe(1);
+      expect(getDependencyStatus('claude_cli')).toMatchObject({ executablePath: shim });
+    });
+
+    it('lets one start through once the file is repaired in place', async () => {
+      const { session, state, routes } = harness();
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+
+      writeFileSync(shim, '@echo off\r\nrem reinstalled over the same path\r\n');
+      Date.now = () => realDateNow() + CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS + 1;
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+
+      expect(state.starts).toBe(2);
+      expect(getDependencyStatus('claude_cli')).toBeNull();
+    });
+
+    it('does not restart the worker for it: that self-heal is for a CLI swapped out under a running worker', async () => {
+      const { session, state, routes } = harness();
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+      expect(state.shutdowns).toBe(0);
     });
   });
 });
