@@ -255,7 +255,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 1. `worker-service.cjs start` - Starts the worker service
 2. `context-hook.js` - Fetches and silently injects prior session context
 
-(Runtime setup is handled out-of-band by `npx claude-mem install` / `npx claude-mem repair`. The Setup phase runs a sub-100ms `version-check.js` that prompts the user to repair if the `.install-version` marker is stale.)
+(Runtime setup is handled by `npx claude-mem install` / `npx claude-mem repair`. The Setup phase runs `version-check.js`, which installs the plugin's dependencies when they are missing, records the `.install-version` marker once they are complete, and asks you to run `npx claude-mem@latest install` only if they are still missing.)
 
 <Note>
 As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.

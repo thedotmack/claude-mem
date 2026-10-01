@@ -7,8 +7,25 @@ import {
   planPluginCachePrune,
   prunePluginCache,
   readRegisteredCacheVersions,
+  workingCacheVersions,
   DEFAULT_CACHE_RETENTION,
 } from '../../src/npx-cli/utils/prune-cache.js';
+
+/**
+ * A cache version directory as the installer leaves it: the plugin files with
+ * a worker script and a package.json declaring one dependency. `complete`
+ * installs that dependency; a fresh copy has none until "Setting up runtime".
+ */
+function writeCacheVersion(root: string, version: string, complete: boolean): void {
+  const versionDir = join(root, version);
+  mkdirSync(join(versionDir, 'scripts'), { recursive: true });
+  writeFileSync(join(versionDir, 'scripts', 'worker-service.cjs'), '');
+  writeFileSync(join(versionDir, 'package.json'), JSON.stringify({ version, dependencies: { 'left-pad': '1.3.0' } }));
+  if (complete) {
+    mkdirSync(join(versionDir, 'node_modules', 'left-pad'), { recursive: true });
+    writeFileSync(join(versionDir, 'node_modules', 'left-pad', 'package.json'), '{"name":"left-pad"}');
+  }
+}
 
 describe('planCachePrune', () => {
   it('keeps the newest two versions by default and prunes the rest', () => {
@@ -109,6 +126,53 @@ describe('prunePluginCache', () => {
     expect(existsSync(join(root, '13.26.0'))).toBe(false);
     expect(existsSync(join(root, '13.25.0'))).toBe(true);
     expect(existsSync(join(root, '13.24.0'))).toBe(true);
+  });
+});
+
+describe('prunePluginCache — never deletes the install that can still start a worker', () => {
+  let root: string;
+  const originalOverride = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+
+  afterEach(() => {
+    if (originalOverride === undefined) delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+    else process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = originalOverride;
+    if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it('keeps the only dependency-complete version while the newer copies still lack dependencies', () => {
+    // The installer prunes right after copying 13.26.0 and before "Setting up
+    // runtime" installs its dependencies; 13.25.0 is a failed earlier install.
+    // Keeping just the newest two deleted 13.24.0, the only copy that could run.
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-working-'));
+    writeCacheVersion(root, '13.26.0', false);
+    writeCacheVersion(root, '13.25.0', false);
+    writeCacheVersion(root, '13.24.0', true);
+    writeCacheVersion(root, '13.23.0', true);
+
+    const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
+
+    expect(result.removed).toEqual(['13.23.0']);
+    expect(existsSync(join(root, '13.24.0', 'scripts', 'worker-service.cjs'))).toBe(true);
+  });
+
+  it('keeps the version the worker resolver picks, even outside the newest two', () => {
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-resolved-'));
+    for (const version of ['13.20.0', '13.24.0', '13.25.0', '13.25.1']) writeCacheVersion(root, version, true);
+    // resolveWorkerScript() honors this override first: every launcher spawns it.
+    process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = join(root, '13.20.0', 'scripts', 'worker-service.cjs');
+
+    const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
+
+    expect(result.removed).toEqual(['13.24.0']);
+    expect(existsSync(join(root, '13.20.0'))).toBe(true);
+  });
+
+  it('protects nothing extra for a resolver pick outside the cache', () => {
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-outside-'));
+    writeCacheVersion(root, '13.25.0', false);
+    const outside = { scriptPath: join(tmpdir(), 'elsewhere', '13.20.0', 'scripts', 'worker-service.cjs'), version: '13.20.0' };
+    // No cache copy is complete, so the newest installed one stands in.
+    expect(workingCacheVersions(root, outside)).toEqual(['13.25.0']);
   });
 });
 
