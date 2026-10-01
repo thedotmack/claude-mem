@@ -10,12 +10,11 @@ OpenAI `/chat/completions` shape. Set `CLAUDE_MEM_PROVIDER` to
 `openai-compatible`, pick a preset (or supply a base URL), and memory runs
 entirely off your Claude plan.
 
-<Tip>
-**NVIDIA NIM is free to start.** A key from
-[build.nvidia.com](https://build.nvidia.com) gives you hosted inference across
-NVIDIA-served models with no card on file, which is a good fit for observation
-extraction — it is high-volume, structured, and does not need a frontier model.
-</Tip>
+<Note>
+**claude-mem observer**: choosing the claude-mem observer during
+`npx claude-mem install` runs memory off-plan with nothing to configure. This
+page is for bringing your own endpoint and key.
+</Note>
 
 ## Why this is separate from the OpenRouter provider
 
@@ -35,14 +34,21 @@ But it carries three things that belong to openrouter.ai specifically:
 
 This provider has its own settings keys and sends a deliberately plain request
 body: `model`, `messages`, `temperature`, `max_tokens`, and nothing else. Strict
-servers (vLLM in particular) reject unknown fields.
+servers (vLLM in particular) reject unknown fields. `max_tokens` is
+`CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS` (4096 by default); a model that only
+accepts `max_completion_tokens` gets the request again with that field.
+
+A claude-mem observer key (`cm_pro_…`) is never sent to these endpoints. Use the
+key the endpoint issued.
 
 ## Quick start: NVIDIA NIM
 
 <Steps>
 <Step title="Get a key">
 Sign in at [build.nvidia.com](https://build.nvidia.com) and create an API key.
-It starts with `nvapi-`.
+It starts with `nvapi-`. NVIDIA's hosted models are free to start, which suits
+observation extraction: it is high-volume and structured, and does not need a
+frontier model.
 </Step>
 
 <Step title="Point claude-mem at it">
@@ -158,12 +164,14 @@ deliberate: a half-configured endpoint should not fail every observation. Check
 endpoint does not serve; the error names both settings. Note that some gateways
 prefix model ids differently from the vendor's own docs.
 
-**Repeated 30s timeouts.** The per-attempt deadline defaults to 30 seconds,
-which some large models exceed. Raise it with `CLAUDE_MEM_LLM_TIMEOUT_MS` (in
-milliseconds), or prefer a small, fast model for observation extraction —
+**Repeated timeouts.** Each request has a deadline of
+`CLAUDE_MEM_LLM_TIMEOUT_MS` (180 seconds by default), which a large model on a
+slow endpoint can still exceed. Raise it, or prefer a small, fast model:
 observation extraction is a high-volume structured task, not a reasoning
 benchmark.
 
-**Empty observations.** A model that will not hold to the output schema produces
-nothing usable. Small instruct-tuned models generally do better here than
-reasoning models, whose thinking output tends to crowd out the structured reply.
+**Empty or cut-off observations.** A model that will not hold to the output
+schema produces nothing usable. Small instruct-tuned models generally do better
+here than reasoning models, whose thinking output tends to crowd out the
+structured reply. When the log says a reply was cut off at the output-token
+limit, raise `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS`.

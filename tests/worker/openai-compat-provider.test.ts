@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs';
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { createServer } from 'node:http';
 import {
   classifyOpenAICompatError,
@@ -16,6 +16,10 @@ import {
 } from '../../src/shared/openai-compat-presets.js';
 import { getSelectedProvider } from '../../src/services/worker/provider-dispatch.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
+import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { logger } from '../../src/utils/logger.js';
+import type { ConversationMessage } from '../../src/services/worker-types.js';
 
 /**
  * As in provider-dispatch.test.ts: SettingsDefaultsManager applies process.env
@@ -369,6 +373,20 @@ describe('structured error envelopes outrank the transport status', () => {
  * override reports itself ready and then 401s on every observation.
  */
 describe('auth policy follows the endpoint actually configured', () => {
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
   it('reads loopback, LAN and .local hosts as keyless-capable', () => {
     for (const url of [
       'http://localhost:11434/v1', 'http://127.0.0.1:1234/v1', 'http://[::1]:8000/v1',
@@ -484,5 +502,257 @@ describe('openai-compatible credentials are registered as secrets', () => {
     );
     expect(secretBlock).toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEY'");
     expect(secretBlock).toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS'");
+  });
+});
+
+/**
+ * Main's observer contract, which this provider shares with OpenRouter: the
+ * system anchor and turn normalization (#3868, #3491), text-only answers
+ * (#4017), and the configurable output cap (#3868) with the
+ * max_completion_tokens retry (#4003).
+ */
+describe('openai-compatible requests follow the shared observer contract', () => {
+  const CONFIG = {
+    apiKey: 'fixture-not-a-secret',
+    apiKeys: ['fixture-not-a-secret'],
+    model: 'fixture/model',
+    apiUrl: 'https://compat.example.test/v1/chat/completions',
+    preset: resolveOpenAICompatPreset('custom'),
+    requiresApiKey: true,
+  };
+  let settingsOverrides: Record<string, string> = {};
+  let spies: Array<{ mockRestore(): void }> = [];
+
+  beforeEach(() => {
+    settingsOverrides = {};
+    spies = [spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      ...settingsOverrides,
+    }))];
+  });
+
+  afterEach(() => {
+    for (const spy of spies) spy.mockRestore();
+  });
+
+  const query = (history: ConversationMessage[]) =>
+    (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+      query(h: ConversationMessage[], c: unknown): Promise<{ content: string; finishReason?: string }>;
+    }).query(history, CONFIG);
+
+  const reply = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+  const sentBodies = (fetchSpy: { mock: { calls: unknown[][] } }) =>
+    fetchSpy.mock.calls.map(call => JSON.parse(String((call[1] as RequestInit).body)));
+
+  it('sends no empty turn, no doubled role and no leading assistant turn', async () => {
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(reply({ choices: [{ message: { content: 'ok' } }] }));
+    spies.push(fetchSpy);
+
+    await query([
+      { role: 'assistant', content: 'stray' },
+      { role: 'user', content: 'init request' },
+      { role: 'assistant', content: '' },
+      { role: 'user', content: 'observation 1' },
+    ]);
+
+    expect(sentBodies(fetchSpy)[0].messages).toEqual([
+      { role: 'user', content: 'init request\n\nobservation 1' },
+    ]);
+  });
+
+  it('anchors a generation framing prompt as the system message', async () => {
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(reply({ choices: [{ message: { content: 'ok' } }] }));
+    spies.push(fetchSpy);
+
+    await query([{
+      role: 'user',
+      content: 'Instructions here.\n\n<observed_from_primary_session>\n<user_request>fix it</user_request>\n</observed_from_primary_session>',
+      framing: true,
+    }]);
+
+    const [system, user] = sentBodies(fetchSpy)[0].messages;
+    expect(system.role).toBe('system');
+    expect(user.role).toBe('user');
+    expect(user.content).toContain('<user_request>fix it</user_request>');
+  });
+
+  it('reads text blocks from a content array, never reasoning', async () => {
+    spies.push(spyOn(globalThis, 'fetch').mockResolvedValue(reply({
+      choices: [{ message: { content: [
+        { type: 'reasoning', text: 'private reasoning' },
+        { type: 'text', text: '<observation>one</observation>' },
+        { type: 'text', text: '<observation>two</observation>' },
+      ] }, finish_reason: 'stop' }],
+    })));
+
+    const result = await query([{ role: 'user', content: 'hi' }]);
+    expect(result.content).toBe('<observation>one</observation>\n<observation>two</observation>');
+    expect(result.finishReason).toBe('stop');
+  });
+
+  it('returns no text, not an object, when content is neither a string nor text blocks', async () => {
+    spies.push(spyOn(globalThis, 'fetch').mockResolvedValue(reply({
+      choices: [{ message: { content: { unexpected: true } } }],
+    })));
+    spies.push(spyOn(logger, 'error').mockImplementation(() => {}));
+
+    const result = await query([{ role: 'user', content: 'hi' }]);
+    expect(result.content).toBe('');
+  });
+
+  it('sends CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS as the output cap in a plain body', async () => {
+    settingsOverrides.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS = '9000';
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(reply({ choices: [{ message: { content: 'ok' } }] }));
+    spies.push(fetchSpy);
+
+    await query([{ role: 'user', content: 'hi' }]);
+
+    const [body] = sentBodies(fetchSpy);
+    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'temperature']);
+    expect(body.max_tokens).toBe(9000);
+  });
+
+  it('resends max_completion_tokens when the model only takes that (#4003)', async () => {
+    const fetchSpy = spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(reply({ error: {
+        message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+        type: 'invalid_request_error', param: 'max_tokens', code: 'unsupported_parameter',
+      } }, 400))
+      .mockResolvedValueOnce(reply({ choices: [{ message: { content: 'ok' } }] }));
+    spies.push(fetchSpy);
+
+    const result = await query([{ role: 'user', content: 'hi' }]);
+
+    const [first, second] = sentBodies(fetchSpy);
+    expect(first.max_tokens).toBe(4096);
+    expect(second.max_tokens).toBeUndefined();
+    expect(second.max_completion_tokens).toBe(4096);
+    expect(result.content).toBe('ok');
+  });
+});
+
+/** #3263's lesson, applied here: a 200 envelope carries the status that matters. */
+describe('200 error envelopes are classified by what they report', () => {
+  const classify = (error: Record<string, unknown>) =>
+    classifyOpenAICompatError({ status: 200, bodyText: JSON.stringify({ error }), cause: new Error('x') });
+
+  it('reads a numeric error.code as the effective status', () => {
+    expect(classify({ code: 429, message: 'Too many requests' }).kind).toBe('rate_limit');
+    expect(classify({ code: 503, message: 'upstream unavailable' }).kind).toBe('transient');
+    expect(classify({ code: '502', message: 'bad gateway' }).kind).toBe('transient');
+    expect(classify({ code: 401, message: 'bad key' }).kind).toBe('auth_invalid');
+  });
+
+  it('retries a litellm parse failure instead of dropping the batch', () => {
+    const err = classify({ code: 200, message: 'Unable to get json response - Expecting value: line 45 column 1' });
+    expect(err.kind).toBe('transient');
+    expect(err.message).toContain('Unable to get json response');
+  });
+
+  it('keeps an unrelated 200 envelope unrecoverable', () => {
+    expect(classify({ code: 200, message: 'something else' }).kind).toBe('unrecoverable');
+  });
+});
+
+/**
+ * #4276's key lock covers every provider: an account-owned cm_pro_ key never
+ * leaves for a third-party endpoint, and the gateway never gets another key.
+ */
+describe('openai-compatible keys go through the cmem key lock', () => {
+  const LOCK_ENV_KEYS = [...ENV_KEYS, 'CMEM_PRO_ORIGIN'];
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of LOCK_ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'm';
+  });
+
+  afterEach(() => {
+    for (const key of LOCK_ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  it('withholds a cm_pro_ key from a third-party endpoint', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'cm_pro_0123456789abcdef01234567';
+
+    const config = resolveOpenAICompatConfig();
+    expect(config.apiKey).toBe('');
+    expect(config.apiKeys).toEqual([]);
+    expect(isOpenAICompatAvailable()).toBe(false);
+  });
+
+  it('drops a cm_pro_ key pasted into the rotation list and keeps the endpoint keys', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'nvidia-nim';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = '';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'nvapi-1';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS = 'cm_pro_0123456789abcdef01234567, nvapi-2';
+
+    expect(resolveOpenAICompatConfig().apiKeys).toEqual(['nvapi-1', 'nvapi-2']);
+  });
+
+  it('never sends a personal key to the cmem gateway', () => {
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'custom';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://cmem.ai/api/inference/v1';
+    process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'nvapi-personal';
+
+    expect(resolveOpenAICompatConfig().apiKeys).toEqual([]);
+    expect(isOpenAICompatAvailable()).toBe(false);
+  });
+});
+
+/** The wrap-up runs on the provider the session observed with (SessionRoutes). */
+describe('Telegram wrap-ups on the openai-compatible provider', () => {
+  const input = {
+    sessionDbId: 7,
+    contentSessionId: 'content-7',
+    project: 'p',
+    platformSource: 'claude',
+    summaryText: 'request\ncompleted',
+  };
+
+  it('SessionRoutes formats an openai-compatible session with the openai-compatible agent', async () => {
+    let formatter: ((value: typeof input) => Promise<string>) | undefined;
+    const sessionManager = {
+      setTelegramWrapupFormatter: (fn: typeof formatter) => { formatter = fn; },
+      getSession: () => ({ currentProvider: 'openai-compatible', lastModelId: 'local-model' }),
+    };
+    const otherAgent = { formatTelegramWrapup: async () => { throw new Error('wrong agent'); } };
+    const compatAgent = { formatTelegramWrapup: mock(async () => '• Finished') };
+
+    new SessionRoutes(
+      sessionManager as never, {} as never, otherAgent as never, otherAgent as never, otherAgent as never,
+      {} as never, {} as never, {} as never, compatAgent as never,
+    );
+
+    await expect(formatter!(input)).resolves.toBe('• Finished');
+    expect(compatAgent.formatTelegramWrapup).toHaveBeenCalledWith(input, 'local-model');
+  });
+
+  it('formats a wrap-up on a keyless local endpoint', async () => {
+    const provider = new OpenAICompatProvider({} as never, {} as never);
+    const config = {
+      apiKey: '', apiKeys: [], model: 'llama3', requiresApiKey: false,
+      apiUrl: 'http://localhost:11434/v1/chat/completions', preset: resolveOpenAICompatPreset('ollama'),
+    };
+    const spies = [
+      spyOn(provider as never, 'getConfig').mockReturnValue(config as never),
+      spyOn(provider as never, 'query').mockResolvedValue({ content: '• Finished' } as never),
+    ];
+    try {
+      await expect(provider.formatTelegramWrapup(input as never)).resolves.toBe('• Finished');
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 });

@@ -59,7 +59,6 @@ function buildRoutes(session: ActiveSession, startSession: () => Promise<void>) 
     { startSession } as any,
     { startSession: async () => {} } as any,
     { startSession: async () => {} } as any,
-    { startSession: async () => {} } as any,
     {} as any,
     {} as any,
     { finalizeSession: async () => { finalizeCalls += 1; } } as any,

@@ -11,11 +11,11 @@
  * carries the cmem.ai gateway's credential-pinning rules, and neither should
  * follow a user to NVIDIA.
  *
- * What this sends is deliberately plain — model, messages, temperature,
- * max_tokens, and nothing else. Strict endpoints (vLLM in particular) reject
- * unknown body fields, so there is no vendor-specific extra and no usage-
- * accounting flag. Token counts are used when the endpoint reports them and
- * are never estimated into the usage event, matching the rule OpenRouter's
+ * What this sends is deliberately plain — model, messages, temperature, the
+ * output-token cap, and nothing else. Strict endpoints (vLLM in particular)
+ * reject unknown body fields, so there is no vendor-specific extra and no
+ * usage-accounting flag. Token counts are used when the endpoint reports them
+ * and are never estimated into the usage event, matching the rule OpenRouter's
  * `buildLastUsage` already enforces: real numbers on both sides or none.
  */
 
@@ -23,6 +23,8 @@ import { getCredential } from '../../shared/EnvManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
+import { isKeyAllowedForEndpoint } from '../../shared/cmem-gateway.js';
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { logger } from '../../utils/logger.js';
@@ -31,19 +33,20 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
-import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { resolveObserverMaxOutputTokens } from './context-window.js';
+import {
+  OpenAICompatibleProvider,
+  assistantText,
+  type OpenAIChatMessage,
+  type ProviderQueryResult,
+} from './OpenAICompatibleProvider.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
-
-interface OpenAIMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
 
 interface ChatCompletionResponse {
   model?: string;
   choices?: Array<{
-    message?: { role?: string; content?: string };
+    message?: { role?: string; content?: unknown };
     finish_reason?: string;
   }>;
   usage?: {
@@ -74,6 +77,8 @@ export interface OpenAICompatConfig {
    * observation.
    */
   requiresApiKey: boolean;
+  /** Set for a Telegram wrap-up request (OpenAICompatibleProvider.formatTelegramWrapup). */
+  plainText?: boolean;
 }
 
 /**
@@ -106,21 +111,6 @@ export function isLocalEndpointUrl(rawUrl: string): boolean {
 }
 
 /**
- * Classify a failure from an arbitrary OpenAI-compatible endpoint.
- *
- * Kept separate from `classifyOpenRouterError` because the inputs differ in
- * kind, not just in wording. OpenRouter and the cmem gateway send a known
- * taxonomy envelope; a self-hosted vLLM or a vendor gateway sends whatever it
- * sends. So this leans on status codes first — which are the one thing the
- * OpenAI shape actually standardizes — and consults the body only for the
- * quota-vs-rate-limit distinction that status alone cannot make.
- *
- * The distinction matters more here than elsewhere: `quota_exhausted` retires a
- * key for 30 minutes and arms the provider breaker, while `rate_limit` retires
- * it for a minute. Calling a per-minute throttle "exhausted" would idle a
- * perfectly good key for half an hour.
- */
-/**
  * Rate-limit markers from an OpenAI-shaped `error` envelope.
  *
  * The transport status cannot be trusted to carry this. Several compatible
@@ -139,19 +129,67 @@ const RATE_LIMIT_ERROR_CODES = new Set([
   'tokens_rate_limit_exceeded',
 ]);
 
-/** Pull `error.code` / `error.type` out of a body that may not even be JSON. */
-function structuredErrorMarkers(bodyText: string): string[] {
-  if (!bodyText.trimStart().startsWith('{')) return [];
+/**
+ * litellm (behind many compatible gateways) reports a failure to parse the
+ * downstream model's reply as an error envelope, often inside a 200 (#3263).
+ * The same request usually succeeds on a retry.
+ */
+const TRANSIENT_PARSE_FAILURE_MARKERS = ['unable to get json', 'expecting value'];
+
+interface ErrorEnvelope {
+  code?: unknown;
+  type?: unknown;
+  message?: unknown;
+}
+
+/** The `error` object of a body that may not even be JSON. */
+function parseErrorEnvelope(bodyText: string): ErrorEnvelope | null {
+  if (!bodyText.trimStart().startsWith('{')) return null;
   try {
-    const parsed = JSON.parse(bodyText) as { error?: { code?: unknown; type?: unknown } };
-    return [parsed?.error?.code, parsed?.error?.type]
-      .filter((marker): marker is string | number => typeof marker === 'string' || typeof marker === 'number')
-      .map(marker => String(marker).toLowerCase());
+    const parsed = JSON.parse(bodyText) as { error?: unknown };
+    return parsed?.error && typeof parsed.error === 'object' ? parsed.error as ErrorEnvelope : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
+/** `error.code` / `error.type`, lower-cased, for the rate-limit marker check. */
+function structuredErrorMarkers(envelope: ErrorEnvelope | null): string[] {
+  if (!envelope) return [];
+  return [envelope.code, envelope.type]
+    .filter((marker): marker is string | number => typeof marker === 'string' || typeof marker === 'number')
+    .map(marker => String(marker).toLowerCase());
+}
+
+/**
+ * The status to classify by. An error envelope inside a 2xx response often
+ * carries the real HTTP status as a numeric `error.code` (a 429 or a 503
+ * relayed by a gateway), and that is the one that says whether to retry.
+ */
+function effectiveStatus(status: number | undefined, envelope: ErrorEnvelope | null): number | undefined {
+  const code = envelope?.code;
+  const numeric = typeof code === 'number' ? code : typeof code === 'string' && /^\d{3}$/.test(code) ? Number(code) : NaN;
+  if (status !== undefined && status >= 200 && status < 300 && numeric >= 400 && numeric < 600) {
+    return numeric;
+  }
+  return status;
+}
+
+/**
+ * Classify a failure from an arbitrary OpenAI-compatible endpoint.
+ *
+ * Kept separate from `classifyOpenRouterError` because the inputs differ in
+ * kind, not just in wording. OpenRouter and the cmem gateway send a known
+ * taxonomy envelope; a self-hosted vLLM or a vendor gateway sends whatever it
+ * sends. So this leans on status codes first — which are the one thing the
+ * OpenAI shape actually standardizes — and consults the body only for the
+ * quota-vs-rate-limit distinction that status alone cannot make.
+ *
+ * The distinction matters more here than elsewhere: `quota_exhausted` retires a
+ * key for 30 minutes and arms the provider breaker, while `rate_limit` retires
+ * it for a minute. Calling a per-minute throttle "exhausted" would idle a
+ * perfectly good key for half an hour.
+ */
 export function classifyOpenAICompatError(input: {
   status?: number;
   bodyText?: string;
@@ -159,12 +197,15 @@ export function classifyOpenAICompatError(input: {
   cause: unknown;
   endpointLabel?: string;
 }): ClassifiedProviderError {
-  const status = input.status;
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
+  const envelope = parseErrorEnvelope(body);
+  const status = effectiveStatus(input.status, envelope);
   const retryAfterMs = input.headers ? parseRetryAfterMs(input.headers.get('retry-after')) : undefined;
   const label = input.endpointLabel ?? 'OpenAI-compatible endpoint';
-  const excerpt = body.substring(0, 300);
+  const excerpt = typeof envelope?.message === 'string' && envelope.message
+    ? envelope.message.substring(0, 300)
+    : body.substring(0, 300);
   const describe = (cls: string): string =>
     `${label} ${cls}${status !== undefined ? ` (status ${status})` : ''}${excerpt ? `: ${excerpt}` : ''}`;
 
@@ -205,15 +246,7 @@ export function classifyOpenAICompatError(input: {
 
   // A structured rate-limit marker outranks the transport status: an endpoint
   // that reports the throttle in a 200 body must still retry and rotate.
-  if (structuredErrorMarkers(body).some(marker => RATE_LIMIT_ERROR_CODES.has(marker))) {
-    return new ClassifiedProviderError(describe('rate limit'), {
-      kind: 'rate_limit',
-      cause: input.cause,
-      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-    });
-  }
-
-  if (status === 429) {
+  if (status === 429 || structuredErrorMarkers(envelope).some(marker => RATE_LIMIT_ERROR_CODES.has(marker))) {
     return new ClassifiedProviderError(describe('rate limit'), {
       kind: 'rate_limit',
       cause: input.cause,
@@ -255,11 +288,21 @@ export function classifyOpenAICompatError(input: {
     });
   }
 
+  if (TRANSIENT_PARSE_FAILURE_MARKERS.some(marker => lower.includes(marker))) {
+    return new ClassifiedProviderError(describe('transient upstream parse failure'), {
+      kind: 'transient',
+      cause: input.cause,
+    });
+  }
+
   return new ClassifiedProviderError(describe('API error'), {
     kind: 'unrecoverable',
     cause: input.cause,
   });
 }
+
+/** Endpoint a key was last withheld from, so a status poll logs it once, not per read. */
+let lastWithheldKeyUrl: string | null = null;
 
 /**
  * Resolve the endpoint tuple.
@@ -268,6 +311,11 @@ export function classifyOpenAICompatError(input: {
  * The preset only ever fills a blank — so switching preset never silently
  * moves a user who pinned a base URL or a model, and the two settings remain
  * the source of truth for what is actually sent.
+ *
+ * Every key goes through the cmem key lock (#4276): an account-owned cm_pro_
+ * key is never sent to a third-party endpoint, and no other key is sent to the
+ * cmem gateway. A withheld key leaves the endpoint keyless, which a hosted
+ * endpoint reports as unconfigured.
  */
 export function resolveOpenAICompatConfig(
   settingsPath: string = USER_SETTINGS_PATH,
@@ -277,6 +325,10 @@ export function resolveOpenAICompatConfig(
 
   const configuredBaseUrl = (settings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL ?? '').trim();
   const baseUrl = configuredBaseUrl || preset.baseUrl;
+  // Reuses the OpenRouter base-URL normalizer: same job (tolerate a trailing
+  // slash, tolerate a base that already names /chat/completions), and one copy
+  // of that rule is better than two.
+  const apiUrl = baseUrl ? resolveOpenRouterChatCompletionsUrl(baseUrl) : '';
 
   const configuredModel = (settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL ?? '').trim();
   const model = configuredModel || preset.defaultModel;
@@ -287,10 +339,15 @@ export function resolveOpenAICompatConfig(
   const primaryKey = (settings.CLAUDE_MEM_OPENAI_COMPAT_API_KEY ?? '').trim()
     || getCredential('OPENAI_COMPAT_API_KEY')
     || '';
-  const apiKeys = buildKeyPool(
+  const configuredKeys = buildKeyPool(
     primaryKey,
     settings.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS || getCredential('OPENAI_COMPAT_API_KEYS') || '',
   );
+  const apiKeys = configuredKeys.filter(key => isKeyAllowedForEndpoint(apiUrl, key));
+  if (apiKeys.length < configuredKeys.length && lastWithheldKeyUrl !== apiUrl) {
+    lastWithheldKeyUrl = apiUrl;
+    logger.warn('SDK', 'Withholding an openai-compatible key: a cmem.ai memory key (cm_pro_) only goes to the cmem gateway, and the gateway only takes a cmem.ai memory key. Set CLAUDE_MEM_OPENAI_COMPAT_API_KEY to the key this endpoint issued.');
+  }
 
   // The preset's answer only stands while the preset's endpoint does. Once the
   // base URL is overridden, ask the endpoint being called.
@@ -299,14 +356,11 @@ export function resolveOpenAICompatConfig(
     : preset.requiresApiKey;
 
   return {
-    apiKey: primaryKey || apiKeys[0] || '',
+    apiKey: apiKeys[0] ?? '',
     apiKeys,
     requiresApiKey,
     model,
-    // Reuses the OpenRouter base-URL normalizer: same job (tolerate a trailing
-    // slash, tolerate a base that already names /chat/completions), and one
-    // copy of that rule is better than two.
-    apiUrl: baseUrl ? resolveOpenRouterChatCompletionsUrl(baseUrl) : '',
+    apiUrl,
     preset,
   };
 }
@@ -351,11 +405,10 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     return config.requiresApiKey;
   }
 
-  protected prepareSessionExtras(session: ActiveSession, config: OpenAICompatConfig): void {
+  protected prepareSessionExtras(session: ActiveSession, _config: OpenAICompatConfig): void {
     // Telemetry already segments openrouter.ai from 'custom'; every endpoint
     // reached through this provider is by definition the latter.
     session.endpointClass = 'custom';
-    void config;
   }
 
   protected estimateTokens(text: string): number {
@@ -370,31 +423,34 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     return { input: result.inputTokens, output: result.outputTokens };
   }
 
-  private conversationToMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.content,
-    }));
-  }
-
-  protected async query(history: ConversationMessage[], config: OpenAICompatConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
+  protected async query(
+    history: ConversationMessage[],
+    config: OpenAICompatConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult> {
     if (!config.apiUrl || !config.model) {
       throw this.missingApiKeyError();
     }
     return withKeyPool(
       { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label },
-      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal),
+      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs),
     );
   }
 
-  /** POST the request. Extracted so the retry try block stays narrow. */
+  /**
+   * POST the request. Extracted so the retry try block stays narrow. Goes
+   * through the max_tokens compatibility wrapper, so a model that only takes
+   * max_completion_tokens gets the #4003 retry here too.
+   */
   private fetchChatCompletion(
     config: OpenAICompatConfig,
     apiKey: string,
-    messages: OpenAIMessage[],
+    messages: OpenAIChatMessage[],
+    maxOutputTokens: number,
     attemptSignal: AbortSignal,
   ): Promise<Response> {
-    return fetch(config.apiUrl, {
+    return fetchWithOpenRouterTokenCompatibility(fetch, config.apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -402,14 +458,12 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         // them is worse than sending no header at all.
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature: 0.3,
-        max_tokens: 4096,
-      }),
       signal: attemptSignal,
-    });
+    }, {
+      model: config.model,
+      messages,
+      temperature: 0.3,
+    }, maxOutputTokens);
   }
 
   private async queryChatCompletions(
@@ -419,19 +473,22 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     poolSize: number,
     config: OpenAICompatConfig,
     signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
-    const messages = this.conversationToMessages(history);
+    const messages = this.conversationToOpenAIMessages(history);
     const label = config.preset.label;
+    const maxOutputTokens = resolveObserverMaxOutputTokens();
 
     logger.debug('SDK', `Querying ${label} multi-turn (${config.model})`, {
       turns: history.length,
       totalChars: history.reduce((sum, m) => sum + m.content.length, 0),
+      maxOutputTokens,
     });
 
     const data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(config, apiKey, messages, attemptSignal);
+        response = await this.fetchChatCompletion(config, apiKey, messages, maxOutputTokens, attemptSignal);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenAICompatError({ cause: err, endpointLabel: label });
@@ -466,14 +523,25 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     }, {
       label: `${label} ${config.model}`,
       abortSignal: signal,
+      perAttemptTimeoutMs,
       ...(signal ? { maxRetries: 0 } : {}),
       ...retryPolicyForPool(poolSize),
     });
 
-    const content = data.choices?.[0]?.message?.content;
+    const choice = data.choices?.[0];
+    // Text blocks only: reasoning and tool-call arguments are never the answer.
+    const content = assistantText(choice?.message?.content);
+    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
+    if (finishReason === 'length') {
+      logger.warn('SDK', `${label} reply was cut off at the output-token limit`, {
+        model: config.model,
+        maxTokens: maxOutputTokens,
+        outputTokens: data.usage?.completion_tokens,
+        contentChars: content.length,
+      });
+    }
     if (!content) {
-      logger.error('SDK', `Empty response from ${label}`, { model: config.model });
-      return { content: '' };
+      logger.error('SDK', `Empty response from ${label}`, { model: config.model, finishReason });
     }
 
     const inputTokens = data.usage?.prompt_tokens;
@@ -497,6 +565,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       ...(inputTokens !== undefined ? { inputTokens } : {}),
       ...(outputTokens !== undefined ? { outputTokens } : {}),
       ...(servedModel ? { servedModel } : {}),
+      ...(finishReason ? { finishReason } : {}),
     };
   }
 }
