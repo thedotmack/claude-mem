@@ -1,5 +1,5 @@
 import path from 'path';
-import { sessionInitHandler } from '../../cli/handlers/session-init.js';
+import { recordSessionPrompt } from '../../cli/handlers/session-init.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
@@ -24,9 +24,10 @@ export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
 }
 
 /**
- * The worker did not record a transcript turn's user prompt. The watcher stops
- * the pass on it, before checkpointing, so the turn is replayed rather than its
- * observations being filed under no prompt.
+ * The worker did not record a transcript turn's user prompt. The watcher
+ * checkpoints at the start of that turn's line (or zstd frame) and retries it
+ * from there, so the turn is replayed rather than its observations being filed
+ * under no prompt, and nothing before it is sent twice.
  */
 export class TranscriptAnchorError extends Error {
   constructor(sessionId: string, cause: unknown) {
@@ -242,10 +243,10 @@ export class TranscriptEventProcessor {
 
   /**
    * Record the turn's user prompt through the init path the hooks use, so the
-   * worker has a user_prompts row for it. A failure throws
-   * TranscriptAnchorError: the watcher then stops before checkpointing past
-   * the turn, so it is replayed instead of its observations being filed under
-   * no prompt.
+   * worker has a user_prompts row for it. A prompt the worker did not record
+   * (unreachable, a 429/5xx reply, no budget) throws TranscriptAnchorError:
+   * the watcher then checkpoints at this turn's line and retries it, instead
+   * of its observations being filed under no prompt.
    */
   private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
     const cwd = session.cwd ?? process.cwd();
@@ -254,7 +255,7 @@ export class TranscriptEventProcessor {
     }
 
     try {
-      await sessionInitHandler.execute({
+      await recordSessionPrompt({
         sessionId: session.sessionId,
         cwd,
         prompt,

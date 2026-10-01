@@ -10,13 +10,13 @@ const sessionInitCalls: NormalizedHookInput[] = [];
 import * as realSessionInit from '../../src/cli/handlers/session-init.js';
 const realSessionInitSnapshot = { ...realSessionInit };
 
+const fakeSessionInit = async (input: NormalizedHookInput) => {
+  sessionInitCalls.push(input);
+  return { continue: true, suppressOutput: true };
+};
 mock.module('../../src/cli/handlers/session-init.js', () => ({
-  sessionInitHandler: {
-    execute: async (input: NormalizedHookInput) => {
-      sessionInitCalls.push(input);
-      return { continue: true, suppressOutput: true };
-    },
-  },
+  sessionInitHandler: { execute: fakeSessionInit },
+  recordSessionPrompt: fakeSessionInit,
 }));
 
 afterAll(() => {
