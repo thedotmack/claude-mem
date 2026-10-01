@@ -1,15 +1,16 @@
 import { ChildProcess, spawnSync } from 'child_process';
 import { spawnHidden } from '../shared/spawn.js';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
+import { writeJsonFileAtomic } from '../shared/atomic-json.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
-import { captureProcessStartToken, isSameProcess } from '../shared/process-identity.js';
-export { captureProcessStartToken, isSameProcess };
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName } from '../shared/process-identity.js';
+export { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, normalizeProcessName };
 import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
@@ -31,6 +32,21 @@ export interface ManagedProcessRecord extends ManagedProcessInfo {
 
 interface PersistedRegistry {
   processes: Record<string, ManagedProcessInfo>;
+}
+
+/**
+ * Optional reporter for a supervisor-registry persist failure. process-registry
+ * lives under src/supervisor/, which must not import src/services/ (telemetry) —
+ * so, exactly like logger.setErrorSink, the worker injects a reporter at startup
+ * that forwards to captureEvent. Absent (tests, CLI, telemetry off) it is a
+ * no-op, so a persist failure still degrades cleanly without telemetry.
+ */
+export type RegistryDegradedReporter = (info: { errorCategory: string }) => void;
+let degradedReporter: RegistryDegradedReporter | null = null;
+
+/** Installs (or clears, with null) the persist-failure reporter. Never throws. */
+export function setRegistryDegradedReporter(reporter: RegistryDegradedReporter | null): void {
+  degradedReporter = reporter;
 }
 
 export function isPidAlive(pid: number): boolean {
@@ -91,11 +107,31 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   return match;
 }
 
+/**
+ * The verified-owner PID info from the worker PID file, or null when the file
+ * is missing, unparseable, or names a process that is not a live claude-mem
+ * worker. Read-only sibling of validateWorkerPidFile for callers that need
+ * the pid itself (the hook's stale-worker kill in shared/worker-utils.ts, the
+ * installer's cache prune and pre-overwrite stop). Lives here, beside
+ * verifyPidFileOwnership, so npx-cli callers need not import the supervisor.
+ */
+export function readOwnedWorkerPidInfo(pidFilePath: string = paths.workerPid()): PidInfo | null {
+  if (!existsSync(pidFilePath)) return null;
+  let pidInfo: PidInfo | null;
+  try {
+    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo | null;
+  } catch {
+    return null;
+  }
+  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
+}
+
 export class ProcessRegistry {
   private readonly registryPath: string;
   private readonly entries = new Map<string, ManagedProcessInfo>();
   private readonly runtimeProcesses = new Map<string, ChildProcess>();
   private initialized = false;
+  private persistDegraded = false;
 
   constructor(registryPath: string = DEFAULT_REGISTRY_PATH) {
     this.registryPath = registryPath;
@@ -105,7 +141,9 @@ export class ProcessRegistry {
     if (this.initialized) return;
     this.initialized = true;
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
+    // No mkdir here: persist() writes through writeJsonFileAtomic, which
+    // creates the parent directory itself and — unlike a bare mkdirSync — never
+    // propagates an EACCES/EROFS out of initialize() into worker/session start.
 
     if (!existsSync(this.registryPath)) {
       this.persist();
@@ -389,8 +427,38 @@ export class ProcessRegistry {
       processes: Object.fromEntries(this.entries.entries())
     };
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
-    writeFileSync(this.registryPath, JSON.stringify(payload, null, 2));
+    try {
+      writeJsonFileAtomic(this.registryPath, payload);
+      this.persistDegraded = false;
+    } catch (error: unknown) {
+      // An unwritable data directory (EACCES/EROFS/ENOSPC) must degrade, not
+      // crash. this.entries stays the source of truth in memory, so the worker
+      // still starts and the 30s health-check timer keeps pruning. Before this
+      // guard the throw propagated out of persist() into worker/session start
+      // and, every 30s, out of the health-check timer callback.
+      this.reportPersistFailure(error);
+    }
+  }
+
+  private reportPersistFailure(error: unknown): void {
+    // Log and report only on the transition INTO a degraded episode. A
+    // persistent permission failure is hit by every register/unregister/reap
+    // and by the 30s health-check timer, so logging (and rebuilding an Error
+    // for the stack) on each one would storm the warn log while only the first
+    // occurrence is worth surfacing. Reset again on the next successful persist.
+    if (this.persistDegraded) return;
+    this.persistDegraded = true;
+
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Failed to persist supervisor registry; keeping it in memory', {
+      path: this.registryPath,
+    }, err);
+    try {
+      degradedReporter?.({ errorCategory: (err as NodeJS.ErrnoException).code ?? 'unknown' });
+    } catch {
+      // Reporting is best-effort: never let it turn a degraded-but-running
+      // supervisor back into a crash.
+    }
   }
 }
 
@@ -720,11 +788,17 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   const filteredArgs: string[] = [];
   for (const arg of args) {
     if (arg === '') {
-      // The SDK encodes optional flag/value pairs as `--flag ''` when the
-      // value is absent. Strip the whole pair, but only when the preceding
-      // token is a long option so positional args are left untouched.
-      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
-        filteredArgs.pop();
+      // The SDK encodes an explicitly empty value as the pair `--flag ''`:
+      // `tools: []` becomes `--tools ''`, which tells the CLI "no built-in
+      // tools". cmd.exe drops empty arguments (#3317), but stripping the pair
+      // changed its meaning: without `--tools` the CLI loads its full default
+      // tool set. Fold the pair into the single token `--flag=` instead, which
+      // carries the same empty value and survives cmd.exe. An empty positional
+      // argument is still dropped.
+      const previousIndex = filteredArgs.length - 1;
+      const previousArg = filteredArgs[previousIndex];
+      if (previousArg !== undefined && previousArg.startsWith('--') && !previousArg.includes('=')) {
+        filteredArgs[previousIndex] = `${previousArg}=`;
       }
       continue;
     }

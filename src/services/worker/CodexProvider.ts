@@ -2,10 +2,29 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
-import { CodexAppServerClient } from './CodexAppServerClient.js';
-import { ClassifiedProviderError } from './provider-errors.js';
-import { withRetry } from './retry.js';
-import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted } from '../../shared/quota-cooldown.js';
+import {
+  CodexAppServerClient,
+  CODEX_NO_AGENT_MESSAGE_CODE,
+  CODEX_SETUP_REQUIRED_CODE,
+  type CodexAppServerTurnResult,
+} from './CodexAppServerClient.js';
+import { ClassifiedProviderError, isClassified } from './provider-errors.js';
+import { resolveLlmTimeoutMs, withRetry } from './retry.js';
+import {
+  clearQuotaCooldown,
+  getQuotaCooldown,
+  isQuotaCooldownActive,
+  recordAuthCooldown,
+  recordQuotaExhausted,
+  type QuotaCooldownState,
+} from '../../shared/quota-cooldown.js';
+import {
+  CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  clearDependencyStatus,
+  getDependencyStatus,
+  isDependencyStatusInCooldown,
+  recordCodexCliSetupRequired,
+} from '../../shared/dependency-health.js';
 import { logger } from '../../utils/logger.js';
 
 interface CodexConfig {
@@ -13,21 +32,27 @@ interface CodexConfig {
   model: string;
   codexPath: string;
   reasoningEffort: string | null;
-  timeoutMs: number;
   signal?: AbortSignal;
-  quotaProbeClaimId?: number | null;
-  setupProbeClaimId?: number | null;
 }
 
-const CODEX_ERROR_INFO_KINDS: Record<string, ConstructorParameters<typeof ClassifiedProviderError>[1]['kind']> = {
+type CodexErrorKind = ConstructorParameters<typeof ClassifiedProviderError>[1]['kind'];
+
+const CODEX_ERROR_INFO_KINDS: Record<string, CodexErrorKind> = {
   usageLimitExceeded: 'quota_exhausted',
   unauthorized: 'auth_invalid',
   rateLimitExceeded: 'rate_limit',
   contextWindowExceeded: 'context_overflow',
 };
 
+/**
+ * `code` on a request that was never sent because the Codex breaker or the
+ * codex_cli setup gate is armed. It repeats a failure another request already
+ * earned, so it is not published a second time.
+ */
+const CODEX_COOLDOWN_REFUSAL_CODE = 'codex_cooldown_active';
+
 /** Maps the app-server's structured CodexErrorInfo, which is more stable than its display text. */
-function classifyCodexErrorInfo(info: unknown): ConstructorParameters<typeof ClassifiedProviderError>[1]['kind'] | null {
+function classifyCodexErrorInfo(info: unknown): CodexErrorKind | null {
   if (typeof info === 'string') return CODEX_ERROR_INFO_KINDS[info] ?? null;
   if (!info || typeof info !== 'object') return null;
   const [detail] = Object.values(info as Record<string, unknown>);
@@ -41,11 +66,15 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
   const message = cause instanceof Error ? cause.message : String(cause);
   const code = (cause as { code?: unknown } | null)?.code;
   const structuredKind = classifyCodexErrorInfo((cause as { codexErrorInfo?: unknown } | null)?.codexErrorInfo);
-  let kind: ConstructorParameters<typeof ClassifiedProviderError>[1]['kind'] = 'transient';
-  if (structuredKind) {
+  let kind: CodexErrorKind = 'transient';
+  if (code === CODEX_NO_AGENT_MESSAGE_CODE) {
+    // Its diagnostic counts must not be read as an HTTP status.
+    kind = 'transient';
+  } else if (structuredKind) {
     kind = structuredKind;
-  } else if (code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
-    kind = 'unrecoverable';
+  } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
+    // Fixed on this machine (install the CLI, `codex login`), never by retrying.
+    kind = 'setup_required';
   } else if (/not logged in|codex login|unauthorized|authentication|ChatGPT auth|requires Codex CLI|\b40[13]\b/i.test(message)) {
     kind = 'auth_invalid';
   } else if (/usage limit|quota|insufficient credits|plan limit|billing/i.test(message)) {
@@ -56,6 +85,48 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     kind = 'context_overflow';
   }
   return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, { kind, cause });
+}
+
+/**
+ * The refusal an armed Codex breaker stands for, so a request it withholds
+ * pauses its session exactly as the request that armed it did.
+ */
+function cooldownRefusal(cooldown: QuotaCooldownState): ClassifiedProviderError {
+  const kind: CodexErrorKind = cooldown.cause === 'auth'
+    ? 'auth_invalid'
+    : cooldown.window === 'rate_limit' ? 'rate_limit' : 'quota_exhausted';
+  return new ClassifiedProviderError(cooldown.message, { kind, cause: null, code: CODEX_COOLDOWN_REFUSAL_CODE });
+}
+
+/**
+ * Arm the shared breaker (or the codex_cli setup gate) before the app-server
+ * releases its queue, so a request another session queued behind this one is
+ * withheld instead of earning the same refusal. The session runner books the
+ * failure again when it reaches it; re-arming within the same moment is a
+ * no-op in effect.
+ */
+function publishCodexFailure(error: ClassifiedProviderError): void {
+  if (error.code === CODEX_COOLDOWN_REFUSAL_CODE) return;
+  switch (error.kind) {
+    case 'quota_exhausted':
+      recordQuotaExhausted('codex', error.message);
+      logger.warn('SDK', 'Codex usage limit reached; pausing Codex requests until a quota probe succeeds', {
+        message: error.message,
+      });
+      break;
+    case 'auth_invalid':
+      recordAuthCooldown('codex', error.message);
+      logger.warn('SDK', 'Codex refused the ChatGPT login; pausing Codex requests until a probe succeeds', {
+        message: error.message,
+      });
+      break;
+    case 'setup_required':
+      recordCodexCliSetupRequired(error.message);
+      logger.warn('SDK', 'Codex CLI or login is not set up; pausing Codex starts until a recovery probe succeeds', {
+        message: error.message,
+      });
+      break;
+  }
 }
 
 /** Native subscription transport using the existing observer session lifecycle. */
@@ -75,14 +146,12 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     if (process.platform === 'win32' && /[\0\r\n&|<>()^%!\"]/.test(codexPath)) {
       throw new Error('CLAUDE_MEM_CODEX_PATH contains unsafe shell characters');
     }
-    const timeout = Number(settings.CLAUDE_MEM_CODEX_TIMEOUT_MS);
     return {
       // The shared lifecycle expects a credential marker; auth stays in Codex CLI.
       apiKey: 'codex-subscription',
       model: settings.CLAUDE_MEM_CODEX_MODEL.trim(),
       codexPath,
       reasoningEffort: settings.CLAUDE_MEM_CODEX_REASONING_EFFORT.trim() || null,
-      timeoutMs: Number.isSafeInteger(timeout) && timeout > 0 ? timeout : 120_000,
     };
   }
 
@@ -103,80 +172,92 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
 
   protected prepareSessionExtras(session: ActiveSession, config: CodexConfig): void {
     config.signal = session.abortController.signal;
-    config.quotaProbeClaimId = session.quotaProbeClaimId;
-    config.setupProbeClaimId = session.codexSetupProbeClaimId;
     session.lastModelId = config.model || 'codex-default';
   }
 
-  protected override queryForInitialization(history: ConversationMessage[], config: CodexConfig): Promise<ProviderQueryResult> {
-    return this.query(history, config, undefined, { allowEmptyContent: true });
-  }
-
+  /**
+   * One request on the persistent app-server. `signal` (a field condensation
+   * racing its own deadline) is honoured alongside the session's, and the
+   * per-attempt deadline is the observer's CLAUDE_MEM_LLM_TIMEOUT_MS unless
+   * the caller passes its own (the field pass does).
+   */
   protected async query(
     history: ConversationMessage[],
     config: CodexConfig,
-    callerSignal?: AbortSignal,
-    options: { allowEmptyContent?: boolean } = {},
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
-    const abortSignal = config.signal && callerSignal
-      ? AbortSignal.any([config.signal, callerSignal])
-      : callerSignal ?? config.signal;
+    const abortSignal = config.signal && signal
+      ? AbortSignal.any([config.signal, signal])
+      : signal ?? config.signal;
+    const timeoutMs = perAttemptTimeoutMs ?? resolveLlmTimeoutMs();
     const prompt = [
       'You are the claude-mem memory compression worker. Use only the supplied conversation; do not call tools.',
       'Follow the latest user request: XML for observations/summaries, plain text for payload compression.',
       ...history.map(message => `${message.role.toUpperCase()}:\n${message.content}`),
     ].join('\n\n');
+    let result: CodexAppServerTurnResult;
     try {
-      const result = await withRetry(async signal => {
-        try {
-          return await this.appServer.runTurn({
-            codexPath: config.codexPath,
-            model: config.model,
-            reasoningEffort: config.reasoningEffort,
-            timeoutMs: config.timeoutMs,
-            prompt,
-            signal,
-            allowEmptyContent: options.allowEmptyContent,
-            beforeSend: () => {
-              signal.throwIfAborted();
-              const setup = getQuotaCooldown('codex-setup');
-              if (setup && (setup.probeClaimId == null || setup.probeClaimId !== config.setupProbeClaimId)) {
-                throw new ClassifiedProviderError('Codex setup cooldown is active', { kind: 'setup_paused', cause: null });
-              }
-              const cooldown = getQuotaCooldown('codex');
-              if (cooldown && (cooldown.probeClaimId == null || cooldown.probeClaimId !== config.quotaProbeClaimId)) {
-                throw new ClassifiedProviderError('Codex quota cooldown is active', { kind: 'quota_paused', cause: null });
-              }
-            },
-            onFailure: error => {
-              if (signal.aborted) return;
-              const classified = error instanceof ClassifiedProviderError ? error : classifyCodexError(error);
-              if (classified.kind === 'unrecoverable' || classified.kind === 'auth_invalid') {
-                recordQuotaExhausted('codex-setup', classified.message);
-                logger.warn('SDK', 'Codex setup failure; pausing Codex requests until a recovery probe succeeds', {
-                  kind: classified.kind,
-                  message: classified.message,
-                });
-              }
-            },
-          });
-        } catch (error) {
-          if (signal.aborted || error instanceof ClassifiedProviderError) throw error;
-          throw classifyCodexError(error);
-        }
-      }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: config.timeoutMs, abortSignal });
-      clearQuotaCooldown('codex');
-      clearQuotaCooldown('codex-setup');
-      return result;
+      result = await this.runTurnWithRetry(prompt, config, timeoutMs, abortSignal);
     } catch (error) {
-      if (error instanceof ClassifiedProviderError && error.kind === 'quota_exhausted') {
-        recordQuotaExhausted('codex', error.message);
-        logger.warn('SDK', 'Codex usage limit reached; pausing Codex requests until a quota probe succeeds', {
-          message: error.message,
-        });
+      // A turn that completes without any agent message gets withRetry's one
+      // retry. A second one is passed on as an empty reply, for the skip
+      // contract to settle, rather than pausing the batch as a transport fault
+      // again and again.
+      if (!isClassified(error) || (error.cause as { code?: unknown } | null)?.code !== CODEX_NO_AGENT_MESSAGE_CODE) {
+        throw error;
       }
-      throw error;
+      logger.warn('SDK', 'Codex completed twice without an agent message; passing an empty reply on', {
+        message: error.message,
+      });
+      return { content: '' };
     }
+    // A served request is the recovery probe succeeding. The guard skips the
+    // breaker's disk write when nothing was armed.
+    if (getQuotaCooldown('codex')) clearQuotaCooldown('codex');
+    clearDependencyStatus('codex_cli');
+    return result;
+  }
+
+  private runTurnWithRetry(
+    prompt: string,
+    config: CodexConfig,
+    timeoutMs: number,
+    abortSignal: AbortSignal | undefined,
+  ): Promise<CodexAppServerTurnResult> {
+    return withRetry(async attemptSignal => {
+      try {
+        return await this.appServer.runTurn({
+          codexPath: config.codexPath,
+          model: config.model,
+          reasoningEffort: config.reasoningEffort,
+          timeoutMs,
+          prompt,
+          signal: attemptSignal,
+          // Rechecked after the wait for the serialized app-server: the request
+          // this one queued behind may have found setup broken or armed the
+          // breaker.
+          beforeSend: () => {
+            attemptSignal.throwIfAborted();
+            const setup = getDependencyStatus('codex_cli');
+            if (setup && isDependencyStatusInCooldown(setup, CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS)) {
+              throw new ClassifiedProviderError(setup.message, {
+                kind: 'setup_required', cause: null, code: CODEX_COOLDOWN_REFUSAL_CODE,
+              });
+            }
+            const cooldown = getQuotaCooldown('codex');
+            if (cooldown && isQuotaCooldownActive('codex')) throw cooldownRefusal(cooldown);
+          },
+          onFailure: error => {
+            if (attemptSignal.aborted) return;
+            publishCodexFailure(isClassified(error) ? error : classifyCodexError(error));
+          },
+        });
+      } catch (error) {
+        if (attemptSignal.aborted || isClassified(error)) throw error;
+        throw classifyCodexError(error);
+      }
+    }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: timeoutMs, abortSignal });
   }
 }
 

@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  type Stats,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -121,8 +122,6 @@ export interface CodexAppServerTurnOptions {
   prompt: string;
   timeoutMs: number;
   signal?: AbortSignal;
-  /** Initialization may complete with an empty structured content string. */
-  allowEmptyContent?: boolean;
   /** Recheck caller-owned admission after waiting in the serialized queue. */
   beforeSend?: () => void;
   /** Publish admission failures before releasing the queue to the next caller. */
@@ -222,6 +221,24 @@ function resolveNativeCodexHome(explicitHome?: string): string {
   return configured || join(process.env.HOME?.trim() || homedir(), '.codex');
 }
 
+/**
+ * `code` on a failure the user fixes on this machine (log in with ChatGPT,
+ * tighten the auth file), so it is classified as setup rather than guessed
+ * from its wording.
+ */
+export const CODEX_SETUP_REQUIRED_CODE = 'codex_setup_required';
+
+function codexSetupError(message: string): Error {
+  return Object.assign(new Error(message), { code: CODEX_SETUP_REQUIRED_CODE });
+}
+
+/**
+ * `code` on a turn that completed without any agent message: an anomaly worth
+ * one retry, never a refusal, so it is classified by code rather than by its
+ * diagnostic text.
+ */
+export const CODEX_NO_AGENT_MESSAGE_CODE = 'codex_no_agent_message';
+
 function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
   const root = mkdtempSync(join(tmpdir(), APP_SERVER_WORKDIR_PREFIX));
   try {
@@ -236,24 +253,29 @@ function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
     }
 
     const nativeAuth = join(nativeCodexHome, 'auth.json');
-    const authStat = statSync(nativeAuth);
-    if (!authStat.isFile()) throw new Error(`Codex ChatGPT auth is not a file: ${nativeAuth}`);
+    let authStat: Stats;
+    try {
+      authStat = statSync(nativeAuth);
+    } catch (error) {
+      throw codexSetupError(`No Codex ChatGPT login at ${nativeAuth} (run \`codex login\`): ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!authStat.isFile()) throw codexSetupError(`Codex ChatGPT auth is not a file: ${nativeAuth}`);
     if (process.platform !== 'win32') {
       if (typeof process.getuid === 'function' && authStat.uid !== process.getuid()) {
-        throw new Error(`Codex ChatGPT auth is not owned by the claude-mem worker user: ${nativeAuth}`);
+        throw codexSetupError(`Codex ChatGPT auth is not owned by the claude-mem worker user: ${nativeAuth}`);
       }
       if ((authStat.mode & 0o077) !== 0) {
-        throw new Error(`Codex ChatGPT auth permissions must deny group and other access: ${nativeAuth}`);
+        throw codexSetupError(`Codex ChatGPT auth permissions must deny group and other access: ${nativeAuth}`);
       }
     }
     let auth: unknown;
     try {
       auth = JSON.parse(readFileSync(nativeAuth, 'utf8'));
     } catch (error) {
-      throw new Error(`Cannot read Codex ChatGPT auth: ${error instanceof Error ? error.message : String(error)}`);
+      throw codexSetupError(`Cannot read Codex ChatGPT auth: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (!isObject(auth) || (auth.auth_mode !== 'chatgpt' && auth.auth_mode !== 'chatgptAuthTokens')) {
-      throw new Error('claude-mem requires Codex CLI to be logged in with ChatGPT, not an API key');
+      throw codexSetupError('claude-mem requires Codex CLI to be logged in with ChatGPT, not an API key');
     }
 
     const scopedAuth = join(codexHome, 'auth.json');
@@ -458,7 +480,10 @@ export class CodexAppServerClient {
         throw codexTurnError(`Codex app-server turn ${String(active.terminalTurn.status)}`, active.terminalTurn.error);
       }
       if (active.finalText === null) {
-        throw new Error(`Codex app-server completed without a final agent message (${this.describeEmptyTurn(active)})`);
+        throw Object.assign(
+          new Error(`Codex app-server completed without a final agent message (${this.describeEmptyTurn(active)})`),
+          { code: CODEX_NO_AGENT_MESSAGE_CODE },
+        );
       }
 
       let structured: unknown;
@@ -471,8 +496,14 @@ export class CodexAppServerClient {
         throw new Error('Codex app-server structured output omitted string content');
       }
       const content = structured.content.trim();
-      if (!content && !options.allowEmptyContent) {
-        throw new Error(`Codex app-server returned empty structured content (${this.describeEmptyTurn(active)})`);
+      if (!content) {
+        // The model's answer, passed on as one: the observer's skip contract
+        // (ResponseProcessor) decides what an empty reply to queued work means.
+        // Retrying it here as a transport fault re-sent the whole history and
+        // kept the batch pending without bound. Counts only, never the text.
+        logger.warn('SDK', 'Codex app-server returned empty structured content', {
+          diagnostics: this.describeEmptyTurn(active),
+        });
       }
       return { content, ...normalizeUsage(active.tokenUsage) };
     } finally {

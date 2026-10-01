@@ -47,6 +47,12 @@ export async function loadSessionStartContext(
       projects: [session.project],
       platformSource: session.platformSource,
       source: 'compact',
+      // This briefing is read by the observer, not by a user. The outage banner
+      // ends with an instruction addressed to the primary assistant, and a
+      // model that reads it here obeys it rather than emitting <observation>
+      // XML, so the batch is confirmed and dropped while the banner keeps
+      // itself up (#4221).
+      includeHealthWarning: false,
     });
     logger.info('SESSION', 'Briefed the observer generation with session-start context', {
       sessionId: session.sessionDbId,
@@ -61,6 +67,34 @@ export async function loadSessionStartContext(
       sessionId: session.sessionDbId,
     }, error instanceof Error ? error : new Error(String(error)));
     return '';
+  }
+}
+
+/**
+ * Start a new generation with this init prompt, dropping whatever the previous
+ * generator left in the history (#3479).
+ *
+ * A generator start never continues an earlier conversation: the Claude
+ * observer spawns a fresh, non-resuming SDK process each time, and an HTTP
+ * provider re-sends exactly the history it holds. Appending the init prompt to
+ * the old history therefore re-sent a dead generation over HTTP and inflated
+ * the budget proxy for Claude. After a quota, auth or transport pause every
+ * retry stacked one more init prompt on top, so a retry loop grew the history
+ * without bound. The init prompt already carries the session-start context, so
+ * continuity rides on memory here exactly as it does after a recycle.
+ */
+export function openObserverGeneration(session: ActiveSession, initPrompt: string): void {
+  const discardedMessages = session.conversationHistory.length;
+  // Marked as the framing prompt: HTTP providers anchor it as the system
+  // message on every request of the generation (#3868).
+  session.conversationHistory = [{ role: 'user', content: initPrompt, framing: true }];
+  // The last generation's measured context says nothing about this one (#2957).
+  session.lastContextTokens = undefined;
+  if (discardedMessages > 0) {
+    logger.debug('SESSION', 'Generator start opened a new observer generation', {
+      sessionId: session.sessionDbId,
+      discardedMessages,
+    });
   }
 }
 

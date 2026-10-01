@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Job } from 'bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 import { logger } from '../../utils/logger.js';
 import { PostgresAgentEventsRepository } from '../../storage/postgres/agent-events.js';
 import type { PostgresAgentEvent } from '../../storage/postgres/agent-events.js';
@@ -16,7 +16,7 @@ import {
   type ServerGenerationJobPayload,
 } from '../jobs/types.js';
 import { ServerClassifiedProviderError } from './providers/shared/error-classification.js';
-import type { ServerGenerationProvider } from './providers/shared/types.js';
+import type { ServerGenerationProvider, ServerGenerationResult } from './providers/shared/types.js';
 import {
   markGenerationFailed,
   processGeneratedResponse,
@@ -34,6 +34,24 @@ export class ServerGenerationScopeViolationError extends Error {
   constructor(reason: 'scope_mismatch' | 'revoked_key', message: string) {
     super(message);
     this.reason = reason;
+  }
+}
+
+// Terminal generation outcomes (empty provider response, unparseable XML)
+// already move the outbox row to `failed` before throwing. Extending
+// UnrecoverableError makes BullMQ fail the job immediately instead of
+// burning its remaining retry attempts re-running a job whose outbox row is
+// already terminal. The name must stay 'UnrecoverableError' — BullMQ
+// identifies these by name, so the subclass must not override it.
+export class ServerGenerationTerminalOutcomeError extends UnrecoverableError {
+  readonly classification: 'parse_error' | 'empty_response';
+  constructor(classification: 'parse_error' | 'empty_response', message: string) {
+    super(message);
+    this.classification = classification;
+    // BullMQ also detects unrecoverable errors by name (job.js checks
+    // `err.name == 'UnrecoverableError'`), and instanceof breaks across
+    // duplicated bullmq installs — keep the parent name.
+    this.name = 'UnrecoverableError';
   }
 }
 
@@ -58,11 +76,20 @@ export interface ProviderObservationGeneratorOptions {
   pool: PostgresPool;
   provider: ServerGenerationProvider;
   workerId?: string;
+  // Upper bound on one provider.generate() call. Defaults to
+  // DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS; tests pass a small value.
+  providerTimeoutMs?: number;
 }
 
+// #4100: nothing bounded the provider call, so one hung request held the
+// generation lane (concurrency 1) indefinitely. Well above the ~325s longest
+// job observed in production. A timeout is rethrown as a transient
+// ServerClassifiedProviderError so it takes the normal retry path.
+const DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS = 600_000;
 
-// The `limit` on listUnprocessedEvents caps the event COUNT, not the payload
-// volume, and event size varies by orders of magnitude. Long sessions therefore
+
+// The session event query (`listSessionEvents`, head + tail) caps the event
+// COUNT, not the payload volume, and event size varies by orders of magnitude. Long sessions therefore
 // still blow the provider context window: measured on a production deployment,
 // sessions that failed with "context overflow" carried up to 34 MB of event
 // payload (~9M tokens), and even truncated to the 500-event default they still
@@ -263,18 +290,23 @@ export class ProviderObservationGenerator {
     try {
       return await this.generateAndPersist(job, payload, fresh, correlationId, payloadRequestId);
     } catch (error) {
-      const classified = error instanceof ServerClassifiedProviderError ? error : null;
-      const retryable = classified
-        ? classified.kind === 'transient' || classified.kind === 'rate_limit'
-        : false;
-      await markGenerationFailed({
-        pool: this.options.pool,
-        job: fresh,
-        reason: error instanceof Error ? error.message : String(error),
-        classification: classified?.kind ?? 'unknown',
-        retryable,
-        ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
-      });
+      // Terminal outcomes already moved the outbox to `failed` before
+      // throwing; re-marking here would append a duplicate lifecycle event
+      // under a bogus 'unknown' classification.
+      if (!(error instanceof ServerGenerationTerminalOutcomeError)) {
+        const classified = error instanceof ServerClassifiedProviderError ? error : null;
+        const retryable = classified
+          ? classified.kind === 'transient' || classified.kind === 'rate_limit'
+          : false;
+        await markGenerationFailed({
+          pool: this.options.pool,
+          job: fresh,
+          reason: error instanceof Error ? error.message : String(error),
+          classification: classified?.kind ?? 'unknown',
+          retryable,
+          ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
+        });
+      }
       throw error;
     }
   }
@@ -292,20 +324,37 @@ export class ProviderObservationGenerator {
     const events = await this.loadEvents(fresh, payload);
     const project = await this.loadProject(fresh);
 
-    const result = await this.options.provider.generate({
-      job: fresh,
-      events,
-      project: {
-        projectId: fresh.projectId,
-        teamId: fresh.teamId,
-        serverSessionId: fresh.serverSessionId,
-        projectName: project?.name ?? null,
-      },
-    });
+    const timeoutMs = this.options.providerTimeoutMs ?? DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS;
+    const signal = AbortSignal.timeout(timeoutMs);
+    let result: ServerGenerationResult;
+    try {
+      result = await this.options.provider.generate({
+        job: fresh,
+        events,
+        project: {
+          projectId: fresh.projectId,
+          teamId: fresh.teamId,
+          serverSessionId: fresh.serverSessionId,
+          projectName: project?.name ?? null,
+        },
+      }, signal);
+    } catch (error) {
+      // An abort can surface from fetch (already transient) or from reading the
+      // response body (classified parse_error, non-retryable). Either way the
+      // cause is the timeout, so report it as transient.
+      if (signal.aborted) {
+        throw new ServerClassifiedProviderError(
+          `${this.options.provider.providerLabel} request timed out after ${timeoutMs}ms`,
+          { kind: 'transient', cause: error },
+        );
+      }
+      throw error;
+    }
 
     const persistInput = {
       pool: this.options.pool,
       job: fresh,
+      inputEventCount: events.length,
       rawText: result.rawText,
       modelId: result.modelId,
       providerLabel: result.providerLabel,
@@ -322,16 +371,21 @@ export class ProviderObservationGenerator {
       ? await processSessionSummaryResponse(persistInput)
       : await processGeneratedResponse(persistInput);
 
-    if (outcome.kind === 'parse_error') {
+    if (outcome.kind === 'parse_error' || outcome.kind === 'empty_response') {
       await markGenerationFailed({
         pool: this.options.pool,
         job: fresh,
         reason: outcome.reason,
-        classification: 'parse_error',
+        classification: outcome.kind,
         retryable: false,
         ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
       });
-      throw new Error(`generation parse error: ${outcome.reason}`);
+      throw new ServerGenerationTerminalOutcomeError(
+        outcome.kind,
+        outcome.kind === 'empty_response'
+          ? `generation empty response: ${outcome.reason}`
+          : `generation parse error: ${outcome.reason}`,
+      );
     }
 
     logger.info('SYSTEM', 'generation completed', {
@@ -580,12 +634,13 @@ export class ProviderObservationGenerator {
     const repo = new PostgresAgentEventsRepository(this.options.pool);
 
     if (job.sourceType === 'session_summary') {
-      // Summary jobs feed the provider every event tied to the server_session
-      // that hasn't already been collapsed into a completed event-generation
-      // job. The session repo enforces tenant scope inside its WHERE clause.
+      // Summary jobs feed the provider every event tied to the server_session.
+      // NOT only the uncollapsed ones: the per-event lane normally wins that
+      // race, which left the summary with nothing to read. The session repo
+      // enforces tenant scope inside its WHERE clause.
       if (!job.serverSessionId) return [];
       const sessions = new PostgresServerSessionsRepository(this.options.pool);
-      const events = await sessions.listUnprocessedEvents({
+      const events = await sessions.listSessionEvents({
         serverSessionId: job.serverSessionId,
         projectId: job.projectId,
         teamId: job.teamId,
