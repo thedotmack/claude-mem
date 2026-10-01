@@ -32,6 +32,8 @@
  *     CLAUDE_MEM_OPENROUTER_MODEL    = <model id>
  */
 
+import { logger } from '../utils/logger.js';
+
 export const DEFAULT_OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 const CHAT_COMPLETIONS_PATH = '/chat/completions';
@@ -44,6 +46,15 @@ export function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The unusable base URL last warned about: once per value, not per status poll. */
+let lastWarnedBaseUrl: string | null = null;
+
+function warnUnusableBaseUrl(value: string): void {
+  if (lastWarnedBaseUrl === value) return;
+  lastWarnedBaseUrl = value;
+  logger.warn('SDK', 'CLAUDE_MEM_OPENROUTER_BASE_URL is not an http(s) URL; requests to it will fail until it is fixed', { baseUrl: value });
 }
 
 /**
@@ -70,7 +81,16 @@ export function resolveOpenRouterChatCompletionsUrl(baseUrl: string | undefined 
   }
 
   if (!isHttpUrl(trimmed)) {
-    throw new Error('OpenRouter base URL must use http or https');
+    // Only a hand-edited settings.json or the environment gets here: the
+    // settings API rejects anything but http(s). Never throw — every status
+    // poll and dispatch resolves this URL — and never swap in a default host,
+    // which would send the key to an endpoint the user did not name. The old
+    // string join keeps the request failing at fetch, with the URL in the error.
+    warnUnusableBaseUrl(trimmed);
+    const normalized = trimmed.replace(TRAILING_SLASHES, '');
+    return normalized.toLowerCase().endsWith(CHAT_COMPLETIONS_PATH)
+      ? normalized
+      : `${normalized}${CHAT_COMPLETIONS_PATH}`;
   }
 
   // Extend the pathname rather than the raw string: concatenating onto a base

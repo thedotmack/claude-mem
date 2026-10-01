@@ -3,6 +3,7 @@ import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
 import { DEFAULT_SETTINGS } from '../constants/settings';
+import { isClaudeMemObserverBaseUrl } from '../utils/observer-endpoint';
 
 interface ContextSettingsModalProps {
   isOpen: boolean;
@@ -131,6 +132,9 @@ export function ContextSettingsModal({
   saveStatus
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
+  // From the saved settings, not the form: the field stays editable while a
+  // user types any other URL, and read-only for the observer's own endpoint.
+  const observerManagesBaseUrl = isClaudeMemObserverBaseUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
 
   useEffect(() => {
     setFormState(settings);
@@ -438,13 +442,16 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="OpenRouter Base URL"
-                    tooltip="Optional OpenAI-compatible base URL. Leave blank to use openrouter.ai."
+                    tooltip={observerManagesBaseUrl
+                      ? 'Managed by the claude-mem observer. Run npx claude-mem install to use your own endpoint.'
+                      : 'Optional OpenAI-compatible base URL. Leave blank to use openrouter.ai.'}
                   >
                     <input
                       type="text"
                       value={formState.CLAUDE_MEM_OPENROUTER_BASE_URL || ''}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_BASE_URL', e.target.value)}
-                      placeholder="https://api.openrouter.ai/api/v1"
+                      placeholder="https://openrouter.ai/api/v1"
+                      readOnly={observerManagesBaseUrl}
                     />
                   </FormField>
                   <FormField
