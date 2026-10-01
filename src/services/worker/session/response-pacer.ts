@@ -33,13 +33,72 @@ export const RESPONSE_STALL_RESUME_DELAY_MS = 30_000;
 export const MAX_CONSECUTIVE_STALL_RESUMES = 3;
 
 /**
+ * Consecutive rate-limit resumes allowed before a session stops resuming on its
+ * own and the provider breaker takes over. An answered queued-work turn resets
+ * the count, so this only trips when the provider keeps refusing.
+ */
+export const MAX_CONSECUTIVE_RATE_LIMIT_RESUMES = 3;
+
+/**
  * Count one response-stall exit and decide whether to resume automatically.
  * Returns the attempt number so the caller can log it.
  */
 export function planResponseStallResume(session: ActiveSession): { resume: boolean; attempts: number } {
-  const attempts = (session.consecutiveResponseStalls ?? 0) + 1;
-  session.consecutiveResponseStalls = attempts;
-  return { resume: attempts <= MAX_CONSECUTIVE_STALL_RESUMES, attempts };
+  return planBoundedResume(session, 'consecutiveResponseStalls', MAX_CONSECUTIVE_STALL_RESUMES);
+}
+
+/** Count one rate-limit pause that named a Retry-After and decide whether to resume after it. */
+export function planRateLimitResume(session: ActiveSession): { resume: boolean; attempts: number } {
+  return planBoundedResume(session, 'consecutiveRateLimitResumes', MAX_CONSECUTIVE_RATE_LIMIT_RESUMES);
+}
+
+/**
+ * Unattended resumes allowed in a row while memory is on the cmem.ai gateway,
+ * whichever pause scheduled them: a transport pause's backoff (#4204), a rate
+ * limit's Retry-After, or the move to the Anthropic plan after a cmem fallback.
+ * Each one re-sends buffered work with no user activity behind it, and on the
+ * gateway each spends plan tokens, so a gateway or model that keeps failing
+ * would otherwise be retried for as long as the worker runs. An answered
+ * queued-work turn resets the count; the next captured event still starts a
+ * generator, and nothing buffered is dropped.
+ */
+export const MAX_UNATTENDED_GATEWAY_RESUMES = 3;
+
+/**
+ * Count one unattended resume and decide whether it may run. Off the gateway
+ * nothing is counted: those resumes keep their own bounds (or backoff).
+ */
+export function planUnattendedGatewayResume(
+  session: ActiveSession,
+  source: string,
+  memoryOnCmemGateway: boolean,
+): { resume: boolean; attempts: number } {
+  if (!memoryOnCmemGateway) return { resume: true, attempts: 0 };
+  const plan = planBoundedResume(session, 'consecutiveUnattendedGatewayResumes', MAX_UNATTENDED_GATEWAY_RESUMES);
+  if (!plan.resume) {
+    logger.warn('SESSION', 'Unattended resumes stopped on the cmem gateway; buffered work waits for the next hook', {
+      sessionId: session.sessionDbId,
+      source,
+      attempts: plan.attempts,
+      maxUnattendedResumes: MAX_UNATTENDED_GATEWAY_RESUMES,
+    });
+  }
+  return plan;
+}
+
+/** Read-only: whether this session's unattended gateway resumes are spent (the periodic sweep honours it). */
+export function unattendedGatewayResumesSpent(session: ActiveSession): boolean {
+  return (session.consecutiveUnattendedGatewayResumes ?? 0) >= MAX_UNATTENDED_GATEWAY_RESUMES;
+}
+
+function planBoundedResume(
+  session: ActiveSession,
+  counter: 'consecutiveResponseStalls' | 'consecutiveRateLimitResumes' | 'consecutiveUnattendedGatewayResumes',
+  maxResumes: number,
+): { resume: boolean; attempts: number } {
+  const attempts = (session[counter] ?? 0) + 1;
+  session[counter] = attempts;
+  return { resume: attempts <= maxResumes, attempts };
 }
 
 export class ObserverResponsePacer {
@@ -48,6 +107,8 @@ export class ObserverResponsePacer {
   private stalled = false;
   private wake: (() => void) | null = null;
   private rearm: ((graceMs: number) => void) | null = null;
+  private suspend: (() => void) | null = null;
+  private processing = false;
 
   /** Snapshot taken BEFORE yielding a prompt; an answer can land before the feed resumes. */
   mark(): number {
@@ -73,6 +134,18 @@ export class ObserverResponsePacer {
    */
   activity(graceMs = 0): void {
     this.rearm?.(graceMs);
+  }
+
+  /** Storage and claim acknowledgement belong to the answer, not SDK silence. */
+  processingStarted(): void {
+    this.processing = true;
+    this.suspend?.();
+  }
+
+  /** Start a fresh silence window if the result frame has not arrived yet. */
+  processingFinished(): void {
+    this.processing = false;
+    this.rearm?.(0);
   }
 
   /**
@@ -102,6 +175,8 @@ export class ObserverResponsePacer {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const arm = (graceMs: number) => {
         if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+        if (this.processing) return;
         timer = setTimeout(() => {
           // Fence first, synchronously: from here on the SDK loop ignores frames.
           this.stalled = true;
@@ -115,6 +190,7 @@ export class ObserverResponsePacer {
         signal.removeEventListener('abort', onAbort);
         this.wake = null;
         this.rearm = null;
+        this.suspend = null;
         resolve(outcome);
       };
       const onAbort = () => finish('aborted');
@@ -123,6 +199,10 @@ export class ObserverResponsePacer {
         if (outcome) finish(outcome);
       };
       this.rearm = arm;
+      this.suspend = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+      };
       signal.addEventListener('abort', onAbort, { once: true });
       arm(0);
     });

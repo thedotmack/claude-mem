@@ -21,44 +21,18 @@
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { POSTINSTALL_ALLOWLIST, allowScriptsMap } from './postinstall-allowlist.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT_KEYS = ['preinstall', 'install', 'postinstall'];
 
 // The known, reviewed set of plugin deps that carry install scripts. These are
 // the tree-sitter grammar native-binding builders (suppressed at runtime by
-// --ignore-scripts) plus the tree-sitter-cli builder. Adding a NEW entry here
-// must be a deliberate, reviewed change.
-const ALLOWLIST = new Set([
-  'tree-sitter-cli',
-  'tree-sitter',
-  'tree-sitter-c',
-  'tree-sitter-cpp',
-  'tree-sitter-go',
-  'tree-sitter-java',
-  'tree-sitter-javascript',
-  'tree-sitter-python',
-  'tree-sitter-ruby',
-  'tree-sitter-rust',
-  'tree-sitter-typescript',
-  'tree-sitter-kotlin',
-  'tree-sitter-swift',
-  'tree-sitter-php',
-  'tree-sitter-scala',
-  'tree-sitter-bash',
-  'tree-sitter-haskell',
-  'tree-sitter-css',
-  'tree-sitter-scss',
-  '@tree-sitter-grammars/tree-sitter-lua',
-  '@tree-sitter-grammars/tree-sitter-zig',
-  '@tree-sitter-grammars/tree-sitter-toml',
-  '@tree-sitter-grammars/tree-sitter-yaml',
-  '@tree-sitter-grammars/tree-sitter-markdown',
-  '@derekstride/tree-sitter-sql',
-  'esbuild',
-  '@biomejs/biome',
-  'better-sqlite3',
-]);
+// --ignore-scripts) plus the tree-sitter-cli builder. The list itself lives in
+// scripts/postinstall-allowlist.js so the CI guard, the build, and the shipped
+// `allowScripts` declarations all read one source. Adding a NEW entry there must
+// be a deliberate, reviewed change.
+const ALLOWLIST = new Set(POSTINSTALL_ALLOWLIST);
 
 const pluginPkgPath = join(repoRoot, 'plugin', 'package.json');
 if (!existsSync(pluginPkgPath)) {
@@ -103,10 +77,58 @@ if (offenders.length > 0) {
     console.error(`  - ${o.name} (${o.keys.join(', ')})`);
   }
   console.error('\nA network postinstall can hang `npx claude-mem install` (see CHANGELOG v12.6.1 -> v12.6.2).');
-  console.error('If the script is genuinely required, add the package to ALLOWLIST in');
-  console.error('scripts/check-postinstall-allowlist.js AFTER review. Do NOT auto-add.');
+  console.error('If the script is genuinely required, add the package to POSTINSTALL_ALLOWLIST in');
+  console.error('scripts/postinstall-allowlist.js AFTER review. Do NOT auto-add.');
+  process.exit(1);
+}
+
+// Drift guard: the shipped `allowScripts` declarations MUST equal the reviewed
+// allowlist (npm 11.16+ runs dependency install scripts only for packages listed
+// there). If someone edits the allowlist but not the manifests (or hand-edits a
+// manifest), they silently diverge — so fail loud here.
+const expectedMap = allowScriptsMap();
+const expectedKeys = Object.keys(expectedMap).sort();
+const driftErrors = [];
+
+function checkAllowScriptsField(label, relPath) {
+  const abs = join(repoRoot, relPath);
+  if (!existsSync(abs)) {
+    driftErrors.push(`${label}: missing file ${relPath}`);
+    return;
+  }
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(abs, 'utf-8'));
+  } catch (e) {
+    driftErrors.push(`${label}: could not parse ${relPath} (${e.message})`);
+    return;
+  }
+  const actual = pkg.allowScripts;
+  if (!actual || typeof actual !== 'object') {
+    driftErrors.push(`${label}: ${relPath} is missing an "allowScripts" field`);
+    return;
+  }
+  const actualKeys = Object.keys(actual).sort();
+  const sameKeys =
+    actualKeys.length === expectedKeys.length &&
+    actualKeys.every((k, i) => k === expectedKeys[i]);
+  const allTrue = expectedKeys.every((k) => actual[k] === true);
+  if (!sameKeys || !allTrue) {
+    driftErrors.push(`${label}: "allowScripts" in ${relPath} does not match the reviewed allowlist`);
+  }
+}
+
+checkAllowScriptsField('root manifest', 'package.json');
+checkAllowScriptsField('plugin manifest', join('plugin', 'package.json'));
+
+if (driftErrors.length > 0) {
+  console.error('\nallowScripts declaration guard FAILED — shipped config is out of sync with the allowlist:');
+  for (const e of driftErrors) console.error(`  - ${e}`);
+  console.error('\nRegenerate them from the single source of truth (scripts/postinstall-allowlist.js):');
+  console.error('run `node scripts/build-hooks.js` to refresh plugin/package.json, and sync package.json to match.');
   process.exit(1);
 }
 
 console.log(`Postinstall allowlist guard passed — ${deps.length} plugin deps checked, no unexpected install/postinstall scripts.`);
+console.log(`allowScripts declaration guard passed — root + plugin manifests match the ${expectedKeys.length}-entry allowlist.`);
 process.exit(0);

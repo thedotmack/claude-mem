@@ -47,6 +47,12 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolResponse: r.tool_response,
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
+      // stop_hook_active is deliberately not mapped. Claude Code sets it once a
+      // Stop hook has blocked the stop and Claude kept working. claude-mem's
+      // Stop hook never blocks (it always exits 0 with continue: true), so the
+      // flag can only come from another plugin and never marks a loop
+      // claude-mem must break. Honoring it (#3168) dropped the summary and the
+      // advisor capture for every turn after such a hook fired.
       reason: pickStringField(r.reason),
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),
