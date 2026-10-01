@@ -9,9 +9,13 @@ const { SessionRoutes } = await import('../../src/services/worker/http/routes/Se
 
 /**
  * Drives the real SessionRoutes generator lifecycle (dispatch, admission, the
- * exit handling and its deferred resume) with fake provider agents, the same
- * harness shape as overflow-recycle-resume.test.ts. Settings are pinned with
- * env vars, which SettingsDefaultsManager applies last.
+ * exit handling, and the periodic resume sweep) with fake provider agents, the
+ * same harness shape as overflow-recycle-resume.test.ts. Settings are pinned
+ * with env vars, which SettingsDefaultsManager applies last.
+ *
+ * Quota-paused work has no resume of its own: the worker's periodic sweep
+ * (SessionRoutes.resumePendingSessions, once a minute) paces itself on the
+ * provider dispatch returns, so it restarts the work wherever it can run.
  */
 const ENV_KEYS = [
   'CLAUDE_MEM_PROVIDER',
@@ -55,7 +59,7 @@ function makeSession(): ActiveSession {
   };
 }
 
-/** Let the deferred resume timer (setTimeout 0) run. */
+/** Let deferred starts run. */
 function nextTick(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 5));
 }
@@ -79,6 +83,13 @@ function buildRoutes(session: ActiveSession, agents: FakeAgents) {
     removeSessionImmediate: () => {
       active = undefined;
     },
+    // The sweep's view of SessionManager: a paused session with buffered work
+    // and no generator (the real filter also skips pending timers).
+    getResumableSessionIds: () => (
+      active && !active.generatorPromise && ['quota', 'rate_limit'].includes(active.pausedReason ?? '')
+        ? [active.sessionDbId]
+        : []
+    ),
   };
   const routes = new SessionRoutes(
     sessionManager as any,
@@ -103,15 +114,22 @@ describe('quota fallback in SessionRoutes', () => {
     Object.assign(process.env, { CLAUDE_MEM_OPENROUTER_API_KEY: '', CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false' }, env);
   }
 
+  /** Run the periodic sweep, as the worker does once a minute, and let any start it schedules run. */
+  async function sweep(routes: InstanceType<typeof SessionRoutes>): Promise<number> {
+    const scheduled = routes.resumePendingSessions('periodic-resume');
+    await nextTick();
+    return scheduled;
+  }
+
   /**
-   * Nothing tried to resume. Start counts alone cannot show this: a wrongly
-   * scheduled resume re-dispatches to the held provider and admission refuses
-   * it, so it starts nothing. The log lines are what give it away.
+   * The sweep scheduled nothing. Start counts alone cannot show this: a resume
+   * dispatched to a held provider is refused by admission and starts nothing,
+   * so the skip line is what would give it away.
    */
-  function expectNoResume(): void {
-    expect(infoLines).not.toContain('Resuming quota-paused work on another provider');
-    expect(infoLines.filter(line => line.startsWith('Generator auto-starting (quota-fallback-resume'))).toEqual([]);
-    expect(warnLines).not.toContain('Skipping generator start while the provider quota cooldown is active');
+  async function expectNoResume(routes: InstanceType<typeof SessionRoutes>): Promise<void> {
+    expect(await sweep(routes)).toBe(0);
+    expect(infoLines.filter(line => line.startsWith('Generator auto-starting (periodic-resume'))).toEqual([]);
+    expect(warnLines).not.toContain('Skipping generator start while the provider cooldown is active');
   }
 
   beforeEach(() => {
@@ -148,7 +166,7 @@ describe('quota fallback in SessionRoutes', () => {
     resetQuotaCooldownsForTesting();
   });
 
-  it('resumes work paused by a quota exit onto the fallback, with no further hook event', async () => {
+  it('resumes work paused by a quota exit onto the fallback on the next sweep, with no further hook event', async () => {
     pin(GEMINI_WITH_CLAUDE_FALLBACK);
     const session = makeSession();
     let geminiStarts = 0;
@@ -161,11 +179,13 @@ describe('quota fallback in SessionRoutes', () => {
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
     await session.generatorPromise;
     await nextTick();
-
     expect(geminiStarts).toBe(1);
+    expect(claudeStarts).toBe(0);
+    expect(session.pausedReason).toBe('quota');
+
+    expect(await sweep(routes)).toBe(1);
     expect(claudeStarts).toBe(1);
-    expect(infoLines).toContain('Resuming quota-paused work on another provider');
-    expect(infoLines).toContain('Generator auto-starting (quota-fallback-resume) using Claude SDK');
+    expect(infoLines).toContain('Generator auto-starting (periodic-resume) using Claude SDK');
     expect(stats().finalizeCalls).toBe(0);
   });
 
@@ -186,7 +206,7 @@ describe('quota fallback in SessionRoutes', () => {
 
     expect(geminiStarts).toBe(1);
     expect(claudeStarts).toBe(0);
-    expectNoResume();
+    await expectNoResume(routes);
   });
 
   it('does not resume an auth pause, even with a fallback configured', async () => {
@@ -205,10 +225,10 @@ describe('quota fallback in SessionRoutes', () => {
 
     expect(geminiStarts).toBe(1);
     expect(claudeStarts).toBe(0);
-    expectNoResume();
+    await expectNoResume(routes);
   });
 
-  it('with no fallback configured, a quota pause still waits for the user', async () => {
+  it('with no fallback configured, a quota pause waits out its cooldown', async () => {
     pin({ CLAUDE_MEM_PROVIDER: 'gemini', CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key' });
     const session = makeSession();
     let geminiStarts = 0;
@@ -224,16 +244,16 @@ describe('quota fallback in SessionRoutes', () => {
 
     expect(geminiStarts).toBe(1);
     expect(claudeStarts).toBe(0);
-    expectNoResume();
+    await expectNoResume(routes);
   });
 
   it('does not resume when dispatch would not use the fallback (cmem-gateway branch)', async () => {
     // The gateway trial-expiry branch sends work to Claude regardless of the
-    // quota fallback rule, so a resume scheduled "onto gemini" would dispatch
-    // straight back to the Claude breaker that was just armed.
+    // quota fallback rule, so the sweep finds Claude's fresh breaker and starts
+    // nothing: the quota fallback never routes around the cmem branch.
     pin({
       CLAUDE_MEM_PROVIDER: 'openrouter',
-      CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-test-key',
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_test-key',  // the gateway only takes a cm_pro_ key (#4276)
       CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
       CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString(),
       CLAUDE_MEM_GEMINI_API_KEY: 'gemini-test-key',
@@ -253,7 +273,7 @@ describe('quota fallback in SessionRoutes', () => {
 
     expect(claudeStarts).toBe(1);
     expect(geminiStarts).toBe(0);
-    expectNoResume();
+    await expectNoResume(routes);
   });
 
   it("schedules at most one resume: the fallback's own quota exit does not start another", async () => {
@@ -273,7 +293,7 @@ describe('quota fallback in SessionRoutes', () => {
 
     expect(claudeStarts).toBe(1);
     expect(geminiStarts).toBe(0);
-    expectNoResume();
+    await expectNoResume(routes);
   });
 
   it("resumes a fallback run's own quota exit on the primary once the primary has recovered", async () => {
@@ -296,10 +316,12 @@ describe('quota fallback in SessionRoutes', () => {
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
     await session.generatorPromise;
     await nextTick();
-
     expect(claudeStarts).toBe(1);
+    expect(geminiStarts).toBe(0);
+
+    expect(await sweep(routes)).toBe(1);
     expect(geminiStarts).toBe(1);
-    expect(infoLines).toContain('Generator auto-starting (quota-fallback-resume) using Gemini');
+    expect(infoLines).toContain('Generator auto-starting (periodic-resume) using Gemini');
   });
 
   it('runs the configured fallback model on a fallback run', async () => {

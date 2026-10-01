@@ -287,9 +287,10 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Empty is valid: it turns the fallback off.
     if (settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER) {
-      const validFallbacks = ['claude', 'gemini', 'openrouter'];
+      // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts.
+      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible'];
       if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
-        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (off), "claude", "gemini", or "openrouter"' };
+        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (off), "claude", "gemini", "openrouter", or "openai-compatible"' };
       }
     }
 

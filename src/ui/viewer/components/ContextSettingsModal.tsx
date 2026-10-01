@@ -473,6 +473,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
+                  <option value="openai-compatible">OpenAI-compatible endpoint</option>
                 </select>
               </FormField>
 
