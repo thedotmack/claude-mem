@@ -242,11 +242,16 @@ export class ServerV1Routes implements RouteHandler {
 
     app.post('/v1/context', readAuth, this.handleCreate(z.object({
       projectId: z.string().min(1),
-      query: z.string().min(1),
+      // Optional: a context request with no query asks for the most RECENT
+      // items, which is what a session-start block actually wants.
+      query: z.string().min(1).optional(),
       limit: z.number().int().positive().max(50).optional(),
     }), (req, res, body) => {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
-      const memories = new MemoryItemsRepository(this.options.getDatabase()).search(body.projectId, body.query, body.limit ?? 10);
+      const repo = new MemoryItemsRepository(this.options.getDatabase());
+      const memories = body.query
+        ? repo.search(body.projectId, body.query, body.limit ?? 10)
+        : repo.listByProject(body.projectId, body.limit ?? 10);
       this.audit(req, 'memory.context', null, body.projectId);
       res.json({ memories, context: memories.map(memory => memory.narrative ?? memory.text ?? memory.title).filter(Boolean).join('\n\n') });
     }));

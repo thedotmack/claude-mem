@@ -1,15 +1,25 @@
 
 import { getCredential } from '../../shared/EnvManager.js';
-import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
+import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl, isCmemMemoryKey, isKeyAllowedForEndpoint } from '../../shared/cmem-gateway.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
-import { ClassifiedProviderError } from './provider-errors.js';
+import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
-import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
+import { OpenAICompatibleProvider, assistantText, type OpenAIChatMessage as OpenAIMessage, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import {
+  resolveContextWindowTokens,
+  resolveObserverMaxOutputTokens,
+  DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS,
+} from './context-window.js';
+import { isContextOverflowObserverOutput } from '../../sdk/output-classifier.js';
 
 /**
  * OpenAI-compatible client configuration.
@@ -22,6 +32,111 @@ import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAIComp
  * CLAUDE_MEM_OPENROUTER_MODEL. See src/shared/openrouter-base-url.ts for the
  * resolution rules and per-provider config examples (#2382/#2590/#2622/#2393).
  */
+
+/**
+ * Gateway error taxonomy (cmem.ai inference gateway) → worker error kind.
+ * The gateway classifies once at the source and sends
+ * `{ error: { code, message, action, url, request_id } }`; the worker carries
+ * that envelope verbatim and only maps `code` to a retry class.
+ */
+const GATEWAY_CODE_TO_KIND: Record<string, ProviderErrorClass> = {
+  allowance_exhausted: 'quota_exhausted',
+  key_invalid: 'auth_invalid',
+  subscription_inactive: 'auth_invalid',
+  rate_limited: 'rate_limit',
+  upstream_unavailable: 'transient',
+  bad_request: 'unrecoverable',
+};
+
+interface UpstreamErrorEnvelope {
+  code?: unknown;
+  message?: unknown;
+  action?: unknown;
+  url?: unknown;
+  request_id?: unknown;
+  metadata?: unknown;
+}
+
+/**
+ * Whether a 403 is OpenRouter refusing a moderated model's flagged input
+ * rather than the key: its envelope carries the flagged reasons or input in
+ * `metadata`, or its message says the input was flagged.
+ */
+function isModerationRefusal(envelope: UpstreamErrorEnvelope | null, lowerBody: string): boolean {
+  const metadata = envelope?.metadata;
+  if (
+    metadata !== null && typeof metadata === 'object'
+    && ('flagged_input' in metadata || Array.isArray((metadata as { reasons?: unknown }).reasons))
+  ) {
+    return true;
+  }
+  return lowerBody.includes('requires moderation') || lowerBody.includes('input was flagged');
+}
+
+/** Best-effort parse of `{ error: {...} }` from an upstream body. */
+function parseUpstreamErrorEnvelope(bodyText: string): UpstreamErrorEnvelope | null {
+  if (!bodyText) return null;
+  try {
+    const parsed: unknown = JSON.parse(bodyText);
+    if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+      const error = (parsed as { error?: unknown }).error;
+      if (error && typeof error === 'object') {
+        return error as UpstreamErrorEnvelope;
+      }
+    }
+  } catch {
+    // Not JSON — legacy/plain-text body.
+  }
+  return null;
+}
+
+/**
+ * OpenRouter's answers when the configured model id itself is gone: a retired
+ * model (404 "This model has been deprecated. It is recommended to migrate to
+ * …", #3659), an id that is not in the catalog (400 "… is not a valid model
+ * ID"), or one with no serving endpoint left (404 "No endpoints found for
+ * <id>."). Retrying never helps, and the generic "check the API key, spend
+ * limit and base URL" remedy points at the wrong setting, so these get their
+ * own code and remedy. Phrases only count on a 400/404 or an error envelope
+ * inside a 200; any other 400/404 stays a plain bad request.
+ */
+const MODEL_UNAVAILABLE_MARKERS = [
+  'model has been deprecated',
+  'not a valid model id',
+  'no endpoints found for',
+];
+
+const MODEL_UNAVAILABLE_ACTION =
+  'Set CLAUDE_MEM_OPENROUTER_MODEL in ~/.claude-mem/settings.json to a model your endpoint still serves (on OpenRouter, one from the model list).';
+
+const OPENROUTER_MODEL_LIST_URL = 'https://openrouter.ai/models';
+
+/**
+ * Machine-readable context-length refusals from OpenAI-compatible servers:
+ * OpenAI's error code, and llama.cpp's error type and message. The prose forms
+ * ("maximum context length", "prompt is too long", "reduce the length of the
+ * messages") are the ones the observer-text classifier already recognizes.
+ */
+const CONTEXT_OVERFLOW_MARKERS = [
+  'context_length_exceeded',
+  'exceed_context_size_error',
+  'exceeds the available context size',
+];
+
+function isContextOverflowBody(body: string): boolean {
+  const lower = body.toLowerCase();
+  return CONTEXT_OVERFLOW_MARKERS.some(marker => lower.includes(marker)) || isContextOverflowObserverOutput(body);
+}
+
+/**
+ * A 429 that names a limit of a day or longer ("Rate limit exceeded:
+ * free-models-per-day"). That is a spent allowance until the period turns
+ * over, not a throttle: as a rate limit it would hold only the short breaker
+ * window (quota-cooldown's RATE_LIMIT_RECHECK_COOLDOWN_MS) and send a doomed
+ * probe every ninety seconds until the reset. The per-minute limits
+ * ("free-models-per-min") stay rate limits.
+ */
+const PERIOD_RATE_LIMIT = /limit exceeded:\s*[\w-]*per-(day|week|month)\b/;
 
 /**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
@@ -39,44 +154,123 @@ export function classifyOpenRouterError(input: {
   const lower = body.toLowerCase();
   const headers = input.headers;
   const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
+  const envelope = parseUpstreamErrorEnvelope(body);
+
+  // Structured taxonomy envelope from the cmem.ai gateway: carry it verbatim.
+  if (envelope && typeof envelope.code === 'string' && Object.prototype.hasOwnProperty.call(GATEWAY_CODE_TO_KIND, envelope.code)) {
+    const code = envelope.code;
+    const kind = GATEWAY_CODE_TO_KIND[code];
+    const message = typeof envelope.message === 'string' && envelope.message
+      ? envelope.message
+      : `OpenRouter error ${code}${status !== undefined ? ` (status ${status})` : ''}`;
+    const requestId = typeof envelope.request_id === 'string' && envelope.request_id
+      ? envelope.request_id
+      : input.requestId;
+    return new ClassifiedProviderError(message, {
+      kind,
+      cause: input.cause,
+      code,
+      ...(typeof envelope.action === 'string' && envelope.action ? { action: envelope.action } : {}),
+      ...(typeof envelope.url === 'string' && envelope.url ? { url: envelope.url } : {}),
+      ...(requestId ? { requestId } : {}),
+      ...(kind === 'rate_limit' ? { retryAfterMs: retryAfterMs ?? 60_000 } : {}),
+    });
+  }
+
+  // Legacy classification: keep the upstream body in the message (it usually
+  // contains the remedy, e.g. OpenRouter's "Key limit exceeded … Manage it
+  // using https://openrouter.ai/…") and carry the request id.
+  const upstreamMessage = envelope && typeof envelope.message === 'string' && envelope.message
+    ? envelope.message
+    : body.substring(0, 300);
+  const detail = { ...(input.requestId ? { requestId: input.requestId } : {}) };
+  const describe = (cls: string): string =>
+    `OpenRouter ${cls}${status !== undefined ? ` (status ${status})` : ''}${upstreamMessage ? `: ${upstreamMessage}` : ''}`;
+
+  // The request did not fit the model's context window, or the server refused
+  // its size outright (413). Retiring the conversation fixes both, so neither
+  // may finalize the session as a bad request (#3625). Checked before the quota
+  // markers: "context limit exceeded" is not a spend limit.
+  if (status === 413 || (status === 400 && isContextOverflowBody(body))) {
+    return new ClassifiedProviderError(
+      describe('context overflow'),
+      { kind: 'context_overflow', cause: input.cause, ...detail },
+    );
+  }
 
   // Quota / insufficient credits — body marker takes precedence over status.
   if (
     lower.includes('quota exceeded') ||
     lower.includes('insufficient credits') ||
-    lower.includes('insufficient_quota')
+    lower.includes('insufficient_quota') ||
+    lower.includes('key limit exceeded') ||
+    // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
+    // marker only applies off the 429 path (the key-limit marker always wins).
+    (lower.includes('limit exceeded') && status !== 429) ||
+    (status === 429 && PERIOD_RATE_LIMIT.test(lower)) ||
+    lower.includes('negative credit') ||
+    status === 402
   ) {
     return new ClassifiedProviderError(
-      `OpenRouter quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
-      { kind: 'quota_exhausted', cause: input.cause },
+      describe('quota exhausted'),
+      { kind: 'quota_exhausted', cause: input.cause, ...detail },
     );
   }
 
   if (status === 429) {
     return new ClassifiedProviderError(
-      'OpenRouter rate limit (429)',
-      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+      describe('rate limit'),
+      { kind: 'rate_limit', cause: input.cause, ...detail, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
+
+  // OpenRouter's moderation refusal names the INPUT, not the key: "<model>
+  // requires moderation on <provider>. Your input was flagged for …", with the
+  // flagged reasons in `metadata`. The next observation is a different input,
+  // so this is unrecoverable for this batch only — as auth_invalid it would
+  // pause all memory behind a cooldown under "credentials refused".
+  if (status === 403 && isModerationRefusal(envelope, lower)) {
+    return new ClassifiedProviderError(
+      describe('moderation refusal'),
+      { kind: 'unrecoverable', cause: input.cause, ...detail },
     );
   }
 
   if (status === 401 || status === 403) {
     return new ClassifiedProviderError(
-      `OpenRouter auth error (status ${status})`,
-      { kind: 'auth_invalid', cause: input.cause },
+      describe('auth error'),
+      { kind: 'auth_invalid', cause: input.cause, ...detail },
+    );
+  }
+
+  if (
+    (status === 400 || status === 404 || (status === 200 && envelope !== null))
+    && MODEL_UNAVAILABLE_MARKERS.some(marker => lower.includes(marker))
+  ) {
+    return new ClassifiedProviderError(
+      describe('model unavailable'),
+      {
+        kind: 'unrecoverable',
+        cause: input.cause,
+        code: 'model_unavailable',
+        action: MODEL_UNAVAILABLE_ACTION,
+        url: OPENROUTER_MODEL_LIST_URL,
+        ...detail,
+      },
     );
   }
 
   if (status === 400 || status === 404) {
     return new ClassifiedProviderError(
-      `OpenRouter bad request (status ${status})`,
-      { kind: 'unrecoverable', cause: input.cause },
+      describe('bad request'),
+      { kind: 'unrecoverable', cause: input.cause, ...detail },
     );
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
     return new ClassifiedProviderError(
-      `OpenRouter upstream error (status ${status})`,
-      { kind: 'transient', cause: input.cause },
+      describe('upstream error'),
+      { kind: 'transient', cause: input.cause, ...detail },
     );
   }
 
@@ -84,22 +278,34 @@ export function classifyOpenRouterError(input: {
   if (status === undefined) {
     return new ClassifiedProviderError(
       `OpenRouter network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
-      { kind: 'transient', cause: input.cause },
+      { kind: 'transient', cause: input.cause, ...detail },
+    );
+  }
+
+  // litellm (behind OpenRouter) can fail to parse the downstream model's
+  // response and surface it as a body-level error inside a 200 envelope, e.g.
+  // `{ error: { code: 200, message: "Unable to get json response - Expecting
+  // value: line 45 column 1" } }`. Because the body-error path forwards the
+  // success status verbatim, none of the HTTP-status branches above match and
+  // it would otherwise fall through to `unrecoverable` and never retry. These
+  // are transient upstream hiccups that usually succeed on a retry, so detect
+  // the tell-tale litellm markers and route them to the retry loop.
+  // Kept marker-scoped on purpose: OpenRouter also delivers genuine auth/quota
+  // errors inside 200 envelopes, which must stay non-transient.
+  if (lower.includes('unable to get json') || lower.includes('expecting value')) {
+    return new ClassifiedProviderError(
+      describe('transient upstream parse failure'),
+      { kind: 'transient', cause: input.cause, ...detail },
     );
   }
 
   return new ClassifiedProviderError(
-    `OpenRouter API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
-    { kind: 'unrecoverable', cause: input.cause },
+    describe('API error'),
+    { kind: 'unrecoverable', cause: input.cause, ...detail },
   );
 }
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
-
-interface OpenAIMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
 
 interface OpenRouterResponse {
   /** The model that actually served the request — not the configured string. */
@@ -107,7 +313,10 @@ interface OpenRouterResponse {
   choices?: Array<{
     message?: {
       role?: string;
-      content?: string;
+      content?: string | Array<{ type: string; text?: string }> | null;
+      reasoning_content?: string;
+      reasoning?: string | null;
+      tool_calls?: unknown[];
     };
     finish_reason?: string;
   }>;
@@ -128,12 +337,220 @@ interface OpenRouterResponse {
   };
 }
 
-interface OpenRouterConfig {
+export interface OpenRouterConfig {
   apiKey: string;
+  /**
+   * The rotation pool: `apiKey` followed by CLAUDE_MEM_OPENROUTER_API_KEYS.
+   *
+   * Always exactly `[apiKey]` when the endpoint is the cmem.ai gateway. The
+   * gateway key is account-delivered, so there is no second one to rotate to,
+   * and the list is by definition the user's PERSONAL keys — sending those to
+   * the gateway is the exact leak `resolveOpenRouterConfig` already refuses to
+   * commit when a key-only override meets a persisted cmem base URL.
+   */
+  apiKeys: string[];
+  /** First entry of the configured list; the one named in logs and sessions. */
   model: string;
+  /**
+   * The rest of the configured list, in priority order, sent as OpenRouter's
+   * native `models` fallback array. Empty for the ordinary single-model
+   * configuration, which is every install that has not opted in.
+   */
+  fallbackModels: string[];
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  /** Per-call output mode for the wrap-up; never a persisted setting. */
+  plainText?: boolean;
+}
+
+function hasProcessEnvOverride(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(process.env, key);
+}
+
+/**
+ * Split CLAUDE_MEM_OPENROUTER_MODEL into a primary model and its fallbacks.
+ *
+ * The setting has always accepted an array, and the array has always been
+ * comma-joined into a single `model` string that OpenRouter rejects outright —
+ * #3829 item 3. No model id contains a comma, so the joined form is never
+ * anything a user wanted; a comma- or whitespace-separated STRING is the same
+ * mistake typed a different way, and is split here too.
+ *
+ * The first entry becomes `model`, which keeps every single-model install
+ * byte-identical, and the rest become OpenRouter's native `models` fallback
+ * array. Blanks and repeats are dropped: a repeat would spend a fallback slot
+ * re-trying the model that just failed.
+ */
+export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fallbackModels: string[] } {
+  const parts = (Array.isArray(rawModel) ? rawModel : [rawModel])
+    // Strings only: a non-string scalar resolved to the default before this
+    // change, and no model id is a bare number.
+    .filter((entry): entry is string => typeof entry === 'string')
+    .flatMap(entry => entry.split(/[\s,]+/))
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0);
+
+  const unique = [...new Set(parts)];
+  if (unique.length === 0) {
+    return {
+      model: SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
+      fallbackModels: [],
+    };
+  }
+  return { model: unique[0], fallbackModels: unique.slice(1) };
+}
+
+/**
+ * Build the chat-completions request body.
+ *
+ * Exported so the body shape is testable without a network round trip, which
+ * matters here: in OpenRouter's documented fallback shape `models` REPLACES
+ * `model` rather than accompanying it, and that is not a thing to get wrong
+ * silently.
+ *
+ * `models` is only sent to openrouter.ai. A custom gateway reached through
+ * CLAUDE_MEM_OPENROUTER_BASE_URL speaks plain OpenAI, where an unknown body
+ * field is a 400 — the same reason `usage` is already gated. Such a gateway
+ * gets the first model, still strictly better than today's rejected
+ * comma-joined string.
+ */
+export function buildOpenRouterRequestBody(input: {
+  model: string;
+  fallbackModels: string[];
+  messages: OpenAIMessage[];
+  apiUrl: string;
+  plainText?: boolean;
+  /** CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS; the #4003 retry resends it as max_completion_tokens. */
+  maxOutputTokens?: number;
+}): Record<string, unknown> {
+  const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
+  const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
+  return {
+    ...(useFallbacks
+      ? { models: [input.model, ...input.fallbackModels] }
+      : { model: input.model }),
+    messages: input.messages,
+    temperature: 0.3,  // Lower temperature for structured extraction
+    max_tokens: input.maxOutputTokens ?? DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS,
+    // Keep the same model, but ask for an answer instead of spending this
+    // short rewrite's budget on reasoning. Only known OpenRouter endpoints
+    // accept the vendor-specific reasoning control (cmem forwards it).
+    ...(input.plainText && (isOpenRouter || isCmemGatewayUrl(input.apiUrl)) ? {
+      response_format: { type: 'text' },
+      reasoning: { enabled: false },
+    } : {}),
+    // Ask openrouter.ai for usage accounting (token counts + cost).
+    // Only sent to openrouter.ai — strict custom gateways may reject
+    // unknown body fields.
+    ...(isOpenRouter ? { usage: { include: true } } : {}),
+  };
+}
+
+/** Endpoint a mismatched key was last withheld from, so dispatch logs it once, not per call. */
+let lastWithheldCmemKeyUrl: string | null = null;
+
+/**
+ * Resolve key/base/model as a source-coherent tuple. In particular, a
+ * key-only environment override must never inherit a persisted cmem.ai base
+ * URL and send a personal OpenRouter credential to the cmem gateway, and a key
+ * is never returned with a URL it does not belong to (a cmem memory key only
+ * with the gateway, any other key only elsewhere). To
+ * replace a stored cmem tuple at runtime, explicitly override the base URL too
+ * (an empty CLAUDE_MEM_OPENROUTER_BASE_URL selects normal OpenRouter).
+ */
+export function resolveOpenRouterConfig(
+  settingsPath: string = USER_SETTINGS_PATH,
+): OpenRouterConfig {
+  const persisted = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const persistedBaseUrl = typeof persisted.CLAUDE_MEM_OPENROUTER_BASE_URL === 'string'
+    ? persisted.CLAUDE_MEM_OPENROUTER_BASE_URL.trim()
+    : '';
+  const hasBaseOverride = hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_BASE_URL');
+  const lockPersistedCmemTuple = isCmemGatewayUrl(persistedBaseUrl) && !hasBaseOverride;
+
+  const configuredBaseUrl = typeof settings.CLAUDE_MEM_OPENROUTER_BASE_URL === 'string'
+    ? settings.CLAUDE_MEM_OPENROUTER_BASE_URL.trim()
+    : '';
+  const baseUrl = lockPersistedCmemTuple
+    ? persistedBaseUrl
+    : configuredBaseUrl || process.env.OPENROUTER_BASE_URL?.trim() || '';
+
+  const detachPersistedCmemTuple = isCmemGatewayUrl(persistedBaseUrl)
+    && hasBaseOverride
+    && !isCmemGatewayUrl(baseUrl);
+
+  const persistedKey = typeof persisted.CLAUDE_MEM_OPENROUTER_API_KEY === 'string'
+    ? persisted.CLAUDE_MEM_OPENROUTER_API_KEY.trim()
+    : '';
+  const configuredKey = typeof settings.CLAUDE_MEM_OPENROUTER_API_KEY === 'string'
+    ? settings.CLAUDE_MEM_OPENROUTER_API_KEY.trim()
+    : '';
+  const explicitKey = hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_API_KEY')
+    ? process.env.CLAUDE_MEM_OPENROUTER_API_KEY?.trim() ?? ''
+    : '';
+  const apiKey = lockPersistedCmemTuple
+    ? persistedKey
+    : detachPersistedCmemTuple
+      // A base-only override must not carry the account-owned cmem key to a
+      // different host. Accept only a key supplied as part of this runtime
+      // tuple or the user's personal key from ~/.claude-mem/.env.
+      ? explicitKey || getCredential('OPENROUTER_API_KEY') || ''
+      : configuredKey || getCredential('OPENROUTER_API_KEY') || '';
+
+  let rawModel: unknown = lockPersistedCmemTuple
+    ? persisted.CLAUDE_MEM_OPENROUTER_MODEL
+    : settings.CLAUDE_MEM_OPENROUTER_MODEL;
+  if (
+    isCmemGatewayUrl(persistedBaseUrl)
+    && hasBaseOverride
+    && !isCmemGatewayUrl(baseUrl)
+    && !hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_MODEL')
+  ) {
+    // A base override that moves away from cmem must not retain the gateway's
+    // cmem-observer model. Restore the ordinary OpenRouter default unless the
+    // operator supplied a model override as part of the new tuple.
+    rawModel = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+  }
+  const { model, fallbackModels } = normalizeOpenRouterModel(rawModel);
+
+  const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
+  const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
+  const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
+
+  // The cmem gateway and its keys go together, both ways: the account-owned
+  // cm_pro_ key authenticates only against the gateway, and the gateway only
+  // takes a cm_pro_ key, so a personal key must never be sent there. The tuple
+  // lock above covers environment overrides, but a base URL changed in
+  // settings.json itself (the settings API / viewer, a hand edit) can pair
+  // either key with the wrong host. Every request resolves its key and URL
+  // here, together, so the pair is checked here — and fails closed.
+  if (apiKey && !isKeyAllowedForEndpoint(apiUrl, apiKey)) {
+    if (lastWithheldCmemKeyUrl !== apiUrl) {
+      lastWithheldCmemKeyUrl = apiUrl;
+      logger.warn('SDK', 'Withholding the OpenRouter key: a cmem.ai memory key only goes to the cmem gateway, and the gateway only takes a cmem.ai memory key. Pair CLAUDE_MEM_OPENROUTER_BASE_URL with a key for that endpoint.');
+    }
+    return { apiKey: '', apiKeys: [], model, fallbackModels, apiUrl, siteUrl, appName };
+  }
+
+  // The gateway never pools: its key is account-delivered, so there is no
+  // second one to rotate to, and the rotation list holds the user's PERSONAL
+  // keys, which must never reach the gateway.
+  if (isCmemGatewayUrl(apiUrl)) {
+    return { apiKey, apiKeys: apiKey ? [apiKey] : [], model, fallbackModels, apiUrl, siteUrl, appName };
+  }
+
+  // Off the gateway the list joins the primary. The same lock applies per
+  // entry: a cm_pro_ key pasted into the list never leaves for this host.
+  const apiKeys = buildKeyPool(
+    apiKey,
+    hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_API_KEYS')
+      ? process.env.CLAUDE_MEM_OPENROUTER_API_KEYS?.trim() ?? ''
+      : settings.CLAUDE_MEM_OPENROUTER_API_KEYS || getCredential('OPENROUTER_API_KEYS') || '',
+  ).filter(key => !isCmemMemoryKey(key));
+
+  return { apiKey: apiKey || apiKeys[0] || '', apiKeys, model, fallbackModels, apiUrl, siteUrl, appName };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -146,7 +563,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected getConfig(): OpenRouterConfig {
-    return this.getOpenRouterConfig();
+    return resolveOpenRouterConfig();
   }
 
   protected missingApiKeyError(): Error {
@@ -156,7 +573,11 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   protected prepareSessionExtras(session: ActiveSession, config: OpenRouterConfig): void {
     // openrouter.ai responses carry real usage/cost; custom OpenAI-compatible
     // gateways often fabricate or omit usage — let telemetry segment the two.
-    session.endpointClass = config.apiUrl.includes('openrouter.ai') ? 'openrouter' : 'custom';
+    session.endpointClass = isOpenRouterApiUrl(config.apiUrl) ? 'openrouter' : 'custom';
+  }
+
+  protected resolveContextWindow(config: OpenRouterConfig): Promise<number> {
+    return resolveContextWindowTokens('openrouter', config.model, config.apiUrl);
   }
 
   protected estimateTokens(text: string): number {
@@ -179,15 +600,24 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     };
   }
 
-  private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.content
-    }));
-  }
-
-  protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+  protected async query(
+    history: ConversationMessage[],
+    config: OpenRouterConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult> {
+    // Rotation wraps withRetry rather than living inside it: the inner retry
+    // still owns transient failures against one key, and this outer sweep moves
+    // on only for the kinds that mean the key itself is spent. A pool of one —
+    // every install that has not opted in, and every cmem-gateway install — is
+    // a pass-through.
+    return withKeyPool(
+      { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter' },
+      ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
+        history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
+        signal, config.plainText, perAttemptTimeoutMs,
+      ),
+    );
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -195,65 +625,71 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiUrl: string,
     apiKey: string,
     model: string,
+    fallbackModels: string[],
     messages: OpenAIMessage[],
     siteUrl: string | undefined,
     appName: string | undefined,
     priorRequestId: string | null,
-    attemptSignal: AbortSignal
+    attemptSignal: AbortSignal,
+    maxOutputTokens: number,
+    plainText?: boolean,
   ): Promise<Response> {
-    return fetch(apiUrl, {
+    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens });
+    return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
-        'X-Title': appName || 'claude-mem',
+        ...openRouterAttributionHeaders(siteUrl, appName),
         'Content-Type': 'application/json',
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-        // Ask openrouter.ai for usage accounting (token counts + cost).
-        // Only sent to openrouter.ai — strict custom gateways may reject
-        // unknown body fields.
-        ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-      }),
       signal: attemptSignal,
-    });
+    }, body, maxOutputTokens);
   }
 
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
+    /** Size of the rotation pool this attempt belongs to; 1 means no rotation. */
+    poolSize: number,
     model: string,
+    fallbackModels: string[],
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    signal?: AbortSignal,
+    plainText?: boolean,
+    perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(history.map(m => m.content).join(''));
+    const estimatedTokens = this.estimateTokens(messages.map(m => m.content).join(''));
+    const maxOutputTokens = resolveObserverMaxOutputTokens();
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: history.length,
       totalChars,
-      estimatedTokens
+      estimatedTokens,
+      maxOutputTokens,
     });
 
     let priorRequestId: string | null = null;
+    // The id of the response actually returned. priorRequestId keeps an earlier
+    // failed attempt's id for the retry-dedup header, so it would name the wrong
+    // request when the final response carries no id header.
+    let finalRequestId: string | undefined;
 
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
       }
 
       const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
+      finalRequestId = requestId ?? undefined;
       if (requestId) {
         priorRequestId = requestId;
       } else {
@@ -277,21 +713,65 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         // Per OpenRouter spec, errors can come in 200 responses too.
         throw classifyOpenRouterError({
           status: response.status,
-          bodyText: `${responseData.error.code} ${responseData.error.message ?? ''}`,
+          bodyText: JSON.stringify(responseData),
           headers: response.headers,
           cause: new Error(`OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`),
+          ...(requestId ? { requestId } : {}),
         });
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }, { label: `OpenRouter ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize) });
 
-    if (!data.choices?.[0]?.message?.content) {
+    // A successful cmem-gateway response proves the delivered key is funded
+    // again (resubscribed) — clear the trial-expiry fallback marker so
+    // dispatch returns to the gateway. No-op for every other endpoint.
+    clearProFallbackOnGatewaySuccess(apiUrl);
+
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    // OpenAI-compatible gateways may represent assistant text as content
+    // blocks. Never substitute reasoning or tool arguments for the answer.
+    const content = assistantText(message?.content);
+    // `length`: generation stopped at the output-token limit. A block cut off
+    // mid-tag never closes, so the parser drops it: silently when earlier blocks
+    // parsed, taking the whole batch when none did. Logged before the plain-text
+    // and empty-reply exits so a reply cut off before any text is named too.
+    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
+    if (finishReason === 'length') {
+      logger.warn('SDK', 'OpenRouter reply was cut off at the output-token limit', {
+        model: data.model ?? model,
+        requestId: finalRequestId,
+        maxTokens: maxOutputTokens,
+        outputTokens: data.usage?.completion_tokens,
+        contentChars: content.length,
+        messagesInContext: history.length,
+      });
+    }
+    if (plainText && !content.trim()) {
+      const error = new Error('OpenRouter returned no assistant text for the Telegram wrap-up');
+      logger.error('TELEGRAM', error.message, {
+        model: data.model ?? model,
+        requestId: priorRequestId,
+        finishReason: choice?.finish_reason,
+        contentType: Array.isArray(message?.content) ? 'array' : typeof message?.content,
+        hasReasoningContent: Boolean(message?.reasoning_content || message?.reasoning),
+        toolCalls: message?.tool_calls?.length ?? 0,
+        completionTokens: data.usage?.completion_tokens,
+      }, error);
+      throw error;
+    }
+    if (!message || (typeof message.content !== 'string' && !content)) {
       logger.error('SDK', 'Empty response from OpenRouter');
-      return { content: '' };
+      return { content: '', ...(finishReason ? { finishReason } : {}) };
     }
 
-    const content = data.choices[0].message.content;
+    if (content.length === 0) {
+      logger.debug('SDK', 'OpenRouter returned an empty message', {
+        finishReason: choice.finish_reason,
+        hasReasoningContent: Boolean(message.reasoning_content),
+      });
+    }
     const tokensUsed = data.usage?.total_tokens;
     const realInputTokens = data.usage?.prompt_tokens;
     const realOutputTokens = data.usage?.completion_tokens;
@@ -316,52 +796,18 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
         messagesInContext: history.length
       });
-
-      if (tokensUsed > 50000) {
-        logger.warn('SDK', 'High token usage detected - consider reducing context', {
-          totalTokens: tokensUsed,
-          ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
-        });
-      }
     }
 
-    return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel };
+    return {
+      content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel,
+      ...(finishReason ? { finishReason } : {}),
+    };
   }
 
-  private getOpenRouterConfig(): OpenRouterConfig {
-    const settingsPath = USER_SETTINGS_PATH;
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-    const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '';
-
-    // Model is passed verbatim — any OpenAI-compatible model id is accepted
-    // (e.g. deepseek-chat, an LM Studio local model). #2393. Settings are raw
-    // JSON passthrough, so coerce non-string spellings (e.g. a JSON-array
-    // fallback list) to a string instead of leaking them downstream, where
-    // the telemetry scrubber drops non-string model values silently.
-    const rawModel: unknown = settings.CLAUDE_MEM_OPENROUTER_MODEL;
-    const model = typeof rawModel === 'string' && rawModel.trim()
-      ? rawModel
-      : Array.isArray(rawModel) && rawModel.length > 0
-        ? rawModel.map(String).join(',')
-        : 'xiaomi/mimo-v2-flash:free';
-
-    // Base URL: settings value wins, then OPENROUTER_BASE_URL env var, else
-    // the default OpenRouter endpoint (unchanged behavior). #2382/#2590/#2622/#2393.
-    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || process.env.OPENROUTER_BASE_URL || '';
-    const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
-
-    const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
-    const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
-
-    return { apiKey, model, apiUrl, siteUrl, appName };
-  }
 }
 
-export function isOpenRouterAvailable(): boolean {
-  const settingsPath = USER_SETTINGS_PATH;
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY'));
+export function isOpenRouterAvailable(settingsPath: string = USER_SETTINGS_PATH): boolean {
+  return Boolean(resolveOpenRouterConfig(settingsPath).apiKey);
 }
 
 export function isOpenRouterSelected(): boolean {

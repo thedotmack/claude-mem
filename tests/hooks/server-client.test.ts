@@ -224,15 +224,22 @@ describe('ServerClient', () => {
     });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/memories');
     expect(captured[0]?.method).toBe('POST');
-    // Write-path contract (#2684): content maps onto narrative (the FTS-indexed
-    // / trigger-precondition column) and type defaults from kind, so the row is
-    // never empty. The old payload shipped a `content` field that no column
-    // accepted, producing a frozen/empty observation.
+    // Write-path contract: `content` goes over the wire AS `content`, which is
+    // what ServerV1PostgresRoutes validates (`content: z.string().min(1)`) and
+    // what PostgresObservationRepository writes into `observations.content`.
+    //
+    // This assertion previously required `narrative`/`type` and explicitly
+    // required `content` to be ABSENT, citing #2684 and a column that "no column
+    // accepted". That is true of the SQLite `memory_items` route
+    // (ServerV1Routes, mounted by worker-service) — a server this client cannot
+    // reach, because ServerClient is only constructed on the `server` runtime.
+    // On a live `server` runtime the narrative payload returned 400
+    // ValidationError "path":["content"] for every MCP observation_add.
     const body = captured[0]?.body as Record<string, unknown>;
-    expect(body.narrative).toBe('hello');
+    expect(body.content).toBe('hello');
     expect(body.kind).toBe('manual');
-    expect(body.type).toBe('manual');
-    expect(body.content).toBeUndefined();
+    expect(body.narrative).toBeUndefined();
+    expect(body.type).toBeUndefined();
     expect(result.memory.id).toBe('o1');
   });
 
@@ -296,13 +303,19 @@ describe('ServerClient', () => {
 
   it('payload builders omit absent fields', () => {
     const client = new ServerClient({ serverBaseUrl: 'http://x', apiKey: 'k' });
-    // content → narrative, type defaults from kind (default 'manual') so a
-    // minimal observation_add still persists a searchable row (#2684).
+    // `content` goes over the wire AS `content`. This assertion previously
+    // required `narrative` + `type`, which is CreateMemoryItemSchema — the
+    // contract of ServerV1Routes, the SQLite /v1/memories that worker-service
+    // mounts. This client is only ever built on the `server` runtime, so the
+    // route it actually reaches is ServerV1PostgresRoutes, which validates
+    // `content: z.string().min(1)`. The old payload returned 400
+    // ValidationError "path":["content"] on every MCP observation_add, and
+    // tests/server/runtime/server-mcp-routes.test.ts reproduces it 4-red
+    // against a real Postgres.
     expect(client.buildAddObservationPayload({ projectId: 'p', content: 'c' })).toEqual({
       projectId: 'p',
       kind: 'manual',
-      type: 'manual',
-      narrative: 'c',
+      content: 'c',
     });
     expect(client.buildSearchPayload({ projectId: 'p', query: 'q' })).toEqual({
       projectId: 'p',

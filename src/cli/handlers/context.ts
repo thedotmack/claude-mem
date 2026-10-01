@@ -9,48 +9,57 @@ import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  getViewerBaseUrl,
+  consumeWorkerOutageNotice,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { callMcpToolOnce } from '../../shared/mcp-client.js';
+import { proTrialLine } from '../../shared/pro-promo.js';
+import {
+  hasShownProFallbackNotice,
+  isCmemGatewayUrl,
+  markProFallbackNoticeShown,
+  proFallbackNotice,
+  trialDaysRemaining,
+} from '../../shared/cmem-gateway.js';
+import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import type { ContextInput } from '../../services/context/types.js';
+import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 
-async function requestSessionStartContext(args: {
-  projects: string[];
-  platformSource?: string;
-  colors?: boolean;
-}): Promise<string | null> {
-  const result = await callMcpToolOnce('session_start_context', {
-    projects: args.projects,
-    ...(args.platformSource ? { platformSource: args.platformSource } : {}),
-    ...(args.colors !== undefined ? { colors: args.colors } : {}),
+// Plan-24 step 4 (#2991): in server runtime every write goes to the shared
+// server, so SessionStart reads from it too, straight from this hook process.
+// The rows go through the same renderer and 10,000-character budget as the
+// worker's /api/context/inject (#4112). No local worker is started or asked,
+// and a server that cannot answer yields an empty block (logged as
+// [server-fallback]), never stale local rows. One read serves both the model
+// block and the colored terminal copy, and it is bounded by what the host's
+// SessionStart limit leaves (Codex kills the hook at 20 s, the client's own
+// default is 30 s).
+async function renderSessionStartFromServer(
+  runtime: ServerRuntimeContext,
+  contextInput: ContextInput,
+  withColoredTerminalRender: boolean,
+  modeId: string,
+  host: string | undefined,
+): Promise<{ model: string; terminal: string }> {
+  const [{ generateServerSessionStartContext }, { ModeManager }] = await Promise.all([
+    import('../../services/context/ContextBuilder.js'),
+    import('../../services/domain/ModeManager.js'),
+  ]);
+  // The worker loads the active mode at boot. This hook process has no worker,
+  // so it loads the same mode itself: the renderer reads its observation types,
+  // emojis and legend.
+  ModeManager.getInstance().loadMode(modeId);
+  const { model, terminal } = await generateServerSessionStartContext(runtime, contextInput, {
+    withTerminalRender: withColoredTerminalRender,
+    timeoutMs: serverSessionStartBudgetMs(host),
   });
-  if (result.isError) {
-    logger.warn('HOOK', 'MCP session_start_context returned an error; falling back to worker HTTP', {
-      preview: result.text.slice(0, 200),
-    });
-    return null;
-  }
-  return result.text.trim();
-}
-
-async function fetchSessionStartContextViaMcp(args: {
-  projects: string[];
-  platformSource?: string;
-  colors?: boolean;
-}): Promise<string | null> {
-  try {
-    return await requestSessionStartContext(args);
-  } catch (error: unknown) {
-    logger.warn('HOOK', 'MCP session_start_context failed; falling back to worker HTTP', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
+  return { model, terminal: terminal ?? model };
 }
 
 export const contextHandler: EventHandler = {
@@ -83,7 +92,9 @@ export const contextHandler: EventHandler = {
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
-    const platformSourceParam = input.platform
+    // Let users share startup memory across harnesses without changing the
+    // source-scoped behavior of search and other context requests.
+    const platformSourceParam = input.platform && settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true'
       ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
       : '';
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
@@ -94,30 +105,49 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
-    let additionalContext: string;
-    const mcpContextResult = input.platform === 'codex'
-      ? await fetchSessionStartContextViaMcp({
-          projects: context.allProjects,
-          ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-        })
+    // Server runtime reads the shared server (plan-24 step 4). When the server
+    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
+    // exactly as the write hooks do, so reads and writes stay on one corpus.
+    const runtime = resolveRuntimeContext();
+    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
+    const serverRender = serverRuntime
+      ? await renderSessionStartFromServer(
+          serverRuntime,
+          {
+            session_id: input.sessionId,
+            cwd,
+            projects: context.allProjects,
+            ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
+          },
+          showTerminalOutput && input.platform === 'claude-code',
+          settings.CLAUDE_MEM_MODE,
+          input.platform,
+        )
       : null;
 
-    if (mcpContextResult !== null) {
-      additionalContext = mcpContextResult;
-    } else {
-      const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
-      if (isWorkerFallback(contextResult)) {
-        return emptyResult;
-      }
+    // ponytail: Codex's MCP normally starts the worker; this one bounded
+    // fallback covers cold sessions without the old startup process chain.
+    const workerOptions = input.platform === 'codex'
+      ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
+      : undefined;
+    const contextResult = serverRender
+      ? serverRender.model
+      : await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    if (isWorkerFallback(contextResult)) {
+      // SessionStart context is synchronous, so a systemMessage here is shown
+      // to the user: the once-per-session worker-outage notice, if any.
+      const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
+      return outageNotice ? { ...emptyResult, systemMessage: outageNotice } : emptyResult;
+    }
 
-      if (typeof contextResult === 'string') {
-        additionalContext = contextResult.trim();
-      } else if (contextResult === undefined) {
-        additionalContext = '';
-      } else {
-        logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
-        return emptyResult;
-      }
+    let additionalContext: string;
+    if (typeof contextResult === 'string') {
+      additionalContext = contextResult.trim();
+    } else if (contextResult === undefined) {
+      additionalContext = '';
+    } else {
+      logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
+      return emptyResult;
     }
 
     // Issue #2215: surface stale OAuth token marker as a session-start hint.
@@ -125,28 +155,47 @@ export const contextHandler: EventHandler = {
     // a previous worker spawn detected an expired keychain entry.
     const staleReason = readStaleMarker();
     if (staleReason) {
-      const hint = `[claude-mem] Claude Desktop OAuth token is stale: ${staleReason}\nPlease re-login via Claude Desktop to refresh the token.`;
+      // The observer authenticates with the Claude Code CLI credentials
+      // (keychain service "Claude Code-credentials", see oauth-token.ts), not
+      // Claude Desktop. Point the remedy at the CLI so the user runs the right
+      // login (#4150).
+      const hint = `[claude-mem] Claude Code OAuth token is stale: ${staleReason}\nRun /login in Claude Code (or \`claude auth login\` in a terminal) to refresh it.`;
       additionalContext = additionalContext
         ? `${hint}\n\n${additionalContext}`
         : hint;
     }
 
+    // Trial-expiry fallback notice (plan 2026-08-26 Phase 6): the worker wrote
+    // CLAUDE_MEM_PRO_FALLBACK_AT when the cmem gateway terminally rejected the
+    // delivered key, and dispatch now runs memory on the Anthropic plan. Tell
+    // the user exactly once (DATA_DIR marker file, oauth-stale pattern); the
+    // marker resets whenever the fallback is cleared.
+    //
+    // The gateway's own words, stored with the marker, say what happened and
+    // what to do. They enter model context, so proFallbackNotice relays them
+    // as plain bounded lines and keeps only an https cmem.ai link.
+    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== ''
+      && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
+      && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+    if (fallbackActive && !hasShownProFallbackNotice()) {
+      const fallbackNotice = proFallbackNotice({
+        message: settings.CLAUDE_MEM_PRO_FALLBACK_MESSAGE,
+        action: settings.CLAUDE_MEM_PRO_FALLBACK_ACTION,
+        url: settings.CLAUDE_MEM_PRO_FALLBACK_URL,
+      });
+      additionalContext = additionalContext
+        ? `${fallbackNotice}\n\n${additionalContext}`
+        : fallbackNotice;
+      markProFallbackNoticeShown();
+    }
+
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const mcpColorResult = input.platform === 'codex'
-        ? await fetchSessionStartContextViaMcp({
-            projects: context.allProjects,
-            ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-            colors: true,
-          })
-        : null;
-      if (mcpColorResult !== null) {
-        coloredTimeline = mcpColorResult;
-      } else {
-        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
-        if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-          coloredTimeline = colorResult.trim();
-        }
+      const colorResult = serverRender
+        ? serverRender.terminal
+        : await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+        coloredTimeline = colorResult.trim();
       }
     }
 
@@ -158,8 +207,21 @@ export const contextHandler: EventHandler = {
     // back to the plain additionalContext for terminal display.
     const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
 
+    // Days-remaining nicety: while the free trial is active (plan 'trial', an
+    // end date stored, no fallback), append the countdown. Computed locally —
+    // no network — and display-only: nothing is enabled or disabled by it.
+    const daysLeft = !fallbackActive && settings.CLAUDE_MEM_PRO_PLAN === 'trial'
+      ? trialDaysRemaining(settings.CLAUDE_MEM_PRO_TRIAL_ENDS_AT)
+      : null;
+    const trialDaysLine = daysLeft !== null && daysLeft >= 0
+      ? `claude-mem free trial: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
+      : null;
+
+    // In server runtime the viewer is served by the server (#2552), not by a
+    // local worker, so the link points there.
+    const viewerUrl = serverRuntime ? serverRuntime.serverBaseUrl : getViewerBaseUrl(port);
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
+      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
 
     return {

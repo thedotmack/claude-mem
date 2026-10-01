@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { isAbsolute } from 'path';
+import { pathToFileURL } from 'url';
 import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../../services/domain/ModeManager.js';
-import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
 import { bootstrapServerPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
@@ -12,9 +13,10 @@ import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
+import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
-import { MiniMaxObservationProvider } from '../generation/providers/MiniMaxObservationProvider.js';
+import { buildServerGenerationPrompt } from '../generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerService } from './ServerService.js';
 import {
@@ -197,7 +199,7 @@ export async function createServerService(
       ? new DisabledServerGenerationWorkerManager(
           'CLAUDE_MEM_GENERATION_DISABLED is set; this server runs HTTP only. A separate `claude-mem server worker start` process consumes the BullMQ queues.',
         )
-      : buildGenerationWorkerManager(pool, queueManager, options.generationProvider));
+      : await buildGenerationWorkerManager(pool, queueManager, options.generationProvider));
   const graph: ServerServiceGraph = {
     // Persisted runtime literal — Phase 1d will migrate this value. The TS
     // identifiers above are now `Server*`; the wire/storage value remains
@@ -219,17 +221,17 @@ export async function createServerService(
   return new ServerService({ graph });
 }
 
-function buildGenerationWorkerManager(
+async function buildGenerationWorkerManager(
   pool: PostgresPool,
   queueManager: ServerQueueManager,
   injectedProvider?: ServerGenerationProvider,
-): ServerGenerationWorkerManager {
+): Promise<ServerGenerationWorkerManager> {
   if (!(queueManager instanceof ActiveServerQueueManager)) {
     return new DisabledServerGenerationWorkerManager(
       'queue manager is disabled; set CLAUDE_MEM_QUEUE_ENGINE=bullmq to enable provider generation.',
     );
   }
-  const provider = injectedProvider ?? buildServerGenerationProviderFromEnv();
+  const provider = injectedProvider ?? await buildServerGenerationProviderFromEnv();
   if (!provider) {
     return new DisabledServerGenerationWorkerManager(
       'no server generation provider configured; set CLAUDE_MEM_SERVER_PROVIDER and the matching API key to enable.',
@@ -242,17 +244,11 @@ function buildGenerationWorkerManager(
   });
 }
 
-export function buildServerGenerationProviderFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
-  storedSettings: Partial<SettingsDefaults> | undefined = loadStoredGenerationSettings(),
-): ServerGenerationProvider | null {
-  const provider = (
-    env.CLAUDE_MEM_SERVER_PROVIDER
-    ?? (storedSettings?.CLAUDE_MEM_PROVIDER === 'minimax' ? 'minimax' : '')
-  ).trim().toLowerCase();
+async function buildServerGenerationProviderFromEnv(): Promise<ServerGenerationProvider | null> {
+  const provider = (process.env.CLAUDE_MEM_SERVER_PROVIDER ?? '').trim().toLowerCase();
   if (!provider) return null;
   try {
-    return instantiateServerGenerationProvider(provider, env, storedSettings);
+    return await instantiateServerGenerationProvider(provider);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     // Surface the construction failure so operators can see why generation is
@@ -262,54 +258,146 @@ export function buildServerGenerationProviderFromEnv(
   }
 }
 
-function loadStoredGenerationSettings(): Partial<SettingsDefaults> | undefined {
-  if (!existsSync(USER_SETTINGS_PATH)) return undefined;
-  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
+/**
+ * Optional cap on generated tokens for the server generation providers (#3829).
+ * All three providers already accept `maxOutputTokens`; nothing populated it, so
+ * every request went out with the constructor default of 4096. On a model that
+ * answers at length the reply is truncated mid-structure, the observation parser
+ * rejects it, and the job settles as a non-retryable parse_error — the work is
+ * lost silently. Unset keeps the 4096 default, so behavior is unchanged.
+ */
+export function resolveServerMaxOutputTokens(): number | undefined {
+  const raw = process.env.CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS;
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    logger.warn('SYSTEM', 'server: ignoring invalid CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS', { value: raw });
+    return undefined;
+  }
+  return parsed;
 }
 
-function instantiateServerGenerationProvider(
-  provider: string,
-  env: NodeJS.ProcessEnv,
-  storedSettings?: Partial<SettingsDefaults>,
-): ServerGenerationProvider | null {
+// Helpers handed to a CLAUDE_MEM_CUSTOM_PROVIDER_MODULE factory (see
+// loadCustomServerGenerationProvider below) so a custom provider can reuse
+// this server's own Anthropic HTTP client, prompt construction, and error
+// classification instead of reimplementing them — all three are internal,
+// unexported implementation details of this codebase, not a published
+// library surface, so a custom provider module has no other way to reach
+// them. ServerClassifiedProviderError matters beyond convenience: the retry
+// pipeline (ProviderObservationGenerator) only treats an error as retryable
+// when it's `instanceof ServerClassifiedProviderError` with `kind`
+// `'transient'`/`'rate_limit'` — a plain Error, even with a `.kind`
+// property bolted on, is always treated as non-retryable.
+//
+// These helpers are internal code, not a published library, and they do change
+// (buildServerGenerationPrompt gained a summary variant and a byte budget in
+// #4029/#4030). `apiVersion` is bumped whenever a helper's contract changes, so
+// a module can refuse to run against helpers it was not written for.
+export const CUSTOM_PROVIDER_HELPERS_API_VERSION = 1;
+
+export interface CustomServerGenerationProviderHelpers {
+  apiVersion: number;
+  buildServerGenerationPrompt: typeof buildServerGenerationPrompt;
+  ClaudeObservationProvider: typeof ClaudeObservationProvider;
+  ServerClassifiedProviderError: typeof ServerClassifiedProviderError;
+  /** CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS, resolved exactly as the built-in providers read it. */
+  maxOutputTokens: number | undefined;
+}
+
+type CustomServerGenerationProviderFactory = (
+  helpers: CustomServerGenerationProviderHelpers,
+) => ServerGenerationProvider;
+
+// CLAUDE_MEM_SERVER_PROVIDER=custom + CLAUDE_MEM_CUSTOM_PROVIDER_MODULE=<path>
+// dynamically loads an operator-supplied ServerGenerationProvider instead of
+// one of the built-in providers above — for deployments whose credential
+// model this codebase can't anticipate (e.g. a host application that stores
+// its own per-project API keys and wants generation jobs to use them,
+// instead of one static key for the whole process). The module is resolved
+// from the filesystem at startup, not bundled at build time, and must
+// export a `createProvider(helpers)` factory (as a named export, a default
+// export, or `default.createProvider` — CJS/ESM interop can produce any of
+// the three depending on how the module was authored).
+//
+// Trust model: the path comes ONLY from the server process's environment. Server
+// providers never read settings.json, and no HTTP route can set it, so loading a
+// module takes the same access as setting NODE_OPTIONS. Keep it that way: this
+// key must never be added to SettingsDefaultsManager, settings.json hydration or
+// the SettingsRoutes allowlist. The module runs with everything the server holds
+// (the database URL, every provider key, the Redis credentials), so the path
+// must be absolute, and the path and the file's sha256 are logged at startup so
+// an operator can see exactly what was loaded.
+//
+// Exported for tests: the wiring is otherwise only reachable through the
+// full createServerService() (Postgres + queue setup), which is expensive
+// to stand up just to exercise the module-loading logic itself.
+export async function loadCustomServerGenerationProvider(): Promise<ServerGenerationProvider | null> {
+  const modulePath = (process.env.CLAUDE_MEM_CUSTOM_PROVIDER_MODULE ?? '').trim();
+  if (!modulePath) {
+    logger.warn('SYSTEM', 'server: CLAUDE_MEM_SERVER_PROVIDER=custom requires CLAUDE_MEM_CUSTOM_PROVIDER_MODULE');
+    return null;
+  }
+  if (!isAbsolute(modulePath)) {
+    logger.warn('SYSTEM', 'server: CLAUDE_MEM_CUSTOM_PROVIDER_MODULE must be an absolute path; generation disabled', { modulePath });
+    return null;
+  }
+  const moduleSha256 = createHash('sha256').update(readFileSync(modulePath)).digest('hex');
+  logger.info('SYSTEM', 'server: loading custom generation provider module', { modulePath, sha256: moduleSha256 });
+  const mod = (await import(pathToFileURL(modulePath).href)) as Record<string, unknown>;
+  const defaultExport = mod.default as Record<string, unknown> | (() => unknown) | undefined;
+  const factory = (
+    typeof mod.createProvider === 'function' ? mod.createProvider
+    : typeof defaultExport === 'function' ? defaultExport
+    : typeof defaultExport === 'object' && defaultExport !== null && typeof defaultExport.createProvider === 'function'
+      ? defaultExport.createProvider
+      : null
+  ) as CustomServerGenerationProviderFactory | null;
+  if (!factory) {
+    logger.warn('SYSTEM', 'server: CLAUDE_MEM_CUSTOM_PROVIDER_MODULE does not export a createProvider(helpers) factory', { modulePath });
+    return null;
+  }
+  return factory({
+    apiVersion: CUSTOM_PROVIDER_HELPERS_API_VERSION,
+    buildServerGenerationPrompt,
+    ClaudeObservationProvider,
+    ServerClassifiedProviderError,
+    maxOutputTokens: resolveServerMaxOutputTokens(),
+  });
+}
+
+async function instantiateServerGenerationProvider(provider: string): Promise<ServerGenerationProvider | null> {
   if (provider === 'claude' || provider === 'anthropic') {
-    const apiKey = env.ANTHROPIC_API_KEY ?? env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
+    const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string } = { apiKey };
-    if (env.CLAUDE_MEM_SERVER_MODEL) opts.model = env.CLAUDE_MEM_SERVER_MODEL;
+    const opts: { apiKey: string; model?: string; maxOutputTokens?: number } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    const maxOutputTokens = resolveServerMaxOutputTokens();
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
     return new ClaudeObservationProvider(opts);
   }
   if (provider === 'gemini') {
-    const apiKey = env.GEMINI_API_KEY ?? env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
+    const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string } = { apiKey };
-    if (env.CLAUDE_MEM_SERVER_MODEL) opts.model = env.CLAUDE_MEM_SERVER_MODEL;
+    const opts: { apiKey: string; model?: string; maxOutputTokens?: number } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    const maxOutputTokens = resolveServerMaxOutputTokens();
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
     return new GeminiObservationProvider(opts);
   }
   if (provider === 'openrouter') {
-    const apiKey = env.OPENROUTER_API_KEY ?? env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
+    const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
-    if (env.CLAUDE_MEM_SERVER_MODEL) opts.model = env.CLAUDE_MEM_SERVER_MODEL;
+    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
     // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
-    const baseUrl = env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? env.OPENROUTER_BASE_URL;
+    const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
     if (baseUrl) opts.baseUrl = baseUrl;
+    const maxOutputTokens = resolveServerMaxOutputTokens();
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
     return new OpenRouterObservationProvider(opts);
   }
-  if (provider === 'minimax') {
-    const apiKey = env.MINIMAX_API_KEY
-      ?? env.CLAUDE_MEM_MINIMAX_API_KEY
-      ?? storedSettings?.CLAUDE_MEM_MINIMAX_API_KEY
-      ?? '';
-    if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
-    const model = env.CLAUDE_MEM_SERVER_MODEL ?? storedSettings?.CLAUDE_MEM_MINIMAX_MODEL;
-    if (model) opts.model = model;
-    const baseUrl = env.CLAUDE_MEM_MINIMAX_BASE_URL
-      ?? env.MINIMAX_BASE_URL
-      ?? storedSettings?.CLAUDE_MEM_MINIMAX_BASE_URL;
-    if (baseUrl) opts.baseUrl = baseUrl;
-    return new MiniMaxObservationProvider(opts);
+  if (provider === 'custom') {
+    return loadCustomServerGenerationProvider();
   }
   return null;
 }
