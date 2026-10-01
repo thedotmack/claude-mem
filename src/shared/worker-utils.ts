@@ -2,7 +2,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
@@ -13,6 +13,7 @@ import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index.js";
 import { classifyPortOccupancy } from "../services/infrastructure/HealthMonitor.js";
+import { UNBINDABLE_PORT_REMEDIATION } from "./connection-errors.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
@@ -280,7 +281,9 @@ export function getWorkerApiRequestTimeoutMs(): number {
 /**
  * The UserPromptSubmit session-init budget (#3434, plan-17 step 3): one
  * deadline for the whole worker round-trip, kept inside the 15 s host timeout.
- * Never Windows-scaled — the cap it has to fit under is not scaled either.
+ * Never Windows-scaled up — the cap it has to fit under is not scaled — and
+ * its Windows default is shorter, because hook start-up there eats seconds
+ * the budget's clock never sees (defaultSessionInitRequestTimeoutMs).
  */
 export function getSessionInitRequestTimeoutMs(): number {
   if (cachedSessionInitRequestTimeoutMs !== null) {
@@ -289,7 +292,7 @@ export function getSessionInitRequestTimeoutMs(): number {
 
   cachedSessionInitRequestTimeoutMs = readSettingsBackedTimeout(
     'CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS',
-    HOOK_TIMEOUTS.SESSION_INIT_REQUEST,
+    defaultSessionInitRequestTimeoutMs(),
     SESSION_INIT_REQUEST_TIMEOUT_BOUNDS
   );
   return cachedSessionInitRequestTimeoutMs;
@@ -958,7 +961,7 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
       // A stale worker we just killed already proved its port closed
       // (waitForWorkerPortReleased); every other spawn must first prove the port
       // free (#3171).
-      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline))) return false;
+      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline, deadlineAt))) return false;
       const runtimePath = resolveWorkerRuntimePath();
       if (!runtimePath) {
         logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found (PATH, BUN / BUN_PATH / BUN_INSTALL, or ~/.bun/bin)');
@@ -979,6 +982,8 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
         // rename or move long after the session ends (#3706). The helper also
         // listens for the async spawn 'error' (a dangling runtime shim), which
         // would otherwise escape as an uncaught exception (#4039).
+        // A budgeted hook caps the Windows launch (a synchronous PowerShell
+        // Start-Process) at what is left of its deadline.
         const spawned = spawnDetachedWorkerDaemon(
           runtimePath,
           scriptPath,
@@ -986,6 +991,8 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
             ...process.env,
             CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
           }),
+          process.platform,
+          remainingBudgetMs(deadlineAt) ?? undefined,
         );
         if (spawned === undefined) {
           return false;
@@ -1072,6 +1079,9 @@ const ORPHANED_PORT_REMEDIATION =
  */
 let orphanedPortDiagnosis: number | null = null;
 
+/** Port this hook process found unbindable (EACCES / EADDRNOTAVAIL), or null. Same scoping as above. */
+let unbindablePortDiagnosis: number | null = null;
+
 /**
  * The hook's pre-spawn port gate (#3171, plan-15 steps 2-3). A failed health
  * request is not proof the port is free: a wedged or orphaned listener refuses
@@ -1085,19 +1095,33 @@ let orphanedPortDiagnosis: number | null = null;
  * - indeterminate (the bind neither succeeded nor hit EADDRINUSE in time) →
  *   no spawn: never start another worker onto a port in an unknown state.
  */
-async function preSpawnPortIsFree(deadline: number): Promise<boolean> {
+async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | null): Promise<boolean> {
   const port = getWorkerPort();
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) return false;
 
   const occupancy = await classifyPortOccupancy(port, remainingMs);
   if (occupancy === 'free') return true;
+  if (occupancy === 'unbindable') {
+    // The OS refuses the bind itself (EACCES / EADDRNOTAVAIL): a daemon would
+    // die at listen() on every hook event. Name the fix instead of spawning.
+    unbindablePortDiagnosis = port;
+    logger.error('SYSTEM', 'Worker port cannot be bound (EACCES or EADDRNOTAVAIL) — skipping lazy-spawn', {
+      port,
+      host: getWorkerHost(),
+      fix: UNBINDABLE_PORT_REMEDIATION,
+    });
+    return false;
+  }
   if (occupancy === 'indeterminate') {
     logger.warn('SYSTEM', 'Worker port state could not be determined in time — skipping lazy-spawn', { port });
     return false;
   }
 
-  const reclaim = await reclaimGhostListeningPort(port);
+  // The reclaim gets the hook's own deadline, not the 5 s probe bound: it
+  // declines ('out-of-budget') rather than start a kill it cannot finish
+  // before the host kills the hook, and runs unbounded for callers without one.
+  const reclaim = await reclaimGhostListeningPort(port, { deadlineAt: hookDeadlineAt });
   if (reclaim.reclaimed) {
     logger.info('SYSTEM', 'Reclaimed the worker port before lazy-spawn', { port, killedPids: reclaim.killedPids });
     return true;
@@ -1155,6 +1179,8 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
           ...process.env,
           CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
         }),
+        process.platform,
+        Math.max(1, deadline - Date.now()),
       );
       if (spawned === undefined) return false;
     }
@@ -1379,9 +1405,11 @@ export function getActiveHookType(): TelemetryHookType | null {
  * port, the port fix replaces the generic recovery hint.
  */
 function buildWorkerOutageNotice(consecutiveFailures: number): string {
-  const recovery = orphanedPortDiagnosis !== null
-    ? `Port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims, so the worker cannot bind it. ${ORPHANED_PORT_REMEDIATION}.`
-    : 'Run `npx claude-mem restart`; if it keeps failing, run `npx claude-mem doctor`.';
+  const recovery = unbindablePortDiagnosis !== null
+    ? `The worker cannot bind port ${unbindablePortDiagnosis} on ${getWorkerHost()}: the system refuses it (EACCES or EADDRNOTAVAIL). ${UNBINDABLE_PORT_REMEDIATION}.`
+    : orphanedPortDiagnosis !== null
+      ? `Port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims, so the worker cannot bind it. ${ORPHANED_PORT_REMEDIATION}.`
+      : 'Run `npx claude-mem restart`; if it keeps failing, run `npx claude-mem doctor`.';
   return `claude-mem worker unreachable for ${consecutiveFailures} consecutive hooks — memory features are degraded, but your prompts are not blocked. ${recovery}`;
 }
 

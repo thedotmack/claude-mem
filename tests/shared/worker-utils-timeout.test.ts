@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
-import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs } from '../../src/shared/hook-constants.js';
 // Eagerly evaluate src/shared/paths.ts BEFORE any per-test env override:
 // paths.ts freezes its DATA_DIR const at first evaluation, and without this
 // import the dynamic `import('../../src/shared/worker-utils.js')` calls
@@ -166,7 +166,7 @@ describe('worker-utils API timeout resolution', () => {
 
     workerUtils.clearPortCache();
 
-    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(HOOK_TIMEOUTS.SESSION_INIT_REQUEST);
+    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(defaultSessionInitRequestTimeoutMs());
     expect(warnSpy).toHaveBeenCalledWith(
       'SYSTEM',
       'Invalid CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS, using default',
