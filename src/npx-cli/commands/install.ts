@@ -2120,16 +2120,16 @@ async function promptTelemetryOptIn(): Promise<void> {
 /**
  * Whether an install still has an account question to answer.
  *
- * `--provider claude`, `--provider codex`, and `--provider host` are exempt:
- * they use the user's existing local credentials and need no claude-mem
- * account. `gemini` and
- * `openrouter` are NOT exempt — openrouter is the transport for the cmem
- * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
- * With no flag at all the provider screen can still offer CMEM Pro, so login
- * must happen first.
+ * `--provider claude` and `--provider host` are exempt: they use the user's
+ * existing local credentials and need no claude-mem account. `gemini`,
+ * `openrouter` and `codex` are NOT exempt — openrouter is the transport for
+ * the cmem gateway, so an explicit `openrouter` install may still be reaching
+ * cmem.ai, and gemini and codex are bring-your-own providers that sign in
+ * like any other. With no flag at all the provider screen can still offer
+ * CMEM Pro, so login must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'codex' && provider !== 'host';
+  return provider !== 'claude' && provider !== 'host';
 }
 
 export interface InstallOptions {
@@ -2759,11 +2759,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
-      : options.provider === 'codex'
-        ? '--provider codex uses the local Codex subscription login.'
-        : options.providerSource === 'default'
-          ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
-          : '--provider claude runs memory on your own Anthropic plan.';
+      : options.providerSource === 'default'
+        ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
+        : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);

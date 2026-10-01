@@ -9,9 +9,8 @@ const source = readFileSync(
 );
 
 describe('provider account gate', () => {
-  it('exempts local subscription and host installs from the account requirement', () => {
+  it('exempts the local Anthropic plan and host installs from the account requirement', () => {
     expect(providerNeedsAccount('claude')).toBe(false);
-    expect(providerNeedsAccount('codex')).toBe(false);
     expect(providerNeedsAccount('host')).toBe(false);
   });
 
@@ -20,9 +19,10 @@ describe('provider account gate', () => {
     expect(source).toContain('if (providerNeedsAccount(options.provider)) {');
   });
 
-  it('still treats openrouter and gemini as account-backed providers', () => {
+  it('still treats openrouter, gemini and codex as account-backed providers', () => {
     expect(providerNeedsAccount('openrouter')).toBe(true);
     expect(providerNeedsAccount('gemini')).toBe(true);
+    expect(providerNeedsAccount('codex')).toBe(true);
     expect(source).toContain("if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;");
   });
 });
