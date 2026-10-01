@@ -135,26 +135,6 @@ export function queryObservationsNewest(
   ) as LocalObservation[];
 }
 
-/**
- * `projects` plus every project whose rows were merged into one of them (a
- * worktree adopted into its repository, a folder `project merge`d into an
- * environment). Reads match `project IN list OR merged_into_project IN list`, so
- * with this list they also reach rows merged into a project that was itself
- * merged into one of `projects`: one hop of a merge chain (`repo/wt` → `repo` →
- * `work`), which `project merge` relies on to bring a repository's adopted
- * memory along (gate P2-4).
- */
-export function withMergedProjects(db: DatabaseOwner, projects: string[]): string[] {
-  if (projects.length === 0) return projects;
-  const placeholders = projects.map(() => '?').join(',');
-  const merged = db.db.prepare(`
-    SELECT DISTINCT project FROM observations WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
-    UNION
-    SELECT DISTINCT project FROM session_summaries WHERE merged_into_project COLLATE NOCASE IN (${placeholders})
-  `).all(...projects, ...projects) as Array<{ project: string }>;
-  return [...new Set([...projects, ...merged.map(row => row.project)])];
-}
-
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
   if (projects.length === 0) return 0;
   const projectPlaceholders = projects.map(() => '?').join(',');

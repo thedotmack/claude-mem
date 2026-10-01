@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
+import { projectReadKeys } from '../sqlite/project-read-keys.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
@@ -17,7 +18,6 @@ import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
   querySummariesMulti,
-  withMergedProjects,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
   buildTimeline,
@@ -520,7 +520,9 @@ export async function generateContextWithStats(
 
   try {
     const db = { db: rawDb };
-    const queryProjects = withMergedProjects(db, scope.projects.length > 1 ? scope.projects : [scope.project]);
+    // Every key these projects are stored under, including one hop of a merge
+    // chain, so a `project merge` brings the merged project's adopted rows along.
+    const queryProjects = projectReadKeys(rawDb, scope.projects.length > 1 ? scope.projects : [scope.project]);
     const observations = queryObservationsMulti(db, queryProjects, scope.config, scope.platformSource);
     const summaries = querySummariesMulti(db, queryProjects, scope.config, scope.platformSource);
     return renderContextFromRows({ observations, summaries }, input, forHuman, scope);
