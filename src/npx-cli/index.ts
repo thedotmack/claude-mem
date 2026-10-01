@@ -1,6 +1,7 @@
 import { parseArgs, styleText } from 'node:util';
 import { readPluginVersion } from './utils/paths.js';
 import type { InstallOptions } from './commands/install.js';
+import { resolveInstallerProviderChoice } from './installer-provider-choice.js';
 
 const args = process.argv.slice(2);
 const firstArg = args[0]?.toLowerCase() ?? '';
@@ -23,13 +24,14 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${styleText('cyan', 'npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
+  ${styleText('cyan', 'npx claude-mem install --provider claude|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
   ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
+  ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
   ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
   ${styleText('cyan', 'npx claude-mem version')}              Print version
@@ -48,13 +50,16 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem server api-key create|list|revoke')}   Manage API keys
   ${styleText('cyan', 'npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
   ${styleText('cyan', 'npx claude-mem search <query>')}       Search observations
+  ${styleText('cyan', 'npx claude-mem mcp')}                    Start the stdio MCP server
+  ${styleText('cyan', 'npx claude-mem hook cursor <event>')}    Run Cursor hook forwarding
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
+  ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
 
 ${styleText('bold', 'IDE Identifiers')}:
-  claude-code, cursor, opencode, openclaw, omp,
+  claude-code, cursor, grok-bot, opencode, openclaw, omp,
   windsurf, codex-cli, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
@@ -78,8 +83,8 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   const flag = (name: string): string | undefined =>
     typeof values[name] === 'string' ? (values[name] as string) : undefined;
   const provider = flag('provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'host') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, host`);
     process.exit(1);
   }
   const runtime = flag('runtime');
@@ -87,9 +92,24 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     console.error(`Unknown --runtime: ${runtime}. Allowed: worker, server`);
     process.exit(1);
   }
+  const ide = flag('ide');
+  let resolvedProvider = provider as InstallOptions['provider'];
+  // Non-TTY grok-bot: CMEM Pro is the user default. The 'cmem' sentinel is
+  // prompt-only (install.ts maps it to openrouter + cmem-observer + OAuth).
+  // Interactive installs still get the CMEM/Claude prompt. `--provider host`
+  // stays an explicit loopback-shim opt-in.
+  if (!resolvedProvider && process.stdin.isTTY !== true) {
+    const implicit = resolveInstallerProviderChoice({ ide });
+    if (implicit) {
+      resolvedProvider = implicit as InstallOptions['provider'];
+    }
+  }
   return {
-    ide: flag('ide'),
-    provider: provider as InstallOptions['provider'],
+    ide,
+    provider: resolvedProvider,
+    // Both the explicit flag and the grok-bot implicit cmem default are
+    // explicit product choices; install.ts only defaults when this is unset.
+    providerSource: resolvedProvider ? 'flag' : undefined,
     model: flag('model'),
     noAutoStart: values['no-auto-start'] === true,
     disableAutoMemory: values['disable-auto-memory'] === true,
@@ -168,6 +188,12 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'prune': {
+      const { runPruneCommand } = await import('./commands/prune.js');
+      await runPruneCommand(args.slice(1));
+      break;
+    }
+
     case 'telemetry': {
       const { runTelemetryCommand } = await import('./commands/telemetry.js');
       await runTelemetryCommand(args.slice(1));
@@ -201,9 +227,27 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'mcp': {
+      const { runMcpCommand } = await import('./commands/runtime.js');
+      runMcpCommand();
+      break;
+    }
+
+    case 'hook': {
+      const { runHookCommand } = await import('./commands/runtime.js');
+      runHookCommand(args.slice(1));
+      break;
+    }
+
     case 'adopt': {
       const { runAdoptCommand } = await import('./commands/runtime.js');
       runAdoptCommand(args.slice(1));
+      break;
+    }
+
+    case 'project': {
+      const { runProjectCommand } = await import('./commands/runtime.js');
+      runProjectCommand(args.slice(1));
       break;
     }
 
