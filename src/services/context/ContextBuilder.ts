@@ -40,6 +40,7 @@ import {
   renderObserverHealthWarning,
   renderObserverQuotaCooldownNotice,
 } from '../../shared/observer-health.js';
+import { cooldownAppliesToCurrentAccount } from '../../shared/quota-cooldown.js';
 import { readSyncHealth, renderSyncHealthWarning } from '../../shared/sync-health.js';
 import { resolveRuntimeContext, type ServerRuntimeContext } from '../hooks/runtime-selector.js';
 import { fetchServerContextRows } from './ServerContextRows.js';
@@ -241,11 +242,14 @@ export function observerHealthWarning(forHuman: boolean = false): string {
   // says capture is paused, and a cooldown is not a second outage. Cooldown
   // alone (consecutiveFailures still below the unhealthy threshold) is the
   // gap this notice exists to close — the breaker withholds the generator
-  // without ever incrementing the failure streak.
+  // without ever incrementing the failure streak. A Claude breaker pauses only
+  // the account it was armed under; after a switch to another account it
+  // withholds nothing, so announcing it would be false.
+  const cooldown = health?.quotaCooldown;
   let notice: string | null = null;
   if (isObserverUnhealthy(health)) {
     notice = renderObserverHealthWarning(health);
-  } else if (isObserverQuotaCooldownActive(health)) {
+  } else if (isObserverQuotaCooldownActive(health) && cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
     notice = renderObserverQuotaCooldownNotice(health);
   }
   // Cloud sync health rides the same slot: a paused (401/403) or long-failing
