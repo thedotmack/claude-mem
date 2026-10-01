@@ -16,8 +16,8 @@ Never paste real `cm_pro_…` keys, setup tokens, or OpenRouter `sk-or-` keys in
 Three stages:
 
 1. **Runtime** — Bun/uv if needed, IDE plugin files, worker deps.
-2. **Sign in** — skipped for `--provider claude`, and for non-interactive runs without `--provider` (fresh install defaults to claude; an existing config keeps its provider). A non-interactive install that skipped sign-in prints an optional sign-in link as its last line; agents should show that link to the user rather than open it. Local installs contact cmem.ai once, at signup, to create the sign-in link; nothing else is sent to cmem.ai. Otherwise the CLI does **not** ask for an email:
-   - `POST https://cmem.ai/api/installer/oauth/start` with `{ source: "npx-installer", device_name: <hostname> }`
+2. **Sign in** — skipped for `--provider claude`, and for non-interactive runs without `--provider` (fresh install defaults to claude; an existing config keeps its provider). A non-interactive install that skipped sign-in prints an optional sign-in link as its last line; agents should show that link to the user rather than open it. Local installs contact cmem.ai once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai. Otherwise the CLI does **not** ask for an email:
+   - `POST https://cmem.ai/api/installer/oauth/start` with `{ source: "npx-installer", device_name: <hostname>, install_state: "fresh" | "update", usage_summary?: { window_days: 28, active_days, observations, memory_tokens, days: [{ d: "YYYY-MM-DD", obs, tokens }] } }` (`usage_summary` is omitted when no local data can be read)
    - prints a device code `XXXX-XXXX` and opens `authorization_url`
    - polls `https://cmem.ai/api/pro/trial/poll` until authenticated
 3. **Provider** — **CMEM Pro is pre-selected.** Choosing it opens `checkout_url` (trial/claim), polls until `status: "ready"`, then writes settings and restarts the worker.
@@ -44,6 +44,9 @@ Credentials are **staged**, then **activated**. File: `~/.claude-mem/settings.js
 | `CLAUDE_MEM_PRO_MEMORY_BASE_URL` | `memory_base_url`, or `https://cmem.ai/api/inference/v1` |
 | `CLAUDE_MEM_PRO_MEMORY_MODEL` | `memory_model`, or `cmem-observer` |
 | `CLAUDE_MEM_PRO_FALLBACK_AT` | `""` |
+| `CLAUDE_MEM_PRO_FALLBACK_MESSAGE` | `""` (the worker stores the gateway's message here when a fallback starts) |
+| `CLAUDE_MEM_PRO_FALLBACK_ACTION` | `""` (the gateway's "what to do" for that fallback) |
+| `CLAUDE_MEM_PRO_FALLBACK_URL` | `""` (the gateway's link for that fallback; the notice shows only an `https://cmem.ai` link) |
 
 Cloud sync is on only when the token, user id, **and** hub URL are all non-empty. See [Cloud Sync](/cloud-sync).
 
@@ -106,7 +109,7 @@ curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/sync/status"
 
 Expect health with provider `openrouter`, and sync `configured: true` plus `hub.reachable: true`.
 
-6. First real observation should store via model `cmem-observer`. Gateway success **clears** `CLAUDE_MEM_PRO_FALLBACK_AT`. A terminal quota/key error from the gateway **sets** that timestamp and memory falls back to the Anthropic plan.
+6. First real observation should store via model `cmem-observer`. Gateway success **clears** `CLAUDE_MEM_PRO_FALLBACK_AT`. A terminal gateway rejection (a spent allowance, an inactive subscription, or a refused key) **sets** that timestamp, memory falls back to the Anthropic plan, and the next session start relays the gateway's own message and link.
 
 <Info>
 Fallback is **event-driven**, not a calendar date. Do not treat `CLAUDE_MEM_PRO_TRIAL_ENDS_AT` as the switch. The switch is `CLAUDE_MEM_PRO_FALLBACK_AT`.

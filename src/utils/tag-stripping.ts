@@ -1,5 +1,6 @@
 
 import { logger } from './logger.js';
+import { getRedactionConfig, redactSensitive } from './redaction.js';
 
 const TAG_NAMES = [
   'private',
@@ -42,7 +43,12 @@ export function stripTags(input: string): { stripped: string; counts: Record<Tag
     });
   }
 
-  return { stripped: stripped.trim(), counts };
+  // The single choke point for opt-in secret redaction (CLAUDE_MEM_REDACT_*):
+  // every capture path (tool I/O and tool_uses, prompts incl. prompt storage,
+  // assistant messages, server-beta events) strips tags through here, so no
+  // site can be missed. A no-op while redaction is disabled.
+  const redacted = redactSensitive(stripped.trim(), getRedactionConfig()).redacted;
+  return { stripped: redacted, counts };
 }
 
 export function stripMemoryTags(content: string): string {

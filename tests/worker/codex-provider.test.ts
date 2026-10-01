@@ -1,55 +1,57 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { CodexProvider, classifyCodexError } from '../../src/services/worker/CodexProvider.js';
+import { CODEX_SETUP_REQUIRED_CODE } from '../../src/services/worker/CodexAppServerClient.js';
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import { getSelectedProvider, selectProviderForGenerator } from '../../src/services/worker/provider-dispatch.js';
-import { getQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, tryAdmitQuotaProbe, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS, CODEX_SETUP_RECHECK_COOLDOWN_MS } from '../../src/shared/quota-cooldown.js';
+import {
+  getQuotaCooldown,
+  recordAuthCooldown,
+  recordQuotaExhausted,
+  resetQuotaCooldownsForTesting,
+  tryAdmitQuotaProbe,
+  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+} from '../../src/shared/quota-cooldown.js';
+import {
+  CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  clearDependencyStatus,
+  getDependencyStatus,
+  recordCodexCliSetupRequired,
+} from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
-const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex', timeoutMs: 1000 };
-
-function stubCompletedAppServerTurns(provider: any, contents: Array<string | null>): string[] {
-  const methods: string[] = [];
-  let turn = 0;
-  provider.appServer.ensureStarted = async () => {};
-  provider.appServer.workspace = 'private-test-workspace';
-  provider.appServer.readInheritedMcpServerNames = async () => [];
-  provider.appServer.attestMcpServersDisabled = async () => {};
-  provider.appServer.request = async (method: string) => {
-    methods.push(method);
-    if (method === 'thread/start') return { thread: { id: `thread-${turn + 1}` }, instructionSources: [] };
-    if (method === 'turn/start') {
-      const content = contents[turn++];
-      return { turn: { id: `turn-${turn}`, status: 'completed', items: content === null ? [] : [
-        { type: 'agentMessage', phase: 'final_answer', text: JSON.stringify({ content }) },
-      ] } };
-    }
-    if (method === 'thread/unsubscribe') return {};
-    throw new Error(`Unexpected request: ${method}`);
-  };
-  return methods;
-}
+const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' };
 let savedProvider: string | undefined;
 beforeEach(() => {
   savedProvider = process.env.CLAUDE_MEM_PROVIDER;
   process.env.CLAUDE_MEM_PROVIDER = 'codex';
   resetQuotaCooldownsForTesting();
+  clearDependencyStatus('codex_cli');
 });
 afterEach(() => {
   resetQuotaCooldownsForTesting();
+  clearDependencyStatus('codex_cli');
   if (savedProvider === undefined) delete process.env.CLAUDE_MEM_PROVIDER;
   else process.env.CLAUDE_MEM_PROVIDER = savedProvider;
 });
 
+let nextSessionId = 710;
 function session(): ActiveSession {
-  return { sessionDbId: 710, contentSessionId: 'codex-test', memorySessionId: 'codex-test', project: 'test',
+  const id = nextSessionId++;
+  return { sessionDbId: id, contentSessionId: `codex-test-${id}`, memorySessionId: `codex-test-${id}`, project: 'test',
     platformSource: 'codex', userPrompt: 'Remember the change', abortController: new AbortController(),
     generatorPromise: null, lastPromptNumber: 1, startTime: Date.now(), cumulativeInputTokens: 0,
     cumulativeOutputTokens: 0, earliestPendingTimestamp: 1, claimedMessageIds: [1], conversationHistory: [],
-    currentProvider: 'codex', consecutiveRestarts: 0, consecutiveInvalidOutputs: 0,
-    consecutiveContextOverflows: 0, lastGeneratorActivity: Date.now() };
+    currentProvider: null, consecutiveRestarts: 0, consecutiveInvalidOutputs: 0,
+    consecutiveContextOverflows: 0, lastGeneratorActivity: Date.now() } as ActiveSession;
+}
+
+/** Ages a recorded codex_cli status past its recheck window. */
+function ageCodexSetupStatus(): void {
+  const status = getDependencyStatus('codex_cli');
+  if (status) status.recordedAtMs = Date.now() - CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS - 1;
 }
 
 function harness(startSession: (s: ActiveSession) => Promise<void>) {
@@ -57,45 +59,25 @@ function harness(startSession: (s: ActiveSession) => Promise<void>) {
   const reset = mock(async () => 1);
   const other = mock(async () => {});
   const finalize = mock(async () => {});
+  const scheduleTransportResume = mock(() => {});
   const codex = mock(startSession);
   const manager = { getSession: () => s, resetProcessingToPending: reset,
-    getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => ['observation'] }),
+    getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+    clearTransportResume: mock(() => {}), scheduleTransportResume,
     removeSessionImmediate: mock(() => {}) };
   const routes = new SessionRoutes(manager as any, {} as any, { startSession: other } as any,
     { startSession: other } as any, { startSession: other } as any, {} as any, {} as any,
     { finalizeSession: finalize } as any, { startSession: codex } as any);
-  return { s, routes, codex, other, reset, finalize };
+  return { s, routes, codex, other, reset, finalize, scheduleTransportResume };
+}
+
+/** A generator that fails the way the real provider does: through its handleSessionError. */
+function failingLikeCodex(error: ClassifiedProviderError) {
+  const provider = new CodexProvider(null as any, null as any) as any;
+  return async (s: ActiveSession) => provider.handleSessionError(error, s);
 }
 
 describe('Codex provider integration', () => {
-  it('accepts an empty structured initialization reply without retrying', async () => {
-    const provider = new CodexProvider(null as any, null as any) as any;
-    const methods = stubCompletedAppServerTurns(provider, ['']);
-    const result = await provider.queryForInitialization([{ role: 'user', content: 'initialize' }], config);
-    expect(result.content).toBe('');
-    expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
-  });
-
-  it('retries a completed app-server turn without an agent message once', async () => {
-    const provider = new CodexProvider(null as any, null as any) as any;
-    const methods = stubCompletedAppServerTurns(provider, [null, 'Recovered memory']);
-    const result = await provider.query([{ role: 'user', content: 'input' }], config);
-    expect(result.content).toBe('Recovered memory');
-    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
-  });
-
-  it('retries blank structured output once and reports bounded diagnostics if it stays blank', async () => {
-    const provider = new CodexProvider(null as any, null as any) as any;
-    const methods = stubCompletedAppServerTurns(provider, [' ', ' ']);
-    const error = await provider.query([{ role: 'user', content: 'input' }], config)
-      .then(() => null, (caught: unknown) => caught);
-    expect(error).toHaveProperty('kind', 'transient');
-    expect((error as Error).message).toContain('agentMessages=1');
-    expect((error as Error).message).toContain('finalTextBytes=15');
-    expect((error as Error).message).not.toContain('"content"');
-    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
-  });
-
   it('accepts Codex settings without changing the default provider or pinning a model', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
     expect(defaults.CLAUDE_MEM_PROVIDER).toBe('claude');
@@ -104,158 +86,160 @@ describe('Codex provider integration', () => {
     expect(routes.validateSettings({ CLAUDE_MEM_PROVIDER: 'codex' }).valid).toBe(true);
   });
 
-  for (const kind of ['auth_invalid', 'quota_exhausted', 'rate_limit', 'transient', 'unrecoverable']) {
-    it(`keeps Codex selected and preserves buffered work after ${kind}`, async () => {
-      const h = harness(async () => { throw new ClassifiedProviderError('fixture failure', { kind, cause: null }); });
+  for (const [kind, pause] of [
+    ['quota_exhausted', 'quota'], ['auth_invalid', 'auth'], ['rate_limit', 'rate_limit'], ['transient', 'transport'],
+  ] as const) {
+    it(`pauses on ${kind}, keeps Codex selected and preserves buffered work`, async () => {
+      const h = harness(failingLikeCodex(new ClassifiedProviderError('fixture failure', { kind, cause: null })));
       await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
       await h.s.generatorPromise;
       expect(h.codex).toHaveBeenCalledTimes(1);
       expect(h.other).not.toHaveBeenCalled();
-      expect(h.reset).toHaveBeenCalledTimes(1);
       expect(h.finalize).not.toHaveBeenCalled();
+      expect(h.s.pausedReason).toBe(pause);
       expect(getSelectedProvider()).toBe('codex');
       expect(selectProviderForGenerator().provider).toBe('codex');
       expect(h.s.generatorPromise).toBeNull();
+      // main's runner books each kind on the shared 'codex' breaker
+      const cooldown = getQuotaCooldown('codex');
+      if (kind === 'transient') {
+        expect(cooldown).toBeNull();
+        expect(h.scheduleTransportResume).toHaveBeenCalledTimes(1);
+      } else {
+        expect(cooldown).not.toBeNull();
+        if (kind === 'auth_invalid') expect(cooldown?.cause).toBe('auth');
+        if (kind === 'rate_limit') expect(cooldown?.window).toBe('rate_limit');
+      }
     });
   }
 
-  it('withholds starts during cooldown and releases the probe after failure', async () => {
-    const h = harness(async () => { throw new ClassifiedProviderError('auth fixture', { kind: 'auth_invalid', cause: null }); });
+  it('withholds starts during the breaker window and releases the probe after failure', async () => {
+    const h = harness(failingLikeCodex(new ClassifiedProviderError('auth fixture', { kind: 'auth_invalid', cause: null })));
     recordQuotaExhausted('codex', 'fixture');
     await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
     expect(h.codex).not.toHaveBeenCalled();
     recordQuotaExhausted('codex', 'fixture', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
     await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'test');
     await h.s.generatorPromise;
+    expect(h.codex).toHaveBeenCalledTimes(1);
+    // the failed probe re-armed the breaker, and no claim outlived the run
     expect(getQuotaCooldown('codex')?.probeClaimId).toBeNull();
-    expect(tryAdmitQuotaProbe('codex').admitted).toBe(true);
+    expect(tryAdmitQuotaProbe('codex').admitted).toBe(false);
   });
 
-  for (const kind of ['unrecoverable', 'auth_invalid']) {
-    it(`pauses repeated starts after ${kind} and re-arms a failed setup probe`, async () => {
-      const h = harness(async () => { throw new ClassifiedProviderError('setup fixture', { kind, cause: null }); });
-      await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'first');
-      await h.s.generatorPromise;
-      await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'second');
-      expect(h.codex).toHaveBeenCalledTimes(1);
-      expect(h.reset).toHaveBeenCalledTimes(1);
+  it('pauses Codex starts after a setup failure and lets one recovery probe through after the window', async () => {
+    const setup = new ClassifiedProviderError('Codex: no ChatGPT login', { kind: 'setup_required', cause: null });
+    const h = harness(failingLikeCodex(setup));
+    await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'first');
+    await h.s.generatorPromise;
+    expect(h.finalize).not.toHaveBeenCalled();
+    expect(h.s.pausedReason).toBe('setup_required');
+    expect(getDependencyStatus('codex_cli')?.message).toBe('Codex: no ChatGPT login');
+    expect(getQuotaCooldown('codex')).toBeNull();
+
+    await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'second');
+    expect(h.codex).toHaveBeenCalledTimes(1);
+
+    ageCodexSetupStatus();
+    await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe');
+    await h.s.generatorPromise;
+    expect(h.codex).toHaveBeenCalledTimes(2);
+    // the failed probe started a fresh window
+    await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'third');
+    expect(h.codex).toHaveBeenCalledTimes(2);
+    expect(h.finalize).not.toHaveBeenCalled();
+    expect(h.other).not.toHaveBeenCalled();
+  });
+
+  it('withholds requests queued behind a failed setup probe and starts the app-server once', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const starts = mock(async () => { await blocked; throw Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }); });
+    // Keep the real client queue and failure callback; only replace process startup.
+    provider.appServer.ensureStarted = starts;
+    const runs = Array.from({ length: 3 }, () => harness(async s => {
+      const c = { ...config };
+      provider.prepareSessionExtras(s, c);
+      try {
+        await provider.query([{ role: 'user', content: 'input' }], c);
+      } catch (error) {
+        provider.handleSessionError(error, s);
+      }
+    }));
+    try {
+      for (const h of runs) await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'queued');
+      release();
+      await Promise.all(runs.map(h => h.s.generatorPromise));
+      expect(starts).toHaveBeenCalledTimes(1);
+      expect(getDependencyStatus('codex_cli')).not.toBeNull();
       expect(getQuotaCooldown('codex')).toBeNull();
-      recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
-      await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe');
-      await h.s.generatorPromise;
-      await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'third');
-      expect(h.codex).toHaveBeenCalledTimes(2);
-      expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
-      expect(tryAdmitQuotaProbe('codex-setup', Date.now(), CODEX_SETUP_RECHECK_COOLDOWN_MS).admitted).toBe(false);
-      expect(h.finalize).not.toHaveBeenCalled();
-      expect(h.other).not.toHaveBeenCalled();
-    });
-  }
+      for (const h of runs) {
+        expect(h.s.pausedReason).toBe('setup_required');
+        expect(h.finalize).not.toHaveBeenCalled();
+        expect(h.other).not.toHaveBeenCalled();
+      }
+      ageCodexSetupStatus();
+      await runs[0].routes.ensureGeneratorRunning(runs[0].s.sessionDbId, 'recovery');
+      await runs[0].s.generatorPromise;
+      expect(starts).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      await provider.close();
+    }
+  });
 
-  it('admits only one setup probe and clears setup cooldown on successful generation', async () => {
-    recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+  it('clears the breaker and the setup status when a request is served', async () => {
+    recordQuotaExhausted('codex', 'fixture', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
+    recordCodexCliSetupRequired('fixture');
+    ageCodexSetupStatus();
     const provider = new CodexProvider(null as any, null as any) as any;
-    let release!: () => void;
-    provider.appServer.runTurn = () => new Promise(resolve => { release = () => resolve({ content: '' }); });
-    const h = harness(async () => { await provider.query([{ role: 'user', content: 'input' }], config); });
-    const other = harness(async () => {});
-    await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe');
-    await other.routes.ensureGeneratorRunning(other.s.sessionDbId, 'concurrent');
-    expect(other.codex).not.toHaveBeenCalled();
-    release();
-    await h.s.generatorPromise;
-    expect(getQuotaCooldown('codex-setup')).toBeNull();
-    expect(tryAdmitQuotaProbe('codex-setup').admitted).toBe(true);
+    provider.appServer.runTurn = mock(async (options: any) => { options.beforeSend(); return { content: '' }; });
+    await provider.query([{ role: 'user', content: 'probe' }], config);
+    expect(getQuotaCooldown('codex')).toBeNull();
+    expect(getDependencyStatus('codex_cli')).toBeNull();
   });
 
-  it('releases a setup probe when admission setup throws', async () => {
-    recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
-    const h = harness(async () => {});
-    (h.routes as any).applyTierRouting = async () => { throw new Error('routing fixture'); };
-    await expect(h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe')).rejects.toThrow('routing fixture');
-    expect(h.codex).not.toHaveBeenCalled();
-    expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
-  });
-
-  it('releases a setup probe on an unrelated transient failure', async () => {
-    recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
-    const h = harness(async () => { throw new ClassifiedProviderError('network fixture', { kind: 'transient', cause: null }); });
-    await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe');
-    await h.s.generatorPromise;
-    expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
-    expect(tryAdmitQuotaProbe('codex-setup', Date.now(), CODEX_SETUP_RECHECK_COOLDOWN_MS).admitted).toBe(true);
-  });
-
-  it('does not send a queued request after another session exhausts quota', async () => {
-    const provider = new CodexProvider(null as any, null as any) as any;
-    let release!: () => void;
-    const queued = new Promise<void>(resolve => { release = resolve; });
-    let sends = 0;
-    provider.appServer.runTurn = async (options: any) => {
-      await queued;
-      options.beforeSend();
-      sends++;
-      return { content: '' };
-    };
-    const result = provider.query([{ role: 'user', content: 'input' }], config);
-    recordQuotaExhausted('codex', 'fixture');
-    release();
-    await expect(result).rejects.toMatchObject({ kind: 'quota_paused' });
-    expect(sends).toBe(0);
-  });
-
-  for (const message of ['Codex executable not found', 'not logged in']) {
-    it(`blocks already queued sessions before startup after ${message}`, async () => {
+  for (const [arm, kind] of [
+    [() => recordQuotaExhausted('codex', 'usage limit fixture'), 'quota_exhausted'],
+    [() => recordAuthCooldown('codex', 'login fixture'), 'auth_invalid'],
+    [() => recordCodexCliSetupRequired('setup fixture'), 'setup_required'],
+  ] as const) {
+    it(`does not send a queued request once another request armed ${kind}`, async () => {
       const provider = new CodexProvider(null as any, null as any) as any;
       let release!: () => void;
-      const blocked = new Promise<void>(resolve => { release = resolve; });
-      const starts = mock(async () => { await blocked; throw new Error(message); });
-      // Keep the real client queue and failure callback; only replace process startup.
-      provider.appServer.ensureStarted = starts;
-      const runs = Array.from({ length: 3 }, () => harness(async s => {
-        const c = { ...config };
-        provider.prepareSessionExtras(s, c);
-        await provider.query([{ role: 'user', content: 'input' }], c);
-      }));
-      try {
-        for (const h of runs) await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'queued');
-        expect(runs.every(h => h.codex.mock.calls.length === 1)).toBe(true);
-        release();
-        await Promise.all(runs.map(h => h.s.generatorPromise));
-        expect(starts).toHaveBeenCalledTimes(1);
-        expect(getQuotaCooldown('codex-setup')).not.toBeNull();
-        expect(getQuotaCooldown('codex')).toBeNull();
-        for (const h of runs) {
-          expect(h.reset).toHaveBeenCalledTimes(1);
-          expect(h.finalize).not.toHaveBeenCalled();
-          expect(h.other).not.toHaveBeenCalled();
+      const queued = new Promise<void>(resolve => { release = resolve; });
+      let sends = 0;
+      provider.appServer.runTurn = async (options: any) => {
+        await queued;
+        try {
+          options.beforeSend();
+        } catch (error) {
+          options.onFailure(error);
+          throw error;
         }
-        recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
-        await runs[0].routes.ensureGeneratorRunning(runs[0].s.sessionDbId, 'recovery');
-        await runs[0].s.generatorPromise;
-        expect(starts).toHaveBeenCalledTimes(2);
-        expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
-      } finally {
-        release();
-        await provider.close();
-      }
+        sends++;
+        return { content: '' };
+      };
+      const result = provider.query([{ role: 'user', content: 'input' }], config);
+      arm();
+      const armedAt = getQuotaCooldown('codex')?.armedAtMs;
+      release();
+      await expect(result).rejects.toMatchObject({ kind });
+      expect(sends).toBe(0);
+      // the withheld request repeats a known refusal; it does not re-arm the breaker
+      expect(getQuotaCooldown('codex')?.armedAtMs).toBe(armedAt);
     });
   }
 
-  it('allows only the owned setup probe through send admission and clears it on success', async () => {
-    recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
-    const claim = tryAdmitQuotaProbe('codex-setup', Date.now(), CODEX_SETUP_RECHECK_COOLDOWN_MS);
+  it('sends once the breaker window has elapsed (the probe is not withheld)', async () => {
+    recordQuotaExhausted('codex', 'fixture', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
     const provider = new CodexProvider(null as any, null as any) as any;
-    const sends = mock(async (options: any) => { options.beforeSend(); return { content: '' }; });
+    const sends = mock(async (options: any) => { options.beforeSend(); return { content: '<observation/>' }; });
     provider.appServer.runTurn = sends;
-    const s = session();
-    s.codexSetupProbeClaimId = claim.claimId;
-    const c = { ...config };
-    provider.prepareSessionExtras(s, c);
-    await expect(provider.query([{ role: 'user', content: 'input' }], config)).rejects.toMatchObject({ kind: 'setup_paused' });
-    expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBe(claim.claimId);
-    await provider.query([{ role: 'user', content: 'probe' }], c);
-    expect(getQuotaCooldown('codex-setup')).toBeNull();
+    await provider.query([{ role: 'user', content: 'input' }], config);
+    expect(sends).toHaveBeenCalledTimes(1);
+    expect(getQuotaCooldown('codex')).toBeNull();
   });
 
   it('forwards all conversation text and accepts successful quota-related prose', async () => {
@@ -274,54 +258,57 @@ describe('Codex provider integration', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it('cancels the native request when its session aborts', async () => {
+  it('uses the shared LLM deadline, or the caller\'s own (the field pass)', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
-    const s = session();
-    const c = { ...config };
-    provider.prepareSessionExtras(s, c);
-    let started!: () => void;
-    let nativeSignal: AbortSignal | undefined;
-    const ready = new Promise<void>(resolve => { started = resolve; });
-    provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
-      nativeSignal = options.signal;
-      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
-      started();
-    });
-    const result = provider.query([{ role: 'user', content: 'input' }], c);
-    await ready;
-    s.abortController.abort(new Error('stopped'));
-    await expect(result).rejects.toThrow('Aborted');
-    expect(nativeSignal?.aborted).toBe(true);
+    const turn = mock(async () => ({ content: 'ok' }));
+    provider.appServer.runTurn = turn;
+    const savedTimeout = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+    process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '45000';
+    try {
+      await provider.query([{ role: 'user', content: 'input' }], config);
+      await provider.query([{ role: 'user', content: 'condense' }], config, undefined, 9000);
+    } finally {
+      if (savedTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+      else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = savedTimeout;
+    }
+    expect((turn.mock.calls[0] as any)[0].timeoutMs).toBe(45000);
+    expect((turn.mock.calls[1] as any)[0].timeoutMs).toBe(9000);
   });
 
-  it('cancels a compression request while the session signal remains active', async () => {
-    const provider = new CodexProvider(null as any, null as any) as any;
-    const sessionController = new AbortController();
-    const compressionController = new AbortController();
-    const c = { ...config, signal: sessionController.signal };
-    let started!: () => void;
-    let nativeSignal: AbortSignal | undefined;
-    const ready = new Promise<void>(resolve => { started = resolve; });
-    provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
-      nativeSignal = options.signal;
-      options.signal.addEventListener('abort', () => reject(new Error('compression aborted')), { once: true });
-      started();
+  for (const source of ['session', 'caller'] as const) {
+    it(`cancels the native request when the ${source} signal aborts`, async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const s = session();
+      const c = { ...config };
+      provider.prepareSessionExtras(s, c);
+      const caller = new AbortController();
+      let started!: () => void;
+      let nativeSignal: AbortSignal | undefined;
+      const ready = new Promise<void>(resolve => { started = resolve; });
+      provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
+        nativeSignal = options.signal;
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        started();
+      });
+      const result = provider.query([{ role: 'user', content: 'input' }], c, caller.signal);
+      await ready;
+      if (source === 'session') s.abortController.abort(new Error('stopped'));
+      else caller.abort(new Error('field deadline'));
+      await expect(result).rejects.toThrow('Aborted');
+      expect(nativeSignal?.aborted).toBe(true);
     });
-    const result = provider.query([{ role: 'user', content: 'compress payload' }], c, compressionController.signal);
-    await ready;
-    compressionController.abort();
-    await expect(result).rejects.toThrow('Aborted');
-    expect(nativeSignal?.aborted).toBe(true);
-    expect(sessionController.signal.aborted).toBe(false);
-  });
+  }
 
-  for (const [message, kind] of [
-    ['Codex executable not found', 'unrecoverable'], ['not logged in', 'auth_invalid'],
-    ['usage limit reached', 'quota_exhausted'], ['429 rate limit', 'rate_limit'],
-    ['context window exceeded', 'context_overflow'], ['connection closed', 'transient'],
-  ]) {
-    it(`classifies ${kind} transport failures`, () => {
-      expect(classifyCodexError(new Error(message)).kind).toBe(kind);
+  for (const [error, kind] of [
+    [new Error('Codex executable not found'), 'setup_required'],
+    [Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }), 'setup_required'],
+    [Object.assign(new Error('auth file readable by others'), { code: CODEX_SETUP_REQUIRED_CODE }), 'setup_required'],
+    [new Error('not logged in'), 'auth_invalid'],
+    [new Error('usage limit reached'), 'quota_exhausted'], [new Error('429 rate limit'), 'rate_limit'],
+    [new Error('context window exceeded'), 'context_overflow'], [new Error('connection closed'), 'transient'],
+  ] as const) {
+    it(`classifies "${error.message}" as ${kind}`, () => {
+      expect(classifyCodexError(error).kind).toBe(kind);
     });
   }
 
@@ -338,20 +325,27 @@ describe('Codex provider integration', () => {
     });
   }
 
-  it('arms the quota cooldown without retrying a structured usage-limit failure', async () => {
-    const provider = new CodexProvider(null as any, null as any) as any;
-    const sends = mock(async () => {
-      throw Object.assign(new Error('Codex app-server reported an error'), { codexErrorInfo: 'usageLimitExceeded' });
+  for (const [info, check] of [
+    ['usageLimitExceeded', () => expect(getQuotaCooldown('codex')?.cause).toBeUndefined()],
+    ['unauthorized', () => expect(getQuotaCooldown('codex')?.cause).toBe('auth')],
+  ] as const) {
+    it(`arms the shared breaker before the queue moves on, without retrying ${info}`, async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const sends = mock(async (options: any) => {
+        const error = Object.assign(new Error('Codex app-server reported an error'), { codexErrorInfo: info });
+        options.onFailure(error);
+        throw error;
+      });
+      provider.appServer.runTurn = sends;
+      try {
+        await expect(provider.query([{ role: 'user', content: 'input' }], { ...config })).rejects.toBeInstanceOf(ClassifiedProviderError);
+        expect(sends).toHaveBeenCalledTimes(1);
+        expect(getQuotaCooldown('codex')).not.toBeNull();
+        check();
+        expect(getDependencyStatus('codex_cli')).toBeNull();
+      } finally {
+        await provider.close();
+      }
     });
-    provider.appServer.runTurn = sends;
-    try {
-      await expect(provider.query([{ role: 'user', content: 'input' }], { ...config }))
-        .rejects.toMatchObject({ kind: 'quota_exhausted' });
-      expect(sends).toHaveBeenCalledTimes(1);
-      expect(getQuotaCooldown('codex')).not.toBeNull();
-      expect(getQuotaCooldown('codex-setup')).toBeNull();
-    } finally {
-      await provider.close();
-    }
-  });
+  }
 });

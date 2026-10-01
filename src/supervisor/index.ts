@@ -12,11 +12,26 @@ import { startHealthChecker, stopHealthChecker } from './health-checker.js';
 import { sweepOrphanedChromaTrees } from './orphan-chroma-sweep.js';
 import { paths } from '../shared/paths.js';
 
+// Moved beside verifyPidFileOwnership so npx-cli callers can read the PID file
+// without importing the supervisor; re-exported so existing imports keep working.
+export { readOwnedWorkerPidInfo } from './process-registry.js';
+
 const PID_FILE = paths.workerPid();
 
 interface ValidateWorkerPidOptions {
   logAlive?: boolean;
   pidFilePath?: string;
+  /**
+   * I-4 (bwrap --unshare-pid): a caller inside a PID namespace gets ESRCH
+   * from process.kill(hostPid, 0) even when the host worker is healthy, so
+   * this validator alone cannot distinguish "dead" from "invisible". A
+   * caller that has already proven liveness some other way (HTTP health
+   * probe) can pass removeStale:false to inspect the file without deleting
+   * it out from under a perfectly healthy host worker. Defaults to true so
+   * every other caller (including the supervisor boot path) keeps deleting
+   * a genuinely stale file exactly as before.
+   */
+  removeStale?: boolean;
 }
 
 export type ValidateWorkerPidStatus = 'missing' | 'alive' | 'stale' | 'invalid';
@@ -163,23 +178,6 @@ export function configureSupervisorSignalHandlers(shutdownHandler: () => Promise
   supervisorSingleton.configureSignalHandlers(shutdownHandler);
 }
 
-/**
- * The verified-owner PID info from the worker PID file, or null when the file
- * is missing, unparseable, or names a process that is not a live claude-mem
- * worker. Read-only sibling of validateWorkerPidFile for callers that need
- * the pid itself (the hook's stale-worker kill in shared/worker-utils.ts).
- */
-export function readOwnedWorkerPidInfo(): PidInfo | null {
-  if (!existsSync(PID_FILE)) return null;
-  let pidInfo: PidInfo | null;
-  try {
-    pidInfo = JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo | null;
-  } catch {
-    return null;
-  }
-  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
-}
-
 export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): ValidateWorkerPidStatus {
   const pidFilePath = options.pidFilePath ?? PID_FILE;
 
@@ -214,6 +212,10 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
       });
     }
     return 'alive';
+  }
+
+  if (options.removeStale === false) {
+    return 'stale';
   }
 
   logger.info('SYSTEM', 'Removing stale PID file (worker process is dead or PID has been reused)', {

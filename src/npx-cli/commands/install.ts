@@ -5,12 +5,12 @@ import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -18,9 +18,12 @@ import {
   ensureBun,
   ensureUv,
   installPluginDependencies,
+  provisionTreeSitterCli,
   writeInstallMarker,
   isInstallCurrent,
+  getBunPath,
 } from '../install/setup-runtime.js';
+import { formatUsageSummaryLines, readUsageSummary, type UsageSummary } from '../install/usage-summary.js';
 import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag } from './server-runtime-setup.js';
 import { ErrorSeverity } from '../install/error-taxonomy.js';
@@ -31,7 +34,7 @@ import {
   InstallAbortError,
   type InstallSummary,
 } from '../install/error-reporter.js';
-import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
+import { extractEresolveBlock, isEresolve, npmErrorCode, runNpmStrict } from '../install/npm-install-helper.js';
 import {
   buildProviderLabels,
   CMEM_INSTALLER_OAUTH_POLL_URL,
@@ -56,6 +59,9 @@ function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[
 }
 
 const isInteractive = process.stdin.isTTY === true;
+
+/** How long `install` waits for the tree-sitter CLI download before warning and moving on to sign-in. */
+const TREE_SITTER_INSTALL_BUDGET_MS = 2 * 60 * 1000;
 
 /**
  * Which package manager launched this CLI (npx / bunx / pnpm / yarn), parsed
@@ -177,9 +183,13 @@ import {
   readPluginVersion,
   writeJsonFileAtomic,
 } from '../utils/paths.js';
+import { prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
-import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
+import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
+import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
+import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
+import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
@@ -693,6 +703,7 @@ function copyPluginToMarketplace(): void {
 
   const allowedTopLevelEntries = [
     '.agents',
+    '.claude-plugin',
     '.codex-plugin',
     '.cursor-plugin',
     'claude-mem-cursor',
@@ -721,6 +732,32 @@ function copyPluginToMarketplace(): void {
   }
 
   writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
+  writeTrimmedMarketplaceManifest(marketplaceDir);
+}
+
+/**
+ * Keep only the marketplace entries whose local `source` shipped.
+ *
+ * The repo's root .claude-plugin/marketplace.json also lists claude-mem-cowork
+ * (`./cowork`), which the npm package does not ship. Copied verbatim, the
+ * manifest would advertise a plugin whose source is missing from the
+ * marketplace directory, so drop every entry whose relative source path does
+ * not exist there. Non-path sources (a GitHub repo object) are kept as-is.
+ */
+export function writeTrimmedMarketplaceManifest(marketplaceDir: string): void {
+  const manifestPath = join(marketplaceDir, '.claude-plugin', 'marketplace.json');
+  if (!existsSync(manifestPath)) return;
+
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { plugins?: unknown };
+  if (!Array.isArray(manifest.plugins)) return;
+
+  const shipped = manifest.plugins.filter((entry) => {
+    const source = (entry as { source?: unknown } | null)?.source;
+    return typeof source !== 'string' || !source.startsWith('.') || existsSync(join(marketplaceDir, source));
+  });
+  if (shipped.length === manifest.plugins.length) return;
+
+  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, plugins: shipped }, null, 2)}\n`);
 }
 
 /**
@@ -745,13 +782,37 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
-function copyPluginToCache(version: string): void {
+async function copyPluginToCache(version: string): Promise<void> {
   const sourcePluginDirectory = npmPackagePluginDirectory();
   const cachePath = pluginCacheDirectory(version);
 
   rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
+
+  // Prune superseded versions now that the new one has landed. Without this the
+  // cache grew one directory per release forever, and every retained directory
+  // stayed a runnable old-version worker source (#4105). The safe prune keeps
+  // the just-written version plus N-1 and protects any live worker's version —
+  // the repair path reaches here without stopping the worker, so a running
+  // older worker must never lose its source directory. It also keeps the
+  // newest version whose dependencies are complete: the one just copied has
+  // none until "Setting up runtime" installs them, and that step can fail.
+  // Pruning is housekeeping: it runs inside runTasks, before the sign-in/trial
+  // step, so any failure (a corrupt installed_plugins.json, say) only warns.
+  try {
+    const pruned = await prunePluginCacheSafely({ additionalProtectedVersions: [version] });
+    if (pruned.retainedForLiveWorker) {
+      log.info('Skipped cache prune: a worker is running but its version could not be read; retaining all versions.');
+    } else if (pruned.removed.length > 0) {
+      log.info(`Pruned ${pruned.removed.length} stale plugin cache version(s): ${pruned.removed.join(', ')}`);
+    }
+    for (const failure of pruned.failed) {
+      log.warn(`Could not prune cache version ${failure.version}: ${failure.reason}`);
+    }
+  } catch (error: unknown) {
+    log.warn(`Skipped cache prune: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function writeMarketplaceInstallMarkers(
@@ -797,10 +858,12 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 
   if (!isEresolve(strictResult.stderr)) {
     // A strict failure with no ERESOLVE is a real bug — never retry, ABORT.
+    // npm's own error code goes in the cause so the taxonomy can name the fix.
+    const npmCode = npmErrorCode(strictResult.stderr);
     installerError(ErrorSeverity.ABORT, {
       component: 'marketplace-npm-install',
       phase: 'marketplace-deps',
-      cause: new Error(`npm install failed (exit ${strictResult.code})`),
+      cause: new Error(`npm install failed (exit ${strictResult.code})${npmCode ? `: ${npmCode}` : ''}`),
       details: strictResult.stderr.slice(0, 4000),
     }, summary);
   }
@@ -827,62 +890,35 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
   }, summary);
 }
 
-function mergeSettings(updates: Record<string, string>): boolean {
-  const path = USER_SETTINGS_PATH;
-  try {
-    // Read the FULL document so we can write it back intact. The
-    // Claude-Code-style settings.json wraps env vars in a top-level `env`
-    // block and exposes peer keys at the root (hooks, permissions,
-    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
-    // env subtree for reads, but writing that flattened view back as the
-    // entire file silently drops every non-env top-level key — destroying
-    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
-    // had carefully written.
-    //
-    // Track whether the file uses the env-nested shape so we mutate only the
-    // relevant subtree and preserve every other top-level key on write.
-    let document: Record<string, unknown> = {};
-    let envNested = false;
-    if (existsSync(path)) {
-      try {
-        const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
-        if (parsed && typeof parsed === 'object') {
-          document = parsed as Record<string, unknown>;
-          envNested = typeof document.env === 'object' && document.env !== null;
-        }
-      } catch (parseError: unknown) {
-        console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        document = {};
-      }
-    } else {
-      const dir = dirname(path);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    }
-
-    const target = envNested
-      ? (document.env as Record<string, unknown>)
-      : document;
-    for (const [key, value] of Object.entries(updates)) {
-      target[key] = value;
-    }
-
-    writeSettingsJsonAtomic(path, document);
-    // settings.json can carry tokens (CMEM Pro setup token, provider API
-    // keys); a fresh file inherits the umask (usually 0644), leaving them
-    // world-readable. Tighten to owner-only. Fail-soft: a chmod failure must
-    // never fail the settings write itself, but it is not silent.
-    try {
-      chmodSync(path, 0o600);
-    } catch (chmodError: unknown) {
-      log.warn(`Could not restrict permissions on ${path} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
-    }
-    return true;
-  } catch (error: unknown) {
-    log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
+/**
+ * Merge installer settings into settings.json through the shared settings
+ * document boundary. The whole document is kept (a Claude-Code-style `env`
+ * wrapper and its root peers survive). An unreadable file is no longer reset
+ * to `{}`: it is moved aside to `settings.json.corrupt-<epoch-ms>` (the user's
+ * bytes are kept) and a fresh document is written, so a corrupt file can never
+ * stop setup or drop the sign-in's memory key. Returns false only when the
+ * write itself fails; the worker and hooks refuse-and-report instead. The
+ * boundary writes settings.json owner-only from the first byte (it can carry
+ * the CMEM Pro setup token and provider API keys).
+ */
+export function mergeSettings(
+  updates: Record<string, string>,
+  settingsPath: string = USER_SETTINGS_PATH,
+): boolean {
+  const result = updateSettingsDocument(settingsPath, updates, {}, undefined, { quarantineCorrupt: true });
+  if (result.status === 'refused') {
+    const reason = result.error instanceof Error ? result.error.message : String(result.error);
+    // A quarantined file is moved back when the fresh write fails; quarantinedTo
+    // survives only if even that move failed, so say where the bytes are.
+    log.error(result.quarantinedTo
+      ? `Failed to write settings to ${settingsPath}: ${reason}. Its unreadable previous contents are in ${result.quarantinedTo}.`
+      : `Failed to write settings to ${settingsPath}: ${reason}`);
     return false;
   }
+  if (result.quarantinedTo) {
+    log.warn(`${settingsPath} could not be read, so it was moved to ${result.quarantinedTo} and a fresh settings file was started. Copy back any settings you still need from it.`);
+  }
+  return true;
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
@@ -1032,18 +1068,27 @@ async function maybeBootstrapServerApiKey(): Promise<void> {
 }
 
 async function bootstrapAndPersistServerApiKey(): Promise<void> {
-  const { bootstrapServerApiKey, persistServerSettings } = await import(
+  const { bootstrapServerApiKey, revokeServerApiKey, persistServerSettings } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
   const result = await bootstrapServerApiKey();
-  persistServerSettings(USER_SETTINGS_PATH, {
+  const persisted = persistServerSettings(USER_SETTINGS_PATH, {
     apiKey: result.rawKey,
     projectId: result.projectId,
   });
-  log.info(
-    `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
-      + 'Settings saved with mode 0600.',
-  );
+  if (persisted) {
+    log.info(
+      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
+        + 'Settings saved with mode 0600.',
+    );
+    return;
+  }
+  // The key exists server-side but no hook can use it: revoke it rather than
+  // leave an orphaned live credential, and say how to recover.
+  await revokeServerApiKey(result.apiKeyId).catch((error: unknown) => {
+    log.warn(`Could not revoke the unpersisted server API key: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  log.warn('Server API key was provisioned but settings.json could not be updated. Repair or restore ~/.claude-mem/settings.json and rerun the installer.');
 }
 
 /**
@@ -1491,6 +1536,33 @@ export function lastOAuthStartFailure(): OAuthStartFailure | null {
   return lastStartFailure;
 }
 
+export type InstallState = 'fresh' | 'update';
+
+/**
+ * What this install tells cmem.ai alongside the sign-in start request: whether
+ * it ran over an existing install, and the numbers-only local usage summary
+ * (see install/usage-summary.ts). Set once by the install command before any
+ * pairing starts; both are optional on the wire and omitted when unknown.
+ */
+let signupContext: { installState?: InstallState; usageSummary?: UsageSummary | null } = {};
+export function setInstallerSignupContext(ctx: { installState?: InstallState; usageSummary?: UsageSummary | null }): void {
+  signupContext = { ...ctx };
+}
+
+/** Pure: the JSON body for POST /api/installer/oauth/start. */
+export function buildInstallerOAuthStartBody(
+  source: string,
+  deviceName: string,
+  ctx: { installState?: InstallState; usageSummary?: UsageSummary | null } = {},
+): Record<string, unknown> {
+  return {
+    source,
+    device_name: deviceName,
+    ...(ctx.installState ? { install_state: ctx.installState } : {}),
+    ...(ctx.usageSummary ? { usage_summary: ctx.usageSummary } : {}),
+  };
+}
+
 /** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
 export async function startInstallerOAuthPairing(
   opts: { source?: string; timeoutMs?: number } = {},
@@ -1503,7 +1575,7 @@ export async function startInstallerOAuthPairing(
     const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source, device_name: hostname() }),
+      body: JSON.stringify(buildInstallerOAuthStartBody(source, hostname(), signupContext)),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -1983,11 +2055,142 @@ export interface InstallOptions {
   serverUrl?: string;
 }
 
-async function requireWorkerStopped(
+/**
+ * How the installer reacts when the worker port is not free. This runs before
+ * the sign-in/trial step, which the install must still reach, so it aborts only
+ * when a live claude-mem worker demonstrably holds the port: the verified owner
+ * of the PID file, the worker the stop targeted, is still alive. Its in-memory
+ * configuration would outlive the overwrite. A port some other process holds,
+ * or one taken again after that worker exited, only warns. Exported for tests.
+ */
+export function workerShutdownFailure(
+  blocker: ShutdownBlocker,
+  port: number | string,
+): { severity: ErrorSeverity; cause: string; remediation: string } {
+  switch (blocker.kind) {
+    case 'port-held-by-other-process':
+      return {
+        severity: ErrorSeverity.WARN_CONTINUE,
+        cause: `Port ${port} is held by a process that is not a claude-mem worker (no live claude-mem worker owns it), so the worker cannot listen there.`,
+        remediation: `Stop the process using port ${port}, or set CLAUDE_MEM_WORKER_PORT to a free port in ${USER_SETTINGS_PATH}, then run \`npx claude-mem start\`.`,
+      };
+    case 'port-rebound': {
+      const owner = blocker.ownerPid === null ? 'another process' : `another claude-mem worker (PID ${blocker.ownerPid})`;
+      return {
+        severity: ErrorSeverity.WARN_CONTINUE,
+        cause: `The claude-mem worker stopped, but ${owner} took port ${port} again before the install finished: a hook, the MCP server or a process manager started it, or a leftover process still holds the socket.`,
+        remediation: 'When the install finishes, run `npx claude-mem restart` (or restart the worker with whatever manages it) so it runs the new version.',
+      };
+    }
+    case 'worker-still-running': {
+      if (blocker.pid === null) {
+        // Identified only by its /api/health answers: never name that PID in
+        // a kill command (it may belong to a container, or be reused).
+        return {
+          severity: ErrorSeverity.ABORT,
+          cause: 'The running claude-mem worker accepted the shutdown request but was still serving after 10 seconds.',
+          remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+        };
+      }
+      // The PID was verified as ours (PID file plus start token) at the
+      // deadline, so naming it cannot point the user at an unrelated process.
+      const killCommand = process.platform === 'win32' ? `taskkill /PID ${blocker.pid} /F` : `kill ${blocker.pid}`;
+      return {
+        severity: ErrorSeverity.ABORT,
+        cause: `The claude-mem worker (PID ${blocker.pid}) did not stop within 10 seconds.`,
+        remediation: `Run \`npx claude-mem stop\`, or end PID ${blocker.pid} (\`${killCommand}\`), then run \`npx claude-mem install\` again.`,
+      };
+    }
+  }
+}
+
+/** Evidence sources for the installer's worker stop, injectable so tests never touch a real worker. */
+export interface WorkerStopDeps {
+  stopWorker?: typeof shutdownWorkerAndWait;
+  /** The live, verified PID-file owner, or null. */
+  readOwnedWorker?: () => PidInfo | null;
+  /** How long to wait for the spawn lock; defaults to the lock's staleness window. */
+  spawnLockWaitMs?: number;
+}
+
+/**
+ * How long the installer waits for the spawn lock: a launcher normally holds
+ * it for seconds, and any lock not refreshed within the staleness window can
+ * be broken, so waiting that long gets it from a stuck or crashed holder too.
+ */
+const INSTALL_SPAWN_LOCK_WAIT_MS = SPAWN_LOCK_STALE_MS + 5_000;
+
+/**
+ * Stop the running worker, then overwrite the plugin files, holding the spawn
+ * lock from before the stop until the overwrite is done. Without it a hook or
+ * the MCP server could lazily start a worker from half-copied files the moment
+ * the old one exited; the stop then found the port taken again. Exported for
+ * tests.
+ */
+export async function overwriteWithWorkerStopped(
+  port: number | string,
+  summary: InstallSummary,
+  overwrite: () => Promise<void>,
+  deps: WorkerStopDeps = {},
+): Promise<void> {
+  let releaseSpawnLock = await holdSpawnLock(0);
+  if (!releaseSpawnLock) {
+    log.info('Waiting for another claude-mem launcher to finish starting the worker…');
+    releaseSpawnLock = await holdSpawnLock(deps.spawnLockWaitMs ?? INSTALL_SPAWN_LOCK_WAIT_MS);
+  }
+  if (!releaseSpawnLock) {
+    // Only a holder that keeps refreshing the lock (another install running
+    // now) gets here. Aborting is not an option before sign-in, so overwrite
+    // and say how to recover if a worker started from the half-copied files.
+    installerError(ErrorSeverity.WARN_CONTINUE, {
+      component: 'worker-shutdown',
+      phase: 'pre-overwrite',
+      cause: new Error('Another claude-mem process held the worker spawn lock, so the plugin files were overwritten without it.'),
+      remediation: 'When the install finishes, run `npx claude-mem restart` so the worker runs the new files.',
+    }, summary);
+  }
+  try {
+    await requireWorkerStopped(port, 'pre-overwrite', summary, deps);
+    await overwrite();
+  } finally {
+    releaseSpawnLock?.();
+  }
+}
+
+/** The verified PID-file owner on `port`, or null; never throws. */
+function readOwnedWorkerOnPort(port: number | string, readOwnedWorker: () => PidInfo | null): PidInfo | null {
+  try {
+    const owner = readOwnedWorker();
+    return owner && (!owner.port || Number(owner.port) === Number(port)) ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Exported for tests. */
+export async function requireWorkerStopped(
   port: number | string,
   phase: 'pre-overwrite' | 'provider-cutover',
   summary: InstallSummary,
+  deps: WorkerStopDeps = {},
 ): Promise<void> {
+  const stopWorker = deps.stopWorker ?? shutdownWorkerAndWait;
+  // CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally
+  // (#2828). claude-mem never stops, kills or recycles it, and its manager
+  // would restart it the moment it exited, so leave it running and say once
+  // how to load the new version.
+  if (isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART') })) {
+    if (phase === 'pre-overwrite') {
+      installerError(ErrorSeverity.WARN_CONTINUE, {
+        component: 'worker-shutdown',
+        phase,
+        cause: new Error('CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally, so the installer did not stop it.'),
+        remediation: 'When the install finishes, restart the worker with whatever manages it so it runs the new version.',
+      }, summary);
+    }
+    return;
+  }
+
   const spinner = isInteractive ? p.spinner() : null;
   const action = phase === 'pre-overwrite'
     ? 'Stopping running worker (so we can overwrite cleanly)…'
@@ -1995,32 +2198,50 @@ async function requireWorkerStopped(
   spinner?.start(action);
 
   try {
-    const result = await shutdownWorkerAndWait(port, 10000);
+    const result = await stopWorker(port, 10000);
     if (!result.stopped) {
-      spinner?.error('Running worker did not stop; refusing to overwrite its live configuration.');
-      installerError(ErrorSeverity.ABORT, {
+      const failure = workerShutdownFailure(result.blocker, port);
+      if (failure.severity === ErrorSeverity.ABORT) {
+        spinner?.error('Running worker did not stop; refusing to overwrite its live configuration.');
+      }
+      // ABORT throws; WARN_CONTINUE records the warning for the end-of-install summary.
+      installerError(failure.severity, {
         component: 'worker-shutdown',
         phase,
-        cause: new Error('The existing worker did not stop within 10 seconds.'),
-        remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+        cause: new Error(failure.cause),
+        remediation: failure.remediation,
       }, summary);
     }
 
-    const stopMessage = result.workerWasRunning
-      ? 'Stopped running worker before configuration cutover.'
-      : 'No worker running — proceeding.';
+    const stopMessage = result.stopped
+      ? result.workerWasRunning
+        ? 'Stopped running worker before configuration cutover.'
+        : 'No worker running — proceeding.'
+      : result.blocker.kind === 'port-rebound'
+        ? `Stopped the running worker, but port ${port} was taken again — proceeding.`
+        : `Port ${port} is held by another process, not a claude-mem worker — proceeding.`;
     if (spinner) spinner.stop(stopMessage);
     else if (result.workerWasRunning) log.info(stopMessage);
   } catch (error: unknown) {
     if (error instanceof InstallAbortError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     if (spinner) spinner.error(`Worker shutdown failed: ${message}`);
-    else console.warn('[install] Worker shutdown failed:', message);
-    installerError(ErrorSeverity.ABORT, {
+    // The stop itself failed, so decide from the ownership record alone: a
+    // live, verified worker on this port must not have its files overwritten;
+    // with none, nothing shows a claude-mem worker holds the port, and the
+    // install must still reach sign-in.
+    const owner = readOwnedWorkerOnPort(port, deps.readOwnedWorker ?? readOwnedWorkerPidInfo);
+    if (owner) {
+      const failure = workerShutdownFailure({ kind: 'worker-still-running', pid: owner.pid }, port);
+      // ABORT: throws.
+      installerError(failure.severity, { component: 'worker-shutdown', phase, cause: error, remediation: failure.remediation }, summary);
+      return;
+    }
+    installerError(ErrorSeverity.WARN_CONTINUE, {
       component: 'worker-shutdown',
       phase,
       cause: error,
-      remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+      remediation: 'When the install finishes, run `npx claude-mem restart` so the worker runs the new version.',
     }, summary);
   }
 }
@@ -2176,6 +2397,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
   log.info(segments.join(` ${dot} `));
 
+  // Numbers-only local usage summary for the sign-in start request (and the
+  // block below). Read before the worker is restarted; any failure omits it.
+  const usageSummary = await readUsageSummary({ dbPath: resolveDbPath(), bunPath: getBunPath() })
+    .catch(() => null);
+  setInstallerSignupContext({ installState: alreadyInstalled ? 'update' : 'fresh', usageSummary });
+  const usageLines = formatUsageSummaryLines(usageSummary);
+  if (usageLines.length > 0) log.info(usageLines.join('\n'));
+
   // All claude-mem hooks run via `"shell": "bash"`; on Windows, Claude Code
   // resolves that through Git for Windows with no WSL fallback. Surfacing it
   // here — rather than letting the first hook throw an unbranded error — is
@@ -2228,17 +2457,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const needsMarketplace = selectedIDEs.length > 0;
 
   {
-    if (needsMarketplace) {
-      const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
-      await requireWorkerStopped(installPort, 'pre-overwrite', summary);
-    }
-
     const tasks: TaskDescriptor[] = [
       {
         title: 'Caching plugin version',
         task: async (message) => {
           message(`Caching v${version}...`);
-          copyPluginToCache(version);
+          await copyPluginToCache(version);
           return `Plugin cached (v${version}) ${styleText('green', 'OK')}`;
         },
       },
@@ -2283,6 +2507,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
+          // Installs run with lifecycle scripts suppressed, so tree-sitter-cli's
+          // own download never ran (#2910). This runs before the sign-in/trial
+          // step, so a failure only warns and a stalled download is cut off at
+          // TREE_SITTER_INSTALL_BUDGET_MS; `npx claude-mem repair` retries it
+          // with the full dependency timeout.
+          const stopTreeSitterHeartbeat = startHeartbeat(message, 'Checking the tree-sitter CLI…');
+          try {
+            await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary, TREE_SITTER_INSTALL_BUDGET_MS);
+          } finally {
+            stopTreeSitterHeartbeat();
+          }
           writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },
@@ -2322,7 +2557,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       });
     }
 
-    await runTasks(tasks);
+    if (needsMarketplace) {
+      await overwriteWithWorkerStopped(getSetting('CLAUDE_MEM_WORKER_PORT'), summary, () => runTasks(tasks));
+    } else {
+      await runTasks(tasks);
+    }
   }
 
   const failedIDEs = await setupIDEs(selectedIDEs, summary);
@@ -2593,7 +2832,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
-      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link; nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine. cmem.ai is contacted once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai (telemetry is separate: npx claude-mem telemetry).`,
     ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
@@ -2676,11 +2915,13 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         // fail immediately with no package.json to install against.
         if (!existsSync(join(cacheDir, 'package.json'))) {
           message('Cache missing — repopulating from npm package…');
-          copyPluginToCache(version);
+          await copyPluginToCache(version);
         }
         message('Reinstalling plugin dependencies…');
         const { bunPath } = bun;
         await installPluginDependencies(cacheDir, bunPath);
+        message('Provisioning the tree-sitter CLI…');
+        await provisionTreeSitterCli(cacheDir, ErrorSeverity.ABORT, summary);
         writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
         return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
       },
