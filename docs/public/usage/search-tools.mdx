@@ -236,11 +236,11 @@ Step 3: get_observations(ids=[<critical_observations>])
 
 When the vector index (Chroma) is running, `search` first matches your query **by meaning**, so describe what you are looking for in plain words: `query="why the worker failed to start after the upgrade"`. Keyword matching fills any record category the semantic pass left empty, and answers on its own when the vector index is off or unavailable.
 
-Keyword matching reads the query as plain words. It has no operators:
+Keyword matching of observations and session summaries reads the query as plain words. It has no operators:
 
 - **Every word must appear** somewhere in the record, in any order and in any field. `query="security deprecated"` finds records that mention both.
 - **`AND`, `OR`, `NOT`, quotes, parentheses and `field:` prefixes are ordinary words.** `query="security NOT deprecated"` requires "not" and "deprecated" too, and `query='"database migration"'` is not a phrase search: the two words can appear anywhere. To narrow results, use the `obs_type`, `project`, `dateStart` and `dateEnd` parameters.
-- **Case does not matter, and punctuation separates words**, so `query="worker-service.ts"` finds that file name.
+- **Case does not matter. Punctuation inside a word splits it into parts that must appear together, in order**, so `query="worker-service.ts"` finds that file name, but not a record that only mentions "worker", "service" and "ts" apart.
 - **Words can match inside longer words when nothing matches whole words.** If no record contains every whole word, each word must still appear, but may be part of a longer one, so `query="migrat"` finds "migration". Text in scripts written without spaces between words (Chinese, Japanese, Korean, Thai and others) is always matched this way.
 
 ```
@@ -248,6 +248,10 @@ query="database migration"       # records mentioning both words, anywhere
 query="worker-service.ts"         # a file name
 query="security NOT deprecated"  # all three words, "not" included: there are no operators
 ```
+
+Your own prompts are matched as one piece of text instead: the whole query must appear in the prompt as written, so `query="database migration"` misses a prompt that says "migration of the database". Keep prompt searches short.
+
+The [hosted server runtime](/hosted-server) searches observations with PostgreSQL full-text search, which has its own rules: words match by their English stem, `OR` combines alternatives, quotes require a phrase, a leading `-` excludes a word, and there is no matching inside longer words.
 
 ## Token Management
 
