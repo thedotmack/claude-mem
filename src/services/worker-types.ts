@@ -37,16 +37,17 @@ export interface ActiveSession {
   observerProfile?: string;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
-   * observer output is confirmed as a no-op and resets this so benign skip
-   * acknowledgements never accumulate respawn debt.
-   *
-   * It is deliberately NOT the breaker for repeated hard rejections — counting
-   * skips and rejections on one counter is what produced the respawn storm this
-   * reset was added to stop. Hard rejections are counted by
-   * `consecutiveContextOverflows` instead.
+   * Rejected replies (neither observation/summary XML nor the
+   * `<skip_summary />` sentinel) to the batch named by `invalidOutputBatchKey`.
+   * The first earns the batch one retry in a fresh generation; the second drops
+   * it with an error (OutputRecovery). A skip is a valid answer and is never
+   * counted, so skip acknowledgements cannot accumulate the respawn debt this
+   * counter once caused. Hard rejections (overflow, quota, auth, transport) are
+   * not counted here either; they pause on their own terms.
    */
   consecutiveInvalidOutputs: number;
+  /** The claimed message ids `consecutiveInvalidOutputs` counts against. */
+  invalidOutputBatchKey?: string | null;
   /**
    * Consecutive "prompt too long" rejections on this session's conversation.
    *

@@ -648,9 +648,10 @@ export class ClaudeProvider {
           const resultIsError = (message as any).is_error === true || resultSubtype !== 'success';
 
           // The turn is over and the model never emitted text. Only a
-          // successful turn means "the model read the batch and chose to skip
-          // it" — forward the empty response once so the claim is acknowledged
-          // instead of being retried forever. A failed turn never reached that
+          // successful turn means the model read the batch — forward its empty
+          // answer once, and ResponseProcessor holds it to the skip contract
+          // (asked for once more in a fresh generation, then dropped) instead
+          // of it being retried forever. A failed turn never reached that
           // judgement, so its batch goes back to the buffer for the drain to
           // re-yield. Exactly one such retry per generator pass: a message is
           // always pending while a batch is re-queued, so the buffer never

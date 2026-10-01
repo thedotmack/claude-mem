@@ -59,7 +59,10 @@ export async function handleGeneratorExit(
   // (except provider_switch, which parks a live buffer for a provider change).
   // Falling through to finalizeSession would remove the session and undo that
   // preservation — the second half of #3752.
-  const PRESERVES_CLAIMED_WORK = ['quota', 'rate_limit', 'auth', 'overflow', 'provider_switch', 'transport'];
+  // 'output_retry' is a queued batch whose reply was neither XML nor the skip
+  // sentinel: ResponseProcessor reset it to pending for one more try in a
+  // fresh generation, which the runner starts on the next tick.
+  const PRESERVES_CLAIMED_WORK = ['quota', 'rate_limit', 'auth', 'overflow', 'provider_switch', 'transport', 'output_retry'];
   // Every transport pause resumes on the transport backoff — a deadline or an
   // upstream fault that outlived the provider's retries, whatever code it
   // carries, and a transport failure the Claude CLI returned as text — except a

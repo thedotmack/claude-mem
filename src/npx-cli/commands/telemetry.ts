@@ -71,7 +71,7 @@ const COLLECTED_FIELDS = [
   'invalid_output_class   xml / idle / prose (never the output)',
   'consecutive_invalid_outputs   legacy unusable-output counter',
   'respawn_triggered      legacy recovery flag for old invalid-output restarts',
-  'abort_reason     idle / shutdown / overflow / restart_guard / quota / rate_limit / auth / provider_switch / deadline_exceeded / none',
+  'abort_reason     idle / shutdown / overflow / restart_guard / quota / rate_limit / auth / provider_switch / deadline_exceeded / output_retry / none',
   'top_abort_reason the most common abort_reason in a session rollup (same enum)',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',

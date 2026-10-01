@@ -31,7 +31,9 @@ describe('buildObservationPrompt', () => {
 
     expect(prompt).toContain('Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" />');
     expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
-    expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
+    expect(prompt).toContain('Never reply with an empty response, or with prose such as "Skipping", "No substantive tool executions"');
+    // The sentinel is the only no-op answer; anything else is re-asked once, then dropped.
+    expect(prompt).toContain('Only <observation> blocks or the <skip_summary /> sentinel complete this tool use');
   });
 
   it('explains redaction markers only when the observed tool use carries one', () => {
@@ -63,6 +65,18 @@ describe('buildObservationPrompt', () => {
     expect(prompt).toContain("Used <redacted type='openai_key'/> during setup.");
     expect(prompt).toContain(`If you see a "<redacted type='...'/>" marker`);
     expect(prompt).toContain('do not infer the literal value or copy the marker itself into generated memory content.');
+  });
+
+  it('offers the skip sentinel, not silence, when there is nothing to summarize', () => {
+    const prompt = buildSummaryPrompt({
+      id: 1,
+      memory_session_id: 'memory-session-1',
+      project: '/repo',
+      user_prompt: 'summarize',
+      last_assistant_message: 'Nothing happened.',
+    }, summaryMode);
+
+    expect(prompt).toContain('reply with exactly <skip_summary reason="nothing durable" /> instead of an empty response or prose');
   });
 });
 
