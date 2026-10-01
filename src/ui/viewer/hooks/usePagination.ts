@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
-import { authFetch } from '../utils/api';
+import { sessionKey, type SessionRef } from '../utils/sessions';
 
 interface PaginationState {
   isLoading: boolean;
@@ -12,22 +12,28 @@ interface PaginationState {
 type DataType = 'observations' | 'summaries' | 'prompts';
 type DataItem = Observation | Summary | UserPrompt;
 
-function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string) {
+function usePaginationFor<TItem extends DataItem>(
+  endpoint: string,
+  dataType: DataType,
+  currentFilter: string,
+  currentSession: SessionRef | null
+) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
   });
 
+  const selectionKey = `${currentFilter}|${currentSession ? sessionKey(currentSession) : ''}`;
   const offsetRef = useRef(0);
-  const lastSelectionRef = useRef(currentFilter);
+  const lastSelectionKeyRef = useRef(selectionKey);
   const stateRef = useRef(state);
 
   const loadMore = useCallback(async (): Promise<TItem[]> => {
-    const filterChanged = lastSelectionRef.current !== currentFilter;
+    const filterChanged = lastSelectionKeyRef.current !== selectionKey;
 
     if (filterChanged) {
       offsetRef.current = 0;
-      lastSelectionRef.current = currentFilter;
+      lastSelectionKeyRef.current = selectionKey;
 
       const newState = { isLoading: false, hasMore: true };
       setState(newState);
@@ -49,14 +55,28 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
     if (currentFilter) {
       params.append('project', currentFilter);
     }
+    if (currentSession) {
+      // Both halves of the session identity: the same content session id can
+      // exist under two platforms.
+      params.append('contentSessionId', currentSession.contentSessionId);
+      params.append('platformSource', currentSession.platformSource);
+    }
 
-    const response = await authFetch(`${endpoint}?${params}`);
+    // A response that lands after the selection changed (another session or
+    // project opened mid-request) belongs to the old selection: the cursor and
+    // state now serve the new one, so drop it instead of advancing them.
+    const requestSelectionKey = selectionKey;
+    const isStale = () => lastSelectionKeyRef.current !== requestSelectionKey;
+
+    const response = await fetch(`${endpoint}?${params}`);
+    if (isStale()) return [];
 
     if (!response.ok) {
       throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
     }
 
     const data = await response.json() as { items: TItem[], hasMore: boolean };
+    if (isStale()) return [];
 
     const nextState = {
       ...stateRef.current,
@@ -74,18 +94,27 @@ function usePaginationFor<TItem extends DataItem>(endpoint: string, dataType: Da
     offsetRef.current += UI.PAGINATION_PAGE_SIZE;
 
     return data.items;
-  }, [currentFilter, endpoint, dataType]);
+    // selectionKey covers currentFilter and currentSession.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionKey, endpoint, dataType]);
+
+  // Rows from a loaded page were deleted: the server's list moved up by that
+  // many, so the next page starts that much earlier or it would skip rows.
+  const noteRemoved = useCallback((count: number = 1) => {
+    offsetRef.current = Math.max(0, offsetRef.current - count);
+  }, []);
 
   return {
     ...state,
-    loadMore
+    loadMore,
+    noteRemoved
   };
 }
 
-export function usePagination(currentFilter: string) {
-  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
-  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
-  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
+export function usePagination(currentFilter: string, currentSession: SessionRef | null = null) {
+  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, currentSession);
+  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter, currentSession);
+  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter, currentSession);
 
   return {
     observations,

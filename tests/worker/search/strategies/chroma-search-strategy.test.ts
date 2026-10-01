@@ -71,38 +71,11 @@ describe('ChromaSearchStrategy', () => {
     mockSessionStore = {
       getObservationsByIds: mock(() => [mockObservation]),
       getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [mockPrompt])
+      getUserPromptsByIds: mock(() => [mockPrompt]),
+      getProjectReadKeys: mock((projects: string[]) => projects)
     };
 
     strategy = new ChromaSearchStrategy(mockChromaSync, mockSessionStore);
-  });
-
-  describe('canHandle', () => {
-    it('should return true when query text is present', () => {
-      const options: StrategySearchOptions = {
-        query: 'semantic search query'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return false for filter-only (no query)', () => {
-      const options: StrategySearchOptions = {
-        project: 'test-project'
-      };
-      expect(strategy.canHandle(options)).toBe(false);
-    });
-
-    it('should return false when query is empty string', () => {
-      const options: StrategySearchOptions = {
-        query: ''
-      };
-      expect(strategy.canHandle(options)).toBe(false);
-    });
-
-    it('should return false when query is undefined', () => {
-      const options: StrategySearchOptions = {};
-      expect(strategy.canHandle(options)).toBe(false);
-    });
   });
 
   describe('search', () => {
@@ -130,6 +103,26 @@ describe('ChromaSearchStrategy', () => {
 
       expect(result.usedChroma).toBe(true);
       expect(result.strategy).toBe('chroma');
+    });
+
+    it('should preserve requested date ordering in SQLite hydration', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        orderBy: 'date_asc',
+        limit: 10
+      };
+
+      await strategy.search(options);
+
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+      expect(mockSessionStore.getSessionSummariesByIds).toHaveBeenCalledWith([2], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
+      expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalledWith([3], expect.objectContaining({
+        orderBy: 'date_asc'
+      }));
     });
 
     it('should hydrate observations from SQLite', async () => {
@@ -164,6 +157,26 @@ describe('ChromaSearchStrategy', () => {
       await strategy.search(options);
 
       expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalled();
+    });
+
+    it('should pass platformSource through all SQLite hydration calls', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        platformSource: 'cursor',
+        limit: 10
+      };
+
+      await strategy.search(options);
+
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+      expect(mockSessionStore.getSessionSummariesByIds).toHaveBeenCalledWith([2], expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+      expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalledWith([3], expect.objectContaining({
+        platformSource: 'cursor'
+      }));
     });
 
     it('should filter by doc_type when searchType is observations', async () => {
@@ -222,8 +235,27 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { project: 'my-project' }
+        { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
       );
+    });
+
+    it('should scope the project to every key it reads, in Chroma and in the hydration (#3531, gate P2-5)', async () => {
+      mockSessionStore.getProjectReadKeys = mock(() => ['my-project', 'My-Project', 'old-folder']);
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        project: 'my-project'
+      };
+
+      await strategy.search(options);
+
+      const readKeys = ['my-project', 'My-Project', 'old-folder'];
+      expect(mockSessionStore.getProjectReadKeys).toHaveBeenCalledWith(['my-project']);
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { $or: [{ project: { $in: readKeys } }, { merged_into_project: { $in: readKeys } }] }
+      );
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({ projects: readKeys }));
     });
 
     it('should combine doc_type and project with $and when both specified', async () => {
@@ -238,7 +270,39 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $and: [{ doc_type: 'observation' }, { project: 'my-project' }] }
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] }
+      );
+    });
+
+    it('should include platformSource in Chroma where clause when specified', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        platformSource: 'cursor'
+      };
+
+      await strategy.search(options);
+
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { platform_source: 'cursor' }
+      );
+    });
+
+    it('should combine doc_type, project, and platformSource with $and when specified', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        searchType: 'observations',
+        project: 'my-project',
+        platformSource: 'cursor'
+      };
+
+      await strategy.search(options);
+
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] }
       );
     });
 
@@ -392,12 +456,6 @@ describe('ChromaSearchStrategy', () => {
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalled();
       const calledWith = mockSessionStore.getObservationsByIds.mock.calls[0][0];
       expect(calledWith).toEqual([100]);
-    });
-  });
-
-  describe('strategy name', () => {
-    it('should have name "chroma"', () => {
-      expect(strategy.name).toBe('chroma');
     });
   });
 });

@@ -52,12 +52,13 @@ export class PaginationHelper {
     };
   }
 
-  getObservations(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<Observation> {
+  getObservations(offset: number, limit: number, project?: string, platformSource?: string, contentSessionId?: string): PaginatedResult<Observation> {
     const db = this.dbManager.getSessionStore().db;
     let query = `
       SELECT
         o.id,
         o.memory_session_id,
+        s.content_session_id,
         o.project,
         o.merged_into_project,
         COALESCE(s.platform_source, 'claude') as platform_source,
@@ -80,7 +81,7 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      conditions.push('(o.project COLLATE NOCASE = ? OR o.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     } else {
       conditions.push('o.project != ?');
@@ -89,6 +90,10 @@ export class PaginationHelper {
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
+    }
+    if (contentSessionId) {
+      conditions.push('s.content_session_id = ?');
+      params.push(contentSessionId);
     }
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;
@@ -111,7 +116,7 @@ export class PaginationHelper {
     };
   }
 
-  getSummaries(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<Summary> {
+  getSummaries(offset: number, limit: number, project?: string, platformSource?: string, contentSessionId?: string): PaginatedResult<Summary> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -135,7 +140,7 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      conditions.push('(ss.project COLLATE NOCASE = ? OR ss.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     } else {
       conditions.push('ss.project != ?');
@@ -145,6 +150,11 @@ export class PaginationHelper {
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
+    }
+
+    if (contentSessionId) {
+      conditions.push('s.content_session_id = ?');
+      params.push(contentSessionId);
     }
 
     if (conditions.length > 0) {
@@ -165,7 +175,7 @@ export class PaginationHelper {
     };
   }
 
-  getPrompts(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<UserPrompt> {
+  getPrompts(offset: number, limit: number, project?: string, platformSource?: string, contentSessionId?: string): PaginatedResult<UserPrompt> {
     const db = this.dbManager.getSessionStore().db;
 
     let query = `
@@ -179,14 +189,14 @@ export class PaginationHelper {
         up.created_at,
         up.created_at_epoch
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
     `;
     const params: any[] = [];
 
     const conditions: string[] = [];
 
     if (project) {
-      conditions.push('s.project = ?');
+      conditions.push('s.project COLLATE NOCASE = ?');
       params.push(project);
     } else {
       conditions.push('s.project != ?');
@@ -198,11 +208,16 @@ export class PaginationHelper {
       params.push(platformSource);
     }
 
+    if (contentSessionId) {
+      conditions.push('up.content_session_id = ?');
+      params.push(contentSessionId);
+    }
+
     conditions.push(`
       NOT EXISTS (
         SELECT 1
         FROM user_prompts duplicate
-        WHERE duplicate.content_session_id = up.content_session_id
+        WHERE duplicate.session_db_id = up.session_db_id
           AND duplicate.prompt_text = up.prompt_text
           AND (
             duplicate.created_at_epoch > up.created_at_epoch
@@ -225,37 +240,6 @@ export class PaginationHelper {
 
     const stmt = db.prepare(query);
     const results = stmt.all(...params) as UserPrompt[];
-
-    return {
-      items: results.slice(0, limit),
-      hasMore: results.length > limit,
-      offset,
-      limit
-    };
-  }
-
-  private paginate<T>(
-    table: string,
-    columns: string,
-    offset: number,
-    limit: number,
-    project?: string
-  ): PaginatedResult<T> {
-    const db = this.dbManager.getSessionStore().db;
-
-    let query = `SELECT ${columns} FROM ${table}`;
-    const params: any[] = [];
-
-    if (project) {
-      query += ' WHERE project = ?';
-      params.push(project);
-    }
-
-    query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
-    params.push(limit + 1, offset); 
-
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as T[];
 
     return {
       items: results.slice(0, limit),

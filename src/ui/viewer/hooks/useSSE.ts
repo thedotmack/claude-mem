@@ -1,21 +1,61 @@
-import { useState, useEffect, useRef } from 'react';
-import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Observation, Summary, UserPrompt, StreamEvent, FeedItemType } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+import { itemDeletedTarget } from '../utils/feed-deletion';
+import { removeSessionRows, sessionDeletedTarget, sessionRefOf, type SessionRef } from '../utils/sessions';
 
-export function useSSE() {
+/** A live row as the session catalog sees it. */
+export interface LiveSessionItem {
+  session: SessionRef;
+  project: string;
+  createdAtEpoch: number;
+}
+
+export interface StreamHandlers {
+  /** Every `item_deleted` event (a row deleted in this tab or any other); the caller owns removal. */
+  onItemDeleted: (itemType: FeedItemType, id: number) => void;
+  /** Every `session_deleted` event; the caller owns removal. */
+  onSessionDeleted: (session: SessionRef) => void;
+  /** Every new live observation, summary or prompt, for the session catalog. */
+  onLiveItem: (item: LiveSessionItem) => void;
+}
+
+export function useSSE(handlers: StreamHandlers) {
   const [observations, setObservations] = useState<Observation[]>([]);
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [prompts, setPrompts] = useState<UserPrompt[]>([]);
   const [projects, setProjects] = useState<string[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const handlersRef = useRef(handlers);
+  handlersRef.current = handlers;
+
+  const removeLiveItem = useCallback((itemType: FeedItemType, id: number) => {
+    if (itemType === 'observation') {
+      setObservations(prev => prev.filter(o => o.id !== id));
+    } else if (itemType === 'summary') {
+      setSummaries(prev => prev.filter(s => s.id !== id));
+    } else {
+      setPrompts(prev => prev.filter(p => p.id !== id));
+    }
+  }, []);
+
+  const removeLiveSession = useCallback((session: SessionRef) => {
+    setObservations(prev => removeSessionRows(prev, session).rows);
+    setSummaries(prev => removeSessionRows(prev, session).rows);
+    setPrompts(prev => removeSessionRows(prev, session).rows);
+  }, []);
 
   const addProjectIfNew = (project: string) => {
     setProjects(prev => prev.includes(project) ? prev : [...prev, project]);
+  };
+
+  const reportLiveItem = (row: { content_session_id?: string | null; session_id?: string | null; platform_source?: string | null; project: string; created_at_epoch: number }) => {
+    const session = sessionRefOf(row);
+    if (session) handlersRef.current.onLiveItem({ session, project: row.project, createdAtEpoch: row.created_at_epoch });
   };
 
   useEffect(() => {
@@ -29,7 +69,6 @@ export function useSSE() {
 
       eventSource.onopen = () => {
         console.log('[SSE] Connected');
-        setIsConnected(true);
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
         }
@@ -37,7 +76,6 @@ export function useSSE() {
 
       eventSource.onerror = (error) => {
         console.error('[SSE] Connection error:', error);
-        setIsConnected(false);
         eventSource.close();
 
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -62,6 +100,7 @@ export function useSSE() {
             if (data.observation) {
               console.log('[SSE] New observation:', data.observation.id);
               addProjectIfNew(data.observation.project);
+              reportLiveItem(data.observation);
               setObservations(prev => [data.observation!, ...prev]);
             }
             break;
@@ -70,6 +109,7 @@ export function useSSE() {
             if (data.summary) {
               console.log('[SSE] New summary:', data.summary.id);
               addProjectIfNew(data.summary.project);
+              reportLiveItem(data.summary);
               setSummaries(prev => [data.summary!, ...prev]);
             }
             break;
@@ -78,9 +118,22 @@ export function useSSE() {
             if (data.prompt) {
               console.log('[SSE] New prompt:', data.prompt.id);
               addProjectIfNew(data.prompt.project);
+              reportLiveItem(data.prompt);
               setPrompts(prev => [data.prompt!, ...prev]);
             }
             break;
+
+          case 'item_deleted': {
+            const target = itemDeletedTarget(data);
+            if (target) handlersRef.current.onItemDeleted(target.itemType, target.id);
+            break;
+          }
+
+          case 'session_deleted': {
+            const session = sessionDeletedTarget(data);
+            if (session) handlersRef.current.onSessionDeleted(session);
+            break;
+          }
 
           case 'processing_status':
             if (typeof data.isProcessing === 'boolean') {
@@ -112,6 +165,7 @@ export function useSSE() {
     projects,
     isProcessing,
     queueDepth,
-    isConnected
+    removeLiveItem,
+    removeLiveSession
   };
 }

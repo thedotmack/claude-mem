@@ -9,6 +9,7 @@ import { parse as parse5Parse, parseFragment as parse5ParseFragment } from 'pars
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { extname, basename, join } from 'node:path';
+import { parseArgs } from 'node:util';
 
 interface CliOptions {
   root: string;
@@ -17,27 +18,33 @@ interface CliOptions {
   verbose: boolean;
 }
 
-function parseArgs(argv: string[]): CliOptions {
-  let root = process.cwd();
-  let check = false;
-  let dryRun = false;
-  let verbose = false;
-  for (const arg of argv.slice(2)) {
-    if (arg === '--check') check = true;
-    else if (arg === '--dry-run') dryRun = true;
-    else if (arg === '--verbose' || arg === '-v') verbose = true;
-    else if (arg === '--help' || arg === '-h') {
+function parseCliArgs(argv: string[]): CliOptions {
+  try {
+    const { values, positionals } = parseArgs({
+      args: argv.slice(2),
+      allowPositionals: true,
+      options: {
+        check: { type: 'boolean', default: false },
+        'dry-run': { type: 'boolean', default: false },
+        verbose: { type: 'boolean', short: 'v', default: false },
+        help: { type: 'boolean', short: 'h', default: false },
+      },
+    });
+    if (values.help) {
       printHelp();
       process.exit(0);
-    } else if (!arg.startsWith('-')) {
-      root = arg;
-    } else {
-      console.error(`Unknown flag: ${arg}`);
-      printHelp();
-      process.exit(2);
     }
+    return {
+      root: positionals[0] ?? process.cwd(),
+      check: values.check,
+      dryRun: values['dry-run'],
+      verbose: values.verbose,
+    };
+  } catch (e) {
+    console.error((e as Error).message);
+    printHelp();
+    process.exit(2);
   }
-  return { root, check, dryRun, verbose };
 }
 
 function printHelp(): void {
@@ -422,7 +429,7 @@ function processFile(absPath: string, relPath: string, stats: Stats, opts: CliOp
 }
 
 function main(): void {
-  const opts = parseArgs(process.argv);
+  const opts = parseCliArgs(process.argv);
 
   const stats: Stats = {
     changed: 0,
