@@ -1,15 +1,21 @@
 import { afterAll, describe, expect, it, mock } from 'bun:test';
+import * as realOpenCodeInstallerModule from '../../src/services/integrations/OpenCodeInstaller.js';
 
 // The OpenCode integration distinguishes a hard failure (1) from a partial
 // install (2: plugin + context written, MCP entry not). The CLI must not fold
 // the partial code into a blanket "plugin installation failed" — it has to be
 // recorded as a warning so the install still reports success with remediation.
 let installResult = 0;
-const OPENCODE_MCP_REGISTRATION_INCOMPLETE = 2;
+const { OPENCODE_MCP_REGISTRATION_INCOMPLETE } = realOpenCodeInstallerModule;
+
+// bun test runs every file in one process, and mock.restore() does not undo a
+// module mock: put the real installer back after this file, or every later
+// OpenCode installer test runs against the stub.
+const realOpenCodeInstallerSnapshot = { ...realOpenCodeInstallerModule };
 
 mock.module('../../src/services/integrations/OpenCodeInstaller.js', () => ({
+  ...realOpenCodeInstallerSnapshot,
   installOpenCodeIntegration: async () => installResult,
-  OPENCODE_MCP_REGISTRATION_INCOMPLETE,
 }));
 
 // Dynamic imports keep the module mock registered before install.ts (and its
@@ -19,7 +25,7 @@ const { createInstallSummary } = await import('../../src/npx-cli/install/error-r
 
 describe('OpenCode CLI install task', () => {
   afterAll(() => {
-    mock.restore();
+    mock.module('../../src/services/integrations/OpenCodeInstaller.js', () => realOpenCodeInstallerSnapshot);
   });
 
   it('records a partial install as a warning, not a failed IDE', async () => {

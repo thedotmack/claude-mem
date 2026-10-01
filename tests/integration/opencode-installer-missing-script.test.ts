@@ -4,11 +4,18 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 import { logger } from '../../src/utils/logger.js';
+import * as realInstallPathsModule from '../../src/services/integrations/install-paths.js';
+
+// bun test runs every file in one process, and mock.restore() does not undo a
+// module mock: put the real module back after this file, or every later file
+// that resolves an install path sees the stub.
+const realInstallPathsSnapshot = { ...realInstallPathsModule };
 
 // Force the MCP server script to be unresolvable, so addOpenCodeMcpReference
 // returns the config without a claude-mem MCP entry — the condition that must
 // produce a user-visible warning and a partial-install result.
 mock.module('../../src/services/integrations/install-paths.js', () => ({
+  ...realInstallPathsSnapshot,
   getMcpServerAbsolutePath: () => null,
   getNodeAbsolutePath: () => process.execPath,
 }));
@@ -40,7 +47,7 @@ describe('OpenCode installer missing-MCP-script warning', () => {
   });
 
   afterAll(() => {
-    mock.restore();
+    mock.module('../../src/services/integrations/install-paths.js', () => realInstallPathsSnapshot);
   });
 
   function expectUserVisibleWarning(): void {
