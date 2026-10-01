@@ -31,6 +31,9 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "chat.message",
   "event",
   "experimental.session.compacting",
+  // (input: { sessionID?, model }, output: { system: string[] }) in OpenCode's
+  // plugin Hooks type (packages/plugin/src/index.ts).
+  "experimental.chat.system.transform",
   "tool.execute.before",
   "permission.ask",
   "auth",
@@ -280,6 +283,11 @@ describe("OpenCode plugin event contract", () => {
         ),
         "experimental.session.compacting": () => plugin["experimental.session.compacting"]({ sessionID: "ses_contract_compact" }),
         event: () => plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_contract_idle" } } }),
+        // Reads context (a GET); it writes nothing.
+        "experimental.chat.system.transform": () => plugin["experimental.chat.system.transform"](
+          { sessionID: "ses_contract_system" },
+          { system: [] },
+        ),
       };
       for (const hook of REGISTERED_OPENCODE_HOOKS) {
         const invoke = postHookInvocations[hook];
@@ -815,6 +823,137 @@ describe("isConnectionRefusedError (worker-down warning suppression)", () => {
     } finally {
       globalThis.fetch = originalFetch;
       console.warn = originalWarn;
+    }
+  });
+});
+
+describe("OpenCode plugin lifecycle (#3208)", () => {
+  type Request = { method: string; url: URL; body: Record<string, unknown> | null; signal: unknown };
+
+  function captureRequests(
+    requests: Request[],
+    reply: (url: URL) => Response = () => new Response("{}", { status: 200 }),
+  ): void {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      requests.push({
+        method: init?.method || "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+        signal: init?.signal,
+      });
+      return reply(url);
+    }) as typeof fetch;
+  }
+
+  it("injects memory context into the system prompt once per session, keyed by the checkout", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests, (url) =>
+      url.pathname === "/api/context/inject" ? new Response("# memory context", { status: 200 }) : new Response("{}"));
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      const firstTurn = { system: ["base prompt"] };
+      await transform({ sessionID: "ses_ctx_a" }, firstTurn);
+      const secondTurn = { system: ["base prompt"] };
+      await transform({ sessionID: "ses_ctx_a" }, secondTurn);
+      await transform({ sessionID: "ses_ctx_b" }, { system: [] });
+
+      expect(firstTurn.system).toEqual(["base prompt", "# memory context"]);
+      expect(secondTurn.system).toEqual(["base prompt", "# memory context"]);
+      const injects = requests.filter((request) => request.url.pathname === "/api/context/inject");
+      expect(injects).toHaveLength(2);
+      expect(injects[0].url.searchParams.get("cwd")).toBe(pluginCtx.directory);
+      expect(injects[0].url.searchParams.get("projects")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("retries a failed context fetch on the next build instead of caching the failure", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    const requests: Request[] = [];
+    let workerUp = false;
+    captureRequests(requests, () => (workerUp ? new Response("# late context") : new Response("down", { status: 503 })));
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      const beforeWorker = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, beforeWorker);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      workerUp = true;
+      const afterWorker = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, afterWorker);
+
+      expect(beforeWorker.system).toEqual([]);
+      expect(afterWorker.system).toEqual(["# late context"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+    }
+  });
+
+  it("sends the latest completed assistant reply when the session idles or compacts", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests);
+    const listed: unknown[] = [];
+    const client = {
+      session: {
+        async messages(options: { path: { id: string } }) {
+          listed.push(options);
+          return {
+            data: [
+              { info: { role: "user", time: { completed: 1 } }, parts: [{ type: "text", text: "fix the bug" }] },
+              { info: { role: "assistant", time: { completed: 2 } }, parts: [{ type: "text", text: "first reply" }] },
+              { info: { role: "assistant", time: { completed: 3 } }, parts: [{ type: "text", text: "final reply" }] },
+              { info: { role: "assistant", summary: true, time: { completed: 4 } }, parts: [{ type: "text", text: "a compaction summary" }] },
+              { info: { role: "assistant", time: {} }, parts: [{ type: "text", text: "still streaming" }] },
+            ],
+          };
+        },
+      },
+    };
+    try {
+      const plugin = await ClaudeMemPlugin({ ...pluginCtx, client });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_reply" } } });
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_reply" });
+
+      const summaries = requests.filter((request) => request.url.pathname === "/api/sessions/summarize");
+      expect(summaries.map((request) => request.body?.last_assistant_message)).toEqual(["final reply", "final reply"]);
+      expect(listed).toEqual([
+        { path: { id: "ses_reply" }, query: { directory: pluginCtx.directory } },
+        { path: { id: "ses_reply" }, query: { directory: pluginCtx.directory } },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("bounds every worker request with a timeout signal", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests);
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_bounded", callID: "c1", args: {} },
+        { title: "Read", output: "x", metadata: {} },
+      );
+      await plugin["experimental.chat.system.transform"]({ sessionID: "ses_bounded" }, { system: [] });
+      await plugin.tool.claude_mem_search.execute({ query: "auth" });
+
+      expect(requests.length).toBeGreaterThanOrEqual(3);
+      for (const request of requests) {
+        expect(request.signal).toBeInstanceOf(AbortSignal);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });
