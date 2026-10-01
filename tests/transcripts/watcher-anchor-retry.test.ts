@@ -328,7 +328,7 @@ describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
   it('reads a large file from byte 0 when its first record began after startup (a live session)', async () => {
     const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
     const filePath = join(tmpRoot, 'live-large.jsonl');
-    const opening = JSON.stringify({ type: 'turn', session: 'session-retry', text: 'opening', timestamp: new Date().toISOString() });
+    const opening = JSON.stringify({ type: 'turn', session: 'session-retry', cwd: '/tmp/retry-project', text: 'opening', timestamp: new Date().toISOString() });
     const padding = 'z'.repeat(1000);
     writeFileSync(filePath, `${opening}\n${Array.from({ length: 300 }, (_, index) => `${turnLine(`turn-${index}`, padding)}\n`).join('')}`);
     expect(statSync(filePath).size).toBeGreaterThan(256 * 1024);
@@ -344,7 +344,7 @@ describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
   it('starts even a small copied history at EOF when its first record is older than startup', async () => {
     const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
     const filePath = join(tmpRoot, 'copied-small.jsonl');
-    const oldOpening = JSON.stringify({ type: 'turn', session: 'session-retry', text: 'old opening', timestamp: '2026-01-02T03:04:05.000Z' });
+    const oldOpening = JSON.stringify({ type: 'turn', session: 'session-retry', cwd: '/tmp/retry-project', text: 'old opening', timestamp: '2026-01-02T03:04:05.000Z' });
     writeFileSync(filePath, `${oldOpening}\n${turnLine('old turn')}\n`);
 
     const watch: WatchTarget = { name: 'retry-test', path: join(tmpRoot, '*.jsonl'), schema, startAtEnd: true };
