@@ -265,6 +265,7 @@ export class SessionStore {
     this.ensureProjectNocaseIndexes();
     this.ensureAdvisorCallsTable();
     this.ensureSessionProjectKeySourceColumn();
+    this.requeuePromptsDeadLetteredForSize();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -2050,6 +2051,38 @@ export class SessionStore {
     this.db.run(
       'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
     );
+  }
+
+  // v60 — re-queue prompts dead-lettered for size before #3537's clamp. A
+  // prompt whose canonical body passed CONTENT_BODY_MAX_BYTES was quarantined
+  // (synced_at = -1 plus a sync_dead_letter row), and the drain reads
+  // synced_at IS NULL only, so it never synced again. The drain now bounds
+  // prompt_text (prompt-text-clamp.ts), so those prompts fit: re-null them
+  // and drop their size dead-letter rows, once. Native rows only; a prompt
+  // quarantined for any other reason keeps its quarantine.
+  private requeuePromptsDeadLetteredForSize(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(60);
+    if (applied) return;
+    const sizeReason = "canonical content: body exceeds % UTF-8 bytes";
+    this.db.transaction(() => {
+      const requeued = this.db.prepare(`
+        UPDATE user_prompts SET synced_at = NULL
+        WHERE synced_at = -1 AND origin_device_id IS NULL
+          AND CAST(id AS TEXT) IN (
+            SELECT origin_local_id FROM sync_dead_letter
+            WHERE lane = 'content' AND kind = 'prompt' AND reason LIKE ?
+          )
+      `).run(sizeReason);
+      this.db.prepare(`
+        DELETE FROM sync_dead_letter WHERE lane = 'content' AND kind = 'prompt' AND reason LIKE ?
+      `).run(sizeReason);
+      if (requeued.changes > 0) {
+        logger.info('DB', 'Re-queued prompts quarantined for size before the cloud-sync prompt clamp', {
+          prompts: requeued.changes,
+        });
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(60, new Date().toISOString());
+    })();
   }
 
   // v59 — sdk_sessions.project_key_source: how the session's project key was

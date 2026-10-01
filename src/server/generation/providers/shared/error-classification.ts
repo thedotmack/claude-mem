@@ -5,6 +5,8 @@
 // src/services/worker/*, so we duplicate the small, stable error model here.
 // Worker code keeps src/services/worker/provider-errors.ts unchanged.
 
+import { namesPeriodRateLimit } from '../../../../shared/period-rate-limit.js';
+
 export type ServerProviderErrorClass =
   | 'transient'
   | 'unrecoverable'
@@ -93,6 +95,9 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
     // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
     // marker only applies off the 429 path (the key-limit marker always wins).
     (lower.includes('limit exceeded') && status !== 429) ||
+    // A daily cap is a spent allowance, read by the worker's rule: retrying
+    // the job only spends attempts until the period turns over.
+    (status === 429 && namesPeriodRateLimit(lower)) ||
     lower.includes('negative credit') ||
     status === 402
   ) {

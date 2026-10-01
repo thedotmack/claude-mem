@@ -798,6 +798,44 @@ describe('CloudSync', () => {
     expect(pendingCount('user_prompts')).toBe(0);
   });
 
+  it('re-queues, once, prompts dead-lettered for size before the clamp, so they sync truncated', async () => {
+    // Before #3537 a prompt whose canonical body passed 256000 bytes was
+    // dead-lettered (synced_at = -1), and the drain reads synced_at IS NULL
+    // only, so it never synced again even after the clamp made it fit.
+    const deadLetter = db.prepare(`
+      INSERT INTO sync_dead_letter (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+      VALUES ('content', ?, 'prompt', ?, '1', ?, NULL, 1)
+    `);
+    seedPrompt('x'.repeat(400_000));
+    db.prepare('UPDATE user_prompts SET synced_at = -1 WHERE id = 1').run();
+    deadLetter.run('prompt:oversized', '1', 'canonical content: body exceeds 256000 UTF-8 bytes');
+    // A prompt refused for another reason keeps its quarantine.
+    seedPrompt('second prompt', 6);
+    db.prepare('UPDATE user_prompts SET synced_at = -1 WHERE id = 2').run();
+    deadLetter.run('prompt:other', '2', 'canonical content: prompt.project must not be empty or whitespace-only');
+
+    // The re-queue runs at store open, as on the first start of an upgraded install.
+    db.prepare('DELETE FROM schema_versions WHERE version = 60').run();
+    new SessionStore(db);
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].parsed.ops).toHaveLength(1);
+    expect((calls[0].parsed.ops[0].body.prompt_text as string).endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
+    expect((db.prepare('SELECT synced_at FROM user_prompts WHERE id = 1').get() as { synced_at: number }).synced_at)
+      .toBeGreaterThan(0);
+    expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 2').get()).toEqual({ synced_at: -1 });
+    expect(sync.status().quarantine.count).toBe(1);
+
+    // Once: a later store open finds nothing to re-queue.
+    db.prepare('UPDATE user_prompts SET synced_at = -1 WHERE id = 1').run();
+    new SessionStore(db);
+    expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 1').get()).toEqual({ synced_at: -1 });
+  });
+
   it('cuts a prompt that fits as raw bytes but not once JSON-escaped', async () => {
     // Quotes escape to two bytes in the body, so 150 KB of them is 300 KB there.
     seedPrompt('"'.repeat(150_000));

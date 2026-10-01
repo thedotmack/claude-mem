@@ -28,7 +28,7 @@ For example, Gemini as the primary with Claude Haiku as the fallback:
 }
 ```
 
-The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, or a working Claude Code login. A fallback with no API key, or any fallback that is itself held (a quota cooldown, or a refused key), is skipped, and work waits as it does without a fallback. A Claude fallback is not checked ahead of time: if Claude Code is missing or logged out, the fallback run fails the way a Claude primary would. The cmem.ai gateway is skipped as a fallback while it is turning your account away (its trial-expiry fallback is active).
+The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, or a working Claude Code login. A fallback with no API key, or any fallback that is itself held (a quota cooldown, or a refused key), is skipped, and work waits as it does without a fallback. A Claude fallback is not checked ahead of time: if Claude Code is missing or logged out, the fallback run fails the way a Claude primary would. When the cmem.ai gateway turns your account away (a lapsed plan, a spent allowance), it is skipped as a fallback for 15 minutes and then re-tried by a single request; the next session start tells you once, in the gateway's own words. Unattended retries on the gateway are capped the same way whether it is your provider or your fallback.
 
 ## What switches, and what does not
 
