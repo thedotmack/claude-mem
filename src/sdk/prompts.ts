@@ -218,6 +218,15 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
     }
   }
 
+  // MCP tool result: { type: 'image', data: '<base64>', mimeType } — the bytes
+  // sit on the block itself, so neither branch above matched it and a
+  // browser-automation screenshot went to the condense pass whole.
+  if (record.type === 'image' && typeof record.data === 'string') {
+    const elided: Record<string, unknown> = { type: 'image', ...elideImageSource(record) };
+    if (typeof record.mimeType === 'string') elided.mimeType = record.mimeType;
+    return elided;
+  }
+
   // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
   const imageUrl = record.image_url;
   if (record.type === 'image_url' && imageUrl !== null && typeof imageUrl === 'object') {

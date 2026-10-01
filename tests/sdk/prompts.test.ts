@@ -307,3 +307,50 @@ describe('buildObservationPrompt keeps url-backed image sources (#3730 review)',
     expect(prompt).toContain('image data withheld from the observer');
   });
 });
+
+describe('buildObservationPrompt strips the MCP image block shape', () => {
+  // An MCP tool result carries the bytes on the block itself:
+  // { type: 'image', data: '<base64>', mimeType } — no `source`, no `file`.
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+
+  function mcpScreenshotOutcome() {
+    return JSON.stringify({
+      content: [
+        { type: 'text', text: 'Browser tab: 1, Title: "katalog"' },
+        { type: 'image', data: BASE64, mimeType: 'image/png', _meta: { 'codex/imageDetail': 'original' } },
+      ],
+      isError: false,
+    });
+  }
+
+  it('keeps no base64 run from an MCP image block, and says what it withheld', () => {
+    const prompt = buildObservationPrompt({
+      id: 12,
+      tool_name: 'mcp__cua_repl__js',
+      tool_input: JSON.stringify({ code: 'await tab.screenshot()' }),
+      tool_output: mcpScreenshotOutcome(),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+
+    expect(/A{200,}/.test(prompt)).toBe(false);
+    expect(prompt).toContain('Browser tab: 1');
+    expect(prompt).toContain('image data withheld from the observer');
+    expect(prompt).toContain(String(BASE64.length));
+    expect(prompt).toContain('image/png');
+  });
+
+  it('leaves an image block whose data is not a string alone', () => {
+    const prompt = buildObservationPrompt({
+      id: 13,
+      tool_name: 'mcp__cua_repl__js',
+      tool_input: JSON.stringify({}),
+      tool_output: JSON.stringify({ content: [{ type: 'image', data: { ref: 'frame-1' } }] }),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+
+    expect(prompt).toContain('frame-1');
+    expect(prompt).not.toContain('image data withheld from the observer');
+  });
+});
