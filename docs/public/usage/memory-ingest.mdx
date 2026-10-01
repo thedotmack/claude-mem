@@ -75,7 +75,9 @@ npx claude-mem memory ingest --all
   summaries reach the worker. Bulk imports are not time-limited.
 - A file that cannot be read is reported as `failed`; the rest of the import
   carries on. A symlinked note is never followed and a note over 64 KB is not
-  read; both are reported as `skipped`. A source outside the projects directory, or one that does not
+  read; both are reported as `skipped`, each named with its reason. A note
+  swapped for a symlink mid-scan is refused when opened and reported as
+  `failed`. A source outside the projects directory, or one that does not
   exist, is a `400` from the worker.
 - Only the memory notes are imported. A sibling transcript is read for its
   `cwd`, to key the project like live capture does; its content is never
