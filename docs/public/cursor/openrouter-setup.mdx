@@ -85,6 +85,19 @@ The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_O
 }
 ```
 
+### IO Intelligence (io.net)
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://api.intelligence.io.solutions/api/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "meta-llama/Llama-3.3-70B-Instruct",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_IO_INTELLIGENCE_API_KEY"
+}
+```
+
+Model ids are org/name pairs from the [IO Intelligence model list](https://api.intelligence.io.solutions/api/v1/models), for example `deepseek-ai/DeepSeek-R1-0528` or `zai-org/GLM-4.6`.
+
 ## Troubleshooting
 
 **Key not configured** — `cat ~/.claude-mem/settings.json` should show provider `openrouter` and your key.
