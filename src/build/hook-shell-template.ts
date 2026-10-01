@@ -44,6 +44,8 @@ export interface ShellTemplateOptions {
   trailingJson?: object;
   /** stderr message when no candidate root resolves. */
   notFoundMessage: string;
+  /** Runtime hooks that observe memory should degrade to no-memory, not block the host prompt. */
+  failOpen?: boolean;
   /**
    * MCP-only: extra candidate roots enumerated before the cache directories
    * (e.g. '$PWD/plugin', '$PWD'). Ignored for non-mcp hosts.
@@ -110,7 +112,11 @@ function fileExistsClause(options: ShellTemplateOptions): string {
 function candidateBlock(options: ShellTemplateOptions): string {
   const isMcp = options.host === 'mcp';
 
-  const lines: string[] = [`[ -n "$_E" ] && printf '%s\\n' "$_E";`];
+  const lines: string[] = [];
+
+  if (isMcp) {
+    lines.push(`[ -n "$_E" ] && printf '%s\\n' "$_E";`);
+  }
 
   if (isMcp && options.mcpExtraCandidates && options.mcpExtraCandidates.length > 0) {
     const quoted = options.mcpExtraCandidates.map((candidate) => `"${candidate}"`).join(' ');
@@ -148,15 +154,34 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const trimAssignment = isMcp ? '' : ' _R="${_R%/}";';
   const fileClause = fileExistsClause(options);
 
-  return (
+  const fallbackBlock = (
     `_F=; _P=$({ ${lines.join(' ')} } | while IFS= read -r _R; do` +
     `${trimAssignment} [ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
     `${fileClause} && [ -z "$_F" ] && { _F=1; printf '%s\\n' "$_Q"; }; done);`
+  );
+
+  if (isMcp) {
+    return fallbackBlock;
+  }
+
+  // The host-injected root is overwhelmingly the common path. Resolve it
+  // directly so every hook does not enumerate and sort versioned caches even
+  // when the host already supplied a usable installation root.
+  return (
+    `_P=; if [ -n "$_E" ]; then _R="\${_E%/}"; ` +
+    `[ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
+    `${fileClause} && _P="$_Q"; fi; ` +
+    `if [ -z "$_P" ]; then ${fallbackBlock} fi;`
   );
 }
 
 const CYGPATH_CLAUSE =
   `command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w "$_P" 2>/dev/null); [ -n "$_W" ] && _P="$_W"; };`;
+const FAIL_OPEN_EXIT_STATUS_VAR = '_S';
+const FAIL_OPEN_COMMAND_MESSAGE = 'claude-mem: hook command failed';
+/** Fail-open hooks degrade to no-memory; fail-loud hooks surface the failure to the host. */
+const FAIL_OPEN_EXIT_CODE = '0';
+const FAIL_LOUD_EXIT_CODE = '1';
 
 /**
  * Translate a shell-token candidate (`$PWD`, `$PWD/x`, `$HOME/x`, `$_C/x`) into
@@ -307,7 +332,8 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push('_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";');
   parts.push('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";');
   parts.push(candidateBlock(options));
-  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit 1; };`);
+  const notFoundExitCode = options.failOpen ? FAIL_OPEN_EXIT_CODE : FAIL_LOUD_EXIT_CODE;
+  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit ${notFoundExitCode}; };`);
 
   // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
   // uses the Node launcher), so every host reaching here needs the clause.
@@ -327,6 +353,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   let command = `${envPrefix}${options.trailingCommand.join(' ')}`;
   if (options.trailingJson) {
     command += `; echo '${JSON.stringify(options.trailingJson)}'`;
+  }
+  if (options.failOpen) {
+    command = `{ ${command}; } || { ${FAIL_OPEN_EXIT_STATUS_VAR}=$?; echo "${FAIL_OPEN_COMMAND_MESSAGE} (exit $${FAIL_OPEN_EXIT_STATUS_VAR})" >&2; exit ${FAIL_OPEN_EXIT_CODE}; }`;
   }
   parts.push(command);
 

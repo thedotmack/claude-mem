@@ -26,6 +26,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { purgeUndrainableSyncOutbox } from '../../../src/services/sync/outbox-purge.js';
 import { SessionStore, type SessionStoreOptions } from '../../../src/services/sqlite/SessionStore.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
@@ -209,6 +210,23 @@ describe('sync_outbox growth bounds', () => {
       expect(outboxRows(db).length).toBe(1);
       expect(second.op_uuid).not.toBe(first.op_uuid);
       expect(second.rev).toBe('3');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // (3) #4228 backlog cleanup — an unconfigured install empties the undrainable queue
+  // ---------------------------------------------------------------------------
+  describe('undrainable backlog purge (#4228)', () => {
+    it('removes every queued op and reports the count; a second run is a no-op', () => {
+      const store = makeStore({ syncOpsEnabled: true });
+      seedSessionWithPrompts(db, 3);
+      store.updateMemorySessionId(1, 'mem-a');
+      const before = outboxRows(db).length;
+      expect(before).toBeGreaterThan(0);
+
+      expect(purgeUndrainableSyncOutbox(db)).toBe(before);
+      expect(outboxRows(db).length).toBe(0);
+      expect(purgeUndrainableSyncOutbox(db)).toBe(0);
     });
   });
 });

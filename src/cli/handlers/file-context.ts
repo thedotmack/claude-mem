@@ -1,11 +1,11 @@
 // IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
 // HookResult and MUST NOT call process.stderr.write / process.stdout.write /
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
-// caught by hookCommand and routed through emitBlockingError.
+// caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { parseJsonArray } from '../../shared/timeline-formatting.js';
+import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime } from '../../shared/timeline-formatting.js';
 import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
@@ -30,16 +30,6 @@ const TYPE_ICONS: Record<string, string> = {
 
 function compactTime(timeStr: string): string {
   return timeStr.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
-}
-
-function formatTime(epoch: number): string {
-  const date = new Date(epoch);
-  return date.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-}
-
-function formatDate(epoch: number): string {
-  const date = new Date(epoch);
-  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 interface ObservationRow {
@@ -107,17 +97,8 @@ function formatFileTimeline(
     return aEpoch - bEpoch;
   });
 
-  const now = new Date();
-  const currentDate = now.toLocaleDateString('en-CA'); 
-  const currentTime = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }).toLowerCase().replace(' ', '');
-  const currentTimezone = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-
   const lines: string[] = [
-    `Current: ${currentDate} ${currentTime} ${currentTimezone}`,
+    `Current: ${formatHeaderDateTime()}`,
     `This file has prior observations — supplementary context follows. The Read result below is the full requested section.`,
     `- **Need details on a past observation?** get_observations([IDs]) — ~300 tokens each.`,
     `- **Need a structural map first?** smart_outline("${safePath}") — line numbers only, cheaper than re-reading.`,

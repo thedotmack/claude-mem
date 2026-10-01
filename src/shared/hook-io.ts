@@ -4,15 +4,18 @@
  * This module is the ONLY place in the hook execution path that calls
  * console.log / process.stderr.write / process.exit. Every emit point declares
  * an intent and routes through here so stdout (MODEL_CONTEXT), stderr
- * (DIAGNOSTIC / USER_HINT), and exit codes (EXIT_SIGNAL / BLOCKING_FEEDBACK)
- * never get conflated.
+ * (DIAGNOSTIC) and the exit code (EXIT_SIGNAL) never get conflated.
  *
  * Intent vocabulary:
  *  - DIAGNOSTIC        operator-visible logs, never reaches the model. stderr.
- *  - MODEL_CONTEXT     content the assistant consumes. stdout JSON only.
+ *  - MODEL_CONTEXT     content the assistant consumes. stdout payload (JSON envelope, or raw text when the adapter returns a string — e.g. kimi context injection).
  *  - USER_HINT         short advisory shown to the human, via HookResult.systemMessage.
- *  - BLOCKING_FEEDBACK error message the model must see (stderr + exit 2).
  *  - EXIT_SIGNAL       pure status, no payload (exit 0).
+ *
+ * Nothing here exits 2. Claude Code treats exit 2 as "block" (a dropped
+ * prompt, a denied tool, a re-woken Stop), and claude-mem is an optional
+ * background service, so no failure of its own may block the user
+ * (plan-17 step 2).
  *
  * Lives in src/shared/ (not src/cli/) so that src/shared/worker-utils.ts and
  * src/utils/logger.ts can route their stderr through emitDiagnostic without a
@@ -33,8 +36,8 @@ export interface HookStderrBuffer {
 type StderrWriter = (chunk: string | Uint8Array) => boolean;
 
 /**
- * The bypass channel: emitDiagnostic, emitBlockingError, and the buffer's
- * flush() all write through this so they skip the buffered window.
+ * The bypass channel: emitDiagnostic and the buffer's flush() write through
+ * this so they skip the buffered window.
  *
  * - When NO buffer is installed it resolves to the live process.stderr.write
  *   (so non-hook callers — worker daemon, CLI — write straight to stderr).
@@ -56,9 +59,8 @@ let bufferInstalled = false;
 /**
  * Replace process.stderr.write with a buffered writer. Direct
  * process.stderr.write calls (including unsolicited third-party library noise)
- * are captured into a buffer; emitDiagnostic / emitBlockingError write through
- * the bypass channel (realStderrWrite). The buffer is flushed when claude-mem
- * chooses to surface, and dropped on graceful success.
+ * are captured into a buffer; emitDiagnostic writes through the bypass channel
+ * (realStderrWrite). exitGraceful drops the buffer.
  */
 export function installHookStderrBuffer(): HookStderrBuffer {
   // Pin the currently-active stderr writer as the bypass channel BEFORE we
@@ -107,43 +109,31 @@ export function emitDiagnostic(line: string): void {
 }
 
 /**
- * Emit the model-bound JSON payload to stdout. Calls adapter.formatOutput and
- * JSON.stringify exactly once. Throws if called twice in the same emitter
- * lifetime (guards against double-emit corrupting the stdout JSON stream).
+ * Emit the model-bound payload to stdout. Calls adapter.formatOutput once, then
+ * writes either the raw string it returned or a JSON-stringified object. Throws
+ * if called twice in the same emitter lifetime (guards against double-emit
+ * corrupting the stdout stream).
  *
  * Uses console.log (not process.stdout.write) on purpose: the trailing newline
- * is what Claude Code's / Codex's hook parser expects.
+ * is what Claude Code's / Codex's hook parser expects; Kimi context injection
+ * also expects a plain text line.
  */
 export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
   if (moduleHasEmitted) {
     throw new Error('emitModelContext called twice');
   }
-  moduleHasEmitted = true;
   const output = adapter.formatOutput(result);
-  console.log(JSON.stringify(output));
+  if (output === '') {
+    return;
+  }
+  moduleHasEmitted = true;
+  console.log(typeof output === 'string' ? output : JSON.stringify(output));
 }
 
 let moduleHasEmitted = false;
 
 export interface ExitOptions {
   skipExit?: boolean;
-}
-
-/**
- * BLOCKING_FEEDBACK: flush buffered stderr (so preceding diagnostics reach the
- * operator/model), write `msg` to real stderr, then exit 2 so the model
- * receives it per Claude Code's hook contract. `skipExit` is the test seam
- * that mirrors HookCommandOptions.skipExit.
- */
-export function emitBlockingError(msg: string, options: ExitOptions = {}): void {
-  if (bufferedChunks && bufferedChunks.length > 0) {
-    bypassWrite(bufferedChunks.join(''));
-    bufferedChunks = [];
-  }
-  bypassWrite(msg.endsWith('\n') ? msg : `${msg}\n`);
-  if (!options.skipExit) {
-    process.exit(2);
-  }
 }
 
 /**

@@ -3,7 +3,6 @@ import {
   installHookStderrBuffer,
   emitDiagnostic,
   emitModelContext,
-  emitBlockingError,
   exitGraceful,
   resetHookIoState,
 } from '../../src/shared/hook-io.js';
@@ -12,8 +11,8 @@ import type { PlatformAdapter, HookResult } from '../../src/cli/types.js';
 // Windows Terminal tab-accumulation rationale (per CLAUDE.md):
 // Hooks that fail with non-zero exit codes cause Windows Terminal to keep the
 // tab open in an error state, which accumulates over time. The exit-0-on-error
-// policy is intentional. exitGraceful() exits 0 + drops buffered stderr;
-// emitBlockingError() exits 2 only for fail-loud / unrecoverable handler errors.
+// policy is intentional. exitGraceful() exits 0 + drops buffered stderr, and
+// no hook path exits 2 (plan-17 step 2).
 
 /** Capture real stderr by replacing the bound writer. Returns captured chunks. */
 function captureRealStderr(): { chunks: string[]; restore: () => void } {
@@ -134,30 +133,43 @@ describe('emitModelContext', () => {
       out.restore();
     }
   });
-});
 
-describe('emitBlockingError', () => {
-  it('writes msg to real stderr and does not exit when skipExit is set', () => {
-    const real = captureRealStderr();
+  it('skips stdout when the adapter returns an empty string', () => {
+    const emptyAdapter: PlatformAdapter = {
+      normalizeInput: (raw) => raw as never,
+      formatOutput: () => '',
+    };
+    const out = captureStdout();
     try {
-      emitBlockingError('boom', { skipExit: true });
-      expect(real.chunks.join('')).toBe('boom\n');
+      emitModelContext(emptyAdapter, {});
+      expect(out.chunks).toHaveLength(0);
     } finally {
-      real.restore();
+      out.restore();
     }
   });
 
-  it('flushes buffered stderr BEFORE its own message (ordering)', () => {
-    const real = captureRealStderr();
-    const buffer = installHookStderrBuffer();
+  it('empty emit does not trip the double-emit guard', () => {
+    const emptyAdapter: PlatformAdapter = {
+      normalizeInput: (raw) => raw as never,
+      formatOutput: () => '',
+    };
+    const out = captureStdout();
     try {
-      process.stderr.write('preceding\n'); // buffered
-      emitBlockingError('boom', { skipExit: true });
-      // buffered content surfaces first, then the blocking message.
-      expect(real.chunks.join('')).toBe('preceding\nboom\n');
+      emitModelContext(emptyAdapter, {});
+      expect(() => emitModelContext(fakeAdapter, {})).not.toThrow();
+      expect(out.chunks).toHaveLength(1);
     } finally {
-      buffer.restore();
-      real.restore();
+      out.restore();
+    }
+  });
+
+  it('two real emits still throw', () => {
+    const out = captureStdout();
+    try {
+      emitModelContext(fakeAdapter, {});
+      expect(() => emitModelContext(fakeAdapter, {})).toThrow('emitModelContext called twice');
+    } finally {
+      out.restore();
     }
   });
 });

@@ -49,16 +49,6 @@ function makeSession(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-function mockGeminiConfig() {
-  loadFromFileSpy.mockImplementation(() => ({
-    ...SettingsDefaultsManager.getAllDefaults(),
-    CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-    CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
-    CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
-    CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
-  }));
-}
-
 function mockSuccessfulGeminiFetch() {
   global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
     candidates: [{ content: { parts: [{ text: 'response' }] } }]
@@ -219,28 +209,20 @@ describe('GeminiProvider', () => {
     expect(url).toContain('key=test-api-key');
   });
 
-  it('should handle multi-turn conversation', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [{ role: 'user', content: 'prev context' }, { role: 'assistant', content: 'prev response' }],
-      lastPromptNumber: 2,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+  // A generator start opens a new generation (#3479), so a multi-turn history
+  // only exists mid-generation. These drive query() with one directly.
+  const GEMINI_QUERY_CONFIG = { apiKey: 'test-api-key', model: 'gemini-flash-latest', rateLimitingEnabled: false };
 
+  it('should handle multi-turn conversation', async () => {
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: 'response' }] } }]
     }))));
 
-    await agent.startSession(session);
+    await (agent as any).query([
+      { role: 'user', content: 'prev context' },
+      { role: 'assistant', content: 'prev response' },
+      { role: 'user', content: 'next prompt' },
+    ], GEMINI_QUERY_CONFIG);
 
     const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
     expect(body.contents).toHaveLength(3);
@@ -260,14 +242,12 @@ describe('GeminiProvider', () => {
     ];
 
     for (const label of ['a', 'b']) {
-      mockGeminiConfig();
       mockSuccessfulGeminiFetch();
 
-      await agent.startSession(makeSession({
-        userPrompt: `current prompt ${label}`,
-        lastPromptNumber: 2,
-        conversationHistory: history.map(message => ({ ...message })),
-      }));
+      await (agent as any).query(
+        [...history.map(message => ({ ...message })), { role: 'user', content: `current prompt ${label}` }],
+        GEMINI_QUERY_CONFIG,
+      );
 
       const contents = sentGeminiContents();
       expectAlternatingGeminiRoles(contents);
@@ -277,17 +257,14 @@ describe('GeminiProvider', () => {
   });
 
   it('merges adjacent same-role messages instead of sending repeated Gemini roles', async () => {
-    const session = makeSession({
-      conversationHistory: [
-        { role: 'user', content: 'first user turn' },
-        { role: 'user', content: 'second user turn' },
-        { role: 'assistant', content: 'model turn' },
-      ],
-    });
-
     mockSuccessfulGeminiFetch();
 
-    await agent.startSession(session);
+    await (agent as any).query([
+      { role: 'user', content: 'first user turn' },
+      { role: 'user', content: 'second user turn' },
+      { role: 'assistant', content: 'model turn' },
+      { role: 'user', content: 'next prompt' },
+    ], GEMINI_QUERY_CONFIG);
 
     const contents = sentGeminiContents();
     expectAlternatingGeminiRoles(contents);
