@@ -69,11 +69,13 @@ import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
+  probePortBind,
   waitForHealth,
   waitForReadiness,
   waitForPortFree,
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
+import { UNBINDABLE_PORT_REMEDIATION } from '../shared/connection-errors.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdoptionErrors } from './infrastructure/WorktreeAdoption.js';
 import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
@@ -1658,6 +1660,24 @@ async function main() {
       // whatever cwd this daemon was launched with (#3706; EPERM on
       // cross-spawn's chdir-back from an ACL-locked cwd).
       pinDaemonWorkingDirectory();
+
+      // A host and port the system refuses to bind (EACCES / EADDRNOTAVAIL)
+      // is a boot failure, never a duplicate: no other worker holds the port
+      // and no retry will bind it. Decided by the bind probe, before the
+      // duplicate gate (#3219 exited 0 there) and before start(): under Bun,
+      // listen() reports it only as "Is port N in use?", without the errno.
+      const bind = await probePortBind(port);
+      if (bind.occupancy === 'unbindable') {
+        logger.failure('SYSTEM', 'Worker port cannot be bound — not a duplicate; fix the port or host setting', {
+          port,
+          host: getWorkerHost(),
+          code: bind.bindErrorCode,
+          fix: UNBINDABLE_PORT_REMEDIATION,
+        });
+        captureEvent('worker_start_failed', { outcome: 'dead', error_category: 'port_unbindable' });
+        await shutdownTelemetry();
+        process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
+      }
 
       // Duplicate gate, ground truth FIRST (Phase 5): a live worker owns the
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:

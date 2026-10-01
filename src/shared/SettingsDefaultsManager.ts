@@ -2,7 +2,7 @@
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
-import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
+import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
@@ -337,7 +337,7 @@ export class SettingsDefaultsManager {
                                 // worker runs behind a port-forward (e.g.
                                 // https://37700.host.<user>.<domain>). Empty => localhost.
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
-    CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(HOOK_TIMEOUTS.SESSION_INIT_REQUEST),
+    CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(defaultSessionInitRequestTimeoutMs()),  // 10s; 7s on Windows, whose hook start-up the budget never sees
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     CLAUDE_MEM_SKIP_BASH_PATTERNS: '',  // Regex matched against a shell command (Bash; Codex exec_command); when it matches, the observation is skipped. Empty = capture every command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
     CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',  // #2736 — default off preserves current behavior; set 'true' to skip every subagent observation (recommended for heavy Dynamic Workflows users)
