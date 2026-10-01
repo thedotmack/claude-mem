@@ -25,7 +25,7 @@ Three kinds of rows are replicated between your devices:
 
 - **Observations** — the compressed memories claude-mem generates from your sessions.
 - **Session summaries** — the per-session overview records.
-- **User prompts** — the prompts you typed (clamped to 200&nbsp;KB per field).
+- **User prompts** — the prompts you typed. A prompt over 200&nbsp;KB uploads as its first 200&nbsp;KB plus a truncation note; the full prompt stays on the device that captured it.
 
 Alongside the rows, three kinds of **mutations** travel through the same log
 so later edits converge everywhere: session **title** changes, **prompt→session
@@ -104,15 +104,18 @@ URL are non-empty — there is no separate enable flag; blank any one of them to
 turn sync off.
 
 1. A **cmem.ai Pro sync token and user id** (from **cmem.ai → Connect**).
-2. A **sync hub URL** in `CLAUDE_MEM_CLOUD_SYNC_HUB_URL`. The hub is a
-   Cloudflare Workers service (source in `workers/sync-hub/` with its own
-   deploy runbook); use the hub URL your cmem.ai account documentation
-   provides for it.
+2. A **sync hub URL** in `CLAUDE_MEM_CLOUD_SYNC_HUB_URL`: `https://sync.cmem.ai`,
+   which the installer writes for you (source in `services/sync-api/`). A hub
+   URL pinned to the older Cloudflare Workers hub is moved to it automatically.
 
-Run the `/cloud-sync` skill in Claude Code to check status and walk through
-setup. It writes the settings into `~/.claude-mem/settings.json` (mode
-`0600`) without ever echoing the token, restarts the worker, and verifies the
-installed client can reach SyncHub.
+To connect, run `npx claude-mem install` in your terminal and choose **CMEM
+Pro**. The installer signs you in through the browser, writes all three values
+into `~/.claude-mem/settings.json` (mode `0600`), and restarts the worker. The
+`/cloud-sync` skill in Claude Code checks status, points you to the installer
+for setup, and verifies the installed client can reach SyncHub. It never asks
+you to paste the token into the chat, because anything pasted there lands in the
+session transcript. For CI or a remote box, see
+[headless setup](/cmem-pro-headless).
 
 ## Settings
 
@@ -124,6 +127,8 @@ installed client can reach SyncHub.
 | `CLAUDE_MEM_CLOUD_SYNC_WS` | `'true'` | Advisory WebSocket speed layer. `'false'` = HTTP polling only; sync stays fully correct at poll latency. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` | `''` | Stable identity of this machine. A fresh UUID is minted and persisted on first start. Don't edit it: every row is attributed to its origin device. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | machine hostname | Human-readable label for this device. |
+| `CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE` | `'40'` | Ops per content flush page. 200-op pages timed out at 30s under hub `projection_busy`. Max 500. |
+| `CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS` | `'90000'` | Content-push `AbortSignal` timeout. Must exceed the hub's 45s projection fetch; default matches the 90s projection lease. |
 
 A Hub accepts at most 64 distinct device ids per account. Existing devices
 continue to sync normally at the limit; a new device receives

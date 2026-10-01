@@ -1,6 +1,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { execFile, execSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -10,11 +11,14 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
+import { killProcessTree, collectDescendantIdentities } from '../../shared/kill-process-tree.js';
+import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
+import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import type { ChromaCollectionDrop } from './ChromaSync.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -24,9 +28,67 @@ const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
+const DEFAULT_CHROMA_MUTATION_TIMEOUT_MS = 600_000;
+const CHROMA_MUTATION_TIMEOUT_BOUNDS = { min: 60_000, max: 3_600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
+// Circuit breaker for a doomed prewarm (#4108). A broken host (missing uv, an
+// unresolvable dep, an NTFS hardlink ceiling) fails the same way every time, so
+// retrying forever just burns CPU and, on NTFS, leaks a half-built env per
+// attempt until the disk fills. After this many CONSECUTIVE failures we open the
+// breaker and stop spawning uvx; the only limiter before was a flat backoff gate
+// that never grew. A single success resets the count and closes the breaker.
+const CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES = 5;
+// While the breaker is open, allow one half-open probe after a cooldown so a
+// host that becomes healthy (disk freed, uv installed, dep resolvable) recovers
+// without a worker restart. The cooldown grows exponentially with each failed
+// probe, from this base up to the cap below, so a persistently broken host is
+// retried ever more rarely instead of once per fixed interval forever.
+const CHROMA_PREWARM_BREAKER_BASE_COOLDOWN_MS = 10 * 60_000;
+const CHROMA_PREWARM_BREAKER_MAX_COOLDOWN_MS = 6 * 60 * 60_000;
+// Hard stop: after this many consecutive failures the breaker latches and stops
+// spawning until the worker restarts. With the exponential cooldown this leaves
+// a recovery window of roughly two days before giving up, which caps the total
+// wasted builds (and the scratch they can leak) on a host that never recovers.
+const CHROMA_PREWARM_GIVE_UP_FAILURES = 20;
+// A failed prewarm can leave uv's half-built environment behind under
+// `<uv cache>/builds-v0/.tmp*`; `uv cache prune` never reclaims it, and on NTFS
+// each leftover pins hardlinks against the 1,023-per-file ceiling, so the debt
+// compounds (#4108). We only remove scratch dirs older than this window: no
+// legitimate uv build runs for a day, so age past it reliably means abandoned,
+// and a concurrent build elsewhere on the machine is never disturbed. Our own
+// fresh leftover is reclaimed by a later sweep once it ages past this bound.
+const CHROMA_UV_BUILDS_SCRATCH_ABANDONED_MS = 24 * 60 * 60_000;
+// A host hit by #4108 can carry ~10k leaked scratch dirs (18.5M files), so the
+// sweep never removes them in one go: each pass deletes at most this many dirs,
+// asynchronously and one at a time, then pauses before the next pass. The event
+// loop keeps serving health checks throughout, and disk I/O stays bounded.
+const CHROMA_UV_BUILDS_SCRATCH_SWEEP_BATCH = 25;
+const CHROMA_UV_BUILDS_SCRATCH_SWEEP_PAUSE_MS = 5_000;
+// Bounded wait for the child's 'exit' after close() resolves. close() can
+// return before Node processes the event, and treating that gap as "still
+// alive" escalates to a hard kill against a process that already exited —
+// which is what SIGKILLs `uv` mid-build and leaks its scratch dir (#3540).
+const CHROMA_EXIT_OBSERVE_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
+// An unparseable lock (typically a 0-byte file left by a crash mid-write) has no
+// owner to probe; once it is this old no concurrent writer is still filling it in.
+const CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS = 10_000;
+const CHROMA_STORE_RECORD_FILENAME = '.claude-mem-chroma-store.json';
+// Writer epoch — monotonic integer, bumped only when an older writer can no
+// longer safely follow a newer one's store layout. Deliberately not tied to
+// the package version so routine releases do not trigger spurious refusals.
+//
+// Bump it whenever the chromadb pin in CHROMA_MCP_DEP_OVERRIDES crosses a
+// store-format boundary. chromadb migrations are forward-only, and an older
+// engine can crash on a newer store: chromadb 1.0.16 panics opening a store
+// that 1.5.9 wrote ("range start index 10 out of range", #3384). After the
+// bump, an older claude-mem refuses such a store up front instead of handing
+// it to an engine that cannot read it.
+const CHROMA_WRITER_EPOCH = 1;
+// Size cap for the store record. A legitimate record is a small JSON envelope;
+// anything larger is damaged or adversarially written and must fail open.
+const CHROMA_STORE_RECORD_MAX_BYTES = 64 * 1024;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -47,12 +109,47 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // `TypeError: Descriptors cannot be created directly` at chromadb import.
 // Capping below 7 lands on protobuf 6.x which opentelemetry tolerates.
 //
+// Why chromadb==1.5.9: chroma-mcp 0.2.6 only declares chromadb>=1.0.16, so
+// the storage engine floated under persisted stores and an unannounced
+// upgrade segfaulted existing ones (#3362). The pin must be the version
+// installs already run, never lower: chromadb migrations are forward-only,
+// and 1.0.16 panics opening a store 1.5.9 wrote. 1.5.9 is the newest release
+// and what an unpinned env resolves today; it opens stores written by 1.0.16
+// and by 1.5.9. Raise it only after the same check on both.
+//
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'onnxruntime>=1.20',
   'protobuf<7',
+  'chromadb==1.5.9',
 ];
+
+// The chromadb version the launcher pins, read from the override list itself
+// so the store record can never disagree with what uvx actually runs.
+const CHROMADB_PINNED_VERSION: string | null =
+  CHROMA_MCP_DEP_OVERRIDES.find(spec => spec.startsWith('chromadb=='))?.slice('chromadb=='.length) ?? null;
+
+/** Chroma child health for /api/admin/doctor and `npx claude-mem doctor`. */
+export interface ChromaCrashState {
+  /** Unexpected exits of the chroma-mcp child (uvx) in this worker's lifetime. */
+  count: number;
+  /** The last one. uvx is the direct child, so a crash inside chroma-mcp usually shows as its exit code. */
+  lastExit: {
+    timestamp: string;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  } | null;
+  chromaMcpVersion: string;
+  dependencyOverrides: string[];
+  /** The uvx prewarm circuit breaker (#4108): paused after 5 consecutive failures, stopped after 20. */
+  prewarm: {
+    consecutiveFailures: number;
+    state: 'ok' | 'paused' | 'stopped';
+  };
+  /** The last collection dropped as corrupt and rebuilt from SQLite (#3202), if any. */
+  collectionDrop?: ChromaCollectionDrop | null;
+}
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
 // every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
@@ -69,13 +166,62 @@ class ChromaMcpConnectionCancelledError extends Error {
   }
 }
 
+/**
+ * A child PID paired with the start token captured WHILE IT WAS ALIVE.
+ *
+ * killProcessTree self-captures the root token when a caller does not supply
+ * one, which is safe only if the process is still alive at the moment of the
+ * call. Every deferred cleanup in this class violates that: `onclose` fires
+ * BECAUSE the child died, and the prewarm paths kill a handle that may have
+ * exited already. Self-capture there reads whatever now owns the number — so
+ * it would bind to a replacement and then validate it against itself.
+ *
+ * Pairing the token with the PID at spawn time makes that structural: the two
+ * travel together, so no cleanup path in this class can forget to carry it.
+ */
+interface TrackedChild {
+  pid: number;
+  startToken: string | null;
+}
+
+/** Capture identity while the child is provably ours — call right after spawn. */
+function trackChild(child: ChildProcess): TrackedChild | null {
+  const pid = child.pid;
+  if (!pid) return null;
+  return { pid, startToken: captureProcessStartToken(pid) };
+}
+
+/** Runtimes a Chroma writer (the worker) can run under. */
+const CHROMA_WRITER_RUNTIMES = new Set(['bun', 'node']);
+
 interface ChromaWriterLockPayload {
   pid: number;
   ownerId: string;
   dataDir: string;
   acquiredAt: string;
   startToken?: string | null;
+  processName?: string | null;
 }
+
+interface ChromaStoreRecord {
+  writerEpoch: number;
+  chromaMcpVersion: string;
+  /** The chromadb engine version that last wrote the store ('' when unknown). */
+  chromadbVersion: string;
+  // depOverrides is written for diagnostic provenance but not parsed back —
+  // element types are unchecked and the field never participates in any predicate.
+  clientType: string;
+  claudeMemVersion: string;
+  updatedAt: string;
+}
+
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const claudeMemVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
+// Keep one writer identity for the lifetime of this process. Multiple manager
+// instances can be created during reconnects/tests, and they must be able to
+// re-acquire a lock that this process already owns.
+const CHROMA_WRITER_OWNER_ID = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
@@ -85,16 +231,45 @@ export class ChromaMcpManager {
   private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
   private activePrewarmChild: ChildProcess | null = null;
+  /** Identity of activePrewarmChild, captured at spawn while it was alive. */
+  private activePrewarmTracked: TrackedChild | null = null;
+  /** Consecutive prewarm failures; trips the circuit breaker, reset on success. */
+  private consecutivePrewarmFailures: number = 0;
+  /** When the breaker last opened; gates the half-open recovery probe. */
+  private prewarmBreakerOpenedAt: number = 0;
+  /** Monotonic prewarm-attempt counter, so the retry cap is observable in logs. */
+  private prewarmAttempts: number = 0;
+  /** Whether the first successful prewarm has already started a scratch sweep. */
+  private sweptUvBuildsScratchAfterSuccess = false;
+  /** The in-flight background scratch sweep; at most one runs per process. */
+  private static uvBuildsScratchSweep: Promise<void> | null = null;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
-  private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  private readonly chromaWriterOwnerId = CHROMA_WRITER_OWNER_ID;
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
+  /**
+   * Teardown of a subprocess that is gone or being taken down: an unexpected
+   * close, or the restart of one hung on a read. Callers wait for it before
+   * they reconnect, so nothing reuses the old client or disposes it twice.
+   */
   private unexpectedCloseCleanup: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
   private pendingMutationCalls = 0;
+  /** Mutation requests sent to chroma-mcp and not yet answered, in either Chroma mode. */
+  private mutationCallsInFlight = 0;
+  /**
+   * The transport on which a write outlived its deadline. chroma-mcp runs one
+   * request at a time (its tools call the blocking Chroma client), so that
+   * write may still be committing until chroma-mcp answers anything else on
+   * the same transport; until then a read timeout never restarts it.
+   */
+  private timedOutWriteTransport: unknown = null;
   private readonly maxPendingMutationCalls: number;
+  private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
+  private chromaCrashCount = 0;
+  private chromaLastExit: ChromaCrashState['lastExit'] = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {
@@ -103,6 +278,13 @@ export class ChromaMcpManager {
     this.maxPendingMutationCalls = Number.isInteger(configuredLimit) && configuredLimit > 0
       ? configuredLimit
       : DEFAULT_MAX_PENDING_MUTATIONS;
+    const configuredMutationTimeout = Number.parseInt(settings.CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS, 10);
+    this.mutationTimeoutMs = Number.isInteger(configuredMutationTimeout)
+      ? Math.min(
+          CHROMA_MUTATION_TIMEOUT_BOUNDS.max,
+          Math.max(CHROMA_MUTATION_TIMEOUT_BOUNDS.min, configuredMutationTimeout)
+        )
+      : DEFAULT_CHROMA_MUTATION_TIMEOUT_MS;
     this.serializeMutations = (settings.CLAUDE_MEM_CHROMA_MODE || 'local') !== 'remote';
   }
 
@@ -139,7 +321,13 @@ export class ChromaMcpManager {
         throw error;
       }
       this.lastConnectionFailureTimestamp = Date.now();
-      if (error instanceof Error) {
+      if (error instanceof ChromaUnavailableError) {
+        // Chroma being unavailable is transient and already handled downstream
+        // (reconnect backoff + skip-the-write). Log at warn so it does not route
+        // through the error sink (captureException) and flood error tracking on
+        // every reconnect.
+        logger.warn('CHROMA_MCP', 'Connection attempt failed; Chroma unavailable', { error: error.message });
+      } else if (error instanceof Error) {
         logger.error('CHROMA_MCP', 'Connection attempt failed', {}, error);
       } else {
         logger.error('CHROMA_MCP', 'Connection attempt failed with non-Error value', { error: String(error) });
@@ -164,6 +352,15 @@ export class ChromaMcpManager {
     this.assertConnectionNotCancelled(connectionGeneration);
 
     const localChromaDataDir = this.getLocalPersistentChromaDataDir();
+
+    // Pre-spawn compatibility check (refs #3012): refuse before prewarm and
+    // before lock acquisition when the on-disk record proves this store was
+    // last written by a newer epoch than this runtime.  The reader never
+    // creates the data dir — acquireChromaWriterLock() retains that right.
+    if (localChromaDataDir) {
+      ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
+    }
+
     const commandArgs = this.buildCommandArgs(localChromaDataDir);
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
@@ -197,6 +394,7 @@ export class ChromaMcpManager {
     try {
       if (localChromaDataDir) {
         this.acquireChromaWriterLock(localChromaDataDir);
+        ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
       }
 
       this.transport = new StdioClientTransport({
@@ -254,9 +452,22 @@ export class ChromaMcpManager {
       // Tree-kill (not just transport.close) so failed-connect descendants
       // can't survive on Linux (#2313).
       await this.disposeCurrentSubprocess();
-      throw connectionError;
+      // A failed MCP handshake means Chroma is unavailable, the same as a
+      // missing uvx, a failed prewarm, or a lost writer lock. The SDK sends
+      // `notifications/initialized` right after `initialize`; when the
+      // subprocess dies mid-handshake that send throws a bare
+      // `Error: Not connected`. Classify every connect failure as
+      // ChromaUnavailableError so callers take the reconnect-backoff and
+      // skip-the-write path instead of surfacing a raw error to error tracking.
+      const unavailableMessage = `chroma-mcp connection failed: ${connectionError instanceof Error ? connectionError.message : String(connectionError)}`;
+      recordChromaVectorSearchUnavailable(unavailableMessage);
+      throw new ChromaUnavailableError(unavailableMessage, connectionError instanceof Error ? connectionError : undefined);
     }
     clearTimeout(timeoutId!);
+
+    if (localChromaDataDir) {
+      ChromaMcpManager.writeChromaStoreRecord(localChromaDataDir);
+    }
 
     this.connected = true;
     this.registerManagedProcess();
@@ -265,7 +476,11 @@ export class ChromaMcpManager {
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
     const currentTransport = this.transport;
-    const currentTrackedPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid;
+    // Captured HERE, while the child is alive and attached — not in the
+    // onclose handler below, which by definition runs after it has died.
+    const transportChild = (this.transport as unknown as { _process?: ChildProcess })._process;
+    const currentTracked = transportChild ? trackChild(transportChild) : null;
+    const currentTrackedPid = currentTracked?.pid;
     this.transport.onclose = () => {
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
@@ -278,9 +493,25 @@ export class ChromaMcpManager {
         logger.debug('CHROMA_MCP', 'Ignoring onclose from intentionally closed transport');
         return;
       }
-      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
+      // The transport clears its own handle before onclose fires, so read the
+      // exit from the child captured at connect. That child is uvx, not
+      // python: a crash in chroma-mcp (e.g. SIGSEGV) usually surfaces as uvx's
+      // exit code rather than a signal on uvx itself, so both are recorded.
+      this.chromaCrashCount += 1;
+      this.chromaLastExit = {
+        timestamp: new Date().toISOString(),
+        code: transportChild?.exitCode ?? null,
+        signal: transportChild?.signalCode ?? null,
+      };
+      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff', {
+        count: this.chromaCrashCount,
+        exitCode: this.chromaLastExit.code,
+        signalCode: this.chromaLastExit.signal,
+        chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+        dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      });
       this.connected = false;
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      if (currentTrackedPid) getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, currentTrackedPid);
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
@@ -290,13 +521,31 @@ export class ChromaMcpManager {
       // does not use process groups. Sweep the descendant tree using the
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
-      this.scheduleUnexpectedCloseCleanup(currentTrackedPid);
+      this.scheduleUnexpectedCloseCleanup(currentTracked);
     };
   }
 
-  private scheduleUnexpectedCloseCleanup(pid: number | undefined): void {
+  getCrashState(): ChromaCrashState {
+    const consecutiveFailures = this.consecutivePrewarmFailures;
+    return {
+      count: this.chromaCrashCount,
+      lastExit: this.chromaLastExit ? { ...this.chromaLastExit } : null,
+      chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      prewarm: {
+        consecutiveFailures,
+        state: consecutiveFailures >= CHROMA_PREWARM_GIVE_UP_FAILURES
+          ? 'stopped'
+          : consecutiveFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES
+            ? 'paused'
+            : 'ok',
+      },
+    };
+  }
+
+  private scheduleUnexpectedCloseCleanup(tracked: TrackedChild | null): void {
     let cleanup: Promise<void>;
-    cleanup = this.cleanupUnexpectedCloseSubprocess(pid).finally(() => {
+    cleanup = this.cleanupUnexpectedCloseSubprocess(tracked).finally(() => {
       if (this.unexpectedCloseCleanup === cleanup) {
         this.unexpectedCloseCleanup = null;
       }
@@ -304,10 +553,16 @@ export class ChromaMcpManager {
     this.unexpectedCloseCleanup = cleanup;
   }
 
-  private async cleanupUnexpectedCloseSubprocess(pid: number | undefined): Promise<void> {
+  private async cleanupUnexpectedCloseSubprocess(tracked: TrackedChild | null): Promise<void> {
+    const pid = tracked?.pid;
     try {
-      if (pid) {
-        await ChromaMcpManager.killProcessTree(pid);
+      if (tracked) {
+        // The spawn-time token is REQUIRED here, not an optimisation. This
+        // path runs because the child already exited, so killProcessTree's
+        // self-capture would read whatever now holds that PID and validate the
+        // replacement against itself — then `taskkill /T /F` would take that
+        // stranger and its whole subtree down.
+        await killProcessTree(tracked.pid, { expectedStartToken: tracked.startToken });
       }
     } catch (error) {
       logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
@@ -399,6 +654,7 @@ export class ChromaMcpManager {
       dataDir: normalizedDataDir,
       acquiredAt: new Date().toISOString(),
       startToken: captureProcessStartToken(process.pid),
+      processName: normalizeProcessName(process.execPath),
     };
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -420,6 +676,20 @@ export class ChromaMcpManager {
 
         const existing = ChromaMcpManager.readChromaWriterLock(lockPath);
         if (!existing) {
+          // Without a readable owner the liveness reaper below can never run,
+          // so vector sync would stay dead until someone deletes the file (#3916).
+          // Treat an unreadable lock that is past the write grace period as stale.
+          if (ChromaMcpManager.isChromaWriterLockAbandoned(lockPath)) {
+            try {
+              fs.rmSync(lockPath, { force: true });
+              logger.info('CHROMA_MCP', 'Removed unreadable Chroma writer lock', { lockPath });
+              continue;
+            } catch (removeError) {
+              const message = `Unable to remove unreadable Chroma writer lock at ${lockPath}: ${removeError instanceof Error ? removeError.message : String(removeError)}`;
+              recordChromaVectorSearchUnavailable(message);
+              throw new ChromaUnavailableError(message, removeError instanceof Error ? removeError : undefined);
+            }
+          }
           const message = `Chroma writer lock at ${lockPath} is unreadable; refusing to start a second writer`;
           recordChromaVectorSearchUnavailable(message);
           throw new ChromaUnavailableError(message);
@@ -494,6 +764,7 @@ export class ChromaMcpManager {
 
   private static readChromaWriterLock(lockPath: string): ChromaWriterLockPayload | null {
     try {
+      if (!fs.statSync(lockPath).isFile()) return null;
       const raw = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as Partial<ChromaWriterLockPayload>;
       if (
         typeof raw.pid !== 'number' ||
@@ -509,9 +780,19 @@ export class ChromaMcpManager {
         dataDir: raw.dataDir,
         acquiredAt: raw.acquiredAt,
         startToken: typeof raw.startToken === 'string' || raw.startToken === null ? raw.startToken : undefined,
+        processName: typeof raw.processName === 'string' ? raw.processName : undefined,
       };
     } catch {
       return null;
+    }
+  }
+
+  private static isChromaWriterLockAbandoned(lockPath: string): boolean {
+    try {
+      return Date.now() - fs.statSync(lockPath).mtimeMs >= CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS;
+    } catch {
+      // Vanished between the failed create and the stat: nothing left to reap.
+      return true;
     }
   }
 
@@ -520,10 +801,127 @@ export class ChromaMcpManager {
       return false;
     }
     if (!lock.startToken) {
-      return true;
+      // No identity was recorded (the capture can fail, e.g. a slow PowerShell
+      // CIM lookup on Windows). If the PID now runs a different program than the
+      // writer, the OS reused the PID and the lock is stale. Keeping it would
+      // disable vector sync until someone deletes the file by hand. This check
+      // does not depend on wall-clock ordering; an unreadable name keeps the
+      // lock, as before. Older locks lack processName and may have been written
+      // under either JS runtime, so any of them keeps such a lock.
+      const currentName = captureProcessName(lock.pid);
+      if (currentName === null) return true;
+      if (lock.processName) return isSameProcessName(currentName, lock.processName);
+      return isSameProcessName(currentName, normalizeProcessName(process.execPath)) || CHROMA_WRITER_RUNTIMES.has(currentName);
     }
     const currentStartToken = captureProcessStartToken(lock.pid);
     return currentStartToken === null || currentStartToken === lock.startToken;
+  }
+
+  private static readChromaStoreRecord(
+    dataDir: string,
+  ): { kind: 'absent' } | { kind: 'damaged'; reason: string } | { kind: 'valid'; record: ChromaStoreRecord } {
+    const recordPath = path.join(path.resolve(dataDir), CHROMA_STORE_RECORD_FILENAME);
+    let raw: string;
+    try {
+      const stat = fs.statSync(recordPath);
+      if (!stat.isFile()) {
+        return { kind: 'damaged', reason: 'record path is not a regular file' };
+      }
+      if (stat.size > CHROMA_STORE_RECORD_MAX_BYTES) {
+        return { kind: 'damaged', reason: `record size ${stat.size} exceeds limit ${CHROMA_STORE_RECORD_MAX_BYTES}` };
+      }
+      raw = fs.readFileSync(recordPath, 'utf-8');
+    } catch (error) {
+      const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (errno === 'ENOENT') {
+        return { kind: 'absent' };
+      }
+      return { kind: 'damaged', reason: error instanceof Error ? error.message : String(error) };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { kind: 'damaged', reason: 'JSON parse error' };
+    }
+    if (typeof parsed !== 'object' || parsed === null) {
+      return { kind: 'damaged', reason: 'record is not an object' };
+    }
+    const candidate = parsed as Record<string, unknown>;
+    if (!Number.isInteger(candidate.writerEpoch)) {
+      return { kind: 'damaged', reason: `writerEpoch is ${typeof candidate.writerEpoch}, expected integer` };
+    }
+    return {
+      kind: 'valid',
+      record: {
+        writerEpoch: candidate.writerEpoch as number,
+        chromaMcpVersion: typeof candidate.chromaMcpVersion === 'string' ? candidate.chromaMcpVersion : '',
+        chromadbVersion: typeof candidate.chromadbVersion === 'string' ? candidate.chromadbVersion : '',
+        clientType: typeof candidate.clientType === 'string' ? candidate.clientType : '',
+        claudeMemVersion: typeof candidate.claudeMemVersion === 'string' ? candidate.claudeMemVersion : '',
+        updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : '',
+      },
+    };
+  }
+
+  private static assertChromaStoreCompatible(dataDir: string): void {
+    const stored = ChromaMcpManager.readChromaStoreRecord(dataDir);
+    if (stored.kind === 'damaged') {
+      logger.warn('CHROMA_MCP', 'Chroma store record is damaged; connecting anyway', {
+        dataDir,
+        reason: stored.reason,
+      });
+      return;
+    }
+    if (stored.kind !== 'valid' || stored.record.writerEpoch <= CHROMA_WRITER_EPOCH) {
+      return;
+    }
+
+    // Strip non-printables and cap each field so injected control characters
+    // or outsized strings cannot propagate through the health map to API responses.
+    const sanitizeField = (s: string) => s.replace(/[^\x20-\x7E]/g, '').slice(0, 80);
+    const version = sanitizeField(stored.record.claudeMemVersion);
+    const ts = sanitizeField(stored.record.updatedAt);
+    const engine = sanitizeField(stored.record.chromadbVersion);
+    const writerDesc = [
+      version
+        ? `claude-mem ${version}${ts ? ` at ${ts}` : ''}`
+        : ts || 'an unknown version',
+      ...(engine ? [`chromadb ${engine}`] : []),
+    ].join(', ');
+    const message =
+      `Chroma data dir ${path.resolve(dataDir)} was last written by epoch ` +
+      `${stored.record.writerEpoch} (${writerDesc}); this writer is epoch ${CHROMA_WRITER_EPOCH}. ` +
+      `Upgrade claude-mem to match the version that last wrote this store, ` +
+      `or configure a distinct CLAUDE_MEM_DATA_DIR.`;
+    recordChromaVectorSearchUnavailable(message);
+    throw new ChromaUnavailableError(message);
+  }
+
+  private static writeChromaStoreRecord(dataDir: string): void {
+    const normalizedDataDir = path.resolve(dataDir);
+    const recordPath = path.join(normalizedDataDir, CHROMA_STORE_RECORD_FILENAME);
+    const tmp = `${recordPath}.tmp`;
+    // depOverrides is written for diagnostic provenance but not typed on ChromaStoreRecord
+    // (see interface comment) — the write payload intentionally extends beyond the read type.
+    const record = {
+      writerEpoch: CHROMA_WRITER_EPOCH,
+      chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      chromadbVersion: CHROMADB_PINNED_VERSION ?? '',
+      depOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      clientType: 'persistent',
+      claudeMemVersion,
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(record, null, 2), 'utf-8');
+      fs.renameSync(tmp, recordPath);
+    } catch (error) {
+      logger.warn('CHROMA_MCP', 'Failed to write Chroma store record; connecting anyway', {
+        recordPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private static buildLauncherPrefix(pythonVersion: string): string[] {
@@ -594,6 +992,145 @@ export class ChromaMcpManager {
     return () => tail.trim();
   }
 
+  /**
+   * Cooldown for the open circuit breaker: the base doubled once per failed
+   * probe (each failure past the open threshold), capped at the max. A host that
+   * keeps failing is therefore probed ever more rarely instead of at a fixed
+   * interval, which bounds the wasted builds while still allowing recovery.
+   */
+  private static prewarmBreakerCooldownMs(consecutiveFailures: number): number {
+    const overshoot = Math.max(0, consecutiveFailures - CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES);
+    const scaled = CHROMA_PREWARM_BREAKER_BASE_COOLDOWN_MS * 2 ** overshoot;
+    return Math.min(scaled, CHROMA_PREWARM_BREAKER_MAX_COOLDOWN_MS);
+  }
+
+  /**
+   * uv's build-scratch directory (`<uv cache>/builds-v0`), resolved from the
+   * spawn env with uv's own cache-dir precedence: `UV_CACHE_DIR`, else
+   * `%LOCALAPPDATA%\uv\cache` on Windows, else `$XDG_CACHE_HOME/uv` or
+   * `~/.cache/uv`. Windows env names are case-insensitive, so the lookup is too.
+   * `platform` and `homedir` are injectable so the resolution is testable.
+   */
+  static resolveUvBuildsScratchDir(
+    env: Record<string, string>,
+    platform: NodeJS.Platform = process.platform,
+    homedir: string = os.homedir(),
+  ): string {
+    const read = (name: string): string | undefined => {
+      if (platform === 'win32') {
+        const target = name.toLowerCase();
+        const key = Object.keys(env).find(k => k.toLowerCase() === target);
+        return key ? env[key]?.trim() || undefined : undefined;
+      }
+      return env[name]?.trim() || undefined;
+    };
+
+    const explicitCache = read('UV_CACHE_DIR');
+    const cacheDir = explicitCache
+      ? explicitCache
+      : platform === 'win32'
+        ? path.join(read('LOCALAPPDATA') || path.join(homedir, 'AppData', 'Local'), 'uv', 'cache')
+        : path.join(read('XDG_CACHE_HOME') || path.join(homedir, '.cache'), 'uv');
+    return path.join(cacheDir, 'builds-v0');
+  }
+
+  /**
+   * Delete abandoned uv build-scratch dirs left by a failed prewarm.
+   *
+   * uv builds chroma-mcp's environment in `builds-v0/.tmp*` and removes the dir
+   * on success, but a build that fails or is killed mid-way leaks it, and `uv
+   * cache prune` never reclaims it. On NTFS each leftover also pins hardlinks
+   * against the 1,023-per-file ceiling, so they compound until the disk fills
+   * (#4108). Only `.tmp*` entries are scratch — real cached builds have other
+   * names and are left untouched — and only ones past the abandoned age are
+   * removed, so a build in progress elsewhere (which can take minutes) is never
+   * disturbed. Best-effort: every failure is logged at debug and swallowed.
+   *
+   * One pass removes at most `maxDirs` dirs and returns how many it removed.
+   * Everything is async: a synchronous recursive delete of a large backlog
+   * would block the worker's event loop for minutes.
+   */
+  private static async sweepUvBuildsScratch(
+    env: Record<string, string>,
+    maxDirs: number = CHROMA_UV_BUILDS_SCRATCH_SWEEP_BATCH,
+  ): Promise<number> {
+    const buildsDir = ChromaMcpManager.resolveUvBuildsScratchDir(env);
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(buildsDir, { withFileTypes: true });
+    } catch {
+      // No cache dir yet, or unreadable — nothing to sweep.
+      return 0;
+    }
+
+    const now = Date.now();
+    let removed = 0;
+    for (const entry of entries) {
+      if (removed >= maxDirs) break;
+      if (!entry.name.startsWith('.tmp')) continue;
+      const scratchPath = path.join(buildsDir, entry.name);
+      try {
+        const { mtimeMs } = await fs.promises.stat(scratchPath);
+        if (now - mtimeMs < CHROMA_UV_BUILDS_SCRATCH_ABANDONED_MS) {
+          continue;
+        }
+        await fs.promises.rm(scratchPath, { recursive: true, force: true });
+        removed += 1;
+      } catch (error) {
+        logger.debug('CHROMA_MCP', 'Failed to remove uv build scratch dir (best-effort)', {
+          scratchPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (removed > 0) {
+      logger.info('CHROMA_MCP', 'Swept abandoned uv build scratch dirs', { buildsDir, removed });
+    }
+    return removed;
+  }
+
+  /**
+   * Run sweep passes until one removes less than a full batch, pausing between
+   * passes so a large backlog is reclaimed without monopolising the disk.
+   */
+  private static async drainUvBuildsScratch(
+    env: Record<string, string>,
+    pauseMs: number = CHROMA_UV_BUILDS_SCRATCH_SWEEP_PAUSE_MS,
+  ): Promise<void> {
+    while (await ChromaMcpManager.sweepUvBuildsScratch(env) >= CHROMA_UV_BUILDS_SCRATCH_SWEEP_BATCH) {
+      await new Promise<void>(resolve => {
+        // unref: a pending pause must never keep a shutting-down worker alive.
+        setTimeout(resolve, pauseMs).unref?.();
+      });
+    }
+  }
+
+  /**
+   * Start a background drain of abandoned uv build scratch and return at once
+   * (fire-and-forget). A request while a drain is running is dropped: the
+   * running drain already removes everything past the age bound.
+   */
+  private static startUvBuildsScratchSweep(env: Record<string, string>): void {
+    if (ChromaMcpManager.uvBuildsScratchSweep) {
+      return;
+    }
+    ChromaMcpManager.uvBuildsScratchSweep = ChromaMcpManager.drainUvBuildsScratch(env)
+      .catch(error => {
+        logger.debug('CHROMA_MCP', 'uv build scratch sweep stopped (best-effort)', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        ChromaMcpManager.uvBuildsScratchSweep = null;
+      });
+  }
+
+  /** Test hook: resolves once the in-flight background scratch sweep, if any, ends. */
+  static async waitForUvBuildsScratchSweepForTesting(): Promise<void> {
+    await ChromaMcpManager.uvBuildsScratchSweep;
+  }
+
   private async prewarmChromaMcp(
     command: string,
     commandArgs: string[],
@@ -602,13 +1139,53 @@ export class ChromaMcpManager {
   ): Promise<void> {
     this.assertConnectionNotCancelled(connectionGeneration);
 
+    if (this.consecutivePrewarmFailures >= CHROMA_PREWARM_GIVE_UP_FAILURES) {
+      // Latched: a full recovery window of exponentially spaced probes has
+      // failed, so stop spawning entirely until the worker restarts. This caps
+      // the total wasted builds (and the scratch they can leak) on a host that
+      // never recovers.
+      const message = `chroma-mcp prewarm disabled after ${this.consecutivePrewarmFailures} consecutive failures; restart required`;
+      logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker latched, restart required', {
+        consecutiveFailures: this.consecutivePrewarmFailures,
+        prewarmAttempts: this.prewarmAttempts,
+      });
+      recordUvxVectorSearchUnavailable(message);
+      throw new ChromaUnavailableError(message);
+    }
+
+    if (this.consecutivePrewarmFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES) {
+      const cooldownMs = ChromaMcpManager.prewarmBreakerCooldownMs(this.consecutivePrewarmFailures);
+      const msSinceOpen = Date.now() - this.prewarmBreakerOpenedAt;
+      if (msSinceOpen < cooldownMs) {
+        const retryInS = Math.ceil((cooldownMs - msSinceOpen) / 1000);
+        const message = `chroma-mcp prewarm paused after ${this.consecutivePrewarmFailures} consecutive failures; retrying in ${retryInS}s`;
+        logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker open, skipping spawn', {
+          consecutiveFailures: this.consecutivePrewarmFailures,
+          prewarmAttempts: this.prewarmAttempts,
+          retryInS,
+        });
+        recordUvxVectorSearchUnavailable(message);
+        throw new ChromaUnavailableError(message);
+      }
+      // Cooldown elapsed — let a single probe through (half-open). A failure
+      // re-opens the breaker for a longer cooldown; a success resets the count
+      // and closes it, so a recovered host reconnects without a restart.
+      logger.info('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker half-open, allowing one probe', {
+        consecutiveFailures: this.consecutivePrewarmFailures,
+        prewarmAttempts: this.prewarmAttempts,
+      });
+    }
+
     const args = ChromaMcpManager.buildPrewarmCommandArgs(commandArgs);
     const timeoutMs = ChromaMcpManager.getChromaPrewarmTimeoutMs();
+    this.prewarmAttempts += 1;
 
     logger.info('CHROMA_MCP', 'Prewarming chroma-mcp uvx environment', {
       command,
       args: args.join(' '),
-      timeoutMs
+      timeoutMs,
+      attempt: this.prewarmAttempts,
+      consecutiveFailures: this.consecutivePrewarmFailures,
     });
 
     const child = spawn(command, args, {
@@ -619,6 +1196,8 @@ export class ChromaMcpManager {
       windowsHide: process.platform === 'win32',
     });
     this.activePrewarmChild = child;
+    const prewarmTracked = trackChild(child);
+    this.activePrewarmTracked = prewarmTracked;
 
     const stdoutTail = ChromaMcpManager.captureOutputTail(child.stdout);
     const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
@@ -654,13 +1233,31 @@ export class ChromaMcpManager {
     try {
       await Promise.race([exitPromise, timeoutPromise]);
       this.assertConnectionNotCancelled(connectionGeneration);
+      this.consecutivePrewarmFailures = 0;
       logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm completed');
+      if (!this.sweptUvBuildsScratchAfterSuccess) {
+        // A host that recovered (e.g. once UV_LINK_MODE=copy lets installs
+        // finish) still carries every scratch dir its failed attempts leaked,
+        // and a sweep that ran only on failure would never reclaim them.
+        this.sweptUvBuildsScratchAfterSuccess = true;
+        ChromaMcpManager.startUvBuildsScratchSweep(env);
+      }
     } catch (error) {
       if (error instanceof ChromaMcpConnectionCancelledError) {
         logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm cancelled during shutdown');
+        // A cancelled build is killed but not cleaned up by uv, so its scratch
+        // dir leaks too. Sweep here as well so repeated shutdowns/reconnects
+        // cannot accumulate abandoned builds (#4108).
+        ChromaMcpManager.startUvBuildsScratchSweep(env);
         throw error;
       }
       this.assertConnectionNotCancelled(connectionGeneration);
+      this.consecutivePrewarmFailures += 1;
+      if (this.consecutivePrewarmFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES) {
+        // Mark when the breaker opened (or re-opened after a failed probe) so
+        // the half-open cooldown is measured from the latest failure.
+        this.prewarmBreakerOpenedAt = Date.now();
+      }
       const errorMessage = error instanceof Error ? error.message : String(error);
       const pid = child.pid;
       const stdout = stdoutTail();
@@ -669,6 +1266,8 @@ export class ChromaMcpManager {
         command,
         args: args.join(' '),
         timeoutMs,
+        attempt: this.prewarmAttempts,
+        consecutiveFailures: this.consecutivePrewarmFailures,
         ...(pid ? { pid } : {}),
         error: errorMessage,
         ...(stdout ? { stdoutTail: stdout } : {}),
@@ -677,7 +1276,10 @@ export class ChromaMcpManager {
 
       if (pid) {
         try {
-          await ChromaMcpManager.killProcessTree(pid);
+          // Token from spawn time: by here the prewarm may already have exited
+          // (that is often WHY we are in this branch), so self-capture would
+          // read a replacement rather than the child we spawned.
+          await killProcessTree(pid, { expectedStartToken: prewarmTracked?.startToken ?? null });
         } catch (killError) {
           logger.debug('CHROMA_MCP', 'prewarm process tree kill finished (best-effort)', {
             pid,
@@ -688,6 +1290,11 @@ export class ChromaMcpManager {
         try { child.kill('SIGKILL'); } catch { /* already dead */ }
       }
 
+      // Reclaim the half-built env this failed attempt may have leaked, so a
+      // retry loop cannot fill the disk on NTFS (#4108). Runs after the kill so
+      // our own scratch dir is no longer held open.
+      ChromaMcpManager.startUvBuildsScratchSweep(env);
+
       const unavailableMessage = `chroma-mcp prewarm failed: ${errorMessage}`;
       recordUvxVectorSearchUnavailable(unavailableMessage);
       throw new ChromaUnavailableError(unavailableMessage, error instanceof Error ? error : undefined);
@@ -697,8 +1304,17 @@ export class ChromaMcpManager {
       }
       if (this.activePrewarmChild === child) {
         this.activePrewarmChild = null;
+        this.activePrewarmTracked = null;
       }
     }
+  }
+
+  /**
+   * Whether a mutation sent now would be accepted. False in local mode once
+   * stop() has begun, because callTool() then refuses every mutation.
+   */
+  acceptsMutations(): boolean {
+    return !this.serializeMutations || this.acceptingLocalMutations;
   }
 
   async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
@@ -715,18 +1331,61 @@ export class ChromaMcpManager {
   private async callToolUnqueued(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
     const callGeneration = this.connectionGeneration;
     await this.ensureConnected();
+    const callTransport = this.transport;
+    const isMutation = ChromaMcpManager.isMutationTool(toolName);
+
+    // Chroma embedding/index mutations routinely exceed the MCP SDK's
+    // 60-second default once a persistent collection grows. The SDK treats
+    // that deadline as a request failure, and tearing chroma-mcp down while
+    // SQLite/FTS5 may still be committing can leave the persistent index
+    // malformed (a timeout is therefore never handled as a transport error,
+    // see below). Give mutations a bounded, configurable deadline while
+    // keeping read/query latency at the SDK default.
+    const requestOptions = isMutation
+      ? { timeout: this.mutationTimeoutMs }
+      : undefined;
 
     logger.debug('CHROMA_MCP', `Calling tool: ${toolName}`, {
-      arguments: JSON.stringify(toolArguments).slice(0, 200)
+      arguments: JSON.stringify(toolArguments).slice(0, 200),
+      ...(requestOptions ? { timeoutMs: requestOptions.timeout } : {})
     });
 
     let result;
+    if (isMutation) {
+      this.mutationCallsInFlight += 1;
+    }
     try {
       result = await this.client!.callTool({
         name: toolName,
         arguments: toolArguments
-      });
+      }, undefined, requestOptions);
+      if (this.timedOutWriteTransport === callTransport) {
+        // chroma-mcp answered again, so the write that timed out has finished.
+        this.timedOutWriteTransport = null;
+      }
     } catch (transportError) {
+      if (ChromaMcpManager.isRequestTimeout(transportError)) {
+        const cause = transportError instanceof Error ? transportError : undefined;
+        if (isMutation) {
+          this.timedOutWriteTransport = callTransport;
+        } else if (this.mutationCallsInFlight === 0 && this.timedOutWriteTransport !== callTransport) {
+          await this.restartHungSubprocess(toolName, callTransport);
+          throw new ChromaUnavailableError(`chroma-mcp did not answer "${toolName}" in time and was restarted`, cause);
+        }
+        // A request that outlived its deadline while a write is, or may still
+        // be, in flight means chroma-mcp is slow, not gone: the SDK has already
+        // sent notifications/cancelled, and the write may still be committing.
+        // Tree-killing it here is what leaves a persistent index malformed,
+        // and a retry would repeat the same slow work, so neither happens.
+        // The caller keeps the row pending.
+        const message = `chroma-mcp "${toolName}" timed out; the subprocess was left running`;
+        logger.warn('CHROMA_MCP', message, {
+          timeoutMs: requestOptions?.timeout,
+          error: transportError instanceof Error ? transportError.message : String(transportError)
+        });
+        throw new ChromaUnavailableError(message, cause);
+      }
+
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
@@ -737,8 +1396,15 @@ export class ChromaMcpManager {
 
       // Tree-kill the dying subprocess before reconnect. Previously this path
       // just nulled the handle, which on Linux leaks the uv/python/chroma-mcp
-      // descendants every time a transport error happens (#2313).
-      await this.disposeCurrentSubprocess();
+      // descendants every time a transport error happens (#2313). When its
+      // teardown is already under way (an unexpected close, or a restart for
+      // a hung read that cut this call off) or the subprocess was replaced,
+      // wait instead: disposing again could take down its replacement.
+      if (this.unexpectedCloseCleanup || this.transport !== callTransport) {
+        await this.waitForUnexpectedCloseCleanup();
+      } else {
+        await this.disposeCurrentSubprocess();
+      }
 
       try {
         if (callGeneration !== this.connectionGeneration) {
@@ -748,10 +1414,14 @@ export class ChromaMcpManager {
         result = await this.client!.callTool({
           name: toolName,
           arguments: toolArguments
-        });
+        }, undefined, requestOptions);
       } catch (retryError) {
         this.connected = false;
         throw new Error(`chroma-mcp transport error during "${toolName}" (retry failed): ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+      }
+    } finally {
+      if (isMutation) {
+        this.mutationCallsInFlight -= 1;
       }
     }
 
@@ -817,6 +1487,46 @@ export class ChromaMcpManager {
 
   private static isMutationTool(toolName: string): boolean {
     return CHROMA_MUTATION_TOOL_PATTERN.test(toolName);
+  }
+
+  private static isRequestTimeout(error: unknown): boolean {
+    return error instanceof McpError && error.code === ErrorCode.RequestTimeout;
+  }
+
+  /**
+   * A read outlived the SDK's deadline while no write was in flight or still
+   * possibly committing after its own deadline. Reads are short, so chroma-mcp
+   * is hung rather than busy, and left running it makes every later read wait
+   * out the same deadline. Take it down so the
+   * next call reconnects to a fresh subprocess. The teardown is published as
+   * the close cleanup: ensureConnected() and stop() wait for it, and a call
+   * it cuts off joins it instead of disposing a second time.
+   */
+  private async restartHungSubprocess(toolName: string, callTransport: unknown): Promise<void> {
+    if (this.unexpectedCloseCleanup) {
+      await this.waitForUnexpectedCloseCleanup();
+      return;
+    }
+    if (!callTransport || this.transport !== callTransport) {
+      return;
+    }
+    logger.warn('CHROMA_MCP', `chroma-mcp did not answer "${toolName}" in time and no write is in flight; restarting it`);
+    // Waiters on the close cleanup expect it never to reject, like the
+    // unexpected-close cleanup it shares the slot with.
+    let restart: Promise<void>;
+    restart = this.disposeCurrentSubprocess()
+      .catch((error: unknown) => {
+        logger.warn('CHROMA_MCP', 'Restarting a hung chroma-mcp did not finish cleanly', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      })
+      .finally(() => {
+        if (this.unexpectedCloseCleanup === restart) {
+          this.unexpectedCloseCleanup = null;
+        }
+      });
+    this.unexpectedCloseCleanup = restart;
+    await restart;
   }
 
   async isHealthy(): Promise<boolean> {
@@ -912,16 +1622,27 @@ export class ChromaMcpManager {
     const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })?._process;
     const trackedPid = chromaProcess?.pid;
 
-    if (trackedPid) {
-      try {
-        await ChromaMcpManager.killProcessTree(trackedPid);
-      } catch (error) {
-        logger.warn('CHROMA_MCP', 'failed to kill prior chroma-mcp tree (best-effort)', {
-          pid: trackedPid,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
+    // #3540 — graceful FIRST, hard tree-kill only as escalation.
+    //
+    // The previous order tree-killed before closing, so `uv` was always
+    // SIGKILLed mid-build and never unlinked its builds-v0/.tmp* scratch dir.
+    // StdioClientTransport.close() already implements exactly the escalation
+    // this needs — stdin EOF, wait 2s, SIGTERM, wait 2s, SIGKILL — so the
+    // grace period is the SDK's, not a new timer scheme of ours.
+    //
+    // The #2313 singleton invariant is preserved, but it needs the descendant
+    // set captured BEFORE the close: once the root exits, its children
+    // re-parent and drop out of the walk, so a post-mortem scan finds nothing
+    // to reap. collectDescendantPids() enumerates on Windows too — a
+    // POSIX-only walk returned [] there and left the chain untracked.
+    // The ROOT's identity, captured BEFORE close(). uvx can exit during the
+    // close, and on Windows the escalation below is unconditional — so without
+    // this, a reused PID would be handed to `taskkill /PID <pid> /T /F`, force
+    // terminating an unrelated process AND its entire descendant tree.
+    const rootStartToken = trackedPid ? captureProcessStartToken(trackedPid) : null;
+    const descendantsBeforeClose = trackedPid
+      ? await ChromaMcpManager.snapshotDescendantIdentities(trackedPid)
+      : [];
 
     if (closingTransport) {
       try { await closingTransport.close(); } catch { /* already dead */ }
@@ -930,8 +1651,59 @@ export class ChromaMcpManager {
       try { await this.client.close(); } catch { /* already dead */ }
     }
 
+    // Both directions of the close/exit race have to be handled, and they pull
+    // opposite ways:
+    //
+    //   - Escalate too eagerly and `uv` gets SIGKILLed mid-build, which is
+    //     #3540 (leaked builds-v0/.tmp* scratch). close() can resolve before
+    //     Node has processed the child's 'exit', so exitCode is briefly still
+    //     null for a process that is already gone — hence the bounded wait
+    //     below rather than reading exitCode the instant close() returns.
+    //   - Escalate too reluctantly and the chain is orphaned, which is #3482.
+    //
+    // On Windows the second risk dominates and cannot be handled by the
+    // exitCode check at all: close() ends in TerminateProcess against ONE pid,
+    // so uvx.exe dies while uv -> python -> chroma-mcp keep running. Reading
+    // exitCode there would skip the `taskkill /T /F` that is the only thing
+    // able to reach them. So win32 always escalates; taskkill against an
+    // already-dead pid is the tolerated not-found case, not an error.
+    const exitedCleanly = chromaProcess
+      ? await ChromaMcpManager.waitForChildExit(chromaProcess, CHROMA_EXIT_OBSERVE_TIMEOUT_MS)
+      : true;
+    const mustEscalate = process.platform === 'win32' || !exitedCleanly;
+
+    if (trackedPid && mustEscalate) {
+      try {
+        // expectedStartToken makes this a no-op if the PID was reused; the
+        // identity-validated descendant reap below still runs, which is the
+        // part that matters once the real root is gone.
+        await killProcessTree(trackedPid, { expectedStartToken: rootStartToken });
+      } catch (error) {
+        logger.warn('CHROMA_MCP', 'failed to kill prior chroma-mcp tree (best-effort)', {
+          pid: trackedPid,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    // Re-scan AFTER the close and union with the pre-close snapshot.
+    //
+    // The pre-close snapshot alone leaves a hole: if the walk ran before uvx
+    // had forked `uv`, the snapshot is empty. Re-collecting here catches any
+    // layer that became visible after the first walk and is still reachable
+    // from the root. Descendants re-parent once the root is gone, so this
+    // second walk is not guaranteed to see everything — which is exactly why
+    // it UNIONS with the pre-close set rather than replacing it. Between the
+    // two, a descendant has to be invisible at BOTH sample points to escape.
+    // Only re-scan when the root is still the process we recorded — walking a
+    // reused PID would enumerate a stranger's children and then reap them.
+    const descendantsAfterClose = trackedPid && isSameProcess(trackedPid, rootStartToken)
+      ? await ChromaMcpManager.snapshotDescendantIdentities(trackedPid)
+      : [];
+    ChromaMcpManager.reapOrphanedDescendants([...descendantsBeforeClose, ...descendantsAfterClose]);
+
     if (trackedPid) {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, trackedPid);
     }
     this.releaseChromaWriterLock();
 
@@ -940,19 +1712,108 @@ export class ChromaMcpManager {
     this.connected = false;
   }
 
+  /**
+   * Wait (bounded) for a child's 'exit' to be observed.
+   *
+   * close() can resolve before Node has processed the exit event, so reading
+   * `exitCode` the instant it returns reports a live process that is already
+   * gone — and escalating on that false negative is what SIGKILLs `uv`
+   * mid-build (#3540). Resolves true when the child is known to have exited.
+   */
+  private static waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>(resolve => {
+      const onExit = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        child.off('exit', onExit);
+        resolve(child.exitCode !== null || child.signalCode !== null);
+      }, timeoutMs);
+      child.once('exit', onExit);
+    });
+  }
+
+  /**
+   * Descendants of `rootPid` with their start tokens captured.
+   *
+   * The token is what makes the later reap safe: a bare PID can be recycled by
+   * the OS between snapshot and teardown, and SIGKILLing a recycled PID kills
+   * an unrelated process. Captured here, at snapshot time, so it describes the
+   * process we actually intend to reap.
+   */
+  private static async snapshotDescendantIdentities(
+    rootPid: number
+  ): Promise<Array<{ pid: number; startToken: string | null }>> {
+    // Identity comes from the SAME process-table read that discovered the PID.
+    // Enumerating first and probing each PID afterwards would let a reissued
+    // number have the REPLACEMENT's token captured, which the later check would
+    // then happily validate — certifying a stranger as a legitimate target.
+    return collectDescendantIdentities(rootPid);
+  }
+
+  /**
+   * SIGKILL descendants that outlived their parent, verifying identity first.
+   *
+   * These have already had the full graceful window (stdin EOF -> SIGTERM ->
+   * SIGKILL against their parent); surviving it means they re-parented and
+   * nothing else will ever reap them.
+   *
+   * A PID alone is not sufficient authority to kill: if the descendant died
+   * and the OS reissued its number, the start token no longer matches and the
+   * entry is skipped rather than killing a stranger. When no token could be
+   * captured at snapshot time we fall back to liveness — the pre-existing
+   * behavior — because refusing to reap would resurrect #2313.
+   */
+  private static reapOrphanedDescendants(
+    entries: Array<{ pid: number; startToken: string | null }>
+  ): void {
+    const seen = new Set<number>();
+
+    for (const { pid, startToken } of entries) {
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      if (!isPidAlive(pid)) continue;
+
+      if (!isSameProcess(pid, startToken)) {
+        logger.debug('CHROMA_MCP', 'Skipping reap: PID was recycled since the snapshot', { pid });
+        continue;
+      }
+
+      try {
+        process.kill(pid, 'SIGKILL');
+        logger.debug('CHROMA_MCP', 'Reaped orphaned chroma-mcp descendant', { pid });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ESRCH') {
+          logger.warn('CHROMA_MCP', 'Failed to reap orphaned chroma-mcp descendant', {
+            pid,
+            code,
+          });
+        }
+      }
+    }
+  }
+
   private async disposeActivePrewarm(): Promise<void> {
     const prewarmChild = this.activePrewarmChild;
+    const tracked = this.activePrewarmTracked;
     if (!prewarmChild) {
       return;
     }
     if (this.activePrewarmChild === prewarmChild) {
       this.activePrewarmChild = null;
+      this.activePrewarmTracked = null;
     }
 
     const pid = prewarmChild.pid;
     if (pid) {
       try {
-        await ChromaMcpManager.killProcessTree(pid);
+        // Spawn-time identity: this handle may already have exited.
+        await killProcessTree(pid, { expectedStartToken: tracked?.startToken ?? null });
       } catch (error) {
         logger.warn('CHROMA_MCP', 'failed to kill in-flight chroma-mcp prewarm tree (best-effort)', {
           pid,
@@ -1023,134 +1884,6 @@ export class ChromaMcpManager {
     this.connecting = null;
 
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
-  }
-
-  /**
-   * Kill a process and all its descendants (tree-kill).
-   *
-   * POSIX: Sends SIGTERM to the process, then uses `pkill -P` to signal
-   * children recursively. Falls back to single-PID kill if pkill is unavailable.
-   *
-   * Windows: Uses `taskkill /T /F /PID` for full subtree teardown (same
-   * pattern as shutdown.ts).
-   *
-   * Best-effort — swallows ESRCH (already dead) and logs other errors.
-   */
-  private static async killProcessTree(pid: number): Promise<void> {
-    logger.debug('CHROMA_MCP', `Killing process tree rooted at PID ${pid}`);
-
-    if (process.platform === 'win32') {
-      try {
-        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
-          timeout: 5_000,
-          windowsHide: true
-        });
-      } catch (error) {
-        // taskkill exits non-zero when the process is already dead — that's fine.
-        logger.debug('CHROMA_MCP', `taskkill tree-kill finished (may already be dead)`, {
-          pid,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-      return;
-    }
-
-    // POSIX: walk descendants recursively (bottom-up) and signal each.
-    // `pkill -P <pid>` only reaches direct children, so `python` /
-    // `chroma-mcp` under `uv` (grandchildren) get re-parented to init and
-    // survive. We collect the full descendant set via `pgrep -P` walks before
-    // signaling, so the SIGTERM phase reaches every layer
-    // (CodeRabbit review on PR #2282).
-    try {
-      const descendantsBeforeTerm = await ChromaMcpManager.collectDescendantPids(pid);
-      // Signal leaves first, then the root.
-      for (const child of descendantsBeforeTerm) {
-        try {
-          process.kill(child, 'SIGTERM');
-        } catch {
-          // Already gone — fine.
-        }
-      }
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'ESRCH') {
-          logger.debug('CHROMA_MCP', `Failed to SIGTERM PID ${pid}`, { code }, err);
-        }
-      }
-
-      // Brief wait for SIGTERM to propagate, then SIGKILL stragglers.
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Re-collect descendants — some layers may have re-parented during the
-      // SIGTERM grace window.
-      //
-      // SIGKILL targets the UNION of pre-TERM and post-wait descendant sets:
-      // when the root exits between snapshots, children get re-parented to
-      // init and drop out of `pgrep -P <root>`. Without the union, those
-      // re-parented descendants would never receive SIGKILL even though they
-      // were definitely children before SIGTERM (CodeRabbit review on PR
-      // #2282). Dedupe via Set since `descendantsBeforeKill` typically
-      // overlaps with `descendantsBeforeTerm`.
-      const descendantsBeforeKill = await ChromaMcpManager.collectDescendantPids(pid);
-      const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
-      for (const child of killTargets) {
-        try {
-          process.kill(child, 'SIGKILL');
-        } catch {
-          // Already dead — fine.
-        }
-      }
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // Already dead — fine.
-      }
-    } catch (error) {
-      logger.debug('CHROMA_MCP', `Process tree kill completed (best-effort)`, {
-        pid,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  /**
-   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`.
-   * Returned bottom-up (leaves first) so callers can signal leaves before
-   * their ancestors. Best-effort: missing pgrep / non-zero exits return [].
-   */
-  private static async collectDescendantPids(rootPid: number): Promise<number[]> {
-    const seen = new Set<number>();
-    const collected: number[] = [];
-
-    async function walk(pid: number): Promise<void> {
-      let stdout = '';
-      try {
-        const result = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2_000 });
-        stdout = result.stdout;
-      } catch {
-        // [ANTI-PATTERN IGNORED]: pgrep exits 1 whenever a PID has no children, which is the expected leaf case on every recursive walk; recovery is treating the node as childless and returning early.
-        return;
-      }
-      const children = stdout
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .map(line => Number.parseInt(line, 10))
-        .filter(n => Number.isFinite(n) && n > 0 && !seen.has(n));
-
-      for (const child of children) {
-        seen.add(child);
-        await walk(child);
-        // Bottom-up: push after recursion so leaves come first.
-        collected.push(child);
-      }
-    }
-
-    await walk(rootPid);
-    return collected;
   }
 
   /**
@@ -1381,9 +2114,35 @@ export class ChromaMcpManager {
     // bin dir (#2790).
     ChromaMcpManager.ensureUvOnPath(baseEnv);
 
+    // Never let an activated venv / conda shell leak its interpreter into the
+    // uvx child (#3552). This is THE spawn env for chroma-mcp, so this is the
+    // call that actually fixes the numpy ABI clash.
+    stripForeignPythonEnv(baseEnv);
+
+    // On NTFS, uv installs cached files into each build env with hardlinks, but
+    // a single file can back at most 1,023 hardlinks; chroma-mcp's large deps
+    // blow past that ceiling, and from then on every install fails and leaks a
+    // half-built env — over time this fills the disk (#4108). `copy` link mode
+    // trades a little extra space for installs that actually complete on
+    // Windows: offline install succeeds in ~15s under copy, fails in ~3s without
+    // it. Only a default: an explicit UV_LINK_MODE still wins. Windows env names
+    // are case-insensitive, so a lowercase `uv_link_mode` counts as set too —
+    // otherwise we would add a duplicate uppercase key the user did not choose.
+    if (process.platform === 'win32'
+        && !Object.keys(baseEnv).some(key => key.toLowerCase() === 'uv_link_mode')) {
+      baseEnv.UV_LINK_MODE = 'copy';
+    }
+
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
     if (!baseEnv.ANONYMIZED_TELEMETRY) baseEnv.ANONYMIZED_TELEMETRY = 'false';
+
+    // Force UTF-8 on the Python child's stdio. Without this, a non-UTF-8 ANSI
+    // code page (e.g. cp936) makes Python encode JSON-RPC stdout in the locale
+    // encoding, which Node then decodes as UTF-8 — the bad bytes become U+FFFD
+    // and JSON.parse throws. These vars govern both directions of the pipe.
+    baseEnv.PYTHONUTF8 = '1';
+    baseEnv.PYTHONIOENCODING = 'utf-8';
     return baseEnv;
   }
 
@@ -1410,7 +2169,8 @@ export class ChromaMcpManager {
 
   private registerManagedProcess(): void {
     const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })._process;
-    if (!chromaProcess?.pid) {
+    const chromaPid = chromaProcess?.pid;
+    if (!chromaProcess || !chromaPid) {
       return;
     }
 
@@ -1426,17 +2186,17 @@ export class ChromaMcpManager {
     // On POSIX the pgid recorded here is used by killProcessTree() in
     // stop() for explicit tree teardown rather than negative-PID signaling.
     getSupervisor().registerProcess(CHROMA_SUPERVISOR_ID, {
-      pid: chromaProcess.pid,
+      pid: chromaPid,
       type: 'chroma',
       startedAt: new Date().toISOString(),
       // Store pid as pgid — shutdown.ts will attempt kill(-pgid) on POSIX.
       // If the child isn't actually its own group leader, the ESRCH is caught
       // and shutdown falls back to single-PID kill (see signalProcess()).
-      pgid: chromaProcess.pid
+      pgid: chromaPid
     }, chromaProcess);
 
     chromaProcess.once('exit', () => {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, chromaPid);
     });
   }
 }

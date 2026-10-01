@@ -8,12 +8,24 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
-import { CloudSync, type CloudSyncSettingKeys, type CloudSyncOptions } from '../../../src/services/sync/CloudSync.js';
-import { buildContentOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
+import {
+  CloudSync,
+  HubHttpError,
+  hubRetryAfterMs,
+  parseContentBatchSize,
+  parseRequestTimeoutMs,
+  parseRetryAfterMs,
+  DEFAULT_CONTENT_BATCH_SIZE,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  type CloudSyncSettingKeys,
+  type CloudSyncOptions,
+} from '../../../src/services/sync/CloudSync.js';
+import { PROMPT_TEXT_MAX_BYTES, PROMPT_TRUNCATION_MARKER } from '../../../src/services/sync/prompt-text-clamp.js';
+import { buildContentOperation, buildMutationOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -121,6 +133,49 @@ function makeFetchMock(handler?: (call: number) => Response | Error | undefined)
   }) as typeof fetch;
   return { impl, calls };
 }
+
+describe('hub retry-after helpers', () => {
+  it('parses delta-seconds and HTTP-date Retry-After values', () => {
+    expect(parseRetryAfterMs('5')).toBe(5_000);
+    expect(parseRetryAfterMs(null)).toBeNull();
+    expect(parseRetryAfterMs('nope')).toBeNull();
+    const now = Date.parse('Wed, 21 Oct 2015 07:28:00 GMT');
+    expect(parseRetryAfterMs('Wed, 21 Oct 2015 07:28:05 GMT', now)).toBe(5_000);
+  });
+
+  it('treats Cloudflare HTML 429 as a 10-minute floor', () => {
+    expect(hubRetryAfterMs(429, '<!DOCTYPE html><p>error 1027</p>', null)).toBe(10 * 60 * 1_000);
+    expect(hubRetryAfterMs(429, '<!DOCTYPE html>', '30')).toBe(10 * 60 * 1_000);
+    expect(hubRetryAfterMs(503, 'busy', '2')).toBe(2_000);
+    const err = new HubHttpError('sync hub push', 429, '<!DOCTYPE html>', 600_000);
+    expect(err.retryable).toBe(true);
+    expect(err.retryAfterMs).toBe(600_000);
+    expect(err.message).toContain('sync hub push 429');
+  });
+});
+
+describe('cloud sync flush knobs', () => {
+  it('defaults content batch to 40 and request timeout to 90s', () => {
+    expect(DEFAULT_CONTENT_BATCH_SIZE).toBe(40);
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(90_000);
+    expect(parseContentBatchSize(undefined)).toBe(40);
+    expect(parseRequestTimeoutMs(undefined)).toBe(90_000);
+  });
+
+  it('accepts in-range settings and rejects out-of-range / garbage', () => {
+    expect(parseContentBatchSize('10')).toBe(10);
+    expect(parseContentBatchSize('500')).toBe(500);
+    expect(parseContentBatchSize('0')).toBe(40);
+    expect(parseContentBatchSize('501')).toBe(40);
+    expect(parseContentBatchSize('nope')).toBe(40);
+    expect(parseRequestTimeoutMs('60000')).toBe(60_000);
+    expect(parseRequestTimeoutMs('5000')).toBe(5_000);
+    expect(parseRequestTimeoutMs('180000')).toBe(180_000);
+    expect(parseRequestTimeoutMs('4999')).toBe(90_000);
+    expect(parseRequestTimeoutMs('180001')).toBe(90_000);
+    expect(parseRequestTimeoutMs('')).toBe(90_000);
+  });
+});
 
 describe('CloudSync', () => {
   let tempDir: string;
@@ -510,21 +565,75 @@ describe('CloudSync', () => {
     sync.stop();
   });
 
-  it('loops 200-row pages until fully drained and stamps every batch', async () => {
-    for (let i = 0; i < 450; i++) seedObservation({ title: `obs ${i}` });
+  it('loops default 40-row pages until fully drained and stamps every batch', async () => {
+    for (let i = 0; i < 90; i++) seedObservation({ title: `obs ${i}` });
 
     const { impl, calls } = makeFetchMock();
     const sync = makeCloudSync(impl);
     await sync.flush();
 
     expect(calls.length).toBe(3);
-    expect(calls.map(c => c.parsed.ops.length)).toEqual([200, 200, 50]);
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([40, 40, 10]);
     expect(pendingCount('observations')).toBe(0);
 
     const status = sync.status();
     expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
     expect(status.lastFlushAt).not.toBeNull();
     expect(status.lastError).toBeNull();
+  });
+
+  it('pages content flushes at CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE', async () => {
+    for (let i = 0; i < 25; i++) seedObservation({ title: `obs ${i}` });
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '10' });
+    await sync.flush();
+
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([10, 10, 5]);
+    expect(pendingCount('observations')).toBe(0);
+  });
+
+  it('lets options.contentBatchSize override the settings page size', async () => {
+    for (let i = 0; i < 15; i++) seedObservation({ title: `obs ${i}` });
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(
+      impl,
+      { CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '10' },
+      { contentBatchSize: 6 },
+    );
+    await sync.flush();
+
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([6, 6, 3]);
+  });
+
+  it('falls back to the default content batch when the setting is out of range', async () => {
+    for (let i = 0; i < 90; i++) seedObservation({ title: `obs ${i}` });
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '9999' });
+    await sync.flush();
+
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([40, 40, 10]);
+  });
+
+  it('aborts a hung content push at the configured requestTimeoutMs', async () => {
+    seedObservation({ title: 'hung-push' });
+    const impl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 80);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(signal.reason ?? new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+        });
+      });
+      return canonicalSuccess([], 0);
+    }) as typeof fetch;
+    const sync = makeCloudSync(impl, {}, { requestTimeoutMs: 20 });
+    await sync.flush();
+    expect(sync.status().lastError).toMatch(/aborted|timed out|timeout|TimeoutError/i);
+    expect(pendingCount('observations')).toBe(1);
   });
 
   it('authenticates a read-only Hub status probe even when the local queue is empty', async () => {
@@ -624,22 +733,83 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(0);
   });
 
-  it('rejects a prompt whose canonical body exceeds the 256KB bound without stamping it', async () => {
-    seedPrompt('x'.repeat(300_000));
+  /** UTF-8 bytes of a string as it sits inside the JSON body. */
+  const jsonBytes = (text: string): number => Buffer.byteLength(JSON.stringify(text), 'utf8') - 2;
+
+  it('clamps an oversized prompt at the SELECT and syncs it truncated with a marker (#3537)', async () => {
+    // A pasted multi-MB prompt must not cross the bun:sqlite FFI boundary in
+    // full: the drain reads only its first PROMPT_TEXT_MAX_BYTES bytes. It
+    // syncs truncated, is stamped, and is not re-queued by ack reconciliation
+    // (which re-reads the row through the same clamp).
+    seedPrompt('x'.repeat(1_000_000));
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    const text: string = calls[0].parsed.ops[0].body.prompt_text;
+    expect(text.endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
+    expect(jsonBytes(text)).toBeLessThanOrEqual(PROMPT_TEXT_MAX_BYTES);
+    expect(text.slice(0, -PROMPT_TRUNCATION_MARKER.length)).toBe('x'.repeat(text.length - PROMPT_TRUNCATION_MARKER.length));
+    expect(pendingCount('user_prompts')).toBe(0);
+    expect(sync.status().quarantine.count).toBe(0);
+    // The local row keeps the full prompt.
+    expect((db.prepare('SELECT length(prompt_text) AS n FROM user_prompts WHERE id = 1').get() as { n: number }).n)
+      .toBe(1_000_000);
+
+    await sync.flush();
+    expect(calls.length).toBe(1);
+  });
+
+  it('cuts a multibyte prompt on a character boundary, inside the 256KB body bound', async () => {
+    seedPrompt('☃'.repeat(300_000));
     seedPrompt('following row', 6);
 
     const { impl, calls } = makeFetchMock();
     const sync = makeCloudSync(impl);
     await sync.flush();
 
-    expect(calls.length).toBe(1);
+    const ops = calls.flatMap(call => call.wireParsed.ops) as Array<{ body: string }>;
+    expect(ops).toHaveLength(2);
+    for (const op of ops) expect(Buffer.byteLength(op.body, 'utf8')).toBeLessThanOrEqual(256_000);
+    const text: string = calls[0].parsed.ops[0].body.prompt_text;
+    const kept = text.slice(0, -PROMPT_TRUNCATION_MARKER.length);
+    expect(kept.length).toBeGreaterThan(60_000);
+    expect(kept).toBe('☃'.repeat(kept.length));
     expect(pendingCount('user_prompts')).toBe(0);
-    expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 1').get())
-      .toEqual({ synced_at: -1 });
-    expect(sync.status().quarantine.count).toBe(1);
-    expect(sync.status().quarantine.latestReason).toMatch(/256000 UTF-8 bytes/);
-    expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 2').get() as { synced_at: number })
-      .toMatchObject({ synced_at: expect.any(Number) });
+    expect(sync.status().quarantine.count).toBe(0);
+  });
+
+  it('never cuts a prompt short at an embedded NUL', async () => {
+    // SQLite's TEXT substr()/length() stop at the first NUL, so a text clamp
+    // would drop everything after it and ack the row as synced.
+    seedPrompt('before\u0000after');
+    seedPrompt(`a\u0000${'b'.repeat(300_000)}`, 6);
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    const [small, large] = calls.flatMap(call => call.parsed.ops).map((op: any) => op.body.prompt_text as string);
+    expect(small).toBe('before\u0000after');
+    expect(large.startsWith('a\u0000bbb')).toBe(true);
+    expect(large.endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
+    expect(large.length).toBeGreaterThan(190_000);
+    expect(pendingCount('user_prompts')).toBe(0);
+  });
+
+  it('cuts a prompt that fits as raw bytes but not once JSON-escaped', async () => {
+    // Quotes escape to two bytes in the body, so 150 KB of them is 300 KB there.
+    seedPrompt('"'.repeat(150_000));
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    const text: string = calls[0].parsed.ops[0].body.prompt_text;
+    expect(text.endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
+    expect(jsonBytes(text)).toBeLessThanOrEqual(PROMPT_TEXT_MAX_BYTES);
+    expect(pendingCount('user_prompts')).toBe(0);
   });
 
   it('queues a durable tombstone and revives the same stable entity at a higher revision', async () => {
@@ -1014,6 +1184,222 @@ describe('CloudSync', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // After a device-id mint, frozen canonical_body rows stay hash-locked to
+  // the previous origin_device_id. The hub 400s invalid_ops on the batch
+  // head; those poison ops must dead-letter so later healthy ops can drain.
+  // ---------------------------------------------------------------------------
+  describe('stale origin_device_id invalid_ops quarantine', () => {
+    const STALE_DEVICE_ID = '1e1798f5-1111-4111-8111-111111111111';
+    const STALE_OP_UUID = '11111111-1111-4111-8111-111111111111';
+    const STALE_OP_UUID_2 = '22222222-2222-4222-8222-222222222222';
+
+    function seedFrozenStaleMutation(opUuid: string): void {
+      const mutation = {
+        op: 'set_prompt_session' as const,
+        target: { origin_device_id: STALE_DEVICE_ID, origin_local_id: '1632' },
+        fields: { memory_session_id: 'mem-stale' },
+      };
+      const op = buildMutationOperation({
+        originDeviceId: STALE_DEVICE_ID,
+        mutationId: opUuid,
+        entityRev: '1',
+        mutation,
+      });
+      db.prepare(`
+        INSERT INTO sync_outbox
+          (op_uuid, rev, body, canonical_body, operation_sha256, created_at_epoch)
+        VALUES (?, 1, ?, ?, ?, 1)
+      `).run(opUuid, JSON.stringify(mutation), op.body, op.operation_sha256);
+    }
+
+    it('dead-letters a stale-head mutation so the healthy op behind it drains', async () => {
+      seedFrozenStaleMutation(STALE_OP_UUID);
+      store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
+      expect(outboxRows()[0].op_uuid).toBe(STALE_OP_UUID);
+      expect(outboxRows().length).toBe(2);
+
+      const { impl, calls } = makeFetchMock(call => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(outboxRows().length).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().quarantine.count).toBe(1);
+      expect(sync.status().quarantine.latestReason).toMatch(
+        /origin_device_id does not match authenticated X-Device-Id/,
+      );
+      const dead = db.prepare(
+        "SELECT queue_key, raw_body FROM sync_dead_letter WHERE lane = 'mutation'"
+      ).get() as { queue_key: string; raw_body: string };
+      expect(dead.queue_key).toBe(STALE_OP_UUID);
+      expect(JSON.parse(dead.raw_body).origin_device_id).toBe(STALE_DEVICE_ID);
+
+      const healthyPushes = calls.filter(c =>
+        c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
+          o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
+        ),
+      );
+      expect(healthyPushes.length).toBeGreaterThan(0);
+      expect(healthyPushes.some(c =>
+        c.parsed.ops.every((o: { body: { fields?: { custom_title?: string } } }) =>
+          o.body.fields?.custom_title === 'healthy title',
+        ),
+      )).toBe(true);
+      sync.stop();
+    });
+
+    it('quarantines every stale-head op in a rejected batch before draining later work', async () => {
+      seedFrozenStaleMutation(STALE_OP_UUID);
+      seedFrozenStaleMutation(STALE_OP_UUID_2);
+      store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
+
+      const { impl, calls } = makeFetchMock(call => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(outboxRows().length).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().quarantine.count).toBe(2);
+      const deadKeys = (db.prepare(
+        "SELECT queue_key FROM sync_dead_letter WHERE lane = 'mutation' ORDER BY queue_key"
+      ).all() as Array<{ queue_key: string }>).map(r => r.queue_key);
+      expect(deadKeys).toEqual([STALE_OP_UUID, STALE_OP_UUID_2]);
+      expect(calls.some(c =>
+        c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
+          o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
+        ),
+      )).toBe(true);
+      sync.stop();
+    });
+
+    function seedFrozenStaleContent(originLocalId: string, title: string, deleted = false): string {
+      const op = buildContentOperation({
+        kind: 'observation',
+        originDeviceId: STALE_DEVICE_ID,
+        originLocalId,
+        entityRev: '1',
+        payload: deleted ? null : observationPayload(title),
+        deleted,
+        deletedAt: deleted ? ISO : undefined,
+      });
+      const body = JSON.parse(op.body) as { id: string };
+      db.prepare(`
+        INSERT INTO sync_content_outbox
+          (entity_id, kind, origin_local_id, entity_rev, body,
+           operation_sha256, deleted, created_at_epoch)
+        VALUES (?, 'observation', ?, '1', ?, ?, ?, 1)
+      `).run(body.id, originLocalId, op.body, op.operation_sha256, deleted ? 1 : 0);
+      return body.id;
+    }
+
+    it('drops a reminted-device stale content outbox so flush resnapshots and drains', async () => {
+      seedObservation({ title: 'Title A' });
+      seedObservation({ title: 'healthy later' });
+      const staleEntityId = seedFrozenStaleContent('1', 'Title A');
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 1 });
+
+      const { impl, calls } = makeFetchMock(call => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().lastFlushAt).not.toBeNull();
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 0 });
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().quarantine.count).toBe(1);
+      expect(sync.status().quarantine.latestReason).toMatch(
+        /origin_device_id does not match authenticated X-Device-Id/,
+      );
+
+      const dead = db.prepare(
+        "SELECT queue_key, kind, raw_body FROM sync_dead_letter WHERE lane = 'content'"
+      ).get() as { queue_key: string; kind: string; raw_body: string };
+      expect(dead.queue_key).toBe(staleEntityId);
+      expect(dead.kind).toBe('observation');
+      expect(JSON.parse(dead.raw_body).origin_device_id).toBe(STALE_DEVICE_ID);
+
+      const pushed = calls.flatMap(c => c.wireParsed.ops.map((op: { body: string }) => JSON.parse(op.body)));
+      expect(pushed.every((body: { origin_device_id: string }) => body.origin_device_id === 'device-fixture')).toBe(true);
+      expect(pushed.some((body: { origin_local_id: string; payload?: { title?: string } }) =>
+        body.origin_local_id === '1' && body.payload?.title === 'Title A',
+      )).toBe(true);
+      expect(pushed.some((body: { origin_local_id: string; payload?: { title?: string } }) =>
+        body.origin_local_id === '2' && body.payload?.title === 'healthy later',
+      )).toBe(true);
+      sync.stop();
+    });
+
+    it('drops a reminted-device stale content tombstone so later live snapshots drain', async () => {
+      seedObservation({ title: 'Title A' });
+      seedFrozenStaleContent('99', 'gone', true);
+
+      const { impl, calls } = makeFetchMock(call => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().lastFlushAt).not.toBeNull();
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 0 });
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().quarantine.count).toBe(1);
+      const dead = db.prepare(
+        "SELECT origin_local_id, raw_body FROM sync_dead_letter WHERE lane = 'content'"
+      ).get() as { origin_local_id: string; raw_body: string };
+      expect(dead.origin_local_id).toBe('99');
+      expect(JSON.parse(dead.raw_body)).toMatchObject({
+        origin_device_id: STALE_DEVICE_ID,
+        deleted: true,
+      });
+      expect(calls.some(c =>
+        c.parsed.ops.some((o: { kind: string; origin_id: string }) =>
+          o.kind === 'observation' && o.origin_id === '1',
+        ),
+      )).toBe(true);
+      sync.stop();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // stampAcked contract + the ack-driven-progress livelock guard.
   // ---------------------------------------------------------------------------
   describe('ack handling', () => {
@@ -1112,9 +1498,9 @@ describe('CloudSync', () => {
         error: /seq exceeds head_seq/,
       },
       {
-        name: 'head beyond projected checkpoint',
-        change: acks => ({ acks, head: '3', projected: '2' }),
-        error: /head_seq <= projected_seq/,
+        name: 'ack seq beyond projected coverage',
+        change: acks => ({ acks: [{ ...acks[0], seq: '3' }, acks[1]], head: '3', projected: '2' }),
+        error: /not covered by projected_seq/,
       },
       {
         name: 'noncanonical head checkpoint',
@@ -1170,6 +1556,30 @@ describe('CloudSync', () => {
       expect(ackDurabilityState()).toEqual(atResponse);
       expect(outboxRows()).toHaveLength(1);
       expect(seenHeads).toEqual([]);
+      sync.stop();
+    });
+
+    it('accepts a 200 whose durable head is ahead of projected when every ack is covered', async () => {
+      seedFrozenAckState();
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body));
+        const acks = parsed.ops.map((op: any, index: number) => canonicalAck(op, index + 1));
+        return canonicalSuccess(acks, '3', undefined, '2');
+      }) as typeof fetch;
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+      expect(sync.status().lastError).toBeNull();
+      expect(pendingCount('observations')).toBe(0);
+      sync.stop();
+    });
+
+    it('accepts an empty-ack push when head is ahead of projected', async () => {
+      const impl = (async () => canonicalSuccess([], '9', undefined, '3')) as typeof fetch;
+      const sync = makeCloudSync(impl);
+      const validate = (sync as unknown as {
+        validatePushResponse: (response: any, pushed: any[]) => void;
+      }).validatePushResponse.bind(sync);
+      expect(() => validate({ acked: [], head_seq: '9', projected_seq: '3' }, [])).not.toThrow();
       sync.stop();
     });
 
@@ -1319,12 +1729,49 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(1);
     expect(sync.status().lastError).toContain('ECONNREFUSED');
 
-    // A later notify() also retries (independent of the backoff timer).
+    // Notify must not bypass backoff (#4231). The retry timer drains instead.
     failing = false;
     sync.notify();
-    await sleep(200);
-    expect(pendingCount('observations')).toBe(0);
+    await sleep(50);
+    expect(pendingCount('observations')).toBe(1);
+    expect(calls.length).toBe(1);
 
+    sync.stop();
+  });
+
+  it('skips notify()-triggered pushes while 5xx backoff is armed', async () => {
+    seedObservation();
+    const { impl, calls } = makeFetchMock(() => new Response('server sad', { status: 500 }));
+    const sync = makeCloudSync(impl, {}, { backoffInitialMs: 600_000, debounceMs: 10 });
+    await sync.flush();
+    const afterFlush = calls.length;
+    expect(afterFlush).toBe(1);
+    sync.notify();
+    await sleep(80);
+    expect(calls.length).toBe(afterFlush);
+    sync.stop();
+  });
+
+  it('honors Retry-After on 429 before the next push', async () => {
+    seedObservation();
+    let call = 0;
+    const impl = (async () => {
+      call += 1;
+      if (call === 1) {
+        return new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '1' },
+        });
+      }
+      return new Response(JSON.stringify({ acked: [], head_seq: '0', projected_seq: '0' }), { status: 200 });
+    }) as typeof fetch;
+    const sync = makeCloudSync(impl, {}, { backoffInitialMs: 20, debounceMs: 10 });
+    await sync.flush();
+    expect(call).toBe(1);
+    await sleep(200);
+    expect(call).toBe(1);
+    await sleep(2_000);
+    expect(call).toBeGreaterThanOrEqual(2);
     sync.stop();
   });
 
@@ -1415,6 +1862,15 @@ describe('CloudSync', () => {
 
       const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(persisted.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID).toBe(deviceId);
+    });
+
+    it('disables sync instead of treating a root array as a writable settings document', () => {
+      writeFileSync(settingsPath, '["sentinel"]');
+      const { impl } = makeFetchMock();
+      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '' });
+
+      expect(sync.status().deviceId).toBe('');
+      expect(readFileSync(settingsPath, 'utf-8')).toBe('["sentinel"]');
     });
   });
 

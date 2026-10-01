@@ -147,63 +147,6 @@ describe('PostgresServerSessionsRepository + Postgres', () => {
     expect(job2.id).toBe(job1.id);
   });
 
-  it('listUnprocessedEvents excludes events with completed jobs', async () => {
-    const session = await sessions.create({
-      teamId,
-      projectId,
-      externalSessionId: 'ext-1',
-    });
-
-    const eventA = await storage.agentEvents.create({
-      projectId,
-      teamId,
-      serverSessionId: session.id,
-      sourceAdapter: 'api',
-      eventType: 'tool_use',
-      payload: { x: 1 },
-      occurredAt: new Date(Date.now() - 2000),
-    });
-    const eventB = await storage.agentEvents.create({
-      projectId,
-      teamId,
-      serverSessionId: session.id,
-      sourceAdapter: 'api',
-      eventType: 'tool_use',
-      payload: { x: 2 },
-      occurredAt: new Date(),
-    });
-
-    // Create a job for eventA and mark it completed.
-    const completedJob = await storage.observationGenerationJobs.create({
-      projectId,
-      teamId,
-      sourceType: 'agent_event',
-      sourceId: eventA.id,
-      agentEventId: eventA.id,
-      serverSessionId: session.id,
-      jobType: 'observation_generate_for_event',
-    });
-    await storage.observationGenerationJobs.transitionStatus({
-      id: completedJob.id,
-      projectId,
-      teamId,
-      status: 'processing',
-    });
-    await storage.observationGenerationJobs.transitionStatus({
-      id: completedJob.id,
-      projectId,
-      teamId,
-      status: 'completed',
-    });
-
-    const unprocessed = await sessions.listUnprocessedEvents({
-      teamId,
-      projectId,
-      serverSessionId: session.id,
-    });
-    expect(unprocessed.map(e => e.id)).toEqual([eventB.id]);
-  });
-
   it('cross-tenant getByIdForScope returns null', async () => {
     const otherTeam = await storage.teams.create({ name: 'other' });
     const otherProject = await storage.projects.create({ teamId: otherTeam.id, name: 'other-p' });

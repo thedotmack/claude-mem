@@ -11,7 +11,7 @@
 // runOneTimeCwdRemap against a real pending_messages fixture — both open the
 // DB file themselves, exactly as in production.
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -20,7 +20,7 @@ import { spawnSync } from 'child_process';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { openConfiguredSqliteDatabase } from '../../../src/services/sqlite/connection.js';
 import { emitRemapProject, hasSyncLane } from '../../../src/services/sync/remap-outbox.js';
-import { adoptMergedWorktrees } from '../../../src/services/infrastructure/WorktreeAdoption.js';
+import { adoptMergedWorktrees, hasProvenAncestry } from '../../../src/services/infrastructure/WorktreeAdoption.js';
 import { runOneTimeCwdRemap } from '../../../src/services/infrastructure/ProcessManager.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
@@ -33,6 +33,15 @@ function git(cwd: string, ...args: string[]): void {
   if (r.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
   }
+}
+
+function gitOutput(cwd: string, ...args: string[]): string {
+  const r = spawnSync('git', ['-C', cwd, '-c', 'user.email=test@test', '-c', 'user.name=test', ...args], {
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+  return r.stdout.trim();
 }
 
 interface OutboxRow {
@@ -166,6 +175,33 @@ describe('mutation sites', () => {
           platform_source: 'claude',
         });
       }
+    });
+
+    it('prepares the repair statements once per store, not once per prompt (#3537)', () => {
+      store.updateMemorySessionId(1, 'mem-a');
+      const prepare = spyOn(db, 'prepare');
+      try {
+        // Re-registration re-runs the whole repair: per prompt a rev bump, a
+        // supersede DELETE and an INSERT.
+        store.updateMemorySessionId(1, 'mem-b');
+        const repairPrepares = prepare.mock.calls
+          .map(([sql]) => String(sql))
+          .filter(sql => /sync_outbox|FROM user_prompts|SET sync_rev = \?/.test(sql));
+        expect(repairPrepares).toEqual([]);
+        expect(outboxRows(db).map(op => op.body.fields.memory_session_id)).toEqual(['mem-b', 'mem-b']);
+      } finally {
+        prepare.mockRestore();
+      }
+    });
+
+    it('updateMemorySessionId emits nothing when the id is unchanged', () => {
+      store.updateMemorySessionId(1, 'mem-late');
+      expect(outboxRows(db).length).toBe(2);
+
+      store.updateMemorySessionId(1, 'mem-late');
+
+      expect(outboxRows(db).length).toBe(2);
+      for (const row of promptRows()) expect(row.sync_rev).toBe('2');
     });
 
     it('ensureMemorySessionIdRegistered goes through the same repair (only when the id actually changes)', () => {
@@ -366,6 +402,121 @@ describe('mutation sites', () => {
     } finally {
       db.close();
     }
+  });
+
+    it('adopts branched and detached worktrees proven by a remote commit while preserving negative space', async () => {
+    const bareOrigin = join(tempDir, 'origin.git');
+    const repo = join(tempDir, 'parent-repo');
+    const integration = join(tempDir, 'integration-repo');
+    const featureWorktree = join(tempDir, 'feature-wt');
+    const detachedWorktree = join(tempDir, 'detached-wt');
+    const historicalWorktree = join(tempDir, 'historical-wt');
+    const unmergedWorktree = join(tempDir, 'unmerged-wt');
+    mkdirSync(bareOrigin);
+    mkdirSync(repo);
+    git(bareOrigin, 'init', '--bare');
+    git(repo, 'init', '-b', 'main');
+    writeFileSync(join(repo, 'base.txt'), 'base\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'base');
+    git(repo, 'remote', 'add', 'origin', bareOrigin);
+    git(repo, 'push', '-u', 'origin', 'main');
+    git(tempDir, 'clone', '--branch', 'main', bareOrigin, integration);
+
+    git(repo, 'worktree', 'add', '-b', 'feature', featureWorktree);
+    writeFileSync(join(featureWorktree, 'feature.txt'), 'feature\n');
+    git(featureWorktree, 'add', '.');
+    git(featureWorktree, 'commit', '-m', 'feature');
+    git(repo, 'push', '-u', 'origin', 'feature');
+    git(repo, 'worktree', 'add', '--detach', detachedWorktree, 'feature');
+    git(repo, 'worktree', 'add', '--detach', historicalWorktree, 'HEAD');
+
+    git(repo, 'worktree', 'add', '-b', 'unmerged', unmergedWorktree);
+    writeFileSync(join(unmergedWorktree, 'unmerged.txt'), 'unmerged\n');
+    git(unmergedWorktree, 'add', '.');
+    git(unmergedWorktree, 'commit', '-m', 'unmerged');
+
+    git(integration, 'fetch', 'origin');
+    git(integration, 'merge', '--no-ff', 'origin/feature', '-m', 'merge feature');
+    git(integration, 'push', 'origin', 'main');
+    git(repo, 'fetch', 'origin');
+
+    try {
+      const dataDir = join(tempDir, 'data');
+      mkdirSync(dataDir);
+      const dbPath = join(dataDir, 'claude-mem.db');
+      const store = new SessionStore(dbPath);
+      for (const [memorySessionId, project] of [
+        ['native', 'parent-repo'],
+        ['feature', 'parent-repo/feature-wt'],
+        ['detached', 'parent-repo/detached-wt'],
+        ['historical', 'parent-repo/historical-wt'],
+        ['unmerged', 'parent-repo/unmerged-wt'],
+      ]) {
+        store.db.prepare(`
+          INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+          VALUES (?, ?, ?, ?, 1751234567000, 'active')
+        `).run(`sess-${memorySessionId}`, memorySessionId, project, ISO);
+        store.db.prepare(`
+          INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch, sync_rev, synced_at)
+          VALUES (?, ?, 'req', ?, 1751234567891, 1, 123)
+        `).run(memorySessionId, project, ISO);
+      }
+      store.close();
+
+      const result = await adoptMergedWorktrees({ repoPath: repo, dataDirectory: dataDir });
+      expect(result.scannedWorktrees).toBe(4);
+      expect(result.mergedBranches).toEqual(['feature']);
+      expect(result.adoptedSummaries).toBe(2);
+
+      const verify = openConfiguredSqliteDatabase(dbPath);
+      try {
+        const rows = verify.prepare(
+          'SELECT memory_session_id, project, merged_into_project FROM session_summaries ORDER BY memory_session_id'
+        ).all() as Array<{ memory_session_id: string; project: string; merged_into_project: string | null }>;
+        expect(rows).toEqual([
+          { memory_session_id: 'detached', project: 'parent-repo/detached-wt', merged_into_project: 'parent-repo' },
+          { memory_session_id: 'feature', project: 'parent-repo/feature-wt', merged_into_project: 'parent-repo' },
+          { memory_session_id: 'historical', project: 'parent-repo/historical-wt', merged_into_project: null },
+          { memory_session_id: 'native', project: 'parent-repo', merged_into_project: null },
+          { memory_session_id: 'unmerged', project: 'parent-repo/unmerged-wt', merged_into_project: null },
+        ]);
+      } finally {
+        verify.close();
+      }
+
+      const override = await adoptMergedWorktrees({
+        repoPath: repo,
+        dataDirectory: dataDir,
+        onlyBranch: 'unmerged',
+      });
+      expect(override.mergedBranches).toEqual(['unmerged']);
+      expect(override.adoptedSummaries).toBe(1);
+    } finally {
+      for (const worktree of [featureWorktree, detachedWorktree, historicalWorktree, unmergedWorktree]) {
+        if (existsSync(worktree)) git(repo, 'worktree', 'remove', '--force', worktree);
+      }
+    }
+  }, 30000);
+
+  it('keeps failed merge-base probes unproven', () => {
+    const repo = join(tempDir, 'provenance-repo');
+    const unrelated = join(tempDir, 'unrelated-repo');
+    mkdirSync(repo);
+    mkdirSync(unrelated);
+    git(repo, 'init', '-b', 'main');
+    writeFileSync(join(repo, 'base.txt'), 'base\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'base');
+    git(unrelated, 'init', '-b', 'main');
+    writeFileSync(join(unrelated, 'other.txt'), 'other\n');
+    git(unrelated, 'add', '.');
+    git(unrelated, 'commit', '-m', 'unrelated');
+
+    const head = gitOutput(repo, 'rev-parse', 'HEAD');
+    const unrelatedHead = gitOutput(unrelated, 'rev-parse', 'HEAD');
+    expect(hasProvenAncestry(repo, head, new Set([unrelatedHead]))).toBe(false);
+    expect(hasProvenAncestry(repo, 'not-a-commit', new Set([head]))).toBe(false);
   });
 
   // ---------------------------------------------------------------------------

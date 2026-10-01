@@ -6,11 +6,22 @@ import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
-import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
+import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { ingestObservation } from '../worker/http/shared.js';
+
+const AGENT_ID_IN_PATH =
+  /agent-transcripts[/\\]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/\\]|$)/i;
+
+/** Prefer the explicit watch field; fall back to `agent-transcripts/<uuid>/` in the path. */
+export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
+  const explicit = typeof watch.agentId === 'string' ? watch.agentId.trim() : '';
+  if (explicit && explicit !== '*') return explicit;
+  const match = watch.path.match(AGENT_ID_IN_PATH);
+  return match?.[1];
+}
 
 interface SessionState {
   sessionId: string;
@@ -20,6 +31,7 @@ interface SessionState {
   lastUserMessage?: string;
   lastAssistantMessage?: string;
   pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
+  isSubagent?: boolean;
 }
 
 export class TranscriptEventProcessor {
@@ -120,6 +132,29 @@ export class TranscriptEventProcessor {
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
 
+    // Codex writes the subagent marker on the first (session_meta) line, as an
+    // object; learn it from whichever line carries it so later ingest events
+    // can be gated. Its presence is the test, not its contents.
+    if (watch.subagentSource && !session.isSubagent) {
+      const marker = getValueByPath(entry, watch.subagentSource.path);
+      if (marker !== undefined && marker !== null) {
+        session.isSubagent = true;
+      }
+    }
+
+    // When native hooks own top-level sessions, ingest only confirmed subagent
+    // rollouts. session_context still runs so a later marker line can flip the
+    // session on; session_end still runs so the suppressed session is dropped
+    // from the map instead of lingering.
+    if (
+      watch.subagentOnly &&
+      !session.isSubagent &&
+      event.action !== 'session_context' &&
+      event.action !== 'session_end'
+    ) {
+      return;
+    }
+
     const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
 
     switch (event.action) {
@@ -133,19 +168,19 @@ export class TranscriptEventProcessor {
         }
         break;
       case 'user_message':
-        await this.handleUserMessage(session, fields);
+        session.lastUserMessage = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt) ?? session.lastUserMessage;
         break;
       case 'assistant_message':
-        if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
+        session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
         break;
       case 'tool_use':
-        await this.handleToolUse(session, fields);
+        await this.handleToolUse(session, watch, fields);
         break;
       case 'tool_result':
-        await this.handleToolResult(session, fields);
+        await this.handleToolResult(session, watch, fields);
         break;
       case 'observation':
-        await this.sendObservation(session, fields);
+        await this.sendObservation(session, watch, fields);
         break;
       case 'file_edit':
         await this.sendFileEdit(session, fields);
@@ -165,23 +200,25 @@ export class TranscriptEventProcessor {
     if (project) session.project = project;
   }
 
+  /**
+   * Normalize a message field to text. Transcripts that store messages as
+   * content-block arrays (e.g. DeepSeek Harness assistant messages with
+   * reasoning/text blocks) are joined by newline; strings pass through.
+   */
+  private resolveMessageText(value: unknown): string | undefined {
+    if (typeof value === 'string') return value;
+    if (!Array.isArray(value)) return undefined;
+    const parts: string[] = [];
+    for (const block of value) {
+      if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
+        parts.push((block as { text: string }).text);
+      }
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  }
+
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
-    await this.anchorUserPrompt(session, prompt);
-  }
-
-  private async handleUserMessage(session: SessionState, fields: Record<string, unknown>): Promise<void> {
-    const prompt = typeof fields.message === 'string'
-      ? fields.message
-      : typeof fields.prompt === 'string' ? fields.prompt : '';
-    await this.anchorUserPrompt(session, prompt);
-  }
-
-  // Write a user_prompts row for the turn through the same init endpoint the
-  // hook path uses. Without this anchor a transcript-ingested turn resolves to
-  // prompt number 0, and the observer sends every batch as an empty
-  // continuation the model rejects as prose — dropping the work (#3653).
-  private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
     const cwd = session.cwd ?? process.cwd();
     if (prompt) {
       session.lastUserMessage = prompt;
@@ -195,7 +232,7 @@ export class TranscriptEventProcessor {
     });
   }
 
-  private async handleToolUse(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
@@ -212,7 +249,7 @@ export class TranscriptEventProcessor {
     }
 
     if (toolName && toolResponse !== undefined) {
-      await this.sendObservation(session, {
+      await this.sendObservation(session, watch, {
         toolName,
         toolInput,
         toolResponse,
@@ -224,7 +261,7 @@ export class TranscriptEventProcessor {
     }
   }
 
-  private async handleToolResult(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     let toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
@@ -240,7 +277,7 @@ export class TranscriptEventProcessor {
     }
 
     if (toolName) {
-      await this.sendObservation(session, {
+      await this.sendObservation(session, watch, {
         toolName,
         toolInput,
         toolResponse,
@@ -254,7 +291,7 @@ export class TranscriptEventProcessor {
     }
   }
 
-  private async sendObservation(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+  private async sendObservation(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
 
@@ -266,6 +303,7 @@ export class TranscriptEventProcessor {
       toolResponse: this.maybeParseJson(fields.toolResponse),
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
+      agentId: resolveWatchAgentId(watch),
     });
 
     if (!result.ok) {
@@ -323,8 +361,12 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
-    await this.queueSummary(session);
-    await this.updateContext(session, watch);
+    // A suppressed top-level session reaches here only to be cleaned up; its
+    // summary and context belong to the native hooks, not the transcript watch.
+    if (!watch.subagentOnly || session.isSubagent) {
+      await this.queueSummary(session);
+      await this.updateContext(session, watch);
+    }
     session.pendingTools?.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);

@@ -1,6 +1,7 @@
 export interface Observation {
   id: number;
   memory_session_id: string;
+  content_session_id: string;
   project: string;
   merged_into_project?: string | null;
   platform_source: string;
@@ -41,13 +42,24 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
+export interface SessionCatalogEntry {
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  custom_title: string | null;
+  started_at_epoch: number;
+  item_count: number;
+}
+
 export type FeedItem =
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
+export type FeedItemType = 'observation' | 'summary' | 'prompt';
+
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -57,6 +69,11 @@ export interface StreamEvent {
   prompt?: UserPrompt;
   isProcessing?: boolean;
   queueDepth?: number;
+  itemType?: FeedItemType;
+  id?: number;
+  /** session_deleted */
+  platformSource?: string;
+  contentSessionId?: string;
 }
 
 export interface ProjectCatalog {
@@ -68,17 +85,30 @@ export interface ProjectCatalog {
 export interface Settings {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES?: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
 
   CLAUDE_MEM_PROVIDER?: string;  
+  CLAUDE_MEM_CODEX_MODEL?: string;
   CLAUDE_MEM_GEMINI_API_KEY?: string;
+  CLAUDE_MEM_GEMINI_API_KEYS?: string;
   CLAUDE_MEM_GEMINI_MODEL?: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED?: string;  
   CLAUDE_MEM_OPENROUTER_API_KEY?: string;
+  CLAUDE_MEM_OPENROUTER_API_KEYS?: string;
+  CLAUDE_MEM_OPENROUTER_BASE_URL?: string;
   CLAUDE_MEM_OPENROUTER_MODEL?: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL?: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME?: string;
+  CLAUDE_MEM_OPENROUTER_REASONING_EFFORT?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_PRESET?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_API_KEY?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_API_KEYS?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL?: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER?: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_MODEL?: string;
 
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;
@@ -91,4 +121,7 @@ export interface Settings {
 
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+
+  /** File/env only — shown read-only. Not written via POST /api/settings. */
+  CLAUDE_CODE_PATH?: string;
 }
