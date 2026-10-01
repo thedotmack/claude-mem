@@ -18,6 +18,7 @@ export interface NormalizedHookInput {
   lastAssistantMessage?: string;
   reason?: string;
   turnId?: string;
+  /** Codex only; the Claude Code adapter deliberately leaves it unset (see claude-code.ts). */
   stopHookActive?: boolean;
   permissionMode?: string;
   model?: string;

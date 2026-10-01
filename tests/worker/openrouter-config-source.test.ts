@@ -142,6 +142,86 @@ describe('OpenRouter credential tuple source coherence', () => {
     });
   });
 
+  describe('the cmem memory key authenticates only against the cmem gateway', () => {
+    const MEMORY_KEY = 'cm_pro_0123456789abcdef01234567';
+
+    it('withholds the key once the persisted base URL points at another host', () => {
+      // What a settings-API write or a hand edit of settings.json leaves behind.
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://gateway.example/v1',
+      });
+
+      const config = resolveOpenRouterConfig(settingsPath);
+
+      expect(config.apiKey).toBe('');
+      expect(config.apiUrl).toBe('https://gateway.example/v1/chat/completions');
+      expect(isOpenRouterAvailable(settingsPath)).toBe(false);
+    });
+
+    it('withholds the key from openrouter.ai when the persisted base URL is cleared', () => {
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+      });
+
+      const config = resolveOpenRouterConfig(settingsPath);
+
+      expect(config.apiKey).toBe('');
+      expect(config.apiUrl).toBe(DEFAULT_OPENROUTER_API_URL);
+    });
+
+    it('withholds the key from a deceptive gateway lookalike', () => {
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY,
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai.evil.example/api/inference/v1',
+      });
+
+      expect(resolveOpenRouterConfig(settingsPath).apiKey).toBe('');
+    });
+
+    it('withholds an exported key from an overridden non-gateway base', () => {
+      writeSettings();
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = MEMORY_KEY;
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://gateway.example/v1';
+
+      expect(resolveOpenRouterConfig(settingsPath).apiKey).toBe('');
+    });
+
+    it('still sends the key to the gateway', () => {
+      writeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY });
+
+      expect(resolveOpenRouterConfig(settingsPath)).toMatchObject({
+        apiKey: MEMORY_KEY,
+        apiUrl: `${CMEM_BASE}/chat/completions`,
+        model: 'cmem-observer',
+      });
+    });
+
+    it('withholds a personal key from the gateway, which only takes a cmem.ai memory key', () => {
+      writeSettings({ CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-personal' });
+
+      const config = resolveOpenRouterConfig(settingsPath);
+
+      expect(config.apiKey).toBe('');
+      expect(config.apiUrl).toBe(`${CMEM_BASE}/chat/completions`);
+      expect(isOpenRouterAvailable(settingsPath)).toBe(false);
+    });
+
+    it('leaves a personal key on its own host alone', () => {
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-deepseek-personal',
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://api.deepseek.com',
+        CLAUDE_MEM_OPENROUTER_MODEL: 'deepseek-chat',
+      });
+
+      expect(resolveOpenRouterConfig(settingsPath)).toMatchObject({
+        apiKey: 'sk-deepseek-personal',
+        apiUrl: 'https://api.deepseek.com/chat/completions',
+      });
+    });
+  });
+
   it('does not treat a deceptive CMEM hostname as an account-owned tuple', () => {
     writeSettings({
       CLAUDE_MEM_OPENROUTER_API_KEY: 'custom-persisted-key',

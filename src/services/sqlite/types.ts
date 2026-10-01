@@ -53,6 +53,8 @@ export interface DateRange {
 
 export interface SearchFilters {
   project?: string;
+  /** Every key a checkout reads; when set, it scopes the search instead of `project` (gate P2-5). */
+  projects?: string[];
   platformSource?: string;
   type?: ObservationRow['type'] | ObservationRow['type'][];
   concepts?: string | string[];

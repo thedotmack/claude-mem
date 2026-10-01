@@ -7,10 +7,13 @@ import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import {
   createCorsMiddleware,
+  createForeignPageDeleteGuard,
   createMiddleware,
   createRemoteReadOnlyGuard,
+  createWorkerHostGuard,
   requireLocalhost,
   type RemoteReadOnlyOptions,
+  type WorkerOriginPolicy,
 } from '../worker/http/middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -21,6 +24,7 @@ import { getUptimeSeconds } from '../../shared/uptime.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
+import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
 import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
@@ -113,6 +117,7 @@ export interface ServerOptions {
   runtime?: string;
   getAiStatus: () => AiStatus;
   getDependencyHealth?: () => DependencyHealthSnapshot;
+  getChromaCrashState?: () => ChromaCrashState | undefined;
   preBodyParserRoutes?: RouteHandler[];
   getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
   // #2572 — when true, install a minimal set of hardening response headers
@@ -128,6 +133,13 @@ export interface ServerOptions {
    * unchanged.
    */
   remoteReadOnly?: RemoteReadOnlyOptions;
+  /**
+   * Worker only: trusted browser origins and Host names (plan-23 step 4). When
+   * present, a DNS-rebinding Host check runs before CORS, and CORS also admits
+   * same-host and explicitly allowlisted origins. The server runtime leaves it
+   * unset: it authenticates with API keys and serves public DNS names.
+   */
+  originPolicy?: WorkerOriginPolicy;
 }
 
 // #2572 — hand-rolled security headers.
@@ -254,7 +266,13 @@ export class Server {
   }
 
   private setupCors(): void {
-    this.app.use(createCorsMiddleware());
+    if (this.options.originPolicy) {
+      this.app.use(createWorkerHostGuard(this.options.originPolicy));
+      // Every DELETE (memories, sessions, corpora, and any route added later),
+      // not a list of the ones someone remembered.
+      this.app.use(createForeignPageDeleteGuard(this.options.originPolicy));
+    }
+    this.app.use(createCorsMiddleware(this.options.originPolicy));
   }
 
   private setupPreBodyParserRoutes(): void {
@@ -395,6 +413,7 @@ export class Server {
       const hours = Math.floor(uptimeSeconds / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
       const formattedUptime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+      const chromaCrashState = this.options.getChromaCrashState?.();
 
       res.json({
         supervisor: {
@@ -409,6 +428,9 @@ export class Server {
           dependencies: this.options.getDependencyHealth
             ? this.options.getDependencyHealth()
             : snapshotDependencyHealth(),
+          ...(chromaCrashState
+            ? { chroma: chromaCrashState }
+            : {}),
         },
       });
     });

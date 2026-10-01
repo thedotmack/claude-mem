@@ -28,11 +28,14 @@ const processManager = {
   getPlatformTimeout: mock((timeout: number) => timeout),
   spawnDaemon: mock(() => 2147483647),
   touchPidFile: mock(() => {}),
+  readPidFile: mock((): { pid: number; port: number; startedAt: string } | null => null),
+  removePidFileIfOwner: mock((_expectedOwnerPid: number | null) => {}),
   probeWorkerBootFailure: mock((): string | undefined => undefined),
 };
 
 const healthMonitor = {
   isPortInUse: mock(async () => false),
+  probePortBind: mock(async (): Promise<{ occupancy: string; bindErrorCode?: string }> => ({ occupancy: 'free' })),
   waitForHealth: mock(async () => false),
   waitForReadiness: mock(async () => false),
 };
@@ -114,10 +117,15 @@ function resetMocks(): void {
   processManager.spawnDaemon.mockReset();
   processManager.spawnDaemon.mockReturnValue(2147483647);
   processManager.touchPidFile.mockClear();
+  processManager.readPidFile.mockReset();
+  processManager.readPidFile.mockReturnValue(null);
+  processManager.removePidFileIfOwner.mockClear();
   processManager.probeWorkerBootFailure.mockReset();
   processManager.probeWorkerBootFailure.mockReturnValue(undefined);
   healthMonitor.isPortInUse.mockReset();
   healthMonitor.isPortInUse.mockResolvedValue(false);
+  healthMonitor.probePortBind.mockReset();
+  healthMonitor.probePortBind.mockResolvedValue({ occupancy: 'free' });
   healthMonitor.waitForHealth.mockReset();
   healthMonitor.waitForHealth.mockResolvedValue(false);
   healthMonitor.waitForReadiness.mockReset();
@@ -232,6 +240,27 @@ describe('ensureWorkerStarted startup readiness', () => {
     );
   });
 
+  it('reports a port the system will not bind as a boot failure with its errno, without spawning', async () => {
+    // #3219 read EACCES / EADDRNOTAVAIL as "in use": this path waited for
+    // health, tried a reclaim, and returned dead with no marker and no event.
+    resetMocks();
+    healthMonitor.probePortBind.mockResolvedValue({ occupancy: 'unbindable', bindErrorCode: 'EACCES' });
+
+    const result = await ensureWorkerStarted(39016, import.meta.filename);
+
+    expect(result).toBe('dead');
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+    expect(getLastWorkerBootFailure()).toContain('EACCES');
+    expect(getLastWorkerBootFailure()).toContain('CLAUDE_MEM_WORKER_PORT');
+    const marker = readFileSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'), 'utf-8');
+    expect(marker).toContain('cannot be bound');
+    expect(marker).toContain('EACCES');
+    expect(cliTelemetry.captureCliEvent).toHaveBeenCalledWith(
+      'worker_start_failed',
+      expect.objectContaining({ outcome: 'dead', error_category: 'port_unbindable' }),
+    );
+  });
+
   it('still returns dead when the boot-failure telemetry rejects', async () => {
     resetMocks();
     cliTelemetry.captureCliEvent.mockImplementationOnce(async () => {
@@ -301,6 +330,61 @@ describe('ensureWorkerStarted startup readiness', () => {
 
     expect(result).toBe('dead');
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+  });
+
+  it('keeps a live PID whose worker answers health but is not ready yet (#3224)', async () => {
+    resetMocks();
+    processManager.cleanStalePidFile.mockReturnValue('alive');
+    healthMonitor.waitForHealth.mockResolvedValue(true);
+
+    const result = await ensureWorkerStarted(39010, import.meta.filename);
+
+    expect(result).toBe('warming');
+    expect(processManager.removePidFileIfOwner).not.toHaveBeenCalled();
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+  });
+
+  it('clears a live PID that never answers health and spawns when nothing holds the port (#3224)', async () => {
+    resetMocks();
+    // A reused PID: the process is alive, but no worker answers and the port is free.
+    processManager.cleanStalePidFile.mockReturnValue('alive');
+    processManager.readPidFile.mockReturnValue({ pid: 4242, port: 39011, startedAt: '2026-09-30T00:00:00.000Z' });
+    healthMonitor.waitForReadiness
+      .mockResolvedValueOnce(false) // waiting on the live PID
+      .mockResolvedValueOnce(true); // the freshly spawned worker
+
+    const result = await ensureWorkerStarted(39011, import.meta.filename);
+
+    // Before #3224 this returned 'warming' forever and never spawned.
+    expect(result).toBe('ready');
+    // Owner-checked: only the pid judged silent is cleared, so a PID file a
+    // restart successor wrote after the port check survives.
+    expect(processManager.removePidFileIfOwner).toHaveBeenCalledTimes(1);
+    expect(processManager.removePidFileIfOwner).toHaveBeenCalledWith(4242);
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the PID file as reclaim evidence when a live-but-silent worker holds the port (#3224)', async () => {
+    resetMocks();
+    // A wedged worker of ours: alive, holding the port, never answering health.
+    processManager.cleanStalePidFile.mockReturnValue('alive');
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    healthMonitor.waitForReadiness
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({
+      reclaimed: true,
+      killedPids: [4242],
+    });
+
+    const result = await ensureWorkerStarted(39012, import.meta.filename);
+
+    expect(result).toBe('ready');
+    expect(portReclaim.reclaimGhostListeningPort).toHaveBeenCalledWith(39012);
+    // The reclaim proves ownership through the PID file, so it must still be
+    // there when the reclaim runs.
+    expect(processManager.removePidFileIfOwner).not.toHaveBeenCalled();
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
   });
 
   it('keeps spawn failures dead', async () => {
@@ -417,5 +501,47 @@ describe('Windows spawn cooldown keyed to a proven boot crash (plan-15 step 7)',
     expect(await ensureWorkerStarted(39106, import.meta.filename)).toBe('ready');
     expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
     expect(existsSync(marker())).toBe(false);
+  });
+});
+
+/**
+ * CLAUDE_MEM_WORKER_AUTOSTART=false (#2828): the MCP server and `start` report
+ * on an externally managed worker but never launch, reclaim or clean up after
+ * one. Read from settings.json at call time, so each test writes its own.
+ */
+describe('ensureWorkerStarted with CLAUDE_MEM_WORKER_AUTOSTART=false', () => {
+  const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  let dataDir: string;
+
+  beforeEach(() => {
+    resetMocks();
+    portReclaim.reclaimGhostListeningPort.mockReset();
+    dataDir = mkdtempSync(join(tmpdir(), 'cmem-spawn-autostart-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_AUTOSTART: 'false' }));
+  });
+
+  afterEach(() => {
+    if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('reports a running worker without touching its lifecycle', async () => {
+    healthMonitor.waitForHealth.mockResolvedValue(true);
+    healthMonitor.waitForReadiness.mockResolvedValue(true);
+
+    expect(await ensureWorkerStarted(39201, import.meta.filename)).toBe('ready');
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+    expect(processManager.cleanStalePidFile).not.toHaveBeenCalled();
+  });
+
+  it('never launches or reclaims when no worker is running', async () => {
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+
+    expect(await ensureWorkerStarted(39202, import.meta.filename)).toBe('dead');
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+    expect(portReclaim.reclaimGhostListeningPort).not.toHaveBeenCalled();
+    expect(spawnGate.acquireSpawnLock).not.toHaveBeenCalled();
   });
 });

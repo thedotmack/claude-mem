@@ -40,14 +40,23 @@ export type FieldCompressor = (
 ) => Promise<string | null>;
 
 /**
- * Default deadline for one compression pass before the observer gives up on it.
- * Overridable per call via CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS — the providers
- * pass resolveFieldOptimizeTimeoutMs (the function, not its result) so the
- * settings file is read only on the rare oversized branch, not every turn. This
- * constant stays the fallback so the module has no settings dependency of its
- * own and remains testable in isolation.
+ * Default deadline for one compression pass before the observer gives up on it
+ * and falls back to truncation. Overridable per call via
+ * CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS — the providers pass
+ * resolveFieldOptimizeTimeoutMs (the function, not its result) so the settings
+ * file is read only on the rare oversized branch, not every turn. This constant
+ * stays the fallback so the module has no settings dependency of its own and
+ * remains testable in isolation; a test keeps it equal to the shipped default.
+ *
+ * The pass is one request to the same backend as the observer request, and the
+ * heaviest one: the whole oversized field in, up to FIELD_OPTIMIZE_TARGET_RATIO
+ * of the field cap back. At 30s it expired on the cmem.ai gateway's ordinary
+ * latency (p90 40–72s by day) and truncated, while the abandoned request could
+ * still be billed. So it gets the observer request's deadline
+ * (DEFAULT_LLM_TIMEOUT_MS): above the gateway's worst daily p99, below its own
+ * 240s timeout.
  */
-export const FIELD_OPTIMIZE_TIMEOUT_MS = 30_000;
+export const FIELD_OPTIMIZE_TIMEOUT_MS = 180_000;
 
 /**
  * Target size for compressed output, as a fraction of the per-field budget.

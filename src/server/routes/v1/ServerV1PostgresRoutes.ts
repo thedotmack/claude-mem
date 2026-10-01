@@ -989,8 +989,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         limit: z.number().int().positive().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
         platformSource: z.string().min(1).nullable().optional(),
         // Folder labels (observations.metadata.project). When set, only rows
-        // generated for one of these folders are returned.
+        // generated for one of these folders are returned (ASCII
+        // case-insensitive, like the SQLite read path).
         folderProjects: z.array(z.string().min(1)).min(1).max(20).optional(),
+        // CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: leave out rows generated from
+        // subagent hook events.
+        excludeSubagents: z.boolean().optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
@@ -1002,8 +1006,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         let results;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
-          // One query for both modes, so the platform and folder filters apply
-          // to the recency read exactly as they do to a relevance read.
+          // One query for both modes, so the platform, folder and subagent
+          // filters apply to the recency read exactly as to a relevance read.
           results = await repo.search({
             projectId: body.projectId,
             teamId,
@@ -1011,6 +1015,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             limit,
             platformSource,
             folderProjects: body.folderProjects ?? null,
+            excludeSubagents: body.excludeSubagents === true,
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -1028,6 +1033,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           limit,
           platformSource,
           folderProjects: body.folderProjects ?? null,
+          excludeSubagents: body.excludeSubagents === true,
           resultCount: results.length,
           observationIds: results.map(o => o.id),
         });

@@ -15,6 +15,53 @@ import { clearInjected } from '../../shared/kimi-context-gate.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
+import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
+
+// The ingest route accepts at most this many calls per request.
+const ADVISOR_CALLS_PER_REQUEST = 50;
+
+/**
+ * Opt-in capture of the turn's `advisor` tool calls
+ * (CLAUDE_MEM_CAPTURE_ADVISOR_CALLS). The advisor is a server-side tool
+ * (server_tool_use in the transcript), so PostToolUse never fires for it and
+ * the Stop hook's scan of the transcript's tail is the only capture point.
+ * currentTurnOnly keeps each Stop from re-sending the session's history; the
+ * worker's UNIQUE(tool_use_id) absorbs any overlap. Worker runtime only: in
+ * server runtime this must not start a local worker (plan-24 step 4), and the
+ * server-side store is a follow-up.
+ */
+async function recordAdvisorCalls(
+  sessionId: string,
+  transcriptPath: string | undefined,
+  cwd: string | undefined,
+  platformSource: string,
+): Promise<void> {
+  if (!transcriptPath) return;
+  if (loadFromFileOnce().CLAUDE_MEM_CAPTURE_ADVISOR_CALLS !== 'true') return;
+  if (resolveRuntimeContext().runtime === 'server') return;
+
+  const calls = extractAdvisorCalls(transcriptPath, { currentTurnOnly: true });
+  if (calls.length === 0) return;
+
+  logger.debug('HOOK', 'Stop: recording advisor calls', { count: calls.length });
+  for (let start = 0; start < calls.length; start += ADVISOR_CALLS_PER_REQUEST) {
+    await executeWithWorkerFallback<{ status?: string }>('/api/advisor-calls', 'POST', {
+      contentSessionId: sessionId,
+      platformSource,
+      cwd,
+      transcriptPath,
+      calls: calls.slice(start, start + ADVISOR_CALLS_PER_REQUEST).map(call => ({
+        toolUseId: call.toolUseId,
+        advice: call.advice,
+        advisorModel: call.advisorModel,
+        occurredAtEpoch: call.occurredAtEpoch,
+        lastUserMessage: call.lastUserMessage,
+        transcriptByteOffset: call.transcriptByteOffset,
+      })),
+    });
+  }
+}
 
 async function summarizeViaServer(
   runtime: ServerRuntimeContext,
@@ -58,6 +105,8 @@ export const summarizeHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    // Only the Codex adapter maps stop_hook_active; claude-code.ts explains why
+    // Claude Code's flag must never suppress a summary.
     if (input.stopHookActive === true) {
       logger.debug('HOOK', 'Skipping summary: Stop hook re-entry detected (stop_hook_active)', {
         sessionId: input.sessionId,
@@ -88,6 +137,18 @@ export const summarizeHandler: EventHandler = {
     // re-injects a fresh timeline (see src/shared/kimi-context-gate.ts).
     if (input.platform === 'kimi' && input.hookEventName === 'PreCompact') {
       clearInjected(sessionId);
+    }
+
+    // Advisor capture runs before summarize's own early returns (an empty
+    // assistant message must not drop the turn's advisor calls) and is
+    // failure-isolated from it.
+    try {
+      await recordAdvisorCalls(sessionId, transcriptPath, input.cwd, normalizePlatformSource(input.platform));
+    } catch (err) {
+      logger.warn('HOOK', 'Advisor-call capture failed; continuing with summary', {
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     let lastAssistantMessage = '';

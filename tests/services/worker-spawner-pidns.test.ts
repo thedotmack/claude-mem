@@ -22,6 +22,7 @@ const realProcessManagerSnapshot = { ...realProcessManager };
 
 const healthMonitor = {
   isPortInUse: mock(async () => false),
+  probePortBind: mock(async () => ({ occupancy: 'free' })),
   waitForHealth: mock(async () => false),
   waitForReadiness: mock(async () => false),
 };

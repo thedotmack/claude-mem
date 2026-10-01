@@ -1,6 +1,7 @@
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import { scopedProjects } from '../sqlite/project-read-keys.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
@@ -76,6 +77,36 @@ export class SearchManager {
   }
 
   /**
+   * Chroma where-filter for a set of read keys (see projectReadKeysFor): the
+   * row's own key or the project it was merged into. Chroma compares metadata
+   * exactly, so the keys already list every stored spelling (#3531).
+   */
+  private buildProjectWhereFilter(readKeys: string[]): Record<string, any> {
+    const match = readKeys.length === 1 ? readKeys[0] : { $in: readKeys };
+    return {
+      $or: [
+        { project: match },
+        { merged_into_project: match }
+      ]
+    };
+  }
+
+  /**
+   * Every key a search for `project` and `projects` reads: the requested keys
+   * (a checkout's current key plus the ones it wrote under before a re-key,
+   * gate P2-5), their stored spellings, and the projects merged into them, one
+   * hop (gate P2-4). `projects` is a list, or comma-separated from a query
+   * string. Empty when the search is not scoped to a project.
+   */
+  private projectReadKeysFor(project: unknown, projects: unknown): string[] {
+    const listed = typeof projects === 'string'
+      ? projects.split(',')
+      : Array.isArray(projects) ? projects.filter((entry): entry is string => typeof entry === 'string') : [];
+    const requested = scopedProjects({ projects: [...(typeof project === 'string' ? [project] : []), ...listed] });
+    return requested.length > 0 ? this.sessionStore.getProjectReadKeys(requested) : [];
+  }
+
+  /**
    * Build a Chroma where-filter scoped to a single doc_type, applying the
    * dual-project ($or: project + merged_into_project) scoping used by every
    * single-type hybrid search path.
@@ -83,13 +114,7 @@ export class SearchManager {
   private buildDocTypeWhereFilter(docType: string, project?: string, platformSource?: string): Record<string, any> {
     const filters: Array<Record<string, any>> = [{ doc_type: docType }];
     if (project) {
-      const projectFilter = {
-        $or: [
-          { project },
-          { merged_into_project: project }
-        ]
-      };
-      filters.push(projectFilter);
+      filters.push(this.buildProjectWhereFilter(this.projectReadKeysFor(project, undefined)));
     }
     if (platformSource) {
       filters.push({ platform_source: normalizePlatformSource(platformSource) });
@@ -436,6 +461,7 @@ export class SearchManager {
           orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
+          projects: options.projects,
           platformSource: options.platformSource
         });
       }
@@ -444,6 +470,7 @@ export class SearchManager {
           orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
+          projects: options.projects,
           platformSource: options.platformSource
         });
       }
@@ -493,6 +520,15 @@ export class SearchManager {
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    // Gate P2-5: every key the requested projects are stored under, so a
+    // checkout's search reaches what it wrote before a re-key. The SQLite paths
+    // receive the same list (scopedProjects prefers `projects` over `project`).
+    const projectReadKeys = this.projectReadKeysFor(options.project, options.projects);
+    if (projectReadKeys.length > 0) {
+      options.projects = projectReadKeys;
+    } else {
+      delete options.projects;
+    }
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -511,7 +547,7 @@ export class SearchManager {
     const { category, effectiveObsType } = this.resolveTypeFilters(type, obs_type);
     assertSearchHasQueryOrFilter({
       query,
-      project: options.project,
+      project: options.project ?? options.projects?.[0],
       platformSource: options.platformSource,
       dateRange: options.dateRange,
       obsType: effectiveObsType,
@@ -550,13 +586,8 @@ export class SearchManager {
         whereFilters.push({ doc_type: 'user_prompt' });
       }
 
-      if (options.project) {
-        whereFilters.push({
-          $or: [
-            { project: options.project },
-            { merged_into_project: options.project }
-          ]
-        });
+      if (projectReadKeys.length > 0) {
+        whereFilters.push(this.buildProjectWhereFilter(projectReadKeys));
       }
 
       if (options.platformSource) {

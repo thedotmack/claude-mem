@@ -40,7 +40,7 @@ function getDetailField(obs: Observation, config: ContextConfig): string | null 
 function renderDayTimelineAgent(
   day: string,
   dayItems: TimelineItem[],
-  fullObservationIds: Set<number>,
+  fullObservationIds: Set<Observation['id']>,
   config: ContextConfig,
 ): string[] {
   const output: string[] = [];
@@ -53,7 +53,7 @@ function renderDayTimelineAgent(
     if (item.type === 'summary') {
       const summary = item.data as SummaryTimelineItem;
       const formattedTime = formatDateTime(summary.displayTime);
-      output.push(...Agent.renderAgentSummaryItem(summary, formattedTime));
+      output.push(...Agent.renderAgentSummaryItem(summary, formattedTime, config));
     } else {
       const obs = item.data as Observation;
       const time = formatTime(obs.created_at);
@@ -77,7 +77,7 @@ function renderDayTimelineAgent(
 
 export function renderAgentTimeline(
   timeline: TimelineItem[],
-  fullObservationIds: Set<number>,
+  fullObservationIds: Set<Observation['id']>,
   config: ContextConfig
 ): string[] {
   const output: string[] = [];
@@ -106,7 +106,7 @@ export interface HumanTimelineEntry {
 
 export function buildHumanTimelineEntries(
   timeline: TimelineItem[],
-  fullObservationIds: Set<number>,
+  fullObservationIds: Set<Observation['id']>,
   config: ContextConfig,
   cwd: string
 ): HumanTimelineEntry[] {
@@ -119,7 +119,7 @@ export function buildHumanTimelineEntries(
         const summary = item.data as SummaryTimelineItem;
         entries.push({
           day, file: null, summary: true,
-          lines: Human.renderHumanSummaryItem(summary, formatDateTime(summary.displayTime)),
+          lines: Human.renderHumanSummaryItem(summary, formatDateTime(summary.displayTime), config),
         });
         continue;
       }
