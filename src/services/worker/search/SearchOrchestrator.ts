@@ -16,6 +16,7 @@ import type {
 } from './types.js';
 import { SEARCH_CATEGORIES, isCategoryRequested } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
+import { projectReadKeysFor } from './project-where-filter.js';
 import { AppError } from '../../server/ErrorHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
@@ -180,7 +181,13 @@ export class SearchOrchestrator {
       return await this.hybridStrategy.findByFile(filePath, options);
     }
 
-    const results = this.sqliteStrategy.findByFile(filePath, options);
+    // The keys the hybrid strategy scopes its file lookup by, so turning
+    // Chroma off never changes which projects a file search reads.
+    const readKeys = projectReadKeysFor(this.sessionStore, options.project, options.projects);
+    const results = this.sqliteStrategy.findByFile(filePath, {
+      ...options,
+      projects: readKeys.length > 0 ? readKeys : undefined,
+    });
     return { ...results, usedChroma: false };
   }
 

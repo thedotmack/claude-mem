@@ -285,3 +285,7 @@ export function runTranscriptWatchCommand(): void {
 
   spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], pluginRoot, 'transcript watcher');
 }
+
+export function runMemoryIngestCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('memory', ['ingest', ...extraArgs]);
+}

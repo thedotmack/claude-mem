@@ -22,6 +22,7 @@ import { MEDIA_PROMPT_PLACEHOLDER } from '../../../sqlite/prompt-storage.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
 import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
+import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import { startGeneratorWithProvider } from '../../session/GeneratorRunner.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
@@ -767,6 +768,15 @@ export class SessionRoutes extends BaseRouteHandler {
     // the key itself sends `project` and `projectKeySource`, and those win.
     const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
     const checkoutContext = !req.body.project && checkoutCwd.trim() ? getProjectContext(checkoutCwd) : null;
+    // Such a host cannot check the user's project exclusions either (the CLI
+    // hooks do, before they call): skip before any session row exists.
+    if (checkoutContext) {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+        res.json({ skipped: true, reason: 'project_excluded' });
+        return;
+      }
+    }
     const project = req.body.project || checkoutContext?.primary || 'unknown';
     const projectKeySource = checkoutContext ? checkoutContext.keySource : req.body.projectKeySource;
 

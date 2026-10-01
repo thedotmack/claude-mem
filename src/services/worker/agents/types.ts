@@ -53,6 +53,8 @@ export interface StorageResult {
    * an existing row instead of storing a new one. Absent = nothing merged.
    */
   mergedIntoExisting?: boolean[];
+  /** The ids this turn actually inserted (no duplicates or Tier-0 merges of earlier rows). */
+  insertedObservationIds?: number[];
   summaryId: number | null;
   createdAtEpoch: number;
 }

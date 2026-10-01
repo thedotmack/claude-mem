@@ -390,6 +390,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
       return uninstallKimiHooks();
     }},
+    { label: 'OMP hooks', fn: async () => {
+      const { uninstallOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');
+      return uninstallOmpHooks();
+    }},
   ];
 
   for (const { label, fn } of ideCleanups) {

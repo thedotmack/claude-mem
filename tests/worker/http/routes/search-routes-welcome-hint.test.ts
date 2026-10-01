@@ -1,7 +1,8 @@
 
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { basename, join } from 'path';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
 import * as realContextGenerator from '../../../../src/services/context-generator.js';
@@ -26,6 +27,7 @@ import {
   OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
 } from '../../../../src/shared/observer-health.js';
 import { resolveConfigDirProfileKey } from '../../../../src/shared/EnvManager.js';
+import { getProjectContext } from '../../../../src/utils/project-name.js';
 
 // The route reads the ledger from paths.dataDir() (CLAUDE_MEM_DATA_DIR, set to a
 // per-run temp dir by tests/preload.ts), so write it there for the health case.
@@ -345,5 +347,50 @@ describe('SearchRoutes Welcome Hint', () => {
 
     const body = (res.send as any).mock.calls[0][0] as string;
     expect(body).toContain('http://localhost:43210');
+  });
+
+  // A host that cannot run the project resolver itself (the in-process OMP
+  // hook, #3556) sends its cwd; the route reads the keys the CLI context hook
+  // would send for that checkout.
+  describe('from a host cwd (#3556)', () => {
+    let checkout: string;
+
+    const searchManagerWithObservations = () => ({
+      getSessionStore: () => ({ db: { prepare: mock(() => ({ get: mock(() => ({ count: 1 })) })) } }),
+    });
+
+    beforeEach(() => {
+      checkout = mkdtempSync(join(tmpdir(), 'omp-inject-checkout-'));
+    });
+
+    afterEach(() => {
+      delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+      rmSync(checkout, { recursive: true, force: true });
+    });
+
+    it('reads the project keys of that checkout', async () => {
+      const handler = captureContextInjectHandler(new SearchRoutes(searchManagerWithObservations() as any));
+      const res = createMockRes();
+
+      handler({ query: { cwd: checkout } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(generateContextStub).toHaveBeenCalledTimes(1);
+      const [injectRequest] = (generateContextStub as any).mock.calls[0];
+      expect(injectRequest.projects).toEqual(getProjectContext(checkout).allProjects);
+    });
+
+    it('injects nothing for a checkout the user excluded', async () => {
+      process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
+      const handler = captureContextInjectHandler(new SearchRoutes(searchManagerWithObservations() as any));
+      const res = createMockRes();
+
+      handler({ query: { cwd: checkout } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(res.send).toHaveBeenCalledWith('');
+      expect(generateContextStub).not.toHaveBeenCalled();
+    });
   });
 });

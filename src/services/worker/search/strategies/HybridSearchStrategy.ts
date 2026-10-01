@@ -28,7 +28,12 @@ export class HybridSearchStrategy {
     usedChroma: boolean;
   }> {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, projects, platformSource, dateRange, orderBy, isFolder } = options;
-    const filterOptions = { limit, project, platformSource, dateRange, orderBy, isFolder };
+    // The keys SearchManager scopes by, resolved once: the SQLite lookup that
+    // decides which rows match the file, the Chroma ranking and the hydration
+    // all read the same projects.
+    const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
+    const projectScope = readKeys.length > 0 ? { projects: readKeys } : {};
+    const filterOptions = { limit, ...projectScope, platformSource, dateRange, orderBy, isFolder };
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
 
@@ -41,22 +46,21 @@ export class HybridSearchStrategy {
 
     const ids = metadataResults.observations.map(obs => obs.id);
 
-    return await this.rankAndHydrateForFile(filePath, ids, metadataResults.observations, { limit, project, projects, platformSource, orderBy }, sessions);
+    return await this.rankAndHydrateForFile(filePath, ids, metadataResults.observations, { limit, readKeys, platformSource, orderBy }, sessions);
   }
 
   private async rankAndHydrateForFile(
     filePath: string,
     metadataIds: number[],
     fallbackObservations: ObservationSearchResult[],
-    options: { limit: number; project?: string; projects?: unknown; platformSource?: string; orderBy?: StrategySearchOptions['orderBy'] },
+    options: { limit: number; readKeys: string[]; platformSource?: string; orderBy?: StrategySearchOptions['orderBy'] },
     sessions: SessionSummarySearchResult[]
   ): Promise<{ observations: ObservationSearchResult[]; sessions: SessionSummarySearchResult[]; usedChroma: boolean }> {
     const chromaResults = await this.chromaSync.queryChroma(
       filePath,
       Math.min(metadataIds.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE),
-      // Ranks only: the file matches came from SQLite. The same read keys
-      // SearchManager scopes by, or case-variant and merged rows drop out.
-      this.buildObservationWhereFilter(projectReadKeysFor(this.sessionStore, options.project, options.projects), options.platformSource)
+      // Ranks only: the file matches came from SQLite, scoped by the same keys.
+      this.buildObservationWhereFilter(options.readKeys, options.platformSource)
     );
 
     const rankedIds = this.intersectWithRanking(metadataIds, chromaResults.ids);
@@ -71,7 +75,7 @@ export class HybridSearchStrategy {
       const observations = this.sessionStore.getObservationsByIds(rankedIds, {
         orderBy: 'relevance',
         limit: options.limit,
-        project: options.project,
+        ...(options.readKeys.length > 0 ? { projects: options.readKeys } : {}),
         platformSource: options.platformSource
       });
       observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));

@@ -24,6 +24,8 @@
  *   - `chat.message`                  ({}, output)    — fires on each chat message
  *   - `event`                         ({ event })     — generic bus; event.type carries the name
  *   - `experimental.session.compacting`               — fires when a session compacts
+ *   - `experimental.chat.system.transform` (input, { system }) — builds each request's
+ *                                                       system prompt; memory context is pushed here
  *
  * The generic `event` hook delivers bus events whose discriminant is
  * `event.type`. The only bus event types claude-mem reacts to are
@@ -51,6 +53,7 @@ export const REGISTERED_OPENCODE_HOOKS = [
   "chat.message",
   "event",
   "experimental.session.compacting",
+  "experimental.chat.system.transform",
 ] as const;
 
 /**

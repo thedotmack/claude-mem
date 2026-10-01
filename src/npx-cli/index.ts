@@ -60,7 +60,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
 
 ${styleText('bold', 'IDE Identifiers')}:
-  claude-code, cursor, grok-bot, opencode, openclaw,
+  claude-code, cursor, grok-bot, opencode, openclaw, omp,
   windsurf, codex-cli, kimi, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
@@ -275,6 +275,19 @@ async function main(): Promise<void> {
       } else {
         console.error(styleText('red', `Unknown transcript subcommand: ${subCommand ?? '(none)'}`));
         console.error(`Usage: npx claude-mem transcript watch`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'memory': {
+      const subCommand = args[1]?.toLowerCase();
+      if (subCommand === 'ingest') {
+        const { runMemoryIngestCommand } = await import('./commands/runtime.js');
+        runMemoryIngestCommand(args.slice(2));
+      } else {
+        console.error(styleText('red', `Unknown memory subcommand: ${subCommand ?? '(none)'}`));
+        console.error(`Usage: npx claude-mem memory ingest [--source <dir> | --all] [--dry-run] [--require-cwd]`);
         process.exit(1);
       }
       break;
