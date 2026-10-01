@@ -146,6 +146,18 @@ describe('sanitizeEnv', () => {
     expect(result.HOME).toBe('/home/user');
   });
 
+  it('preserves CLAUDE_CODE_PATH, the documented env form of the claude-mem setting, across daemon spawns', () => {
+    const result = sanitizeEnv({
+      CLAUDE_CODE_PATH: 'C:\\Users\\me\\.local\\bin\\claude.exe',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      PATH: '/usr/bin',
+    });
+
+    expect(result.CLAUDE_CODE_PATH).toBe('C:\\Users\\me\\.local\\bin\\claude.exe');
+    expect(result.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
   it('preserves Azure AI Foundry auth vars through sanitization', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_USE_FOUNDRY: '1',

@@ -334,7 +334,7 @@ export async function buildIsolatedEnvWithFreshOAuth(
     case 'expired':
       logger.warn(
         'OAUTH',
-        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Re-login via Claude Desktop to refresh.`,
+        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Run /login in Claude Code (or \`claude auth login\` in a terminal) to refresh it.`,
         { expiresAt: result.expiresAt },
       );
       writeStaleMarker(result.reason);
