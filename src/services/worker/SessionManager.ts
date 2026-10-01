@@ -8,7 +8,7 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { deliverSessionWrapup, type TelegramWrapupFormatter } from '../integrations/TelegramWrapupNotifier.js';
 import { MAX_LLM_TIMEOUT_MS, resolveLlmTimeoutMs } from './retry.js';
-import { isMemoryOnCmemGateway } from '../../shared/cmem-gateway.js';
+import { canCmemGatewayServe } from '../../shared/cmem-gateway.js';
 import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './session/response-pacer.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
@@ -89,7 +89,7 @@ export class SessionManager {
     // shares its budget with rate-limit and fallback resumes. Spent, the pause
     // keeps its backoff position without a timer, and the next hook-driven
     // start still drains the buffer.
-    if (!planUnattendedGatewayResume(session, 'transport-resume', isMemoryOnCmemGateway()).resume) {
+    if (!planUnattendedGatewayResume(session, 'transport-resume', canCmemGatewayServe()).resume) {
       this.transportResumes.set(sessionDbId, { pauses });
       return;
     }
@@ -699,7 +699,7 @@ export class SessionManager {
    */
   getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
     const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
-    const memoryOnCmemGateway = !includeOperatorOnly && isMemoryOnCmemGateway();
+    const memoryOnCmemGateway = !includeOperatorOnly && canCmemGatewayServe();
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0

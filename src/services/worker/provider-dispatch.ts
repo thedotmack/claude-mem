@@ -106,23 +106,35 @@ export function readQuotaFallbackProvider(): QuotaFallbackProvider | null {
 }
 
 /**
+ * The cmem gateway as the openrouter fallback, by its trial-expiry marker:
+ * 'not-refusing' when the endpoint is not the gateway or no marker is set,
+ * 'refusing' inside the marker's window (shouldUseCmemFallback), 'probe' once
+ * that window has elapsed. The same window and single re-probe the gateway
+ * branch gives a gateway primary: a probe that fails re-stamps the marker
+ * (recordCmemFallbackIfEligible), one that succeeds clears it, so one refusal
+ * never disqualifies the gateway for good.
+ */
+function gatewayFallbackState(): 'not-refusing' | 'refusing' | 'probe' {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  if (!settings.CLAUDE_MEM_PRO_FALLBACK_AT || !isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
+    return 'not-refusing';
+  }
+  return shouldUseCmemFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT) ? 'refusing' : 'probe';
+}
+
+/**
  * Whether a fallback has what it needs to run. Claude counts as available:
  * when dispatch returns it, the Claude setup check in SessionRoutes runs
- * exactly as it does for a Claude primary. The cmem gateway is not a fallback
- * while it is turning this account away (its trial-expiry marker is set):
- * its own dispatch branch owns that window and its single re-probe, and a
- * fallback must not send it traffic around them.
+ * exactly as it does for a Claude primary. The cmem gateway is skipped inside
+ * its trial-expiry window; after it, it is available for the single re-probe,
+ * which `selectWithQuotaFallback` claims before sending.
  */
 function isFallbackAvailable(provider: QuotaFallbackProvider): boolean {
   switch (provider) {
     case 'gemini': return isGeminiAvailable();
     case 'openai-compatible': return isOpenAICompatAvailable();
     case 'claude': return true;
-    case 'openrouter': {
-      if (!isOpenRouterAvailable()) return false;
-      const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-      return !(settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL));
-    }
+    case 'openrouter': return isOpenRouterAvailable() && gatewayFallbackState() !== 'refusing';
   }
 }
 
@@ -232,13 +244,22 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
  */
 function selectWithQuotaFallback(primary: SelectableProvider): ProviderSelection {
   const nowMs = Date.now();
-  const routed = applyQuotaFallback(primary, nowMs);
+  let routed = applyQuotaFallback(primary, nowMs);
+  let gatewayProbeClaimId: number | null = null;
+  // A refusing gateway past its window is re-probed by exactly one caller,
+  // through the claim the gateway branch uses; the rest stay with the held
+  // primary until that probe resolves.
+  if (routed.fallbackFrom !== null && routed.provider === 'openrouter' && gatewayFallbackState() === 'probe') {
+    const admission = tryAdmitCmemGatewayProbe();
+    if (admission.admitted) gatewayProbeClaimId = admission.claimId;
+    else routed = { provider: primary, fallbackFrom: null };
+  }
   if (readQuotaFallbackProvider() !== null) {
     noteQuotaFallbackTransition(primary, routed, nowMs);
   }
   return routed.fallbackFrom === null
-    ? { provider: routed.provider, gatewayProbeClaimId: null }
-    : { provider: routed.provider, gatewayProbeClaimId: null, fallbackFrom: routed.fallbackFrom };
+    ? { provider: routed.provider, gatewayProbeClaimId }
+    : { provider: routed.provider, gatewayProbeClaimId, fallbackFrom: routed.fallbackFrom };
 }
 
 /** Test seam: forget the last logged quota-fallback state. */
