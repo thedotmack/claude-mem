@@ -12,6 +12,7 @@ import {
   toJsonObject
 } from './utils.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
+import { redactJsonStrings } from '../../utils/redaction.js';
 
 export interface PostgresAgentEvent {
   id: string;
@@ -97,7 +98,9 @@ export class PostgresAgentEventsRepository {
         idempotencyKey,
         input.eventType,
         platformSource,
-        JSON.stringify(input.payload ?? {}),
+        // Opt-in secret redaction (#2616) for the raw event body, at the one
+        // write every ingest path goes through.
+        JSON.stringify(redactJsonStrings(input.payload ?? {})),
         JSON.stringify(input.metadata ?? {}),
         new Date(input.occurredAt)
       ]

@@ -15,33 +15,92 @@ export function parseJsonArray(json: string | null): string[] {
   }
 }
 
+// Some runtimes (Bun/JavaScriptCore on Windows with an unresolvable system time
+// zone) throw `failed to initialize DateTimeFormat` from toLocale* calls. These
+// helpers run inside the session-start context build, so a throw there loses the
+// whole memory injection. Fall back to a fixed date/time instead of failing.
+function guardInvalid(date: Date, build: (date: Date) => string): string {
+  if (Number.isNaN(date.getTime())) return 'Invalid Date';
+  return build(date);
+}
+
+// The 12-hour clock the folder-timeline parser (claude-md-utils) reads back: it
+// matches only `H:MM AM/PM`, so a 24-hour fallback would drop the row's time and
+// leave it at the day header's midnight. Uses UTC because the local zone is the
+// thing that failed.
+function isoClock(date: Date): string {
+  const hours = date.getUTCHours();
+  const period = hours < 12 ? 'AM' : 'PM';
+  const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+  return `${hours % 12 || 12}:${minutes} ${period}`;
+}
+
+function isoDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function safeFormat(format: () => string, fallback: () => string): string {
+  try {
+    return format();
+  } catch (err: unknown) {
+    logger.debug('PARSER', 'Locale date formatter unavailable, using ISO fallback', {},
+      err instanceof Error ? err : new Error(String(err)));
+    return fallback();
+  }
+}
+
 export function formatDateTime(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }),
+    () => guardInvalid(date, d => `${isoDay(d)} ${isoClock(d)}`)
+  );
 }
 
 export function formatTime(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }),
+    () => guardInvalid(date, isoClock)
+  );
 }
 
 export function formatDate(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    }),
+    () => guardInvalid(date, isoDay)
+  );
+}
+
+export function formatHeaderDateTime(now: Date = new Date()): string {
+  return safeFormat(
+    () => {
+      const date = now.toLocaleDateString('en-CA');
+      const time = now.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      }).toLowerCase().replace(' ', '');
+      const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+      return `${date} ${time} ${tz}`;
+    },
+    () => guardInvalid(now, d => `${isoDay(d)} ${isoClock(d)} UTC`)
+  );
 }
 
 export function toRelativePath(filePath: string, cwd: string): string {
@@ -76,10 +135,23 @@ export function estimateTokens(text: string | null): number {
   return Math.ceil(text.length / 4);
 }
 
+export interface GroupByDateOptions {
+  /**
+   * Order of the day groups:
+   * - 'asc' (default): oldest day first.
+   * - 'desc': newest day first, for date_desc results.
+   * - 'first-seen': the order in which each day's first item appears in `items`, so a
+   *   relevance-ordered input stays relevance-ordered across day headers.
+   */
+  order?: 'asc' | 'desc' | 'first-seen';
+}
+
 export function groupByDate<T>(
   items: T[],
-  getDate: (item: T) => string
+  getDate: (item: T) => string,
+  options: GroupByDateOptions = {}
 ): Map<string, T[]> {
+  const { order = 'asc' } = options;
   const itemsByDay = new Map<string, T[]>();
   for (const item of items) {
     const itemDate = getDate(item);
@@ -90,10 +162,14 @@ export function groupByDate<T>(
     itemsByDay.get(day)!.push(item);
   }
 
+  if (order === 'first-seen') {
+    return itemsByDay;
+  }
+
   const sortedEntries = Array.from(itemsByDay.entries()).sort((a, b) => {
     const aDate = new Date(a[0]).getTime();
     const bDate = new Date(b[0]).getTime();
-    return aDate - bDate;
+    return order === 'desc' ? bDate - aDate : aDate - bDate;
   });
 
   return new Map(sortedEntries);
