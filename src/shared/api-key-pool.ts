@@ -529,8 +529,8 @@ export async function withKeyPool<T>(
 /**
  * How soon the first cooling key in the pool is back, when that is within a
  * rate-limit window (RATE_LIMIT_COOLDOWN_MAX_MS, the longest a throttle parks a
- * key); otherwise null. A spent key's own window (30 minutes or more) is longer,
- * so it never counts.
+ * key); otherwise null. A key spent or refused just now sits out 30 minutes or
+ * more, so it never counts.
  */
 function soonestKeyFreeWithinRateLimitWindow(poolId: KeyPoolId, keys: string[]): number | null {
   let soonest: number | null = null;
