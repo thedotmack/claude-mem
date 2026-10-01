@@ -76,3 +76,79 @@ describe('a viewer save is judged on what it changes', () => {
     expect(String(saved.payload.error)).toContain('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER');
   });
 });
+
+// GET shows environment overrides, so the viewer posts them back with every
+// save. Persisted, such a value outlives the variable: an invalid one set in
+// the environment kept failing requests after the variable was removed. A value
+// whose only source is the environment is neither checked nor written.
+describe('a viewer save never writes an environment override to settings.json', () => {
+  const settingsPath = paths.settings();
+  const ENV_KEYS = ['CLAUDE_MEM_CODEX_REASONING_EFFORT', 'CLAUDE_MEM_OPENROUTER_MODEL', 'CLAUDE_MEM_OPENROUTER_API_KEY'];
+  let prior: string | undefined;
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    prior = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : undefined;
+    savedEnv = {};
+    for (const key of ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    if (prior === undefined) rmSync(settingsPath, { force: true });
+    else writeFileSync(settingsPath, prior, 'utf-8');
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  /** GET, then POST it back with one unrelated edit, as the viewer does. */
+  function saveUnrelatedEdit() {
+    const routes = handlers();
+    const shown = call(routes['GET /api/settings']).payload;
+    return call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_CONTEXT_OBSERVATIONS: '60' });
+  }
+
+  it('does not persist an invalid value set in the environment', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low' }));
+    process.env.CLAUDE_MEM_CODEX_REASONING_EFFORT = 'bogus';
+
+    expect(saveUnrelatedEdit().status()).toBe(200);
+
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(after.CLAUDE_MEM_CONTEXT_OBSERVATIONS).toBe('60');
+    expect(after.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('low');
+  });
+
+  it('does not write a value that only the environment sets', () => {
+    writeFileSync(settingsPath, JSON.stringify({}));
+    process.env.CLAUDE_MEM_OPENROUTER_MODEL = 'env-only/model';
+
+    expect(saveUnrelatedEdit().status()).toBe(200);
+
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_OPENROUTER_MODEL).toBeUndefined();
+  });
+
+  it('keeps the stored key when the environment overrides it (GET shows the masked environment key)', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-stored-key-1111' }));
+    process.env.CLAUDE_MEM_OPENROUTER_API_KEY = 'sk-or-v1-environment-key-2222';
+
+    expect(saveUnrelatedEdit().status()).toBe(200);
+
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_OPENROUTER_API_KEY).toBe('sk-or-v1-stored-key-1111');
+  });
+
+  it('still checks and saves a field the user edits while the environment overrides it', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low' }));
+    process.env.CLAUDE_MEM_CODEX_REASONING_EFFORT = 'bogus';
+    const routes = handlers();
+    const shown = call(routes['GET /api/settings']).payload;
+
+    expect(call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_CODEX_REASONING_EFFORT: 'also-bogus' }).status()).toBe(400);
+    expect(call(routes['POST /api/settings'], { ...shown, CLAUDE_MEM_CODEX_REASONING_EFFORT: 'high' }).status()).toBe(200);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('high');
+  });
+});
