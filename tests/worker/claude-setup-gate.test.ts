@@ -199,6 +199,7 @@ describe('Claude setup-required generator gate', () => {
     };
     const sessionManager = {
       getSession: () => session,
+      clearTransportResume: () => {},
       getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
       removeSessionImmediate: () => {},
     };
