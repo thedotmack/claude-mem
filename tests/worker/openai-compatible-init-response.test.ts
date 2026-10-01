@@ -141,22 +141,44 @@ describe('OpenAICompatibleProvider init response', () => {
 
   it('continues a Codex session after an empty initialization reply', async () => {
     const provider = new CodexProvider(dbManager, sessionManager) as any;
-    provider.getConfig = () => ({
-      apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex', timeoutMs: 1000,
-    });
-    const turns = mock(async (options: { allowEmptyContent?: boolean }) => ({
-      content: options.allowEmptyContent ? '' : observationXml,
-    }));
+    provider.getConfig = () => ({ apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' });
+    let call = 0;
+    const turns = mock(async () => ({ content: call++ === 0 ? '' : observationXml }));
     provider.appServer.runTurn = turns;
     const session = makeSession({ currentProvider: 'codex' });
 
     await provider.startSession(session);
 
     expect(turns).toHaveBeenCalledTimes(2);
-    expect(turns.mock.calls[0][0].allowEmptyContent).toBe(true);
-    expect(turns.mock.calls[1][0].allowEmptyContent).toBeUndefined();
     expect(storeObservations).toHaveBeenCalledTimes(1);
     expect(session.conversationHistory.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(session.conversationHistory[1].content).toBe('');
+  });
+
+  it('hands a blank Codex observation reply to the skip contract instead of pausing it as a fault', async () => {
+    const session = makeSession({ currentProvider: 'codex' });
+    const resetProcessingToPending = mock(() => Promise.resolve(1));
+    const manager = {
+      ...sessionManager,
+      resetProcessingToPending,
+      getMessageIterator: async function* () {
+        session.claimedMessageIds.push(7);
+        yield { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/main.ts' }, tool_response: 'file contents', prompt_number: 1 };
+      },
+    } as unknown as SessionManager;
+    const provider = new CodexProvider(dbManager, manager) as any;
+    provider.getConfig = () => ({ apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' });
+    let call = 0;
+    const turns = mock(async () => ({ content: call++ === 0 ? 'ready' : '' }));
+    provider.appServer.runTurn = turns;
+
+    await provider.startSession(session);
+
+    // One reply per request: no in-provider retry and no transport pause. The
+    // queued batch goes back to pending for one more try in a fresh generation.
+    expect(turns).toHaveBeenCalledTimes(2);
+    expect(session.abortReason).toBe('output_retry:idle');
+    expect(resetProcessingToPending).toHaveBeenCalled();
+    expect(storeObservations).not.toHaveBeenCalled();
   });
 });

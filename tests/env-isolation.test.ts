@@ -288,12 +288,84 @@ describe('#2753: buildIsolatedEnv resolves CLAUDE_CONFIG_DIR for the SDK subproc
     expect(result.CLAUDE_CONFIG_DIR).not.toBe(CLAUDE_CONFIG_DIR);
   });
 
-  it('falls through to the frozen CLAUDE_CONFIG_DIR (env-or-default, resolved at module load) when the setting is empty', () => {
+  function withProcessEnvConfigDir(value: string | undefined, run: () => void): void {
+    const originalProcessEnvConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    if (value === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = value;
+    }
+    try {
+      run();
+    } finally {
+      if (originalProcessEnvConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = originalProcessEnvConfigDir;
+      }
+    }
+  }
+
+  it('#4149: with the setting empty and nothing exported, the SDK subprocess gets NO CLAUDE_CONFIG_DIR', () => {
     stubConfigDirSetting('');
+
+    withProcessEnvConfigDir(undefined, () => {
+      // Default profile: the variable must be ABSENT so Claude Code reads the
+      // bare 'Claude Code-credentials' keychain entry the worker injects under.
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+  });
+
+  // #4149 — Claude Code keys the keychain name on whether CLAUDE_CONFIG_DIR is
+  // SET. A user who explicitly exports CLAUDE_CONFIG_DIR=~/.claude logged in
+  // under the SUFFIXED entry, so their child must keep the variable (and the
+  // worker must read the suffixed entry — see oauth-token.test.ts).
+  it('#4149: with the setting empty, an explicit CLAUDE_CONFIG_DIR export of the default dir is still stamped', () => {
+    stubConfigDirSetting('');
+
+    withProcessEnvConfigDir(DEFAULT_CLAUDE_CONFIG_DIR, () => {
+      const result = buildIsolatedEnv();
+
+      expect(result.CLAUDE_CONFIG_DIR).toBeDefined();
+      expect(result.CLAUDE_CONFIG_DIR).toBe(oauthToken.resolveEffectiveClaudeConfigDir(''));
+    });
+  });
+
+  it('#4149: an empty CLAUDE_CONFIG_DIR export counts as unset, as it does for Claude Code', () => {
+    stubConfigDirSetting('');
+
+    withProcessEnvConfigDir('', () => {
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+  });
+
+  // #4149 — regression: a default-profile config dir (the resolved '~/.claude',
+  // whether typed as '~/.claude' or already expanded) must leave
+  // CLAUDE_CONFIG_DIR ABSENT on the SDK subprocess. Claude Code derives its
+  // macOS keychain service name from whether CLAUDE_CONFIG_DIR is SET, so any
+  // value here — even the default — sent the child to a suffixed
+  // 'Claude Code-credentials-<hash>' entry a normal login never creates, while
+  // the worker injects under the bare name (deriveMacKeychainServiceName). Once
+  // the access token expired the worker stopped injecting and capture silently
+  // stopped for default-profile macOS users.
+  it('#4149: stamps NO CLAUDE_CONFIG_DIR on the SDK subprocess for a default-profile setting', () => {
+    stubConfigDirSetting('~/.claude');
 
     const result = buildIsolatedEnv();
 
-    expect(result.CLAUDE_CONFIG_DIR).toBe(CLAUDE_CONFIG_DIR);
+    expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it('#4149: a default-dir SETTING deletes a blanket-copied process.env.CLAUDE_CONFIG_DIR', () => {
+    // The setting names the profile: `~/.claude` in settings means "my normal
+    // profile", so even when the worker inherited CLAUDE_CONFIG_DIR in its own
+    // env (and the blanket process.env copy carries it), the child ends up
+    // with the variable UNSET.
+    stubConfigDirSetting(DEFAULT_CLAUDE_CONFIG_DIR);
+
+    withProcessEnvConfigDir(DEFAULT_CLAUDE_CONFIG_DIR, () => {
+      expect(buildIsolatedEnv().CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
   });
 
   it('never touches the worker\'s own paths.CLAUDE_CONFIG_DIR / MARKETPLACE_ROOT module constants, nor the real process.env.CLAUDE_CONFIG_DIR', () => {
