@@ -20,7 +20,19 @@
  * This module is the DB-free half: enumerate + parse + count. The real store
  * path (`ingestMemorySource`) runs inside the worker where the SQLite store lives.
  */
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync, openSync, readSync, closeSync } from 'fs';
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from 'fs';
 import { basename, dirname, isAbsolute, join, relative } from 'path';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { expandHome } from '../../shared/expand-home.js';
@@ -34,6 +46,18 @@ const INDEX_FILE = 'MEMORY.md';
 const MEMORY_SUBDIR = 'memory';
 /** Bytes of a sibling transcript to sniff for the project's real cwd. */
 const CWD_SNIFF_BYTES = 16_384;
+/**
+ * Claude Code's memory notes are short distilled prose. Anything larger is not
+ * a note (a log or a dump dropped into memory/) and is skipped rather than
+ * stored and synced as one observation.
+ */
+export const MAX_MEMORY_FILE_BYTES = 64 * 1024;
+/**
+ * With O_NOFOLLOW, open() itself refuses a symlink (ELOOP), so a file swapped
+ * for a symlink after its lstat check is still never followed. Windows has no
+ * O_NOFOLLOW; there the lstat check is the guard.
+ */
+const OPEN_NO_FOLLOW_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 
 /** Claude Code's projects directory: the only tree memory ingest reads. */
 export function claudeProjectsDir(): string {
@@ -212,6 +236,8 @@ export interface MemoryDirRef {
   indexFile?: MemoryFileRef;
   /** Files (or the whole dir) that could not be read; reported as failed, never abort the run. */
   unreadable: Array<{ fileName: string; reason: string }>;
+  /** Files deliberately not read: symlinks (never followed) and oversized files. */
+  skipped: Array<{ fileName: string; reason: string }>;
 }
 
 export interface ScanOptions {
@@ -233,7 +259,9 @@ function sniffCwd(projectDir: string): string | undefined {
     const filePath = join(projectDir, name);
     let fd: number | undefined;
     try {
-      fd = openSync(filePath, 'r');
+      // A symlinked transcript could point anywhere; only real files are sniffed.
+      if (!lstatSync(filePath).isFile()) continue;
+      fd = openSync(filePath, OPEN_NO_FOLLOW_FLAGS);
       const buf = Buffer.alloc(CWD_SNIFF_BYTES);
       const read = readSync(fd, buf, 0, CWD_SNIFF_BYTES, 0);
       const chunk = buf.toString('utf-8', 0, read);
@@ -279,17 +307,34 @@ function readMemoryDir(memoryDir: string): MemoryDirRef {
   const cwd = sniffCwd(projectDir);
   const project = fallbackProject(cwd, encodedName);
 
-  const ref: MemoryDirRef = { memoryDir, encodedName, cwd, project, files: [], unreadable: [] };
+  const ref: MemoryDirRef = { memoryDir, encodedName, cwd, project, files: [], unreadable: [], skipped: [] };
 
   for (const name of readdirSync(memoryDir)) {
     if (!name.endsWith(MD_EXT)) continue;
     const filePath = join(memoryDir, name);
     // One unreadable file is reported and skipped; it never aborts the run.
+    let fd: number | undefined;
     try {
-      const stat = statSync(filePath);
+      // Symlinks are never followed: a symlinked note (notes.md ->
+      // ~/.aws/credentials) would otherwise be read, stored and synced. lstat
+      // names the skip; the O_NOFOLLOW open refuses a note swapped for a
+      // symlink after this check, and the size and contents both come from
+      // the file that open returned.
+      const linkStat = lstatSync(filePath);
+      if (linkStat.isSymbolicLink()) {
+        ref.skipped.push({ fileName: name, reason: 'symlink (not followed)' });
+        continue;
+      }
+      if (!linkStat.isFile()) continue;
+      fd = openSync(filePath, OPEN_NO_FOLLOW_FLAGS);
+      const stat = fstatSync(fd);
       if (!stat.isFile()) continue;
+      if (stat.size > MAX_MEMORY_FILE_BYTES) {
+        ref.skipped.push({ fileName: name, reason: `larger than ${MAX_MEMORY_FILE_BYTES} bytes` });
+        continue;
+      }
 
-      const raw = readFileSync(filePath, 'utf-8');
+      const raw = readFileSync(fd, 'utf-8');
       const { frontmatter, body } = parseMemoryFrontmatter(raw);
       const isIndex = name === INDEX_FILE;
       const fileRef: MemoryFileRef = {
@@ -306,6 +351,8 @@ function readMemoryDir(memoryDir: string): MemoryDirRef {
       else ref.files.push(fileRef);
     } catch (error: unknown) {
       ref.unreadable.push({ fileName: name, reason: errorMessage(error) });
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
   }
 
@@ -353,6 +400,7 @@ export function scanMemorySource(source: string, options: ScanOptions = {}): Mem
           project: name,
           files: [],
           unreadable: [{ fileName: MEMORY_SUBDIR, reason: errorMessage(error) }],
+          skipped: [],
         });
       }
     }
@@ -387,6 +435,8 @@ export interface MemoryDirCounts {
   bytes: number;
   /** Files that could not be read; a real ingest reports them as failed. */
   unreadable: number;
+  /** Symlinked or oversized files, never read. */
+  skipped: number;
 }
 
 export interface MemoryDryRunReport {
@@ -400,6 +450,7 @@ export interface MemoryDryRunReport {
     bytes: number;
     cwdUnresolved: number;
     unreadable: number;
+    skipped: number;
   };
 }
 
@@ -419,6 +470,7 @@ export function dryRunMemorySource(source: string, options: ScanOptions = {}): M
     indexSkipped: !!ref.indexFile,
     bytes: ref.files.reduce((n, f) => n + f.bytes, 0),
     unreadable: ref.unreadable.length,
+    skipped: ref.skipped.length,
   }));
 
   return {
@@ -431,6 +483,7 @@ export function dryRunMemorySource(source: string, options: ScanOptions = {}): M
       bytes: dirs.reduce((n, d) => n + d.bytes, 0),
       cwdUnresolved: dirs.filter(d => !d.cwdResolved).length,
       unreadable: dirs.reduce((n, d) => n + d.unreadable, 0),
+      skipped: dirs.reduce((n, d) => n + d.skipped, 0),
     },
   };
 }
@@ -462,6 +515,9 @@ export function formatMemoryDryRunReport(report: MemoryDryRunReport): string {
   }
   if (t.unreadable) {
     lines.push(`WARNING: ${t.unreadable} file(s) could not be read and would be reported as failed.`);
+  }
+  if (t.skipped) {
+    lines.push(`NOTE: ${t.skipped} file(s) skipped: symlinks are never followed; files over ${MAX_MEMORY_FILE_BYTES} bytes are not notes.`);
   }
   lines.push('NOTE: mechanical store — memory prose is stored as-is, no model spend. Dedup by content_hash.');
   return lines.join('\n');
@@ -592,6 +648,11 @@ export async function ingestMemorySource(
       report.found++;
       report.failed++;
       report.files.push({ project: ref.project, file: fileName, status: 'failed', reason });
+    }
+    for (const { fileName, reason } of ref.skipped) {
+      report.found++;
+      report.skipped++;
+      report.files.push({ project: ref.project, file: fileName, status: 'skipped', reason });
     }
     for (const file of ref.files) {
       report.found++;

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as fs from 'fs';
 import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -11,6 +12,7 @@ import {
   ingestMemorySource,
   memoryDirForCwd,
   MemorySourceError,
+  MAX_MEMORY_FILE_BYTES,
   type MemoryDirRef,
   type MemoryFileRef,
   type MemoryObservationToStore,
@@ -137,6 +139,62 @@ describe('scanMemorySource', () => {
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it('never follows a symlinked note file, and stores nothing from it (R5-4)', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'memscan-secret-'));
+    try {
+      const secrets = join(outside, 'credentials');
+      writeFileSync(secrets, '[default]\naws_secret_access_key = SHOULD-NEVER-BE-STORED\n');
+      symlinkSync(secrets, join(memDir, 'notes.md'), 'file');
+
+      const [ref] = scanMemorySource(memDir, { root });
+      expect(ref.files.map(f => f.fileName)).not.toContain('notes.md');
+      expect(ref.skipped.map(entry => entry.fileName)).toEqual(['notes.md']);
+
+      const stored: MemoryObservationToStore[] = [];
+      const report = await ingestMemorySource(memDir, { root }, {
+        storeMemoryObservation: async obs => {
+          stored.push(obs);
+          return { id: stored.length, deduped: false };
+        },
+      });
+      expect(JSON.stringify(stored)).not.toContain('SHOULD-NEVER-BE-STORED');
+      expect(report.files.find(f => f.file === 'notes.md')?.status).toBe('skipped');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  // Windows has no O_NOFOLLOW; there the lstat check alone is the guard.
+  it.skipIf(process.platform === 'win32')('never follows a note swapped for a symlink after its check', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'memscan-swap-'));
+    // The scan reads the realpath of the source (macOS tmpdir is a symlink).
+    const swapped = join(fs.realpathSync(memDir), 'notes.md');
+    // lstat still sees the plain note that was there a moment before the swap.
+    const realLstatSync = fs.lstatSync;
+    const lstatSpy = spyOn(fs, 'lstatSync').mockImplementation(((path: fs.PathLike) =>
+      realLstatSync(path === swapped ? join(memDir, 'recent-work.md') : path)) as typeof fs.lstatSync);
+    try {
+      const secrets = join(outside, 'credentials');
+      writeFileSync(secrets, '[default]\naws_secret_access_key = SHOULD-NEVER-BE-STORED\n');
+      symlinkSync(secrets, swapped, 'file');
+
+      const [ref] = scanMemorySource(memDir, { root });
+      expect(JSON.stringify(ref)).not.toContain('SHOULD-NEVER-BE-STORED');
+      expect(ref.unreadable.map(entry => entry.fileName)).toEqual(['notes.md']);
+    } finally {
+      lstatSpy.mockRestore();
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a note larger than the size cap', () => {
+    writeFileSync(join(memDir, 'huge.md'), `# huge\n\n${'x'.repeat(MAX_MEMORY_FILE_BYTES + 1)}`);
+
+    const [ref] = scanMemorySource(memDir, { root });
+    expect(ref.files.map(f => f.fileName)).not.toContain('huge.md');
+    expect(ref.skipped.map(entry => entry.fileName)).toEqual(['huge.md']);
   });
 
   it('does not follow a symlinked memory dir out of the projects directory', () => {
