@@ -11,6 +11,10 @@ interface TailState {
   partial: string;
 }
 
+// Coarse filesystem clocks (HFS+ 1 s, FAT 2 s) can stamp a file written just
+// after startup with an mtime just before it.
+const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
+
 class FileTailer {
   private watcher: ReturnType<typeof fsWatch> | null = null;
   private tailState: TailState;
@@ -109,12 +113,14 @@ export class TranscriptWatcher {
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
+  private startedAtMs = 0;
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
   }
 
   async start(): Promise<void> {
+    this.startedAtMs = Date.now();
     for (const watch of this.config.watches) {
       await this.setupWatch(watch);
     }
@@ -266,15 +272,19 @@ export class TranscriptWatcher {
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
-    // `startAtEnd` is a statement about the INITIAL scan: it means "do not
-    // replay history that predates this worker". A file the root watcher turns
-    // up afterwards is new by construction, and by the time a recursive watch
-    // reports it, session_meta and the opening turns are already on disk -
-    // jumping to EOF drops the head of that transcript, including the user
-    // prompt the schema exists to capture (#4211). Read those from byte 0.
-    if (offset === 0 && watch.startAtEnd && !discoveredAfterStartup) {
+    // `startAtEnd` means "do not replay history that predates this worker".
+    // A transcript created after startup is read from byte 0: by the time the
+    // recursive root watch reports it, session_meta and the opening turns are
+    // already on disk, and jumping to EOF drops the user prompt the schema
+    // exists to capture (#4211). A historical file moved in after startup is
+    // still history: a rename keeps its old mtime (it does bump ctime, so ctime
+    // cannot tell the two apart), so it starts at EOF like the initial scan.
+    if (offset === 0 && watch.startAtEnd) {
       try {
-        offset = statSync(filePath).size;
+        const stat = statSync(filePath);
+        const writtenSinceStartup =
+          discoveredAfterStartup && stat.mtimeMs >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
+        if (!writtenSinceStartup) offset = stat.size;
       } catch (error: unknown) {
         logger.debug('WORKER', 'Failed to stat file for startAtEnd offset', { file: filePath }, error instanceof Error ? error : undefined);
         offset = 0;
