@@ -732,7 +732,7 @@ describe('Telegram wrap-ups on the openai-compatible provider', () => {
 
     new SessionRoutes(
       sessionManager as never, {} as never, otherAgent as never, otherAgent as never, otherAgent as never,
-      {} as never, {} as never, {} as never, compatAgent as never,
+      {} as never, {} as never, {} as never, otherAgent as never, compatAgent as never,
     );
 
     await expect(formatter!(input)).resolves.toBe('• Finished');

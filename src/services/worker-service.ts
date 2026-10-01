@@ -109,6 +109,7 @@ import { GeminiProvider, classifyGeminiError } from './worker/GeminiProvider.js'
 import { OpenRouterProvider, classifyOpenRouterError } from './worker/OpenRouterProvider.js';
 import { OpenAICompatProvider } from './worker/OpenAICompatProvider.js';
 import { getSelectedProvider } from './worker/provider-dispatch.js';
+import { CodexProvider } from './worker/CodexProvider.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -248,6 +249,7 @@ export class WorkerService implements WorkerRef {
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
   private openAICompatAgent: OpenAICompatProvider;
+  private codexAgent: CodexProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -281,6 +283,7 @@ export class WorkerService implements WorkerRef {
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
     this.openAICompatAgent = new OpenAICompatProvider(this.dbManager, this.sessionManager);
+    this.codexAgent = new CodexProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -331,7 +334,7 @@ export class WorkerService implements WorkerRef {
         const provider = getSelectedProvider();
         return {
           provider,
-          authMethod: getAuthMethodDescription(),
+          authMethod: provider === 'codex' ? 'Codex CLI subscription' : getAuthMethodDescription(),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -455,7 +458,7 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.openAICompatAgent);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
     this.startPendingSessionResume(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
@@ -970,6 +973,7 @@ export class WorkerService implements WorkerRef {
           this.deferredSessionEndReplayTimer = null;
         }
 
+        await this.codexAgent.close();
         if (this.transcriptWatcher) {
           this.transcriptWatcher.stop();
           this.transcriptWatcher = null;
@@ -1790,6 +1794,9 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
   const labels = dependencies.statuses.map(status => {
     if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
       return 'Claude CLI setup required';
+    }
+    if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
+      return 'Codex CLI setup required';
     }
     if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
       return 'uvx unavailable for vector search';

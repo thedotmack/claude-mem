@@ -23,6 +23,7 @@ import { scrubErrorMessage } from '../../shared/observer-health.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
+import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
 import { isQuotaCooldownActive, releaseQuotaProbe, tryAdmitCmemGatewayProbe } from '../../shared/quota-cooldown.js';
 
@@ -32,7 +33,7 @@ import { isQuotaCooldownActive, releaseQuotaProbe, tryAdmitCmemGatewayProbe } fr
  * src/shared/openai-compat-presets.ts for why it is not folded into
  * openrouter.
  */
-export type SelectableProvider = 'claude' | 'gemini' | 'openrouter' | 'openai-compatible';
+export type SelectableProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -76,6 +77,7 @@ export interface ProviderSelection {
  * `selectProviderForGenerator` instead, or it becomes part of the herd.
  */
 export function getSelectedProvider(): SelectableProvider {
+  if (isCodexSelected()) return 'codex';
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     if (
@@ -114,6 +116,7 @@ export function getSelectedProvider(): SelectableProvider {
  * is not a pause.
  */
 export function selectProviderForGenerator(): ProviderSelection {
+  if (isCodexSelected()) return { provider: 'codex', gatewayProbeClaimId: null };
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
