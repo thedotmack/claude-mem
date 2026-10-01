@@ -340,7 +340,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // conversation that starts partway through (a recycle, or a resume after a
     // quota pause) continues from the memory rather than from nothing (#3800).
     const priorContext = await loadSessionStartContext(session);
-    const initPrompt = session.lastPromptNumber === 1
+    // Prompt 0 means no user_prompts row exists for this session (a
+    // transcript-ingested turn with no anchor). Treat it, like the genuine
+    // first prompt, as an init rather than an empty continuation the model
+    // rejects as prose (#3653).
+    const initPrompt = session.lastPromptNumber <= 1
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
 

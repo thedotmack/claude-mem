@@ -256,9 +256,11 @@ describe('GeminiProvider', () => {
       conversationHistory: [],
     }));
 
-    const firstPrompt = sentGeminiContents()[0].parts[0].text as string;
-    expect(firstPrompt).toContain('__INIT_MARKER__');
-    expect(firstPrompt).not.toContain('__CONTINUATION_MARKER__');
+    // The generation's framing prompt goes out as systemInstruction (#3868).
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    const framing = body.systemInstruction.parts[0].text as string;
+    expect(framing).toContain('__INIT_MARKER__');
+    expect(framing).not.toContain('__CONTINUATION_MARKER__');
   });
 
   it('keeps Gemini roles alternating for full conversation history', async () => {

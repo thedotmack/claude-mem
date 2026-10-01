@@ -4,7 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
-import { TranscriptEventProcessor } from './processor.js';
+import { TranscriptAnchorError, TranscriptEventProcessor } from './processor.js';
 import { decompressZstdFrame, isZstdSupported, scanZstdFrames, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
@@ -16,6 +16,16 @@ interface TailState {
 // Coarse filesystem clocks (HFS+ 1 s, FAT 2 s) can stamp a file written just
 // after startup with an mtime just before it.
 const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
+
+// A bulk backfill can walk hundreds of files and tens of thousands of lines on
+// the Bun event loop that also serves the worker's HTTP API. Awaiting line
+// after line back to back starves live hook capture, so dispatch hands a
+// macrotask back to the loop every so often (#3653).
+const YIELD_EVERY_N_LINES = 100;
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>(resolve => setImmediate(resolve));
+}
 
 /**
  * Concatenated-frame Zstandard session logs (DeepSeek Harness writes
@@ -148,15 +158,21 @@ class FileTailer {
     this.tailState.partial = lines.pop() ?? '';
 
     // Keep live reads at EOF while restart recovery resumes before any partial record.
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      await this.onLine(trimmed);
-    }
+    await this.dispatchLines(lines);
 
     const checkpointOffset = size - Buffer.byteLength(this.tailState.partial, 'utf8');
     this.tailState.offset = checkpointOffset;
     this.onOffset(checkpointOffset);
+  }
+
+  private async dispatchLines(lines: string[]): Promise<void> {
+    let dispatched = 0;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      await this.onLine(trimmed);
+      if (++dispatched % YIELD_EVERY_N_LINES === 0) await yieldToEventLoop();
+    }
   }
 
   /**
@@ -193,11 +209,7 @@ class FileTailer {
       }
       const lines = (this.tailState.partial + plain).split('\n');
       this.tailState.partial = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        await this.onLine(trimmed);
-      }
+      await this.dispatchLines(lines);
       processedEnd = frame.end;
     }
     if (processedEnd === 0) return;
@@ -252,6 +264,7 @@ export class TranscriptWatcher {
 
     for (const filePath of files) {
       await this.addTailer(filePath, watch, schema);
+      await yieldToEventLoop();
     }
 
     const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
@@ -451,6 +464,16 @@ export class TranscriptWatcher {
       const entry = JSON.parse(line);
       await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined);
     } catch (error: unknown) {
+      // A turn whose prompt the worker did not record stops the pass before the
+      // checkpoint moves past it (#4192), so it is replayed, not misfiled.
+      if (error instanceof TranscriptAnchorError) {
+        logger.warn('TRANSCRIPT', 'Transcript turn not anchored; it is replayed from the last checkpoint', {
+          watch: watch.name,
+          file: basename(filePath),
+          error: error.message,
+        });
+        throw error;
+      }
       if (error instanceof Error) {
         logger.debug('TRANSCRIPT', 'Failed to parse transcript line', {
           watch: watch.name,
