@@ -10,6 +10,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
+import { parseGeminiErrorDetails } from '../../shared/gemini-error-details.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
 
@@ -35,23 +36,43 @@ export function classifyGeminiError(input: {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
   const headers = input.headers;
-  const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
   const cause = status === undefined
     ? input.cause
     : new Error(`Gemini HTTP error (status ${status}${input.requestId ? `, request ${input.requestId}` : ''})`);
+
+  // A 429 is decided BEFORE the body markers below, because every Gemini 429
+  // body carries `RESOURCE_EXHAUSTED` no matter what it is actually refusing.
+  // Testing the marker first made this branch unreachable, so this provider
+  // never produced `kind: 'rate_limit'` and never populated `retryAfterMs` —
+  // the two things `withRetry` and the quota breaker key on.
+  if (status === 429) {
+    // Read from the body's structured details (gemini-error-details.ts): the
+    // QuotaFailure names the window, and RetryInfo carries the retry hint
+    // Google sends instead of a Retry-After header. A header still wins.
+    const details = parseGeminiErrorDetails(body);
+    const retryAfterMs = (headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined)
+      ?? details.retryDelayMs;
+    if (details.periodQuotaExhausted) {
+      // A whole day/week/month is spent: the breaker's long cooldown is the
+      // right answer. Carry the hint anyway — it is the reset time.
+      return new ClassifiedProviderError(
+        `Gemini quota exhausted (status ${status})`,
+        { kind: 'quota_exhausted', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+      );
+    }
+    // A window that clears on its own. Holding this for the quota cooldown
+    // turns a six-second throttle into a half-hour outage.
+    return new ClassifiedProviderError(
+      'Gemini rate limit (429)',
+      { kind: 'rate_limit', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
 
   // Quota exceeded — by body marker — even on 500 (Gemini quirk).
   if (lower.includes('quota exceeded') || lower.includes('resource_exhausted')) {
     return new ClassifiedProviderError(
       `Gemini quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
       { kind: 'quota_exhausted', cause },
-    );
-  }
-
-  if (status === 429) {
-    return new ClassifiedProviderError(
-      'Gemini rate limit (429)',
-      { kind: 'rate_limit', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
     );
   }
 

@@ -27,7 +27,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | null;
   /**
    * Claude account (config-dir profile key) the latest Claude generator was
    * spawned under. Its env, and so its billing account, is fixed at spawn, so

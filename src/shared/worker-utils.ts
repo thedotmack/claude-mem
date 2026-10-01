@@ -1417,6 +1417,56 @@ function buildWorkerOutageNotice(consecutiveFailures: number): string {
   return `claude-mem worker unreachable for ${consecutiveFailures} consecutive hooks — memory features are degraded, but your prompts are not blocked. ${recovery}`;
 }
 
+export function isWorkerUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+
+  const transportPatterns = [
+    'econnrefused',
+    'econnreset',
+    'epipe',
+    'etimedout',
+    'enotfound',
+    'econnaborted',
+    'enetunreach',
+    'ehostunreach',
+    'fetch failed',
+    'unable to connect',
+    'socket hang up',
+    'socket connection was closed',
+    'connection closed',
+  ];
+  if (transportPatterns.some(p => lower.includes(p))) return true;
+
+  if (lower.includes('timed out') || lower.includes('timeout')) return true;
+
+  if (/failed:\s*5\d{2}/.test(message) || /status[:\s]+5\d{2}/.test(message)) return true;
+
+  if (/failed:\s*429/.test(message) || /status[:\s]+429/.test(message)) return true;
+
+  if (/failed:\s*4\d{2}/.test(message) || /status[:\s]+4\d{2}/.test(message)) return false;
+
+  if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError) {
+    return false;
+  }
+
+  return false;
+}
+
+let workerUnreachableScopeActive = false;
+let workerUnreachableRecordedThisProcess = false;
+
+/**
+ * Open a per-hook-process scope for recordWorkerUnreachable. hookCommand calls
+ * this at the start of each invocation so the fail-loud counter is incremented
+ * at most once per hook process, not once per worker API attempt within a
+ * composite handler. Callers outside a hook invocation are not deduplicated.
+ */
+export function resetWorkerUnreachableState(): void {
+  workerUnreachableScopeActive = true;
+  workerUnreachableRecordedThisProcess = false;
+}
+
 /**
  * Count one worker-unreachable hook. Never blocks and never exits: a memory
  * outage must not stop the user's prompt, Read or Stop (plan-17 step 2).
@@ -1427,6 +1477,16 @@ function buildWorkerOutageNotice(consecutiveFailures: number): string {
  * consumeWorkerOutageNotice on the next synchronous hook.
  */
 export async function recordWorkerUnreachable(): Promise<number> {
+  // The counter tracks consecutive hook invocations (processes), not individual
+  // worker API attempts: a composite handler (e.g. Kimi's session-init-context)
+  // can hit the unreachable worker more than once in one process.
+  if (workerUnreachableScopeActive) {
+    if (workerUnreachableRecordedThisProcess) {
+      return readHookFailureState().consecutiveFailures;
+    }
+    workerUnreachableRecordedThisProcess = true;
+  }
+
   const lockToken = await acquireHookFailureLock();
   if (lockToken === null) {
     return readHookFailureState().consecutiveFailures;

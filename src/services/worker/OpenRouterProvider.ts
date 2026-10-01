@@ -6,7 +6,7 @@ import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-t
 import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl, isCmemMemoryKey } from '../../shared/cmem-gateway.js';
+import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl, isCmemMemoryKey, isKeyAllowedForEndpoint } from '../../shared/cmem-gateway.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -14,7 +14,7 @@ import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
-import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { OpenAICompatibleProvider, assistantText, type OpenAIChatMessage as OpenAIMessage, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import {
   resolveContextWindowTokens,
   resolveObserverMaxOutputTokens,
@@ -130,6 +130,16 @@ function isContextOverflowBody(body: string): boolean {
 }
 
 /**
+ * A 429 that names a limit of a day or longer ("Rate limit exceeded:
+ * free-models-per-day"). That is a spent allowance until the period turns
+ * over, not a throttle: as a rate limit it would hold only the short breaker
+ * window (quota-cooldown's RATE_LIMIT_RECHECK_COOLDOWN_MS) and send a doomed
+ * probe every ninety seconds until the reset. The per-minute limits
+ * ("free-models-per-min") stay rate limits.
+ */
+const PERIOD_RATE_LIMIT = /limit exceeded:\s*[\w-]*per-(day|week|month)\b/;
+
+/**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
  * at the boundary right after `fetch()` returns or throws.
  */
@@ -198,6 +208,7 @@ export function classifyOpenRouterError(input: {
     // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
     // marker only applies off the 429 path (the key-limit marker always wins).
     (lower.includes('limit exceeded') && status !== 429) ||
+    (status === 429 && PERIOD_RATE_LIMIT.test(lower)) ||
     lower.includes('negative credit') ||
     status === 402
   ) {
@@ -296,12 +307,6 @@ export function classifyOpenRouterError(input: {
 }
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
-const OPENROUTER_EMPTY_HISTORY_FALLBACK = '(context unavailable)';
-
-interface OpenAIMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
 
 interface OpenRouterResponse {
   /** The model that actually served the request — not the configured string. */
@@ -543,7 +548,7 @@ export function resolveOpenRouterConfig(
   // settings.json itself (the settings API / viewer, a hand edit) can pair
   // either key with the wrong host. Every request resolves its key and URL
   // here, together, so the pair is checked here — and fails closed.
-  if (apiKey && isCmemGatewayUrl(apiUrl) !== isCmemMemoryKey(apiKey)) {
+  if (apiKey && !isKeyAllowedForEndpoint(apiUrl, apiKey)) {
     if (lastWithheldCmemKeyUrl !== apiUrl) {
       lastWithheldCmemKeyUrl = apiUrl;
       logger.warn('SDK', 'Withholding the OpenRouter key: a cmem.ai memory key only goes to the cmem gateway, and the gateway only takes a cmem.ai memory key. Pair CLAUDE_MEM_OPENROUTER_BASE_URL with a key for that endpoint.');
@@ -628,53 +633,6 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       output: result.outputTokens,
       ...(typeof result.costUsd === 'number' ? { costUsd: result.costUsd } : {}),
     };
-  }
-
-  /**
-   * The chat messages for a request. An observer generation's framing prompt
-   * goes out as the system message, its user request as the first user turn
-   * (anchorFraming); the turns after it keep the merge and empty guards.
-   */
-  private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    const { system, turns } = this.anchorFraming(history);
-    const anchor: OpenAIMessage[] = system ? [{ role: 'system', content: system }] : [];
-
-    let newestNonEmptyContent: string | null = null;
-    for (const msg of turns) {
-      const trimmed = msg.content.trim();
-      if (trimmed.length > 0) {
-        newestNonEmptyContent = trimmed;
-      }
-    }
-
-    const messages: OpenAIMessage[] = [];
-    for (const msg of turns) {
-      const trimmed = msg.content.trim();
-      if (!trimmed) {
-        continue;
-      }
-
-      const role = msg.role === 'assistant' ? 'assistant' : 'user';
-      if (messages.length === 0 && role === 'assistant') {
-        continue;
-      }
-
-      const previous = messages[messages.length - 1];
-      if (previous?.role === role) {
-        previous.content = `${previous.content}\n\n${msg.content}`;
-      } else {
-        messages.push({ role, content: msg.content });
-      }
-    }
-
-    if (messages.length === 0) {
-      return [...anchor, {
-        role: 'user',
-        content: newestNonEmptyContent ?? OPENROUTER_EMPTY_HISTORY_FALLBACK,
-      }];
-    }
-
-    return [...anchor, ...messages];
   }
 
   protected async query(
@@ -811,12 +769,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const message = choice?.message;
     // OpenAI-compatible gateways may represent assistant text as content
     // blocks. Never substitute reasoning or tool arguments for the answer.
-    const content = typeof message?.content === 'string'
-      ? message.content
-      : Array.isArray(message?.content)
-        ? message.content.filter(part => part?.type === 'text' && typeof part.text === 'string')
-          .map(part => part.text).join('\n')
-        : '';
+    const content = assistantText(message?.content);
     // `length`: generation stopped at the output-token limit. A block cut off
     // mid-tag never closes, so the parser drops it: silently when earlier blocks
     // parsed, taking the whole batch when none did. Logged before the plain-text

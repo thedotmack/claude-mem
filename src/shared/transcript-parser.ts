@@ -108,6 +108,38 @@ function contentToText(msgContent: unknown): string | null {
 }
 
 /**
+ * Kimi Code wire.jsonl is event-sourced; role is carried by envelope type:
+ * - user:      {"type":"context.append_message","message":{"role":"user",...}}
+ * - assistant: {"type":"context.append_loop_event","event":{"type":"content.part",
+ *              ...,"part":{"type":"text","text":"..."}}}  (part.type "think" is reasoning — skipped)
+ */
+function kimiWireRole(line: any): 'user' | 'assistant' | undefined {
+  if (line?.type === 'context.append_message') {
+    const role = line.message?.role;
+    return role === 'user' || role === 'assistant' ? role : undefined;
+  }
+  if (
+    line?.type === 'context.append_loop_event' &&
+    line.event?.type === 'content.part' &&
+    line.event?.part?.type === 'text'
+  ) {
+    return 'assistant';
+  }
+  return undefined;
+}
+
+function kimiWireText(line: any, role: 'user' | 'assistant'): string {
+  if (role === 'user' && line?.type === 'context.append_message') {
+    return contentToText(line.message?.content) ?? '';
+  }
+  if (role === 'assistant' && line?.type === 'context.append_loop_event') {
+    const text = line.event?.part?.text;
+    return typeof text === 'string' ? text : '';
+  }
+  return '';
+}
+
+/**
  * Last-resort stand-in for a tool-only assistant turn: names the tools it
  * called, so a session that ended mid-tool-call (every assistant turn is
  * tool_use only) still has something to summarize. A Bash command is clipped
@@ -129,10 +161,11 @@ function synthesizeToolDescription(msgContent: any[]): string {
 /**
  * Extract last message from a JSONL transcript.
  *
- * Supports three field conventions for the per-line role marker:
+ * Supports four field conventions for the per-line role marker:
  * - Claude Code:      `{"type":"assistant","message":{"content":...}}`
  * - Cursor:           `{"role":"assistant","message":{"content":...}}`
  * - Antigravity CLI:  `{"type":"PLANNER_RESPONSE","content":"..."}` (top-level)
+ * - Kimi Code:        wire.jsonl `context.append_message` / `context.append_loop_event`
  *
  * The most recent assistant turn is often a pure tool_use block with no text
  * content (especially in Cursor, where the agent's last action before the
@@ -149,26 +182,33 @@ export function extractLastMessageFromJsonl(
   let lastEmptyText: string | null = null;
 
   for (const line of parseJsonlLinesBackward(content)) {
+    const kimiRole = kimiWireRole(line);
     const antigravityRole = typeof line.type === 'string'
       ? ANTIGRAVITY_TYPE_TO_ROLE[line.type]
       : undefined;
-    const lineRole = antigravityRole ?? line.type ?? line.role;
+    const lineRole = kimiRole ?? antigravityRole ?? line.type ?? line.role;
     if (lineRole !== role) continue;
     foundMatchingRole = true;
 
-    // Antigravity nodes carry text at the top level; Claude/Cursor nest it under
-    // `message.content`.
-    const msgContent = antigravityRole !== undefined ? line.content : line.message?.content;
-    if (msgContent === undefined || msgContent === null) continue;
+    let text: string;
+    let msgContent: unknown;
+    if (kimiRole !== undefined) {
+      text = kimiWireText(line, role);
+    } else {
+      // Antigravity nodes carry text at the top level; Claude/Cursor nest it under
+      // `message.content`.
+      msgContent = antigravityRole !== undefined ? line.content : line.message?.content;
+      if (msgContent === undefined || msgContent === null) continue;
 
-    // Unknown content shape (number, plain object, etc.) — skip rather than
-    // throw. A single weird line should not crash the entire summary pipeline;
-    // we already tolerate malformed JSONL in parseJsonlLinesBackward, and this
-    // is the same class of defensive forward compat (CodeRabbit / Greptile
-    // review on PR #2282).
-    const extracted = contentToText(msgContent);
-    if (extracted === null) continue;
-    let text = extracted;
+      // Unknown content shape (number, plain object, etc.) — skip rather than
+      // throw. A single weird line should not crash the entire summary pipeline;
+      // we already tolerate malformed JSONL in parseJsonlLinesBackward, and this
+      // is the same class of defensive forward compat (CodeRabbit / Greptile
+      // review on PR #2282).
+      const extracted = contentToText(msgContent);
+      if (extracted === null) continue;
+      text = extracted;
+    }
 
     if (stripSystemReminders) {
       text = text.replace(SYSTEM_REMINDER_REGEX, '');

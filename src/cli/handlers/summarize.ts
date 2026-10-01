@@ -11,6 +11,7 @@ import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { clearInjected } from '../../shared/kimi-context-gate.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
@@ -127,6 +128,15 @@ export const summarizeHandler: EventHandler = {
     if (!sessionId) {
       logger.warn('HOOK', 'summarize: No sessionId provided, skipping');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Kimi routes BOTH PreCompact and Stop to this handler, and Kimi's Stop
+    // fires at the end of EVERY turn — clearing the once-per-session injection
+    // marker on Stop would re-inject the full timeline into every prompt.
+    // Clear only on PreCompact so the first prompt after a compaction
+    // re-injects a fresh timeline (see src/shared/kimi-context-gate.ts).
+    if (input.platform === 'kimi' && input.hookEventName === 'PreCompact') {
+      clearInjected(sessionId);
     }
 
     // Advisor capture runs before summarize's own early returns (an empty
