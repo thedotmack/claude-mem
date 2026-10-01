@@ -5,7 +5,7 @@ import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
-import { TranscriptAnchorError, TranscriptEventProcessor } from './processor.js';
+import { TranscriptAnchorError, TranscriptEventProcessor, type TranscriptFileContext } from './processor.js';
 import { decompressZstdFrame, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
@@ -554,11 +554,20 @@ export class TranscriptWatcher {
       }
     }
 
+    // The session's working directory, restored for a watcher that resumes
+    // past the line that reported it; saved with the next checkpoint.
+    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath] };
     const tailer = new FileTailer(
       filePath,
       offset,
       async (line: string) => {
-        await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
+        try {
+          await this.handleLine(line, watch, schema, filePath, sessionIdOverride, fileContext);
+        } finally {
+          if (fileContext.cwd && fileContext.cwd !== this.state.cwds?.[filePath]) {
+            (this.state.cwds ??= {})[filePath] = fileContext.cwd;
+          }
+        }
       },
       (newOffset: number, partial = '') => {
         this.state.offsets[filePath] = newOffset;
@@ -586,11 +595,12 @@ export class TranscriptWatcher {
     watch: WatchTarget,
     schema: TranscriptSchema,
     filePath: string,
-    sessionIdOverride?: string | null
+    sessionIdOverride: string | null,
+    fileContext: TranscriptFileContext
   ): Promise<void> {
     try {
       const entry = JSON.parse(line);
-      await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined);
+      await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined, fileContext);
     } catch (error: unknown) {
       // A turn whose prompt the worker did not record stops the pass with the
       // checkpoint at its line (or frame), so it is retried, not misfiled.

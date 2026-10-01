@@ -14,6 +14,13 @@ export interface TranscriptWatchState {
    * predate this field and simply have no partials.
    */
   partials?: Record<string, string>;
+  /**
+   * The working directory each file's session last reported. Some hosts write
+   * it only on a session's first line (DeepSeek Harness), and a restarted
+   * watcher resumes past that line, so it is kept here. Older state files
+   * have none.
+   */
+  cwds?: Record<string, string>;
 }
 
 export function loadWatchState(statePath: string): TranscriptWatchState {
