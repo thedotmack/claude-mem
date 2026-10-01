@@ -132,15 +132,15 @@ describe('configureKimiMcp', () => {
 });
 
 describe('buildKimiHooksBlock', () => {
-  test('contains all six rules with TOML literal commands and valid timeouts', () => {
+  test('contains all seven rules with TOML literal commands and valid timeouts', () => {
     const block = buildKimiHooksBlock('/home/u/.bun/bin/bun', '/x/worker-service.cjs');
-    for (const event of ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PreToolUse', 'Stop', 'PreCompact']) {
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'Stop', 'PreCompact']) {
       expect(block).toContain(`event = "${event}"`);
     }
     expect(block).toContain("command = '\"/home/u/.bun/bin/bun\" \"/x/worker-service.cjs\"");
     expect(block).toContain('matcher = "Read"');
     const timeouts = [...block.matchAll(/timeout = (\d+)/g)].map((m) => Number(m[1]));
-    expect(timeouts).toHaveLength(6);
+    expect(timeouts).toHaveLength(7);
     for (const t of timeouts) {
       expect(t).toBeGreaterThanOrEqual(1);
       expect(t).toBeLessThanOrEqual(600);

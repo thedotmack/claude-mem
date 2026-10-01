@@ -20,13 +20,14 @@ import {
 export const KIMI_MARKER_BEGIN = '# >>> claude-mem kimi hooks (managed by claude-mem; do not edit) >>>';
 export const KIMI_MARKER_END = '# <<< claude-mem kimi hooks <<<';
 
-/** Six rules, full parity with the Claude Code hook surface. */
+/** Seven rules: the Claude Code hook surface, plus PostToolUseFailure (a failed tool call is still an observation). */
 export function buildKimiHooksBlock(bunPath: string, workerPath: string): string {
   const run = (suffix: string) => `'"${bunPath}" "${workerPath}" ${suffix}'`;
   const rules = [
     { event: 'SessionStart', matcher: 'startup|resume', command: run('start'), timeout: 120 },
     { event: 'UserPromptSubmit', matcher: undefined, command: run('hook kimi session-init-context'), timeout: 120 },
     { event: 'PostToolUse', matcher: undefined, command: run('hook kimi observation'), timeout: 120 },
+    { event: 'PostToolUseFailure', matcher: undefined, command: run('hook kimi observation'), timeout: 120 },
     { event: 'PreToolUse', matcher: 'Read', command: run('hook kimi file-context'), timeout: 60 },
     { event: 'Stop', matcher: undefined, command: run('hook kimi summarize'), timeout: 120 },
     { event: 'PreCompact', matcher: 'manual|auto', command: run('hook kimi summarize'), timeout: 120 },

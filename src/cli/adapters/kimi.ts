@@ -54,6 +54,26 @@ export function deriveKimiTranscriptPath(sessionId: string): string | undefined 
   return undefined;
 }
 
+/**
+ * Kimi Code's UserPromptSubmit `prompt` is the message's ContentPart[] (e.g.
+ * [{ type: 'text', text: '...' }]), not a string (MoonshotAI/kimi-code#917).
+ * Join its text parts; an image-only prompt yields undefined, which
+ * session-init records as a media prompt, as it does for Claude Code.
+ */
+function promptText(prompt: unknown): string | undefined {
+  if (!Array.isArray(prompt)) return stringOrUndefined(prompt);
+  const text = prompt
+    .map((part) => {
+      if (typeof part === 'string') return part;
+      const candidate = part as { type?: unknown; text?: unknown } | null;
+      return candidate?.type === 'text' && typeof candidate.text === 'string' ? candidate.text : '';
+    })
+    .filter((partText) => partText.length > 0)
+    .join('\n')
+    .trim();
+  return text || undefined;
+}
+
 export const kimiAdapter: PlatformAdapter = {
   normalizeInput(raw): NormalizedHookInput {
     const r = (raw ?? {}) as Record<string, unknown>;
@@ -69,10 +89,14 @@ export const kimiAdapter: PlatformAdapter = {
     return {
       sessionId,
       cwd,
-      prompt: stringOrUndefined(r.prompt),
+      prompt: promptText(r.prompt),
       toolName: stringOrUndefined(r.tool_name),
       toolInput: r.tool_input,
-      toolResponse: r.tool_response,
+      // Kimi sends `tool_output` on PostToolUse and `error` on
+      // PostToolUseFailure where Claude Code sends `tool_response`, and
+      // `tool_call_id` where it sends `tool_use_id`.
+      toolResponse: r.tool_response ?? r.tool_output ?? r.error,
+      toolUseId: stringOrUndefined(r.tool_call_id),
       transcriptPath: deriveKimiTranscriptPath(sessionId),
       model: stringOrUndefined(r.model),
       sessionSource: source === 'startup' || source === 'resume' ? source : undefined,
