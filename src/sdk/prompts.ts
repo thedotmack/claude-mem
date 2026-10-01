@@ -199,11 +199,18 @@ function elideDataImageUrl(value: string): string {
 // was stripped, so every other string keeps the encoding it arrived with.
 const NESTED_JSON_MIN_CHARS = 256;
 
+// Every shape stripped here names an image: an `"image"` type (its closing
+// quote escaped once per level of encoding), `image_url`, or a data:image URL.
+// A string with none of them holds no payload, so it is not worth a parse and
+// a walk, which would otherwise run twice per field (greptile review).
+const IMAGE_PAYLOAD_MARKER = /image(?:"|\\|_url)|data:image\//i;
+
 function stripImagePayloadsFromString(value: string, depth: number): string {
   const elided = elideDataImageUrl(value);
   if (elided !== value) return elided;
   if (depth > MAX_SANITIZE_DEPTH || value.length <= NESTED_JSON_MIN_CHARS) return value;
   if (value[0] !== '{' && value[0] !== '[') return value;
+  if (!IMAGE_PAYLOAD_MARKER.test(value)) return value;
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);

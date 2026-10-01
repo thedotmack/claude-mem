@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 
 import { buildObservationPrompt, buildSummaryPrompt, stripImagePayloadsFromField } from '../../src/sdk/prompts.js';
 
@@ -499,5 +499,33 @@ describe('stripImagePayloadsFromField is idempotent and bounded on the new shape
     expect(stripImagePayloadsFromField(shallow)).not.toBe(shallow);
     const deep = nest(20);
     expect(stripImagePayloadsFromField(deep)).toBe(deep);
+  });
+});
+
+describe('stripImagePayloadsFromField parses a nested JSON string only when it may hold an image', () => {
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+
+  it('returns an image-free 300 KB JSON string untouched without parsing it', () => {
+    // An accessibility tree mentions images in prose; that is not a payload.
+    const rows = Array.from({ length: 3_000 }, (_, i) => ({ id: i, text: `image Igor ${i}`, path: `/assets/${i}.png` }));
+    const nested = JSON.stringify({ rows });
+    expect(nested.length).toBeGreaterThan(150_000);
+    const field = { stdout: nested + ' '.repeat(Math.max(0, 300_000 - nested.length)) };
+    const parse = spyOn(JSON, 'parse');
+    try {
+      expect(stripImagePayloadsFromField(field)).toBe(field);
+      expect(parse).toHaveBeenCalledTimes(0);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('still strips an image block nested two string levels deep, where its quotes are escaped', () => {
+    const inner = JSON.stringify({ content: [{ type: 'image', data: BASE64 }], pad: 'p'.repeat(300) });
+    const field = { stdout: JSON.stringify({ result: inner }) };
+    const out = stripImagePayloadsFromField(field) as { stdout: string };
+
+    expect(/A{200,}/.test(out.stdout)).toBe(false);
+    expect(JSON.parse(JSON.parse(out.stdout).result).content[0]).toMatchObject({ type: 'image', bytes: BASE64.length });
   });
 });
