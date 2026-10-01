@@ -439,12 +439,15 @@ function bookClassifiedFailure(
       recordAuthCooldown(provider, error.message, session.observerProfile);
       break;
     case 'rate_limit': {
-      // Never a spent allowance. The provider already retried in place, and
-      // when it said how long to wait (the gateway envelope always does), the
-      // session resumes after that — a bounded number of times in a row.
-      // With no Retry-After (OpenRouter's daily free-model limit is such a
-      // 429) or once the resumes run out, the limit may last hours: withhold
-      // requests behind the breaker instead of resuming into it.
+      // Never a spent allowance: a limit that names a day or longer is
+      // classified quota_exhausted by the provider (Gemini's per-day quotaId,
+      // OpenRouter's free-models-per-day). The provider already retried in
+      // place, and when it said how long to wait (the gateway envelope always
+      // does; Gemini's body RetryInfo does), the session resumes after that —
+      // a bounded number of times in a row. With no Retry-After, or once the
+      // resumes run out, withhold requests behind the breaker instead of
+      // resuming into it; a 'rate_limit' window holds for the short throttle
+      // cooldown (resolveQuotaCooldownMs), not the quota one.
       // On the cmem gateway the resume also draws on the unattended budget it
       // shares with transport and fallback resumes; once that is spent, the
       // breaker takes over here too.
