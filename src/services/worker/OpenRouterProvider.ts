@@ -12,6 +12,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
+import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import {
   resolveContextWindowTokens,
@@ -316,6 +317,16 @@ interface OpenRouterResponse {
 
 export interface OpenRouterConfig {
   apiKey: string;
+  /**
+   * The rotation pool: `apiKey` followed by CLAUDE_MEM_OPENROUTER_API_KEYS.
+   *
+   * Always exactly `[apiKey]` when the endpoint is the cmem.ai gateway. The
+   * gateway key is account-delivered, so there is no second one to rotate to,
+   * and the list is by definition the user's PERSONAL keys — sending those to
+   * the gateway is the exact leak `resolveOpenRouterConfig` already refuses to
+   * commit when a key-only override meets a persisted cmem base URL.
+   */
+  apiKeys: string[];
   /** First entry of the configured list; the one named in logs and sessions. */
   model: string;
   /**
@@ -498,10 +509,26 @@ export function resolveOpenRouterConfig(
       lastWithheldCmemKeyUrl = apiUrl;
       logger.warn('SDK', 'Withholding the OpenRouter key: a cmem.ai memory key only goes to the cmem gateway, and the gateway only takes a cmem.ai memory key. Pair CLAUDE_MEM_OPENROUTER_BASE_URL with a key for that endpoint.');
     }
-    return { apiKey: '', model, fallbackModels, apiUrl, siteUrl, appName };
+    return { apiKey: '', apiKeys: [], model, fallbackModels, apiUrl, siteUrl, appName };
   }
 
-  return { apiKey, model, fallbackModels, apiUrl, siteUrl, appName };
+  // The gateway never pools: its key is account-delivered, so there is no
+  // second one to rotate to, and the rotation list holds the user's PERSONAL
+  // keys, which must never reach the gateway.
+  if (isCmemGatewayUrl(apiUrl)) {
+    return { apiKey, apiKeys: apiKey ? [apiKey] : [], model, fallbackModels, apiUrl, siteUrl, appName };
+  }
+
+  // Off the gateway the list joins the primary. The same lock applies per
+  // entry: a cm_pro_ key pasted into the list never leaves for this host.
+  const apiKeys = buildKeyPool(
+    apiKey,
+    hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_API_KEYS')
+      ? process.env.CLAUDE_MEM_OPENROUTER_API_KEYS?.trim() ?? ''
+      : settings.CLAUDE_MEM_OPENROUTER_API_KEYS || getCredential('OPENROUTER_API_KEYS') || '',
+  ).filter(key => !isCmemMemoryKey(key));
+
+  return { apiKey: apiKey || apiKeys[0] || '', apiKeys, model, fallbackModels, apiUrl, siteUrl, appName };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -604,9 +631,17 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(
-      history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
-      signal, config.plainText, perAttemptTimeoutMs,
+    // Rotation wraps withRetry rather than living inside it: the inner retry
+    // still owns transient failures against one key, and this outer sweep moves
+    // on only for the kinds that mean the key itself is spent. A pool of one —
+    // every install that has not opted in, and every cmem-gateway install — is
+    // a pass-through.
+    return withKeyPool(
+      { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter' },
+      ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
+        history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
+        signal, config.plainText, perAttemptTimeoutMs,
+      ),
     );
   }
 
@@ -640,6 +675,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
+    /** Size of the rotation pool this attempt belongs to; 1 means no rotation. */
+    poolSize: number,
     model: string,
     fallbackModels: string[],
     apiUrl: string,
@@ -709,7 +746,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}) });
+    }, { label: `OpenRouter ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize) });
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
