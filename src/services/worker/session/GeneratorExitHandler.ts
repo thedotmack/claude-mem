@@ -7,6 +7,13 @@ import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervis
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
+  /**
+   * Start a fresh generator for this session on the next tick (the runner's
+   * resumeGeneratorLater). Used only for buffered work that finalizing would
+   * otherwise dispose of: work that arrived while an idle generator was
+   * stopping, and one rescue of a summarize after an unclassified failure.
+   */
+  resumeGenerator?: (source: string) => void;
 }
 
 /**
@@ -24,6 +31,16 @@ export interface GeneratorExitDependencies {
  * transcript. Continuation of a session that is still live happens naturally —
  * the next observation ingest calls ensureGeneratorRunning, which starts a
  * fresh generator that drains whatever is buffered.
+ *
+ * Two bounded exceptions, neither of them a retry loop (#3419, plan-21):
+ *  - an idle exit that finds work buffered: the idle timeout only fires after
+ *    the queue sat empty, so that work arrived while the generator was
+ *    stopping — typically the turn's summarize, whose own start request found
+ *    the old generator still in place. It is new work, handed to a fresh
+ *    generator instead of being disposed of with the buffer;
+ *  - an unclassified failure with a summarize buffered: the summary is the
+ *    session's last and most valuable event, so it gets one rescue pass per
+ *    session before the session finalizes.
  */
 export async function handleGeneratorExit(
   session: ActiveSession,
@@ -83,6 +100,31 @@ export async function handleGeneratorExit(
       sessionManager.scheduleTransportResume?.(sessionDbId);
     }
     return;
+  }
+
+  if (deps.resumeGenerator) {
+    const pendingCount = reason === 'idle'
+      ? sessionManager.getMessageBuffer?.()?.getPendingCount(sessionDbId) ?? 0
+      : 0;
+    if (pendingCount > 0) {
+      logger.info('SESSION', 'Work arrived while the idle generator was stopping; starting a fresh one instead of finalizing', {
+        sessionId: sessionDbId,
+        pendingCount,
+      });
+      deps.resumeGenerator('idle-teardown');
+      return;
+    }
+    if (reason === null && sessionManager.hasPendingSummarize?.(sessionDbId)) {
+      if (sessionManager.claimSummarizeRescue(sessionDbId)) {
+        await sessionManager.resetProcessingToPending(sessionDbId);
+        logger.warn('SESSION', 'Generator failed with a summarize buffered; starting one rescue pass', {
+          sessionId: sessionDbId,
+        });
+        deps.resumeGenerator('summarize-rescue');
+        return;
+      }
+      logger.warn('SESSION', 'Dropping the buffered summarize after its one rescue pass', { sessionId: sessionDbId });
+    }
   }
 
   logger.info('SESSION', 'Generator exited — finalizing session', { sessionId: sessionDbId, reason });

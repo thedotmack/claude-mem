@@ -55,6 +55,8 @@ export class SessionManager {
   private activeTransportResume: ReadyTransportResume | null = null;
   private deletingSessions = new Set<number>();
   private transportResumeDispositionEpochs = new WeakMap<ActiveSession, number>();
+  /** Sessions that already used their one summarize rescue (#3419). */
+  private readonly summarizeRescues = new Set<number>();
 
   constructor(
     dbManager: DatabaseManager,
@@ -604,6 +606,7 @@ export class SessionManager {
       }
       this.clearTransportResume(sessionDbId);
       this.buffer.dispose(sessionDbId);
+      this.summarizeRescues.delete(sessionDbId);
       this.sessions.delete(sessionDbId);
       logger.info('SESSION', 'Session deleted', {
         sessionId: sessionDbId,
@@ -658,6 +661,7 @@ export class SessionManager {
 
     this.clearTransportResume(sessionDbId);
     this.buffer.dispose(sessionDbId);
+    this.summarizeRescues.delete(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
@@ -752,6 +756,18 @@ export class SessionManager {
   }
 
   /** Read-only access to the in-RAM buffer for diagnostics. */
+  /** Whether a summarize is buffered for this session, claimed or not. */
+  hasPendingSummarize(sessionDbId: number): boolean {
+    return this.buffer.peekTypes(sessionDbId).some(message => message.message_type === 'summarize');
+  }
+
+  /** Take this session's one summarize rescue; false once it has been used. */
+  claimSummarizeRescue(sessionDbId: number): boolean {
+    if (this.summarizeRescues.has(sessionDbId)) return false;
+    this.summarizeRescues.add(sessionDbId);
+    return true;
+  }
+
   getMessageBuffer(): SessionMessageBuffer {
     return this.buffer;
   }

@@ -371,6 +371,7 @@ export async function startGeneratorWithProvider(
       await handleGeneratorExit(session, reason, {
         sessionManager: sessionManager,
         completionHandler: completionHandler,
+        resumeGenerator: resumeSource => resumeGeneratorLater(session, 0, resumeSource, ensureGeneratorRunning),
       });
 
       // Paused work that nothing else is guaranteed to pick up resumes on its
