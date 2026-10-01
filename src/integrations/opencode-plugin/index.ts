@@ -189,11 +189,24 @@ const MAX_SESSION_MAP_ENTRIES = 1000;
 // Memory context per OpenCode session: fetched on the session's first system
 // prompt build and reused for its later turns, as Claude Code injects once per
 // session. Compaction clears it, so the next build carries fresh context.
-const contextByOpenCodeSessionId = new Map<string, Promise<string | null>>();
+interface CachedMemoryContext {
+  request: Promise<string | null>;
+  /** When the fetch came back with nothing; set only for a failed fetch. */
+  failedAt?: number;
+}
+const contextByOpenCodeSessionId = new Map<string, CachedMemoryContext>();
+
+// A failed context fetch is remembered this long before the next build tries
+// again: OpenCode builds a system prompt for every request, and a hung worker
+// would otherwise add the full request timeout to each one (plan-17 contract).
+const FAILED_CONTEXT_RETRY_MS = 60_000;
 
 function memoryContextFor(openCodeSessionId: string, cwd: string): Promise<string | null> {
   const cached = contextByOpenCodeSessionId.get(openCodeSessionId);
-  if (cached) return cached;
+  if (cached && (cached.failedAt === undefined || Date.now() - cached.failedAt < FAILED_CONTEXT_RETRY_MS)) {
+    return cached.request;
+  }
+  contextByOpenCodeSessionId.delete(openCodeSessionId);
 
   while (contextByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
     const oldestKey = contextByOpenCodeSessionId.keys().next().value;
@@ -201,17 +214,16 @@ function memoryContextFor(openCodeSessionId: string, cwd: string): Promise<strin
     contextByOpenCodeSessionId.delete(oldestKey);
   }
   // The worker resolves the project keys from the checkout, as it does for init.
-  const request = workerGetText(
-    `/api/context/inject?cwd=${encodeURIComponent(cwd)}&platformSource=${PLATFORM_SOURCE}`,
-  );
-  contextByOpenCodeSessionId.set(openCodeSessionId, request);
-  // A failed fetch is retried on the next build instead of being cached.
-  void request.then((context) => {
-    if (!context && contextByOpenCodeSessionId.get(openCodeSessionId) === request) {
-      contextByOpenCodeSessionId.delete(openCodeSessionId);
-    }
+  const entry: CachedMemoryContext = {
+    request: workerGetText(
+      `/api/context/inject?cwd=${encodeURIComponent(cwd)}&platformSource=${PLATFORM_SOURCE}`,
+    ),
+  };
+  contextByOpenCodeSessionId.set(openCodeSessionId, entry);
+  void entry.request.then((context) => {
+    if (!context) entry.failedAt = Date.now();
   });
-  return request;
+  return entry.request;
 }
 
 /**
@@ -387,7 +399,8 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     },
 
     // Inject memory context into the system prompt OpenCode builds for each
-    // request (the static AGENTS.md written at install time goes stale).
+    // request: this project's own memory, current, rather than one global
+    // AGENTS.md block shared by every project.
     "experimental.chat.system.transform": async (
       input: { sessionID?: string },
       output: { system: string[] },

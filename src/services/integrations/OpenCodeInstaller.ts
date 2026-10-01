@@ -4,8 +4,7 @@ import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
-import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
@@ -266,36 +265,6 @@ export function installOpenCodePlugin(): number {
   }
 }
 
-export function injectContextIntoAgentsMd(contextContent: string): number {
-  const agentsMdPath = getOpenCodeAgentsMdPath();
-
-  try {
-    injectContextIntoMarkdownFile(agentsMdPath, contextContent, '# Claude-Mem Memory Context');
-    logger.info('OPENCODE', 'Context injected into AGENTS.md', { path: agentsMdPath });
-    return 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`Failed to inject context into AGENTS.md: ${message}`);
-    return 1;
-  }
-}
-
-async function fetchRealContextFromWorker(): Promise<string | null> {
-  const workerHost = getWorkerHost();
-  const workerPort = getWorkerPort();
-  const workerUrl = `http://${workerHost}:${workerPort}`;
-  const healthResponse = await fetch(`${workerUrl}/api/readiness`);
-  if (!healthResponse.ok) return null;
-
-  const contextResponse = await fetch(
-    `${workerUrl}/api/context/inject?project=opencode`,
-  );
-  if (!contextResponse.ok) return null;
-
-  const realContext = await contextResponse.text();
-  return typeof realContext === 'string' && realContext.trim() ? realContext : null;
-}
-
 function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: string): void {
   if (
     trimmedContent.length === 0 ||
@@ -328,39 +297,53 @@ export function uninstallOpenCodePlugin(): number {
     hasErrors = true;
   }
 
-  const agentsMdPath = getOpenCodeAgentsMdPath();
-  if (existsSync(agentsMdPath)) {
-    let content: string;
-    try {
-      content = readFileSync(agentsMdPath, 'utf-8');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`  Failed to read AGENTS.md: ${message}`);
-      hasErrors = true;
-      content = '';
-    }
-
-    const tagStartIndex = content.indexOf(CONTEXT_TAG_OPEN);
-    const tagEndIndex = content.indexOf(CONTEXT_TAG_CLOSE);
-
-    if (tagStartIndex !== -1 && tagEndIndex !== -1) {
-      content =
-        content.slice(0, tagStartIndex).trimEnd() +
-        '\n' +
-        content.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length).trimStart();
-
-      const trimmedContent = content.trim();
-      try {
-        writeOrRemoveCleanedAgentsMd(agentsMdPath, trimmedContent);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`  Failed to clean AGENTS.md: ${message}`);
-        hasErrors = true;
-      }
-    }
+  if (!removeContextBlockFromAgentsMd()) {
+    hasErrors = true;
   }
 
   return hasErrors ? 1 : 0;
+}
+
+/**
+ * Strip claude-mem's context block from OpenCode's global AGENTS.md
+ * (`~/.config/opencode/AGENTS.md`). Older installs wrote memory there, read
+ * from the `opencode` project key, which nothing has written since #3803.
+ * OpenCode loads that file for every project, so one stale block showed up in
+ * all of them. The plugin now injects each project's own context into the
+ * system prompt instead. The user's own content in the file stays, and a file
+ * holding nothing else is removed. Returns false when the file could not be
+ * read or rewritten.
+ */
+export function removeContextBlockFromAgentsMd(): boolean {
+  const agentsMdPath = getOpenCodeAgentsMdPath();
+  if (!existsSync(agentsMdPath)) return true;
+
+  let content: string;
+  try {
+    content = readFileSync(agentsMdPath, 'utf-8');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`  Failed to read AGENTS.md: ${message}`);
+    return false;
+  }
+
+  const tagStartIndex = content.indexOf(CONTEXT_TAG_OPEN);
+  const tagEndIndex = content.indexOf(CONTEXT_TAG_CLOSE);
+  if (tagStartIndex === -1 || tagEndIndex === -1) return true;
+
+  const trimmedContent = (
+    content.slice(0, tagStartIndex).trimEnd() +
+    '\n' +
+    content.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length).trimStart()
+  ).trim();
+  try {
+    writeOrRemoveCleanedAgentsMd(agentsMdPath, trimmedContent);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`  Failed to clean AGENTS.md: ${message}`);
+    return false;
+  }
 }
 
 export function checkOpenCodeStatus(): number {
@@ -378,14 +361,10 @@ export function checkOpenCodeStatus(): number {
   console.log(`  Installed: ${existsSync(pluginPath) ? 'yes' : 'no'}`);
   console.log('');
 
-  console.log(`Context (AGENTS.md): ${agentsMdPath}`);
-  if (existsSync(agentsMdPath)) {
-    const content = readFileSync(agentsMdPath, 'utf-8');
-    const hasContextTags = content.includes(CONTEXT_TAG_OPEN);
-    console.log(`  Exists: yes`);
-    console.log(`  Has claude-mem context: ${hasContextTags ? 'yes' : 'no'}`);
-  } else {
-    console.log(`  Exists: no`);
+  console.log(`Context: injected by the plugin into each request's system prompt`);
+  if (existsSync(agentsMdPath) && readFileSync(agentsMdPath, 'utf-8').includes(CONTEXT_TAG_OPEN)) {
+    console.log(`  Leftover claude-mem block from an older install in ${agentsMdPath}`);
+    console.log(`  (shown in every OpenCode project): re-run the install to remove it`);
   }
   console.log('');
 
@@ -422,37 +401,12 @@ export async function installOpenCodeIntegration(): Promise<number> {
     return pluginResult;
   }
 
-  const placeholderContext = `# Memory Context from Past Sessions
-
-*No context yet. Complete your first session and context will appear here.*
-
-Use claude-mem search tools for manual memory queries.`;
-
-  let contextToInject = placeholderContext;
-  let contextSource = 'placeholder';
-  try {
-    const realContext = await fetchRealContextFromWorker();
-    if (realContext) {
-      contextToInject = realContext;
-      contextSource = 'existing memory';
-    }
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Worker not available during OpenCode install', {}, error);
-    } else {
-      logger.debug('WORKER', 'Worker not available during OpenCode install', {}, new Error(String(error)));
-    }
-  }
-
-  const injectResult = injectContextIntoAgentsMd(contextToInject);
-  if (injectResult !== 0) {
-    logger.warn('OPENCODE', `Failed to inject ${contextSource} context into AGENTS.md during install`);
-  } else {
-    if (contextSource === 'existing memory') {
-      console.log('  Context injected from existing memory');
-    } else {
-      console.log('  Placeholder context created (worker not running)');
-    }
+  // The plugin injects each project's memory itself; a block an older install
+  // left in the global AGENTS.md would show stale memory in every project.
+  if (!removeContextBlockFromAgentsMd()) {
+    logger.warn('OPENCODE', 'Could not remove the old claude-mem block from the global AGENTS.md during install', {
+      path: getOpenCodeAgentsMdPath(),
+    });
   }
 
   if (mcpIncomplete) {
@@ -460,7 +414,6 @@ Use claude-mem search tools for manual memory queries.`;
 OpenCode integration installed partially!
 
 Plugin installed to: ${getInstalledPluginPath()}
-Context file: ${getOpenCodeAgentsMdPath()}
 MCP server: NOT registered (mcp-server.cjs not found)
 
 Next steps:
@@ -474,7 +427,7 @@ Next steps:
 Installation complete!
 
 Plugin installed to: ${getInstalledPluginPath()}
-Context file: ${getOpenCodeAgentsMdPath()}
+Memory context: injected by the plugin into each project's requests
 
 Next steps:
   1. Start claude-mem worker: npx claude-mem start

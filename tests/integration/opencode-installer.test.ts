@@ -183,13 +183,17 @@ describe('OpenCode installer config registration', () => {
   });
 });
 
-describe('OpenCode installer context retrieval', () => {
+// R5-9: OpenCode loads ~/.config/opencode/AGENTS.md for every project, so a
+// memory block there is one stale block in all of them (it was read from the
+// `opencode` key, which nothing has written since #3803). The plugin injects
+// each project's own context into the system prompt instead.
+describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
   let tempDir: string;
   let previousConfigDir: string | undefined;
   let previousClaudeConfigDir: string | undefined;
   let previousFetch: typeof globalThis.fetch;
-  let previousDebug: typeof logger.debug;
   let previousInfo: typeof logger.info;
+  let requestedUrls: string[];
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `opencode-context-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -200,15 +204,19 @@ describe('OpenCode installer context retrieval', () => {
     previousConfigDir = process.env.OPENCODE_CONFIG_DIR;
     previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
     previousFetch = globalThis.fetch;
-    previousDebug = logger.debug;
     previousInfo = logger.info;
     process.env.OPENCODE_CONFIG_DIR = tempDir;
     process.env.CLAUDE_CONFIG_DIR = tempDir;
+    logger.info = () => {};
+    requestedUrls = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      requestedUrls.push(String(input));
+      return new Response('# memory from the opencode key', { status: 200 });
+    }) as typeof fetch;
   });
 
   afterEach(() => {
     globalThis.fetch = previousFetch;
-    logger.debug = previousDebug;
     logger.info = previousInfo;
     if (previousConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = previousConfigDir;
@@ -217,47 +225,39 @@ describe('OpenCode installer context retrieval', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  function stubWorkerContext(body: unknown, diagnostics: string[]): void {
-    logger.debug = (_component, message) => diagnostics.push(message);
-    logger.info = () => {};
-    globalThis.fetch = async (input) => ({
-      ok: true,
-      text: async () => input.toString().includes('/api/context/inject') ? body : '',
-    }) as Response;
-  }
+  it('writes no memory into the global AGENTS.md and never fetches it', async () => {
+    expect(await installOpenCodeIntegration()).toBe(0);
 
-  it('rejects a wrapped object body without coercion or unavailable-worker diagnostics', async () => {
-    const diagnostics: string[] = [];
-    const wrappedBody = Object.freeze({ wrapped: true, value: '# Existing memory' });
-    stubWorkerContext(wrappedBody, diagnostics);
+    expect(existsSync(getOpenCodeAgentsMdPath())).toBe(false);
+    expect(requestedUrls.filter((url) => url.includes('/api/context/inject'))).toEqual([]);
+  });
+
+  it("strips the block an older install wrote and keeps the user's own instructions", async () => {
+    writeFileSync(
+      getOpenCodeAgentsMdPath(),
+      '# My rules\n\nAlways run the tests.\n\n<claude-mem-context>\n# Memory Context from Past Sessions\n\nstale memory\n</claude-mem-context>\n',
+      'utf-8',
+    );
 
     expect(await installOpenCodeIntegration()).toBe(0);
 
     const agentsMd = readFileSync(getOpenCodeAgentsMdPath(), 'utf-8');
-    expect(agentsMd).toContain('*No context yet. Complete your first session and context will appear here.*');
-    expect(agentsMd).not.toContain('# Existing memory');
-    expect(diagnostics).toEqual([]);
+    expect(agentsMd).toContain('# My rules');
+    expect(agentsMd).toContain('Always run the tests.');
+    expect(agentsMd).not.toContain('claude-mem-context');
+    expect(agentsMd).not.toContain('stale memory');
   });
 
-  it('preserves valid existing context exactly', async () => {
-    const diagnostics: string[] = [];
-    const context = '  # Existing memory  ';
-    stubWorkerContext(context, diagnostics);
+  it('removes the file when the old block was all it held', async () => {
+    writeFileSync(
+      getOpenCodeAgentsMdPath(),
+      '# Claude-Mem Memory Context\n\n<claude-mem-context>\n*No context yet. Complete your first session and context will appear here.*\n</claude-mem-context>\n',
+      'utf-8',
+    );
 
     expect(await installOpenCodeIntegration()).toBe(0);
 
-    expect(readFileSync(getOpenCodeAgentsMdPath(), 'utf-8')).toContain(context);
-    expect(diagnostics).toEqual([]);
-  });
-
-  it('uses placeholder context for blank strings', async () => {
-    const diagnostics: string[] = [];
-    stubWorkerContext(' \t\n ', diagnostics);
-
-    expect(await installOpenCodeIntegration()).toBe(0);
-
-    expect(readFileSync(getOpenCodeAgentsMdPath(), 'utf-8')).toContain('*No context yet. Complete your first session and context will appear here.*');
-    expect(diagnostics).toEqual([]);
+    expect(existsSync(getOpenCodeAgentsMdPath())).toBe(false);
   });
 });
 
