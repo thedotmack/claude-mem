@@ -1,8 +1,9 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import {
   cmemProOrigin,
   isCmemGatewayUrl,
@@ -119,6 +120,76 @@ describe('cmem-gateway', () => {
       expect(parsed.permissions).toEqual({ defaultMode: 'auto' });
       expect(parsed.env.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('cm_pro_test_key');
       expect(parsed.env.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+    });
+
+    // settings-document.ts: root CLAUDE_MEM_* keys make the document flat, and
+    // an `env` block beside them is Claude Code's. The marker must land where
+    // SettingsDefaultsManager (and so dispatch) reads it: the root.
+    it('writes and clears at the root of a flat document that also carries a Claude Code env block', () => {
+      const claudeCodeEnv = { ANTHROPIC_BASE_URL: 'https://llm-proxy.example', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' };
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'openrouter',
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
+        env: claudeCodeEnv,
+        theme: 'dark',
+      }));
+
+      writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath, { message: 'Your CMEM Pro subscription has ended.' });
+      let parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe('Your CMEM Pro subscription has ended.');
+      expect(parsed.env).toEqual(claudeCodeEnv);
+      expect(parsed.theme).toBe('dark');
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
+      // Owner-only, like every settings.json write (it carries keys).
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+
+      clearProFallback(settingsPath, tempDir);
+      parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+      expect(parsed.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe('');
+      expect(parsed.env).toEqual(claudeCodeEnv);
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+    });
+
+    it('reads a wrapped document\'s marker back where it wrote it', () => {
+      writeFileSync(settingsPath, JSON.stringify({
+        theme: 'dark',
+        env: { CLAUDE_MEM_PROVIDER: 'openrouter' },
+      }));
+
+      writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath);
+
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_PRO_FALLBACK_AT).toBeUndefined();
+    });
+
+    it('round-trips the marker in an old viewer\'s wrapped document, dropping its masked root copies', () => {
+      writeFileSync(settingsPath, JSON.stringify({
+        theme: 'dark',
+        CLAUDE_MEM_OPENROUTER_API_KEY: '****',
+        CLAUDE_MEM_PRO_FALLBACK_AT: '',
+        env: { CLAUDE_MEM_PROVIDER: 'openrouter', CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567' },
+      }));
+
+      writeProFallbackAt('2026-08-26T12:00:00.000Z', settingsPath);
+      let parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.env.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
+      expect(parsed.env.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('cm_pro_0123456789abcdef01234567');
+      expect(parsed.CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
+      expect(parsed.theme).toBe('dark');
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('2026-08-26T12:00:00.000Z');
+
+      clearProFallback(settingsPath, tempDir);
+      parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(parsed.env.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
+    });
+
+    it('does not create settings.json just to clear a fallback that was never recorded', () => {
+      clearProFallback(settingsPath, tempDir);
+
+      expect(existsSync(settingsPath)).toBe(false);
     });
 
     it('writes the gateway\'s own words with the marker, and a bare re-stamp keeps them', () => {

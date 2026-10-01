@@ -26,7 +26,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   }
 }));
 
-import { adoptMergedWorktrees } from '../../../src/services/infrastructure/WorktreeAdoption.js';
+import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from '../../../src/services/infrastructure/WorktreeAdoption.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 
 let tempRoot: string | undefined;
@@ -56,7 +56,13 @@ function initRepo(repo: string): void {
   git(repo, 'commit', '-m', 'base');
 }
 
-function seedObservation(store: SessionStore, memorySessionId: string, project: string): number {
+// Rows default to a timestamp from before this database recorded checkouts.
+function seedObservation(
+  store: SessionStore,
+  memorySessionId: string,
+  project: string,
+  createdAtEpoch = 1_700_000_000_000
+): number {
   const result = store.importObservation({
     memory_session_id: memorySessionId,
     project,
@@ -71,8 +77,8 @@ function seedObservation(store: SessionStore, memorySessionId: string, project: 
     files_modified: null,
     prompt_number: 1,
     discovery_tokens: 0,
-    created_at: new Date(1_700_000_000_000).toISOString(),
-    created_at_epoch: 1_700_000_000_000,
+    created_at: new Date(createdAtEpoch).toISOString(),
+    created_at_epoch: createdAtEpoch,
   });
   return result.id;
 }
@@ -87,11 +93,12 @@ function seedSessionWithCheckout(
   contentId: string,
   project: string,
   memoryId: string,
-  checkout: string
+  checkout: string,
+  keySource: 'path' | 'git-remote' | 'environment' = 'path'
 ): void {
   const sessionDbId = store.createSDKSession(contentId, project, 'prompt');
   store.ensureMemorySessionIdRegistered(sessionDbId, memoryId);
-  store.setSessionCwd(sessionDbId, checkout);
+  store.setSessionCwd(sessionDbId, checkout, keySource);
 }
 
 function mergedInto(dbPath: string, obsId: number): string | null {
@@ -101,6 +108,16 @@ function mergedInto(dbPath: string, obsId: number): string | null {
   ).get(obsId) as { merged_into_project: string | null };
   verify.close();
   return row.merged_into_project;
+}
+
+/** The projects of every remap_project op queued for cloud sync. */
+function remappedProjects(dbPath: string): string[] {
+  const verify = new SessionStore(dbPath);
+  const ops = (verify.db.prepare('SELECT body FROM sync_outbox').all() as Array<{ body: string }>)
+    .map(op => JSON.parse(op.body))
+    .filter(op => op.op === 'remap_project');
+  verify.close();
+  return ops.map(op => op.where.project);
 }
 
 describe('orphaned worktree adoption (#2864)', () => {
@@ -522,5 +539,93 @@ describe('orphaned worktree adoption (#2864)', () => {
       where: { project: 'app/app', merged_into_project_is_null: true },
       fields: { merged_into_project: 'app' },
     });
+  }, 30_000);
+});
+
+// Gate P1-2 — a checkout that no longer exists proves a deleted worktree or
+// submodule only for a folder-derived key. A git-remote slug (#2827) or an
+// environment name (#2737) is not tied to one folder: deleting the only clone
+// of acme/api says nothing about whether acme/api belongs to a repository whose
+// folder happens to be named after the org.
+describe('adoption only trusts a gone checkout for folder-derived keys (gate P1-2)', () => {
+  for (const keySource of ['git-remote', 'environment'] as const) {
+    it(`leaves a deleted clone's ${keySource} key alone, stamps nothing and queues no remap`, async () => {
+      tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-gate-p12-'));
+      const orgNamedRepo = path.join(tempRoot, 'acme');
+      const apiClone = path.join(tempRoot, 'api');
+      const dataDirectory = path.join(tempRoot, 'data');
+      mkdirSync(dataDirectory, { recursive: true });
+      initRepo(orgNamedRepo);
+      initRepo(apiClone);
+      git(apiClone, 'remote', 'add', 'origin', 'git@github.com:acme/api.git');
+
+      const dbPath = path.join(dataDirectory, 'claude-mem.db');
+      const store = new SessionStore(dbPath);
+      // The folder repo `acme` has a session, so the boot sweep discovers it.
+      seedSessionWithCheckout(store, 'content-acme', 'acme', 'memory-acme', orgNamedRepo, 'path');
+      seedObservation(store, 'memory-acme', 'acme', Date.now());
+      seedSessionWithCheckout(store, 'content-api', 'acme/api', 'memory-api', apiClone, keySource);
+      const apiObsId = seedObservation(store, 'memory-api', 'acme/api', Date.now());
+      store.close();
+
+      // The only clone of acme/api is deleted.
+      rmSync(apiClone, { recursive: true, force: true });
+
+      await adoptMergedWorktreesForAllKnownRepos({ dataDirectory });
+
+      expect(mergedInto(dbPath, apiObsId)).toBeNull();
+      expect(remappedProjects(dbPath)).toEqual([]);
+    }, 30_000);
+  }
+
+  it('still folds a deleted worktree whose key was folder-derived', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-gate-p12-'));
+    const mainRepo = path.join(tempRoot, 'acme');
+    const worktree = path.join(tempRoot, 'api');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory, { recursive: true });
+    initRepo(mainRepo);
+    git(mainRepo, 'worktree', 'add', '-b', 'api-work', worktree);
+
+    const dbPath = path.join(dataDirectory, 'claude-mem.db');
+    const store = new SessionStore(dbPath);
+    seedSessionWithCheckout(store, 'content-acme', 'acme', 'memory-acme', mainRepo, 'path');
+    seedSessionWithCheckout(store, 'content-wt', 'acme/api', 'memory-wt', worktree, 'path');
+    const worktreeObsId = seedObservation(store, 'memory-wt', 'acme/api', Date.now());
+    store.close();
+
+    git(mainRepo, 'worktree', 'remove', '--force', worktree);
+    git(mainRepo, 'worktree', 'prune');
+
+    await adoptMergedWorktreesForAllKnownRepos({ dataDirectory });
+
+    expect(mergedInto(dbPath, worktreeObsId)).toBe('acme');
+    expect(remappedProjects(dbPath)).toEqual(['acme/api']);
+  }, 30_000);
+
+  // Sessions record their checkout since sdk_sessions.cwd (v53). Rows written
+  // after that with no recorded checkout at all (an import, a session that never
+  // reported one) have an unknown writer and are left alone; older rows can
+  // only carry folder-derived keys and are still folded.
+  it('folds keys without a recorded checkout only when their rows predate checkout recording', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-gate-p12-'));
+    const mainRepo = path.join(tempRoot, 'acme');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory, { recursive: true });
+    initRepo(mainRepo);
+
+    const dbPath = path.join(dataDirectory, 'claude-mem.db');
+    const store = new SessionStore(dbPath);
+    seedSession(store, 'content-recent', 'acme/imported', 'memory-recent');
+    const recentObsId = seedObservation(store, 'memory-recent', 'acme/imported', Date.now());
+    seedSession(store, 'content-legacy', 'acme/old-wt', 'memory-legacy');
+    const legacyObsId = seedObservation(store, 'memory-legacy', 'acme/old-wt');
+    store.close();
+
+    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+
+    expect(result.orphanedWorktrees).toEqual(['acme/old-wt']);
+    expect(mergedInto(dbPath, recentObsId)).toBeNull();
+    expect(mergedInto(dbPath, legacyObsId)).toBe('acme');
   }, 30_000);
 });

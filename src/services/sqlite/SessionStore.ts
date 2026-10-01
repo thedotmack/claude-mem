@@ -2,6 +2,7 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import type { ProjectKeySource } from '../../utils/project-name.js';
 import {
   TableColumnInfo,
   IndexInfo,
@@ -14,7 +15,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
-import { computeObservationContentHash } from './observations/store.js';
+import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -34,6 +35,7 @@ import {
   type DedupRuntimeConfig,
 } from './dedup-store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
+import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
@@ -259,6 +261,7 @@ export class SessionStore {
     this.dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers();
     this.ensureProjectNocaseIndexes();
     this.ensureAdvisorCallsTable();
+    this.ensureSessionProjectKeySourceColumn();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -2046,6 +2049,24 @@ export class SessionStore {
     );
   }
 
+  // v59 — sdk_sessions.project_key_source: how the session's project key was
+  // derived ('path' | 'git-remote' | 'environment'), recorded with its checkout
+  // (cwd). Worktree adoption treats a checkout that no longer exists as a
+  // deleted worktree only for a folder-derived key: a slug or an environment
+  // name is not tied to one folder (gate P1-2). Local-only, like cwd. Runs last,
+  // after v33's sdk_sessions rebuild, for the reason given at v53 below.
+  private ensureSessionProjectKeySourceColumn(): void {
+    const cols = this.db
+      .query('PRAGMA table_info(sdk_sessions)')
+      .all() as TableColumnInfo[];
+    if (!cols.some(c => c.name === 'project_key_source')) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN project_key_source TEXT');
+      logger.debug('DB', 'Added project_key_source column to sdk_sessions table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(59, new Date().toISOString());
+  }
+
   // v53 — sdk_sessions.cwd. Worktree adoption discovers repos from this;
   // sdk_sessions is local-only, so no sync-lane plumbing (#2864).
   //
@@ -3283,12 +3304,14 @@ export class SessionStore {
   }
 
   // First write wins: cwd drifts when the agent `cd`s into a subdirectory, and
-  // the launch directory is the one that identifies the repo.
-  setSessionCwd(sessionDbId: number, cwd: string): void {
+  // the launch directory is the one that identifies the repo. The key source
+  // (how the session's project key was derived from that checkout) is recorded
+  // in the same write, so the two always describe the same resolution.
+  setSessionCwd(sessionDbId: number, cwd: string, projectKeySource?: ProjectKeySource | null): void {
     if (!cwd.trim()) return;
     this.db.prepare(
-      'UPDATE sdk_sessions SET cwd = ? WHERE id = ? AND cwd IS NULL'
-    ).run(cwd, sessionDbId);
+      'UPDATE sdk_sessions SET cwd = ?, project_key_source = ? WHERE id = ? AND cwd IS NULL'
+    ).run(cwd, projectKeySource ?? null, sessionDbId);
   }
 
   /**
@@ -3455,7 +3478,7 @@ export class SessionStore {
     // storeObservations skips empty-title rows, which would leave no id to return here.
     // This wrapper stores exactly one observation, so require a title up front rather than
     // returning an undefined id.
-    if (!observation.title || observation.title.trim() === '') {
+    if (!hasStorableTitle(observation.title)) {
       throw new Error('storeObservation requires a non-empty title');
     }
 
@@ -3597,15 +3620,20 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
-        // Skip observations with an empty title. They're malformed, low-signal rows that
-        // just take up space in the recency-based recall window without adding any facts.
-        if (!observation.title || observation.title.trim() === '') {
+        // Skip observations with an empty title (see hasStorableTitle). The worker
+        // drops them before calling, so its stored ids stay paired by position.
+        if (!hasStorableTitle(observation.title)) {
           logger.debug('DB', 'Skipping observation with empty title');
           continue;
         }
 
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const titleNormKey = computeTitleNormKey(project, sessionPlatform, observation.title);
+        const titleNormKey = computeTitleNormKey(
+          project,
+          sessionPlatform,
+          observation.title,
+          isSubagentEvent(observation.agent_id, observation.agent_type)
+        );
 
         // Tier-0 (#3038): cross-session normalized-title duplicate (incl. earlier items
         // in THIS batch — already inserted and visible in-transaction) → bump + reuse.

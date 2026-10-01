@@ -19,7 +19,7 @@ import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { getProjectContext } from '../../../../utils/project-name.js';
+import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
@@ -252,6 +252,20 @@ export class SessionRoutes extends BaseRouteHandler {
   private async ensureGeneratorRunningLocked(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    // Nothing is buffered, so a generator would only open with its INIT turn
+    // and idle out: one paid request per user prompt, including prompts that
+    // never use a tool (#3454). Gated BEFORE provider selection, so this path
+    // never takes the single cmem-gateway re-probe (or a quota probe) that it
+    // would then have to release. The first observation or summarize enqueues
+    // work and starts the generator, INIT turn included, through this same
+    // method. Resume sources (overflow-recycle, response-stall, rate-limit,
+    // cmem-fallback, the periodic sweep) pass the same gate: with nothing
+    // buffered there is nothing to resume.
+    if (this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId) === 0) {
+      logger.debug('SESSION', 'Skipping generator start with an empty queue', { sessionId: sessionDbId, source });
+      return;
+    }
 
     // The claiming variant: this path is about to SEND, so it must take the
     // single gateway re-probe rather than merely reading the clock.
@@ -680,6 +694,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
+        const normalizedReason = normalizeAbortReason(reason);
         // Quota surfaced as assistant prose — or Claude's proactive usage guard
         // — aborts without throwing, so it never reaches the catch; book it
         // here, arming the breaker too, or the prose path keeps the
@@ -687,7 +702,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // A thrown classified error was already booked by the catch, once: it
         // is never re-booked here as a spent allowance (a rate limit is not
         // one), nor given a breaker over a cmem fallback's window.
-        if (normalizeAbortReason(reason) === 'quota' && !failureBooked) {
+        if (normalizedReason === 'quota' && !failureBooked) {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
           recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
           // Quota returned as assistant prose never throws, so it never reaches
@@ -696,6 +711,25 @@ export class SessionRoutes extends BaseRouteHandler {
           // class: the allowance is spent, no observation will ever store, and
           // the user is told nothing.
           recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
+        }
+        // A signed-out Claude observer answers with the CLI's own prose ("Not
+        // logged in · Please run /login"). ResponseProcessor resets the batch to
+        // pending and aborts with 'auth:observer_text' rather than throwing, so
+        // it never reaches the .catch above. Without this the observer-health
+        // ledger stays green through a full auth outage — every observation is
+        // dropped, yet /api/health and the session-start warning report healthy
+        // (#4150). Only that Claude prose path is booked here: a classified auth
+        // error is booked by the .catch with the provider's own words, and the
+        // cmem gateway's key_invalid is the trial-expiry fallback, not an outage.
+        // It is booked as the refused credential it is (auth_invalid), so the
+        // SessionStart banner shows at once with the /login remedy rather than
+        // waiting out the failure threshold and then offering a restart.
+        if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
+          recordObserverFailure(provider, {
+            message: 'Claude Code reported the observer as signed out',
+            kind: 'auth_invalid',
+            action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
+          });
         }
         if (reason !== null) {
           // Abort accounting lives HERE, where the reason is consumed — the
@@ -706,7 +740,7 @@ export class SessionRoutes extends BaseRouteHandler {
             outcome: 'aborted',
             provider,
             model: session.lastModelId ?? 'unknown',
-            abort_reason: normalizeAbortReason(reason),
+            abort_reason: normalizedReason,
             hook: session.lastGeneratorSource,
             ide: session.platformSource,
             observed_model: session.observedModel,
@@ -912,6 +946,9 @@ export class SessionRoutes extends BaseRouteHandler {
     prompt: z.string().optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
+    // The checkout `project` was resolved from, and how (gate P1-2).
+    cwd: z.string().optional(),
+    projectKeySource: z.string().optional(),
   }).passthrough();
 
   private static readonly observationsByClaudeIdSchema = z.object({
@@ -1109,6 +1146,15 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+
+    // The checkout the hook resolved `project` from, and how it derived it, so a
+    // session that never reports an observation still leaves evidence for
+    // worktree adoption (gate P1-2). An unknown key source is not recorded as
+    // anything: the next observation's ingest records the checkout itself.
+    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
+    if (checkoutCwd.trim() && isProjectKeySource(req.body.projectKeySource)) {
+      store.setSessionCwd(sessionDbId, checkoutCwd, req.body.projectKeySource);
+    }
 
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;

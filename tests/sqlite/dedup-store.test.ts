@@ -44,6 +44,7 @@ describe('dedup-store: token_df maintenance + IDF lookup (#3038)', () => {
     expect(computeTitleNormKey('p1', 'claude', 'same title')).not.toBe(computeTitleNormKey('p2', 'claude', 'same title')); // project-scoped
     expect(computeTitleNormKey('p', 'claude', 'same title')).not.toBe(computeTitleNormKey('p', 'codex', 'same title')); // platform-scoped
     expect(computeTitleNormKey('p', null, 'same title')).toBe(computeTitleNormKey('p', 'claude', 'same title')); // unknown platform = default
+    expect(computeTitleNormKey('p', 'claude', 'same title', true)).not.toBe(computeTitleNormKey('p', 'claude', 'same title')); // agent-scoped (#3310)
     expect(computeTitleNormKey('p', 'claude', 'Added X')).not.toBe(computeTitleNormKey('p', 'claude', 'Removed X'));
     for (const empty of [null, '', '   ', '!!!', '🔵']) expect(computeTitleNormKey('p', 'claude', empty)).toBeNull();
   });

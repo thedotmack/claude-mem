@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../../../../src/shared/SettingsDefaultsManager.js';
+import { settingsTarget } from '../../../../src/shared/settings-document.js';
 import { paths } from '../../../../src/shared/paths.js';
 import * as realHookSettings from '../../../../src/shared/hook-settings.js';
 import * as realProjectName from '../../../../src/utils/project-name.js';
@@ -184,9 +185,9 @@ function seedSettings(overrides: Record<string, string> = {}): void {
   }, null, 2), 'utf-8');
 }
 
+/** claude-mem's keys, found by the one rule every settings reader uses. */
 function persistedSettings(): Record<string, string> {
-  const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-  return persisted.env ?? persisted;
+  return settingsTarget(JSON.parse(readFileSync(settingsPath, 'utf-8'))) as Record<string, string>;
 }
 
 function persistedFallbackAt(): string {
@@ -602,6 +603,32 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       expect(session(id).currentProvider).toBe('claude');
     });
 
+    it('falls back when settings.json is flat but also carries a Claude Code env block', async () => {
+      const id = 920010;
+      const claudeCodeEnv = { ANTHROPIC_BASE_URL: 'https://llm-proxy.example', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' };
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'openrouter',
+        CLAUDE_MEM_OPENROUTER_BASE_URL: GATEWAY_BASE_URL,
+        CLAUDE_MEM_OPENROUTER_MODEL: 'cmem-observer',
+        CLAUDE_MEM_OPENROUTER_API_KEY: MEMORY_KEY,
+        CLAUDE_MEM_PRO_FALLBACK_AT: '',
+        env: claudeCodeEnv,
+      }, null, 2), 'utf-8');
+      respond = async () => gatewayRejection('subscription_inactive');
+      const { routes, claudeAgent } = makeHarness([id]);
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await waitFor(() => claudeAgent.startSession.mock.calls.length === 1, 'the resume on claude');
+
+      // The marker is at the root, where dispatch reads it; Claude Code's block
+      // is untouched.
+      const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).not.toBe('');
+      expect(persisted.env).toEqual(claudeCodeEnv);
+      expect(gatewayRequests()).toHaveLength(1);
+      expect(session(id).currentProvider).toBe('claude');
+    });
+
     it('writes the marker once when two sessions are rejected together', async () => {
       const ids = [920005, 920006];
       seedSettings();
@@ -858,6 +885,79 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       } finally {
         telemetrySpy.mockRestore();
       }
+    });
+  });
+
+  describe('a signed-out Claude observer (#4150)', () => {
+    /**
+     * What ResponseProcessor does with the CLI's "Not logged in · Please run
+     * /login": the batch goes back to pending and the run pauses without
+     * throwing, so the catch never sees it.
+     */
+    function answerSignedOut(s: ActiveSession): Promise<void> {
+      s.abortReason = 'auth:observer_text';
+      s.abortController.abort();
+      return Promise.resolve();
+    }
+
+    it('is booked as a refused credential with the /login remedy, shown at the next SessionStart', async () => {
+      const id = 924001;
+      seedSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+      const { routes, claudeAgent, completionHandler } = makeHarness([id]);
+      claudeAgent.startSession.mockImplementationOnce(answerSignedOut);
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      const health = readObserverHealth();
+      expect(health?.consecutiveFailures).toBe(1);
+      expect(health?.lastErrorProvider).toBe('claude');
+      expect(health?.lastErrorKind).toBe('auth_invalid');
+      expect(health?.lastErrorAction).toContain('/login');
+      // Paused, not finalized: the batch waits for the re-login.
+      expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+
+      // Shown at once, with the /login remedy: a restart cannot sign the CLI in.
+      const notice = observerHealthWarning();
+      expect(notice).toContain('What to do: Run /login in Claude Code');
+      expect(notice).not.toContain('npx claude-mem restart');
+    });
+
+    it('a classified refusal that also paused on the prose is booked once, by the catch', async () => {
+      const id = 924002;
+      seedSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+      const { routes, claudeAgent } = makeHarness([id]);
+      claudeAgent.startSession.mockImplementationOnce((s: ActiveSession) => {
+        s.abortReason = 'auth:observer_text';
+        s.abortController.abort();
+        return Promise.reject(new ClassifiedProviderError('The provider refused the credential', {
+          kind: 'auth_invalid',
+          cause: null,
+          action: 'Run /login',
+        }));
+      });
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      // One failure, in the provider's own words — not re-booked as signed out.
+      const health = readObserverHealth();
+      expect(health?.consecutiveFailures).toBe(1);
+      expect(health?.lastErrorMessage).toBe('The provider refused the credential');
+    });
+
+    it('signed-out prose from a cmem gateway session is never booked as a Claude /login outage', async () => {
+      const id = 924003;
+      seedSettings();
+      const gatewayAgent = { startSession: mock(answerSignedOut) };
+      const { routes } = makeHarness([id], gatewayAgent);
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      expect(gatewayAgent.startSession).toHaveBeenCalledTimes(1);
+      expect(readObserverHealth()?.consecutiveFailures ?? 0).toBe(0);
+      expect(persistedFallbackAt()).toBe('');
     });
   });
 
