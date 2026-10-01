@@ -11,6 +11,7 @@ import { ClassifiedProviderError } from './provider-errors.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { parseGeminiErrorDetails } from '../../shared/gemini-error-details.js';
+import { readGeminiAnswerText, type GeminiPart } from '../../shared/gemini-answer-text.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
 
@@ -217,35 +218,6 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
   }
 
   lastRequestTime = Date.now();
-}
-
-/** A response part. Gemini 3 marks a reasoning part with `thought: true`. */
-interface GeminiPart {
-  text?: string;
-  thought?: boolean;
-}
-
-/**
- * The answer's text — not the reasoning that came before it.
- *
- * A response arrives as an ordered list of parts, and when thinking output is
- * included the chain of thought is `parts[0]`, so reading the first part
- * returns the model's private deliberation instead of its answer. Confirmed
- * against the live endpoint: with `thinkingConfig.includeThoughts` a two-part
- * response came back, reasoning first and answer second. An answer can also be
- * split across parts, so the answer parts are joined rather than picked.
- *
- * A response whose every part is reasoning has no answer at all; returning ''
- * lets the caller treat it as the empty response it is, instead of storing
- * deliberation as an observation.
- */
-function readAnswerText(parts: GeminiPart[] | undefined): string {
-  if (!parts?.length) return '';
-  return parts
-    .filter((part): part is GeminiPart & { text: string } =>
-      part.thought !== true && typeof part.text === 'string')
-    .map(part => part.text)
-    .join('');
 }
 
 interface GeminiResponse {
@@ -473,7 +445,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const candidate = data.candidates?.[0];
     const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : undefined;
-    const text = readAnswerText(candidate?.content?.parts);
+    // The answer parts, joined — never a leading reasoning part (gemini-answer-text.ts).
+    const text = readGeminiAnswerText(candidate?.content?.parts);
     // MAX_TOKENS: the output-token cap cut the reply off. A block cut mid-tag
     // never closes, so the parser drops it. Named before the empty-reply exit
     // so a reply cut off before any text is named too (parity with OpenRouter).
