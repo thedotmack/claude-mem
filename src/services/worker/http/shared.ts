@@ -23,6 +23,21 @@ interface IngestContext {
 
 let ctx: IngestContext | null = null;
 
+// Kimi Code's bookkeeping tools (its todo list, background-task polling and
+// cron scheduling) carry no project knowledge. Several share a name with a
+// Claude Code tool, so they are skipped for Kimi sessions only, not through
+// the global CLAUDE_MEM_SKIP_TOOLS default.
+const KIMI_BOOKKEEPING_TOOLS = new Set([
+  'SetTodoList',
+  'TodoList',
+  'TaskList',
+  'TaskOutput',
+  'TaskStop',
+  'CronCreate',
+  'CronList',
+  'CronDelete',
+]);
+
 // Compile each CLAUDE_MEM_SKIP_BASH_PATTERNS value once, not per observation:
 // ingestObservation runs on the hot path. A cached `null` marks a value that
 // failed to compile, so an invalid regex warns once instead of on every Bash
@@ -129,6 +144,9 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
         ide: platformSource,
       });
     }
+    return { ok: true, status: 'skipped', reason: 'tool_excluded' };
+  }
+  if (platformSource === 'kimi' && KIMI_BOOKKEEPING_TOOLS.has(payload.toolName)) {
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
   }
 
