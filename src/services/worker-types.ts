@@ -27,7 +27,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'codex' | null;
   /**
    * Claude account (config-dir profile key) the latest Claude generator was
    * spawned under. Its env, and so its billing account, is fixed at spawn, so
@@ -48,6 +48,14 @@ export interface ActiveSession {
   consecutiveInvalidOutputs: number;
   /** The claimed message ids `consecutiveInvalidOutputs` counts against. */
   invalidOutputBatchKey?: string | null;
+  /**
+   * Replies in a row that drifted off the observation schema and were salvaged
+   * (#3461). Reaching ResponseProcessor's limit ends the generation so the next
+   * one starts clean; a clean reply resets it.
+   */
+  consecutiveSchemaDrifts?: number;
+  /** Set by a drifted reply: the next observation prompt restates the schema once. */
+  observerSchemaReminder?: boolean;
   /**
    * Consecutive "prompt too long" rejections on this session's conversation.
    *

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { writeFileSync } from 'fs';
 import { join } from 'path';
 import {
   isQuotaCooldownActive,
@@ -9,7 +10,10 @@ import {
   getQuotaCooldown,
   resetQuotaCooldownsForTesting,
   syncObserverHealthQuotaCooldown,
+  QUOTA_COOLDOWN_FILENAME,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  RATE_LIMIT_RECHECK_COOLDOWN_MS,
+  resolveQuotaCooldownMs,
   QUOTA_PROBE_STALE_MS,
 } from '../../src/shared/quota-cooldown.js';
 import {
@@ -17,6 +21,7 @@ import {
   isObserverUnhealthy,
   OBSERVER_HEALTH_FILENAME,
   readObserverHealth,
+  recordObserverQuotaCooldown,
 } from '../../src/shared/observer-health.js';
 import { paths } from '../../src/shared/paths.js';
 
@@ -259,6 +264,126 @@ describe('quota cooldown breaker (#3634)', () => {
 
     // Before the fix this loop sent ~720 doomed requests; now it sends one.
     expect(requestsSent).toBe(1);
+  });
+
+  it('holds a rate-limit window for the short cooldown, not the quota one', () => {
+    // Both reach this breaker through recordQuotaExhausted, so the window
+    // string is the only thing separating a six-second throttle from a spent
+    // billing period.
+    const armedAt = Date.now();
+    recordQuotaExhausted('gemini', 'Provider rate limited the request', 'rate_limit', armedAt);
+
+    expect(isQuotaCooldownActive('gemini', armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS - 1)).toBe(true);
+    expect(isQuotaCooldownActive('gemini', armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1)).toBe(false);
+    // The default cooldown would still be withholding here.
+    expect(RATE_LIMIT_RECHECK_COOLDOWN_MS).toBeLessThan(QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+  });
+
+  it('admits the post-expiry probe on the short window too', () => {
+    const armedAt = Date.now();
+    recordQuotaExhausted('gemini', 'Provider rate limited the request', 'rate_limit', armedAt);
+
+    expect(tryAdmitQuotaProbe('gemini', armedAt + 1).admitted).toBe(false);
+    expect(tryAdmitQuotaProbe('gemini', armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1).admitted).toBe(true);
+  });
+
+  it('resolves the cooldown from the window, for every caller that reports it', () => {
+    // The duration has to have one source. A caller reading the quota constant
+    // directly reports a half-hour wait for a throttle that clears in ninety
+    // seconds, which is what the worker log line did before this.
+    expect(resolveQuotaCooldownMs('rate_limit')).toBe(RATE_LIMIT_RECHECK_COOLDOWN_MS);
+    expect(resolveQuotaCooldownMs('weekly')).toBe(QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+    // An absent window is the quota window, so an unfamiliar provider is never
+    // treated as transient by accident.
+    expect(resolveQuotaCooldownMs(undefined)).toBe(QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+  });
+
+  it('still lets an explicit duration override the window', () => {
+    // Resolving from the window must not take away the pre-existing duration
+    // parameter, which is how a caller pins the window for a test.
+    const armedAt = Date.now();
+    recordQuotaExhausted('gemini', 'Provider rate limited the request', 'rate_limit', armedAt);
+
+    // The window alone has already admitted by here...
+    expect(isQuotaCooldownActive('gemini', armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1)).toBe(false);
+    // ...and the explicit duration still withholds.
+    expect(
+      isQuotaCooldownActive(
+        'gemini',
+        armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1,
+        QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps the quota cooldown for an unrecognised or absent window', () => {
+    // An unfamiliar window must not be treated as transient by accident: the
+    // short cooldown is only for windows the provider named as a throttle.
+    const armedAt = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly', armedAt);
+    recordQuotaExhausted('openrouter', 'Spend cap reached', undefined, armedAt);
+
+    expect(isQuotaCooldownActive('claude', armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1)).toBe(true);
+    expect(isQuotaCooldownActive('openrouter', armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1)).toBe(true);
+  });
+
+  it('mirrors the rate-limit window expiry into observer-health', () => {
+    const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+    recordQuotaExhausted('gemini', 'Provider rate limited the request', 'rate_limit');
+
+    const armed = readObserverHealth(healthPath)!;
+    expect(armed.quotaCooldown!.window).toBe('rate_limit');
+    // The banner has to expire when the breaker does, or it reports a live
+    // outage for a throttle that cleared twenty-eight minutes ago.
+    expect(armed.quotaCooldown!.until).toBe(
+      armed.quotaCooldown!.armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS,
+    );
+    expect(isObserverQuotaCooldownActive(armed)).toBe(true);
+  });
+
+  it('mirrors the pause that holds longest, not the one armed last', () => {
+    // A throttle armed after a spent allowance clears in ninety seconds; the
+    // allowance still has most of half an hour to run. Mirroring whichever was
+    // armed last would drop the banner while capture is still paused.
+    const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+    const now = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly', now - 60_000);
+    recordQuotaExhausted('gemini', 'Provider rate limited the request', 'rate_limit', now);
+
+    syncObserverHealthQuotaCooldown(now);
+    const mirrored = readObserverHealth(healthPath)!.quotaCooldown!;
+    expect(mirrored.provider).toBe('claude');
+    expect(mirrored.until).toBe(now - 60_000 + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+
+    // Each window expires on its own clock: past the throttle, the allowance
+    // is still the live pause.
+    syncObserverHealthQuotaCooldown(now + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1);
+    expect(readObserverHealth(healthPath)!.quotaCooldown!.provider).toBe('claude');
+  });
+
+  it('re-mirrors windows armed by an older build when it reloads them', () => {
+    // A build that held every window for the quota cooldown wrote that `until`
+    // into observer-health.json. The breaker now resolves a rate-limit window
+    // to ninety seconds; a reload that left the old mirror alone would keep the
+    // banner up for half an hour on a throttle the breaker already released.
+    const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+    const armedAt = Date.now();
+    writeFileSync(
+      join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME),
+      JSON.stringify([{ provider: 'gemini', message: 'Provider rate limited the request', window: 'rate_limit', armedAtMs: armedAt }]),
+    );
+    recordObserverQuotaCooldown({
+      active: true,
+      provider: 'gemini',
+      armedAt,
+      until: armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+      window: 'rate_limit',
+      message: 'Provider rate limited the request',
+    }, healthPath);
+
+    // First read in this "process" hydrates from disk.
+    expect(getQuotaCooldown('gemini')?.window).toBe('rate_limit');
+    expect(readObserverHealth(healthPath)!.quotaCooldown!.until).toBe(armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS);
   });
 
   it('mirrors the armed window into observer-health.json and clears it on success', () => {

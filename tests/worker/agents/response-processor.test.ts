@@ -106,8 +106,10 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 import {
   extractObservationFileEvidence,
   processAgentResponse,
+  takeObserverSchemaReminder,
   type ResponseContext,
 } from '../../../src/services/worker/agents/ResponseProcessor.js';
+import { buildObservationPrompt, OBSERVATION_SCHEMA_REMINDER } from '../../../src/sdk/prompts.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
@@ -1606,6 +1608,62 @@ describe('ResponseProcessor', () => {
       expect(resetProcessingToPending).toHaveBeenCalledWith(1);
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+  });
+
+  // #3461: drifted XML (<kind>/<detail> for <type>/<title>) is salvaged into
+  // rows, but the drifted turn stayed in the conversation and the model kept
+  // copying it for the rest of the generation.
+  describe('schema drift (#3461)', () => {
+    const DRIFTED = '<observation><kind>bugfix</kind><detail>Fixed the retry loop</detail></observation>';
+    const CLEAN = '<observation><type>discovery</type><title>Clean reply</title><narrative>ok</narrative></observation>';
+    const reply = (session: ActiveSession, text: string) =>
+      processAgentResponse(text, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+    it('stores the salvaged rows, corrects the drifted turn, and reminds the next prompt', async () => {
+      const session = createMockSession();
+
+      await reply(session, DRIFTED);
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const turn = session.conversationHistory.at(-1)!;
+      expect(turn.role).toBe('assistant');
+      expect(turn.content).toContain('<type>');
+      expect(turn.content).not.toContain('<kind>');
+      expect(turn.content).not.toContain('<detail>');
+      expect(session.observerSchemaReminder).toBe(true);
+      expect(session.consecutiveSchemaDrifts).toBe(1);
+      expect(session.abortController.signal.aborted).toBe(false);
+    });
+
+    it('starts a fresh generation after three drifts in a row; a clean reply resets the count', async () => {
+      const session = createMockSession();
+
+      await reply(session, DRIFTED);
+      await reply(session, DRIFTED);
+      await reply(session, CLEAN);
+      expect(session.consecutiveSchemaDrifts).toBe(0);
+
+      await reply(session, DRIFTED);
+      await reply(session, DRIFTED);
+      expect(session.abortController.signal.aborted).toBe(false);
+      await reply(session, DRIFTED);
+
+      expect(session.abortReason).toBe('drift:observer_schema');
+      expect(session.abortController.signal.aborted).toBe(true);
+      expect(session.consecutiveSchemaDrifts).toBe(0);
+    });
+
+    it('restates the schema once, in the next observation prompt', () => {
+      const session = createMockSession({ observerSchemaReminder: true });
+      expect(takeObserverSchemaReminder(session)).toBe(true);
+      expect(takeObserverSchemaReminder(session)).toBe(false);
+
+      const observation = {
+        id: 0, tool_name: 'Read', tool_input: '{}', tool_output: '"ok"', created_at_epoch: Date.now(), cwd: '/repo',
+      };
+      expect(buildObservationPrompt(observation, undefined, true)).toContain(OBSERVATION_SCHEMA_REMINDER);
+      expect(buildObservationPrompt(observation)).not.toContain(OBSERVATION_SCHEMA_REMINDER);
     });
   });
 });

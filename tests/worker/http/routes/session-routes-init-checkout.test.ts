@@ -3,15 +3,15 @@
 // an observation still leaves evidence for worktree adoption.
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import path from 'node:path';
 import express from 'express';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
-import { getProjectContext } from '../../../../src/utils/project-name.js';
 import { logger } from '../../../../src/utils/logger.js';
+import { getProjectContext } from '../../../../src/utils/project-name.js';
 
 let server: Server | undefined;
 let store: SessionStore | undefined;
@@ -121,45 +121,79 @@ describe('session-init records the checkout and how its key was derived (gate P1
   });
 });
 
-// A host that cannot run the project resolver itself (the in-process OMP hook,
-// #3556) sends only its cwd; the worker names the project with the same
-// resolver the CLI hooks use.
-describe('session-init resolves the project from a host cwd (#3556)', () => {
-  let checkout: string;
-
-  beforeEach(() => {
-    checkout = mkdtempSync(join(tmpdir(), 'omp-init-checkout-'));
-  });
+// #3803: the OpenCode plugin runs inside OpenCode's process and sends only its
+// checkout. The route keys the session with the shared resolver, the one
+// observation ingest already applies to that host's tool events.
+describe('session-init keys a checkout-only host with the shared resolver (#3803)', () => {
+  let fixtureRoot: string | undefined;
 
   afterEach(() => {
-    delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
-    rmSync(checkout, { recursive: true, force: true });
+    if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+    fixtureRoot = undefined;
   });
 
-  it('names the project and records the checkout when the host sends no project', async () => {
-    const response = await postInit({ contentSessionId: 'init-cwd-1', prompt: PRIVATE_PROMPT, cwd: checkout });
-    expect(response.status).toBe(200);
-
-    const context = getProjectContext(checkout);
-    const row = store!.db
+  function sessionRow(contentSessionId: string): { project: string; cwd: string | null; project_key_source: string | null } {
+    return store!.db
       .prepare('SELECT project, cwd, project_key_source FROM sdk_sessions WHERE content_session_id = ?')
-      .get('init-cwd-1');
-    expect(row).toEqual({ project: context.primary, cwd: checkout, project_key_source: context.keySource });
+      .get(contentSessionId) as { project: string; cwd: string | null; project_key_source: string | null };
+  }
+
+  it('keys a linked worktree as parent/leaf and records the checkout as path-derived', async () => {
+    // What `git worktree add` leaves on disk: a `.git` FILE pointing into the
+    // parent repository's .git/worktrees directory.
+    fixtureRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-init-checkout-'));
+    const parentRepo = path.join(fixtureRoot, 'parent-repo');
+    mkdirSync(path.join(parentRepo, '.git', 'worktrees', 'leaf-worktree'), { recursive: true });
+    const worktreeDir = path.join(fixtureRoot, 'leaf-worktree');
+    mkdirSync(worktreeDir);
+    writeFileSync(path.join(worktreeDir, '.git'), `gitdir: ${path.join(parentRepo, '.git', 'worktrees', 'leaf-worktree')}\n`);
+
+    const response = await postInit({
+      contentSessionId: 'init-checkout-only',
+      prompt: PRIVATE_PROMPT,
+      cwd: worktreeDir,
+      platformSource: 'opencode',
+    });
+
+    expect(response.status).toBe(200);
+    expect(sessionRow('init-checkout-only')).toEqual({
+      project: getProjectContext(worktreeDir).primary,
+      cwd: worktreeDir,
+      project_key_source: 'path',
+    });
+    expect(sessionRow('init-checkout-only').project).toBe('parent-repo/leaf-worktree');
   });
 
   it('keeps the project a hook resolved itself', async () => {
-    await postInit({ contentSessionId: 'init-cwd-2', project: 'acme/api', prompt: PRIVATE_PROMPT, cwd: checkout });
-    const row = store!.db
-      .prepare('SELECT project FROM sdk_sessions WHERE content_session_id = ?')
-      .get('init-cwd-2') as { project: string };
-    expect(row.project).toBe('acme/api');
+    const response = await postInit({
+      contentSessionId: 'init-hook-project',
+      project: 'from-the-hook',
+      prompt: PRIVATE_PROMPT,
+      cwd: '/work/elsewhere',
+      projectKeySource: 'environment',
+    });
+
+    expect(response.status).toBe(200);
+    expect(sessionRow('init-hook-project')).toEqual({
+      project: 'from-the-hook',
+      cwd: '/work/elsewhere',
+      project_key_source: 'environment',
+    });
   });
 
+  // Such a host cannot check the user's exclusions before it calls (the CLI
+  // hooks do), so the route skips an excluded checkout before creating a row
+  // (#3556, the OMP hook).
   it('creates no session for a checkout the user excluded', async () => {
-    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
-    const response = await postInit({ contentSessionId: 'init-cwd-3', prompt: 'secret work', cwd: checkout });
+    fixtureRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-init-excluded-'));
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = path.basename(fixtureRoot);
+    try {
+      const response = await postInit({ contentSessionId: 'init-excluded', prompt: 'secret work', cwd: fixtureRoot });
 
-    expect(await response.json()).toEqual({ skipped: true, reason: 'project_excluded' });
-    expect(store!.db.prepare('SELECT COUNT(*) AS n FROM sdk_sessions').get()).toEqual({ n: 0 });
+      expect(await response.json()).toEqual({ skipped: true, reason: 'project_excluded' });
+      expect(store!.db.prepare('SELECT COUNT(*) AS n FROM sdk_sessions').get()).toEqual({ n: 0 });
+    } finally {
+      delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+    }
   });
 });

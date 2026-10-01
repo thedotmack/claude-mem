@@ -155,13 +155,26 @@ describe('ChromaSync.queryChroma adaptive post-filtering', () => {
     expect(out.metadatas.every((m: any) => m.project === 'big' && m.doc_type === 'observation')).toBe(true);
   });
 
-  it('sends operator filters straight to chroma rather than guessing', async () => {
-    // $in is not a shape we evaluate client-side; correctness beats speed.
-    await sync.queryChroma('anything', 10, { project: { $in: ['big', 'tiny'] } });
+  it('evaluates an $in membership clause client-side, as chroma does', async () => {
+    const where = { project: { $in: ['big', 'tiny'] } };
+    const out = await sync.queryChroma('anything', 20, where);
 
     const qs = queryCalls();
     expect(qs.length).toBe(1);
-    expect(qs[0].args.where).toEqual({ project: { $in: ['big', 'tiny'] } });
+    expect(qs[0].args.where).toBeUndefined();
+    const exact = CORPUS.filter(d => matches(where, d)).slice(0, 20).map(d => Number(d.id.split('_')[1]));
+    expect(out.ids).toEqual(exact);
+  });
+
+  it('sends other operator filters straight to chroma rather than guessing', async () => {
+    // $ne / $nin are not shapes we evaluate client-side; correctness beats speed.
+    for (const where of [{ project: { $ne: 'big' } }, { project: { $nin: ['big'] } }]) {
+      calls = [];
+      await sync.queryChroma('anything', 10, where);
+      const qs = queryCalls();
+      expect(qs.length).toBe(1);
+      expect(qs[0].args.where).toEqual(where);
+    }
   });
 
   it('is unchanged when there is no filter at all', async () => {
@@ -235,6 +248,20 @@ describe('ChromaSync.queryChroma with the dual-project $or scoping', () => {
     )).toBe(true);
   });
 
+  it('keeps the fast path for the case-variant project scoping every search path uses (#3531)', async () => {
+    // buildProjectWhereFilter hands chroma every stored spelling of the project.
+    const spellings = { $in: ['big', 'BIG'] };
+    const where = { $or: [{ project: spellings }, { merged_into_project: spellings }] };
+    const out = await sync.queryChroma('anything', 20, where);
+
+    const qs = queryCalls();
+    expect(qs.length).toBe(1);
+    expect(qs[0].args.where).toBeUndefined();
+    const exact = CORPUS.filter(d => matches(where, d)).slice(0, 20).map(d => Number(d.id.split('_')[1]));
+    expect(out.ids).toEqual(exact);
+    expect(out.metadatas.some((m: any) => m.project === 'big-old')).toBe(true);
+  });
+
   it('falls back to chroma with the exact $or clause when the project is too small', async () => {
     await sync.queryChroma('anything', 100, dualProject('tiny'));
 
@@ -252,6 +279,10 @@ describe('ChromaSync.queryChroma with the dual-project $or scoping', () => {
       { $or: [{ project: 'big' }] },
       { $and: [] },
       { project: null },
+      // chroma wants a non-empty $in list of values that all share one type.
+      { project: { $in: [] } },
+      { project: { $in: ['big', 7] } },
+      { project: { $in: 'big' } },
     ];
 
     for (const where of invalidFilters) {
