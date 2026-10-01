@@ -49,13 +49,13 @@ const schema: TranscriptSchema = {
       name: 'turn',
       match: { path: 'type', equals: 'turn' },
       action: 'session_init',
-      fields: { sessionId: 'session', prompt: 'text' },
+      fields: { sessionId: 'session', cwd: 'cwd', prompt: 'text' },
     },
   ],
 };
 
 const turnLine = (text: string, padding = ''): string =>
-  JSON.stringify({ type: 'turn', session: 'session-retry', text, padding });
+  JSON.stringify({ type: 'turn', session: 'session-retry', cwd: '/tmp/retry-project', text, padding });
 
 const zstdFrame = (texts: string[]): Buffer =>
   zstdCompressSync(Buffer.from(`${texts.map(text => turnLine(text)).join('\n')}\n`, 'utf8'));

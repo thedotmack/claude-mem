@@ -48,6 +48,17 @@ interface SessionState {
   isSubagent?: boolean;
 }
 
+/**
+ * What the watcher keeps per transcript file across restarts: the working
+ * directory its session last reported. Some hosts write it once, on the
+ * session's first line (DeepSeek Harness), so a watcher that resumes mid-file
+ * would otherwise never learn it. The processor reads it as a fallback and
+ * updates it whenever the session reports one.
+ */
+export interface TranscriptFileContext {
+  cwd?: string;
+}
+
 /** How many subagent rollouts the processor remembers past their last turn. */
 const MAX_REMEMBERED_SUBAGENT_SESSIONS = 4096;
 
@@ -64,11 +75,12 @@ export class TranscriptEventProcessor {
     entry: unknown,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    sessionIdOverride?: string | null
+    sessionIdOverride?: string | null,
+    file?: TranscriptFileContext
   ): Promise<void> {
     for (const event of schema.events) {
       if (!matchesRule(entry, event.match, schema)) continue;
-      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined);
+      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined, file);
     }
   }
 
@@ -109,11 +121,12 @@ export class TranscriptEventProcessor {
     entry: unknown,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    sessionIdOverride?: string | null
+    sessionIdOverride?: string | null,
+    file?: TranscriptFileContext
   ): Promise<void> {
     for (const event of schema.events) {
       if (event.action !== 'session_context' || !matchesRule(entry, event.match, schema)) continue;
-      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined);
+      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined, file);
     }
   }
 
@@ -169,7 +182,8 @@ export class TranscriptEventProcessor {
     watch: WatchTarget,
     schema: TranscriptSchema,
     event: SchemaEvent,
-    sessionIdOverride?: string
+    sessionIdOverride?: string,
+    file?: TranscriptFileContext
   ): Promise<void> {
     const sessionId = this.resolveSessionId(entry, watch, schema, event, sessionIdOverride);
     if (!sessionId) {
@@ -178,6 +192,9 @@ export class TranscriptEventProcessor {
     }
 
     const session = this.getOrCreateSession(watch, sessionId);
+    // After a restart the watcher resumes mid-file, past the line that carried
+    // the session's working directory: start from the one saved for the file.
+    if (!session.cwd && file?.cwd) session.cwd = file.cwd;
     const cwd = this.resolveCwd(entry, watch, schema, event, session);
     if (cwd) session.cwd = cwd;
     const project = this.resolveProject(entry, watch, schema, event, session);
@@ -209,9 +226,12 @@ export class TranscriptEventProcessor {
 
     const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
 
+    if (event.action === 'session_context') this.applySessionContext(session, fields);
+    // Whatever directory the session now has is the file's, for the next restart.
+    if (file && session.cwd) file.cwd = session.cwd;
+
     switch (event.action) {
       case 'session_context':
-        this.applySessionContext(session, fields);
         break;
       case 'session_init':
         await this.handleSessionInit(session, fields);
@@ -287,9 +307,13 @@ export class TranscriptEventProcessor {
    * of its observations being filed under no prompt.
    */
   private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
-    const cwd = session.cwd ?? process.cwd();
     if (prompt) {
       session.lastUserMessage = prompt;
+    }
+    const cwd = session.cwd;
+    if (!cwd) {
+      this.skipWithoutCwd(session, 'user prompt');
+      return;
     }
 
     try {
@@ -302,6 +326,19 @@ export class TranscriptEventProcessor {
     } catch (error: unknown) {
       throw new TranscriptAnchorError(session.sessionId, error);
     }
+  }
+
+  /**
+   * A turn of a session whose working directory is not known yet is skipped.
+   * The worker's own directory is not a stand-in: it would key the prompt or
+   * observation to the worker's own data dir (`.claude-mem`) and check project
+   * exclusions against it. Once the session or its file reports a directory,
+   * its turns go through.
+   */
+  private skipWithoutCwd(session: SessionState, what: string): void {
+    logger.debug('TRANSCRIPT', `Skipping a ${what}: the session has no known working directory yet`, {
+      sessionId: session.sessionId,
+    });
   }
 
   private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
@@ -366,10 +403,14 @@ export class TranscriptEventProcessor {
   private async sendObservation(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
+    if (!session.cwd) {
+      this.skipWithoutCwd(session, 'observation');
+      return;
+    }
 
     const result = await ingestObservation({
       contentSessionId: session.sessionId,
-      cwd: session.cwd ?? process.cwd(),
+      cwd: session.cwd,
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
       toolResponse: this.maybeParseJson(fields.toolResponse),
@@ -386,10 +427,14 @@ export class TranscriptEventProcessor {
   private async sendFileEdit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const filePath = typeof fields.filePath === 'string' ? fields.filePath : undefined;
     if (!filePath) return;
+    if (!session.cwd) {
+      this.skipWithoutCwd(session, 'file edit');
+      return;
+    }
 
     await fileEditHandler.execute({
       sessionId: session.sessionId,
-      cwd: session.cwd ?? process.cwd(),
+      cwd: session.cwd,
       filePath,
       edits: Array.isArray(fields.edits) ? fields.edits : undefined,
       platform: session.platformSource
@@ -452,7 +497,9 @@ export class TranscriptEventProcessor {
     const requestBody = JSON.stringify({
       contentSessionId: session.sessionId,
       last_assistant_message: lastAssistantMessage,
-      platformSource: session.platformSource
+      platformSource: session.platformSource,
+      // Lets the worker skip a session in an excluded project; sent only when known.
+      ...(session.cwd ? { cwd: session.cwd } : {}),
     });
 
     try {

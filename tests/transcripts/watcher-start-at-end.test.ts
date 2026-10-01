@@ -37,6 +37,7 @@ const createUserMessage = (sessionId: string, prompt: string) => JSON.stringify(
   payload: {
     type: 'user_message',
     session_id: sessionId,
+    cwd: '/tmp/codex-test-project',
     message: prompt,
   },
 });
@@ -50,6 +51,7 @@ const createSchema = (): TranscriptSchema => ({
       action: 'session_init',
       fields: {
         sessionId: 'payload.session_id',
+        cwd: 'payload.cwd',
         prompt: 'payload.message',
       },
     },
@@ -119,6 +121,7 @@ describe('TranscriptWatcher startAtEnd', () => {
         payload: {
           type: 'user_message',
           session_id: sessionId,
+          cwd: '/tmp/codex-test-project',
           message: 'historical prompt that must not be replayed',
         },
       })}\n`,
@@ -134,6 +137,7 @@ describe('TranscriptWatcher startAtEnd', () => {
           action: 'session_init',
           fields: {
             sessionId: 'payload.session_id',
+            cwd: 'payload.cwd',
             prompt: 'payload.message',
           },
         },
@@ -159,6 +163,7 @@ describe('TranscriptWatcher startAtEnd', () => {
         payload: {
           type: 'user_message',
           session_id: sessionId,
+          cwd: '/tmp/codex-test-project',
           message: 'live prompt',
         },
       })}\n`,
