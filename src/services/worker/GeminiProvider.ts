@@ -8,6 +8,7 @@ import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
+import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
@@ -220,7 +221,18 @@ interface GeminiContent {
 }
 
 interface GeminiConfig {
+  /**
+   * The pool's first key. Kept as its own field because everything that only
+   * needs to know "is Gemini usable" reads it, and because a single-key install
+   * must resolve exactly as it did before the pool existed.
+   */
   apiKey: string;
+  /**
+   * The full rotation pool: `apiKey` followed by CLAUDE_MEM_GEMINI_API_KEYS.
+   * Length 1 for every install that has not opted in, which `withKeyPool`
+   * treats as a pass-through.
+   */
+  apiKeys: string[];
   model: GeminiModel;
   rateLimitingEnabled: boolean;
 }
@@ -307,8 +319,14 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
-    return this.queryGeminiMultiTurn(
-      history, config.apiKey, config.model, config.rateLimitingEnabled, signal, perAttemptTimeoutMs,
+    // Rotation wraps withRetry rather than living inside it: the inner retry
+    // still owns transient failures against one key, and this outer sweep moves
+    // on only for the kinds that mean the key itself is spent.
+    return withKeyPool(
+      { poolId: 'gemini', keys: resolvePoolKeys(config), label: 'Gemini' },
+      ({ key, poolSize }) => this.queryGeminiMultiTurn(
+        history, key, poolSize, config.model, config.rateLimitingEnabled, signal, perAttemptTimeoutMs,
+      ),
     );
   }
 
@@ -342,6 +360,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
   private async queryGeminiMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
+    /** Size of the rotation pool this attempt belongs to; 1 means no rotation. */
+    poolSize: number,
     model: GeminiModel,
     rateLimitingEnabled: boolean,
     signal?: AbortSignal,
@@ -401,7 +421,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       }
 
       return await response.json() as GeminiResponse;
-    }, { label: `Gemini ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}) });
+    }, { label: `Gemini ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize) });
 
     const candidate = data.candidates?.[0];
     const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : undefined;
@@ -440,7 +460,14 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-    const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
+    const primaryKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
+    const apiKeys = buildKeyPool(
+      primaryKey,
+      settings.CLAUDE_MEM_GEMINI_API_KEYS || getCredential('GEMINI_API_KEYS') || '',
+    );
+    // With only the list configured, its first entry becomes the primary so
+    // availability checks and error messages keep working unchanged.
+    const apiKey = primaryKey || apiKeys[0] || '';
 
     const defaultModel: GeminiModel = 'gemini-flash-latest';
     const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
@@ -465,14 +492,17 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const rateLimitingEnabled = settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
 
-    return { apiKey, model, rateLimitingEnabled };
+    return { apiKey, apiKeys, model, rateLimitingEnabled };
   }
 }
 
 export function isGeminiAvailable(): boolean {
   const settingsPath = paths.settings();
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY'));
+  if (settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY')) return true;
+  // A pool-only install (no CLAUDE_MEM_GEMINI_API_KEY, keys supplied as a list)
+  // is still available — dispatch must not silently fall through to Claude.
+  return buildKeyPool('', settings.CLAUDE_MEM_GEMINI_API_KEYS || getCredential('GEMINI_API_KEYS') || '').length > 0;
 }
 
 export function isGeminiSelected(): boolean {
