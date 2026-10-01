@@ -47,6 +47,8 @@ const EXCLUDED_PATTERNS = [
   /worker\/observer-usage\.ts$/,  // Pure observer token accumulation helpers; logging happens at provider/session completion call sites (#3508)
   /worker\/session\/OutputRecovery\.ts$/,  // Pure per-batch rejection counter; the retry and drop are logged at the ResponseProcessor call site (#3624)
   /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
+  /sqlite\/project-read-keys\.ts$/,  // Pure project-scope SQL builders plus one read query; logging happens at the search/context call sites
+  /servers\/checkout-search-scope\.ts$/,  // Pure MCP search-args transform; no side effects or error paths
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

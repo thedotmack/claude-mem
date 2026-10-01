@@ -209,7 +209,9 @@ export const sessionInitHandler: EventHandler = {
         const semanticResult = await dependencies.executeWithWorkerFallback<SemanticContextResponse>(
           '/api/context/semantic',
           'POST',
-          { q: prompt, project, limit, platformSource },
+          // Every key this checkout reads, so memory it stored before a re-key
+          // (slug, environment, marker) is found too (gate P2-5).
+          { q: prompt, project, projects: projectContext.allProjects, limit, platformSource },
           workerSessionInitOptions(platformSource, semanticTimeoutMs),
         );
         if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
