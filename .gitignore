@@ -20,6 +20,7 @@ package-lock.json
 bun.lock
 !plugin/bun.lock
 !workers/sync-hub/bun.lock
+!services/sync-api/bun.lock
 private/
 Auto Run Docs/
 

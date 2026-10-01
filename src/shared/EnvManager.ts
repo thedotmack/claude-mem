@@ -1,23 +1,46 @@
 
+import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { parseEnv } from 'util';
 import { basename } from 'path';
 import { logger } from '../utils/logger.js';
-import { paths, DEFAULT_CLAUDE_CONFIG_DIR } from './paths.js';
+import { paths } from './paths.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import {
   readClaudeOAuthToken,
   writeStaleMarker,
   clearStaleMarker,
-  resolveEffectiveClaudeConfigDir,
+  resolveClaudeCredentialProfile,
+  type ClaudeCredentialProfile,
   type OAuthTokenResult,
 } from './oauth-token.js';
 
-/** #2753 — the effective config dir's profile label for logging (never the token itself): 'default' for ~/.claude, else its basename. */
+/** #2753 — the credential profile's label for logging (never the token itself): 'default' for the bare keychain entry, else the config dir's basename. */
 function resolveConfigDirProfileLabel(): string {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-  const effectiveConfigDir = resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
-  return effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR ? 'default' : basename(effectiveConfigDir);
+  const { configDir, explicitConfigDir } = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  return explicitConfigDir ? basename(configDir) : 'default';
+}
+
+/**
+ * The account identity that quota state is keyed by (RateLimitStore entries,
+ * the 'claude' quota-cooldown breaker). It follows the credential the SDK
+ * child uses: 'default' for the bare keychain entry, else the config dir's
+ * basename plus the 8-hex sha256 suffix Claude Code gives that profile's
+ * keychain entry (see deriveMacKeychainServiceName). Two dirs that share a
+ * basename stay apart, and no path (or username) reaches /api/health or
+ * quota-cooldown.json.
+ */
+export function credentialProfileKey(profile: ClaudeCredentialProfile): string {
+  if (!profile.explicitConfigDir) return 'default';
+  const suffix = createHash('sha256').update(profile.configDir.normalize('NFC')).digest('hex').slice(0, 8);
+  return `${basename(profile.configDir)}#${suffix}`;
+}
+
+/** The quota key for the credential the next Claude spawn will use. */
+export function resolveConfigDirProfileKey(): string {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  return credentialProfileKey(resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR));
 }
 
 // Resolved lazily so tests (and any rare runtime path-overrides) can target a
@@ -199,15 +222,31 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
 
   isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
 
-  // #2753 — override whatever the blanket copy above put in
-  // CLAUDE_CONFIG_DIR (the WORKER's own env) with the effective config dir
-  // for the SDK SUBPROCESS only: the CLAUDE_MEM_CLAUDE_CONFIG_DIR setting
-  // when set, else process.env.CLAUDE_CONFIG_DIR/default (unchanged from
-  // today). This never touches the worker's own paths.CLAUDE_CONFIG_DIR /
+  // #2753 / #4149 — set CLAUDE_CONFIG_DIR on the SDK SUBPROCESS from the SAME
+  // credential profile deriveMacKeychainServiceName (oauth-token.ts) uses to
+  // pick the keychain service name, so the child and the worker always agree:
+  //   - explicit profile: stamp the effective config dir (the
+  //     CLAUDE_MEM_CLAUDE_CONFIG_DIR setting when set, else
+  //     process.env.CLAUDE_CONFIG_DIR), so both resolve the suffixed
+  //     'Claude Code-credentials-<hash>' keychain entry.
+  //   - default profile: leave CLAUDE_CONFIG_DIR UNSET on the child, deleting
+  //     any value the blanket process.env copy above carried in. Claude Code
+  //     chooses its macOS keychain service name from whether CLAUDE_CONFIG_DIR
+  //     is SET, not from its value, so stamping even the default '~/.claude'
+  //     made the child hunt for a suffixed entry a normal login never creates
+  //     while the worker injects under the bare name. Once the access token
+  //     expired the worker stopped injecting, the child could not reach the
+  //     refresh token, and capture silently stopped (#4149).
+  // This never touches the worker's own paths.CLAUDE_CONFIG_DIR /
   // MARKETPLACE_ROOT, which stay derived solely from
   // process.env.CLAUDE_CONFIG_DIR at module load.
   const configDirSettings = SettingsDefaultsManager.loadFromFile(paths.settings());
-  isolatedEnv.CLAUDE_CONFIG_DIR = resolveEffectiveClaudeConfigDir(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  const { configDir, explicitConfigDir } = resolveClaudeCredentialProfile(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  if (explicitConfigDir) {
+    isolatedEnv.CLAUDE_CONFIG_DIR = configDir;
+  } else {
+    delete isolatedEnv.CLAUDE_CONFIG_DIR;
+  }
 
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();
@@ -302,7 +341,7 @@ export async function buildIsolatedEnvWithFreshOAuth(
     case 'expired':
       logger.warn(
         'OAUTH',
-        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Re-login via Claude Desktop to refresh.`,
+        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Run /login in Claude Code (or \`claude auth login\` in a terminal) to refresh it.`,
         { expiresAt: result.expiresAt },
       );
       writeStaleMarker(result.reason);
