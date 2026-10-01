@@ -33,6 +33,10 @@ describe('sessionInitContextHandler composite', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  // Both handlers are stubbed with what they return when the worker is down,
+  // so the test never touches a real port: worker-utils caches the port and
+  // worker liveness per process, so an earlier test file decides what a live
+  // call would reach (CI hit 127.0.0.1:37777, not CLOSED_PORT).
   it('resolves against an unreachable worker and returns hookSpecificOutput', async () => {
     const handler = getEventHandler('session-init-context');
     const input: NormalizedHookInput = {
@@ -40,12 +44,45 @@ describe('sessionInitContextHandler composite', () => {
       cwd: process.cwd(),
       platform: 'kimi',
     };
+    // executeWithWorkerFallback's result when the worker is not alive.
+    const sessionInitSpy = spyOn(sessionInitHandler, 'execute').mockImplementation(async () => ({
+      continue: true,
+      suppressOutput: true,
+    }));
+    // The context handler's empty SessionStart payload for an unreachable worker.
+    const contextSpy = spyOn(contextHandler, 'execute').mockImplementation(async () => ({
+      continue: true,
+      suppressOutput: true,
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+    }));
 
-    const result = await handler.execute(input);
+    try {
+      const result = await handler.execute(input);
 
-    expect(result).toBeDefined();
-    expect(result.hookSpecificOutput).toBeDefined();
-    expect(typeof result.hookSpecificOutput).toBe('object');
+      expect(result.hookSpecificOutput).toEqual({ hookEventName: 'SessionStart', additionalContext: '' });
+      // An empty timeline must not use up the session's one injection.
+      expect(hasInjected('t')).toBe(false);
+    } finally {
+      sessionInitSpy.mockRestore();
+      contextSpy.mockRestore();
+    }
+  });
+
+  it('rethrows a worker-unavailable error from session-init so the hook fails open and counts it', async () => {
+    const handler = getEventHandler('session-init-context');
+    const sessionInitSpy = spyOn(sessionInitHandler, 'execute').mockImplementation(async () => {
+      throw new Error('Unable to connect. Is the computer able to access the url? (ECONNREFUSED)');
+    });
+    const contextSpy = spyOn(contextHandler, 'execute');
+
+    try {
+      await expect(handler.execute({ sessionId: 't-down', cwd: process.cwd(), platform: 'kimi' }))
+        .rejects.toThrow('Unable to connect');
+      expect(contextSpy).not.toHaveBeenCalled();
+    } finally {
+      sessionInitSpy.mockRestore();
+      contextSpy.mockRestore();
+    }
   });
 
   it('prepends session-init semantic additionalContext to context output', async () => {
