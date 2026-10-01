@@ -233,6 +233,58 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(calls('chroma_delete_collection')).toBe(1);
   });
 
+  it('rebuilds even when chroma-mcp commits the delete but the call rejects', async () => {
+    // A large collection can outlive the delete's request deadline: chroma-mcp
+    // drops it, the reply is lost, and the call rejects.
+    let failAdds = true;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents' && failAdds) throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new ChromaUnavailableError('chroma-mcp "chroma_delete_collection" timed out; the subprocess was left running');
+      }
+      return {};
+    });
+    statics.backfillStore = {};
+    ChromaSyncState.replace('alpha', { observations: 40, summaries: 3, prompts: 7 });
+    ChromaSyncState.replace('beta', { observations: 9, summaries: 0, prompts: 0 });
+    const writer = new ChromaSync('claude-mem');
+    const sibling = new ChromaSync('claude-mem');
+    await sibling.ensureCollectionExists();
+
+    await writer.addDocuments([makeDoc('d1')]);
+    await expect(writer.addDocuments([makeDoc('d2')])).rejects.toThrow('timed out');
+
+    // The watermarks no longer claim rows the dropped collection took with it.
+    expect(ChromaSyncState.isRebuildPending('alpha')).toBe(true);
+    expect(ChromaSyncState.isRebuildPending('beta')).toBe(true);
+    // The rebuild starts now, not at the next worker start.
+    expect(backfillSweeps).toBe(1);
+    // No instance keeps writing into the collection it cached before the drop.
+    const createsBefore = calls('chroma_create_collection');
+    failAdds = false;
+    expect(await sibling.addDocuments([makeDoc('d3')])).toBe(1);
+    expect(calls('chroma_create_collection')).toBe(createsBefore + 1);
+  });
+
+  it('counts a rejected delete as the one drop, so a delete that keeps failing is never retried in a loop', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new Error('chroma-mcp transport error during "chroma_delete_collection" (retry failed): Connection closed');
+      }
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('transport error');
+    // Later batches still hit the segment: ordinary failed writes, no second drop.
+    expect(await sync.addDocuments([makeDoc('d3')])).toBe(0);
+    expect(await sync.addDocuments([makeDoc('d4')])).toBe(0);
+
+    expect(calls('chroma_delete_collection')).toBe(1);
+  });
+
   it('starts a rebuild sweep when none is running, and leaves a running sweep to restart itself', async () => {
     installCallTool(async (tool) => {
       if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;

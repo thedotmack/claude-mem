@@ -398,7 +398,7 @@ export class ChromaSync {
       return;
     }
     if (ChromaSync.droppedCollections.has(this.collectionName)) {
-      logger.error('CHROMA_SYNC', 'Rebuilt collection still has a corrupt HNSW segment; not dropping it again in this process', {
+      logger.error('CHROMA_SYNC', 'Collection still has a corrupt HNSW segment after this process dropped it (or tried to); not dropping it again in this process', {
         collection: this.collectionName
       }, cause);
       return;
@@ -422,6 +422,14 @@ export class ChromaSync {
    * the generation stops backfill runs still writing into the old collection;
    * a running sweep then starts over, otherwise a new sweep starts here. If
    * the worker stops first, the persisted flags make the next start rebuild.
+   *
+   * The drop is booked before the delete is sent, and the generation moves
+   * whether or not the call resolves: chroma-mcp can commit the delete and
+   * still reject the call (a request deadline on a large collection). Booked
+   * afterwards, a rejection left the watermarks claiming every row the
+   * dropped collection took with it, and semantic search lost them silently.
+   * The attempt also counts as this process's one drop, so a delete that
+   * keeps failing cannot restart the backfill sweep over and over.
    */
   private async dropCorruptCollection(cause: Error): Promise<void> {
     const chromaMcp = ChromaMcpManager.getInstance();
@@ -445,21 +453,26 @@ export class ChromaSync {
       chromaDataDir: settings.CLAUDE_MEM_CHROMA_MODE === 'remote' ? undefined : paths.chroma()
     }, cause);
 
-    await chromaMcp.callTool('chroma_delete_collection', {
-      collection_name: this.collectionName
-    });
-
-    ChromaSync.droppedCollections.add(this.collectionName);
-    ChromaSync.corruptSegmentBatches.delete(this.collectionName);
-    ChromaSync.lastCollectionDrop = {
-      collection: this.collectionName,
-      droppedAt: new Date().toISOString(),
-      documentCount,
-      error: cause.message
-    };
     ChromaSyncState.markAllForRebuild();
-    ChromaSync.collectionGeneration += 1;
+    ChromaSync.droppedCollections.add(this.collectionName);
+    try {
+      await chromaMcp.callTool('chroma_delete_collection', {
+        collection_name: this.collectionName
+      });
+      ChromaSync.corruptSegmentBatches.delete(this.collectionName);
+      ChromaSync.lastCollectionDrop = {
+        collection: this.collectionName,
+        droppedAt: new Date().toISOString(),
+        documentCount,
+        error: cause.message
+      };
+    } finally {
+      ChromaSync.collectionGeneration += 1;
+      this.startRebuildSweep();
+    }
+  }
 
+  private startRebuildSweep(): void {
     if (ChromaSync.backfillInProgress) {
       return;
     }
