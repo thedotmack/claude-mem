@@ -22,9 +22,10 @@
  *    (one claude-mem session per omp session, not per prompt — before_agent_start
  *    fires once per user prompt, so we never mint a new id there).
  *  - every user prompt posts init (the worker de-duplicates a repeated prompt),
- *    as the Claude Code hooks do; observations wait for the latest prompt's init
- *    so they land after it. A tool result never inits on its own: a prompt-less
- *    init would pin the session to "[media prompt]".
+ *    as the Claude Code hooks do, each after the previous one so prompts are
+ *    recorded in order. Observations wait for the latest prompt's init and are
+ *    dropped when the worker did not record it. A tool result never inits on
+ *    its own: a prompt-less init would pin the session to "[media prompt]".
  *  - All POSTs are fire-and-forget via detached chains; the handler returns
  *    synchronously and never blocks the tool dispatch (30s handler cap). Every
  *    request is bounded by a timeout, which counts as a breaker failure.
@@ -127,9 +128,10 @@ function onOk(): void {
 
 interface OmpSession {
   id: string;
-  // The latest prompt's init request; observations wait on it so they land
-  // after the prompt they belong to.
-  lastInit?: Promise<void>;
+  // The tail of the session's init chain: the latest prompt's init, which
+  // resolves true once the worker recorded that prompt. Observations and the
+  // summary wait on it so they land after the prompts they belong to.
+  lastInit?: Promise<boolean>;
   // The worker recorded at least one prompt for this id (finalize needs one).
   anchored: boolean;
   // The worker skipped this checkout as excluded: nothing more is sent.
@@ -190,31 +192,46 @@ function post(path: string, body: unknown): Promise<void> {
 
 /**
  * Record one user prompt for `target`. Every prompt posts init, so prompts 2+
- * are recorded too (the worker de-duplicates a repeated prompt). On a failure
- * the breaker counts it and a later prompt simply tries again.
+ * are recorded too (the worker de-duplicates a repeated prompt). Each init
+ * waits for the previous one, so overlapping prompts reach the worker in order
+ * and finalize, which waits for the chain's tail, covers all of them. A failed
+ * init is counted by the breaker, and a later prompt simply tries again.
  */
 function sendPrompt(target: OmpSession, cwd: string | undefined, prompt: string): void {
-  if (target.excluded || breakerOpen()) return;
   const body: Record<string, unknown> = { contentSessionId: target.id, prompt, platformSource: "omp" };
   if (cwd) body.cwd = cwd;
-  target.lastInit = postJson("/api/sessions/init", body)
-    .then(async r => {
-      onOk();
-      // An excluded checkout is skipped before any session row exists.
-      const reply = await r.json().catch(() => ({}));
-      if (reply?.reason === "project_excluded") target.excluded = true;
-      else target.anchored = true;
-    })
-    .catch(() => onFail());
+  target.lastInit = (target.lastInit ?? Promise.resolve(true)).then(() => recordPrompt(target, body));
+}
+
+// Resolves true once the worker recorded the prompt. Success is counted only
+// after the reply is read: a body that stalls until the timeout is a failure,
+// not a recorded prompt.
+async function recordPrompt(target: OmpSession, body: Record<string, unknown>): Promise<boolean> {
+  if (target.excluded || breakerOpen()) return false;
+  try {
+    const r = await postJson("/api/sessions/init", body);
+    const reply = (await r.json()) as { reason?: unknown } | null;
+    onOk();
+    // An excluded checkout is skipped before any session row exists.
+    if (reply?.reason === "project_excluded") {
+      target.excluded = true;
+      return false;
+    }
+    target.anchored = true;
+    return true;
+  } catch {
+    onFail();
+    return false;
+  }
 }
 
 // Finalize a session the worker recorded a prompt for. Chained after its latest
-// init, so the summary never overtakes the prompt it summarizes; a session with
-// no recorded prompt (every init failed, or the checkout is excluded) is left
-// alone.
+// init, so the summary never overtakes the prompts it summarizes; a session
+// with no recorded prompt (every init failed, or the checkout is excluded) is
+// left alone.
 function finalize(target: OmpSession | undefined, assistantMessage: string): void {
   if (!target) return;
-  void (target.lastInit ?? Promise.resolve()).then(() => {
+  void (target.lastInit ?? Promise.resolve(false)).then(() => {
     if (!target.anchored || target.excluded) return;
     return post("/api/sessions/summarize", {
       contentSessionId: target.id,
@@ -261,9 +278,11 @@ export default function claudeMemBridge(pi: HookAPI): void {
 
   // tool_result: the observation pipeline. Fire-and-forget; handler returns void
   // immediately. Waits for the latest prompt's init, then POSTs the observation
-  // on a detached chain. It never inits: a tool result before the next prompt
-  // would otherwise pin the session to "[media prompt]" (the worker creates the
-  // session row from the observation itself when no prompt came first).
+  // on a detached chain, unless the worker did not record that prompt or
+  // excluded the checkout. It never inits: a tool result before the first
+  // prompt would otherwise pin the session to "[media prompt]" (the worker
+  // creates the session row from the observation itself when no prompt came
+  // first).
   pi.on("tool_result", async (event, ctx) => {
     const toolName = String(event?.toolName ?? "");
     if (!toolName || toolName.startsWith("memory_")) return; // avoid claude-mem recursion
@@ -282,7 +301,10 @@ export default function claudeMemBridge(pi: HookAPI): void {
     };
     if (ctx?.cwd) body.cwd = ctx.cwd;
 
-    void (target.lastInit ?? Promise.resolve()).then(() => post("/api/sessions/observations", body));
+    void (target.lastInit ?? Promise.resolve(true)).then(recorded => {
+      if (!recorded || target.excluded) return;
+      return post("/api/sessions/observations", body);
+    });
   });
 
   // agent_end: remember the last assistant message so summarize has an anchor.

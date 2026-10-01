@@ -42,24 +42,56 @@ async function drainMicrotasks(): Promise<void> {
 }
 
 // Same capture as installFetchCapture, except /api/sessions/init hangs until
-// releaseInit() is called, so a test can observe exactly what the hook sends
-// while session init is still in flight.
-function installDeferredInitCapture(requests: CapturedRequest[]): { releaseInit: () => void } {
+// releaseInit() is called (then answers `initReply`), so a test can observe
+// exactly what the hook sends while session init is still in flight.
+function installDeferredInitCapture(
+  requests: CapturedRequest[],
+  initReply: Record<string, unknown> = {},
+): { releaseInit: () => void } {
   let releaseInit = (): void => {};
   const initGate = new Promise<void>(resolve => {
     releaseInit = resolve;
   });
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
-    if (url.pathname === '/api/sessions/init') await initGate;
+    const isInit = url.pathname === '/api/sessions/init';
+    if (isInit) await initGate;
     requests.push({
       url,
       path: url.pathname,
       body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
     });
-    return new Response('{}', { status: 200 });
+    return new Response(JSON.stringify(isInit ? initReply : {}), { status: 200 });
   }) as typeof fetch;
   return { releaseInit };
+}
+
+// Records each request as it is sent; each init reply is held until
+// releaseNextInit() answers the oldest one still waiting.
+function installHeldInitCapture(requests: CapturedRequest[]): { releaseNextInit: () => void } {
+  const heldInits: Array<() => void> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    requests.push({
+      url,
+      path: url.pathname,
+      body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+    });
+    if (url.pathname === '/api/sessions/init') await new Promise<void>(resolve => heldInits.push(resolve));
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+  return { releaseNextInit: () => heldInits.shift()?.() };
+}
+
+// The breaker is module state: once its 30 s window has passed, one
+// successful request closes it again for the tests that follow.
+async function closeBreaker(handlers: Record<string, HookHandler>): Promise<void> {
+  const afterTheBreakerWindow = Date.now() + 31_000;
+  const nowSpy = spyOn(Date, 'now').mockReturnValue(afterTheBreakerWindow);
+  globalThis.fetch = (async () => new Response('', { status: 200 })) as typeof fetch;
+  await handlers.context?.({ messages: [] }, { cwd: '/tmp/omp-close-breaker' });
+  nowSpy.mockRestore();
+  await handlers.session_shutdown?.();
 }
 
 function registerHook(): Record<string, HookHandler> {
@@ -259,28 +291,116 @@ describe('OMP Claude Mem hook', () => {
 
     try {
       await handlers.session_start?.();
-      await handlers.before_agent_start?.({ prompt: 'p' }, cwd);
-      await drainMicrotasks();
+      // A tool result before any prompt posts at once; the prompt's init and
+      // the context fetch follow.
       await handlers.tool_result?.({ toolName: 'read', content: 'x' }, cwd);
+      await drainMicrotasks();
+      await handlers.before_agent_start?.({ prompt: 'p' }, cwd);
       await drainMicrotasks();
       expect(await handlers.context?.(conversation, cwd)).toBeUndefined();
 
-      expect(paths).toEqual(['/api/sessions/init', '/api/sessions/observations', '/api/context/inject']);
+      expect(paths).toEqual(['/api/sessions/observations', '/api/sessions/init', '/api/context/inject']);
       expect(timeouts).toEqual([5_000, 5_000, 5_000]);
 
       // Three timeouts opened the breaker: the next model call skips the worker.
       expect(await handlers.context?.(conversation, cwd)).toBeUndefined();
       expect(paths).toHaveLength(3);
     } finally {
-      // The breaker is module state: once its 30 s window has passed, one
-      // successful request closes it again for the tests that follow.
       timeoutSpy.mockRestore();
-      const afterTheBreakerWindow = Date.now() + 31_000;
-      const nowSpy = spyOn(Date, 'now').mockReturnValue(afterTheBreakerWindow);
-      globalThis.fetch = (async () => new Response('', { status: 200 })) as typeof fetch;
-      await handlers.context?.(conversation, cwd);
-      nowSpy.mockRestore();
+      await closeBreaker(handlers);
+    }
+  });
+
+  it('drops a tool result whose prompt the worker did not record', async () => {
+    const requests: CapturedRequest[] = [];
+    installFetchCapture(requests, path => (path === '/api/sessions/init' ? { status: 500 } : {}));
+    const handlers = registerHook();
+    const cwd = { cwd: '/tmp/omp-init-failed' };
+
+    await handlers.session_start?.();
+    await handlers.before_agent_start?.({ prompt: 'worker hiccup' }, cwd);
+    await handlers.tool_result?.({ toolName: 'read', content: 'x' }, cwd);
+    await drainMicrotasks();
+
+    // Sent anyway, it would land under a prompt the worker never recorded.
+    expect(requests.map(request => request.path)).toEqual(['/api/sessions/init']);
+  });
+
+  it('drops a tool result that was waiting on an init the worker excluded', async () => {
+    const requests: CapturedRequest[] = [];
+    const { releaseInit } = installDeferredInitCapture(requests, { skipped: true, reason: 'project_excluded' });
+    const handlers = registerHook();
+    const cwd = { cwd: '/tmp/omp-excluded-in-flight' };
+
+    await handlers.session_start?.();
+    await handlers.before_agent_start?.({ prompt: 'secret work' }, cwd);
+    await handlers.tool_result?.({ toolName: 'read', content: 'secret file' }, cwd);
+    releaseInit();
+    await drainMicrotasks();
+
+    expect(requests.map(request => request.path)).toEqual(['/api/sessions/init']);
+  });
+
+  it('records overlapping prompts in order and summarizes after both', async () => {
+    const requests: CapturedRequest[] = [];
+    const { releaseNextInit } = installHeldInitCapture(requests);
+    const handlers = registerHook();
+    const cwd = { cwd: '/tmp/omp-overlapping-prompts' };
+
+    await handlers.session_start?.();
+    await handlers.before_agent_start?.({ prompt: 'first' }, cwd);
+    await handlers.before_agent_start?.({ prompt: 'second' }, cwd);
+    await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'done' }] });
+    await handlers.session_shutdown?.();
+    await drainMicrotasks();
+
+    // The second init waits for the first reply, so the worker can never
+    // record the prompts out of order.
+    expect(requests.map(request => request.body.prompt)).toEqual(['first']);
+
+    releaseNextInit();
+    await drainMicrotasks();
+    releaseNextInit();
+    await drainMicrotasks();
+
+    expect(requests.map(request => request.path)).toEqual([
+      '/api/sessions/init',
+      '/api/sessions/init',
+      '/api/sessions/summarize',
+    ]);
+    expect(requests.map(request => request.body.prompt)).toEqual(['first', 'second', undefined]);
+  });
+
+  it('counts an init whose reply never finishes as a failure', async () => {
+    const paths: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      paths.push(new URL(String(input)).pathname);
+      // Headers arrive, then the body fails, as when the timeout aborts it
+      // mid-read.
+      const stalledBody = new ReadableStream({
+        start(controller) {
+          controller.error(new DOMException('The operation timed out.', 'TimeoutError'));
+        },
+      });
+      return new Response(stalledBody, { status: 200 });
+    }) as typeof fetch;
+    const handlers = registerHook();
+    const cwd = { cwd: '/tmp/omp-stalled-reply' };
+
+    try {
+      await handlers.session_start?.();
+      for (const prompt of ['one', 'two', 'three', 'four']) {
+        await handlers.before_agent_start?.({ prompt }, cwd);
+        await drainMicrotasks();
+      }
       await handlers.session_shutdown?.();
+      await drainMicrotasks();
+
+      // Three failed inits opened the breaker before the fourth, and a session
+      // with no recorded prompt is never summarized.
+      expect(paths).toEqual(['/api/sessions/init', '/api/sessions/init', '/api/sessions/init']);
+    } finally {
+      await closeBreaker(handlers);
     }
   });
 
