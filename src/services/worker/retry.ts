@@ -9,8 +9,11 @@
  * provider-supplied request-id (best-effort) for dedup.
  */
 
-import { ClassifiedProviderError, isClassified } from './provider-errors.js';
+import { ClassifiedProviderError, DEADLINE_EXCEEDED_CODE, isClassified } from './provider-errors.js';
 import { logger } from '../../utils/logger.js';
+import { DEFAULT_LLM_TIMEOUT_MS, SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { FIELD_OPTIMIZE_TIMEOUT_MS } from './field-optimizer.js';
 
 /**
  * Parse Retry-After header (seconds or HTTP-date).
@@ -33,7 +36,7 @@ export function parseRetryAfterMs(value: string | null): number | undefined {
 export interface RetryOptions {
   /** Maximum retry attempts (in addition to the initial attempt). Cap=2 by default for non-idempotent POSTs. */
   maxRetries?: number;
-  /** Per-attempt timeout in ms. Default 30s. */
+  /** Per-attempt timeout in ms. Default: CLAUDE_MEM_LLM_TIMEOUT_MS (resolveLlmTimeoutMs). */
   perAttemptTimeoutMs?: number;
   /** Base delay used for exponential backoff. Default 100ms. */
   baseDelayMs?: number;
@@ -46,28 +49,24 @@ export interface RetryOptions {
 }
 
 /** Bounds shared with the other CLAUDE_MEM_*_TIMEOUT_MS settings. */
-const LLM_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
-const FALLBACK_PER_ATTEMPT_TIMEOUT_MS = 30_000;
+export const MAX_LLM_TIMEOUT_MS = 300_000;
+const LLM_TIMEOUT_BOUNDS = { min: 500, max: MAX_LLM_TIMEOUT_MS } as const;
 
 /**
- * Per-attempt deadline for a provider request.
+ * Bounds-check one CLAUDE_MEM_*_TIMEOUT_MS value (env or settings.json).
  *
- * 30s suits a hosted provider and is far too short for a local model: a
- * report on an Ollama backend measured successful requests with a median of
- * 21s and a p99 of 29.8s, so the deadline was truncating work that had
- * already been computed. The value was unreachable from configuration, and
- * the workaround was editing the installed bundle after every update.
+ * Complete integer only. parseInt('90000ms') would silently accept a typo
+ * as 90000 — Greptile reproduced that on #3808. settings.json values come
+ * back as parsed JSON, so a bare number (90000) arrives as a number, not a
+ * string. Only a string or a number is accepted: String([90000]) would read
+ * as "90000". A falsy value (unset, empty) falls back without a warning.
  *
- * Read here rather than through worker-utils' readTimeoutEnv: this module is
- * a leaf that imports only the logger and the error classifier, and that one
- * pulls in the supervisor and telemetry.
+ * `fallbackMs` is the caller's own default, so each resolver keeps its default
+ * where the value lives instead of every caller inheriting one constant.
  */
-export function resolveLlmTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.CLAUDE_MEM_LLM_TIMEOUT_MS;
-  if (!raw) return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
-  // Complete integer only. parseInt('90000ms') would silently accept a typo
-  // as 90000 — Greptile reproduced that on #3808.
-  const trimmed = raw.trim();
+function parseTimeoutMs(raw: unknown, keyName: string, fallbackMs: number): number {
+  if (!raw) return fallbackMs;
+  const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
   const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
   if (
     Number.isFinite(parsed)
@@ -76,17 +75,73 @@ export function resolveLlmTimeoutMs(env: NodeJS.ProcessEnv = process.env): numbe
   ) {
     return parsed;
   }
-  logger.warn('SDK', 'Invalid CLAUDE_MEM_LLM_TIMEOUT_MS, using default', {
+  logger.warn('SDK', `Invalid ${keyName}, using default`, {
     value: raw,
     min: LLM_TIMEOUT_BOUNDS.min,
     max: LLM_TIMEOUT_BOUNDS.max,
   });
-  return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
+  return fallbackMs;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal'>> = {
+/**
+ * Per-attempt deadline for a provider request.
+ *
+ * The deadline catches a hung request; it must sit above normal latency, or it
+ * abandons work the backend already computed — and, on a metered backend, work
+ * that can still be billed. The old 30s did exactly that twice over: an Ollama
+ * backend measured a p99 of 29.8s (#3794), and the cmem.ai gateway runs p90
+ * 40–72s, p99 ~100–140s, so ~20% of its served requests were cut off. The
+ * default (DEFAULT_LLM_TIMEOUT_MS) now clears that tail; see its note.
+ *
+ * Resolved like every other CLAUDE_MEM_* setting — env override first, then
+ * ~/.claude-mem/settings.json — and on every call, so a settings change takes
+ * effect without a restart. Read here rather than through worker-utils'
+ * readTimeoutEnv, which pulls in the supervisor and telemetry.
+ */
+export function resolveLlmTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_LLM_TIMEOUT_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_LLM_TIMEOUT_MS;
+  return parseTimeoutMs(raw, 'CLAUDE_MEM_LLM_TIMEOUT_MS', DEFAULT_LLM_TIMEOUT_MS);
+}
+
+/**
+ * The remedy an expired deadline carries, naming the place the deadline is
+ * actually read from. Whenever the env var is set, resolveLlmTimeoutMs never
+ * reads settings.json (an unusable value falls back to the default, not to the
+ * file), so advising a settings.json edit then would change nothing.
+ */
+function llmTimeoutRemedy(): string {
+  return process.env.CLAUDE_MEM_LLM_TIMEOUT_MS === undefined
+    ? `Raise CLAUDE_MEM_LLM_TIMEOUT_MS in ~/.claude-mem/settings.json (up to ${LLM_TIMEOUT_BOUNDS.max}) if the backend is simply slow.`
+    : `Raise CLAUDE_MEM_LLM_TIMEOUT_MS (up to ${LLM_TIMEOUT_BOUNDS.max}) if the backend is simply slow. `
+      + 'It is set in your environment, which overrides ~/.claude-mem/settings.json, so change it there.';
+}
+
+/**
+ * Deadline for one oversized-field condensation pass (field-optimizer.ts).
+ *
+ * The field pass races a bounded model call against this deadline; on expiry
+ * the observation falls back to head/tail truncation, so a backend slower than
+ * the deadline silently loses field detail. The default is the observer
+ * request's (FIELD_OPTIMIZE_TIMEOUT_MS; see there for why).
+ * Resolved with the same env-first, then settings.json, per-call rules as
+ * resolveLlmTimeoutMs and sharing the same bounds, so it is reachable from
+ * configuration instead of being frozen in the shipped bundle.
+ */
+export function resolveFieldOptimizeTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS;
+  return parseTimeoutMs(raw, 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', FIELD_OPTIMIZE_TIMEOUT_MS);
+}
+
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal' | 'perAttemptTimeoutMs'>> = {
   maxRetries: 2,
-  perAttemptTimeoutMs: resolveLlmTimeoutMs(),
   baseDelayMs: 100,
   maxDelayMs: 30_000,
 };
@@ -116,7 +171,11 @@ export async function withRetry<T>(
   fn: (attemptSignal: AbortSignal) => Promise<T>,
   options: RetryOptions = {},
 ): Promise<T> {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const opts = {
+    ...DEFAULT_OPTIONS,
+    ...options,
+    perAttemptTimeoutMs: options.perAttemptTimeoutMs ?? resolveLlmTimeoutMs(),
+  };
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
@@ -139,21 +198,29 @@ export async function withRetry<T>(
     } catch (err: unknown) {
       lastError = err;
 
-      // Our own deadline, not a network blip. The abort surfaces with no HTTP  // status, so it classifies as transient and was retried twice — against a
-      // backend that is already saturated, those attempts are what turn a
-      // latency problem into a congestion collapse. Raise the deadline instead.
+      // Our own deadline, not a network blip. Retrying it in-loop against a
+      // backend that is already saturated is what turns a latency problem into
+      // a congestion collapse, so it throws immediately. It is still a
+      // transient condition: classified as such, the session preserves its
+      // buffered work for the next generator instead of finalizing with
+      // reason=null and dropping it. The code keeps it apart from a network
+      // fault — we abandoned a request the backend may still bill — and the
+      // action is the remedy the session-start warning shows for it.
       if (deadlineExpired) {
-        throw new Error(
-          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline. `
-          + 'Raise CLAUDE_MEM_LLM_TIMEOUT_MS if the backend is simply slow.',
-          { cause: err },
+        throw new ClassifiedProviderError(
+          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline.`,
+          {
+            kind: 'transient',
+            code: DEADLINE_EXCEEDED_CODE,
+            action: llmTimeoutRemedy(),
+            cause: err,
+          },
         );
       }
 
       if (!isRetryableKind(err)) {
         throw err;
       }
-    
 
       if (attempt === opts.maxRetries) {
         throw err;

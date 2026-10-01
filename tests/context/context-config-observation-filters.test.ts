@@ -78,5 +78,23 @@ describe('CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES / _CONCEPTS reach the injection q
       expect([...config.observationTypes].sort()).toEqual([...modeTypes].sort());
       expect([...config.observationConcepts].sort()).toEqual([...modeConcepts].sort());
     });
+
+    // A CLAUDE_MEM_MODE switch leaves the previous mode's ids in settings;
+    // matching none of them used to inject "0 obs" over a full database.
+    it('falls back to the active mode lists when every configured id belongs to another mode', () => {
+      process.env[TYPES_KEY] = 'case-holding,issue-pattern';
+      process.env[CONCEPTS_KEY] = 'rule-statement,exam-trap';
+
+      const config = loadContextConfig();
+
+      expect([...config.observationTypes].sort()).toEqual([...modeTypes].sort());
+      expect([...config.observationConcepts].sort()).toEqual([...modeConcepts].sort());
+    });
+
+    it('keeps the valid ids and drops stale ones from a mixed list', () => {
+      process.env[TYPES_KEY] = 'bugfix,case-holding,decision';
+
+      expect([...loadContextConfig().observationTypes].sort()).toEqual(['bugfix', 'decision']);
+    });
   });
 });
