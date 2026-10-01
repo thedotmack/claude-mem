@@ -142,17 +142,20 @@ const WORKER_MERGE_TIMEOUT_MS = 10 * 60 * 1000;
  * worker failure is raised rather than retried here, so a merge never runs
  * twice against two writers (gate P2-4).
  */
-export async function runProjectMergeCommand(opts: {
-  from: string;
-  into: string;
-  dryRun?: boolean;
-  /** Data directory for the in-process fallback (tests). */
-  dataDirectory?: string;
-}): Promise<ProjectMergeResult & { ranIn: 'worker' | 'cli' }> {
+export async function runProjectMergeCommand(
+  opts: {
+    from: string;
+    into: string;
+    dryRun?: boolean;
+    /** Data directory for the in-process fallback (tests). */
+    dataDirectory?: string;
+  },
+  requestWorker: typeof workerHttpRequest = workerHttpRequest,
+): Promise<ProjectMergeResult & { ranIn: 'worker' | 'cli' }> {
   const dryRun = opts.dryRun ?? false;
   let response: Response | null = null;
   try {
-    response = await workerHttpRequest('/api/projects/merge', {
+    response = await requestWorker('/api/projects/merge', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from: opts.from, into: opts.into, dryRun }),
