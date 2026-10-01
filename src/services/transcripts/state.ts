@@ -14,6 +14,13 @@ export interface TranscriptWatchState {
    * predate this field and simply have no partials.
    */
   partials?: Record<string, string>;
+  /**
+   * zstd files only: how many lines of the frame at the offset were already
+   * dispatched when a turn later in that frame failed. The retry, in this
+   * process or after a restart, resumes at the failed line, not at the frame
+   * start.
+   */
+  frameLines?: Record<string, number>;
 }
 
 export function loadWatchState(statePath: string): TranscriptWatchState {

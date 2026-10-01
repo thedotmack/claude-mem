@@ -400,23 +400,37 @@ export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescrip
           message('Loading OpenCode installer…');
           const {
             installOpenCodeIntegration,
+            getOpenCodeAgentsMdPath,
             OPENCODE_MCP_REGISTRATION_INCOMPLETE,
+            OPENCODE_OLD_CONTEXT_BLOCK_LEFT,
           } = await import('../../services/integrations/OpenCodeInstaller.js');
           message('Installing OpenCode plugin…');
           const { result, output } = await bufferConsole(() => installOpenCodeIntegration());
           if (result === OPENCODE_MCP_REGISTRATION_INCOMPLETE) {
-            // The plugin and AGENTS.md context are installed; only the MCP entry
-            // is missing. That is a partial install, not a failed IDE: record a
-            // WARN_CONTINUE warning (exit 0) and keep the integration's captured
-            // output so its remediation reaches the user after the spinners.
+            // The plugin is installed; only the MCP entry is missing. That is a
+            // partial install, not a failed IDE: record a WARN_CONTINUE warning
+            // (exit 0) and keep the integration's captured output so its
+            // remediation reaches the user after the spinners.
             installerError(ErrorSeverity.WARN_CONTINUE, {
               component: 'opencode',
               phase: 'ide-install',
-              cause: new Error('OpenCode plugin + context installed, but MCP registration is incomplete (mcp-server.cjs not found).'),
+              cause: new Error('OpenCode plugin installed, but MCP registration is incomplete (mcp-server.cjs not found).'),
               remediation: 'Restore the plugin build, then re-run `npx claude-mem install --ide=opencode` to register the MCP server.',
               details: output,
             }, summary);
-            return `OpenCode: plugin + context installed; MCP registration incomplete ${styleText('yellow', '!')}`;
+            return `OpenCode: plugin installed; MCP registration incomplete ${styleText('yellow', '!')}`;
+          }
+          if (result === OPENCODE_OLD_CONTEXT_BLOCK_LEFT) {
+            // Installed, but the stale memory block an older install wrote into
+            // the global AGENTS.md is still there: a warning with the remedy.
+            installerError(ErrorSeverity.WARN_CONTINUE, {
+              component: 'opencode',
+              phase: 'ide-install',
+              cause: new Error(`OpenCode plugin installed, but the old claude-mem memory block in ${getOpenCodeAgentsMdPath()} could not be removed; OpenCode shows it in every project.`),
+              remediation: 'Delete the <claude-mem-context> block from that file (or fix its permissions and re-run `npx claude-mem install --ide=opencode`).',
+              details: output,
+            }, summary);
+            return `OpenCode: plugin installed; old AGENTS.md memory block left in place ${styleText('yellow', '!')}`;
           }
           if (result !== 0) {
             recordFailure('OpenCode: plugin installation failed', output);
@@ -2106,16 +2120,16 @@ async function promptTelemetryOptIn(): Promise<void> {
 /**
  * Whether an install still has an account question to answer.
  *
- * `--provider claude`, `--provider codex`, and `--provider host` are exempt:
- * they use the user's existing local credentials and need no claude-mem
- * account. `gemini` and
- * `openrouter` are NOT exempt — openrouter is the transport for the cmem
- * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
- * With no flag at all the provider screen can still offer CMEM Pro, so login
- * must happen first.
+ * `--provider claude` and `--provider host` are exempt: they use the user's
+ * existing local credentials and need no claude-mem account. `gemini`,
+ * `openrouter` and `codex` are NOT exempt — openrouter is the transport for
+ * the cmem gateway, so an explicit `openrouter` install may still be reaching
+ * cmem.ai, and gemini and codex are bring-your-own providers that sign in
+ * like any other. With no flag at all the provider screen can still offer
+ * CMEM Pro, so login must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'codex' && provider !== 'host';
+  return provider !== 'claude' && provider !== 'host';
 }
 
 export interface InstallOptions {
@@ -2745,11 +2759,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
-      : options.provider === 'codex'
-        ? '--provider codex uses the local Codex subscription login.'
-        : options.providerSource === 'default'
-          ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
-          : '--provider claude runs memory on your own Anthropic plan.';
+      : options.providerSource === 'default'
+        ? 'no --provider was given, so memory defaults to your own Anthropic plan.'
+        : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);

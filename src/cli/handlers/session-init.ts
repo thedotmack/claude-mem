@@ -64,8 +64,43 @@ export function setSessionInitDependenciesForTesting(
   dependencies = { ...defaultDependencies, ...overrides };
 }
 
+/**
+ * The worker did not record the prompt for a reason that passes: it was
+ * unreachable, answered 429/5xx, or the budget ran out before the call. Only
+ * recordSessionPrompt throws this; the hook handler stays fail-open.
+ *
+ * A rejection that does not pass (a server-runtime 4xx, a reply the hook
+ * cannot read) is not thrown: a retry could never succeed, and the transcript
+ * watcher would stop on that turn for good, holding back every later turn in
+ * the file. It is logged and the turn moves on.
+ */
+export class SessionPromptNotRecordedError extends Error {
+  constructor(readonly reason: string) {
+    super(`session-init did not record the prompt (${reason})`);
+    this.name = 'SessionPromptNotRecordedError';
+  }
+}
+
 export const sessionInitHandler: EventHandler = {
-  async execute(input: NormalizedHookInput): Promise<HookResult> {
+  execute(input: NormalizedHookInput): Promise<HookResult> {
+    return sessionInit.run(input, false);
+  },
+};
+
+/**
+ * The transcript watcher's anchor for a turn (#3653): the hook's own path,
+ * except that a prompt the worker did not record throws
+ * SessionPromptNotRecordedError instead of returning the fail-open no-op, so
+ * the watcher retries the turn rather than filing its observations under no
+ * prompt. Deliberate skips (excluded project, internal or private prompt)
+ * still return normally.
+ */
+export function recordSessionPrompt(input: NormalizedHookInput): Promise<HookResult> {
+  return sessionInit.run(input, true);
+}
+
+const sessionInit = {
+  async run(input: NormalizedHookInput, requireRecordedPrompt: boolean): Promise<HookResult> {
     const { sessionId, prompt: rawPrompt, submittedPrompt } = input;
     const cwd = input.cwd ?? process.cwd();  
 
@@ -155,6 +190,9 @@ export const sessionInitHandler: EventHandler = {
           });
           // fall through to worker fallback
         } else {
+          // Not thrown for recordSessionPrompt either: a rejection that does
+          // not pass would stop the transcript watcher on this turn for good
+          // (see SessionPromptNotRecordedError).
           logger.error('HOOK', 'Server session-start failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -171,6 +209,7 @@ export const sessionInitHandler: EventHandler = {
         project,
         remainingMs: initTimeoutMs,
       });
+      if (requireRecordedPrompt) throw new SessionPromptNotRecordedError('budget_exhausted');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
@@ -191,6 +230,9 @@ export const sessionInitHandler: EventHandler = {
     );
 
     if (dependencies.isWorkerFallback(initResult)) {
+      if (requireRecordedPrompt) {
+        throw new SessionPromptNotRecordedError('reason' in initResult ? initResult.reason : 'worker_fallback');
+      }
       // The prompt always goes through. Once an outage has tripped the
       // fail-loud latch, tell the user once per session: UserPromptSubmit is
       // synchronous, so its systemMessage is shown to them.

@@ -20,13 +20,10 @@ afterAll(() => {
   mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
 });
 
+const fakeSessionInit = async () => ({ continue: true, suppressOutput: true });
 mock.module('../../src/cli/handlers/session-init.js', () => ({
-  sessionInitHandler: {
-    execute: async () => ({
-      continue: true,
-      suppressOutput: true,
-    }),
-  },
+  sessionInitHandler: { execute: fakeSessionInit },
+  recordSessionPrompt: fakeSessionInit,
 }));
 
 const workerHttpRequestCalls: string[] = [];

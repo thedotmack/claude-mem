@@ -872,29 +872,45 @@ describe("OpenCode plugin lifecycle (#3208)", () => {
     }
   });
 
-  it("retries a failed context fetch on the next build instead of caching the failure", async () => {
+  it("remembers a failed context fetch for a minute, then tries again (R5-7)", async () => {
+    // A hung or failing worker must cost one bounded request a minute, not the
+    // full request timeout on every system prompt OpenCode builds.
     const originalFetch = globalThis.fetch;
     const originalWarn = console.warn;
+    const originalNow = Date.now;
     console.warn = () => {};
     const requests: Request[] = [];
     let workerUp = false;
+    let now = 1_000_000;
+    Date.now = () => now;
     captureRequests(requests, () => (workerUp ? new Response("# late context") : new Response("down", { status: 503 })));
+    const injects = () => requests.filter((request) => request.url.pathname === "/api/context/inject").length;
     try {
       const plugin = await ClaudeMemPlugin(pluginCtx);
       const transform = plugin["experimental.chat.system.transform"];
 
-      const beforeWorker = { system: [] as string[] };
-      await transform({ sessionID: "ses_ctx_retry" }, beforeWorker);
+      const failed = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, failed);
       await new Promise((resolve) => setTimeout(resolve, 0));
       workerUp = true;
-      const afterWorker = { system: [] as string[] };
-      await transform({ sessionID: "ses_ctx_retry" }, afterWorker);
 
-      expect(beforeWorker.system).toEqual([]);
-      expect(afterWorker.system).toEqual(["# late context"]);
+      now += 59_000;
+      const withinTheMinute = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, withinTheMinute);
+      expect(injects()).toBe(1);
+
+      now += 2_000;
+      const afterTheMinute = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, afterTheMinute);
+
+      expect(failed.system).toEqual([]);
+      expect(withinTheMinute.system).toEqual([]);
+      expect(afterTheMinute.system).toEqual(["# late context"]);
+      expect(injects()).toBe(2);
     } finally {
       globalThis.fetch = originalFetch;
       console.warn = originalWarn;
+      Date.now = originalNow;
     }
   });
 
