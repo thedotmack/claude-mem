@@ -315,12 +315,10 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     // An effort Codex does not know fails every Codex request, and the
-    // app-server takes any string. Checked only when this request changes it:
-    // the viewer posts the whole settings object back, so a value already in
-    // settings.json must not turn every unrelated save into a 400.
+    // app-server takes any string. Like every rule here, it sees only the
+    // values this save changes (settingsChangedBy).
     const codexEffort = settings.CLAUDE_MEM_CODEX_REASONING_EFFORT;
-    if (typeof codexEffort === 'string' && codexEffort.trim() && !isCodexReasoningEffort(codexEffort.trim())
-      && codexEffort !== SettingsDefaultsManager.loadFromFile(paths.settings()).CLAUDE_MEM_CODEX_REASONING_EFFORT) {
+    if (typeof codexEffort === 'string' && codexEffort.trim() && !isCodexReasoningEffort(codexEffort.trim())) {
       return {
         valid: false,
         error: `CLAUDE_MEM_CODEX_REASONING_EFFORT must be empty (Codex's default) or one of: ${CODEX_REASONING_EFFORTS.join(', ')}`,
