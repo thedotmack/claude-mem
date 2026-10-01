@@ -122,8 +122,6 @@ export interface CodexAppServerTurnOptions {
   prompt: string;
   timeoutMs: number;
   signal?: AbortSignal;
-  /** Initialization may complete with an empty structured content string. */
-  allowEmptyContent?: boolean;
   /** Recheck caller-owned admission after waiting in the serialized queue. */
   beforeSend?: () => void;
   /** Publish admission failures before releasing the queue to the next caller. */
@@ -233,6 +231,13 @@ export const CODEX_SETUP_REQUIRED_CODE = 'codex_setup_required';
 function codexSetupError(message: string): Error {
   return Object.assign(new Error(message), { code: CODEX_SETUP_REQUIRED_CODE });
 }
+
+/**
+ * `code` on a turn that completed without any agent message: an anomaly worth
+ * one retry, never a refusal, so it is classified by code rather than by its
+ * diagnostic text.
+ */
+export const CODEX_NO_AGENT_MESSAGE_CODE = 'codex_no_agent_message';
 
 function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
   const root = mkdtempSync(join(tmpdir(), APP_SERVER_WORKDIR_PREFIX));
@@ -475,7 +480,10 @@ export class CodexAppServerClient {
         throw codexTurnError(`Codex app-server turn ${String(active.terminalTurn.status)}`, active.terminalTurn.error);
       }
       if (active.finalText === null) {
-        throw new Error(`Codex app-server completed without a final agent message (${this.describeEmptyTurn(active)})`);
+        throw Object.assign(
+          new Error(`Codex app-server completed without a final agent message (${this.describeEmptyTurn(active)})`),
+          { code: CODEX_NO_AGENT_MESSAGE_CODE },
+        );
       }
 
       let structured: unknown;
@@ -488,8 +496,14 @@ export class CodexAppServerClient {
         throw new Error('Codex app-server structured output omitted string content');
       }
       const content = structured.content.trim();
-      if (!content && !options.allowEmptyContent) {
-        throw new Error(`Codex app-server returned empty structured content (${this.describeEmptyTurn(active)})`);
+      if (!content) {
+        // The model's answer, passed on as one: the observer's skip contract
+        // (ResponseProcessor) decides what an empty reply to queued work means.
+        // Retrying it here as a transport fault re-sent the whole history and
+        // kept the batch pending without bound. Counts only, never the text.
+        logger.warn('SDK', 'Codex app-server returned empty structured content', {
+          diagnostics: this.describeEmptyTurn(active),
+        });
       }
       return { content, ...normalizeUsage(active.tokenUsage) };
     } finally {

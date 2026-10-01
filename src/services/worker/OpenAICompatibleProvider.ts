@@ -104,11 +104,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult>;
 
-  /** Allow providers to apply initialization-only response handling. */
-  protected queryForInitialization(history: ConversationMessage[], config: TConfig): Promise<ProviderQueryResult> {
-    return this.query(history, config);
-  }
-
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
    *
@@ -258,7 +253,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
-      const initResponse = await this.queryForInitialization(session.conversationHistory, config);
+      const initResponse = await this.query(session.conversationHistory, config);
       this.handleInitResponse(initResponse, session, model);
     } catch (error: unknown) {
       if (await this.recycleOnContextOverflow(error, session, worker)) return;

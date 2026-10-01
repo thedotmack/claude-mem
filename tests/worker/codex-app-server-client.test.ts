@@ -8,8 +8,10 @@ import {
   buildCodexAppServerEnv,
   buildCodexAppServerThreadConfig,
   CodexAppServerClient,
+  CODEX_NO_AGENT_MESSAGE_CODE,
 } from '../../src/services/worker/CodexAppServerClient.js';
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
+import { logger } from '../../src/utils/logger.js';
 
 const itPosix = process.platform === 'win32' ? it.skip : it;
 
@@ -165,35 +167,38 @@ it('waits for the final turn state when Codex retries an error itself', async ()
   }
 });
 
-itPosix('retries one empty structured app-server response and accepts the next turn', async () => {
-  const fake = createFakeCodex({ mode: 'empty-first-turn' });
+itPosix('passes an empty structured reply on in one turn and logs counts, never the text', async () => {
+  const fake = createFakeCodex({ mode: 'empty-always' });
   const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
   const provider = new CodexProvider(null as any, null as any) as any;
   provider.appServer = client;
+  const warn = spyOn(logger, 'warn');
   try {
     const result = await provider.query([{ role: 'user', content: 'Remember this.' }], {
-      apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null, timeoutMs: 5000,
+      apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null,
     });
-    expect(result.content).toContain('<title>Turn 2</title>');
-    expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(2);
+    expect(result.content).toBe('');
+    expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
+    const logged = warn.mock.calls.find(call => call[1] === 'Codex app-server returned empty structured content');
+    expect(JSON.stringify(logged)).toContain('agentMessages=1');
+    expect(JSON.stringify(logged)).not.toContain('content\\":');
   } finally {
+    warn.mockRestore();
     await client.close();
     rmSync(fake.root, { recursive: true, force: true });
   }
 });
 
-itPosix('fails after one retry when structured content stays empty without logging response text', async () => {
-  const fake = createFakeCodex({ mode: 'empty-always' });
+itPosix('retries a turn without an agent message once, then passes an empty reply on', async () => {
+  const fake = createFakeCodex({ mode: 'missing-message' });
   const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
   const provider = new CodexProvider(null as any, null as any) as any;
   provider.appServer = client;
   try {
-    const error = await provider.query([{ role: 'user', content: 'Remember this.' }], {
-      apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null, timeoutMs: 5000,
-    }).then(() => null, (caught: unknown) => caught);
-    expect(error).toHaveProperty('kind', 'transient');
-    expect((error as Error).message).toContain('agentMessages=1');
-    expect((error as Error).message).not.toContain('"content"');
+    const result = await provider.query([{ role: 'user', content: 'Remember this.' }], {
+      apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null,
+    });
+    expect(result.content).toBe('');
     expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(2);
   } finally {
     await client.close();
@@ -208,6 +213,7 @@ itPosix('describes a completed turn without an agent message', async () => {
     const error = await client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
       prompt: 'Summarize.', timeoutMs: 5000 }).then(() => null, (caught: unknown) => caught);
     expect((error as Error).message).toContain('completedItems=0, terminalItems=0, agentMessages=0, finalTextBytes=0');
+    expect(error).toHaveProperty('code', CODEX_NO_AGENT_MESSAGE_CODE);
   } finally {
     await client.close();
     rmSync(fake.root, { recursive: true, force: true });
