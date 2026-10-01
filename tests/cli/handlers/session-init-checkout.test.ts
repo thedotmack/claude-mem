@@ -43,6 +43,7 @@ describe('sessionInitHandler sends the checkout and its key source (gate P1-2)',
         }),
         resolveRuntimeContext: () => ({ runtime: 'worker' }),
         shouldTrackProject: () => true,
+        getSessionInitRequestTimeoutMs: () => 12000,
         executeWithWorkerFallback: async (apiPath, method, body) => {
           if (apiPath === '/api/sessions/init') initBodies.push(body);
           return { sessionDbId: 42, promptNumber: 1 };
