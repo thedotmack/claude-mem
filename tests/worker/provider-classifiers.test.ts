@@ -221,6 +221,32 @@ describe('classifyOpenRouterError', () => {
     expect(err.retryAfterMs).toBe(10_000);
   });
 
+  // A 429 naming a daily limit lasts until the day turns over. As a rate limit
+  // it would hold only the short throttle window and probe every ninety
+  // seconds until then.
+  it('classifies the free-models-per-day 429 as quota_exhausted', () => {
+    const err = classifyOpenRouterError({
+      status: 429,
+      bodyText: JSON.stringify({ error: {
+        message: 'Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day',
+        code: 429,
+      } }),
+      headers: new Headers(),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('keeps the free-models-per-min 429 a rate_limit', () => {
+    const err = classifyOpenRouterError({
+      status: 429,
+      bodyText: JSON.stringify({ error: { message: 'Rate limit exceeded: free-models-per-min.', code: 429 } }),
+      headers: new Headers(),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
   it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
     const err = classifyOpenRouterError({
       status: 500,

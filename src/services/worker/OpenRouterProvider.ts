@@ -129,6 +129,16 @@ function isContextOverflowBody(body: string): boolean {
 }
 
 /**
+ * A 429 that names a limit of a day or longer ("Rate limit exceeded:
+ * free-models-per-day"). That is a spent allowance until the period turns
+ * over, not a throttle: as a rate limit it would hold only the short breaker
+ * window (quota-cooldown's RATE_LIMIT_RECHECK_COOLDOWN_MS) and send a doomed
+ * probe every ninety seconds until the reset. The per-minute limits
+ * ("free-models-per-min") stay rate limits.
+ */
+const PERIOD_RATE_LIMIT = /limit exceeded:\s*[\w-]*per-(day|week|month)\b/;
+
+/**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
  * at the boundary right after `fetch()` returns or throws.
  */
@@ -197,6 +207,7 @@ export function classifyOpenRouterError(input: {
     // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
     // marker only applies off the 429 path (the key-limit marker always wins).
     (lower.includes('limit exceeded') && status !== 429) ||
+    (status === 429 && PERIOD_RATE_LIMIT.test(lower)) ||
     lower.includes('negative credit') ||
     status === 402
   ) {
