@@ -46,6 +46,22 @@ describe('OpenCode CLI install task', () => {
     expect(line).not.toContain('FAIL');
   });
 
+  it('warns, without failing the IDE, when an old AGENTS.md memory block could not be removed', async () => {
+    installResult = realOpenCodeInstallerModule.OPENCODE_OLD_CONTEXT_BLOCK_LEFT;
+    const summary = createInstallSummary();
+
+    const descriptor = makeIDETask('opencode', summary);
+    const line = await descriptor!.task(() => {});
+
+    expect(summary.failedIDEs).toEqual([]);
+    expect(summary.warnings).toHaveLength(1);
+    expect(summary.warnings[0]?.component).toBe('opencode');
+    expect(summary.warnings[0]?.message).toContain('AGENTS.md');
+    expect(summary.warnings[0]?.remediation).toContain('<claude-mem-context>');
+    expect(line).toContain('old AGENTS.md memory block');
+    expect(line).not.toContain('FAIL');
+  });
+
   it('still records a hard failure for any other non-zero result', async () => {
     installResult = 1;
     const summary = createInstallSummary();

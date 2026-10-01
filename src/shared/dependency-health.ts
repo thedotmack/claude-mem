@@ -125,8 +125,13 @@ export function recordClaudeSetupRequired(error: { message: string; code?: strin
   return recordClaudeCliSetupRequired(error.message, error.executablePath);
 }
 
-export function recordCodexCliSetupRequired(message: string): DependencyStatus {
-  return recordDependencyStatus('codex_cli', 'setup_required', message, CODEX_CLI_SETUP_REMEDIATION);
+/**
+ * `remediation` is the classified failure's own remedy when it has one (a model
+ * or effort Codex does not serve, an isolation it cannot attest); the install
+ * and login steps cover the rest.
+ */
+export function recordCodexCliSetupRequired(message: string, remediation: string = CODEX_CLI_SETUP_REMEDIATION): DependencyStatus {
+  return recordDependencyStatus('codex_cli', 'setup_required', message, remediation);
 }
 
 export function recordUvxVectorSearchUnavailable(message: string): DependencyStatus {

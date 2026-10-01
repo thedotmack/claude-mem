@@ -16,6 +16,7 @@ import { snapshotDependencyHealth } from '../../../../shared/dependency-health.j
 import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
 import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
+import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -52,18 +53,32 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
 ]);
 
-function maskSecretValue(value: unknown): unknown {
-  if (typeof value !== 'string' || value.length === 0) return value;
+function maskSecretString(value: string): string {
   if (value.length <= 4) return '*'.repeat(value.length);
   return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`;
+}
+
+/**
+ * A secret as GET may show it, in every shape settings.json can hold: a string
+ * (a single key, or a comma/newline list, masked as a whole), an array (a key
+ * pool written as JSON: each entry masked), or anything else (hidden whole).
+ * Empty values stay as they are, so the viewer can tell "unset" apart.
+ */
+function maskSecretValue(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') return value;
+  if (typeof value === 'string') return maskSecretString(value);
+  if (Array.isArray(value)) return value.map(entry => (typeof entry === 'string' ? maskSecretString(entry) : '****'));
+  return '****';
 }
 
 // Viewer save posts the GET body back unchanged. Treat a secret as untouched
 // only when the submitted value equals the mask of the currently stored
 // secret — not "any string starting with *", which would silently drop a
-// legitimate replacement key that happens to begin with '*'.
+// legitimate replacement key that happens to begin with '*'. Arrays compare
+// entry by entry, so a pool written as JSON survives a save too.
 function isUnchangedMaskedSecret(incoming: unknown, stored: unknown): boolean {
-  return typeof incoming === 'string' && incoming === maskSecretValue(stored);
+  if (incoming === undefined || incoming === null || incoming === '') return false;
+  return JSON.stringify(incoming) === JSON.stringify(maskSecretValue(stored));
 }
 
 function redactSecretSettings<T extends object>(settings: T): T {
@@ -284,6 +299,19 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (settings[key] !== undefined && typeof settings[key] !== 'string') {
         return { valid: false, error: `${key} must be a string` };
       }
+    }
+
+    // An effort Codex does not know fails every Codex request, and the
+    // app-server takes any string. Checked only when this request changes it:
+    // the viewer posts the whole settings object back, so a value already in
+    // settings.json must not turn every unrelated save into a 400.
+    const codexEffort = settings.CLAUDE_MEM_CODEX_REASONING_EFFORT;
+    if (typeof codexEffort === 'string' && codexEffort.trim() && !isCodexReasoningEffort(codexEffort.trim())
+      && codexEffort !== SettingsDefaultsManager.loadFromFile(paths.settings()).CLAUDE_MEM_CODEX_REASONING_EFFORT) {
+      return {
+        valid: false,
+        error: `CLAUDE_MEM_CODEX_REASONING_EFFORT must be empty (Codex's default) or one of: ${CODEX_REASONING_EFFORTS.join(', ')}`,
+      };
     }
 
     if (settings.CLAUDE_MEM_PROVIDER) {

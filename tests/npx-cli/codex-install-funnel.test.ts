@@ -1,7 +1,8 @@
-// `--provider codex` is a bring-your-own option, like `--provider claude`. It
+// `--provider codex` is a bring-your-own option, like `--provider gemini`. It
 // must not change the sign-in funnel: the interactive menu stays CMEM Pro
-// (pre-selected) and Claude, and a non-interactive Codex install still ends
-// with the deferred sign-in link.
+// (pre-selected) and Claude, and a Codex install signs in like any other
+// bring-your-own provider. #4216 had exempted it from the sign-in (Wave 3 gate
+// R4-4); the plan's verdict for that PR was "flag + viewer only".
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -20,20 +21,33 @@ describe('Codex install keeps the sign-in funnel', () => {
     expect(menu).not.toContain('codex');
   });
 
-  it('skips the blocking sign-in for --provider codex, like --provider claude', () => {
-    expect(providerNeedsAccount('codex')).toBe(false);
+  it('runs the blocking sign-in for --provider codex, like the other bring-your-own providers', () => {
+    expect(providerNeedsAccount('codex')).toBe(true);
+    expect(providerNeedsAccount('gemini')).toBe(true);
+    expect(providerNeedsAccount('openrouter')).toBe(true);
+    // Only the local Anthropic plan and the host observer skip it.
     expect(providerNeedsAccount('claude')).toBe(false);
-    expect(providerNeedsAccount(undefined)).toBe(true);
+    expect(providerNeedsAccount('host')).toBe(false);
   });
 
-  it('still offers the deferred sign-in link at the end of a non-interactive --provider codex install', () => {
+  it('routes a --provider codex install to the sign-in, never to a skip', () => {
+    const gateStart = installSource.indexOf('let oauthPairing: InstallerOAuthPairing | null = null;');
+    const gateEnd = installSource.indexOf('const selectedProvider = await promptProvider(options, oauthPairing, version);');
+    expect(gateStart).toBeGreaterThan(-1);
+    expect(gateEnd).toBeGreaterThan(gateStart);
+    const gate = installSource.slice(gateStart, gateEnd);
+    expect(gate).toMatch(
+      /\} else if \(providerNeedsAccount\(options\.provider\)\) \{\s*\n\s*oauthPairing = await requireInstallerOAuthLogin\(version\);/,
+    );
+    // The skip branch names only the providers that need no account.
+    expect(gate.slice(gate.indexOf('const skipReason'))).not.toContain('codex');
+  });
+
+  it('keeps the deferred sign-in link for installs that skipped the sign-in, which a Codex install no longer does', () => {
     const start = installSource.indexOf('export async function offerDeferredLogin(');
     expect(start).toBeGreaterThan(-1);
     const helper = installSource.slice(start, installSource.indexOf('\n}\n', start));
-    // The offer is skipped only for an install that already signed in, and
-    // providerNeedsAccount('codex') is false, so a Codex install reaches it.
     expect(helper).toContain('if (providerNeedsAccount(options.provider)) return;');
     expect(helper).not.toContain('codex');
-    expect(installSource).toContain('await offerDeferredLogin(options, version)');
   });
 });

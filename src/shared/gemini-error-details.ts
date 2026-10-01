@@ -73,3 +73,25 @@ export function parseGeminiErrorDetails(bodyText: string): GeminiErrorDetails {
   }
   return result;
 }
+
+/**
+ * Google serves the Gemini API in some regions only; elsewhere every request
+ * answers "User location is not supported" (a 400 FAILED_PRECONDITION, or a
+ * 403). No retry helps, no other key helps, and the batch is not at fault.
+ * The worker pauses on it the way it does on a refused key (buffered work
+ * kept, one cooldown) and its key pool never rotates on it (api-key-pool.ts);
+ * the server runtime fails the job without retrying. Both use this one
+ * detector and these words, so the two never disagree.
+ */
+export const GEMINI_REGION_REFUSAL_CODE = 'location_unsupported';
+
+export const GEMINI_REGION_REFUSAL_ACTION =
+  'The Gemini API does not serve this region. Set CLAUDE_MEM_PROVIDER to another provider.';
+
+export function isGeminiRegionRefusal(status: number | undefined, bodyText: string): boolean {
+  return (status === 400 || status === 403) && bodyText.toLowerCase().includes('location is not supported');
+}
+
+export function geminiRegionRefusalMessage(status: number): string {
+  return `Gemini is not available in this region (status ${status})`;
+}

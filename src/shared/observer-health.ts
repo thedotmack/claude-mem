@@ -339,9 +339,11 @@ export function isObserverUnhealthy(state: ObserverHealthState | null): state is
   // The threshold lets a blip self-heal before it warns. A refused credential
   // is not a blip — the provider said so — and the cooldown armed with it
   // allows no second attempt for a while, so waiting for the threshold would
-  // hide the one remedy (a new key) for over an hour.
+  // hide the one remedy (a new key) for over an hour. A setup failure is the
+  // same: it fails every request until the user acts, and its gate re-checks
+  // only every few minutes.
   return state !== null
-    && (state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD || isAuthFailure(state))
+    && (state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD || isAuthFailure(state) || isSetupFailure(state))
     && (state.lastErrorAt ?? 0) > (state.lastSuccessAt ?? 0);
 }
 
@@ -393,6 +395,14 @@ export function isQuotaFailure(state: ObserverHealthState): boolean {
 /** True when the current outage is the provider refusing the observer's credential. */
 export function isAuthFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'auth_invalid';
+}
+
+/**
+ * True when the current outage is setup the user has to fix: a missing CLI or
+ * login, a model or effort the provider does not serve, a CLI too old for it.
+ */
+export function isSetupFailure(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'setup_required';
 }
 
 /**

@@ -1,21 +1,48 @@
-import { existsSync, statSync, watch as fsWatch, createReadStream, openSync, readSync, closeSync } from 'fs';
+import { existsSync, statSync, watch as fsWatch } from 'fs';
+import { open } from 'fs/promises';
 import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
 import { TranscriptAnchorError, TranscriptEventProcessor } from './processor.js';
-import { decompressZstdFrame, isZstdSupported, scanZstdFrames, type ZstdScanResult } from './zstd-frames.js';
+import { decompressZstdFrame, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
+  /**
+   * The durable checkpoint: the first byte not yet dispatched (JSONL: the
+   * start of the next record; zstd: a frame boundary). Persisted.
+   */
   offset: number;
+  /** How far the file has been read (JSONL: past `offset` by the pending partial record). */
   readOffset: number;
+  /** zstd only: the unterminated JSONL text carried from earlier frames (persisted with `offset`). */
   partial: string;
 }
 
 // Coarse filesystem clocks (HFS+ 1 s, FAT 2 s) can stamp a file written just
 // after startup with an mtime just before it.
 const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
+
+/**
+ * A transcript discovered after startup with a fresh mtime whose first record
+ * carries no timestamp is read from byte 0 only while it is this small: a
+ * session that just started (a Codex rollout's session_meta line is ~15-25
+ * KB). Copying or restoring an old transcript also gives it a fresh mtime, and
+ * replaying that history from byte 0 would send every old turn through the
+ * observer again.
+ */
+const NEW_TRANSCRIPT_REPLAY_MAX_BYTES = 256 * 1024;
+
+/**
+ * One read pass handles at most this many bytes (JSONL text, or complete zstd
+ * frames), so a large backlog is worked through in bounded steps that hand the
+ * event loop back between them.
+ */
+const MAX_BYTES_PER_PASS = 4 * 1024 * 1024;
+
+/** The startAtEnd frame scan of a zstd file walks this many bytes of frames between yields. */
+const RESUME_SCAN_BYTES_PER_STEP = 16 * 1024 * 1024;
 
 // A bulk backfill can walk hundreds of files and tens of thousands of lines on
 // the Bun event loop that also serves the worker's HTTP API. Awaiting line
@@ -36,24 +63,80 @@ const ZSTD_TRANSCRIPT_SUFFIX = '.jsonl.zstd';
 
 /**
  * Where startAtEnd resumes a zstd file: after its last complete frame, never
- * inside a torn one (a resume must land on a frame boundary).
+ * inside a torn one (a resume must land on a frame boundary). Only frame and
+ * block headers are read, in bounded steps that yield to the event loop.
  */
-function zstdResumeOffset(filePath: string, size: number): number {
+async function zstdResumeOffset(filePath: string, size: number): Promise<number> {
   try {
-    return scanZstdFrames(readByteRange(filePath, 0, size)).tornStart ?? size;
+    let position = 0;
+    while (position < size) {
+      const scan = scanZstdFramesInFile(filePath, position, size, RESUME_SCAN_BYTES_PER_STEP);
+      if (scan.tornStart !== null) return scan.tornStart;
+      if (scan.frames.length === 0) break;
+      position = scan.frames[scan.frames.length - 1].end;
+      await yieldToEventLoop();
+    }
+    return position;
   } catch {
     return size;
   }
 }
 
-function readByteRange(filePath: string, start: number, length: number): Buffer {
-  const fd = openSync(filePath, 'r');
+/**
+ * How far into a transcript its first line may end for it to be read on its
+ * own (a resumed tail's context, a new file's start time). A Codex
+ * session_meta line carries the base instructions (about 20 KB).
+ */
+const FIRST_LINE_MAX_BYTES = 1024 * 1024;
+
+/** The first line of a JSONL transcript, read from at most `limit` bytes; null when it does not end there. */
+async function readFirstLine(filePath: string, limit: number): Promise<string | null> {
+  const head = (await readByteRange(filePath, 0, Math.min(limit, FIRST_LINE_MAX_BYTES))).toString('utf8');
+  const newline = head.indexOf('\n');
+  return newline < 0 ? null : head.slice(0, newline);
+}
+
+/**
+ * When a transcript's first record says it was written: a top-level
+ * `timestamp` (Codex, Claude Code), `time` or `createdAt` (DeepSeek Harness),
+ * as an ISO string or epoch seconds/milliseconds. Null when the first record
+ * carries none or cannot be read.
+ */
+async function firstRecordTimeMs(filePath: string, isZstd: boolean, size: number): Promise<number | null> {
+  try {
+    let line: string | null;
+    if (isZstd) {
+      const { frames } = scanZstdFramesInFile(filePath, 0, size, 1);
+      if (frames.length === 0) return null;
+      const text = decompressZstdFrame(await readByteRange(filePath, 0, frames[0].end), frames[0]);
+      const newline = text.indexOf('\n');
+      line = newline < 0 ? null : text.slice(0, newline);
+    } else {
+      line = await readFirstLine(filePath, size);
+    }
+    if (line === null) return null;
+    const record = JSON.parse(line) as Record<string, unknown> | null;
+    for (const key of ['timestamp', 'time', 'createdAt']) {
+      const value = record?.[key];
+      const ms = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value)
+        : typeof value === 'string' ? Date.parse(value)
+          : Number.NaN;
+      if (Number.isFinite(ms) && ms > 0) return ms;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function readByteRange(filePath: string, start: number, length: number): Promise<Buffer> {
+  const file = await open(filePath, 'r');
   try {
     const buffer = Buffer.alloc(length);
-    const bytesRead = readSync(fd, buffer, 0, length, start);
+    const { bytesRead } = await file.read(buffer, 0, length, start);
     return buffer.subarray(0, bytesRead);
   } finally {
-    closeSync(fd);
+    await file.close();
   }
 }
 
@@ -63,17 +146,28 @@ class FileTailer {
   private readTask: Promise<void> | null = null;
   private readPending = false;
   private readonly isZstd: boolean;
+  /** JSONL only: the bytes of the unterminated record between `offset` and `readOffset`. */
+  private pendingRecord: Buffer = Buffer.alloc(0);
+  /**
+   * zstd only: how many lines of the frame at `offset` were dispatched before
+   * a turn in it failed, so the retry resumes at the failed line. Persisted
+   * with the checkpoint.
+   */
+  private frameLinesDone: number;
 
   constructor(
     private filePath: string,
     initialOffset: number,
     private onLine: (line: string) => Promise<void>,
-    private onOffset: (offset: number, partial?: string) => void,
-    // zstd only: the unterminated JSONL prefix persisted with the frame-aligned offset.
-    initialPartial = ''
+    private onOffset: (offset: number, partial: string, frameLinesDone: number) => void,
+    // zstd only: the unterminated JSONL prefix and the lines of the frame at
+    // the offset already dispatched, persisted with the frame-aligned offset.
+    initialPartial = '',
+    initialFrameLinesDone = 0
   ) {
     this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
+    this.frameLinesDone = this.isZstd ? initialFrameLinesDone : 0;
   }
 
   start(): void {
@@ -114,6 +208,9 @@ class FileTailer {
     do {
       this.readPending = false;
       await this.readNewData().catch(() => undefined);
+      // A bounded pass that left work behind asks for another; hand the
+      // event loop back first so the worker's HTTP API keeps being served.
+      if (this.readPending) await yieldToEventLoop();
     } while (this.readPending);
   }
 
@@ -132,64 +229,101 @@ class FileTailer {
       this.tailState.offset = 0;
       this.tailState.readOffset = 0;
       this.tailState.partial = '';
+      this.pendingRecord = Buffer.alloc(0);
+      this.frameLinesDone = 0;
     }
 
     if (size === this.tailState.readOffset) return;
 
     if (this.isZstd) {
       await this.readNewZstdFrames(size);
-      return;
+    } else {
+      await this.readNewJsonl(size);
     }
-
-    const stream = createReadStream(this.filePath, {
-      start: this.tailState.readOffset,
-      end: size - 1,
-      encoding: 'utf8'
-    });
-
-    let data = '';
-    for await (const chunk of stream) {
-      data += chunk as string;
-    }
-    this.tailState.readOffset = size;
-
-    const combined = this.tailState.partial + data;
-    const lines = combined.split('\n');
-    this.tailState.partial = lines.pop() ?? '';
-
-    // Keep live reads at EOF while restart recovery resumes before any partial record.
-    await this.dispatchLines(lines);
-
-    const checkpointOffset = size - Buffer.byteLength(this.tailState.partial, 'utf8');
-    this.tailState.offset = checkpointOffset;
-    this.onOffset(checkpointOffset);
   }
 
-  private async dispatchLines(lines: string[]): Promise<void> {
-    let dispatched = 0;
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      await this.onLine(trimmed);
-      if (++dispatched % YIELD_EVERY_N_LINES === 0) await yieldToEventLoop();
-    }
+  /** Durable checkpoint: record and persist where the next pass (or a restart) resumes. */
+  private checkpoint(offset: number, partial = ''): void {
+    this.tailState.offset = offset;
+    this.tailState.partial = partial;
+    this.onOffset(offset, partial, this.frameLinesDone);
   }
 
   /**
-   * zstd mode. The offset always sits on a frame boundary, so only the bytes
-   * after it are read, and only complete frames are decoded. A torn trailing
-   * frame (an interrupted write) is left for the next change event. A frame
-   * that fails to decode stops the pass without advancing past it, so it is
-   * retried rather than skipped. Each frame's lines are dispatched before the
-   * offset moves past it (the same dispatch-then-checkpoint order as JSONL).
+   * JSONL mode. Reads at most MAX_BYTES_PER_PASS past the read offset and
+   * dispatches each complete line in order. The checkpoint follows the lines
+   * that went through, byte-exact, so a restart resumes at the first record
+   * not yet dispatched, never inside the unterminated one still being written.
+   *
+   * A turn that fails (the worker did not record its prompt) ends the pass
+   * with the checkpoint AT that line: the retry resends it and everything
+   * after it, and nothing before it.
+   */
+  private async readNewJsonl(size: number): Promise<void> {
+    const readFrom = this.tailState.readOffset;
+    let chunk: Buffer;
+    try {
+      chunk = await readByteRange(this.filePath, readFrom, Math.min(size - readFrom, MAX_BYTES_PER_PASS));
+    } catch (error: unknown) {
+      logger.debug('WORKER', 'Failed to read transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
+      return;
+    }
+    if (chunk.length === 0) return;
+    this.tailState.readOffset = readFrom + chunk.length;
+
+    // buffer[0] is the byte at the checkpoint.
+    const buffer = this.pendingRecord.length > 0 ? Buffer.concat([this.pendingRecord, chunk]) : chunk;
+    const base = this.tailState.offset;
+    let lineStart = 0;
+    let dispatched = 0;
+    for (let newline = buffer.indexOf(0x0a); newline !== -1; newline = buffer.indexOf(0x0a, lineStart)) {
+      const line = buffer.toString('utf8', lineStart, newline).trim();
+      if (line) {
+        try {
+          await this.onLine(line);
+        } catch {
+          this.pendingRecord = Buffer.alloc(0);
+          this.tailState.readOffset = base + lineStart;
+          this.checkpoint(base + lineStart);
+          return;
+        }
+      }
+      lineStart = newline + 1;
+      this.tailState.offset = base + lineStart;
+      if (line && ++dispatched % YIELD_EVERY_N_LINES === 0) {
+        this.checkpoint(this.tailState.offset);
+        await yieldToEventLoop();
+      }
+    }
+
+    this.pendingRecord = Buffer.from(buffer.subarray(lineStart));
+    this.checkpoint(base + lineStart);
+    if (this.tailState.readOffset < size) this.readPending = true;
+  }
+
+  /**
+   * zstd mode. The offset always sits on a frame boundary. Each pass finds
+   * the complete frames after it from their headers alone, at most
+   * MAX_BYTES_PER_PASS of them, reads just those bytes, and decodes them in
+   * order. A torn trailing frame (an interrupted write) is left for the next
+   * change event. A frame that fails to decode stops the pass without
+   * advancing past it, so it is retried rather than skipped.
+   *
+   * The checkpoint moves past a frame once its lines are dispatched. A turn
+   * that fails keeps the checkpoint at its frame, with the partial record that
+   * frame began with, and the retry resumes at the failed line: frames before
+   * it are never sent twice.
    */
   private async readNewZstdFrames(size: number): Promise<void> {
     const start = this.tailState.offset;
-    let bytes: Buffer;
     let scan: ZstdScanResult;
+    let bytes: Buffer;
     try {
-      bytes = readByteRange(this.filePath, start, size - start);
-      scan = scanZstdFrames(bytes);
+      scan = scanZstdFramesInFile(this.filePath, start, size, MAX_BYTES_PER_PASS);
+      if (scan.frames.length === 0) return;
+      const end = scan.frames[scan.frames.length - 1].end;
+      bytes = await readByteRange(this.filePath, start, end - start);
+      if (bytes.length < end - start) return;
     } catch (error: unknown) {
       logger.warn('TRANSCRIPT', 'Failed to read zstd transcript frames', {
         file: this.filePath,
@@ -198,27 +332,44 @@ class FileTailer {
       return;
     }
 
-    let processedEnd = 0;
+    let dispatched = 0;
     for (const frame of scan.frames) {
       let plain: string;
       try {
-        plain = decompressZstdFrame(bytes, frame);
+        plain = decompressZstdFrame(bytes, { start: frame.start - start, end: frame.end - start });
       } catch {
         // decompressZstdFrame logged it; retried on the next change event.
-        break;
+        this.checkpoint(this.tailState.offset, this.tailState.partial);
+        return;
       }
-      const lines = (this.tailState.partial + plain).split('\n');
-      this.tailState.partial = lines.pop() ?? '';
-      await this.dispatchLines(lines);
-      processedEnd = frame.end;
-    }
-    if (processedEnd === 0) return;
 
-    this.tailState.offset = start + processedEnd;
-    this.tailState.readOffset = this.tailState.offset;
+      const partialBefore = this.tailState.partial;
+      const lines = (partialBefore + plain).split('\n');
+      const partialAfter = lines.pop() ?? '';
+      for (let index = this.frameLinesDone; index < lines.length; index++) {
+        const line = lines[index].trim();
+        if (!line) continue;
+        try {
+          await this.onLine(line);
+        } catch {
+          this.frameLinesDone = index;
+          this.tailState.readOffset = frame.start;
+          this.checkpoint(frame.start, partialBefore);
+          return;
+        }
+        if (++dispatched % YIELD_EVERY_N_LINES === 0) await yieldToEventLoop();
+      }
+
+      this.frameLinesDone = 0;
+      this.tailState.offset = frame.end;
+      this.tailState.readOffset = frame.end;
+      this.tailState.partial = partialAfter;
+    }
+
     // A frame can end mid-record, and the offset is resumable only at frame
     // boundaries, so the unterminated prefix is persisted with it.
-    this.onOffset(this.tailState.offset, this.tailState.partial);
+    this.checkpoint(this.tailState.offset, this.tailState.partial);
+    if (scan.tornStart === null && this.tailState.offset < size) this.readPending = true;
   }
 }
 
@@ -229,12 +380,16 @@ export class TranscriptWatcher {
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
   private startedAtMs = 0;
   private warnedZstdUnsupported = false;
+  private startingTailers = new Set<string>();
+  /** Set by stop(): a tailer still awaiting its start offset then never starts. */
+  private stopped = false;
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
   }
 
   async start(): Promise<void> {
+    this.stopped = false;
     this.startedAtMs = Date.now();
     for (const watch of this.config.watches) {
       await this.setupWatch(watch);
@@ -242,6 +397,7 @@ export class TranscriptWatcher {
   }
 
   stop(): void {
+    this.stopped = true;
     for (const tailer of this.tailers.values()) {
       tailer.close();
     }
@@ -266,6 +422,8 @@ export class TranscriptWatcher {
       await this.addTailer(filePath, watch, schema);
       await yieldToEventLoop();
     }
+    // The startAtEnd offsets the initial scan chose, in one write.
+    if (files.length > 0 && watch.startAtEnd) saveWatchState(this.statePath, this.state);
 
     const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
     if (!watchRoot || !existsSync(watchRoot)) {
@@ -391,8 +549,23 @@ export class TranscriptWatcher {
     // Some path sources skip expandHomePath, so a literal '~' can reach fs.watch
     // and can never resolve to a real file.
     filePath = expandHomePath(filePath);
-    if (this.tailers.has(filePath)) return;
+    // The zstd startAtEnd scan awaits, so a burst of root-watch events for one
+    // new file must not start a second tailer meanwhile.
+    if (this.tailers.has(filePath) || this.startingTailers.has(filePath)) return;
+    this.startingTailers.add(filePath);
+    try {
+      await this.startTailer(filePath, watch, schema, discoveredAfterStartup);
+    } finally {
+      this.startingTailers.delete(filePath);
+    }
+  }
 
+  private async startTailer(
+    filePath: string,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    discoveredAfterStartup: boolean
+  ): Promise<void> {
     const isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     if (isZstd && !isZstdSupported()) {
       if (!this.warnedZstdUnsupported) {
@@ -406,42 +579,68 @@ export class TranscriptWatcher {
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
-    let offset = this.state.offsets[filePath] ?? 0;
+    const savedOffset = this.state.offsets[filePath];
+    let offset = savedOffset ?? 0;
     // `startAtEnd` means "do not replay history that predates this worker".
     // A transcript created after startup is read from byte 0: by the time the
     // recursive root watch reports it, session_meta and the opening turns are
     // already on disk, and jumping to EOF drops the user prompt the schema
     // exists to capture (#4211). A historical file moved in after startup is
     // still history: a rename keeps its old mtime (it does bump ctime, so ctime
-    // cannot tell the two apart), so it starts at EOF like the initial scan.
-    if (offset === 0 && watch.startAtEnd) {
+    // cannot tell the two apart), so it starts at EOF like the initial scan. So
+    // does a large one with a fresh mtime: copying or restoring an old
+    // transcript writes it anew, and a session that just started is small.
+    //
+    // The chosen start is saved at once, so a file that never changes is not
+    // stat'ed or frame-scanned again on every boot. A saved offset is a
+    // checkpoint, 0 included, and is never replaced by the startAtEnd rule.
+    if (savedOffset === undefined && watch.startAtEnd) {
       try {
         const stat = statSync(filePath);
         const writtenSinceStartup =
           discoveredAfterStartup && stat.mtimeMs >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
-        if (!writtenSinceStartup) offset = isZstd ? zstdResumeOffset(filePath, stat.size) : stat.size;
+        const replayFromStart = writtenSinceStartup && await this.startedAfterThisWatcher(filePath, isZstd, stat.size);
+        if (!replayFromStart) offset = isZstd ? await zstdResumeOffset(filePath, stat.size) : stat.size;
+        if (this.stopped) return;
+        this.state.offsets[filePath] = offset;
+        // The initial scan saves once for all its files (setupWatch).
+        if (discoveredAfterStartup) saveWatchState(this.statePath, this.state);
       } catch (error: unknown) {
         logger.debug('WORKER', 'Failed to stat file for startAtEnd offset', { file: filePath }, error instanceof Error ? error : undefined);
         offset = 0;
       }
     }
 
+    // A subagent-only watch learns the rollout's marker from its first line.
+    // A tail that resumes past it reads that line once, before the first new
+    // one, for its context only.
+    let primeFirstLine = offset > 0 && Boolean(watch.subagentSource) && !isZstd;
     const tailer = new FileTailer(
       filePath,
       offset,
       async (line: string) => {
+        if (primeFirstLine) {
+          primeFirstLine = false;
+          await this.primeFromFirstLine(filePath, offset, watch, schema, sessionIdOverride);
+        }
         await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
       },
-      (newOffset: number, partial = '') => {
+      (newOffset: number, partial: string, frameLinesDone: number) => {
         this.state.offsets[filePath] = newOffset;
         if (partial) {
           (this.state.partials ??= {})[filePath] = partial;
         } else if (this.state.partials) {
           delete this.state.partials[filePath];
         }
+        if (frameLinesDone > 0) {
+          (this.state.frameLines ??= {})[filePath] = frameLinesDone;
+        } else if (this.state.frameLines) {
+          delete this.state.frameLines[filePath];
+        }
         saveWatchState(this.statePath, this.state);
       },
-      this.state.partials?.[filePath] ?? ''
+      this.state.partials?.[filePath] ?? '',
+      this.state.frameLines?.[filePath] ?? 0
     );
 
     tailer.start();
@@ -451,6 +650,38 @@ export class TranscriptWatcher {
       watch: watch.name,
       schema: schema.name
     });
+  }
+
+  /**
+   * Whether a transcript that appeared after startup with a fresh mtime holds
+   * a session that began after this watcher started. A copied or restored old
+   * transcript gets a fresh mtime too; its first record's own timestamp tells
+   * the two apart. A transcript whose first record has none counts as new only
+   * while it is small, as a session that just started is.
+   */
+  private async startedAfterThisWatcher(filePath: string, isZstd: boolean, size: number): Promise<boolean> {
+    const firstRecordAt = await firstRecordTimeMs(filePath, isZstd, size);
+    if (firstRecordAt !== null) return firstRecordAt >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
+    return size <= NEW_TRANSCRIPT_REPLAY_MAX_BYTES;
+  }
+
+  private async primeFromFirstLine(
+    filePath: string,
+    resumedAt: number,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride: string | null
+  ): Promise<void> {
+    try {
+      const firstLine = await readFirstLine(filePath, resumedAt);
+      if (firstLine === null) return;
+      await this.processor.primeSessionContext(JSON.parse(firstLine), watch, schema, sessionIdOverride);
+    } catch (error: unknown) {
+      logger.debug('TRANSCRIPT', 'Could not read the first line of a resumed transcript', {
+        watch: watch.name,
+        file: basename(filePath),
+      }, error instanceof Error ? error : undefined);
+    }
   }
 
   private async handleLine(
@@ -464,10 +695,10 @@ export class TranscriptWatcher {
       const entry = JSON.parse(line);
       await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined);
     } catch (error: unknown) {
-      // A turn whose prompt the worker did not record stops the pass before the
-      // checkpoint moves past it (#4192), so it is replayed, not misfiled.
+      // A turn whose prompt the worker did not record stops the pass with the
+      // checkpoint at its line (or frame), so it is retried, not misfiled.
       if (error instanceof TranscriptAnchorError) {
-        logger.warn('TRANSCRIPT', 'Transcript turn not anchored; it is replayed from the last checkpoint', {
+        logger.warn('TRANSCRIPT', 'Transcript turn not anchored; it is retried from its own line', {
           watch: watch.name,
           file: basename(filePath),
           error: error.message,

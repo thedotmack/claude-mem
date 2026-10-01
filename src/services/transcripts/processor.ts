@@ -1,5 +1,5 @@
 import path from 'path';
-import { sessionInitHandler } from '../../cli/handlers/session-init.js';
+import { recordSessionPrompt } from '../../cli/handlers/session-init.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
@@ -24,9 +24,10 @@ export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
 }
 
 /**
- * The worker did not record a transcript turn's user prompt. The watcher stops
- * the pass on it, before checkpointing, so the turn is replayed rather than its
- * observations being filed under no prompt.
+ * The worker did not record a transcript turn's user prompt. The watcher
+ * checkpoints at the start of that turn's line (or zstd frame) and retries it
+ * from there, so the turn is replayed rather than its observations being filed
+ * under no prompt, and nothing before it is sent twice.
  */
 export class TranscriptAnchorError extends Error {
   constructor(sessionId: string, cause: unknown) {
@@ -47,8 +48,17 @@ interface SessionState {
   isSubagent?: boolean;
 }
 
+/** How many subagent rollouts the processor remembers past their last turn. */
+const MAX_REMEMBERED_SUBAGENT_SESSIONS = 4096;
+
 export class TranscriptEventProcessor {
   private sessions = new Map<string, SessionState>();
+  /**
+   * Session keys of confirmed subagent rollouts. Codex ends a session per
+   * turn but marks the rollout only on its first line, so the marker has to
+   * outlive the turn state session_end drops. Oldest forgotten first.
+   */
+  private subagentSessionKeys = new Set<string>();
 
   async processEntry(
     entry: unknown,
@@ -73,10 +83,38 @@ export class TranscriptEventProcessor {
       session = {
         sessionId,
         platformSource: normalizePlatformSource(watch.name),
+        ...(this.subagentSessionKeys.has(key) ? { isSubagent: true } : {}),
       };
       this.sessions.set(key, session);
     }
     return session;
+  }
+
+  private rememberSubagentSession(key: string): void {
+    this.subagentSessionKeys.delete(key);
+    this.subagentSessionKeys.add(key);
+    if (this.subagentSessionKeys.size > MAX_REMEMBERED_SUBAGENT_SESSIONS) {
+      const oldest = this.subagentSessionKeys.values().next().value;
+      if (oldest !== undefined) this.subagentSessionKeys.delete(oldest);
+    }
+  }
+
+  /**
+   * Learn a rollout's session context (cwd, subagent marker) from its first
+   * line without ingesting anything. A tail that resumes past that line (a
+   * worker restart, or startAtEnd on a rollout already running) never reads
+   * it otherwise, and a subagent-only watch would drop the whole rollout.
+   */
+  async primeSessionContext(
+    entry: unknown,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride?: string | null
+  ): Promise<void> {
+    for (const event of schema.events) {
+      if (event.action !== 'session_context' || !matchesRule(entry, event.match, schema)) continue;
+      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined);
+    }
   }
 
   private resolveSessionId(
@@ -152,6 +190,7 @@ export class TranscriptEventProcessor {
       const marker = getValueByPath(entry, watch.subagentSource.path);
       if (marker !== undefined && marker !== null) {
         session.isSubagent = true;
+        this.rememberSubagentSession(this.getSessionKey(watch, sessionId));
       }
     }
 
@@ -242,10 +281,10 @@ export class TranscriptEventProcessor {
 
   /**
    * Record the turn's user prompt through the init path the hooks use, so the
-   * worker has a user_prompts row for it. A failure throws
-   * TranscriptAnchorError: the watcher then stops before checkpointing past
-   * the turn, so it is replayed instead of its observations being filed under
-   * no prompt.
+   * worker has a user_prompts row for it. A prompt the worker did not record
+   * (unreachable, a 429/5xx reply, no budget) throws TranscriptAnchorError:
+   * the watcher then checkpoints at this turn's line and retries it, instead
+   * of its observations being filed under no prompt.
    */
   private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
     const cwd = session.cwd ?? process.cwd();
@@ -254,7 +293,7 @@ export class TranscriptEventProcessor {
     }
 
     try {
-      await sessionInitHandler.execute({
+      await recordSessionPrompt({
         sessionId: session.sessionId,
         cwd,
         prompt,

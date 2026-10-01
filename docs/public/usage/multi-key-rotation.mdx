@@ -92,11 +92,14 @@ both use a salted fingerprint that is meaningless outside your install.
 - **Provider selection is untouched.** Rotation happens *within* the provider you
   selected. When a pool is fully spent, claude-mem does not silently switch to a
   different provider.
-- **The cmem.ai gateway never pools.** Its key is account-delivered, and the list
-  is by definition your personal keys — sending those to the gateway would be a
-  credential leak, so a gateway endpoint always uses exactly its one delivered
-  key. The reverse holds too: a `cm_pro_` key placed in the list is never sent to
-  any other endpoint.
+- **The cmem.ai gateway never pools, whichever provider points at it.** Its key
+  is account-delivered, so a gateway endpoint uses exactly one `cm_pro_` key and
+  never rotates through several. Your personal keys are never sent to it.
+- **A `cm_pro_` key never goes to any other host.** The same rule covers the
+  Gemini, OpenRouter, and OpenAI-compatible pools: a `cm_pro_` key, whether set
+  as the single key or placed in a list, is dropped before any request to an
+  endpoint other than the cmem.ai gateway. A Gemini setup that holds only
+  `cm_pro_` keys counts as having no key.
 
 ## Verifying
 

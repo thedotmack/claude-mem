@@ -52,6 +52,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
+import { GEMINI_REGION_REFUSAL_CODE } from './gemini-error-details.js';
 
 /** Which pools exist. One per provider that resolves an HTTP API key. */
 export type KeyPoolId = 'gemini' | 'openrouter' | 'openai-compatible';
@@ -129,6 +130,7 @@ export function retryPolicyForPool(poolSize: number): { nonRetryableKinds?: read
 interface ClassifiedLike {
   kind: string;
   retryAfterMs?: number;
+  code?: string;
 }
 
 function asClassified(err: unknown): ClassifiedLike | null {
@@ -136,11 +138,22 @@ function asClassified(err: unknown): ClassifiedLike | null {
   const kind = (err as { kind?: unknown }).kind;
   if (typeof kind !== 'string') return null;
   const retryAfterMs = (err as { retryAfterMs?: unknown }).retryAfterMs;
+  const code = (err as { code?: unknown }).code;
   return {
     kind,
     ...(typeof retryAfterMs === 'number' ? { retryAfterMs } : {}),
+    ...(typeof code === 'string' ? { code } : {}),
   };
 }
+
+/**
+ * Refusals that name the account or the region, not the key: every key gets
+ * the same answer. Gemini outside the regions Google serves
+ * (gemini-error-details.ts) is classified like a refused key so the worker
+ * pauses with its work kept, but rotating on it would send a doomed request
+ * per key and park each one for the refused-key window.
+ */
+const NOT_THE_KEY_CODES: ReadonlySet<string> = new Set([GEMINI_REGION_REFUSAL_CODE]);
 
 /**
  * True when a classified error should retire the key that earned it and move
@@ -150,7 +163,9 @@ function asClassified(err: unknown): ClassifiedLike | null {
  */
 export function shouldRotateKey(err: unknown): boolean {
   const classified = asClassified(err);
-  return classified !== null && ROTATE_KINDS.has(classified.kind);
+  return classified !== null
+    && ROTATE_KINDS.has(classified.kind)
+    && !(classified.code !== undefined && NOT_THE_KEY_CODES.has(classified.code));
 }
 
 /**
@@ -439,9 +454,22 @@ export interface KeyPoolAttempt {
  * `rate_limit` still reaches the pause path, so a fully-spent pool behaves
  * exactly like today's single spent key rather than surfacing a new error type
  * the callers upstream do not handle.
+ *
+ * The exception is a pool that is not fully spent: the sweep ended on a spent
+ * or refused key, but another key leaves cooldown within a rate-limit window
+ * (it was only throttled). Rethrowing the spent key's error would hold the
+ * whole provider for that key's window, so the caller's
+ * `rateLimitUntilNextKey` builds a rate limit lasting until the other key is
+ * back instead.
  */
 export async function withKeyPool<T>(
-  opts: { poolId: KeyPoolId; keys: string[]; label?: string },
+  opts: {
+    poolId: KeyPoolId;
+    keys: string[];
+    label?: string;
+    /** Builds that rate limit. The provider owns its error class (see ClassifiedLike). */
+    rateLimitUntilNextKey?: (retryAfterMs: number, lastError: unknown) => unknown;
+  },
   body: (attempt: KeyPoolAttempt) => Promise<T>,
 ): Promise<T> {
   const { poolId, label } = opts;
@@ -489,7 +517,29 @@ export async function withKeyPool<T>(
     }
   }
 
+  const lastKind = asClassified(lastRotateError)?.kind;
+  if (opts.rateLimitUntilNextKey && lastKind !== undefined && lastKind !== 'rate_limit') {
+    const nextKeyFreeMs = soonestKeyFreeWithinRateLimitWindow(poolId, keys);
+    if (nextKeyFreeMs !== null) throw opts.rateLimitUntilNextKey(nextKeyFreeMs, lastRotateError);
+  }
+
   throw lastRotateError ?? new Error(`${label ?? poolId} key pool exhausted without an attempt`);
+}
+
+/**
+ * How soon the first cooling key in the pool is back, when that is within a
+ * rate-limit window (RATE_LIMIT_COOLDOWN_MAX_MS, the longest a throttle parks a
+ * key); otherwise null. A key spent or refused just now sits out 30 minutes or
+ * more, so it never counts.
+ */
+function soonestKeyFreeWithinRateLimitWindow(poolId: KeyPoolId, keys: string[]): number | null {
+  let soonest: number | null = null;
+  for (const key of keys) {
+    const remaining = keyCooldownRemainingMs(poolId, key);
+    if (remaining <= 0 || remaining > RATE_LIMIT_COOLDOWN_MAX_MS) continue;
+    if (soonest === null || remaining < soonest) soonest = remaining;
+  }
+  return soonest;
 }
 
 /**

@@ -59,6 +59,18 @@ describe('openai-compatible settings surface', () => {
     expect(compat).toBeGreaterThan(observer);
   });
 
+  // Wave 3 gate R4-4: #4216 listed Codex second, above the observer. Before the
+  // sweep the select was Claude, Gemini, then the observer; the bring-your-own
+  // options added since come after it.
+  it('lists Codex after the claude-mem observer too, keeping the pre-sweep order ahead of it', () => {
+    const source = modalSource();
+    const position = (value: string) => source.indexOf(`<option value="${value}">`);
+    expect(position('claude')).toBeGreaterThan(-1);
+    expect(position('gemini')).toBeGreaterThan(position('claude'));
+    expect(position('openrouter')).toBeGreaterThan(position('gemini'));
+    expect(position('codex')).toBeGreaterThan(position('openrouter'));
+  });
+
   it('edits the preset, base URL and model, and never the key', () => {
     const source = modalSource();
     for (const key of ['CLAUDE_MEM_OPENAI_COMPAT_PRESET', 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', 'CLAUDE_MEM_OPENAI_COMPAT_MODEL']) {
