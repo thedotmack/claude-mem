@@ -21,8 +21,8 @@ import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
 import {
+  cmemGatewayRole,
   hasShownProFallbackNotice,
-  isCmemGatewayUrl,
   markProFallbackNoticeShown,
   proFallbackNotice,
   trialDaysRemaining,
@@ -174,15 +174,18 @@ export const contextHandler: EventHandler = {
     // The gateway's own words, stored with the marker, say what happened and
     // what to do. They enter model context, so proFallbackNotice relays them
     // as plain bounded lines and keeps only an https cmem.ai link.
-    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== ''
-      && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
-      && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+    //
+    // The gateway as the opt-in quota fallback gets the same notice with its
+    // own consequence: dispatch skips it while it turns the account away, and
+    // without this the user would never learn why the fallback stopped.
+    const gatewayRole = cmemGatewayRole(settings);
+    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== '' && gatewayRole !== null;
     if (fallbackActive && !hasShownProFallbackNotice()) {
       const fallbackNotice = proFallbackNotice({
         message: settings.CLAUDE_MEM_PRO_FALLBACK_MESSAGE,
         action: settings.CLAUDE_MEM_PRO_FALLBACK_ACTION,
         url: settings.CLAUDE_MEM_PRO_FALLBACK_URL,
-      });
+      }, gatewayRole);
       additionalContext = additionalContext
         ? `${fallbackNotice}\n\n${additionalContext}`
         : fallbackNotice;

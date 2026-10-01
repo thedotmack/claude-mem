@@ -102,6 +102,7 @@ const GATEWAY_BASE_URL = 'https://cmem.ai/api/inference/v1';
 const MODEL_CATALOGUE_URL = 'https://openrouter.ai/api/v1/models';
 const MEMORY_KEY = 'cm_pro_0123456789abcdef01234567';
 const ON_ANTHROPIC_PLAN = 'Memory is using your Anthropic plan for now.';
+const QUOTA_FALLBACK_SKIPPED = 'claude-mem skips it as your quota fallback until it answers again';
 
 /** The gateway's own copy (plans/2026-08-16-observer-error-path.md §1.2). */
 const GATEWAY = {
@@ -557,6 +558,31 @@ describe('SessionRoutes — cmem gateway integrity', () => {
 
       expect(notice).not.toContain(url);
       expect(notice).toContain(`Manage your plan: ${proTrialUrl('fallback')}`);
+    });
+
+    it('tells the user, once, when the gateway as the opt-in quota fallback is turning the account away', async () => {
+      seedSettings({
+        CLAUDE_MEM_PROVIDER: 'gemini',
+        CLAUDE_MEM_GEMINI_API_KEY: 'AIza-test',
+        CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'openrouter',
+        CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString(),
+        CLAUDE_MEM_PRO_FALLBACK_MESSAGE: GATEWAY.subscription_inactive.message,
+        CLAUDE_MEM_PRO_FALLBACK_ACTION: GATEWAY.subscription_inactive.action,
+        CLAUDE_MEM_PRO_FALLBACK_URL: GATEWAY.subscription_inactive.url,
+      });
+      const { contextHandler } = await import('../../../../src/cli/handlers/context.js');
+      const hookInput = { sessionId: 'session-start-gateway-quota-fallback', cwd: process.cwd(), platform: 'claude-code' as const };
+
+      const first = (await contextHandler.execute(hookInput)).hookSpecificOutput?.additionalContext ?? '';
+      expect(first).toContain(GATEWAY.subscription_inactive.message);
+      expect(first).toContain(GATEWAY.subscription_inactive.action);
+      expect(first).toContain(QUOTA_FALLBACK_SKIPPED);
+      expect(first).toContain('Manage your plan: https://cmem.ai/dashboard');
+      // Memory's own provider is Gemini: nothing moved to the Anthropic plan.
+      expect(first).not.toContain(ON_ANTHROPIC_PLAN);
+
+      const second = (await contextHandler.execute(hookInput)).hookSpecificOutput?.additionalContext ?? '';
+      expect(second).not.toContain(QUOTA_FALLBACK_SKIPPED);
     });
 
     it('relays an https cmem.ai gateway link as sent', async () => {

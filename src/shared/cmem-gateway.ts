@@ -75,16 +75,32 @@ export function isCmemGatewayUrl(url: string | undefined | null): boolean {
 }
 
 /**
- * Whether memory is set up to run on the cmem.ai gateway: the OpenRouter
- * provider selected, with the gateway as its base URL — whether or not a
- * fallback has memory on the Anthropic plan right now. Settings only, the same
- * predicates dispatch applies. Unattended retries are bounded on this setup,
- * because each one spends plan tokens.
+ * How the cmem.ai gateway figures in a setup, from settings alone (the same
+ * predicates dispatch applies): 'primary' when memory runs on it (the
+ * OpenRouter provider selected with the gateway as its base URL), 'quota-fallback'
+ * when it is the opt-in quota fallback (CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER
+ * 'openrouter' on the gateway), else null.
  */
-export function isMemoryOnCmemGateway(settingsPath: string = USER_SETTINGS_PATH): boolean {
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return settings.CLAUDE_MEM_PROVIDER === 'openrouter'
-    && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+export type CmemGatewayRole = 'primary' | 'quota-fallback';
+
+export function cmemGatewayRole(settings: {
+  CLAUDE_MEM_PROVIDER?: string;
+  CLAUDE_MEM_OPENROUTER_BASE_URL?: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER?: string;
+}): CmemGatewayRole | null {
+  if (!isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) return null;
+  if (settings.CLAUDE_MEM_PROVIDER === 'openrouter') return 'primary';
+  return String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim() === 'openrouter' ? 'quota-fallback' : null;
+}
+
+/**
+ * Whether the cmem.ai gateway can serve observer requests on this setup, as
+ * memory's provider or as the opt-in quota fallback — whether or not it is
+ * serving right now. Unattended retries are bounded whenever it can, because
+ * each one may spend plan tokens.
+ */
+export function canCmemGatewayServe(settingsPath: string = USER_SETTINGS_PATH): boolean {
+  return cmemGatewayRole(SettingsDefaultsManager.loadFromFile(settingsPath)) !== null;
 }
 
 /**
@@ -107,6 +123,24 @@ export function isCmemMemoryKey(apiKey: string | undefined | null): boolean {
  */
 export function isKeyAllowedForEndpoint(apiUrl: string, apiKey: string): boolean {
   return isCmemGatewayUrl(apiUrl) === isCmemMemoryKey(apiKey);
+}
+
+/**
+ * The keys a provider may send to an endpoint, from its configured keys in
+ * priority order: the one lock every key pool goes through.
+ *  - The cmem gateway gets the first cm_pro_ key and nothing else. Its key is
+ *    account-delivered, so there is no pool to rotate through: several
+ *    cm_pro_ keys would mean rotating across accounts, and a personal key is
+ *    never sent there.
+ *  - Every other host gets the keys that are not cm_pro_, so an account key
+ *    pasted into any provider's settings never leaves for a third party.
+ */
+export function keysForEndpoint(apiUrl: string, keys: readonly string[]): string[] {
+  if (isCmemGatewayUrl(apiUrl)) {
+    const accountKey = keys.find(key => isCmemMemoryKey(key));
+    return accountKey ? [accountKey] : [];
+  }
+  return keys.filter(key => !isCmemMemoryKey(key));
 }
 
 /** What the gateway said about the rejection that armed the fallback. */
@@ -134,13 +168,19 @@ const PRO_FALLBACK_KEYS = [
  * never assumes a trial ended. Without the gateway's words it says only what
  * is true for every account.
  */
-export function proFallbackNotice(notice: ProFallbackNotice): string {
+export function proFallbackNotice(notice: ProFallbackNotice, role: CmemGatewayRole = 'primary'): string {
   const message = relayedLine(notice.message) || 'cmem.ai memory is paused for this account.';
   const action = relayedLine(notice.action);
+  // As the opt-in quota fallback the gateway never had memory: nothing moved
+  // to the Anthropic plan. Dispatch skips it inside the marker's window and
+  // re-probes it once per window after that.
+  const consequence = role === 'primary'
+    ? 'Memory is using your Anthropic plan for now.'
+    : 'claude-mem skips it as your quota fallback until it answers again; capture waits for your selected provider.';
   return [
     message,
     ...(action ? [action] : []),
-    `Memory is using your Anthropic plan for now. Manage your plan: ${planLink(notice.url)}`,
+    `${consequence} Manage your plan: ${planLink(notice.url)}`,
   ].join('\n');
 }
 

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { classifyGeminiError } from '../../src/services/worker/GeminiProvider.js';
+import { keyCooldownRemainingMs, resetKeyPoolStateForTesting, withKeyPool } from '../../src/shared/api-key-pool.js';
 
 // From #4147: outside the regions Google serves, every Gemini request answers
 // "User location is not supported". It used to read as a malformed request
@@ -12,13 +13,34 @@ const regionBody = (status: number) => JSON.stringify({
 });
 
 describe('Gemini region restriction', () => {
+  beforeEach(() => {
+    resetKeyPoolStateForTesting();
+  });
+
   for (const status of [400, 403]) {
     it(`pauses with buffered work kept and says what to change (${status})`, () => {
       const err = classifyGeminiError({ status, bodyText: regionBody(status), cause: new Error(String(status)) });
+      // auth_invalid is a pause that keeps the batch (preservingAbortReason)
+      // and holds Gemini for one cooldown; unrecoverable would drop it.
       expect(err.kind).toBe('auth_invalid');
       expect(err.code).toBe('location_unsupported');
       expect(err.message).toContain('not available in this region');
       expect(err.action).toContain('CLAUDE_MEM_PROVIDER');
+    });
+
+    it(`sends one request and parks no key of a multi-key pool (${status})`, async () => {
+      // Every key gets the same answer: the region, not the key, is refused.
+      // Rotating would send a doomed request per key and park each for the
+      // 6-hour refused-key window, long after the region problem is fixed.
+      const keys = ['AIza-one', 'AIza-two', 'AIza-three'];
+      const sent: string[] = [];
+      await expect(withKeyPool({ poolId: 'gemini', keys, label: 'Gemini' }, async ({ key }) => {
+        sent.push(key);
+        throw classifyGeminiError({ status, bodyText: regionBody(status), cause: new Error(String(status)) });
+      })).rejects.toMatchObject({ kind: 'auth_invalid', code: 'location_unsupported' });
+
+      expect(sent).toEqual(['AIza-one']);
+      for (const key of keys) expect(keyCooldownRemainingMs('gemini', key)).toBe(0);
     });
   }
 

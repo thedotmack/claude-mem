@@ -159,6 +159,106 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
   });
 });
 
+/**
+ * Regression coverage for #4284: chromaSync is null when Chroma is turned off
+ * (CLAUDE_MEM_CHROMA_ENABLED=false). `executeWithFallback` must then run the
+ * SQLite/FTS5 strategy for queries instead of returning an empty result that
+ * reads as "no matches". Before the fix this branch returned
+ * `{observations:[], sessions:[], prompts:[]}` for every query, so a
+ * query-filtered knowledge corpus was built empty.
+ */
+describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
+  it('runs SQLite strategy for a query when chromaSync is null and SQLite returns matches', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'cursor sqlite fallback',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('cursor sqlite fallback', expect.objectContaining({
+      project: 'orchestrator-project',
+      limit: 5,
+    }));
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
+    expect(result.results.sessions).toEqual([]);
+    expect(result.results.prompts).toEqual([]);
+  });
+
+  it('returns strategy=sqlite empty result (not the confident-empty bug) when SQLite has no matches', async () => {
+    const searchObservations = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'anything-not-in-the-database',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledTimes(1);
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([]);
+    expect(result.results.sessions).toEqual([]);
+    expect(result.results.prompts).toEqual([]);
+  });
+
+  it('forwards query text to SQLite when chromaSync is null and searchType=all', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'cursor sqlite fallback',
+      searchType: 'all',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('cursor sqlite fallback', expect.objectContaining({
+      project: 'orchestrator-project',
+    }));
+    expect(searchSessions).toHaveBeenCalledWith('cursor sqlite fallback', expect.anything());
+    expect(searchUserPrompts).toHaveBeenCalledWith('cursor sqlite fallback', expect.anything());
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
+  });
+});
+
 describe('SearchOrchestrator per-category SQLite supplement', () => {
   const userPrompt = {
     id: 7,
