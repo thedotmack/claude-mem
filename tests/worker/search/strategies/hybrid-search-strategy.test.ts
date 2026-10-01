@@ -233,6 +233,19 @@ describe('HybridSearchStrategy', () => {
       });
     });
 
+    it('scopes the SQLite file lookup and the hydration by the same read keys as the ranking', async () => {
+      // The file lookup decides which rows match; without `projects` it
+      // returned every project's rows for a checkout reading several keys.
+      mockSessionStore.getProjectReadKeys = mock(() => ['api', 'acme/api', 'api-old']);
+
+      await strategy.findByFile('/path/to/file.ts', { limit: 10, projects: ['api', 'acme/api'] });
+
+      const readKeys = ['api', 'acme/api', 'api-old'];
+      expect(mockSessionStore.getProjectReadKeys).toHaveBeenCalledTimes(1);
+      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.objectContaining({ projects: readKeys }));
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ projects: readKeys }));
+    });
+
     it('forwards isFolder so a folder is matched by its direct children, not as one file', async () => {
       await strategy.findByFile('/repo/src/utils', { limit: 10, isFolder: true });
 
