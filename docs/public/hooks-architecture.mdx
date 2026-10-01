@@ -428,7 +428,7 @@ sequenceDiagram
 | **Setup (version-check)** | Before session | No | 300s | Installs missing plugin dependencies; stderr hint only if they are still missing (always exit 0) |
 | **SessionStart (worker-start)** | Session start (async) | No | 60s | stderr (log only) |
 | **SessionStart (context)** | Before session | No | 60s | JSON → additionalContext (silent) |
-| **UserPromptSubmit** | Before processing | No | 15s (10s internal budget) | stdout → context |
+| **UserPromptSubmit** | Before processing | No | 15s (10s internal budget; 7s on Windows) | stdout → context |
 | **PostToolUse** | After tool | No | 120s | Transcript only |
 | **Summary** | Worker triggered | No | 120s | Database |
 | **SessionEnd** | On exit | No | 120s | Log only |

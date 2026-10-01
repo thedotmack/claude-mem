@@ -16,9 +16,11 @@ import {
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
+  probePortBind,
   waitForHealth,
   waitForReadiness,
 } from './infrastructure/HealthMonitor.js';
+import { UNBINDABLE_PORT_REMEDIATION } from '../shared/connection-errors.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
@@ -106,13 +108,19 @@ async function recordWorkerBootFailure(
   port: number,
   spawnedPid: number | undefined,
   bootFailure: string | undefined,
+  category: 'boot_crash' | 'unreachable_after_boot' | 'port_unbindable' = bootFailure ? 'boot_crash' : 'unreachable_after_boot',
 ): Promise<void> {
+  const unbindable = category === 'port_unbindable';
   const diagnostic = [
-    `[worker-spawner] worker is dead and unreachable on port ${port} after boot — issue #3557`,
+    unbindable
+      ? `[worker-spawner] worker port ${port} cannot be bound, so no worker was spawned`
+      : `[worker-spawner] worker is dead and unreachable on port ${port} after boot — issue #3557`,
     `  spawned pid: ${spawnedPid ?? 'n/a'}`,
     `  platform: ${process.platform}`,
     `  timestamp: ${new Date().toISOString()}`,
-    ...(bootFailure ? ['  boot failure (reproduced):', ...bootFailure.split('\n').map((line) => `    ${line}`)] : []),
+    ...(bootFailure
+      ? [unbindable ? '  bind failure:' : '  boot failure (reproduced):', ...bootFailure.split('\n').map((line) => `    ${line}`)]
+      : []),
   ].join('\n');
 
   try {
@@ -130,7 +138,7 @@ async function recordWorkerBootFailure(
   try {
     await captureCliEvent('worker_start_failed', {
       outcome: 'dead',
-      error_category: bootFailure ? 'boot_crash' : 'unreachable_after_boot',
+      error_category: category,
     });
   } catch (error) {
     // Telemetry is best-effort and must never turn a diagnosed failure into a throw.
@@ -289,6 +297,23 @@ export async function ensureWorkerStarted(
       pid: livePidNeverHealthyPid,
     });
     removePidFileIfOwner(livePidNeverHealthyPid);
+  }
+
+  // Not in use is not the same as bindable: EACCES / EADDRNOTAVAIL mean no
+  // worker can ever listen on this host and port. Record that boot failure
+  // with its errno instead of spawning a daemon that is certain to die.
+  if (!portInUse) {
+    const bind = await probePortBind(port);
+    if (bind.occupancy === 'unbindable') {
+      lastWorkerBootFailure = `Worker port ${port} cannot be bound (${bind.bindErrorCode}). ${UNBINDABLE_PORT_REMEDIATION}.`;
+      logger.error('SYSTEM', 'Worker port cannot be bound — not spawning a worker', {
+        port,
+        code: bind.bindErrorCode,
+        fix: UNBINDABLE_PORT_REMEDIATION,
+      });
+      await recordWorkerBootFailure(port, undefined, lastWorkerBootFailure, 'port_unbindable');
+      return 'dead';
+    }
   }
 
   const recentBootCrash = readSpawnCooldownOnWindows();

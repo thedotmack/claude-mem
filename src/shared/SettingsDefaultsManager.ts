@@ -2,7 +2,7 @@
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
-import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
+import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
@@ -155,9 +155,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PROVIDER: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
+  CLAUDE_MEM_GEMINI_API_KEYS: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
+  CLAUDE_MEM_OPENROUTER_API_KEYS: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
@@ -337,7 +339,7 @@ export class SettingsDefaultsManager {
                                 // worker runs behind a port-forward (e.g.
                                 // https://37700.host.<user>.<domain>). Empty => localhost.
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
-    CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(HOOK_TIMEOUTS.SESSION_INIT_REQUEST),
+    CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(defaultSessionInitRequestTimeoutMs()),  // 10s; 7s on Windows, whose hook start-up the budget never sees
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     CLAUDE_MEM_SKIP_BASH_PATTERNS: '',  // Regex matched against a shell command (Bash; Codex exec_command); when it matches, the observation is skipped. Empty = capture every command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
     CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',  // #2736 — default off preserves current behavior; set 'true' to skip every subagent observation (recommended for heavy Dynamic Workflows users)
@@ -350,9 +352,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PROVIDER: 'claude',
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_GEMINI_API_KEYS: '',  // Optional extra keys (newline/comma separated). Rotates on rate_limit/quota_exhausted/auth_invalid — see src/shared/api-key-pool.ts.
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_OPENROUTER_API_KEYS: '',  // Optional extra keys (newline/comma separated). Rotates on rate_limit/quota_exhausted/auth_invalid — see src/shared/api-key-pool.ts.
     // Default OpenRouter model (free tier). The same id is hard-coded in
     // src/ui/viewer/constants/settings.ts (DEFAULT_SETTINGS) and three times in
     // openclaw/install.sh (settings defaults, openrouter override, completion

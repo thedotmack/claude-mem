@@ -275,7 +275,7 @@ describe('the drop log names a truncated reply', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       earliestPendingTimestamp: null,
-      claimedMessageIds: [],
+      claimedMessageIds: [1],
       conversationHistory: [],
       currentProvider: 'openrouter',
       consecutiveRestarts: 0,
@@ -287,7 +287,7 @@ describe('the drop log names a truncated reply', () => {
   }
 
   const sessionManager = { confirmClaimedMessages: async () => 0, resetProcessingToPending: async () => 0 };
-  const DROP = 'OpenRouter returned non-XML xml response — ignoring queued batch';
+  const RETRY = 'OpenRouter returned non-XML xml response — asking for the queued batch again in a fresh generation';
 
   it('carries finishReason and truncated for a reply cut off at the cap, then forgets it', async () => {
     const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
@@ -297,14 +297,16 @@ describe('the drop log names a truncated reply', () => {
 
       await processAgentResponse('<observation><type>bugfix</type><title>cut', session, {} as never, sessionManager as never, undefined, 0, null, 'OpenRouter');
 
-      expect(warnSpy).toHaveBeenCalledWith('PARSER', DROP, expect.objectContaining({ finishReason: 'length', truncated: true }));
+      expect(warnSpy).toHaveBeenCalledWith('PARSER', RETRY, expect.objectContaining({ finishReason: 'length', truncated: true }));
       expect(session.lastFinishReason).toBeNull();
 
       // The next reply, from any provider, does not inherit it.
       warnSpy.mockClear();
+      session.abortController = new AbortController();
+      session.claimedMessageIds = [2];
       await processAgentResponse('<observation><type>bugfix</type><title>cut', session, {} as never, sessionManager as never, undefined, 0, null, 'OpenRouter');
-      const drop = warnSpy.mock.calls.find((call: unknown[]) => call[1] === DROP);
-      expect(drop?.[2]).not.toHaveProperty('finishReason');
+      const retry = warnSpy.mock.calls.find((call: unknown[]) => call[1] === RETRY);
+      expect(retry?.[2]).not.toHaveProperty('finishReason');
     } finally {
       warnSpy.mockRestore();
     }

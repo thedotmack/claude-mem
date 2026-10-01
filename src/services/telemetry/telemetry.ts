@@ -343,10 +343,10 @@ function errorBeforeSend(event: EventMessage | null): EventMessage | null {
     // These are environment errors — e.g. a Windows worker whose inherited cwd
     // is an ACL-locked Microsoft Store directory, which makes cross-spawn's
     // post-spawn cwd restore throw — not claude-mem defects, so they only add
-    // noise to error tracking. worker-service's ensureSafeWorkingDirectory()
-    // prevents the common case; this catches any residual variant. Runs ahead
-    // of the sentinel branch so it covers BOTH the manual (captureException)
-    // and SDK-autocapture paths.
+    // noise to error tracking. The daemon pins its cwd to the data dir at boot
+    // (pinDaemonWorkingDirectory, #3252), which prevents the common case; this
+    // catches any residual variant. Runs ahead of the sentinel branch so it
+    // covers BOTH the manual (captureException) and SDK-autocapture paths.
     if (isEnvironmentChdirError(props)) return null;
 
     // MANUAL path: already redacted + counted. Strip the sentinel and pass

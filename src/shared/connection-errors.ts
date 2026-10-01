@@ -37,3 +37,19 @@ export function isConnectionRefusedError(error: unknown): boolean {
   if (hasConnectionRefusedCode(error, new Set())) return true;
   return error instanceof Error && error.message.includes('ECONNREFUSED');
 }
+
+/**
+ * Bind errors that no other process causes and no wait clears: EACCES (a
+ * privileged port, or an address this user may not bind) and EADDRNOTAVAIL
+ * (CLAUDE_MEM_WORKER_HOST is not an address of this machine). No worker can
+ * ever listen there, so every launcher reports it as a boot failure with its
+ * errno, never as a busy port or a duplicate worker.
+ */
+export function isUnbindablePortError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return code === 'EACCES' || code === 'EADDRNOTAVAIL';
+}
+
+/** What fixes an unbindable worker port; every launcher's report names it. */
+export const UNBINDABLE_PORT_REMEDIATION =
+  'Set CLAUDE_MEM_WORKER_PORT to a port between 1024 and 65535 and CLAUDE_MEM_WORKER_HOST to an address of this machine (127.0.0.1 by default) in claude-mem settings';

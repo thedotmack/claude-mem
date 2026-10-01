@@ -86,7 +86,7 @@ function startFakeServer(): string {
   return `http://127.0.0.1:${fakeServer.port}`;
 }
 
-function writeSettings(serverBaseUrl: string): void {
+function writeSettings(serverBaseUrl: string, overrides: Record<string, string> = {}): void {
   writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
     CLAUDE_MEM_RUNTIME: 'server',
     CLAUDE_MEM_SERVER_URL: serverBaseUrl,
@@ -94,7 +94,26 @@ function writeSettings(serverBaseUrl: string): void {
     CLAUDE_MEM_SERVER_PROJECT_ID: 'server-project-1',
     CLAUDE_MEM_WORKER_PORT: String(workerPort),
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
+    ...overrides,
   }, null, 2));
+}
+
+// A server that accepts the /v1/context request and never answers it.
+function startHangingServer(): string {
+  fakeServer = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    idleTimeout: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (request.method === 'POST' && url.pathname === '/v1/context') {
+        contextRequests.push({ authorization: request.headers.get('authorization'), body: await request.json() as Record<string, unknown> });
+        return new Promise<Response>(() => {});
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  return `http://127.0.0.1:${fakeServer.port}`;
 }
 
 // The parent test process may carry the developer's CLAUDE_MEM_* overrides;
@@ -138,6 +157,10 @@ function sessionStartInput(): string {
     source: 'startup',
   });
 }
+
+// plugin/hooks/codex-hooks.json: Codex kills a SessionStart hook after 20 s and
+// drops its output.
+const CODEX_SESSION_START_LIMIT_MS = 20_000;
 
 function parseHookOutput(stdout: string): {
   hookSpecificOutput?: { additionalContext?: string };
@@ -203,17 +226,45 @@ describe('SessionStart in server runtime (plan-24 step 4)', () => {
     expect(output.systemMessage ?? '').toContain(`View Observations Live @ ${serverBaseUrl}`);
     expect(output.systemMessage ?? '').not.toContain(`localhost:${workerPort}`);
 
-    // A recency read (no query key) scoped to this folder and platform, sent
-    // with the server API key: once for the model, once for the colored copy.
-    expect(contextRequests.length).toBe(2);
-    for (const request of contextRequests) {
-      expect(request.authorization).toBe('Bearer cmem_test_key');
-      expect(request.body.projectId).toBe('server-project-1');
-      expect('query' in request.body).toBe(false);
-      expect(request.body.folderProjects).toEqual([projectName]);
-      expect(request.body.platformSource).toBe('claude');
-    }
+    // ONE recency read (no query key) per session start, scoped to this folder
+    // and platform and sent with the server API key. The model block and the
+    // colored terminal copy both render from its rows (#3227 read twice).
+    expect(contextRequests.length).toBe(1);
+    const [request] = contextRequests;
+    expect(request.authorization).toBe('Bearer cmem_test_key');
+    expect(request.body.projectId).toBe('server-project-1');
+    expect('query' in request.body).toBe(false);
+    expect(request.body.folderProjects).toEqual([projectName]);
+    expect(request.body.platformSource).toBe('claude');
+    // CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY defaults on: subagent rows stay out.
+    expect(request.body.excludeSubagents).toBe(true);
   }, 30_000);
+
+  it('asks the server for subagent rows too when CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY is false', async () => {
+    writeSettings(startFakeServer(), { CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: 'false' });
+
+    const result = await runWorkerService(['hook', 'claude-code', 'context'], sessionStartInput());
+
+    expect(result.exitCode).toBe(0);
+    expect(contextRequests.length).toBe(1);
+    expect(contextRequests[0].body.excludeSubagents).toBe(false);
+  }, 30_000);
+
+  it('answers a Codex SessionStart inside Codex\'s 20 s hook limit when the server never responds', async () => {
+    // The client's default request timeout is 30 s; Codex would kill the hook
+    // at 20 s and discard its output, context and all.
+    writeSettings(startHangingServer());
+
+    const result = await runWorkerService(['hook', 'codex', 'context'], sessionStartInput());
+
+    expect(result.exitCode).toBe(0);
+    expect(result.elapsedMs).toBeLessThan(CODEX_SESSION_START_LIMIT_MS);
+    expect(contextRequests.length).toBe(1);
+    expect(workerPortConnections).toBe(0);
+    // Still the valid (empty) SessionStart payload Codex's validator accepts.
+    const output = parseHookOutput(result.stdout);
+    expect(output.hookSpecificOutput?.additionalContext ?? '').not.toContain('recent context');
+  }, 45_000);
 
   it('returns an empty block quickly when the server cannot answer, with no stale local rows', async () => {
     // Nothing listens here: the server is down.

@@ -4,6 +4,7 @@ import {
   buildWindowsHiddenDaemonPowerShellArgs,
   resolveWindowsPowerShellPath,
   WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS,
+  windowsDaemonLaunchTimeoutMs,
 } from '../../src/services/infrastructure/ProcessManager.js';
 import { buildSpawnSyncInvocation } from '../../src/shared/spawn.js';
 import { readFileSync } from 'fs';
@@ -64,11 +65,21 @@ describe('Windows #3521 — hidden daemon spawn contract', () => {
 
   it('Windows daemon spawnSync uses a bounded timeout (Greptile P1)', () => {
     expect(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(windowsDaemonLaunchTimeoutMs()).toBe(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS);
     const source = readFileSync(
       join(import.meta.dir, '../../src/services/infrastructure/ProcessManager.ts'),
       'utf8',
     );
-    expect(source).toContain('timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS');
+    expect(source).toContain('const launchTimeoutMs = windowsDaemonLaunchTimeoutMs(launchCapMs);');
+    expect(source).toContain('timeout: launchTimeoutMs');
+  });
+
+  it('cuts the Windows launch to what is left of a hook budget, never past its own bound', () => {
+    // A synchronous PowerShell Start-Process that ignored the hook budget could
+    // push UserPromptSubmit past Claude Code's 15 s timeout.
+    expect(windowsDaemonLaunchTimeoutMs(2_500)).toBe(2_500);
+    expect(windowsDaemonLaunchTimeoutMs(60_000)).toBe(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS);
+    expect(windowsDaemonLaunchTimeoutMs(0)).toBe(1);
   });
 
   it('keeps the daemon cwd pinned: the encoded Start-Process carries -WorkingDirectory (#3706)', () => {

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { ProjectKeySource } from '../../utils/project-name.js';
+import { projectReadKeys, projectScopeSql, scopedProjects } from './project-read-keys.js';
 import {
   TableColumnInfo,
   IndexInfo,
@@ -2638,20 +2639,12 @@ export class SessionStore {
   }
 
   /**
-   * Every stored spelling of `project` that matches it case-insensitively,
-   * always including `project` itself (#3531). SQLite reads compare with
-   * COLLATE NOCASE, but Chroma metadata filters compare exactly, so semantic
-   * search hands Chroma each spelling it should accept.
+   * Every stored key a read of `projects` has to match: their stored spellings
+   * (#3531) and the projects merged into them, one hop (gate P2-4). Search
+   * hands these to Chroma, which compares metadata exactly, and to SQLite.
    */
-  getProjectKeyCaseVariants(project: string): string[] {
-    const rows = this.db.prepare(`
-      SELECT project AS key FROM sdk_sessions WHERE project = ? COLLATE NOCASE
-      UNION SELECT project FROM observations WHERE project = ? COLLATE NOCASE
-      UNION SELECT merged_into_project FROM observations WHERE merged_into_project = ? COLLATE NOCASE
-      UNION SELECT project FROM session_summaries WHERE project = ? COLLATE NOCASE
-      UNION SELECT merged_into_project FROM session_summaries WHERE merged_into_project = ? COLLATE NOCASE
-    `).all(project, project, project, project, project) as Array<{ key: string }>;
-    return Array.from(new Set([project, ...rows.map(row => row.key)]));
+  getProjectReadKeys(projects: string[]): string[] {
+    return projectReadKeys(this.db, projects);
   }
 
   getAllProjects(platformSource?: string): string[] {
@@ -2921,11 +2914,12 @@ export class SessionStore {
 
   getObservationsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; projects?: string[]; platformSource?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
   ): ObservationSearchResult[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, platformSource, type, concepts, files } = options;
+    const { orderBy = 'date_desc', limit, platformSource, type, concepts, files } = options;
+    const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY o.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
     const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
@@ -2934,9 +2928,10 @@ export class SessionStore {
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
 
-    if (project) {
-      additionalConditions.push('(o.project COLLATE NOCASE = ? OR o.merged_into_project COLLATE NOCASE = ?)');
-      params.push(project, project);
+    if (projects.length > 0) {
+      const scope = projectScopeSql('o', projects, { includeMerged: true });
+      additionalConditions.push(scope.sql);
+      params.push(...scope.params);
     }
 
     if (platformSource) {
@@ -3742,11 +3737,12 @@ export class SessionStore {
 
   getSessionSummariesByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; projects?: string[]; platformSource?: string } = {}
   ): SessionSummarySearchResult[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, platformSource } = options;
+    const { orderBy = 'date_desc', limit, platformSource } = options;
+    const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY ss.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
     const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
@@ -3754,9 +3750,10 @@ export class SessionStore {
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
 
-    if (project) {
-      additionalConditions.push('(ss.project COLLATE NOCASE = ? OR ss.merged_into_project COLLATE NOCASE = ?)');
-      params.push(project, project);
+    if (projects.length > 0) {
+      const scope = projectScopeSql('ss', projects, { includeMerged: true });
+      additionalConditions.push(scope.sql);
+      params.push(...scope.params);
     }
 
     if (platformSource) {
@@ -3787,11 +3784,12 @@ export class SessionStore {
 
   getUserPromptsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; projects?: string[]; platformSource?: string } = {}
   ): UserPromptRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, project, platformSource } = options;
+    const { orderBy = 'date_desc', limit, platformSource } = options;
+    const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
     const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
@@ -3799,9 +3797,10 @@ export class SessionStore {
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
 
-    if (project) {
-      additionalConditions.push('s.project COLLATE NOCASE = ?');
-      params.push(project);
+    if (projects.length > 0) {
+      const scope = projectScopeSql('s', projects, { includeMerged: false });
+      additionalConditions.push(scope.sql);
+      params.push(...scope.params);
     }
 
     if (platformSource) {

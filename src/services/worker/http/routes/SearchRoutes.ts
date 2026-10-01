@@ -73,6 +73,8 @@ This message disappears once the first observation lands.
 const semanticContextSchema = z.object({
   q: z.string().optional(),
   project: z.string().optional(),
+  // Every key the checkout reads (gate P2-5); a list, or comma-separated.
+  projects: z.union([z.array(z.string()), z.string()]).optional(),
   limit: z.union([z.string(), z.number()]).optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
@@ -397,6 +399,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
+    const projects = req.body?.projects ?? SearchRoutes.firstString(req.query.projects);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
@@ -411,6 +414,7 @@ export class SearchRoutes extends BaseRouteHandler {
         query,
         type: 'observations',
         project,
+        ...(projects !== undefined ? { projects } : {}),
         limit: String(limit),
         format: 'json',
         ...(platformSource ? { platformSource } : {}),

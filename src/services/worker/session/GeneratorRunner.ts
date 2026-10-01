@@ -18,7 +18,7 @@ import {
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
 import { recordObserverFailure } from '../../../shared/observer-health.js';
-import { recordClaudeCliSetupRequired } from '../../../shared/dependency-health.js';
+import { recordClaudeSetupRequired } from '../../../shared/dependency-health.js';
 import { isMemoryOnCmemGateway } from '../../../shared/cmem-gateway.js';
 import {
   releaseQuotaProbe,
@@ -51,7 +51,7 @@ export interface GeneratorRunnerDependencies {
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | typeof DEADLINE_EXCEEDED_CODE | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | 'output_retry' | typeof DEADLINE_EXCEEDED_CODE | 'none' {
   // The one transport pause that is ours: a request abandoned at the LLM
   // deadline, possibly already billed upstream. Every other transport pause
   // stays 'none', as before.
@@ -65,6 +65,7 @@ function normalizeAbortReason(
     case 'rate_limit': return 'rate_limit';
     case 'auth': return 'auth';
     case 'provider_switch': return 'provider_switch';
+    case 'output_retry': return 'output_retry';
     default: return 'none';
   }
 }
@@ -182,7 +183,7 @@ export async function startGeneratorWithProvider(
       if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
         skipGeneratorExitFinalization = true;
         session.pausedReason = 'setup_required';
-        recordClaudeCliSetupRequired(error.message);
+        recordClaudeSetupRequired(error);
         maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
         logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
           sessionId: session.sessionDbId,
@@ -370,6 +371,7 @@ export async function startGeneratorWithProvider(
       await handleGeneratorExit(session, reason, {
         sessionManager: sessionManager,
         completionHandler: completionHandler,
+        resumeGenerator: resumeSource => resumeGeneratorLater(session, 0, resumeSource, ensureGeneratorRunning),
       });
 
       // Paused work that nothing else is guaranteed to pick up resumes on its
@@ -389,6 +391,12 @@ export async function startGeneratorWithProvider(
       }
       if (reason === 'overflow:recycle') {
         resumeGeneratorLater(session, 0, 'overflow-recycle', ensureGeneratorRunning);
+      }
+      // A queued batch answered with neither XML nor the skip sentinel gets its
+      // one more try now, in a fresh generation; ResponseProcessor bounds it to
+      // one retry per batch, so this cannot loop.
+      if (normalizedReason === 'output_retry') {
+        resumeGeneratorLater(session, 0, 'output-retry', ensureGeneratorRunning);
       }
 
       // A response stall preserved its claimed batch but, like a recycle, has

@@ -55,6 +55,8 @@ export class SessionManager {
   private activeTransportResume: ReadyTransportResume | null = null;
   private deletingSessions = new Set<number>();
   private transportResumeDispositionEpochs = new WeakMap<ActiveSession, number>();
+  /** Sessions that already used their one summarize rescue (#3419). */
+  private readonly summarizeRescues = new Set<number>();
 
   constructor(
     dbManager: DatabaseManager,
@@ -604,6 +606,7 @@ export class SessionManager {
       }
       this.clearTransportResume(sessionDbId);
       this.buffer.dispose(sessionDbId);
+      this.summarizeRescues.delete(sessionDbId);
       this.sessions.delete(sessionDbId);
       logger.info('SESSION', 'Session deleted', {
         sessionId: sessionDbId,
@@ -658,6 +661,7 @@ export class SessionManager {
 
     this.clearTransportResume(sessionDbId);
     this.buffer.dispose(sessionDbId);
+    this.summarizeRescues.delete(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
@@ -676,23 +680,31 @@ export class SessionManager {
 
   /**
    * Snapshot paused in-memory work without loading sessions or changing the buffer.
-   * The automatic sweep also leaves out sessions whose own overflow cooldown is
-   * still running: the start gate would only refuse them and log a skip. It
-   * leaves a session to a resume it scheduled for itself, too: a rate limit
-   * must not be retried before its Retry-After.
-   * A rate-limit pause is retried like a quota pause: the breaker it armed paces it.
-   * With memory on the cmem gateway, a session whose unattended resumes are
-   * spent is left for its next hook as well: the sweep is one more unattended
-   * retry, and letting it through would make that budget meaningless.
+   * The automatic sweep resumes only pauses that time heals, each paced or
+   * capped where it is armed. A rate-limit pause is retried like a quota pause:
+   * the breaker it armed paces it. The sweep leaves a session to a resume it
+   * scheduled for itself, too: a rate limit must not be retried before its
+   * Retry-After. With memory on the cmem gateway, a session whose unattended
+   * resumes are spent is left for its next hook as well: the sweep is one more
+   * unattended retry, and letting it through would make that budget meaningless.
+   *
+   * It leaves out pauses that a retry on a timer cannot heal. Each one waits
+   * for the next captured event or an operator retry (`POST /api/processing`)
+   * until the per-reason resume scheduler gives it a bounded retry:
+   *  - a setup failure (`setup_required`), until the Claude CLI or the data
+   *    directory is repaired. The start gate rechecks it on the next event;
+   *  - an observer that spent its overflow recycles (`overflowPausedUntilMs`):
+   *    a message that fits no generation aborts again on every retry, which
+   *    the sweep repeated every cooldown, forever.
    */
-  getResumableSessionIds(includeOperatorOnly: boolean = false, nowMs: number = Date.now()): number[] {
-    const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall', 'setup_required']);
+  getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
+    const automaticallyRetryable = new Set([null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall']);
     const memoryOnCmemGateway = !includeOperatorOnly && isMemoryOnCmemGateway();
     return Array.from(this.sessions.values())
       .filter(session => !session.generatorPromise
         && this.buffer.getPendingCount(session.sessionDbId) > 0
         && (includeOperatorOnly || !(session.pausedReason === 'response_stall' && session.stallResumeTimer !== undefined))
-        && (includeOperatorOnly || !(session.overflowPausedUntilMs !== undefined && nowMs < session.overflowPausedUntilMs))
+        && (includeOperatorOnly || session.overflowPausedUntilMs === undefined)
         && (includeOperatorOnly || session.scheduledResumeTimer === undefined)
         && (includeOperatorOnly || !(memoryOnCmemGateway && unattendedGatewayResumesSpent(session)))
         && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
@@ -744,6 +756,18 @@ export class SessionManager {
   }
 
   /** Read-only access to the in-RAM buffer for diagnostics. */
+  /** Whether a summarize is buffered for this session, claimed or not. */
+  hasPendingSummarize(sessionDbId: number): boolean {
+    return this.buffer.peekTypes(sessionDbId).some(message => message.message_type === 'summarize');
+  }
+
+  /** Take this session's one summarize rescue; false once it has been used. */
+  claimSummarizeRescue(sessionDbId: number): boolean {
+    if (this.summarizeRescues.has(sessionDbId)) return false;
+    this.summarizeRescues.add(sessionDbId);
+    return true;
+  }
+
   getMessageBuffer(): SessionMessageBuffer {
     return this.buffer;
   }

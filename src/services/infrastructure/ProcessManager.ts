@@ -16,6 +16,17 @@ import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 /** Bound Windows PowerShell Start-Process so a stalled shell cannot hold the spawn lock forever (#3529 Greptile P1). */
 export const WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.POWERSHELL_COMMAND);
 
+/**
+ * The Windows launch timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, cut to
+ * `launchCapMs` (what is left of a caller's hook deadline) when there is one,
+ * so a slow PowerShell cannot push a hook past its host timeout.
+ */
+export function windowsDaemonLaunchTimeoutMs(launchCapMs?: number): number {
+  return launchCapMs === undefined
+    ? WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS
+    : Math.max(1, Math.min(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, launchCapMs));
+}
+
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
 
@@ -612,8 +623,10 @@ export function buildWindowsHiddenDaemonPowerShellArgs(
  * cwd pinned to claude-mem's data dir (daemonWorkingDirectory, #3706).
  *
  * Windows: Start-Process -WindowStyle Hidden via powershell argv (sync,
- * bounded). Returns 0 as a success sentinel (Start-Process does not yield the
- * child pid), so callers must treat only `> 0` as a real pid.
+ * bounded by WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, or by `launchCapMs` when
+ * the caller is spending a hook deadline). Returns 0 as a success sentinel
+ * (Start-Process does not yield the child pid), so callers must treat only
+ * `> 0` as a real pid.
  *
  * POSIX: setsid/detached spawnHidden; returns the child pid.
  *
@@ -624,11 +637,13 @@ export function spawnDetachedWorkerDaemon(
   runtimePath: string,
   scriptPath: string,
   env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  launchCapMs?: number
 ): number | undefined {
   if (platform === 'win32') {
     const powershell = resolveWindowsPowerShellPath(env);
     const args = buildWindowsHiddenDaemonPowerShellArgs(runtimePath, scriptPath);
+    const launchTimeoutMs = windowsDaemonLaunchTimeoutMs(launchCapMs);
     try {
       // argv spawnSync — never `execSync('powershell ...')` shell string.
       // A shell-string launch can allocate a console before windowsHide
@@ -637,7 +652,7 @@ export function spawnDetachedWorkerDaemon(
         stdio: 'ignore',
         windowsHide: true,
         env,
-        timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS,
+        timeout: launchTimeoutMs,
         killSignal: 'SIGTERM',
       });
       if (result.error) {
@@ -646,7 +661,7 @@ export function spawnDetachedWorkerDaemon(
       if (result.signal) {
         throw new Error(
           `powershell Start-Process killed by signal=${result.signal}` +
-            ` after ${WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS}ms`
+            ` after ${launchTimeoutMs}ms`
         );
       }
       if (result.status !== 0) {

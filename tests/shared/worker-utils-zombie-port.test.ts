@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
+import { createServer, type AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
@@ -7,8 +8,12 @@ import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
 import * as realHookIo from '../../src/shared/hook-io.js';
 import * as realCliTelemetry from '../../src/services/telemetry/cli-telemetry.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
+import * as realPortReclaim from '../../src/shared/port-reclaim.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
+const realPortReclaimSnapshot = { ...realPortReclaim };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
 // emitDiagnostic is mocked to a collector below; restoring it in afterAll
@@ -37,9 +42,32 @@ let portOccupied = true;
 // `false` = connection refused, `true` = healthy worker.
 let healthSequence: boolean[] = [];
 
-mock.module('../../src/services/infrastructure/index.js', () => ({
+// The pre-spawn check is the one place ensureWorkerRunning touches a real port:
+// a bind probe (classifyPortOccupancy), then a reclaim attempt when the probe
+// finds it held. Unmocked, the outcome depended on whatever held the port, and
+// the reclaim could aim at a live worker. Here the port is free, as on a clean
+// CI runner, and nothing is ever reclaimed.
+//
+// One set of probe mocks serves both entry points: infrastructure/index.js
+// re-exports HealthMonitor.js, and patching HealthMonitor.js re-links those
+// re-exports, so a mock missing from either one would fall back to the real
+// probe.
+const portProbes = {
   checkVersionMatch: () => Promise.resolve({ matches: true, pluginVersion: '13.16.0', workerVersion: '13.16.0' }),
   isPortInUse: () => Promise.resolve(portOccupied),
+  classifyPortOccupancy: () => Promise.resolve('free'),
+};
+
+mock.module('../../src/services/infrastructure/index.js', () => portProbes);
+
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
+  ...realHealthMonitorSnapshot,
+  ...portProbes,
+}));
+
+mock.module('../../src/shared/port-reclaim.js', () => ({
+  ...realPortReclaimSnapshot,
+  reclaimGhostListeningPort: () => Promise.resolve({ reclaimed: false, reason: 'owner-alive', killedPids: [] }),
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
@@ -66,6 +94,23 @@ mock.module('../../src/shared/hook-io.js', () => ({
 mock.module('../../src/services/telemetry/cli-telemetry.js', () => ({
   captureCliEvent: () => Promise.resolve(),
 }));
+
+/**
+ * A port the OS just handed out and nothing holds, so no path in this test can
+ * target the default worker port (37700 + uid % 100), which is the machine's
+ * real worker whenever one runs. Nothing binds it for real: the port probes
+ * above are mocked, so it is never raced either.
+ */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
+}
 
 async function importWorkerUtilsFresh() {
   return import(`../../src/shared/worker-utils.js?worker-utils-zombie-port=${Date.now()}-${Math.random()}`);
@@ -94,11 +139,13 @@ function installFetchMock(): void {
 describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
   const originalFetch = global.fetch;
   const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  const originalWorkerPort = process.env.CLAUDE_MEM_WORKER_PORT;
   let tempDataDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-zombie-port-'));
     process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
+    process.env.CLAUDE_MEM_WORKER_PORT = String(await freePort());
     spawnCalls.length = 0;
     failLoudDiagnostics.length = 0;
     portOccupied = true;
@@ -113,6 +160,11 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     } else {
       process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
     }
+    if (originalWorkerPort === undefined) {
+      delete process.env.CLAUDE_MEM_WORKER_PORT;
+    } else {
+      process.env.CLAUDE_MEM_WORKER_PORT = originalWorkerPort;
+    }
     rmSync(tempDataDir, { recursive: true, force: true });
     mock.restore();
   });
@@ -123,6 +175,8 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
     mock.module('../../src/shared/hook-io.js', () => realHookIoSnapshot);
     mock.module('../../src/services/telemetry/cli-telemetry.js', () => realCliTelemetrySnapshot);
+    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+    mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
   });
 
   // Regression guard for the warming-worker race: a worker that has bound the
@@ -133,6 +187,8 @@ describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
     healthSequence = [false, false, true];
 
     const workerUtils = await importWorkerUtilsFresh();
+    // Every probe below targets the port this test was handed, never a live worker's.
+    expect(workerUtils.getWorkerPort()).toBe(Number(process.env.CLAUDE_MEM_WORKER_PORT));
     const result = await workerUtils.ensureWorkerRunning();
 
     expect(result).toBe(true);
