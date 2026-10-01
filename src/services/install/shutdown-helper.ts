@@ -4,20 +4,22 @@ import { readOwnedWorkerPidInfo, verifyPidFileOwnership, type PidInfo } from '..
 
 /**
  * Why a stop did not complete, so callers can name the fix:
- * - `worker-still-running`: the claude-mem worker that owns the PID file, the
- *   one this stop targeted, is still alive after the wait. `pid` was verified
- *   against the PID file and its start token at the deadline, so it is safe
- *   to tell the user to end it.
- * - `port-rebound`: the worker this stop targeted has exited (or accepted the
- *   shutdown without owning the PID file), yet the port still accepts
- *   connections: a hook's lazy spawn or a process manager bound it again, or a
- *   leftover process still holds the socket. That is not a stop that failed.
- *   `ownerPid` is the verified PID-file owner now on the port, when there is one.
+ * - `worker-still-running`: the worker this stop targeted is demonstrably
+ *   still alive after the wait. Either the PID file's owner is alive and still
+ *   verified (PID plus start token), and then `pid` is set and safe to tell
+ *   the user to end; or, with no PID file, the same process answers the
+ *   worker's /api/health before the stop and at the deadline, and then `pid`
+ *   is null: an HTTP answer does not verify a PID (it may be a container's).
+ * - `port-rebound`: the worker this stop targeted has exited, yet the port
+ *   still accepts connections: a hook's lazy spawn or a process manager bound
+ *   it again, or a leftover process still holds the socket. That is not a stop
+ *   that failed. `ownerPid` is the verified PID-file owner now on the port,
+ *   when there is one.
  * - `port-held-by-other-process`: something accepts connections on the port,
  *   but no live claude-mem worker owns it and it never accepted a shutdown.
  */
 export type ShutdownBlocker =
-  | { kind: 'worker-still-running'; pid: number }
+  | { kind: 'worker-still-running'; pid: number | null }
   | { kind: 'port-rebound'; ownerPid: number | null }
   | { kind: 'port-held-by-other-process' };
 
@@ -36,9 +38,12 @@ export interface ShutdownProbes {
   /** Whether that worker's process is still alive (it may exit while we wait). */
   isOwnedWorkerAlive: (worker: PidInfo) => boolean;
   probePort: (port: number, timeoutMs: number) => Promise<PortProbeResult>;
+  /** The pid the worker on the port reports from /api/health, or null when no such answer could be read. */
+  readAnsweringWorkerPid: (port: number, timeoutMs: number) => Promise<number | null>;
 }
 
 const SHUTDOWN_REQUEST_TIMEOUT_MS = 5000;
+const HEALTH_PID_TIMEOUT_MS = 2000;
 /** Generous per attempt, so a slow refusal (WSL2 mirrored networking) still reads as a refusal (#4107). */
 const PORT_PROBE_TIMEOUT_MS = 3000;
 const POLL_INTERVAL_MS = 500;
@@ -59,10 +64,22 @@ export function probeLoopbackPort(port: number, timeoutMs: number): Promise<Port
   });
 }
 
+export async function readAnsweringWorkerPid(port: number, timeoutMs: number): Promise<number | null> {
+  try {
+    // A degraded worker answers 503 with the same payload, so the status is not checked.
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    const body = (await response.json()) as { pid?: unknown };
+    return typeof body.pid === 'number' && Number.isInteger(body.pid) && body.pid > 0 ? body.pid : null;
+  } catch {
+    return null;
+  }
+}
+
 const DEFAULT_PROBES: ShutdownProbes = {
   readOwnedWorker: () => readOwnedWorkerPidInfo(),
   isOwnedWorkerAlive: (worker) => verifyPidFileOwnership(worker),
   probePort: probeLoopbackPort,
+  readAnsweringWorkerPid,
 };
 
 /**
@@ -76,13 +93,13 @@ const DEFAULT_PROBES: ShutdownProbes = {
  * - an owned, live worker is running until its process exits;
  * - with no owned worker, only a completed TCP connect counts as a listener.
  *
- * The stop targets the worker that owned the PID file when it began. Only that
- * worker, still alive and still verified as ours at the deadline, is a worker
- * that did not stop. Once it has exited, a port that answers again belongs to
- * a new process (a hook's lazy spawn, a process manager restarting it, a
- * leftover socket), so the result is `port-rebound`, and no PID that has not
- * been verified is ever reported: on Windows a dead worker's PID is soon
- * reused by an unrelated process.
+ * The stop targets the worker that answers on the port when it begins: the
+ * PID file's verified owner, or, with no PID file, the process that answers
+ * /api/health. Only that worker, still alive at the deadline, is a worker that
+ * did not stop. Once it has exited, a port that answers again belongs to a new
+ * process (a hook's lazy spawn, a process manager restarting it, a leftover
+ * socket), so the result is `port-rebound`. No PID that has not been verified
+ * is ever reported: on Windows a dead worker's PID is soon reused.
  */
 export async function shutdownWorkerAndWait(
   port: number | string,
@@ -96,6 +113,9 @@ export async function shutdownWorkerAndWait(
     return recorded && (!recorded.port || Number(recorded.port) === portNumber) ? recorded : null;
   };
   const ownedWorker = readOwnedWorkerOnPort();
+  // With no PID file to go by, note which process answers as the worker, so
+  // the deadline can tell that same worker still running from a new one.
+  const answeringPidBefore = ownedWorker ? null : await probes.readAnsweringWorkerPid(portNumber, HEALTH_PID_TIMEOUT_MS);
 
   let shutdownAccepted = false;
   try {
@@ -136,9 +156,16 @@ export async function shutdownWorkerAndWait(
   if (!identifiedAsWorker) {
     return { workerWasRunning: false, stopped: false, blocker: { kind: 'port-held-by-other-process' } };
   }
-  // The targeted worker is gone (or never owned the PID file), yet the port
-  // answers: whoever holds it now is a different process. Name it only when
-  // the PID file verifies a new claude-mem worker on this port.
+  if (
+    !ownedWorker
+    && answeringPidBefore !== null
+    && (await probes.readAnsweringWorkerPid(portNumber, HEALTH_PID_TIMEOUT_MS)) === answeringPidBefore
+  ) {
+    return { workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: null } };
+  }
+  // The targeted worker is gone, yet the port answers: whoever holds it now
+  // is a different process. Name it only when the PID file verifies a new
+  // claude-mem worker on this port.
   const currentOwner = readOwnedWorkerOnPort();
   return {
     workerWasRunning: true,

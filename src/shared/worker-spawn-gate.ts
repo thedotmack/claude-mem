@@ -36,7 +36,7 @@ import { logger } from '../utils/logger.js';
  * lock through the platform-scaled readiness deadline, which is 60s on
  * Windows. Keep a 30s margin so a readiness poll cannot outlive the lock.
  */
-const SPAWN_LOCK_STALE_MS = 90_000;
+export const SPAWN_LOCK_STALE_MS = 90_000;
 
 /** How often holdSpawnLock refreshes the mtime of a lock it holds: well inside SPAWN_LOCK_STALE_MS. */
 const SPAWN_LOCK_REFRESH_MS = SPAWN_LOCK_STALE_MS / 3;

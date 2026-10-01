@@ -187,7 +187,8 @@ import { prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait, type ShutdownBlocker } from '../../services/install/shutdown-helper.js';
-import { holdSpawnLock } from '../../shared/worker-spawn-gate.js';
+import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-gate.js';
+import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
@@ -2082,6 +2083,15 @@ export function workerShutdownFailure(
       };
     }
     case 'worker-still-running': {
+      if (blocker.pid === null) {
+        // Identified only by its /api/health answers: never name that PID in
+        // a kill command (it may belong to a container, or be reused).
+        return {
+          severity: ErrorSeverity.ABORT,
+          cause: 'The running claude-mem worker accepted the shutdown request but was still serving after 10 seconds.',
+          remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+        };
+      }
       // The PID was verified as ours (PID file plus start token) at the
       // deadline, so naming it cannot point the user at an unrelated process.
       const killCommand = process.platform === 'win32' ? `taskkill /PID ${blocker.pid} /F` : `kill ${blocker.pid}`;
@@ -2094,8 +2104,21 @@ export function workerShutdownFailure(
   }
 }
 
-/** How long the installer waits for a launcher that is mid-spawn to release the spawn lock. */
-const INSTALL_SPAWN_LOCK_WAIT_MS = 20_000;
+/** Evidence sources for the installer's worker stop, injectable so tests never touch a real worker. */
+export interface WorkerStopDeps {
+  stopWorker?: typeof shutdownWorkerAndWait;
+  /** The live, verified PID-file owner, or null. */
+  readOwnedWorker?: () => PidInfo | null;
+  /** How long to wait for the spawn lock; defaults to the lock's staleness window. */
+  spawnLockWaitMs?: number;
+}
+
+/**
+ * How long the installer waits for the spawn lock: a launcher normally holds
+ * it for seconds, and any lock not refreshed within the staleness window can
+ * be broken, so waiting that long gets it from a stuck or crashed holder too.
+ */
+const INSTALL_SPAWN_LOCK_WAIT_MS = SPAWN_LOCK_STALE_MS + 5_000;
 
 /**
  * Stop the running worker, then overwrite the plugin files, holding the spawn
@@ -2108,24 +2131,50 @@ export async function overwriteWithWorkerStopped(
   port: number | string,
   summary: InstallSummary,
   overwrite: () => Promise<void>,
-  stopWorker: typeof shutdownWorkerAndWait = shutdownWorkerAndWait,
+  deps: WorkerStopDeps = {},
 ): Promise<void> {
-  const releaseSpawnLock = await holdSpawnLock(INSTALL_SPAWN_LOCK_WAIT_MS);
+  let releaseSpawnLock = await holdSpawnLock(0);
+  if (!releaseSpawnLock) {
+    log.info('Waiting for another claude-mem launcher to finish starting the worker…');
+    releaseSpawnLock = await holdSpawnLock(deps.spawnLockWaitMs ?? INSTALL_SPAWN_LOCK_WAIT_MS);
+  }
+  if (!releaseSpawnLock) {
+    // Only a holder that keeps refreshing the lock (another install running
+    // now) gets here. Aborting is not an option before sign-in, so overwrite
+    // and say how to recover if a worker started from the half-copied files.
+    installerError(ErrorSeverity.WARN_CONTINUE, {
+      component: 'worker-shutdown',
+      phase: 'pre-overwrite',
+      cause: new Error('Another claude-mem process held the worker spawn lock, so the plugin files were overwritten without it.'),
+      remediation: 'When the install finishes, run `npx claude-mem restart` so the worker runs the new files.',
+    }, summary);
+  }
   try {
-    await requireWorkerStopped(port, 'pre-overwrite', summary, stopWorker);
+    await requireWorkerStopped(port, 'pre-overwrite', summary, deps);
     await overwrite();
   } finally {
     releaseSpawnLock?.();
   }
 }
 
-/** Exported for tests; `stopWorker` is injectable so they never touch a real worker. */
+/** The verified PID-file owner on `port`, or null; never throws. */
+function readOwnedWorkerOnPort(port: number | string, readOwnedWorker: () => PidInfo | null): PidInfo | null {
+  try {
+    const owner = readOwnedWorker();
+    return owner && (!owner.port || Number(owner.port) === Number(port)) ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Exported for tests. */
 export async function requireWorkerStopped(
   port: number | string,
   phase: 'pre-overwrite' | 'provider-cutover',
   summary: InstallSummary,
-  stopWorker: typeof shutdownWorkerAndWait = shutdownWorkerAndWait,
+  deps: WorkerStopDeps = {},
 ): Promise<void> {
+  const stopWorker = deps.stopWorker ?? shutdownWorkerAndWait;
   // CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally
   // (#2828). claude-mem never stops, kills or recycles it, and its manager
   // would restart it the moment it exited, so leave it running and say once
@@ -2175,10 +2224,19 @@ export async function requireWorkerStopped(
     else if (result.workerWasRunning) log.info(stopMessage);
   } catch (error: unknown) {
     if (error instanceof InstallAbortError) throw error;
-    // An unexpected failure of the stop itself proves no live worker holds the
-    // port, so it must not end the install before sign-in: warn and go on.
     const message = error instanceof Error ? error.message : String(error);
     if (spinner) spinner.error(`Worker shutdown failed: ${message}`);
+    // The stop itself failed, so decide from the ownership record alone: a
+    // live, verified worker on this port must not have its files overwritten;
+    // with none, nothing shows a claude-mem worker holds the port, and the
+    // install must still reach sign-in.
+    const owner = readOwnedWorkerOnPort(port, deps.readOwnedWorker ?? readOwnedWorkerPidInfo);
+    if (owner) {
+      const failure = workerShutdownFailure({ kind: 'worker-still-running', pid: owner.pid }, port);
+      // ABORT: throws.
+      installerError(failure.severity, { component: 'worker-shutdown', phase, cause: error, remediation: failure.remediation }, summary);
+      return;
+    }
     installerError(ErrorSeverity.WARN_CONTINUE, {
       component: 'worker-shutdown',
       phase,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,15 +43,19 @@ interface FakeEvidence {
   alive?: boolean[];
   /** Answers for successive port probes; the last one repeats. */
   port?: PortProbeResult[];
+  /** Pids the worker reports from /api/health on successive reads; the last one repeats. */
+  healthPids?: (number | null)[];
 }
 
 function probes(evidence: FakeEvidence = {}): ShutdownProbes & { probeTimeouts: number[] } {
   const owned = Array.isArray(evidence.owned) ? [...evidence.owned] : [evidence.owned ?? null];
   const alive = [...(evidence.alive ?? [false])];
   const port = [...(evidence.port ?? ['refused'])];
+  const healthPids = [...(evidence.healthPids ?? [null])];
   const probeTimeouts: number[] = [];
   return {
     probeTimeouts,
+    readAnsweringWorkerPid: async () => (healthPids.length > 1 ? healthPids.shift()! : healthPids[0]),
     readOwnedWorker: () => (owned.length > 1 ? owned.shift()! : owned[0]),
     isOwnedWorkerAlive: () => (alive.length > 1 ? alive.shift()! : alive[0]),
     probePort: async (_port, timeoutMs) => {
@@ -219,6 +223,26 @@ describe('installer worker shutdown — the port is taken again after the worker
     const result = await shutdownWorkerAndWait(PORT, 0, probes({ owned: ownedWorker(), alive: [false], port: ['open'] }));
     expect(JSON.stringify(result)).not.toContain('4242');
   });
+
+  it('with no PID file, a worker still answering as the same process did not stop: it is not a rebind', async () => {
+    // A worker that never wrote its PID file (a read-only data dir, a container)
+    // accepted the shutdown but still serves at the deadline.
+    fetchResponds(200);
+    await expect(shutdownWorkerAndWait(PORT, 0, probes({ owned: null, port: ['open'], healthPids: [7070] }))).resolves.toEqual({
+      workerWasRunning: true,
+      stopped: false,
+      blocker: { kind: 'worker-still-running', pid: null },
+    });
+  });
+
+  it('with no PID file, a different process answering at the deadline is a rebind', async () => {
+    fetchResponds(200);
+    await expect(shutdownWorkerAndWait(PORT, 0, probes({ owned: null, port: ['open'], healthPids: [7070, 8080] }))).resolves.toEqual({
+      workerWasRunning: true,
+      stopped: false,
+      blocker: { kind: 'port-rebound', ownerPid: null },
+    });
+  });
 });
 
 describe('probeLoopbackPort', () => {
@@ -248,6 +272,13 @@ describe('installer reaction to a port that is not free', () => {
     const failure = workerShutdownFailure({ kind: 'port-rebound', ownerPid: null }, PORT);
     expect(failure.severity).toBe(ErrorSeverity.WARN_CONTINUE);
     expect(failure.remediation).toContain('npx claude-mem restart');
+    expect(failure.remediation).not.toMatch(/taskkill|\bkill\b/);
+  });
+
+  it('aborts without a kill command for a worker identified only by its HTTP answers', () => {
+    const failure = workerShutdownFailure({ kind: 'worker-still-running', pid: null }, PORT);
+    expect(failure.severity).toBe(ErrorSeverity.ABORT);
+    expect(failure.remediation).toContain('npx claude-mem stop');
     expect(failure.remediation).not.toMatch(/taskkill|\bkill\b/);
   });
 
@@ -288,8 +319,8 @@ describe('installer pre-overwrite stop — never aborts before sign-in without a
     const { stop, calls } = fakeStop({ workerWasRunning: true, stopped: true });
     const summary = createInstallSummary();
 
-    await requireWorkerStopped(PORT, 'pre-overwrite', summary, stop);
-    await requireWorkerStopped(PORT, 'provider-cutover', summary, stop);
+    await requireWorkerStopped(PORT, 'pre-overwrite', summary, { stopWorker: stop });
+    await requireWorkerStopped(PORT, 'provider-cutover', summary, { stopWorker: stop });
 
     expect(calls).toEqual([]);
     expect(summary.warnings).toHaveLength(1);
@@ -300,21 +331,30 @@ describe('installer pre-overwrite stop — never aborts before sign-in without a
     const { stop } = fakeStop({ workerWasRunning: true, stopped: false, blocker: { kind: 'port-rebound', ownerPid: null } });
     const summary = createInstallSummary();
 
-    await expect(requireWorkerStopped(PORT, 'pre-overwrite', summary, stop)).resolves.toBeUndefined();
+    await expect(requireWorkerStopped(PORT, 'pre-overwrite', summary, { stopWorker: stop })).resolves.toBeUndefined();
     expect(summary.warnings).toHaveLength(1);
   });
 
-  it('warns and continues when the stop itself fails unexpectedly', async () => {
+  it('warns and continues when the stop itself fails and no live worker owns the port', async () => {
     const { stop } = fakeStop(new Error('probe exploded'));
     const summary = createInstallSummary();
 
-    await expect(requireWorkerStopped(PORT, 'pre-overwrite', summary, stop)).resolves.toBeUndefined();
+    await expect(
+      requireWorkerStopped(PORT, 'pre-overwrite', summary, { stopWorker: stop, readOwnedWorker: () => null }),
+    ).resolves.toBeUndefined();
     expect(summary.warnings[0].message).toContain('probe exploded');
+  });
+
+  it('still aborts when the stop fails but the PID file shows a live worker on the port', async () => {
+    const { stop } = fakeStop(new Error('probe exploded'));
+    await expect(
+      requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), { stopWorker: stop, readOwnedWorker: () => ownedWorker() }),
+    ).rejects.toBeInstanceOf(InstallAbortError);
   });
 
   it('aborts only for the verified live worker that did not stop', async () => {
     const { stop } = fakeStop({ workerWasRunning: true, stopped: false, blocker: { kind: 'worker-still-running', pid: 4242 } });
-    await expect(requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), stop)).rejects.toBeInstanceOf(InstallAbortError);
+    await expect(requireWorkerStopped(PORT, 'pre-overwrite', createInstallSummary(), { stopWorker: stop })).rejects.toBeInstanceOf(InstallAbortError);
   });
 });
 
@@ -344,7 +384,7 @@ describe('installer holds the spawn lock from the stop through the overwrite', (
 
     await overwriteWithWorkerStopped(PORT, createInstallSummary(), async () => {
       launcherCouldSpawn.push(acquireSpawnLock());
-    }, stop);
+    }, { stopWorker: stop });
 
     expect(launcherCouldSpawn).toEqual([false, false]);
     expect(existsSync(join(dataDir, 'spawn.lock'))).toBe(false);
@@ -356,8 +396,24 @@ describe('installer holds the spawn lock from the stop through the overwrite', (
       stopped: false,
       blocker: { kind: 'worker-still-running', pid: 4242 },
     });
-    await expect(overwriteWithWorkerStopped(PORT, createInstallSummary(), async () => {}, stop)).rejects.toBeInstanceOf(InstallAbortError);
+    await expect(overwriteWithWorkerStopped(PORT, createInstallSummary(), async () => {}, { stopWorker: stop })).rejects.toBeInstanceOf(InstallAbortError);
     expect(existsSync(join(dataDir, 'spawn.lock'))).toBe(false);
+  });
+
+  it('when another process keeps the lock, still overwrites but warns how to recover', async () => {
+    // A live holder that keeps its lock fresh (another install running now).
+    const holderPayload = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+    writeFileSync(join(dataDir, 'spawn.lock'), holderPayload);
+    const summary = createInstallSummary();
+    let overwritten = false;
+
+    await overwriteWithWorkerStopped(PORT, summary, async () => {
+      overwritten = true;
+    }, { stopWorker: async () => ({ workerWasRunning: false, stopped: true }), spawnLockWaitMs: 300 });
+
+    expect(overwritten).toBe(true);
+    expect(summary.warnings.map((warning) => warning.message).join('\n')).toContain('spawn lock');
+    expect(readFileSync(join(dataDir, 'spawn.lock'), 'utf-8')).toBe(holderPayload);
   });
 });
 

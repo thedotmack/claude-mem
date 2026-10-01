@@ -85,7 +85,7 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. `npx claude-me
 **When:** Claude Code Setup phase, before every session.
 
 **What it does:**
-1. Checks that every dependency declared in the plugin's `package.json` resolves from its `node_modules` — the complete closure, not just an existing folder.
+1. Checks that every dependency declared in the plugin's `package.json` (plus the `zod` subpaths the worker loads) is present in its `node_modules`, not just that the folder exists.
 2. If any are missing, runs `bun install --production` in the plugin root (up to 120s), then checks again. A partial tree is kept, never deleted.
 3. If dependencies are still missing, prints `claude-mem: plugin dependencies missing (…) - run: npx claude-mem@latest install`, naming the modules (stderr; Codex receives it as SessionStart context).
 4. If the closure is complete and `.install-version` is missing, unreadable or from another version, writes the marker itself (`{version, installedAt, bun}`) instead of sending a working install to the installer.
@@ -107,7 +107,7 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. `npx claude-me
 ```
 
 **Key Features:**
-- ✅ Fast when the install is complete: a dependency-closure check, no install
+- ✅ Fast when the install is complete: a declared-dependency check, no install
 - ✅ Self-heals marketplace installs: installs missing dependencies and writes the marker, so a working install never sees a "run the installer" message
 - ✅ Names the missing modules when an install cannot be completed
 - ✅ Always exit 0 — never blocks a session
