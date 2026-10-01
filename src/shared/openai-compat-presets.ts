@@ -63,6 +63,14 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Free hosted inference across NVIDIA-served models. Key starts with nvapi- from build.nvidia.com.',
   },
   {
+    id: 'orcarouter',
+    label: 'OrcaRouter (orcarouter.ai)',
+    baseUrl: 'https://api.orcarouter.ai/v1',
+    defaultModel: 'openai/gpt-4o-mini',
+    requiresApiKey: true,
+    hint: 'One sk-orca- key for provider-scoped model ids such as anthropic/claude-haiku-4.5.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
