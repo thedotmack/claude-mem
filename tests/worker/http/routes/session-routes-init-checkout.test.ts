@@ -4,10 +4,14 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { Server } from 'node:http';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import express from 'express';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
 import { logger } from '../../../../src/utils/logger.js';
+import { getProjectContext } from '../../../../src/utils/project-name.js';
 
 let server: Server | undefined;
 let store: SessionStore | undefined;
@@ -114,5 +118,66 @@ describe('session-init records the checkout and how its key was derived (gate P1
     const response = await postInit({ contentSessionId: 'init-checkout-3', project: 'acme', prompt: PRIVATE_PROMPT });
     expect(response.status).toBe(200);
     expect(recordedCheckout('init-checkout-3')).toEqual({ cwd: null, project_key_source: null });
+  });
+});
+
+// #3803: the OpenCode plugin runs inside OpenCode's process and sends only its
+// checkout. The route keys the session with the shared resolver, the one
+// observation ingest already applies to that host's tool events.
+describe('session-init keys a checkout-only host with the shared resolver (#3803)', () => {
+  let fixtureRoot: string | undefined;
+
+  afterEach(() => {
+    if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+    fixtureRoot = undefined;
+  });
+
+  function sessionRow(contentSessionId: string): { project: string; cwd: string | null; project_key_source: string | null } {
+    return store!.db
+      .prepare('SELECT project, cwd, project_key_source FROM sdk_sessions WHERE content_session_id = ?')
+      .get(contentSessionId) as { project: string; cwd: string | null; project_key_source: string | null };
+  }
+
+  it('keys a linked worktree as parent/leaf and records the checkout as path-derived', async () => {
+    // What `git worktree add` leaves on disk: a `.git` FILE pointing into the
+    // parent repository's .git/worktrees directory.
+    fixtureRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-init-checkout-'));
+    const parentRepo = path.join(fixtureRoot, 'parent-repo');
+    mkdirSync(path.join(parentRepo, '.git', 'worktrees', 'leaf-worktree'), { recursive: true });
+    const worktreeDir = path.join(fixtureRoot, 'leaf-worktree');
+    mkdirSync(worktreeDir);
+    writeFileSync(path.join(worktreeDir, '.git'), `gitdir: ${path.join(parentRepo, '.git', 'worktrees', 'leaf-worktree')}\n`);
+
+    const response = await postInit({
+      contentSessionId: 'init-checkout-only',
+      prompt: PRIVATE_PROMPT,
+      cwd: worktreeDir,
+      platformSource: 'opencode',
+    });
+
+    expect(response.status).toBe(200);
+    expect(sessionRow('init-checkout-only')).toEqual({
+      project: getProjectContext(worktreeDir).primary,
+      cwd: worktreeDir,
+      project_key_source: 'path',
+    });
+    expect(sessionRow('init-checkout-only').project).toBe('parent-repo/leaf-worktree');
+  });
+
+  it('keeps the project a hook resolved itself', async () => {
+    const response = await postInit({
+      contentSessionId: 'init-hook-project',
+      project: 'from-the-hook',
+      prompt: PRIVATE_PROMPT,
+      cwd: '/work/elsewhere',
+      projectKeySource: 'environment',
+    });
+
+    expect(response.status).toBe(200);
+    expect(sessionRow('init-hook-project')).toEqual({
+      project: 'from-the-hook',
+      cwd: '/work/elsewhere',
+      project_key_source: 'environment',
+    });
   });
 });
