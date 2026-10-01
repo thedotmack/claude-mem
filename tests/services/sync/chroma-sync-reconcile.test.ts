@@ -61,6 +61,19 @@ function newSync(): ChromaSync {
 }
 
 describe('ChromaSync duplicate-ID reconcile', () => {
+  it('sanitizes NUL bytes before Chroma add to prevent trigram FTS corruption', async () => {
+    const sync = newSync();
+
+    const written = await sync.addDocuments([
+      { id: 'prompt_1', document: 'before\0after', metadata: { sqlite_id: 1 } },
+    ]);
+
+    expect(written).toBe(1);
+    const add = calls.find(call => call.tool === 'chroma_add_documents');
+    expect(add?.args.documents).toEqual(['before\uFFFDafter']);
+    expect(add?.args.documents[0]).not.toContain('\0');
+  });
+
   it('coalesces concurrent collection creation into one Chroma mutation', async () => {
     const sync = new ChromaSync('project');
     let releaseCreation: (() => void) | null = null;

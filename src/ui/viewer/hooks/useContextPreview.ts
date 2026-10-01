@@ -52,7 +52,9 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
 
       setCatalog(nextCatalog);
 
-      const preferredSource = getPreferredSource(nextCatalog.sources);
+      const preferredSource = settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'
+        ? null
+        : getPreferredSource(nextCatalog.sources);
       setSelectedSource(preferredSource);
 
       if (preferredSource) {
@@ -67,6 +69,12 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     }
     fetchProjects();
   }, []);
+
+  useEffect(() => {
+    setSelectedSource(settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'
+      ? null
+      : getPreferredSource(catalog.sources));
+  }, [settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES, catalog.sources]);
 
   useEffect(() => {
     if (!selectedSource) {

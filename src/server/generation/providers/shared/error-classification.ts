@@ -83,7 +83,13 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
     lower.includes('quota exceeded') ||
     lower.includes('insufficient credits') ||
     lower.includes('insufficient_quota') ||
-    lower.includes('resource_exhausted')
+    lower.includes('resource_exhausted') ||
+    lower.includes('key limit exceeded') ||
+    // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
+    // marker only applies off the 429 path (the key-limit marker always wins).
+    (lower.includes('limit exceeded') && status !== 429) ||
+    lower.includes('negative credit') ||
+    status === 402
   ) {
     return new ServerClassifiedProviderError(
       `${providerLabel} quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
@@ -126,6 +132,24 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
       kind: 'transient',
       cause: input.cause,
     });
+  }
+
+  // litellm (behind OpenRouter) can fail to parse the downstream model's
+  // response and surface it as a body-level error inside a 200 envelope, e.g.
+  // `{ error: { code: 200, message: "Unable to get json response - Expecting
+  // value: line 45 column 1" } }`. Because the body-error path forwards the
+  // success status verbatim, none of the HTTP-status branches above match and
+  // it would otherwise fall through to `unrecoverable` and never retry. These
+  // are transient upstream hiccups that usually succeed on a retry, so detect
+  // the tell-tale litellm markers and route them to the retry loop.
+  // Kept marker-scoped on purpose: this classifier is shared with Gemini,
+  // which delivers genuine unrecoverable errors (FAILED_PRECONDITION, etc.)
+  // inside 200 envelopes that must stay non-transient.
+  if (lower.includes('unable to get json') || lower.includes('expecting value')) {
+    return new ServerClassifiedProviderError(
+      `${providerLabel} transient upstream parse failure (status ${status})`,
+      { kind: 'transient', cause },
+    );
   }
 
   return new ServerClassifiedProviderError(
