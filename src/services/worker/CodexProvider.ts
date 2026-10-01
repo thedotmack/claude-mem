@@ -2,7 +2,12 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
-import { CodexAppServerClient, CODEX_SETUP_REQUIRED_CODE } from './CodexAppServerClient.js';
+import {
+  CODEX_NO_AGENT_MESSAGE_CODE,
+  CODEX_SETUP_REQUIRED_CODE,
+  type CodexAppServerTurnResult,
+} from './CodexAppServerClient.js';
+import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
 import { resolveLlmTimeoutMs, withRetry } from './retry.js';
 import {
@@ -62,7 +67,10 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
   const code = (cause as { code?: unknown } | null)?.code;
   const structuredKind = classifyCodexErrorInfo((cause as { codexErrorInfo?: unknown } | null)?.codexErrorInfo);
   let kind: CodexErrorKind = 'transient';
-  if (structuredKind) {
+  if (code === CODEX_NO_AGENT_MESSAGE_CODE) {
+    // Its diagnostic counts must not be read as an HTTP status.
+    kind = 'transient';
+  } else if (structuredKind) {
     kind = structuredKind;
   } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
     // Fixed on this machine (install the CLI, `codex login`), never by retrying.
@@ -126,7 +134,9 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   protected readonly providerName = 'Codex';
   protected readonly syntheticIdPrefix = 'codex';
   protected readonly forwardEmptyMessageResponse = true;
-  private readonly appServer = new CodexAppServerClient();
+  private readonly appServer = new CodexAppServerPool(boundedInteger(
+    SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS, 2, 8,
+  ));
 
   async close(): Promise<void> {
     await this.appServer.close();
@@ -188,7 +198,41 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       'Follow the latest user request: XML for observations/summaries, plain text for payload compression.',
       ...history.map(message => `${message.role.toUpperCase()}:\n${message.content}`),
     ].join('\n\n');
-    const result = await withRetry(async attemptSignal => {
+    // Pool slots run concurrently: a success may only clear the breaker or
+    // setup status it was admitted under, never a newer failure another slot
+    // recorded meanwhile (each record installs a new object).
+    const admittedQuota = getQuotaCooldown('codex');
+    const admittedSetup = getDependencyStatus('codex_cli');
+    let result: CodexAppServerTurnResult;
+    try {
+      result = await this.runTurnWithRetry(prompt, config, timeoutMs, abortSignal);
+    } catch (error) {
+      // A turn that completes without any agent message gets withRetry's one
+      // retry. A second one is passed on as an empty reply, for the skip
+      // contract to settle, rather than pausing the batch as a transport fault
+      // again and again.
+      if (!isClassified(error) || (error.cause as { code?: unknown } | null)?.code !== CODEX_NO_AGENT_MESSAGE_CODE) {
+        throw error;
+      }
+      logger.warn('SDK', 'Codex completed twice without an agent message; passing an empty reply on', {
+        message: error.message,
+      });
+      return { content: '' };
+    }
+    // A served request is the recovery probe succeeding.
+    const quota = getQuotaCooldown('codex');
+    if (quota && quota === admittedQuota) clearQuotaCooldown('codex');
+    if (getDependencyStatus('codex_cli') === admittedSetup) clearDependencyStatus('codex_cli');
+    return result;
+  }
+
+  private runTurnWithRetry(
+    prompt: string,
+    config: CodexConfig,
+    timeoutMs: number,
+    abortSignal: AbortSignal | undefined,
+  ): Promise<CodexAppServerTurnResult> {
+    return withRetry(async attemptSignal => {
       try {
         return await this.appServer.runTurn({
           codexPath: config.codexPath,
@@ -221,11 +265,6 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
         throw classifyCodexError(error);
       }
     }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: timeoutMs, abortSignal });
-    // A served request is the recovery probe succeeding. The guard skips the
-    // breaker's disk write when nothing was armed.
-    if (getQuotaCooldown('codex')) clearQuotaCooldown('codex');
-    clearDependencyStatus('codex_cli');
-    return result;
   }
 }
 

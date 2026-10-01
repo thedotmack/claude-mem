@@ -14,7 +14,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
-import { spawnHidden } from '../../shared/spawn.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { logger } from '../../utils/logger.js';
@@ -95,6 +95,9 @@ interface ActiveTurn {
   threadId: string;
   turnId: string | null;
   finalText: string | null;
+  completedItems: number;
+  agentMessages: number;
+  terminalItems: number;
   tokenUsage: JsonObject | null;
   terminalTurn: JsonObject | null;
   protocolError: Error | null;
@@ -134,6 +137,22 @@ export interface CodexAppServerTurnResult {
 
 export function buildCodexAppServerArgs(): string[] {
   return ['app-server', '--listen', 'stdio://'];
+}
+
+export function buildCodexAppServerLaunch(
+  codexPath: string,
+  platform: NodeJS.Platform = process.platform,
+  findCommand: (command: string) => string | null = lookupWindowsCommand,
+): { command: string; args: string[]; windowsVerbatimArguments?: boolean } {
+  const command = platform === 'win32' && codexPath === 'codex'
+    ? findCommand('codex') ?? 'codex.cmd'
+    : codexPath;
+  const invocation = buildSpawnSyncInvocation(command, buildCodexAppServerArgs(), { encoding: 'utf-8' }, platform);
+  return {
+    command: invocation.command,
+    args: invocation.args,
+    windowsVerbatimArguments: invocation.options.windowsVerbatimArguments,
+  };
 }
 
 export function buildCodexAppServerThreadConfig(mcpServerNames: readonly string[]): JsonObject {
@@ -212,6 +231,13 @@ export const CODEX_SETUP_REQUIRED_CODE = 'codex_setup_required';
 function codexSetupError(message: string): Error {
   return Object.assign(new Error(message), { code: CODEX_SETUP_REQUIRED_CODE });
 }
+
+/**
+ * `code` on a turn that completed without any agent message: an anomaly worth
+ * one retry, never a refusal, so it is classified by code rather than by its
+ * diagnostic text.
+ */
+export const CODEX_NO_AGENT_MESSAGE_CODE = 'codex_no_agent_message';
 
 function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
   const root = mkdtempSync(join(tmpdir(), APP_SERVER_WORKDIR_PREFIX));
@@ -412,6 +438,9 @@ export class CodexAppServerClient {
       threadId,
       turnId: null,
       finalText: null,
+      completedItems: 0,
+      agentMessages: 0,
+      terminalItems: 0,
       tokenUsage: null,
       terminalTurn: null,
       protocolError: null,
@@ -451,7 +480,10 @@ export class CodexAppServerClient {
         throw codexTurnError(`Codex app-server turn ${String(active.terminalTurn.status)}`, active.terminalTurn.error);
       }
       if (active.finalText === null) {
-        throw new Error('Codex app-server completed without a final agent message');
+        throw Object.assign(
+          new Error(`Codex app-server completed without a final agent message (${this.describeEmptyTurn(active)})`),
+          { code: CODEX_NO_AGENT_MESSAGE_CODE },
+        );
       }
 
       let structured: unknown;
@@ -463,8 +495,17 @@ export class CodexAppServerClient {
       if (!isObject(structured) || typeof structured.content !== 'string') {
         throw new Error('Codex app-server structured output omitted string content');
       }
-
-      return { content: structured.content.trim(), ...normalizeUsage(active.tokenUsage) };
+      const content = structured.content.trim();
+      if (!content) {
+        // The model's answer, passed on as one: the observer's skip contract
+        // (ResponseProcessor) decides what an empty reply to queued work means.
+        // Retrying it here as a transport fault re-sent the whole history and
+        // kept the batch pending without bound. Counts only, never the text.
+        logger.warn('SDK', 'Codex app-server returned empty structured content', {
+          diagnostics: this.describeEmptyTurn(active),
+        });
+      }
+      return { content, ...normalizeUsage(active.tokenUsage) };
     } finally {
       if (this.activeTurn === active) this.activeTurn = null;
       await this.request('thread/unsubscribe', { threadId }, INTERRUPT_TIMEOUT_MS).catch(() => undefined);
@@ -587,11 +628,13 @@ export class CodexAppServerClient {
 
     let expectedChild: ChildProcessWithoutNullStreams | undefined;
     try {
-      const child = spawnHidden(codexPath, buildCodexAppServerArgs(), {
+      const launch = buildCodexAppServerLaunch(codexPath);
+      const child = spawnHidden(launch.command, launch.args, {
         cwd: this.workspace,
         env: sanitizeEnv(buildCodexAppServerEnv(process.env, runtime.codexHome)),
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
       }) as ChildProcessWithoutNullStreams;
       expectedChild = child;
       this.child = child;
@@ -756,11 +799,13 @@ export class CodexAppServerClient {
 
     if (method === 'item/completed' && isObject(params.item)) {
       const item = params.item;
+      active.completedItems += 1;
       if (typeof item.type === 'string' && FORBIDDEN_ITEM_TYPES.has(item.type)) {
         active.protocolError = new Error(`Codex app-server attempted forbidden ${item.type} capability`);
         void this.interruptOrInvalidate(active).finally(() => active.complete());
       }
       if (item.type === 'agentMessage' && typeof item.text === 'string') {
+        active.agentMessages += 1;
         if (item.phase === 'final_answer' || active.finalText === null) active.finalText = item.text;
       }
       return;
@@ -788,13 +833,20 @@ export class CodexAppServerClient {
     if (typeof turn.status !== 'string' || !TERMINAL_TURN_STATUSES.has(turn.status)) return;
     active.terminalTurn = turn;
     if (Array.isArray(turn.items)) {
+      active.terminalItems += turn.items.length;
       for (const raw of turn.items) {
         if (isObject(raw) && raw.type === 'agentMessage' && typeof raw.text === 'string') {
+          active.agentMessages += 1;
           if (raw.phase === 'final_answer' || active.finalText === null) active.finalText = raw.text;
         }
       }
     }
     active.complete();
+  }
+
+  private describeEmptyTurn(active: ActiveTurn): string {
+    return `completedItems=${active.completedItems}, terminalItems=${active.terminalItems}, `
+      + `agentMessages=${active.agentMessages}, finalTextBytes=${Buffer.byteLength(active.finalText ?? '', 'utf8')}`;
   }
 
   private onChildExit(child: ChildProcessWithoutNullStreams, error: Error): void {

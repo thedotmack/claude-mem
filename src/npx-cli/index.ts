@@ -57,10 +57,11 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
 
 ${styleText('bold', 'IDE Identifiers')}:
   claude-code, cursor, grok-bot, opencode, openclaw,
-  windsurf, codex-cli, copilot-cli, antigravity, goose,
+  windsurf, codex-cli, kimi, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
 }
@@ -209,6 +210,15 @@ async function main(): Promise<void> {
     case 'antigravity-cli': {
       const { handleAntigravityCliCommand } = await import('../services/integrations/AntigravityCliHooksInstaller.js');
       const exitCode = await handleAntigravityCliCommand(args[1]?.toLowerCase(), args.slice(2));
+      if (typeof exitCode === 'number') {
+        process.exit(exitCode);
+      }
+      break;
+    }
+
+    case 'kimi': {
+      const { handleKimiCommand } = await import('../services/integrations/KimiHooksInstaller.js');
+      const exitCode = await handleKimiCommand(args[1]?.toLowerCase(), args.slice(2));
       if (typeof exitCode === 'number') {
         process.exit(exitCode);
       }

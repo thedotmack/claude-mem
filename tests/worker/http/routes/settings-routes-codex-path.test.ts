@@ -4,7 +4,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { SettingsRoutes } from '../../../../src/services/worker/http/routes/SettingsRoutes.js';
 import { paths } from '../../../../src/shared/paths.js';
 
-function postSettings(body: Record<string, unknown>): ReturnType<typeof mock> {
+function postSettings(body: Record<string, unknown>): { json: ReturnType<typeof mock>; status: ReturnType<typeof mock> } {
   let handler!: (req: Request, res: Response) => void;
   const app: any = {
     get: mock(() => {}),
@@ -14,9 +14,10 @@ function postSettings(body: Record<string, unknown>): ReturnType<typeof mock> {
   };
   new SettingsRoutes({} as any).setupRoutes(app);
   const json = mock(() => {});
-  const res = { json, status: mock(() => ({ json })), headersSent: false } as unknown as Response;
+  const status = mock(() => ({ json }));
+  const res = { json, status, headersSent: false } as unknown as Response;
   handler({ body, path: '/api/settings', params: {}, query: {}, headers: {} } as Request, res);
-  return json;
+  return { json, status };
 }
 
 describe('SettingsRoutes — CLAUDE_MEM_CODEX_PATH is not HTTP-writable', () => {
@@ -34,7 +35,7 @@ describe('SettingsRoutes — CLAUDE_MEM_CODEX_PATH is not HTTP-writable', () => 
 
   it('does not persist a Codex executable path from POST /api/settings', () => {
     writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_PROVIDER: 'codex' }));
-    const json = postSettings({ CLAUDE_MEM_CODEX_PATH: '/tmp/attacker-controlled-binary', CLAUDE_MEM_CODEX_MODEL: 'test-model' });
+    const { json } = postSettings({ CLAUDE_MEM_CODEX_PATH: '/tmp/attacker-controlled-binary', CLAUDE_MEM_CODEX_MODEL: 'test-model' });
     expect(json).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
     const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(persisted.CLAUDE_MEM_CODEX_PATH).toBeUndefined();
@@ -43,10 +44,21 @@ describe('SettingsRoutes — CLAUDE_MEM_CODEX_PATH is not HTTP-writable', () => 
 
   it('keeps a file-configured Codex executable path when the viewer echoes GET', () => {
     writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CODEX_PATH: '/usr/local/bin/codex' }));
-    const json = postSettings({ CLAUDE_MEM_CODEX_PATH: '/tmp/attacker-controlled-binary', CLAUDE_MEM_LOG_LEVEL: 'DEBUG' });
+    const { json } = postSettings({ CLAUDE_MEM_CODEX_PATH: '/tmp/attacker-controlled-binary', CLAUDE_MEM_LOG_LEVEL: 'DEBUG' });
     expect(json).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
     const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(persisted.CLAUDE_MEM_CODEX_PATH).toBe('/usr/local/bin/codex');
     expect(persisted.CLAUDE_MEM_LOG_LEVEL).toBe('DEBUG');
   });
+
+  for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
+    it(`rejects a non-string ${key} before persisting settings`, () => {
+      const original = JSON.stringify({ CLAUDE_MEM_CODEX_MODEL: 'gpt-6-luna', CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low' });
+      writeFileSync(settingsPath, original);
+      const { json, status } = postSettings({ [key]: 42 });
+      expect(status).toHaveBeenCalledWith(400);
+      expect(json).toHaveBeenCalledWith({ success: false, error: `${key} must be a string` });
+      expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
+    });
+  }
 });

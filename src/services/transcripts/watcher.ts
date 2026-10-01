@@ -33,9 +33,16 @@ class FileTailer {
 
   start(): void {
     this.requestRead();
-    this.watcher = fsWatch(this.filePath, { persistent: true }, () => {
-      this.requestRead();
-    });
+    try {
+      this.watcher = fsWatch(this.filePath, { persistent: true }, () => {
+        this.requestRead();
+      });
+    } catch (error: unknown) {
+      // The file can disappear between the glob scan and this watch call. A file
+      // that is already gone needs no tailer, so log and leave the watcher null.
+      logger.debug('WORKER', 'Failed to watch transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
+      this.watcher = null;
+    }
   }
 
   close(): void {
@@ -193,7 +200,9 @@ export class TranscriptWatcher {
     const matches = this.resolveWatchFiles(resolvedPath);
     for (const filePath of matches) {
       if (!this.tailers.has(filePath)) {
-        void this.addTailer(filePath, watch, schema, true);
+        void this.addTailer(filePath, watch, schema, true).catch(error => {
+          logger.debug('TRANSCRIPT', 'Failed to add transcript tailer', { file: filePath, watch: watch.name }, error instanceof Error ? error : undefined);
+        });
       }
     }
   }
@@ -272,6 +281,10 @@ export class TranscriptWatcher {
     schema: TranscriptSchema,
     discoveredAfterStartup: boolean = false
   ): Promise<void> {
+    // Expand a leading tilde here, the single point every path feeds through.
+    // Some path sources skip expandHomePath, so a literal '~' can reach fs.watch
+    // and can never resolve to a real file.
+    filePath = expandHomePath(filePath);
     if (this.tailers.has(filePath)) return;
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);

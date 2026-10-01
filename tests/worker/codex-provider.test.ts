@@ -21,8 +21,34 @@ import {
   recordCodexCliSetupRequired,
 } from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' };
+
+function stubCompletedAppServerTurns(provider: any, contents: Array<string | null>): string[] {
+  const methods: string[] = [];
+  let turn = 0;
+  for (const client of provider.appServer.clients) {
+    client.ensureStarted = async () => {};
+    client.workspace = 'private-test-workspace';
+    client.readInheritedMcpServerNames = async () => [];
+    client.attestMcpServersDisabled = async () => {};
+    client.request = async (method: string) => {
+      methods.push(method);
+      if (method === 'thread/start') return { thread: { id: `thread-${turn + 1}` }, instructionSources: [] };
+      if (method === 'turn/start') {
+        const content = contents[turn++];
+        return { turn: { id: `turn-${turn}`, status: 'completed', items: content === null ? [] : [
+          { type: 'agentMessage', phase: 'final_answer', text: JSON.stringify({ content }) },
+        ] } };
+      }
+      if (method === 'thread/unsubscribe') return {};
+      throw new Error(`Unexpected request: ${method}`);
+    };
+  }
+  return methods;
+}
 let savedProvider: string | undefined;
 beforeEach(() => {
   savedProvider = process.env.CLAUDE_MEM_PROVIDER;
@@ -78,6 +104,192 @@ function failingLikeCodex(error: ClassifiedProviderError) {
 }
 
 describe('Codex provider integration', () => {
+  const observation = `<observation><type>bugfix</type><title>Preserve quota pause</title>
+    <subtitle>Concurrent storage</subtitle><narrative>Storage preserves newer quota failures.</narrative>
+    <facts><fact>Two turns can finish out of order.</fact></facts>
+    <concepts><concept>problem-solution</concept></concepts>
+    <files_read></files_read><files_modified></files_modified></observation>`;
+
+  function storageHarness() {
+    ModeManager.getInstance().loadMode('code');
+    const store = mock(() => ({ observationIds: [1], summaryId: null, createdAtEpoch: 1 }));
+    const confirm = mock(async () => 1);
+    const db = { getSessionStore: () => ({ storeObservations: store,
+      ensureMemorySessionIdRegistered: () => 'codex-test' }),
+      getChromaSync: () => null, getCloudSync: () => null };
+    const manager = { getClaimedMessages: () => [], confirmClaimedMessages: confirm };
+    const process = (text: string, s = session()) =>
+      processAgentResponse(text, s, db as any, manager as any, undefined, 0, 1, 'Codex');
+    return { store, confirm, process };
+  }
+
+  for (const failureBeforeSuccess of [true, false]) {
+    it(`preserves concurrent quota refusal through valid observation storage (failure before success: ${failureBeforeSuccess})`, async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const pending: Array<{ options: any; resolve: (value: any) => void; reject: (error: unknown) => void }> = [];
+      provider.appServer.runTurn = (options: any) => {
+        options.beforeSend();
+        return new Promise((resolve, reject) => { pending.push({ options, resolve, reject }); });
+      };
+      const earlier = provider.query([], config);
+      const later = provider.query([], config).catch((error: unknown) => error);
+      expect(pending).toHaveLength(2);
+      const fail = async () => {
+        const error = new Error('usage limit reached');
+        pending[1].options.onFailure(error);
+        pending[1].reject(error);
+        expect(await later).toHaveProperty('kind', 'quota_exhausted');
+      };
+      if (failureBeforeSuccess) await fail();
+      pending[0].resolve({ content: observation });
+      const result = await earlier;
+      if (!failureBeforeSuccess) await fail();
+      const newer = getQuotaCooldown('codex');
+      expect(newer).not.toBeNull();
+      const h = storageHarness();
+      await h.process(result.content, { ...session(), currentProvider: 'codex' });
+      expect(h.store).toHaveBeenCalledTimes(1);
+      expect((h.store.mock.calls[0] as any)[2]).toMatchObject([{ title: 'Preserve quota pause' }]);
+      expect(h.confirm).toHaveBeenCalledTimes(1);
+      expect(getQuotaCooldown('codex')).toBe(newer);
+      expect(tryAdmitQuotaProbe('codex').admitted).toBe(false);
+
+      // Once the window has elapsed, the recovery probe clears the pause and stores its reply.
+      recordQuotaExhausted('codex', 'usage limit reached', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
+      const recovery = provider.query([], config);
+      pending[2].resolve({ content: observation });
+      await h.process((await recovery).content, { ...session(), currentProvider: 'codex' });
+      expect(h.store).toHaveBeenCalledTimes(2);
+      expect(getQuotaCooldown('codex')).toBeNull();
+    });
+  }
+
+  for (const currentProvider of ['claude', 'gemini', 'openrouter', 'cmem-gateway'] as const) {
+    it(`still clears ${currentProvider} cooldown after valid observation storage`, async () => {
+      recordQuotaExhausted(currentProvider, 'fixture');
+      const h = storageHarness();
+      await h.process(observation, { ...session(), currentProvider });
+      expect(h.store).toHaveBeenCalledTimes(1);
+      expect(h.confirm).toHaveBeenCalledTimes(1);
+      expect(getQuotaCooldown(currentProvider)).toBeNull();
+    });
+  }
+
+  for (const [message, kind] of [
+    ['usage limit reached', 'quota_exhausted'],
+    ['unauthorized', 'auth_invalid'],
+    ['Codex executable not found', 'setup_required'],
+  ] as const) {
+    it(`does not let a delayed ${kind} rejection undo a later successful probe`, async () => {
+      const armed = () => kind === 'setup_required' ? getDependencyStatus('codex_cli') : getQuotaCooldown('codex');
+      const age = () => {
+        if (kind === 'setup_required') {
+          const status = getDependencyStatus('codex_cli');
+          if (status) status.recordedAtMs = Date.now() - CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS - 1;
+        } else {
+          const state = getQuotaCooldown('codex');
+          if (state) state.armedAtMs = Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1;
+        }
+      };
+      const provider = new CodexProvider(null as any, null as any) as any;
+      const failure = new Error(message);
+      let rejectOld!: (error: unknown) => void;
+      let sends = 0;
+      provider.appServer.runTurn = (options: any) => {
+        options.beforeSend();
+        if (++sends === 1) {
+          options.onFailure(failure);
+          return new Promise((_, reject) => { rejectOld = reject; });
+        }
+        return Promise.resolve({ content: 'Recovered' });
+      };
+      const old = provider.query([], config).catch((error: unknown) => error);
+      const published = armed();
+      expect(published).not.toBeNull();
+      age();
+      await provider.query([], config);
+      expect(armed()).toBeNull();
+      // The first request's rejection lands after the probe: it was published
+      // once, when it happened, and is not published again.
+      rejectOld(failure);
+      expect(await old).toHaveProperty('kind', kind);
+      expect(armed()).toBeNull();
+      await provider.query([], config);
+      expect(sends).toBe(3);
+      // A new failure arms a fresh window.
+      provider.appServer.runTurn = async (options: any) => { options.onFailure(failure); throw failure; };
+      await expect(provider.query([], config)).rejects.toMatchObject({ kind });
+      expect(armed()).not.toBeNull();
+      expect(armed()).not.toBe(published);
+    });
+  }
+
+  it('publishes quota failure from a retry after a transient attempt', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    let sends = 0;
+    provider.appServer.runTurn = async (options: any) => {
+      const failure = new Error(++sends === 1 ? 'connection closed' : 'usage limit reached');
+      options.onFailure(failure);
+      throw failure;
+    };
+    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'quota_exhausted' });
+    expect(sends).toBe(2);
+    expect(getQuotaCooldown('codex')).not.toBeNull();
+  });
+
+  it('accepts an empty structured initialization reply without retrying', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, ['']);
+    const result = await provider.query([{ role: 'user', content: 'initialize' }], config);
+    expect(result.content).toBe('');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('retries a completed app-server turn without an agent message once', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, [null, 'Recovered memory']);
+    const result = await provider.query([{ role: 'user', content: 'input' }], config);
+    expect(result.content).toBe('Recovered memory');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
+  });
+
+  it('passes blank structured output on as the reply, without a second turn', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, [' ', '<observation/>']);
+    const result = await provider.query([{ role: 'user', content: 'input' }], config);
+    expect(result.content).toBe('');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('passes an empty reply on after a second turn without an agent message', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const methods = stubCompletedAppServerTurns(provider, [null, null, '<observation/>']);
+    const result = await provider.query([{ role: 'user', content: 'input' }], config);
+    expect(result.content).toBe('');
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
+  });
+
+  it('cancels a compression request while the session signal remains active', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const sessionController = new AbortController();
+    const compressionController = new AbortController();
+    const c = { ...config, signal: sessionController.signal };
+    let started!: () => void;
+    let nativeSignal: AbortSignal | undefined;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
+      nativeSignal = options.signal;
+      options.signal.addEventListener('abort', () => reject(new Error('compression aborted')), { once: true });
+      started();
+    });
+    const result = provider.query([{ role: 'user', content: 'compress payload' }], c, compressionController.signal);
+    await ready;
+    compressionController.abort();
+    await expect(result).rejects.toThrow('Aborted');
+    expect(nativeSignal?.aborted).toBe(true);
+    expect(sessionController.signal.aborted).toBe(false);
+  });
+
   it('accepts Codex settings without changing the default provider or pinning a model', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
     expect(defaults.CLAUDE_MEM_PROVIDER).toBe('claude');
@@ -156,8 +368,8 @@ describe('Codex provider integration', () => {
     let release!: () => void;
     const blocked = new Promise<void>(resolve => { release = resolve; });
     const starts = mock(async () => { await blocked; throw Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }); });
-    // Keep the real client queue and failure callback; only replace process startup.
-    provider.appServer.ensureStarted = starts;
+    // Keep the real pool, client queues and failure callback; only replace process startup.
+    for (const client of provider.appServer.clients) client.ensureStarted = starts;
     const runs = Array.from({ length: 3 }, () => harness(async s => {
       const c = { ...config };
       provider.prepareSessionExtras(s, c);
@@ -171,7 +383,8 @@ describe('Codex provider integration', () => {
       for (const h of runs) await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'queued');
       release();
       await Promise.all(runs.map(h => h.s.generatorPromise));
-      expect(starts).toHaveBeenCalledTimes(1);
+      // Two pool slots were already starting; the request queued behind them is withheld.
+      expect(starts).toHaveBeenCalledTimes(2);
       expect(getDependencyStatus('codex_cli')).not.toBeNull();
       expect(getQuotaCooldown('codex')).toBeNull();
       for (const h of runs) {
@@ -182,7 +395,7 @@ describe('Codex provider integration', () => {
       ageCodexSetupStatus();
       await runs[0].routes.ensureGeneratorRunning(runs[0].s.sessionDbId, 'recovery');
       await runs[0].s.generatorPromise;
-      expect(starts).toHaveBeenCalledTimes(2);
+      expect(starts).toHaveBeenCalledTimes(3);
     } finally {
       release();
       await provider.close();
