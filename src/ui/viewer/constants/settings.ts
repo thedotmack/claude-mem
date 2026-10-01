@@ -16,9 +16,6 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_OPENROUTER_SITE_URL: '',
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
-  CLAUDE_MEM_MINIMAX_API_KEY: '',
-  CLAUDE_MEM_MINIMAX_MODEL: 'MiniMax-M3',
-  CLAUDE_MEM_MINIMAX_BASE_URL: 'https://api.minimax.io/v1',
 
   // The generic OpenAI-compatible provider (NVIDIA NIM and friends).
   CLAUDE_MEM_OPENAI_COMPAT_PRESET: '',

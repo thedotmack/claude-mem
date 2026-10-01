@@ -138,7 +138,6 @@ describe('Claude setup-required generator gate', () => {
       { startSession: async () => {} } as any,
       {} as any,
       {} as any,
-      {} as any,
       {
         finalizeSession: async () => {
           finalizerCalls += 1;
