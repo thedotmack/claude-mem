@@ -1,7 +1,6 @@
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
-import { scopedProjects } from '../sqlite/project-read-keys.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
@@ -22,6 +21,7 @@ import type { SearchResults, StrategySearchResult } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
+import { buildProjectWhereFilter, projectReadKeysFor } from './search/project-where-filter.js';
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
@@ -77,36 +77,6 @@ export class SearchManager {
   }
 
   /**
-   * Chroma where-filter for a set of read keys (see projectReadKeysFor): the
-   * row's own key or the project it was merged into. Chroma compares metadata
-   * exactly, so the keys already list every stored spelling (#3531).
-   */
-  private buildProjectWhereFilter(readKeys: string[]): Record<string, any> {
-    const match = readKeys.length === 1 ? readKeys[0] : { $in: readKeys };
-    return {
-      $or: [
-        { project: match },
-        { merged_into_project: match }
-      ]
-    };
-  }
-
-  /**
-   * Every key a search for `project` and `projects` reads: the requested keys
-   * (a checkout's current key plus the ones it wrote under before a re-key,
-   * gate P2-5), their stored spellings, and the projects merged into them, one
-   * hop (gate P2-4). `projects` is a list, or comma-separated from a query
-   * string. Empty when the search is not scoped to a project.
-   */
-  private projectReadKeysFor(project: unknown, projects: unknown): string[] {
-    const listed = typeof projects === 'string'
-      ? projects.split(',')
-      : Array.isArray(projects) ? projects.filter((entry): entry is string => typeof entry === 'string') : [];
-    const requested = scopedProjects({ projects: [...(typeof project === 'string' ? [project] : []), ...listed] });
-    return requested.length > 0 ? this.sessionStore.getProjectReadKeys(requested) : [];
-  }
-
-  /**
    * Build a Chroma where-filter scoped to a single doc_type, applying the
    * dual-project ($or: project + merged_into_project) scoping used by every
    * single-type hybrid search path.
@@ -114,7 +84,7 @@ export class SearchManager {
   private buildDocTypeWhereFilter(docType: string, project?: string, platformSource?: string): Record<string, any> {
     const filters: Array<Record<string, any>> = [{ doc_type: docType }];
     if (project) {
-      filters.push(this.buildProjectWhereFilter(this.projectReadKeysFor(project, undefined)));
+      filters.push(buildProjectWhereFilter(projectReadKeysFor(this.sessionStore, project, undefined)));
     }
     if (platformSource) {
       filters.push({ platform_source: normalizePlatformSource(platformSource) });
@@ -523,7 +493,7 @@ export class SearchManager {
     // Gate P2-5: every key the requested projects are stored under, so a
     // checkout's search reaches what it wrote before a re-key. The SQLite paths
     // receive the same list (scopedProjects prefers `projects` over `project`).
-    const projectReadKeys = this.projectReadKeysFor(options.project, options.projects);
+    const projectReadKeys = projectReadKeysFor(this.sessionStore, options.project, options.projects);
     if (projectReadKeys.length > 0) {
       options.projects = projectReadKeys;
     } else {
@@ -587,7 +557,7 @@ export class SearchManager {
       }
 
       if (projectReadKeys.length > 0) {
-        whereFilters.push(this.buildProjectWhereFilter(projectReadKeys));
+        whereFilters.push(buildProjectWhereFilter(projectReadKeys));
       }
 
       if (options.platformSource) {
@@ -628,14 +598,21 @@ export class SearchManager {
         logger.warn('SEARCH', 'ChromaDB semantic search failed, falling back to FTS5 keyword search', {}, errorObject);
         chromaFailed = true;
 
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
+        // As on the Chroma-less path below: a keyword search that fails too
+        // leaves an empty answer, not a failed request.
+        try {
+          if (searchObservations) {
+            observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
+          }
+          if (searchSessions) {
+            sessions = this.sessionSearch.searchSessions(query, options);
+          }
+          if (searchPrompts) {
+            prompts = this.sessionSearch.searchUserPrompts(query, options);
+          }
+        } catch (ftsError) {
+          const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
+          logger.error('WORKER', 'FTS5 fallback search failed after a Chroma error', {}, ftsErrorObject);
         }
       }
 

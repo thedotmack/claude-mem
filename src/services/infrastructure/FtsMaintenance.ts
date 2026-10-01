@@ -85,10 +85,13 @@ export async function reclaimFtsBloatInBoundedSteps(
 
 /**
  * Schedule the one-time FTS bloat reclaim on an unref'd timer, so worker startup and health
- * checks never wait for it. The marker is written before any work starts: a worker killed
- * mid-reclaim does not start over on every boot (merge steps already done are committed, and
- * a partly merged index is valid). Returns null when the reclaim already started once, or when
- * the marker cannot be written (starting without it would repeat the work on every boot).
+ * checks never wait for it. The marker is written when the timer fires, before the first merge
+ * step: a worker killed mid-reclaim does not start over on every boot (merge steps already done
+ * are committed, and a partly merged index is valid), while a worker stopped during the start
+ * delay never reclaimed anything and schedules it again on its next start. Written at
+ * scheduling time instead, a restart inside the delay skipped the reclaim forever. Returns
+ * null when the reclaim already started once. If the marker cannot be written the reclaim is
+ * skipped, since running without it would repeat the work on every boot.
  */
 export function scheduleOneTimeFtsBloatReclaim(
   db: Database,
@@ -98,15 +101,16 @@ export function scheduleOneTimeFtsBloatReclaim(
   const markerPath = path.join(dataDir, RECLAIM_MARKER_FILENAME);
   if (existsSync(markerPath)) return null;
 
-  try {
-    mkdirSync(dataDir, { recursive: true });
-    writeFileSync(markerPath, JSON.stringify({ startedAt: new Date().toISOString() }));
-  } catch (error) {
-    logger.warn('SYSTEM', 'Skipping FTS bloat reclaim: could not write its marker', { markerPath }, error instanceof Error ? error : new Error(String(error)));
-    return null;
-  }
-
   const timer = setTimeout(() => {
+    // Checked again: another schedule may have started it during the delay.
+    if (existsSync(markerPath)) return;
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(markerPath, JSON.stringify({ startedAt: new Date().toISOString() }));
+    } catch (error) {
+      logger.warn('SYSTEM', 'Skipping FTS bloat reclaim: could not write its marker', { markerPath }, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     reclaimFtsBloatInBoundedSteps(db, options).catch(error => {
       logger.warn('SYSTEM', 'FTS bloat reclaim stopped before finishing', {}, error instanceof Error ? error : new Error(String(error)));
     });
