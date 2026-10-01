@@ -3,6 +3,7 @@ import net from 'net';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isConnectionRefusedError, isUnbindablePortError } from '../../shared/connection-errors.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -42,6 +43,9 @@ async function httpRequestToWorker(
 }
 
 export async function isPortInUse(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<boolean> {
+  // One budget for the whole call: the Windows fetch and the bind probe after
+  // it share it, so a hung fetch cannot push the bind past the caller's wait.
+  const deadline = Date.now() + timeoutMs;
   if (process.platform === 'win32') {
     // Fast path: HTTP health check. A live claude-mem worker responds to
     // /api/health, so this is the cheapest non-disruptive probe for the
@@ -57,7 +61,7 @@ export async function isPortInUse(port: number, timeoutMs: number = HEALTH_PROBE
     // which still reports a bound port as in use.
     try {
       const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {
-        signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
       });
       if (response.ok) return true;
       // Non-ok response: port is reachable but the worker is unhealthy.
@@ -88,20 +92,110 @@ export async function isPortInUse(port: number, timeoutMs: number = HEALTH_PROBE
     // net.createServer() approach to definitively check port occupancy.
   }
 
+  // An inconclusive bind counts as in use: waitForPortFree, the restart
+  // handoff and the daemon duplicate gate must never treat an unknown port
+  // state as free and start another worker onto it. An unbindable port is not
+  // in use: nothing holds it, and a worker that tries to listen there fails
+  // with that errno, which the daemon reports as a boot failure — never as a
+  // duplicate that exits 0.
+  const occupancy = await classifyPortOccupancy(port, Math.max(1, deadline - Date.now()));
+  return occupancy === 'occupied' || occupancy === 'indeterminate';
+}
+
+export type PortOccupancy = 'free' | 'occupied' | 'unbindable' | 'indeterminate';
+
+export interface PortBindProbe {
+  occupancy: PortOccupancy;
+  /** The bind errno, set when `occupancy` is 'unbindable'. */
+  bindErrorCode?: string;
+}
+
+/**
+ * The one bind probe behind every port-occupancy decision, bounded by
+ * `timeoutMs`. 'free' only when a listener actually bound and closed cleanly,
+ * 'occupied' only on EADDRINUSE, 'unbindable' on EACCES / EADDRNOTAVAIL
+ * (isUnbindablePortError, with the errno); anything else (another bind error,
+ * a close failure, no answer before the deadline) is 'indeterminate'. The
+ * probe listener is always closed, even when it binds after the deadline
+ * settled.
+ */
+export async function classifyPortOccupancy(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<PortOccupancy> {
+  return (await probePortBind(port, timeoutMs)).occupancy;
+}
+
+/** classifyPortOccupancy with the bind errno, for launchers that report it. */
+export function probePortBind(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<PortBindProbe> {
+  if (timeoutMs <= 0) return Promise.resolve({ occupancy: 'indeterminate' });
+
   return new Promise((resolve) => {
-    const server = net.createServer();
-    const workerHost = getWorkerHost();
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      } else {
-        resolve(false);
+    let settled = false;
+    let listening = false;
+    let closeRequested = false;
+    let server: net.Server;
+    try {
+      server = net.createServer();
+    } catch {
+      resolve({ occupancy: 'indeterminate' });
+      return;
+    }
+    const closeServer = (callback?: (error?: Error) => void): void => {
+      if (closeRequested) {
+        callback?.();
+        return;
       }
+      closeRequested = true;
+      try {
+        server.close(callback);
+      } catch (error: unknown) {
+        callback?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (listening) {
+        closeServer();
+      } else {
+        try { server.close(); } catch { /* the listening handler retries cleanup */ }
+      }
+      settle({ occupancy: 'indeterminate' });
+    }, timeoutMs);
+
+    const settle = (result: PortBindProbe): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (listening) {
+        closeServer();
+      } else {
+        try { server.close(); } catch { /* the bind did not start */ }
+      }
+      if (err.code === 'EADDRINUSE') settle({ occupancy: 'occupied' });
+      else if (isUnbindablePortError(err)) settle({ occupancy: 'unbindable', bindErrorCode: err.code });
+      else settle({ occupancy: 'indeterminate' });
     });
     server.once('listening', () => {
-      server.close(() => resolve(false));
+      listening = true;
+      if (settled) {
+        closeServer();
+        return;
+      }
+      try {
+        closeServer((error?: Error) => settle({ occupancy: error ? 'indeterminate' : 'free' }));
+      } catch {
+        settle({ occupancy: 'indeterminate' });
+      }
     });
-    server.listen(port, workerHost);
+
+    try {
+      server.listen(port, getWorkerHost());
+    } catch {
+      try { server.close(); } catch { /* the bind did not start */ }
+      settle({ occupancy: 'indeterminate' });
+    }
   });
 }
 
@@ -171,7 +265,7 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
     }
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message?.includes('ECONNREFUSED')) {
+    if (error instanceof Error && isConnectionRefusedError(error)) {
       logger.debug('SYSTEM', 'Worker already stopped', {}, error);
       return false;
     }
@@ -180,9 +274,12 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
   }
 }
 
-export async function getRunningWorkerVersion(port: number): Promise<string | null> {
+export async function getRunningWorkerVersion(
+  port: number,
+  timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
+): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/health');
+    const result = await httpRequestToWorker(port, '/api/health', 'GET', timeoutMs);
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;
@@ -205,9 +302,15 @@ export interface VersionCheckResult {
  * different oracles (the 2026-07-22 restart storm). Either side unknown →
  * matches, since a recycle could not change the outcome deterministically.
  */
-export async function checkVersionMatch(port: number, expectedVersion: string | null): Promise<VersionCheckResult> {
+export async function checkVersionMatch(
+  port: number,
+  expectedVersion: string | null,
+  timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
+): Promise<VersionCheckResult> {
   const pluginVersion = expectedVersion ?? 'unknown';
-  const workerVersion = await getRunningWorkerVersion(port);
+  // A caller spending a hook budget passes what is left of it (#3434). An
+  // expired probe reads as "version unknown", which already means no recycle.
+  const workerVersion = await getRunningWorkerVersion(port, timeoutMs);
 
   if (!workerVersion || pluginVersion === 'unknown') {
     return { matches: true, pluginVersion, workerVersion };

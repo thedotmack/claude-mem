@@ -5,6 +5,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import '../../../sqlite/manual-session.js';
+import { notifyGrokBotIndex } from '../../../integrations/GrokBotIndexWriter.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -75,15 +76,23 @@ export class MemoryRoutes extends BaseRouteHandler {
     // (placed before the chroma branch so the chroma-disabled early return
     // cannot skip it).
     this.dbManager.getCloudSync()?.notify();
+    // Manual saves (e.g. Grok Bot seat self-saves) must reach the live INDEX
+    // promptly, not wait for the next SDK observation. Debounced, never throws.
+    notifyGrokBotIndex();
 
-    if (!chromaSync) {
-      logger.debug('CHROMA', 'ChromaDB sync skipped (chromaSync not available)', { id: result.id });
+    // A Tier-0 dedup merge (#3038) re-confirmed an existing row: its vector
+    // already matches its stored text, so re-syncing this payload under that id
+    // would overwrite it with different content.
+    if (!chromaSync || result.mergedIntoExisting) {
+      logger.debug('CHROMA', 'ChromaDB sync skipped', { id: result.id, mergedIntoExisting: result.mergedIntoExisting });
       res.json({
         success: true,
         id: result.id,
         title: observation.title,
         project: targetProject,
-        message: `Memory saved as observation #${result.id}`
+        message: result.mergedIntoExisting
+          ? `Memory matches existing observation #${result.id} (counted as a repeat)`
+          : `Memory saved as observation #${result.id}`
       });
       return;
     }
