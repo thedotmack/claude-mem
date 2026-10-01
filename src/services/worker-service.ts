@@ -96,6 +96,9 @@ import {
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 import {
+  handleKimiCommand
+} from './integrations/KimiHooksInstaller.js';
+import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
@@ -107,6 +110,7 @@ import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js'
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError } from './worker/OpenRouterProvider.js';
+import { OpenAICompatProvider } from './worker/OpenAICompatProvider.js';
 import { getSelectedProvider } from './worker/provider-dispatch.js';
 import { CodexProvider } from './worker/CodexProvider.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
@@ -247,6 +251,7 @@ export class WorkerService implements WorkerRef {
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
+  private openAICompatAgent: OpenAICompatProvider;
   private codexAgent: CodexProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
@@ -280,6 +285,7 @@ export class WorkerService implements WorkerRef {
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
+    this.openAICompatAgent = new OpenAICompatProvider(this.dbManager, this.sessionManager);
     this.codexAgent = new CodexProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
@@ -455,7 +461,7 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
     this.startPendingSessionResume(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
@@ -1522,6 +1528,13 @@ async function main() {
       const subcommand = process.argv[3];
       const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
       process.exit(cursorResult);
+      break;
+    }
+
+    case 'kimi': {
+      const kimiSubcommand = process.argv[3];
+      const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
+      process.exit(kimiResult);
       break;
     }
 
