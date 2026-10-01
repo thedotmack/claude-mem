@@ -92,6 +92,7 @@ endpoint or model you pinned yourself.
 | Preset | Base URL | Key required |
 |--------|----------|--------------|
 | `nvidia-nim` | `https://integrate.api.nvidia.com/v1` | yes |
+| `orcarouter` | `https://api.orcarouter.ai/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `groq` | `https://api.groq.com/openai/v1` | yes |
 | `together` | `https://api.together.xyz/v1` | yes |
@@ -151,6 +152,22 @@ A remote endpoint that genuinely needs no authentication still works: set
 `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` to any non-empty value. The default errs
 toward asking for a key because the alternative is a provider that reports
 itself ready and then fails every observation with a 401.
+
+## OrcaRouter
+
+[OrcaRouter](https://www.orcarouter.ai) serves provider-scoped model ids, such
+as `openai/gpt-4o-mini` (the preset's default) or `anthropic/claude-haiku-4.5`,
+behind one `sk-orca-` key. Its model list is public at
+`https://api.orcarouter.ai/v1/models`.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "orcarouter",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "sk-orca-...",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "anthropic/claude-haiku-4.5"
+}
+```
 
 ## Troubleshooting
 
