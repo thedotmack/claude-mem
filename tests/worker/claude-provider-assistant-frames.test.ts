@@ -298,6 +298,33 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(session.claimedMessageIds).toEqual([]);
   });
 
+  // #3454: the idle hand-off names why the turn was empty — block kinds only,
+  // never their content — so a thinking/tool_use-only turn is distinguishable
+  // from a deliberate empty reply in the field.
+  it('names the textless turn shape on the idle hand-off', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    const { logger } = await import('../../src/utils/logger.js');
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      scriptedMessages = [
+        assistantFrame([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { secret: 'do-not-log' } }]),
+        assistantFrame([{ type: 'thinking', thinking: 'private reasoning' }, { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: {} }]),
+        resultFrame(),
+      ];
+
+      await harness.provider.startSession(session);
+
+      const idleWarn = warn.mock.calls.find(([, message]) => String(message).includes('non-XML idle response'));
+      expect(idleWarn?.[2]).toMatchObject({ outputClass: 'idle', emptyOutputReason: 'non-text-blocks-only(thinking,tool_use)' });
+      expect(JSON.stringify(idleWarn)).not.toContain('do-not-log');
+      expect(JSON.stringify(idleWarn)).not.toContain('private reasoning');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('does not re-confirm at the result when the turn already dispatched text', async () => {
     const session = createSession();
     const harness = createHarness(session);

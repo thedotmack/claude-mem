@@ -105,7 +105,8 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
 
   const platformSource = normalizePlatformSource(payload.platformSource);
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-  const project = cwd.trim() ? getProjectContext(cwd).primary : '';
+  const projectContext = cwd.trim() ? getProjectContext(cwd) : null;
+  const project = projectContext?.primary ?? '';
 
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
@@ -166,7 +167,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   let promptNumber: number;
   try {
     sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    if (cwd) store.setSessionCwd(sessionDbId, cwd);
+    if (cwd) store.setSessionCwd(sessionDbId, cwd, projectContext?.keySource);
     promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

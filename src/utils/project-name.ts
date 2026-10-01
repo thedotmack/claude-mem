@@ -295,6 +295,20 @@ export function getProjectName(
   return projectNameFromSource(cwd, nameSource);
 }
 
+/**
+ * How a project key was derived: from the folder (git toplevel, worktree or
+ * submodule composite, marker root, cwd), from the origin remote's slug
+ * (#2827), or from a named environment (#2737). Only a folder-derived key is
+ * tied to its checkout, so only its checkout's deletion says anything about it.
+ */
+export type ProjectKeySource = 'path' | 'git-remote' | 'environment';
+
+const PROJECT_KEY_SOURCES: readonly ProjectKeySource[] = ['path', 'git-remote', 'environment'];
+
+export function isProjectKeySource(value: unknown): value is ProjectKeySource {
+  return typeof value === 'string' && (PROJECT_KEY_SOURCES as readonly string[]).includes(value);
+}
+
 export interface ProjectContext {
   primary: string;
   parent: string | null;
@@ -302,6 +316,8 @@ export interface ProjectContext {
   /** Set when `primary` is a composite key for a submodule (#2842). */
   isSubmodule: boolean;
   allProjects: string[];
+  /** How `primary` was derived. */
+  keySource: ProjectKeySource;
 }
 
 /**
@@ -343,7 +359,7 @@ export function getProjectContext(
 ): ProjectContext {
   if (!cwd || cwd.trim() === '') {
     const fallback = getProjectName(cwd, platform);
-    return { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback] };
+    return { primary: fallback, parent: null, isWorktree: false, isSubmodule: false, allProjects: [fallback], keySource: 'path' };
   }
 
   const expandedCwd = expandHome(cwd, platform);
@@ -361,23 +377,24 @@ export function getProjectContext(
   // slug was actually derived: without one, path mode applies unchanged,
   // worktree compositing included.
   const slug = repoRoot ? gitRemoteProjectSlug(repoRoot) : null;
-  const derivedContext = slug ? withPrimaryKey(pathContext, slug) : pathContext;
+  const derivedContext = slug ? withPrimaryKey(pathContext, slug, 'git-remote') : pathContext;
 
   // #2737 — a configured environment wins over every derived name, and the
   // derived keys stay readable so memory stored before the environment existed
   // is not hidden (`project merge` folds it in permanently).
   const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
-  return environment ? withPrimaryKey(derivedContext, environment) : derivedContext;
+  return environment ? withPrimaryKey(derivedContext, environment, 'environment') : derivedContext;
 }
 
 /** Re-key a context to `primary`, keeping every key it already read as a read-only alias. */
-function withPrimaryKey(context: ProjectContext, primary: string): ProjectContext {
+function withPrimaryKey(context: ProjectContext, primary: string, keySource: ProjectKeySource): ProjectContext {
   return {
     primary,
     parent: null,
     isWorktree: context.isWorktree,
     isSubmodule: context.isSubmodule,
     allProjects: [...context.allProjects.filter(key => key !== primary), primary],
+    keySource,
   };
 }
 
@@ -426,7 +443,8 @@ function getPathProjectContext(cwd: string, expandedCwd: string, repoRoot: strin
       parent,
       isWorktree: worktreeInfo.isWorktree,
       isSubmodule: worktreeInfo.isSubmodule,
-      allProjects: [...new Set([parent, ...legacyKeys, primary])].filter(key => key !== primary).concat(primary)
+      allProjects: [...new Set([parent, ...legacyKeys, primary])].filter(key => key !== primary).concat(primary),
+      keySource: 'path',
     };
   }
 
@@ -437,9 +455,9 @@ function getPathProjectContext(cwd: string, expandedCwd: string, repoRoot: strin
   if (markerRoot && path.resolve(markerRoot) !== path.resolve(expandedCwd)) {
     const legacyKey = projectNameFromSource(cwd, expandedCwd);
     if (legacyKey !== cwdProjectName && legacyKey !== UNKNOWN_PROJECT_NAME) {
-      return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [legacyKey, cwdProjectName] };
+      return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [legacyKey, cwdProjectName], keySource: 'path' };
     }
   }
 
-  return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [cwdProjectName] };
+  return { primary: cwdProjectName, parent: null, isWorktree: false, isSubmodule: false, allProjects: [cwdProjectName], keySource: 'path' };
 }
