@@ -91,13 +91,33 @@ describe('search FTS query semantics', () => {
   // No row holds every word of a pasted wall of text, so the substring
   // fallback answers it. One LIKE group per word used to exceed SQLite's
   // expression-depth limit of 1000 ("Expression tree is too large").
-  it('answers a query of a thousand words without overflowing SQLite', () => {
+  it('answers a query of a thousand words without overflowing SQLite, with every filter applied', () => {
     const wallOfText = Array.from({ length: 1000 }, (_, index) => `word${index}`).join(' ');
-    expect(search.searchObservations(wallOfText, { project: 'fts-project' })).toEqual([]);
-    expect(search.searchSessions(wallOfText, { project: 'fts-project' })).toEqual([]);
+    // Every filter adds a WHERE term on top of the capped substring terms.
+    expect(search.searchObservations(wallOfText, {
+      project: 'fts-project',
+      platformSource: 'claude',
+      type: ['bugfix', 'feature'],
+      dateRange: { start: 0, end: Date.now() },
+      concepts: ['search', 'sqlite'],
+      files: ['src/services/sqlite/SessionSearch.ts'],
+    })).toEqual([]);
+    expect(search.searchSessions(wallOfText, { project: 'fts-project', platformSource: 'claude' })).toEqual([]);
   });
 
-  it('matches by substring on each distinct term, up to a cap', () => {
+  it('requires every word of a long query, not just the first few', () => {
+    // Fragments of longer tokens, so FTS (whole tokens) finds nothing and the
+    // substring fallback decides.
+    const fragments = Array.from({ length: 40 }, (_, index) => `frag${index}x`);
+    seedObservation('obs-long', 'Long record', fragments.map(fragment => `pre${fragment}post`).join(' '));
+
+    expect(search.searchObservations(fragments.join(' '), { project: 'fts-project' }).map(r => r.title))
+      .toEqual(['Long record']);
+    expect(search.searchObservations([...fragments, 'absentfragment'].join(' '), { project: 'fts-project' }))
+      .toEqual([]);
+  });
+
+  it('matches by substring on each distinct term, up to a statement-size cap', () => {
     const buildSubstringClause = (SessionSearch as unknown as {
       buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] };
     }).buildSubstringClause;
@@ -105,8 +125,9 @@ describe('search FTS query semantics', () => {
     // A repeated term adds nothing to an AND.
     expect(buildSubstringClause('plugin plugin version plugin', ['o.title']).params)
       .toEqual(['%plugin%', '%version%']);
-    // The leading terms are kept, up to the cap.
-    const capped = buildSubstringClause(Array.from({ length: 1000 }, (_, index) => `w${index}`).join(' '), ['o.title']);
+    // Past the cap, the leading terms are kept.
+    const termCount = SessionSearch.MAX_SUBSTRING_TERMS + 500;
+    const capped = buildSubstringClause(Array.from({ length: termCount }, (_, index) => `w${index}`).join(' '), ['o.title']);
     expect(capped.params).toHaveLength(SessionSearch.MAX_SUBSTRING_TERMS);
     expect(capped.params[0]).toBe('%w0%');
   });

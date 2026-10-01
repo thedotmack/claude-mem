@@ -287,12 +287,14 @@ export class SessionSearch {
 
   /**
    * The most distinct terms the substring predicate requires. It adds one LIKE group per
-   * term and SQLite caps an expression tree at a depth of 1000, so a pasted wall of text
-   * (~1,000 words, which FTS never matches, so it always lands here) failed with
-   * "Expression tree is too large". A query this long matches nothing by its full AND
-   * anyway; its leading terms are kept.
+   * term, and when SQLite plans the project filter's OR across its two indexes it chains
+   * every WHERE term into one AND expression, one level deeper per term. Past ~980 terms
+   * that fails with "Expression tree is too large (maximum depth 1000)", which a pasted
+   * wall of text (FTS never matches one, so it always lands here) used to hit. 500 leaves
+   * room for every other filter. A query with more distinct terms than this matches no
+   * record by its full AND anyway; its leading terms are kept.
    */
-  static readonly MAX_SUBSTRING_TERMS = 32;
+  static readonly MAX_SUBSTRING_TERMS = 500;
 
   /**
    * Build the substring predicate used when the index cannot represent the query. Each
