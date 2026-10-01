@@ -9,6 +9,7 @@ import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
+import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { parseGeminiErrorDetails } from '../../shared/gemini-error-details.js';
 import { readGeminiAnswerText, type GeminiPart } from '../../shared/gemini-answer-text.js';
@@ -497,14 +498,10 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-    const primaryKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
-    const apiKeys = buildKeyPool(
-      primaryKey,
-      settings.CLAUDE_MEM_GEMINI_API_KEYS || getCredential('GEMINI_API_KEYS') || '',
-    );
+    const apiKeys = resolveGeminiKeys(settings);
     // With only the list configured, its first entry becomes the primary so
     // availability checks and error messages keep working unchanged.
-    const apiKey = primaryKey || apiKeys[0] || '';
+    const apiKey = apiKeys[0] ?? '';
 
     const defaultModel: GeminiModel = 'gemini-flash-latest';
     const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
@@ -533,13 +530,24 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
   }
 }
 
+/**
+ * The Gemini keys that may be sent: the primary first, then the rotation list,
+ * through the shared cmem key lock. Google is never the cmem gateway, so a
+ * cm_pro_ key pasted into either setting is dropped rather than sent as ?key=.
+ */
+function resolveGeminiKeys(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): string[] {
+  const primaryKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
+  return keysForEndpoint(GEMINI_API_URL, buildKeyPool(
+    primaryKey,
+    settings.CLAUDE_MEM_GEMINI_API_KEYS || getCredential('GEMINI_API_KEYS') || '',
+  ));
+}
+
 export function isGeminiAvailable(): boolean {
-  const settingsPath = paths.settings();
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  if (settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY')) return true;
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   // A pool-only install (no CLAUDE_MEM_GEMINI_API_KEY, keys supplied as a list)
   // is still available — dispatch must not silently fall through to Claude.
-  return buildKeyPool('', settings.CLAUDE_MEM_GEMINI_API_KEYS || getCredential('GEMINI_API_KEYS') || '').length > 0;
+  return resolveGeminiKeys(settings).length > 0;
 }
 
 export function isGeminiSelected(): boolean {
