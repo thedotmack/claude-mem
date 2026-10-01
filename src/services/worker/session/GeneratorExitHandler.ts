@@ -60,12 +60,25 @@ export async function handleGeneratorExit(
   // Falling through to finalizeSession would remove the session and undo that
   // preservation — the second half of #3752.
   const PRESERVES_CLAIMED_WORK = ['quota', 'rate_limit', 'auth', 'overflow', 'provider_switch', 'transport'];
+  // Every transport pause resumes on the transport backoff — a deadline or an
+  // upstream fault that outlived the provider's retries, whatever code it
+  // carries, and a transport failure the Claude CLI returned as text — except a
+  // response stall, which the runner resumes on its own bounded schedule.
+  const resumesOnTransportBackoff = abortCategory === 'transport' && reason !== 'transport:response_stall';
+  // A later run may finish for a different reason before an earlier transport
+  // timer fires. Its old timer must not bypass the new pause decision.
+  if (!resumesOnTransportBackoff) {
+    sessionManager.clearTransportResume?.(sessionDbId);
+  }
   if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
     session.pausedReason = abortCategory;
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
+    if (resumesOnTransportBackoff) {
+      sessionManager.scheduleTransportResume?.(sessionDbId);
+    }
     return;
   }
 
