@@ -98,7 +98,8 @@ describe('HybridSearchStrategy', () => {
         return allObs.filter(obs => ids.includes(obs.id));
       }),
       getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [])
+      getUserPromptsByIds: mock(() => []),
+      getProjectReadKeys: mock((projects: string[]) => projects)
     };
 
     mockSessionSearch = {
@@ -212,6 +213,37 @@ describe('HybridSearchStrategy', () => {
 
       expect(result.usedChroma).toBe(true);
       expect(result.observations.map(obs => obs.id)).toEqual([2, 1]);
+    });
+
+    it('ranks with the project scoping SQLite matched by: every stored spelling, and merged projects', async () => {
+      // SQLite's file lookup compares project and merged_into_project
+      // case-insensitively (#3531, #3641); an exact { project } filter in
+      // Chroma left those rows out of the ranking.
+      mockSessionStore.getProjectReadKeys = mock(() => ['my-project', 'My-Project']);
+
+      await strategy.findByFile('/path/to/file.ts', { limit: 10, project: 'my-project' });
+
+      const spellings = { $in: ['my-project', 'My-Project'] };
+      expect(mockSessionStore.getProjectReadKeys).toHaveBeenCalledWith(['my-project']);
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith('/path/to/file.ts', expect.any(Number), {
+        $and: [
+          { doc_type: 'observation' },
+          { $or: [{ project: spellings }, { merged_into_project: spellings }] },
+        ],
+      });
+    });
+
+    it('scopes the SQLite file lookup and the hydration by the same read keys as the ranking', async () => {
+      // The file lookup decides which rows match; without `projects` it
+      // returned every project's rows for a checkout reading several keys.
+      mockSessionStore.getProjectReadKeys = mock(() => ['api', 'acme/api', 'api-old']);
+
+      await strategy.findByFile('/path/to/file.ts', { limit: 10, projects: ['api', 'acme/api'] });
+
+      const readKeys = ['api', 'acme/api', 'api-old'];
+      expect(mockSessionStore.getProjectReadKeys).toHaveBeenCalledTimes(1);
+      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.objectContaining({ projects: readKeys }));
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ projects: readKeys }));
     });
 
     it('forwards isFolder so a folder is matched by its direct children, not as one file', async () => {

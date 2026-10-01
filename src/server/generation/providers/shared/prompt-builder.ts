@@ -22,8 +22,8 @@ const FALLBACK_OBSERVATION_TYPES: ReadonlyArray<Pick<ObservationType, 'id'>> = [
 
 // Build a single-shot generation prompt from a list of AgentEvent records
 // plus project/session metadata. Output: a user prompt asking the provider
-// to return one or more <observation> XML blocks (or an empty response if
-// the batch should be skipped). This is intentionally a single-turn request
+// to return one or more <observation> XML blocks (or a self-closing
+// <skip_summary /> if the batch should be skipped). This is intentionally a single-turn request
 // — server-beta does NOT use the worker's multi-turn SDK conversation
 // model. parseAgentXml(...) accepts the response unchanged.
 //

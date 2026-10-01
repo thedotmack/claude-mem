@@ -16,6 +16,7 @@ import { ClaudeObservationProvider } from '../generation/providers/ClaudeObserva
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
+import { parseOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { buildServerGenerationPrompt } from '../generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerService } from './ServerService.js';
@@ -387,13 +388,16 @@ async function instantiateServerGenerationProvider(provider: string): Promise<Se
   if (provider === 'openrouter') {
     const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number } = { apiKey };
+    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number; extraBody?: Record<string, unknown> } = { apiKey };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
     // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
     const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
     if (baseUrl) opts.baseUrl = baseUrl;
     const maxOutputTokens = resolveServerMaxOutputTokens();
     if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
+    const { extraBody, warning } = parseOpenRouterExtraBody(process.env.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+    if (warning) logger.warn('SYSTEM', `server: ${warning}`);
+    if (extraBody) opts.extraBody = extraBody;
     return new OpenRouterObservationProvider(opts);
   }
   if (provider === 'custom') {

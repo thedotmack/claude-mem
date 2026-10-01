@@ -15,6 +15,7 @@ import {
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveDateBound } from '../../shared/date-bounds.js';
 import { applySqliteConnectionPragmas } from './connection.js';
+import { projectScopeSql, scopedProjects } from './project-read-keys.js';
 
 /**
  * Code-point ranges of the scripts FTS5's unicode61 tokenizer cannot segment: Thai and Lao,
@@ -177,14 +178,17 @@ export class SessionSearch {
   ): string {
     const conditions: string[] = [];
 
-    if (filters.project) {
+    const projects = scopedProjects(filters);
+    if (projects.length > 0) {
       // #3641 — match the OR disjunction used by every other read path
       // (SessionStore, PaginationHelper, ObservationCompiler). Without it the
       // FTS/filter path ignores merged_into_project, so adopted worktree
       // observations stay invisible to search even after adoption.
       // #3531 — compared case-insensitively, like every other read path.
-      conditions.push(`(${tableAlias}.project COLLATE NOCASE = ? OR ${tableAlias}.merged_into_project COLLATE NOCASE = ?)`);
-      params.push(filters.project, filters.project);
+      // Gate P2-5 — every key the checkout reads, not just its current one.
+      const scope = projectScopeSql(tableAlias, projects, { includeMerged: true });
+      conditions.push(scope.sql);
+      params.push(...scope.params);
     }
 
     // Source-scoping (#2389): when a platformSource is supplied, restrict to
@@ -286,12 +290,25 @@ export class SessionSearch {
     new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'g');
 
   /**
+   * The most distinct terms the substring predicate requires. It adds one LIKE group per
+   * term, and when SQLite plans the project filter's OR across its two indexes it chains
+   * every WHERE term into one AND expression, one level deeper per term. Past ~980 terms
+   * that fails with "Expression tree is too large (maximum depth 1000)", which a pasted
+   * wall of text (FTS never matches one, so it always lands here) used to hit. 500 leaves
+   * room for every other filter. A query with more distinct terms than this matches no
+   * record by its full AND anyway; its leading terms are kept.
+   */
+  static readonly MAX_SUBSTRING_TERMS = 500;
+
+  /**
    * Build the substring predicate used when the index cannot represent the query. Each
    * term must appear in at least one column, and every term must appear somewhere. The
    * escaping matches {@link searchUserPrompts}, which has always searched by substring.
+   * A repeated term adds nothing to the AND, so terms are deduplicated before the cap.
    */
   private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
-    const terms: string[] = query.match(SessionSearch.UNSEGMENTED_RUN) ?? [];
+    const terms = [...new Set(query.match(SessionSearch.UNSEGMENTED_RUN) ?? [])]
+      .slice(0, SessionSearch.MAX_SUBSTRING_TERMS);
     if (terms.length === 0) {
       terms.push(query);
     }
@@ -666,9 +683,13 @@ export class SessionSearch {
     delete sessionFilters.type; 
 
     const baseConditions: string[] = [];
-    if (sessionFilters.project) {
-      baseConditions.push('s.project COLLATE NOCASE = ?');
-      sessionParams.push(sessionFilters.project);
+    // Gate P2-16 — summaries merged into the project (an adopted worktree's)
+    // count, as they do for observations above and on every other read path.
+    const sessionProjects = scopedProjects(sessionFilters);
+    if (sessionProjects.length > 0) {
+      const scope = projectScopeSql('s', sessionProjects, { includeMerged: true });
+      baseConditions.push(scope.sql);
+      sessionParams.push(...scope.params);
     }
 
     if (sessionFilters.platformSource) {
@@ -741,9 +762,11 @@ export class SessionSearch {
     const { limit = 20, offset = 0, orderBy = 'relevance', ...filters } = options;
 
     const baseConditions: string[] = [];
-    if (filters.project) {
-      baseConditions.push('s.project COLLATE NOCASE = ?');
-      params.push(filters.project);
+    const projects = scopedProjects(filters);
+    if (projects.length > 0) {
+      const scope = projectScopeSql('s', projects, { includeMerged: false });
+      baseConditions.push(scope.sql);
+      params.push(...scope.params);
     }
 
     if (filters.platformSource) {

@@ -60,6 +60,10 @@ export interface ServerClientConfig {
   timeoutMs?: number;
 }
 
+export interface ServerRequestOptions {
+  timeoutMs?: number;
+}
+
 export interface ServerStartSessionRequest {
   projectId: string;
   externalSessionId?: string | null;
@@ -186,6 +190,8 @@ export interface ServerContextObservationsRequest {
   // Folder labels (observations.metadata.project) to scope the read to. Omitted
   // or empty means every folder in the server project.
   folderProjects?: string[];
+  // Leave out rows generated from subagent events (CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY).
+  excludeSubagents?: boolean;
 }
 
 export interface ServerContextObservationsResponse {
@@ -218,9 +224,12 @@ export class ServerClient {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async startSession(input: ServerStartSessionRequest): Promise<ServerStartSessionResponse> {
+  async startSession(
+    input: ServerStartSessionRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerStartSessionResponse> {
     const body = this.buildStartSessionPayload(input);
-    return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body);
+    return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body, options);
   }
 
   async recordEvent(input: ServerRecordEventRequest): Promise<ServerRecordEventResponse> {
@@ -272,6 +281,7 @@ export class ServerClient {
   // context string.
   async contextObservations(
     input: ServerContextObservationsRequest,
+    options: ServerRequestOptions = {},
   ): Promise<ServerContextObservationsResponse> {
     // Built here rather than through buildSearchPayload(): that helper is the
     // /v1/search contract, where a query is genuinely required, and widening it
@@ -285,7 +295,8 @@ export class ServerClient {
     if (input.folderProjects && input.folderProjects.length > 0) {
       payload.folderProjects = input.folderProjects;
     }
-    return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload);
+    if (input.excludeSubagents !== undefined) payload.excludeSubagents = input.excludeSubagents;
+    return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload, options);
   }
 
   // Phase 8 — MCP `observation_generation_status`. Server returns the same
@@ -378,6 +389,7 @@ export class ServerClient {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
+    options: ServerRequestOptions = {},
   ): Promise<T> {
     if (!this.apiKey || !this.apiKey.trim()) {
       throw new ServerClientError(
@@ -399,8 +411,9 @@ export class ServerClient {
     }
 
     let response: Response;
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
     try {
-      response = await fetchWithTimeout(url, init, this.timeoutMs);
+      response = await fetchWithTimeout(url, init, timeoutMs);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       const isTimeout = /timed out|timeout/i.test(message);

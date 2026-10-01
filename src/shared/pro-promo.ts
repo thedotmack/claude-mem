@@ -27,7 +27,7 @@ export type ProPromoSource =
   | 'context-banner'
   | 'welcome-hint'
   | 'viewer'
-  /** One-time session-start notice after the free trial ends and memory falls back on-plan. */
+  /** One-time session-start notice after the cmem gateway stops serving the account and memory falls back on-plan. */
   | 'fallback'
   /** Hand-written links in the cursor-hooks setup docs — no TS caller. */
   | 'docs';

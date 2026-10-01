@@ -8,8 +8,15 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
-import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
+import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
+import { resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import {
+  getBunVersion,
+  getUvVersion,
+  isInstallCurrent,
+  isTreeSitterCliBinaryUsable,
+  treeSitterCliBinaryPath,
+} from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
@@ -197,6 +204,56 @@ async function probeChromaCensus(): Promise<CheckResult> {
   }
 }
 
+const MISSING_DEPENDENCIES_SHOWN = 5;
+
+/** The "Plugin installed" row: root, version and dependency completeness. Exported for tests. */
+export function pluginRootCheck(resolution: PluginRootResolution | null): CheckResult {
+  const name = 'Plugin installed';
+  if (!resolution) {
+    return { name, status: 'fail', detail: 'run `npx claude-mem install`', required: true };
+  }
+  const where = resolution.version ? `${resolution.root} (v${resolution.version})` : resolution.root;
+  const missing = resolution.missingDependencies;
+  if (missing.length === 0) {
+    return { name, status: 'ok', detail: where, required: true };
+  }
+  const shown = missing.slice(0, MISSING_DEPENDENCIES_SHOWN).join(', ');
+  const more = missing.length > MISSING_DEPENDENCIES_SHOWN ? `, +${missing.length - MISSING_DEPENDENCIES_SHOWN} more` : '';
+  return {
+    name,
+    status: 'fail',
+    detail: `${where} — missing ${shown}${more} — run \`npx claude-mem repair\``,
+    required: true,
+  };
+}
+
+/** The "tree-sitter CLI" row for the plugin root the worker runs from. Exported for tests. */
+export async function treeSitterCliCheck(pluginRoot: string): Promise<CheckResult> {
+  const name = 'tree-sitter CLI';
+  const binaryPath = treeSitterCliBinaryPath(pluginRoot);
+  return (await isTreeSitterCliBinaryUsable(pluginRoot))
+    ? { name, status: 'ok', detail: binaryPath, required: false }
+    : {
+        name,
+        status: 'warn',
+        detail: `missing or unusable at ${binaryPath} — smart_search/smart_outline disabled; run \`npx claude-mem repair\``,
+        required: false,
+      };
+}
+
+/** The "Marketplace manifest" row. Exported for tests. */
+export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
+  const manifestPath = join(marketplaceDir, '.claude-plugin', 'marketplace.json');
+  return existsSync(manifestPath)
+    ? { name: 'Marketplace manifest', status: 'ok', detail: manifestPath, required: false }
+    : {
+        name: 'Marketplace manifest',
+        status: 'warn',
+        detail: 'missing — Claude Code may not find the plugin; run `npx claude-mem install`',
+        required: false,
+      };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -219,20 +276,25 @@ export async function runDoctorCommand(): Promise<void> {
     required: false,
   });
 
-  // 3. Plugin installed in the marketplace.
-  const installed = isPluginInstalled();
-  checks.push({
-    name: 'Plugin installed',
-    status: installed ? 'ok' : 'fail',
-    detail: installed ? marketplaceDirectory() : 'run `npx claude-mem install`',
-    required: true,
-  });
+  // 3. Plugin installed: the root the worker spawns from (the shared
+  // resolveWorkerScript() oracle — cache, marketplace, or dev checkout), with
+  // its version and dependency completeness.
+  const pluginRoot = resolvePluginRoot();
+  const installed = pluginRoot !== null;
+  checks.push(pluginRootCheck(pluginRoot));
+
+  // 3b. tree-sitter CLI at that root: smart_search and smart_outline shell out
+  // to it, and installs suppress the script that downloads it (#2910).
+  if (pluginRoot) checks.push(await treeSitterCliCheck(pluginRoot.root));
 
   // 4. Marketplace runtime root materialized. The .install-version marker is
   // written only by the npx installer; installs via Claude Code's own plugin
   // marketplace flow and dev `build-and-sync` never write one, so a missing
   // marker with node_modules present is informational, not a failure (#3661).
+  // Required only when the marketplace copy is the root the worker spawns
+  // from; a cache install is healthy without it.
   const marketplaceDir = marketplaceDirectory();
+  const marketplaceIsActiveRoot = pluginRoot?.root === join(marketplaceDir, 'plugin');
   const marketplaceNodeModules = join(marketplaceDir, 'node_modules');
   const marketplaceMarker = join(marketplaceDir, '.install-version');
   const depsPresent = existsSync(marketplaceNodeModules);
@@ -249,15 +311,20 @@ export async function runDoctorCommand(): Promise<void> {
     ? 'warn'
     : marketplaceCurrent
       ? 'ok'
-      : depsPresent && !markerPresent
+      : (depsPresent && !markerPresent) || !marketplaceIsActiveRoot
         ? 'warn'
         : 'fail';
   checks.push({
     name: 'Marketplace runtime',
     status: marketplaceStatus,
     detail: marketplaceDetail,
-    required: installed,
+    required: marketplaceIsActiveRoot,
   });
+
+  // 4b. Marketplace manifest. Claude Code loads the plugin through the
+  // marketplace root's .claude-plugin/marketplace.json; installs made before it
+  // shipped (#3424) cache-miss until reinstalled.
+  checks.push(marketplaceManifestCheck(marketplaceDir));
 
   // 5. Worker health.
   const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');

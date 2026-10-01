@@ -160,7 +160,17 @@ export class PostgresObservationRepository {
   // The platform filter and the optional folder filter apply in both modes.
   // `folderProjects` matches `metadata.project`, the folder label generation
   // copies from the server session; rows without a label are excluded when it
-  // is set.
+  // is set. Labels compare case-insensitively over ASCII only, exactly like the
+  // SQLite read path's COLLATE NOCASE (#3536): `lower()` under the "C"
+  // collation folds A-Z and nothing else, whatever the database locale, so
+  // checkouts named `PasteyPal` and `pasteypal` share one bucket on both
+  // runtimes while `École` and `école` stay apart on both.
+  //
+  // `excludeSubagents` (CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY) leaves out rows
+  // generated from a subagent's hook event: one whose payload carries BOTH an
+  // agentId and an agentType (src/shared/subagent-predicate.ts). An agent id
+  // alone is main-agent work (transcript-watch seats), and rows with no event
+  // source (summaries, direct memories) always stay.
   async search(input: {
     projectId: string;
     teamId: string;
@@ -168,6 +178,7 @@ export class PostgresObservationRepository {
     limit?: number;
     platformSource?: string | null;
     folderProjects?: string[] | null;
+    excludeSubagents?: boolean;
   }): Promise<PostgresObservation[]> {
     const platformSource = normalizePlatformSourceOrNull(input.platformSource);
     const query = input.query && input.query.trim().length > 0 ? input.query : null;
@@ -184,7 +195,27 @@ export class PostgresObservationRepository {
         WHERE observations.project_id = $1
           AND observations.team_id = $2
           AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))
-          AND ($6::text[] IS NULL OR observations.metadata->>'project' = ANY($6::text[]))
+          AND (
+            $6::text[] IS NULL
+            OR lower((observations.metadata->>'project') COLLATE "C") = ANY(
+              SELECT lower(folder COLLATE "C") FROM unnest($6::text[]) AS folder
+            )
+          )
+          AND (
+            NOT $7::boolean
+            OR NOT EXISTS (
+              SELECT 1
+              FROM observation_sources
+              INNER JOIN agent_events
+                ON agent_events.id = observation_sources.agent_event_id
+                AND agent_events.project_id = observations.project_id
+                AND agent_events.team_id = observations.team_id
+              WHERE observation_sources.observation_id = observations.id
+                AND observation_sources.source_type = 'agent_event'
+                AND COALESCE(agent_events.payload->>'agentId', '') <> ''
+                AND COALESCE(agent_events.payload->>'agentType', '') <> ''
+            )
+          )
           AND (
             $5::text IS NULL
             OR server_sessions.platform_source = $5
@@ -209,7 +240,15 @@ export class PostgresObservationRepository {
           observations.updated_at DESC
         LIMIT $4
       `,
-      [input.projectId, input.teamId, query, input.limit ?? 20, platformSource, folderProjects]
+      [
+        input.projectId,
+        input.teamId,
+        query,
+        input.limit ?? 20,
+        platformSource,
+        folderProjects,
+        input.excludeSubagents === true,
+      ]
     );
     return result.rows.map(mapObservationRow);
   }

@@ -22,6 +22,7 @@ mock.module('../../src/shared/EnvManager.js', () => ({
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
 const { GeminiProvider } = await import('../../src/services/worker/GeminiProvider.js');
 const { OpenRouterProvider } = await import('../../src/services/worker/OpenRouterProvider.js');
+const { CodexProvider } = await import('../../src/services/worker/CodexProvider.js');
 
 const input: TelegramWrapupFormatterInput = {
   sessionDbId: 42,
@@ -91,7 +92,7 @@ describe('Telegram wrap-up provider reuse', () => {
     expect(sdkQuery).not.toHaveBeenCalled();
   });
 
-  for (const Provider of [GeminiProvider, OpenRouterProvider]) {
+  for (const Provider of [GeminiProvider, OpenRouterProvider, CodexProvider]) {
     it(`${Provider.name} uses its normal query/config and summary-tier model even for a live session`, async () => {
       const provider = new Provider({} as never, {} as never);
       const config = { apiKey: 'mock-key', model: 'default-model', maxTokens: 1234, temperature: 0.2 };

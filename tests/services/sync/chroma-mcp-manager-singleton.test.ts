@@ -597,6 +597,154 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(1);
   });
 
+  it('restarts a hung chroma-mcp when a read outlives its deadline and no write is in flight', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(1);
+
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_query_documents') {
+        throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['hung'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+
+    // Reads are short, so the subprocess is hung: it is taken down...
+    expect(transportInstances[0].closed).toBe(true);
+    // ...and the next read reconnects to a fresh one instead of waiting out the same deadline.
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(2);
+    // A restart we chose is not a crash.
+    expect(mgr.getCrashState().count).toBe(0);
+  });
+
+  it('never restarts chroma-mcp on a read timeout while a local write is in flight', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    killProcessTreeCalls.length = 0;
+
+    const writeReleases: Array<() => void> = [];
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        await new Promise<void>(resolve => writeReleases.push(resolve));
+        return { content: [{ type: 'text', text: '{}' }] };
+      }
+      throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+    };
+
+    const write = mgr.callTool('chroma_add_documents', { ids: ['committing'] });
+    await waitForCondition(() => writeReleases.length === 1);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['slow'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+
+    // Killing chroma-mcp mid-commit is what leaves a persistent index malformed.
+    expect(transportInstances[0].closed).toBe(false);
+    expect(killProcessTreeCalls).toEqual([]);
+    writeReleases[0]();
+    await expect(write).resolves.toEqual({});
+    expect(transportInstances.length).toBe(1);
+  });
+
+  it('never restarts chroma-mcp while a write that timed out may still be committing', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    let answering = false;
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_list_collections' && answering) {
+        return { content: [{ type: 'text', text: '[]' }] };
+      }
+      throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+    };
+
+    // chroma-mcp serves one request at a time: a write past its deadline may
+    // still be committing, and a read queued behind it times out as well.
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['slow'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['queued'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    expect(transportInstances[0].closed).toBe(false);
+
+    // Any answer from chroma-mcp means the write finished; a hung read then restarts it.
+    answering = true;
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['hung'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+    expect(transportInstances[0].closed).toBe(true);
+  });
+
+  it('never restarts chroma-mcp on a read timeout while a remote-mode write is in flight', async () => {
+    mockedSettings = {
+      CLAUDE_MEM_CHROMA_MODE: 'remote',
+    };
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const writeReleases: Array<() => void> = [];
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        await new Promise<void>(resolve => writeReleases.push(resolve));
+        return { content: [{ type: 'text', text: '{}' }] };
+      }
+      throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+    };
+
+    // Remote writes skip the local mutation queue, so the guard cannot rely on it.
+    const write = mgr.callTool('chroma_add_documents', { ids: ['remote-write'] });
+    await waitForCondition(() => writeReleases.length === 1);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['slow'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+
+    expect(transportInstances[0].closed).toBe(false);
+    writeReleases[0]();
+    await expect(write).resolves.toEqual({});
+  });
+
+  it('lets a read the restart cut off wait for it and retry once on the fresh subprocess', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const hung = transportInstances[0];
+
+    // The real SDK rejects every pending request when its transport closes.
+    let rejectPendingRead: ((error: Error) => void) | null = null;
+    let hungCloses = 0;
+    const closeHung = hung.close.bind(hung);
+    hung.close = async () => {
+      hungCloses += 1;
+      rejectPendingRead?.(new Error('Connection closed'));
+      rejectPendingRead = null;
+      await closeHung();
+    };
+
+    let pendingReadAttempts = 0;
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_get_documents') {
+        pendingReadAttempts += 1;
+        if (pendingReadAttempts === 1) {
+          return new Promise((_, reject) => { rejectPendingRead = reject; });
+        }
+        return { content: [{ type: 'text', text: '{"ids":["retried"]}' }] };
+      }
+      if (request?.name === 'chroma_query_documents') {
+        throw new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const cutOffRead = mgr.callTool('chroma_get_documents', { ids: ['a'] });
+    await waitForCondition(() => rejectPendingRead !== null);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['hung'] })).rejects.toBeInstanceOf(ChromaUnavailableError);
+
+    // Bounded: without the restart nothing ever settles the cut-off read.
+    const outcome = await Promise.race([
+      cutOffRead.then(value => ({ value }), (error: Error) => ({ error: error.message })),
+      new Promise(resolve => setTimeout(() => resolve({ timedOut: true }), 3_000)),
+    ]);
+    expect(outcome).toEqual({ value: { ids: ['retried'] } });
+    // One restart, one reconnect: the cut-off read joined the restart instead of
+    // disposing again, which could have taken down its replacement.
+    expect(hungCloses).toBe(1);
+    expect(transportInstances.length).toBe(2);
+    expect(transportInstances[1].closed).toBe(false);
+  });
+
   it('bounds the pending mutation queue and leaves rejected writes for backfill', async () => {
     mockedSettings = {
       CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '2',

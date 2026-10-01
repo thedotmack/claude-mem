@@ -36,6 +36,7 @@ describe('POST /v1/context recency mode (no query)', () => {
   let apiKey: string;
   let teamId: string;
   let projectId: string;
+  let claudeSessionId: string;
   let spies: ReturnType<typeof spyOn>[] = [];
 
   // Creates one observation and pins its created_at `minutesAgo` minutes in the
@@ -61,6 +62,44 @@ describe('POST /v1/context recency mode (no query)', () => {
     return created.id;
   }
 
+  // An observation generated from one hook event, linked the way generation
+  // links it (observation_sources, source_type 'agent_event'). The event
+  // payload carries the hook's agentId/agentType, which is where the server
+  // records whether a subagent produced it.
+  async function observationFromEvent(input: {
+    content: string;
+    minutesAgo: number;
+    folderProject: string;
+    payload: Record<string, unknown>;
+  }): Promise<string> {
+    const event = await storage.agentEvents.create({
+      projectId,
+      teamId,
+      serverSessionId: claudeSessionId,
+      sourceAdapter: 'hook',
+      sourceEventId: `event-for-${input.content}`,
+      eventType: 'tool_use',
+      platformSource: 'claude',
+      payload: input.payload as never,
+      occurredAt: Date.now(),
+    });
+    const id = await observation({
+      content: input.content,
+      minutesAgo: input.minutesAgo,
+      serverSessionId: claudeSessionId,
+      folderProject: input.folderProject,
+    });
+    await storage.observationSources.addSource({
+      observationId: id,
+      projectId,
+      teamId,
+      sourceType: 'agent_event',
+      sourceId: event.id,
+      agentEventId: event.id,
+    });
+    return id;
+  }
+
   beforeEach(async () => {
     spies = (['info', 'warn', 'error', 'debug'] as const).map((level) =>
       spyOn(logger, level).mockImplementation(() => {}),
@@ -79,6 +118,7 @@ describe('POST /v1/context recency mode (no query)', () => {
     const claudeSession = await storage.sessions.create({
       projectId, teamId, contentSessionId: 'claude-session', platformSource: 'claude',
     });
+    claudeSessionId = claudeSession.id;
     const cursorSession = await storage.sessions.create({
       projectId, teamId, contentSessionId: 'cursor-session', platformSource: 'cursor',
     });
@@ -184,6 +224,65 @@ describe('POST /v1/context recency mode (no query)', () => {
       'second observation about routing',
       'first observation about setup',
     ]);
+  });
+
+  it('matches folder labels case-insensitively, as the SQLite read path does (#3536)', async () => {
+    // Two checkouts of one repo whose directory names differ only in case
+    // (`PasteyPal` on one machine, `pasteypal` on another) must read one bucket.
+    await observation({ content: 'written from the PasteyPal checkout', minutesAgo: 3, folderProject: 'PasteyPal' });
+    await observation({ content: 'written from the pasteypal checkout', minutesAgo: 2, folderProject: 'pasteypal' });
+
+    expect((await context({ folderProjects: ['pasteypal'] })).contents).toEqual([
+      'written from the pasteypal checkout',
+      'written from the PasteyPal checkout',
+    ]);
+    expect((await context({ folderProjects: ['PASTEYPAL'] })).contents).toHaveLength(2);
+    expect((await context({ folderProjects: ['ALPHA'], platformSource: 'claude' })).contents).toEqual([
+      'third observation about deployment',
+      'first observation about setup',
+    ]);
+  });
+
+  it('folds only ASCII case in folder labels, exactly like SQLite NOCASE', async () => {
+    // SQLite's NOCASE collation folds A-Z only, so `École` and `école` are two
+    // keys on the worker path. The server must not merge what the worker keeps
+    // apart.
+    await observation({ content: 'written from the École checkout', minutesAgo: 3, folderProject: 'École' });
+    expect((await context({ folderProjects: ['école'] })).contents).toEqual([]);
+    expect((await context({ folderProjects: ['ÉCOLE'] })).contents).toEqual(['written from the École checkout']);
+  });
+
+  it('leaves subagent rows out when excludeSubagents is set, keeping main-agent, agent-id-only and summary rows', async () => {
+    await observationFromEvent({
+      content: 'subagent step-log',
+      minutesAgo: 4,
+      folderProject: 'delta',
+      payload: { tool_name: 'Bash', agentId: 'agent-1', agentType: 'Explore' },
+    });
+    await observationFromEvent({
+      content: 'main agent decision',
+      minutesAgo: 3,
+      folderProject: 'delta',
+      payload: { tool_name: 'Edit' },
+    });
+    // Transcript-watch rows carry an agent id alone (a Grok Bot seat): main-agent work.
+    await observationFromEvent({
+      content: 'seat diary note',
+      minutesAgo: 2,
+      folderProject: 'delta',
+      payload: { tool_name: 'Write', agentId: 'seat-7', agentType: '' },
+    });
+    const summaryId = await observation({ content: 'session summary', minutesAgo: 1, folderProject: 'delta' });
+    await client.query(`UPDATE observations SET kind = 'summary' WHERE id = $1`, [summaryId]);
+
+    expect((await context({ folderProjects: ['delta'], excludeSubagents: true })).contents).toEqual([
+      'session summary',
+      'seat diary note',
+      'main agent decision',
+    ]);
+    // Opted out (CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY=false): everything comes back.
+    expect((await context({ folderProjects: ['delta'], excludeSubagents: false })).contents).toHaveLength(4);
+    expect((await context({ folderProjects: ['delta'] })).contents).toHaveLength(4);
   });
 
   it('still runs a relevance-ranked full-text search when a query is given', async () => {

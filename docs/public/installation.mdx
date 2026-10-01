@@ -37,7 +37,7 @@ Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-head
 
 ### Memory Provider Options
 
-- **CMEM Pro / claude-mem observer (pre-selected)** — memory runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. Free trial, then subscribe or fall back. Fallback is **event-driven** (`CLAUDE_MEM_PRO_FALLBACK_AT` after a terminal gateway quota/key error), not the trial end date. See [CMEM Pro (manual / headless)](/cmem-pro-headless).
+- **CMEM Pro / claude-mem observer (pre-selected)** — memory runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. Free trial, then subscribe or fall back. Fallback is **event-driven**: `CLAUDE_MEM_PRO_FALLBACK_AT` is set when the gateway stops serving the account (a spent allowance, an inactive subscription, or a refused key), not on the trial end date, and memory then uses your Anthropic plan. See [CMEM Pro (manual / headless)](/cmem-pro-headless).
 - **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit. Empty base URL (or `https://openrouter.ai/api/v1`). **Never** send a personal `sk-or-` key to the cmem.ai inference gateway.
 - **Gemini API key** — memory runs off-plan on your Gemini key.
 - **Anthropic plan** (`--provider claude`) — memory shares your Claude plan usage. Skips the sign-in step; local installs contact cmem.ai once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names), and nothing else is sent to cmem.ai. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
@@ -99,7 +99,7 @@ npm run worker:status
 
 #### 1. Automatic Dependency Installation
 
-Dependencies are installed automatically by `npx claude-mem install` and `npx claude-mem repair`. Heavy lifting (Bun + uv install, `bun install` inside the plugin cache) happens behind a visible installer spinner. The Setup hook only performs a sub-100ms `version-check.js` read of the `.install-version` marker — on mismatch it prints `run: npx claude-mem repair` to stderr and exits 0, so it never blocks a session. Works cross-platform on Windows, macOS, and Linux.
+Dependencies are installed automatically by `npx claude-mem install` and `npx claude-mem repair`. Heavy lifting (Bun + uv install, `bun install` inside the plugin cache) happens behind a visible installer spinner. Installs made through the plugin marketplace are completed by the Setup hook (`version-check.js`): if the plugin's declared dependencies are missing it runs `bun install` in the plugin root, and once they are complete it records the `.install-version` marker itself. It prints `run: npx claude-mem@latest install` only when dependencies are still missing after that attempt, and it always exits 0, so it never blocks a session. Works cross-platform on Windows, macOS, and Linux.
 
 #### 2. Verify Plugin Installation
 
@@ -145,7 +145,7 @@ See [CMEM Pro (manual / headless)](/cmem-pro-headless).
 
 ## Upgrading
 
-Upgrades are automatic when updating via the plugin marketplace. After an external upgrade (for example `claude plugin update`), the Setup hook detects a version-marker mismatch and asks you to run `npx claude-mem repair`, which installs any missing runtime dependencies and refreshes the marker.
+Upgrades are automatic when updating via the plugin marketplace. After an external upgrade (for example `claude plugin update`), the Setup hook installs any runtime dependencies the new version is missing and refreshes the version marker itself. Only if dependencies are still missing after that does it ask you to run `npx claude-mem@latest install`.
 
 See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete version history.
 

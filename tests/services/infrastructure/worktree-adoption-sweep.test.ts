@@ -86,3 +86,59 @@ describe('adoption sweep repo discovery (#2864)', () => {
     expect(parent!.adoptedObservations).toBe(1);
   }, 30_000);
 });
+
+// Gate P2-3 — the boot sweep runs inside the worker (fire-and-forget at startup),
+// so it must not hold the event loop: recorded checkouts that no longer exist are
+// skipped without spawning git, and the sweep yields before it starts and
+// between repositories, so the worker keeps serving requests while it runs.
+describe('adoption sweep keeps the event loop free (gate P2-3)', () => {
+  function seedDeadCheckouts(store: SessionStore, root: string, count: number): void {
+    for (let i = 0; i < count; i++) {
+      const sessionDbId = store.createSDKSession(`content-gone-${i}`, `gone-${i}`, 'prompt');
+      store.setSessionCwd(sessionDbId, path.join(root, 'gone', `checkout-${i}`));
+    }
+  }
+
+  it('lets the event loop turn before the sweep finishes', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-gate-p23-'));
+    const mainRepo = path.join(tempRoot, 'parent-repo');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(mainRepo, { recursive: true });
+    mkdirSync(dataDirectory);
+    git(mainRepo, 'init', '-b', 'main');
+
+    const store = new SessionStore(path.join(dataDirectory, 'claude-mem.db'));
+    seedDeadCheckouts(store, tempRoot, 20);
+    const liveSession = store.createSDKSession('content-live', 'parent-repo', 'prompt');
+    store.setSessionCwd(liveSession, mainRepo);
+    store.close();
+
+    let sweepFinished = false;
+    const sweep = adoptMergedWorktreesForAllKnownRepos({ dataDirectory }).then(results => {
+      sweepFinished = true;
+      return results;
+    });
+    const turnedWhileSweeping = await new Promise<boolean>(resolve => setImmediate(() => resolve(!sweepFinished)));
+    const results = await sweep;
+
+    expect(turnedWhileSweeping).toBe(true);
+    expect(results.map(result => result.parentProject)).toEqual(['parent-repo']);
+  }, 30_000);
+
+  // 300 dead checkouts cost ~5 s of blocked event loop when each spawned git.
+  it('skips recorded checkouts that no longer exist without spawning git', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-gate-p23-'));
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory);
+    const store = new SessionStore(path.join(dataDirectory, 'claude-mem.db'));
+    seedDeadCheckouts(store, tempRoot, 300);
+    store.close();
+
+    const startedAt = performance.now();
+    const results = await adoptMergedWorktreesForAllKnownRepos({ dataDirectory });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(results).toEqual([]);
+    expect(elapsedMs).toBeLessThan(1_500);
+  }, 30_000);
+});

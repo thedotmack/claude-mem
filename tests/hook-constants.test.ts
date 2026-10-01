@@ -1,10 +1,38 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
   HOOK_TIMEOUTS,
   HOOK_EXIT_CODES,
+  defaultSessionInitRequestTimeoutMs,
   getTimeout,
   isToolHookDisabledByEnv,
 } from '../src/shared/hook-constants.js';
+
+describe('session-init budget vs the UserPromptSubmit host timeout', () => {
+  it('SESSION_INIT_HOOK_CAP is the timeout hooks.json gives UserPromptSubmit', () => {
+    const hooks = JSON.parse(readFileSync(join(import.meta.dir, '..', 'plugin', 'hooks', 'hooks.json'), 'utf-8'));
+    const timeoutsSeconds = hooks.hooks.UserPromptSubmit.flatMap(
+      (entry: { hooks: Array<{ timeout: number }> }) => entry.hooks.map((hook) => hook.timeout),
+    );
+    expect(timeoutsSeconds.map((seconds: number) => seconds * 1000)).toEqual([HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP]);
+  });
+
+  it('leaves Windows its 4-5 s of hook start-up plus an exit margin under the cap', () => {
+    // The budget's clock starts inside the handler, after bash, node and the
+    // worker bundle load. On Windows that start-up takes 4-5 s, so the old
+    // 10 s default could end the hook past the 15 s cap.
+    const windowsBudget = defaultSessionInitRequestTimeoutMs('win32');
+    expect(windowsBudget + 5_000 + 2_000).toBeLessThanOrEqual(HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP);
+    expect(windowsBudget).toBeGreaterThanOrEqual(5_000);
+    expect(defaultSessionInitRequestTimeoutMs('darwin')).toBe(HOOK_TIMEOUTS.SESSION_INIT_REQUEST);
+    expect(defaultSessionInitRequestTimeoutMs('linux')).toBe(HOOK_TIMEOUTS.SESSION_INIT_REQUEST);
+  });
+
+  it('caps user overrides below the host timeout', () => {
+    expect(HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX).toBeLessThan(HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP);
+  });
+});
 
 describe('hook-constants', () => {
   const originalPlatform = process.platform;

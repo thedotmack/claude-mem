@@ -23,6 +23,21 @@ interface IngestContext {
 
 let ctx: IngestContext | null = null;
 
+// Kimi Code's bookkeeping tools (its todo list, background-task polling and
+// cron scheduling) carry no project knowledge. Several share a name with a
+// Claude Code tool, so they are skipped for Kimi sessions only, not through
+// the global CLAUDE_MEM_SKIP_TOOLS default.
+const KIMI_BOOKKEEPING_TOOLS = new Set([
+  'SetTodoList',
+  'TodoList',
+  'TaskList',
+  'TaskOutput',
+  'TaskStop',
+  'CronCreate',
+  'CronList',
+  'CronDelete',
+]);
+
 // Compile each CLAUDE_MEM_SKIP_BASH_PATTERNS value once, not per observation:
 // ingestObservation runs on the hot path. A cached `null` marks a value that
 // failed to compile, so an invalid regex warns once instead of on every Bash
@@ -63,7 +78,9 @@ export function setIngestContext(next: IngestContext): void {
 export function attachIngestGeneratorStarter(
   ensureGeneratorRunning: (sessionDbId: number, source: string) => void | Promise<void>,
 ): void {
-  requireContext().ensureGeneratorRunning = ensureGeneratorRunning;
+  const context = requireContext();
+  context.ensureGeneratorRunning = ensureGeneratorRunning;
+  context.sessionManager.setGeneratorStarter?.(ensureGeneratorRunning);
 }
 
 function requireContext(): IngestContext {
@@ -103,7 +120,8 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
 
   const platformSource = normalizePlatformSource(payload.platformSource);
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-  const project = cwd.trim() ? getProjectContext(cwd).primary : '';
+  const projectContext = cwd.trim() ? getProjectContext(cwd) : null;
+  const project = projectContext?.primary ?? '';
 
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
@@ -126,6 +144,9 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
         ide: platformSource,
       });
     }
+    return { ok: true, status: 'skipped', reason: 'tool_excluded' };
+  }
+  if (platformSource === 'kimi' && KIMI_BOOKKEEPING_TOOLS.has(payload.toolName)) {
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
   }
 
@@ -164,7 +185,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   let promptNumber: number;
   try {
     sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    if (cwd) store.setSessionCwd(sessionDbId, cwd);
+    if (cwd) store.setSessionCwd(sessionDbId, cwd, projectContext?.keySource);
     promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

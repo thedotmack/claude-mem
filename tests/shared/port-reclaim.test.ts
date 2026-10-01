@@ -550,6 +550,94 @@ describe('reclaimWedgedOwnedWorker (via reclaimGhostListeningPort)', () => {
   });
 });
 
+describe('reclaimGhostListeningPort under a hook deadline (UserPromptSubmit, 15 s host cap)', () => {
+  it('declines before probing or killing when the budget left cannot cover a reclaim', async () => {
+    const { deps: testDeps, killed, healthProbes } = wedgedDeps({ isWin32: false });
+    const result = await reclaimGhostListeningPort(37777, { ...testDeps, deadlineAt: NOW_MS + 3_000 });
+    expect(result).toEqual({ reclaimed: false, reason: 'out-of-budget', killedPids: [] });
+    expect(healthProbes()).toBe(0);
+    expect(killed).toEqual([]);
+  });
+
+  it('declines the Windows ghost path before reading netstat when the budget is short', async () => {
+    const { deps: testDeps, killed } = ghostDeps({ table: [] });
+    const result = await reclaimGhostListeningPort(37777, {
+      ...testDeps,
+      now: () => NOW_MS,
+      deadlineAt: NOW_MS + 2_000,
+      listOwners: async () => {
+        throw new Error('must not read netstat without the budget to finish');
+      },
+    });
+    expect(result).toEqual({ reclaimed: false, reason: 'out-of-budget', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('cuts every process read to what is left of the budget', async () => {
+    const { deps: testDeps } = wedgedDeps({ isWin32: false });
+    const caps: Array<number | undefined> = [];
+    const result = await reclaimGhostListeningPort(37777, {
+      ...testDeps,
+      deadlineAt: NOW_MS + 20_000,
+      listOwners: async (port, capMs) => {
+        caps.push(capMs);
+        return caps.length === 1 ? [WEDGED_WORKER_PID] : [];
+      },
+      readIdentity: async (_pid, capMs) => {
+        caps.push(capMs);
+        return { startToken: WEDGED_WORKER_TOKEN, cmdline: 'bun /plugin/scripts/worker-service.cjs --daemon' };
+      },
+    });
+    expect(result.reclaimed).toBe(true);
+    expect(caps).toEqual([20_000, 20_000, 20_000]);
+  });
+
+  it('stops before the kill when the reads used up the budget a kill needs', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: false });
+    let nowCalls = 0;
+    // The budget check and the age read see the start; by the kill, 4 s are left.
+    const now = () => (++nowCalls <= 2 ? NOW_MS : NOW_MS + 16_000);
+    const result = await reclaimGhostListeningPort(37777, { ...testDeps, now, deadlineAt: NOW_MS + 20_000 });
+    expect(result).toEqual({ reclaimed: false, reason: 'out-of-budget', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('re-checks the budget before every sidecar kill, not once for the whole chain', async () => {
+    // Each taskkill may take its full 5 s timeout: four in a row would blow a
+    // hook deadline that only covered the first.
+    const { deps: testDeps } = ghostDeps({
+      owners: [DEAD_OWNER],
+      table: [
+        { pid: 3001, ppid: DEAD_OWNER, name: 'uvx.exe', token: 't-uvx' },
+        { pid: 3002, ppid: 3001, name: 'uv.exe', token: 't-uv' },
+        { pid: 3003, ppid: 3002, name: 'python.exe', token: 't-py' },
+        { pid: 3004, ppid: 3003, name: 'chroma-mcp.exe', token: 't-cm' },
+      ],
+    });
+    let clock = NOW_MS;
+    const killed: number[] = [];
+    const result = await reclaimGhostListeningPort(37777, {
+      ...testDeps,
+      now: () => clock,
+      // Enough to start (9.5 s), and for one kill; after it 5 s are left, under the 5.5 s a kill needs.
+      deadlineAt: NOW_MS + 10_000,
+      killTree: async (pid) => {
+        killed.push(pid);
+        clock += 5_000; // a slow taskkill
+      },
+    });
+    expect(result).toEqual({ reclaimed: false, reason: 'out-of-budget', killedPids: [3004] });
+    expect(killed).toEqual([3004]);
+  });
+
+  it('keeps the unbounded reclaim for callers without a deadline', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: false });
+    const result = await reclaimGhostListeningPort(37777, { ...testDeps, deadlineAt: null });
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map((kill) => kill.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+});
+
 describe('parsePidLines', () => {
   it('parses lsof -t output into unique PIDs', () => {
     expect(parsePidLines('51000\n51000\n4242\n\n')).toEqual([51000, 4242]);

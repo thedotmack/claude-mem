@@ -105,4 +105,42 @@ describe('SessionStore.storeObservations', () => {
     expect(rows.length).toBe(2);
     expect(rows.every(r => r.prompt_number === 7)).toBe(true);
   });
+
+  it('updateDiscoveryTokens back-patches observations and the summary', () => {
+    const result = store.storeObservations(
+      session('mem-backfill'),
+      'project',
+      [obs({ title: 'A', narrative: 'a' }), obs({ title: 'B', narrative: 'b' })],
+      summary(),
+      1,
+      0
+    );
+
+    store.updateDiscoveryTokens(result.observationIds, result.summaryId, 4096);
+
+    const obsRows = store.db.prepare('SELECT discovery_tokens FROM observations WHERE memory_session_id = ?').all('mem-backfill') as Array<{ discovery_tokens: number }>;
+    expect(obsRows.length).toBe(2);
+    expect(obsRows.every(r => r.discovery_tokens === 4096)).toBe(true);
+
+    const summaryRow = store.db.prepare('SELECT discovery_tokens FROM session_summaries WHERE id = ?').get(result.summaryId) as { discovery_tokens: number };
+    expect(summaryRow.discovery_tokens).toBe(4096);
+  });
+
+  it('updateDiscoveryTokens is a no-op with no rows to patch', () => {
+    expect(() => store.updateDiscoveryTokens([], null, 4096)).not.toThrow();
+  });
+
+  it('insertedObservationIds excludes a row deduplicated onto an earlier turn', () => {
+    const mem = session('mem-dedup-insert');
+    const duplicate = obs({ title: 'Same', narrative: 'same' });
+
+    const first = store.storeObservations(mem, 'project', [duplicate], null, 1);
+    expect(first.insertedObservationIds).toEqual(first.observationIds);
+
+    const second = store.storeObservations(mem, 'project', [duplicate], null, 2);
+    // The later turn returns the historical id for sync, but must report it as
+    // NOT newly inserted so a result-usage backfill leaves the original untouched.
+    expect(second.observationIds).toEqual(first.observationIds);
+    expect(second.insertedObservationIds).toEqual([]);
+  });
 });

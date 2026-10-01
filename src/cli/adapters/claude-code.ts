@@ -8,6 +8,24 @@ const pickAgentField = (v: unknown): string | undefined =>
 const pickStringField = (v: unknown): string | undefined =>
   typeof v === 'string' ? v : undefined;
 
+/**
+ * Read Qwen Code's `submitted_prompt` into the three states the handler needs.
+ *
+ * The distinction that matters is presence, not truthiness: an absent field
+ * means the host cannot tell a continuation send from a user turn, and an empty
+ * one means the host can and is saying this was not a user turn. Collapsing
+ * those two is what wrote a fake `[media prompt]` row for every tool round
+ * (#4215).
+ */
+export const normalizeSubmittedPrompt = (raw: unknown): string | null | undefined => {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const record = raw as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(record, 'submitted_prompt')) return undefined;
+  const value = record.submitted_prompt;
+  if (typeof value !== 'string') return null;
+  return value.trim() ? value : null;
+};
+
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
@@ -23,14 +41,18 @@ export const claudeCodeAdapter: PlatformAdapter = {
       sessionId: r.session_id ?? r.id ?? r.sessionId,
       cwd,
       prompt: r.prompt,
+      submittedPrompt: normalizeSubmittedPrompt(r),
       toolName: r.tool_name,
       toolInput: r.tool_input,
       toolResponse: r.tool_response,
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
-      // #3161: feeds summarize.ts's re-entry loop breaker (codex.ts already
-      // maps this; without it the breaker never fires on Claude Code).
-      stopHookActive: typeof r.stop_hook_active === 'boolean' ? r.stop_hook_active : undefined,
+      // stop_hook_active is deliberately not mapped. Claude Code sets it once a
+      // Stop hook has blocked the stop and Claude kept working. claude-mem's
+      // Stop hook never blocks (it always exits 0 with continue: true), so the
+      // flag can only come from another plugin and never marks a loop
+      // claude-mem must break. Honoring it (#3168) dropped the summary and the
+      // advisor capture for every turn after such a hook fired.
       reason: pickStringField(r.reason),
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),
