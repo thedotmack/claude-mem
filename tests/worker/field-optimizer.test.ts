@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, spyOn } from 'bun:test';
 import {
   optimizeField,
   optimizeObservationFields,
   buildFieldCompressionPrompt,
   type FieldCompressor,
 } from '../../src/services/worker/field-optimizer.js';
+import { logger } from '../../src/utils/logger.js';
 
 const CTX = { sessionDbId: 1, field: 'outcome', toolName: 'Read' };
 const MAX = 200;
@@ -136,5 +137,33 @@ describe('oversized observation fields are condensed, not cut (#3800)', () => {
     expect(prompt).toContain('some payload');
     expect(prompt).toContain('file paths');
     expect(prompt).toContain('no code');
+  });
+});
+
+describe('a field too large for any condense prompt skips the model call', () => {
+  it('falls through to truncation without calling the model, and warns once with the sizes', async () => {
+    let calls = 0;
+    const compress: FieldCompressor = async () => { calls++; return 'condensed'; };
+    const huge = { body: 'x'.repeat(MAX * 25) };
+    const warn = spyOn(logger, 'warn');
+    try {
+      expect(await optimizeField(huge, compress, CTX, MAX)).toBe(huge);
+      expect(calls).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const fields = warn.mock.calls[0][2] as Record<string, unknown>;
+      expect(fields.originalChars).toBe(JSON.stringify(huge, null, 2).length);
+      expect(fields.maxInputChars).toBe(MAX * 20);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('still condenses a field that is oversized but within the input bound', async () => {
+    let calls = 0;
+    const compress: FieldCompressor = async () => { calls++; return 'condensed'; };
+
+    const out = await optimizeField({ body: 'x'.repeat(MAX * 15) }, compress, CTX, MAX) as string;
+    expect(calls).toBe(1);
+    expect(out).toContain('condensed');
   });
 });

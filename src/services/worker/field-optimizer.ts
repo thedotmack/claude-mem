@@ -65,6 +65,13 @@ export const FIELD_OPTIMIZE_TIMEOUT_MS = 180_000;
  */
 const FIELD_OPTIMIZE_TARGET_RATIO = 0.8;
 
+/**
+ * Largest field, as a multiple of the per-field budget, worth a condense call.
+ * Measured on a local server: 230-935 KB fields made 300k-631k-token condense
+ * prompts that no local model can serve, so each one was a failed call.
+ */
+const FIELD_OPTIMIZE_MAX_INPUT_RATIO = 20;
+
 export function buildFieldCompressionPrompt(text: string, budgetChars: number): string {
   return `Condense the tool payload below to under ${budgetChars} characters.
 
@@ -113,6 +120,18 @@ export async function optimizeField(
 ): Promise<unknown> {
   const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) {
+    return value;
+  }
+
+  const maxInputChars = maxChars * FIELD_OPTIMIZE_MAX_INPUT_RATIO;
+  if (raw.length > maxInputChars) {
+    logger.warn('SDK', 'Oversized field too large to condense; falling back to truncation', {
+      sessionId: context.sessionDbId,
+      field: context.field,
+      toolName: context.toolName,
+      originalChars: raw.length,
+      maxInputChars,
+    });
     return value;
   }
 
