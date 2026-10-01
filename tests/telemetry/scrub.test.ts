@@ -181,6 +181,20 @@ describe('scrubProperties', () => {
     expect(result.abort_reason).toBe('restart_guard');
   });
 
+  it('keeps the deadline-abort reason and its rollup counter', () => {
+    const result = scrubProperties({
+      abort_reason: 'deadline_exceeded',
+      outcomes_aborted: 4,
+      outcomes_aborted_deadline_exceeded: 3,
+    });
+
+    expect(result).toEqual({
+      abort_reason: 'deadline_exceeded',
+      outcomes_aborted: 4,
+      outcomes_aborted_deadline_exceeded: 3,
+    });
+  });
+
   it('keeps the worker lifecycle keys with primitive values', () => {
     const result = scrubProperties({
       previous_shutdown: 'crash',
@@ -371,6 +385,17 @@ describe('scrubProperties', () => {
 
   it('returns an empty object for empty input', () => {
     expect(scrubProperties({})).toEqual({});
+  });
+
+  it('redacts URL-shaped secrets even on a whitelisted key', () => {
+    const result = scrubProperties({
+      endpoint: 'https://api.example.com/v1/data?token=secret123',
+      outcome: 'success',
+    });
+
+    expect(result.outcome).toBe('success');
+    expect(String(result.endpoint)).not.toContain('secret123');
+    expect(String(result.endpoint)).not.toContain('token=');
   });
 
   it('never throws on hostile input', () => {

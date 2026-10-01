@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
+  describeObserverOutputShape,
+  formatEmptyOutputReason,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
@@ -446,5 +448,181 @@ describe('isTransportFailureObserverOutput separates envelope from diagnosis (re
   it('does not treat a 4xx as retryable because a 5xx-shaped number appears later', () => {
     expect(isTransportFailureObserverOutput('API Error: 400 Bad Request')).toBe(false);
     expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+  });
+});
+
+// #3460 (danemil): CLI stream cuts and deadlines that the anchored detector
+// missed. Each was classified prose, so its claimed batch was confirmed away.
+describe('isTransportFailureObserverOutput — CLI stream cuts and deadlines (#3460)', () => {
+  const cliFailures = [
+    'API Error: Connection closed mid-response. The response above may be incomplete.',
+    'API Error: Connection closed mid-response',
+    'Connection closed mid-response. The response above may be incomplete.',
+    'API ERROR:   Connection   Closed\n  Mid-Response.',
+    'API Error: Request timed out.',
+    'Request error: request timed out',
+    'API Error: premature close',
+    'Error: premature close',
+    'Error: stream ended unexpectedly',
+  ];
+  for (const output of cliFailures) {
+    it(`preserves the batch for: ${output.replace(/\s+/g, ' ').slice(0, 60)}`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(true);
+    });
+  }
+
+  // The same words inside an observer's narrative must stay prose: a false
+  // positive requeues completed work and pauses the generator.
+  const prose = [
+    'The Read tool failed with ECONNRESET while fetching the config file.',
+    'Connection closed mid-response handling was reviewed and is covered by the retry wrapper.',
+    'The observed test run showed the stream ended unexpectedly; the retry wrapper now handles it.',
+    'API Error: request timed out handling was added to the retry wrapper',
+    'Request timed out errors are now retried with backoff.',
+  ];
+  for (const output of prose) {
+    it(`leaves prose alone: ${output.slice(0, 50)}…`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(false);
+    });
+  }
+
+  it('does not steal XML that mentions a dropped connection', () => {
+    expect(
+      isTransportFailureObserverOutput(
+        '<observation><title>Connection closed mid-response in the retry path</title></observation>'
+      )
+    ).toBe(false);
+    expect(
+      isTransportFailureObserverOutput('<skip_summary reason="premature close in observed code"/>')
+    ).toBe(false);
+  });
+});
+
+describe('describeObserverOutputShape and formatEmptyOutputReason (#3454)', () => {
+  it('returns no-content-blocks for null', () => {
+    const r = describeObserverOutputShape(null);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBe('no-content-blocks');
+  });
+
+  it('returns no-content-blocks for undefined', () => {
+    const r = describeObserverOutputShape(undefined);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(formatEmptyOutputReason(r)).toBe('no-content-blocks');
+  });
+
+  it('returns unrecognized-content for a plain object', () => {
+    const r = describeObserverOutputShape({});
+    expect(r.shape).toBe('unrecognized-content');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBe('unrecognized-content');
+  });
+
+  it('returns unrecognized-content for a number', () => {
+    const r = describeObserverOutputShape(42);
+    expect(r.shape).toBe('unrecognized-content');
+  });
+
+  it('returns no-content-blocks for an empty array', () => {
+    const r = describeObserverOutputShape([]);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(r.blockKinds).toEqual([]);
+  });
+
+  it('returns text for a non-blank string', () => {
+    const r = describeObserverOutputShape('<observation/>');
+    expect(r.shape).toBe('text');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBeUndefined();
+  });
+
+  it('returns blank-text for whitespace string', () => {
+    const r = describeObserverOutputShape('   ');
+    expect(r.shape).toBe('blank-text');
+    expect(formatEmptyOutputReason(r)).toBe('blank-text');
+  });
+
+  it('returns text for array with non-blank text block', () => {
+    const r = describeObserverOutputShape([{ type: 'text', text: 'hello' }]);
+    expect(r.shape).toBe('text');
+    expect(r.blockKinds).toEqual(['text']);
+    expect(formatEmptyOutputReason(r)).toBeUndefined();
+  });
+
+  it('returns blank-text for array with blank text block', () => {
+    const r = describeObserverOutputShape([{ type: 'text', text: '' }]);
+    expect(r.shape).toBe('blank-text');
+    expect(r.blockKinds).toEqual(['text']);
+    expect(formatEmptyOutputReason(r)).toBe('blank-text');
+  });
+
+  it('returns non-text-blocks-only(tool_use) for tool_use block', () => {
+    const r = describeObserverOutputShape([{ type: 'tool_use', name: 'bash', input: {} }]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['tool_use']);
+    expect(formatEmptyOutputReason(r)).toBe('non-text-blocks-only(tool_use)');
+  });
+
+  it('returns non-text-blocks-only(thinking,tool_use) for mixed non-text blocks', () => {
+    const r = describeObserverOutputShape([
+      { type: 'thinking', thinking: 'thought' },
+      { type: 'tool_use', name: 'bash', input: {} },
+    ]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['thinking', 'tool_use']);
+    expect(formatEmptyOutputReason(r)).toBe('non-text-blocks-only(thinking,tool_use)');
+  });
+
+  it('whitelist boundary: unknown type becomes "other" and output contains no input substring', () => {
+    const malicious = 'wat-<script>alert(1)</script>';
+    const r = describeObserverOutputShape([{ type: malicious }]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['other']);
+    const reason = formatEmptyOutputReason(r);
+    expect(reason).toBe('non-text-blocks-only(other)');
+    expect(reason).not.toContain(malicious);
+  });
+
+  it('totality: nested array [[]]] does not throw', () => {
+    expect(() => describeObserverOutputShape([[]])).not.toThrow();
+  });
+
+  it('totality: array with null element does not throw', () => {
+    expect(() => describeObserverOutputShape([null])).not.toThrow();
+    const r = describeObserverOutputShape([null]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: array of primitives does not throw', () => {
+    expect(() => describeObserverOutputShape([1, 'raw', true, undefined])).not.toThrow();
+    const r = describeObserverOutputShape([1, 'raw', true, undefined]);
+    expect(r.blockKinds).toEqual(['other']);
+  });
+
+  it('totality: array with plain object (no type) does not throw', () => {
+    expect(() => describeObserverOutputShape([{}])).not.toThrow();
+    const r = describeObserverOutputShape([{}]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: block with throwing type getter does not throw', () => {
+    const evil = Object.defineProperty({}, 'type', {
+      get() { throw new Error('boom'); },
+    });
+    expect(() => describeObserverOutputShape([evil])).not.toThrow();
+    const r = describeObserverOutputShape([evil]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: block with throwing text getter does not throw (Preservation Invariant 2)', () => {
+    const block = Object.defineProperties({}, {
+      type: { get() { return 'text'; }, enumerable: true },
+      text: { get() { throw new Error('boom'); }, enumerable: true },
+    });
+    expect(() => describeObserverOutputShape([block])).not.toThrow();
+    const r = describeObserverOutputShape([block]);
+    expect(r.blockKinds).toContain('text');
+    expect(r.shape).toBe('blank-text');
   });
 });

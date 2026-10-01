@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'bun:test';
 
-import { buildObservationPrompt } from '../../src/sdk/prompts.js';
+import { buildObservationPrompt, buildSummaryPrompt } from '../../src/sdk/prompts.js';
+
+const summaryMode = {
+  prompts: {
+    header_summary_checkpoint: 'summary checkpoint',
+    summary_instruction: 'summarize the session',
+    summary_context_label: 'last assistant message',
+    summary_format_instruction: 'return summary XML',
+    xml_summary_request_placeholder: 'request',
+    xml_summary_investigated_placeholder: 'investigated',
+    xml_summary_learned_placeholder: 'learned',
+    xml_summary_completed_placeholder: 'completed',
+    xml_summary_next_steps_placeholder: 'next steps',
+    xml_summary_notes_placeholder: 'notes',
+    summary_footer: 'summary footer',
+  },
+} as any;
 
 describe('buildObservationPrompt', () => {
   it('instructs the observer to avoid prose skip responses', () => {
@@ -15,7 +31,52 @@ describe('buildObservationPrompt', () => {
 
     expect(prompt).toContain('Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" />');
     expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
-    expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
+    expect(prompt).toContain('Never reply with an empty response, or with prose such as "Skipping", "No substantive tool executions"');
+    // The sentinel is the only no-op answer; anything else is re-asked once, then dropped.
+    expect(prompt).toContain('Only <observation> blocks or the <skip_summary /> sentinel complete this tool use');
+  });
+
+  it('explains redaction markers only when the observed tool use carries one', () => {
+    const base = {
+      id: 1,
+      tool_name: 'Bash',
+      tool_output: JSON.stringify({ output: 'ok' }),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    };
+    const plain = buildObservationPrompt({ ...base, tool_input: JSON.stringify({ command: 'ls' }) });
+    const redacted = buildObservationPrompt({
+      ...base,
+      tool_input: JSON.stringify({ command: "curl -H 'Authorization: Bearer <redacted type='openai_key'/>'" }),
+    });
+    expect(plain).not.toContain('<redacted type=\'...\'/>');
+    expect(redacted).toContain(`If you see a "<redacted type='...'/>" marker`);
+  });
+
+  it('explains redacted markers in summary prompts', () => {
+    const prompt = buildSummaryPrompt({
+      id: 1,
+      memory_session_id: 'memory-session-1',
+      project: '/repo',
+      user_prompt: 'summarize',
+      last_assistant_message: "Used <redacted type='openai_key'/> during setup.",
+    }, summaryMode);
+
+    expect(prompt).toContain("Used <redacted type='openai_key'/> during setup.");
+    expect(prompt).toContain(`If you see a "<redacted type='...'/>" marker`);
+    expect(prompt).toContain('do not infer the literal value or copy the marker itself into generated memory content.');
+  });
+
+  it('offers the skip sentinel, not silence, when there is nothing to summarize', () => {
+    const prompt = buildSummaryPrompt({
+      id: 1,
+      memory_session_id: 'memory-session-1',
+      project: '/repo',
+      user_prompt: 'summarize',
+      last_assistant_message: 'Nothing happened.',
+    }, summaryMode);
+
+    expect(prompt).toContain('reply with exactly <skip_summary reason="nothing durable" /> instead of an empty response or prose');
   });
 });
 
