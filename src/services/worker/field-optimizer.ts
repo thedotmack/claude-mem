@@ -23,7 +23,7 @@
 
 import { OBS_PROMPT_FIELD_MAX_CHARS, stripImagePayloadsFromField } from '../../sdk/prompts.js';
 import { logger } from '../../utils/logger.js';
-import { condenseInputMaxChars, FALLBACK_CONTEXT_WINDOW_TOKENS } from './context-window.js';
+import { condenseInputMaxTokens, estimateCondenseTokens } from './context-window.js';
 
 /**
  * A single bounded model call: condense `text` to at most `budgetChars`.
@@ -111,20 +111,23 @@ export async function optimizeField(
   context: { sessionDbId: number; field: string; toolName?: string },
   maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
   timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
-  maxInputChars: number = condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS),
+  contextWindowTokens?: number,
 ): Promise<unknown> {
   const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) {
     return value;
   }
 
-  if (raw.length > maxInputChars) {
+  const estimatedTokens = estimateCondenseTokens(raw);
+  const maxTokens = condenseInputMaxTokens(contextWindowTokens);
+  if (estimatedTokens > maxTokens) {
     logger.warn('SDK', 'Oversized field too large to condense; falling back to truncation', {
       sessionId: context.sessionDbId,
       field: context.field,
       toolName: context.toolName,
       originalChars: raw.length,
-      maxInputChars,
+      estimatedTokens,
+      maxTokens,
     });
     return value;
   }
@@ -221,7 +224,7 @@ export async function optimizeObservationFields(
   context: { sessionDbId: number; toolName?: string },
   maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
   timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
-  maxInputChars: number = condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS),
+  contextWindowTokens?: number,
 ): Promise<{ toolInput: unknown; toolOutput: unknown }> {
   // Inlined image payloads come out before anything measures or compresses the
   // field. `buildObservationPrompt` strips too, but it runs after this: a
@@ -236,9 +239,9 @@ export async function optimizeObservationFields(
   };
 
   const [toolInput, toolOutput] = await Promise.all([
-    optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs, maxInputChars),
+    optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs, contextWindowTokens),
     optimizeField(context.toolName === 'Edit' ? compactEditOutput(stripped, maxChars) : stripped.toolOutput,
-      compress, { ...context, field: 'outcome' }, maxChars, timeoutMs, maxInputChars),
+      compress, { ...context, field: 'outcome' }, maxChars, timeoutMs, contextWindowTokens),
   ]);
   return { toolInput, toolOutput };
 }

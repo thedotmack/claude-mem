@@ -25,7 +25,7 @@ import {
   resolveConversationMaxChars,
   windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { resolveContextWindowTokens, observationFieldMaxChars, condenseInputMaxChars } from './context-window.js';
+import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
@@ -495,7 +495,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
       fieldMaxChars,
       resolveFieldOptimizeTimeoutMs,
-      condenseInputMaxChars(session.observerContextWindowTokens),
+      session.observerContextWindowTokens,
     );
 
     const obsPrompt = buildObservationPromptParts({

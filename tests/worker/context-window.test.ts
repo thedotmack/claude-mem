@@ -3,7 +3,8 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import {
   resolveContextWindowTokens,
   observationFieldMaxChars,
-  condenseInputMaxChars,
+  condenseInputMaxTokens,
+  estimateCondenseTokens,
   FALLBACK_CONTEXT_WINDOW_TOKENS,
   MIN_CONTEXT_WINDOW_TOKENS,
   __resetContextWindowCacheForTests,
@@ -266,14 +267,45 @@ describe('observationFieldMaxChars', () => {
   });
 });
 
-describe('condenseInputMaxChars', () => {
-  it('gives a condense prompt half the window, in chars', () => {
-    expect(condenseInputMaxChars(32_768)).toBe(65_536);
-    expect(condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS)).toBe(262_144);
-    expect(condenseInputMaxChars(1_000_000)).toBe(2_000_000);
+describe('condenseInputMaxTokens', () => {
+  it('gives a condense prompt half the window', () => {
+    expect(condenseInputMaxTokens(32_768)).toBe(16_384);
+    expect(condenseInputMaxTokens(FALLBACK_CONTEXT_WINDOW_TOKENS)).toBe(65_536);
+    expect(condenseInputMaxTokens(1_000_000)).toBe(500_000);
   });
 
   it('uses the fallback window when none is known', () => {
-    expect(condenseInputMaxChars(undefined)).toBe(condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS));
+    expect(condenseInputMaxTokens(undefined)).toBe(condenseInputMaxTokens(FALLBACK_CONTEXT_WINDOW_TOKENS));
+  });
+});
+
+describe('estimateCondenseTokens', () => {
+  it('reads prose at about 4 chars per token', () => {
+    const prose = 'the quick brown fox jumps over the lazy dog '.repeat(2_000);
+    expect(estimateCondenseTokens(prose)).toBe(Math.ceil(prose.length / 4));
+  });
+
+  it('reads a space-less run at 2.5 chars per token', () => {
+    expect(estimateCondenseTokens('a'.repeat(100_000))).toBe(40_000);
+  });
+
+  it('reads JSON-escaped multi-line prose as prose', () => {
+    const escaped = JSON.stringify(JSON.stringify({ stdout: 'error: cannot open\nfile not found\n'.repeat(2_000) }));
+    // Only the `"{\"stdout\":\"error:` head is one dense run.
+    expect(estimateCondenseTokens(escaped)).toBeLessThan(escaped.length / 4 * 1.01);
+  });
+
+  it('puts mixed text in between', () => {
+    const mixed = JSON.stringify({
+      log: 'GET /api/v1/items 200 '.repeat(1_000),
+      blob: 'iVBORw0KGgoAAAANSUhEUg'.repeat(2_000),
+    }, null, 2);
+    const estimate = estimateCondenseTokens(mixed);
+    expect(estimate).toBeGreaterThan(Math.ceil(mixed.length / 4));
+    expect(estimate).toBeLessThan(Math.ceil(mixed.length / 2.5));
+  });
+
+  it('counts an empty string as nothing', () => {
+    expect(estimateCondenseTokens('')).toBe(0);
   });
 });

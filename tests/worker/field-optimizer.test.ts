@@ -7,7 +7,11 @@ import {
   type FieldCompressor,
 } from '../../src/services/worker/field-optimizer.js';
 import { logger } from '../../src/utils/logger.js';
-import { condenseInputMaxChars, FALLBACK_CONTEXT_WINDOW_TOKENS } from '../../src/services/worker/context-window.js';
+import {
+  condenseInputMaxTokens,
+  estimateCondenseTokens,
+  FALLBACK_CONTEXT_WINDOW_TOKENS,
+} from '../../src/services/worker/context-window.js';
 
 const CTX = { sessionDbId: 1, field: 'outcome', toolName: 'Read' };
 const MAX = 200;
@@ -146,19 +150,19 @@ describe('a field too large for the observer model\'s condense prompt skips the 
   // ~70k chars: over what a 32k-token window can take in one condense prompt,
   // well within what a 1M-token window can.
   const huge = { body: 'x'.repeat(70_000) };
+  const prose = (chars: number) => 'the quick brown fox jumps over the lazy dog '.repeat(Math.ceil(chars / 44)).slice(0, chars);
 
-  it('falls through to truncation without calling the model, and warns once with the sizes', async () => {
+  it('falls through to truncation without calling the model, and warns once with the token sizes', async () => {
     let calls = 0;
     const compress: FieldCompressor = async () => { calls++; return 'condensed'; };
-    const maxInputChars = condenseInputMaxChars(32_768);
     const warn = spyOn(logger, 'warn');
     try {
-      expect(await optimizeField(huge, compress, CTX, MAX, FIELD_OPTIMIZE_TIMEOUT_MS, maxInputChars)).toBe(huge);
+      expect(await optimizeField(huge, compress, CTX, MAX, FIELD_OPTIMIZE_TIMEOUT_MS, 32_768)).toBe(huge);
       expect(calls).toBe(0);
       expect(warn).toHaveBeenCalledTimes(1);
       const fields = warn.mock.calls[0][2] as Record<string, unknown>;
-      expect(fields.originalChars).toBe(JSON.stringify(huge, null, 2).length);
-      expect(fields.maxInputChars).toBe(maxInputChars);
+      expect(fields.estimatedTokens).toBe(estimateCondenseTokens(JSON.stringify(huge, null, 2)));
+      expect(fields.maxTokens).toBe(condenseInputMaxTokens(32_768));
     } finally {
       warn.mockRestore();
     }
@@ -168,29 +172,42 @@ describe('a field too large for the observer model\'s condense prompt skips the 
     let calls = 0;
     const compress: FieldCompressor = async () => { calls++; return 'condensed'; };
 
-    const out = await optimizeField(huge, compress, CTX, MAX, FIELD_OPTIMIZE_TIMEOUT_MS,
-      condenseInputMaxChars(1_000_000)) as string;
+    const out = await optimizeField(huge, compress, CTX, MAX, FIELD_OPTIMIZE_TIMEOUT_MS, 1_000_000) as string;
     expect(calls).toBe(1);
     expect(out).toContain('condensed');
   });
 
-  it('passes the window-derived ceiling through optimizeObservationFields', async () => {
+  it('judges a 1M-token window by tokens: dense 1.5M chars is not sent, prose 1.5M chars is', async () => {
+    // greptile's case: a dense payload under the 2M-char ceiling became a
+    // 1.02M-token request the model rejected.
+    let calls = 0;
+    const compress: FieldCompressor = async () => { calls++; return 'condensed'; };
+    const dense = { body: 'eyJhIjoxfQ'.repeat(150_000) };
+
+    expect(await optimizeField(dense, compress, CTX, MAX, FIELD_OPTIMIZE_TIMEOUT_MS, 1_000_000)).toBe(dense);
+    expect(calls).toBe(0);
+
+    const out = await optimizeField({ body: prose(1_500_000) }, compress, CTX, MAX, FIELD_OPTIMIZE_TIMEOUT_MS, 1_000_000);
+    expect(calls).toBe(1);
+    expect(String(out)).toContain('condensed');
+  });
+
+  it('passes the observer window through optimizeObservationFields', async () => {
     let calls = 0;
     const compress: FieldCompressor = async () => { calls++; return 'condensed'; };
     const fields = { toolInput: { small: 1 }, toolOutput: huge };
 
-    await optimizeObservationFields(fields, compress, { sessionDbId: 1 }, MAX, FIELD_OPTIMIZE_TIMEOUT_MS,
-      condenseInputMaxChars(32_768));
+    await optimizeObservationFields(fields, compress, { sessionDbId: 1 }, MAX, FIELD_OPTIMIZE_TIMEOUT_MS, 32_768);
     expect(calls).toBe(0);
-    await optimizeObservationFields(fields, compress, { sessionDbId: 1 }, MAX, FIELD_OPTIMIZE_TIMEOUT_MS,
-      condenseInputMaxChars(1_000_000));
+    await optimizeObservationFields(fields, compress, { sessionDbId: 1 }, MAX, FIELD_OPTIMIZE_TIMEOUT_MS, 1_000_000);
     expect(calls).toBe(1);
   });
 
-  it('defaults to the fallback window\'s ceiling when no window is known', async () => {
+  it('defaults to the fallback window when no window is known', async () => {
     let calls = 0;
     const compress: FieldCompressor = async () => { calls++; return 'condensed'; };
-    const over = { body: 'x'.repeat(condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS)) };
+    const maxTokens = condenseInputMaxTokens(FALLBACK_CONTEXT_WINDOW_TOKENS);
+    const over = { body: prose(maxTokens * 4 + 4_000) };
 
     expect(await optimizeField(over, compress, CTX, MAX)).toBe(over);
     expect(calls).toBe(0);
