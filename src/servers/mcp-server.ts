@@ -18,6 +18,7 @@ import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../sh
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -39,6 +40,15 @@ import {
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
 import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
+import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
+import { withCheckoutProjects } from './checkout-search-scope.js';
+
+/** This server's checkout (Claude Code starts it in the workspace), resolved once. */
+let workspaceCheckout: ProjectContext | null = null;
+function currentCheckout(): ProjectContext {
+  workspaceCheckout ??= getProjectContext(process.cwd());
+  return workspaceCheckout;
+}
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -232,6 +242,8 @@ function wrapHandler<Args>(
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -247,6 +259,8 @@ const handleObservationAdd = wrapHandler('observation_add', async (args: Observa
     projectId,
     content: args.content,
     ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: args.platformSource } : {}),
     ...(args.kind !== undefined ? { kind: args.kind } : {}),
     ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
   };
@@ -318,20 +332,20 @@ const handleObservationSearch = wrapHandler('observation_search', async (args: O
 
 interface ObservationContextArgs {
   projectId?: string;
-  query: string;
+  // Optional: omit for "recent" (recency-ordered) context instead of a
+  // relevance-ranked search (plan-24 step 4, #2991).
+  query?: string;
   limit?: number;
   platformSource?: string | null;
 }
 
 const handleObservationContext = wrapHandler('observation_context', async (args: ObservationContextArgs) => {
   const ctx = requireServerForObservationTool('observation_context');
-  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-    throw new Error('observation_context: "query" is required');
-  }
+  const hasQuery = typeof args?.query === 'string' && args.query.trim().length > 0;
   const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
   const request: ServerContextObservationsRequest = {
     projectId,
-    query: args.query,
+    ...(hasQuery ? { query: args.query } : {}),
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
@@ -438,10 +452,11 @@ async function ensureWorkerConnection(): Promise<boolean> {
 const tools = [
   {
     name: 'important_workflow',
-    description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
+    description: `LAYERED WORKFLOW (ALWAYS FOLLOW):
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
+4. get_tool_uses([IDs]) → Raw tool_input/tool_response, ONLY when the summary is not enough
 NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
@@ -466,7 +481,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
    Returns: Complete details (~500-1000 tokens/result)
 
-**Why:** 10x token savings. Never fetch full details without filtering first.`
+4. **Disclose raw tool I/O** - Last resort, when the observation summary does not answer the question
+   \`get_tool_uses(ids=[...])\`
+   Returns: The original tool_input / tool_response bodies (UNSUMMARIZED — can be thousands of tokens each)
+
+**Why:** 10x token savings. Never fetch full details without filtering first, and never reach for layer 4 before layer 3 answered.`
       }]
     })
   },
@@ -518,7 +537,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         };
         return formatJsonResult(await sb.client.searchObservations(request));
       }
-      return await callWorker('/api/search', { query: args });
+      return await callWorker('/api/search', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
@@ -556,6 +575,28 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
+    }
+  },
+  {
+    name: 'get_tool_uses',
+    description: 'Step 4 (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: ['number', 'string'] },
+          description: 'Tool-use ids to fetch (required). Numeric tool_uses.id or opaque tool_use_id strings.'
+        },
+        limit: { type: 'number', description: 'Max rows to return' },
+        project: { type: 'string', description: 'Filter by project name' },
+        contentSessionId: { type: 'string', description: 'Filter to one content session' }
+      },
+      required: ['ids'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorker('/api/tool-uses/batch', { body: args });
     }
   },
   {
@@ -638,16 +679,15 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_context',
-    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only.',
+    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only. Omit "query" for recency-ordered "recent" context instead of a relevance-ranked search.',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string' },
-        query: { type: 'string', description: 'Search query (required)' },
+        query: { type: 'string', description: 'Optional search query. Omit for recency-ordered recent context.' },
         platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
-        limit: { type: 'number', description: 'Max observations (default 10, max 50)' },
+        limit: { type: 'number', description: 'Max observations (default 10 with a query, 50 without; max 200)' },
       },
-      required: ['query'],
       additionalProperties: false,
     },
     handler: async (args: any) => handleObservationContext(args ?? {}),
@@ -691,7 +731,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['query']
     },
     handler: async (args: any) => {
-      const rootDir = resolve(args.path || process.cwd());
+      const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
       const result = await searchCodebase(rootDir, args.query, {
         maxResults: args.max_results || 20,
         filePattern: args.file_pattern
@@ -720,7 +760,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path', 'symbol_name']
     },
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
       if (unfolded) {
@@ -760,7 +800,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path']
     },
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
@@ -849,11 +889,12 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'rebuild_corpus',
-    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session.',
+    description: 'Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session. Refuses and keeps the existing corpus if the rebuild would drop a large share of observations, unless force is set.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Name of the corpus to rebuild' }
+        name: { type: 'string', description: 'Name of the corpus to rebuild' },
+        force: { type: 'boolean', description: 'Accept a rebuild that shrinks the corpus significantly instead of keeping the existing one' }
       },
       required: ['name'],
       additionalProperties: true

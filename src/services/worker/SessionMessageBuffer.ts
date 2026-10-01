@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import type { PendingMessage, PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
-const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+export const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
 
 interface BufferedMessage {
   id: number;
@@ -50,9 +50,8 @@ export class SessionMessageBuffer {
   /**
    * Append a message. Returns the assigned id, or 0 if suppressed as a
    * duplicate. Dedup matches the old partial UNIQUE(content_session_id,
-   * tool_use_id) index: any message that carries a toolUseId (observations and
-   * summarize jobs with an idempotency key) is deduped against others in the
-   * same session for this worker's lifetime.
+   * tool_use_id) index: only observations that carry a toolUseId are deduped,
+   * and only against others in the same session for this worker's lifetime.
    */
   enqueue(sessionDbId: number, message: PendingMessage): number {
     const toolUseId = message.toolUseId;
