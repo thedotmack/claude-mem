@@ -9,6 +9,7 @@ import {
   getOpenCodeAgentsMdPath,
   getOpenCodeConfigPath,
   installOpenCodeIntegration,
+  OPENCODE_OLD_CONTEXT_BLOCK_LEFT,
   registerOpenCodePluginInConfig,
   removeOpenCodeMcpReference,
   removeOpenCodePluginReference,
@@ -225,11 +226,18 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('writes no memory into the global AGENTS.md and never fetches it', async () => {
+  it('writes no memory into the global AGENTS.md and never calls the worker', async () => {
     expect(await installOpenCodeIntegration()).toBe(0);
 
     expect(existsSync(getOpenCodeAgentsMdPath())).toBe(false);
-    expect(requestedUrls.filter((url) => url.includes('/api/context/inject'))).toEqual([]);
+    expect(requestedUrls).toEqual([]);
+  });
+
+  it('reports an old block it could not remove instead of a clean success', async () => {
+    // A path that cannot be read as a file stands in for an unreadable AGENTS.md.
+    mkdirSync(getOpenCodeAgentsMdPath());
+
+    expect(await installOpenCodeIntegration()).toBe(OPENCODE_OLD_CONTEXT_BLOCK_LEFT);
   });
 
   it("strips the block an older install wrote and keeps the user's own instructions", async () => {

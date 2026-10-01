@@ -19,6 +19,14 @@ const OPENCODE_MCP_SERVER_KEY = 'claude-mem';
  */
 export const OPENCODE_MCP_REGISTRATION_INCOMPLETE = 2;
 
+/**
+ * Partial-install exit code: everything is installed, but the claude-mem block
+ * an older install left in the global AGENTS.md could not be removed, so
+ * OpenCode still shows that stale memory in every project. The CLI reports it
+ * as a warning with the remedy rather than a clean success.
+ */
+export const OPENCODE_OLD_CONTEXT_BLOCK_LEFT = 3;
+
 type OpenCodeConfig = {
   $schema?: string;
   plugin?: unknown;
@@ -403,7 +411,8 @@ export async function installOpenCodeIntegration(): Promise<number> {
 
   // The plugin injects each project's memory itself; a block an older install
   // left in the global AGENTS.md would show stale memory in every project.
-  if (!removeContextBlockFromAgentsMd()) {
+  const oldContextBlockRemoved = removeContextBlockFromAgentsMd();
+  if (!oldContextBlockRemoved) {
     logger.warn('OPENCODE', 'Could not remove the old claude-mem block from the global AGENTS.md during install', {
       path: getOpenCodeAgentsMdPath(),
     });
@@ -421,6 +430,15 @@ Next steps:
   2. Restart OpenCode to load the plugin
 `);
     return OPENCODE_MCP_REGISTRATION_INCOMPLETE;
+  }
+
+  if (!oldContextBlockRemoved) {
+    console.warn(`
+OpenCode integration installed, but the old claude-mem memory block in
+${getOpenCodeAgentsMdPath()} could not be removed (see above).
+OpenCode shows that stale block in every project until it is deleted.
+`);
+    return OPENCODE_OLD_CONTEXT_BLOCK_LEFT;
   }
 
   console.log(`
