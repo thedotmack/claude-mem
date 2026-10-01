@@ -13,6 +13,9 @@ import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost } from '../middleware.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
+import { mergeProjectInto } from '../../../infrastructure/ProjectMerge.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
@@ -112,6 +115,12 @@ const jsonStringifyFields = (fields: readonly string[]) =>
     return normalized ?? record;
   };
 
+const projectMergeSchema = z.object({
+  from: z.string().trim().min(1),
+  into: z.string().trim().min(1),
+  dryRun: z.boolean().optional(),
+});
+
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
   summaries: z.array(z.preprocess(jsonStringifyFields(SUMMARY_JSON_FIELDS), z.unknown())).optional(),
@@ -204,6 +213,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
+    app.post('/api/projects/merge', requireLocalhost, validateBody(projectMergeSchema), this.handleProjectMerge.bind(this));
     app.get('/api/sessions', this.handleGetSessions.bind(this));
     app.delete('/api/sessions/:platformSource/:contentSessionId', this.handleDeleteSession.bind(this));
 
@@ -689,6 +699,21 @@ export class DataRoutes extends BaseRouteHandler {
 
     return { offset, limit, project, platformSource, contentSessionId };
   }
+
+  /**
+   * `claude-mem project merge <from> <into>` runs here so its Chroma patch can
+   * land: this process holds the Chroma writer lock, and a merge run in the CLI
+   * process was refused by it (gate P2-4). The merge re-keys memory on every
+   * synced device, so other localhost pages may not trigger it.
+   */
+  private handleProjectMerge = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Project merges from a different localhost origin are not allowed' });
+      return;
+    }
+    const { from, into, dryRun } = req.body as z.infer<typeof projectMergeSchema>;
+    res.json(await mergeProjectInto({ from, into, dryRun: dryRun ?? false }));
+  });
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
     const { sessions, summaries, observations, prompts } = req.body;
