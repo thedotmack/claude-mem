@@ -7,6 +7,7 @@ import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
 import { extractLastMessage } from '../src/shared/transcript-parser.js';
 import {
   buildAntigravityHooksConfig,
+  describeAntigravityHooks,
   mergeHooksIntoConfig,
   removeClaudeMemHooks,
 } from '../src/services/integrations/AntigravityCliHooksInstaller.js';
@@ -205,6 +206,34 @@ describe('AntigravityCliHooksInstaller - merge/uninstall migrate and preserve', 
     expect(cleaned.PreToolUse[0].hooks).toHaveLength(1);
     expect(cleaned.PreToolUse[0].hooks[0].name).toBe('other');
     expect(removed).toBe(3);
+  });
+});
+
+describe('AntigravityCliHooksInstaller - status sees leftover legacy hooks (issue #4196)', () => {
+  const BUN = '/usr/local/bin/bun';
+  const WORKER = '/home/u/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs';
+
+  it('counts legacy claude-mem handlers next to a current install, without touching the config', () => {
+    const config = {
+      ...buildAntigravityHooksConfig(BUN, WORKER),
+      PreToolUse: [{ matcher: '*', hooks: [{ name: 'claude-mem', command: 'old' }, { name: 'other', command: 'keep' }] }],
+      Stop: [{ matcher: '*', hooks: [{ name: 'claude-mem', command: 'old', timeout: 10000 }] }],
+    } as unknown as Parameters<typeof describeAntigravityHooks>[0];
+
+    const { installedEvents, legacyHandlerCount } = describeAntigravityHooks(config);
+
+    expect(installedEvents).toEqual(['PreInvocation', 'PreToolUse', 'PostToolUse', 'PostInvocation', 'Stop']);
+    expect(legacyHandlerCount).toBe(2);
+    expect((config as Record<string, any>).PreToolUse[0].hooks).toHaveLength(2);
+    expect((config as Record<string, any>).Stop).toHaveLength(1);
+  });
+
+  it("does not count another tool's top-level event arrays as claude-mem leftovers", () => {
+    const config = {
+      Stop: [{ matcher: '*', hooks: [{ name: 'other', command: './other.sh' }] }],
+    } as unknown as Parameters<typeof describeAntigravityHooks>[0];
+
+    expect(describeAntigravityHooks(config)).toEqual({ installedEvents: [], legacyHandlerCount: 0 });
   });
 });
 

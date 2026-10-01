@@ -100,8 +100,9 @@ const RULES_CONTEXT_PATH = path.join(homedir(), '.agents', 'rules', 'claude-mem-
 const HOOK_NAME = 'claude-mem';
 // agy hook timeouts are in SECONDS ("Execution timeout in seconds. Defaults to
 // 30"). The pre-#4196 installer wrote 10000 here as if it were milliseconds,
-// which agy read as ~2.7 hours instead of 10 seconds.
-const HOOK_TIMEOUT_SECONDS = 30;
+// which agy read as ~2.7 hours instead of 10 seconds. The limit itself lives in
+// host-hook-limits.ts, where the server-runtime SessionStart budget reads it.
+const HOOK_TIMEOUT_SECONDS = ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000;
 // PreToolUse/PostToolUse are the only events that use the grouped
 // { matcher, hooks } shape; the rest are flat handler arrays (agy 1.2.13
 // builtin docs/hooks.md, "Supported Event Types").
@@ -632,6 +633,29 @@ export function removeClaudeMemHooks(
   return { config: result, removed };
 }
 
+// What `status` reports for a hooks.json: the events the named `claude-mem`
+// hook covers, and how many claude-mem handlers a pre-#4196 install left under
+// top-level event keys. Other tools' entries there are not counted, because
+// re-running install only migrates claude-mem's. Exported for tests (#4196).
+export function describeAntigravityHooks(
+  config: AntigravityHooksConfig,
+): { installedEvents: string[]; legacyHandlerCount: number } {
+  const installedEvents: string[] = [];
+  const namedHook = config[HOOK_NAME];
+  if (namedHook && typeof namedHook === 'object' && !Array.isArray(namedHook)) {
+    for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
+      const value = (namedHook as Record<string, unknown>)[event];
+      if (Array.isArray(value) && value.length > 0) {
+        installedEvents.push(event);
+      }
+    }
+  }
+
+  // stripLegacyEventHooks replaces top-level keys on the copy only.
+  const legacyHandlerCount = stripLegacyEventHooks({ ...config });
+  return { installedEvents, legacyHandlerCount };
+}
+
 export function checkAntigravityCliHooksStatus(): number {
   console.log('\nClaude-Mem Antigravity CLI Status\n');
 
@@ -652,26 +676,10 @@ export function checkAntigravityCliHooksStatus(): number {
     return 0;
   }
 
-  const installedEvents: string[] = [];
-  const namedHook = hooksConfig[HOOK_NAME];
-  if (namedHook && typeof namedHook === 'object' && !Array.isArray(namedHook)) {
-    for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
-      const value = (namedHook as Record<string, unknown>)[event];
-      if (Array.isArray(value) && value.length > 0) {
-        installedEvents.push(event);
-      }
-    }
-  }
-
-  // Pre-#4196 installs used top-level event arrays; detect them so users get a
-  // migration hint instead of a bare "not installed".
-  const hasLegacyLayout = Object.values(hooksConfig).some(value => Array.isArray(value));
+  const { installedEvents, legacyHandlerCount } = describeAntigravityHooks(hooksConfig);
 
   if (installedEvents.length === 0) {
     console.log('Hooks: Not installed');
-    if (hasLegacyLayout) {
-      console.log('  (Legacy pre-#4196 event-keyed hooks found — re-run install to migrate.)');
-    }
     console.log('Run: claude-mem install --ide antigravity\n');
   } else {
     console.log(`Hooks config: ${GEMINI_HOOKS_CONFIG_PATH}`);
@@ -681,6 +689,13 @@ export function checkAntigravityCliHooksStatus(): number {
       const internalEvent = ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT[event] ?? 'unknown';
       console.log(`  ${event} → ${internalEvent}`);
     }
+  }
+
+  // A pre-#4196 install leaves claude-mem under top-level event keys, which agy
+  // ignores. Point at the migration whenever any are left, including next to a
+  // current install.
+  if (legacyHandlerCount > 0) {
+    console.log(`Legacy hooks: ${legacyHandlerCount} pre-#4196 event-keyed claude-mem hook(s) found. Re-run install to migrate them.\n`);
   }
 
   if (existsSync(GEMINI_MD_PATH)) {
