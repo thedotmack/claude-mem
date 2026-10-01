@@ -3,6 +3,7 @@ import { getCredential } from '../../shared/EnvManager.js';
 import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
+import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl, isCmemMemoryKey, isKeyAllowedForEndpoint } from '../../shared/cmem-gateway.js';
@@ -362,6 +363,11 @@ export interface OpenRouterConfig {
   appName?: string;
   /** Per-call output mode for the wrap-up; never a persisted setting. */
   plainText?: boolean;
+  /**
+   * CLAUDE_MEM_OPENROUTER_EXTRA_BODY, parsed (src/shared/openrouter-extra-body.ts).
+   * Never set for the cmem gateway.
+   */
+  extraBody?: Record<string, unknown>;
 }
 
 function hasProcessEnvOverride(key: string): boolean {
@@ -423,10 +429,12 @@ export function buildOpenRouterRequestBody(input: {
   plainText?: boolean;
   /** CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS; the #4003 retry resends it as max_completion_tokens. */
   maxOutputTokens?: number;
+  /** CLAUDE_MEM_OPENROUTER_EXTRA_BODY; merged last, but never to the cmem gateway. */
+  extraBody?: Record<string, unknown>;
 }): Record<string, unknown> {
   const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
-  return {
+  return withOpenRouterExtraBody({
     ...(useFallbacks
       ? { models: [input.model, ...input.fallbackModels] }
       : { model: input.model }),
@@ -444,7 +452,21 @@ export function buildOpenRouterRequestBody(input: {
     // Only sent to openrouter.ai — strict custom gateways may reject
     // unknown body fields.
     ...(isOpenRouter ? { usage: { include: true } } : {}),
-  };
+  }, input.extraBody, input.apiUrl, input.plainText);
+}
+
+/** The CLAUDE_MEM_OPENROUTER_EXTRA_BODY value a warning was last logged for: once per value, not per status poll. */
+let lastWarnedExtraBody: string | null = null;
+
+/** The usable extra body for a non-gateway endpoint, warning once about an unusable one. */
+function resolveExtraBody(raw: unknown): Record<string, unknown> | undefined {
+  const { extraBody, warning } = parseOpenRouterExtraBody(raw);
+  const rawText = typeof raw === 'string' ? raw : JSON.stringify(raw ?? '');
+  if (warning && lastWarnedExtraBody !== rawText) {
+    lastWarnedExtraBody = rawText;
+    logger.warn('SDK', warning);
+  }
+  return extraBody;
 }
 
 /** Endpoint a mismatched key was last withheld from, so dispatch logs it once, not per call. */
@@ -550,7 +572,20 @@ export function resolveOpenRouterConfig(
       : settings.CLAUDE_MEM_OPENROUTER_API_KEYS || getCredential('OPENROUTER_API_KEYS') || '',
   ).filter(key => !isCmemMemoryKey(key));
 
-  return { apiKey: apiKey || apiKeys[0] || '', apiKeys, model, fallbackModels, apiUrl, siteUrl, appName };
+  // Off the gateway only: the gateway sets its own request policy on traffic
+  // it pays for (the request body itself drops it there too).
+  const extraBody = resolveExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+
+  return {
+    apiKey: apiKey || apiKeys[0] || '',
+    apiKeys,
+    model,
+    fallbackModels,
+    apiUrl,
+    siteUrl,
+    appName,
+    ...(extraBody ? { extraBody } : {}),
+  };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -615,7 +650,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter' },
       ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
         history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
-        signal, config.plainText, perAttemptTimeoutMs,
+        signal, config.plainText, perAttemptTimeoutMs, config.extraBody,
       ),
     );
   }
@@ -633,8 +668,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     attemptSignal: AbortSignal,
     maxOutputTokens: number,
     plainText?: boolean,
+    extraBody?: Record<string, unknown>,
   ): Promise<Response> {
-    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens });
+    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody });
     return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
@@ -660,6 +696,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     signal?: AbortSignal,
     plainText?: boolean,
     perAttemptTimeoutMs?: number,
+    extraBody?: Record<string, unknown>,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -682,7 +719,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
