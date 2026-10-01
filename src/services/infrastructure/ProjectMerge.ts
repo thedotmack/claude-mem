@@ -3,7 +3,8 @@ import { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { ChromaSync, type MergedIntoProjectTarget } from '../sync/ChromaSync.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
-import { paths } from '../../shared/paths.js';
+import { resolveDbPath } from '../../shared/paths.js';
+import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
 export interface ProjectMergeResult {
@@ -60,7 +61,9 @@ export async function mergeProjectInto(opts: {
     dryRun,
   };
 
-  const dbPath = path.join(opts.dataDirectory ?? paths.dataDir(), 'claude-mem.db');
+  // Resolved at call time, like resolveDbPath's other callers: the same
+  // database for the worker and the CLI, and one a test can point elsewhere.
+  const dbPath = opts.dataDirectory ? path.join(opts.dataDirectory, 'claude-mem.db') : resolveDbPath();
   if (!existsSync(dbPath)) {
     throw new Error(`No claude-mem database at ${dbPath}`);
   }
@@ -125,4 +128,50 @@ export async function mergeProjectInto(opts: {
 
   logger.info('SYSTEM', 'Project merge finished', { ...result });
   return result;
+}
+
+/** A large merge plus its Chroma patch can take a while; the CLI waits for it. */
+const WORKER_MERGE_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * `claude-mem project merge` from the CLI. The running worker holds the Chroma
+ * writer lock, so a merge run in this process could update SQLite but never
+ * Chroma: with a worker up, the merge runs inside it (POST /api/projects/merge).
+ * This process runs it only when no worker answers (it is then the only
+ * writer), or when the worker is an older one without that route. Any other
+ * worker failure is raised rather than retried here, so a merge never runs
+ * twice against two writers (gate P2-4).
+ */
+export async function runProjectMergeCommand(opts: {
+  from: string;
+  into: string;
+  dryRun?: boolean;
+  /** Data directory for the in-process fallback (tests). */
+  dataDirectory?: string;
+}): Promise<ProjectMergeResult & { ranIn: 'worker' | 'cli' }> {
+  const dryRun = opts.dryRun ?? false;
+  let response: Response | null = null;
+  try {
+    response = await workerHttpRequest('/api/projects/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: opts.from, into: opts.into, dryRun }),
+      timeoutMs: WORKER_MERGE_TIMEOUT_MS,
+    });
+  } catch (error: unknown) {
+    logger.info('SYSTEM', 'No worker answered; running the project merge in this process', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  if (response && response.status !== 404) {
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(`The worker refused the project merge (HTTP ${response.status}): ${body}`);
+    }
+    return { ...(JSON.parse(body) as ProjectMergeResult), ranIn: 'worker' };
+  }
+
+  const result = await mergeProjectInto({ from: opts.from, into: opts.into, dryRun, dataDirectory: opts.dataDirectory });
+  return { ...result, ranIn: 'cli' };
 }
