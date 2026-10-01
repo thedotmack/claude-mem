@@ -7,6 +7,7 @@ import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import {
   createCorsMiddleware,
+  createForeignPageDeleteGuard,
   createMiddleware,
   createRemoteReadOnlyGuard,
   createWorkerHostGuard,
@@ -267,6 +268,9 @@ export class Server {
   private setupCors(): void {
     if (this.options.originPolicy) {
       this.app.use(createWorkerHostGuard(this.options.originPolicy));
+      // Every DELETE (memories, sessions, corpora, and any route added later),
+      // not a list of the ones someone remembered.
+      this.app.use(createForeignPageDeleteGuard(this.options.originPolicy));
     }
     this.app.use(createCorsMiddleware(this.options.originPolicy));
   }
