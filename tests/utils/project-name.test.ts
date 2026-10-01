@@ -560,6 +560,15 @@ describe('parseOriginUrlToSlug — CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote', (
     expect(parseOriginUrlToSlug('code.example.com:acme/widgets')).toBe('acme/widgets');
   });
 
+  // Gate P2-16: Azure DevOps puts `_git` between the project and the
+  // repository; it names the URL scheme, not the repository.
+  it('skips the _git segment of Azure DevOps URLs', () => {
+    expect(parseOriginUrlToSlug('https://dev.azure.com/contoso/payments/_git/api')).toBe('payments/api');
+    expect(parseOriginUrlToSlug('https://contoso@dev.azure.com/contoso/payments/_git/api')).toBe('payments/api');
+    expect(parseOriginUrlToSlug('https://contoso.visualstudio.com/DefaultCollection/payments/_git/api')).toBe('payments/api');
+    expect(parseOriginUrlToSlug('git@ssh.dev.azure.com:v3/contoso/payments/api')).toBe('payments/api');
+  });
+
   it('returns a single segment when that is all there is', () => {
     expect(parseOriginUrlToSlug('git@github.com:solorepo.git')).toBe('solorepo');
   });
