@@ -461,6 +461,7 @@ export function buildOpenRouterRequestBody(input: {
 }): Record<string, unknown> {
   const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
+  const typedReasoning = isOpenRouter && !input.plainText && input.reasoningEffort !== undefined;
   return withOpenRouterExtraBody({
     ...(useFallbacks
       ? { models: [input.model, ...input.fallbackModels] }
@@ -478,14 +479,23 @@ export function buildOpenRouterRequestBody(input: {
     // The reasoning-effort setting, for openrouter.ai only: a custom gateway's
     // strict schema rejects the field, and the cmem gateway sets its own
     // reasoning policy. A wrap-up keeps its own control above.
-    ...(isOpenRouter && !input.plainText && input.reasoningEffort
+    ...(typedReasoning && input.reasoningEffort
       ? { reasoning: reasoningControl(input.reasoningEffort) }
       : {}),
     // Ask openrouter.ai for usage accounting (token counts + cost).
     // Only sent to openrouter.ai — strict custom gateways may reject
     // unknown body fields.
     ...(isOpenRouter ? { usage: { include: true } } : {}),
-  }, input.extraBody, input.apiUrl, input.plainText);
+  }, typedReasoning ? withoutReasoning(input.extraBody) : input.extraBody, input.apiUrl, input.plainText);
+}
+
+/**
+ * The extra body without its `reasoning` field: the typed
+ * CLAUDE_MEM_OPENROUTER_REASONING_EFFORT setting decides reasoning when set.
+ */
+function withoutReasoning(extraBody: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!extraBody || !('reasoning' in extraBody)) return extraBody;
+  return Object.fromEntries(Object.entries(extraBody).filter(([key]) => key !== 'reasoning'));
 }
 
 /** The CLAUDE_MEM_OPENROUTER_EXTRA_BODY value a warning was last logged for: once per value, not per status poll. */
@@ -609,6 +619,10 @@ export function resolveOpenRouterConfig(
   // it pays for (the request body itself drops it there too).
   const extraBody = resolveExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
   const reasoningEffort = resolveReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
+  if (reasoningEffort && extraBody && 'reasoning' in extraBody && !warnedReasoningOverlap) {
+    warnedReasoningOverlap = true;
+    logger.warn('SDK', 'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT is set, so the reasoning field in CLAUDE_MEM_OPENROUTER_EXTRA_BODY is ignored');
+  }
 
   return {
     apiKey: apiKey || apiKeys[0] || '',
@@ -625,6 +639,9 @@ export function resolveOpenRouterConfig(
 
 /** The reasoning-effort value a warning was last logged for: once per value, not per status poll. */
 let lastWarnedReasoningEffort: string | null = null;
+
+/** Whether the effort-overrides-extra-body warning was logged (once per process). */
+let warnedReasoningOverlap = false;
 
 /** The configured effort, warning once about a value that is not one. Never throws. */
 function resolveReasoningEffort(raw: unknown): OpenRouterReasoningEffort | undefined {

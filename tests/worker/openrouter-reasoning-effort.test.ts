@@ -44,6 +44,26 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
     }
   });
 
+  it('wins over a reasoning field in CLAUDE_MEM_OPENROUTER_EXTRA_BODY, keeping the rest of it', () => {
+    const body = buildOpenRouterRequestBody({
+      ...base,
+      apiUrl: OPENROUTER_URL,
+      reasoningEffort: 'low',
+      extraBody: { reasoning: { effort: 'high' }, provider: { sort: 'price' } },
+    });
+    expect(body.reasoning).toEqual({ effort: 'low' });
+    expect(body.provider).toEqual({ sort: 'price' });
+  });
+
+  it('leaves the extra body\'s reasoning alone when the typed setting is unset', () => {
+    const body = buildOpenRouterRequestBody({
+      ...base,
+      apiUrl: OPENROUTER_URL,
+      extraBody: { reasoning: { enabled: false } },
+    });
+    expect(body.reasoning).toEqual({ enabled: false });
+  });
+
   it('never overrides a Telegram wrap-up\'s own reasoning control', () => {
     const body = buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, plainText: true, reasoningEffort: 'high' });
     expect(body.reasoning).toEqual({ enabled: false });
