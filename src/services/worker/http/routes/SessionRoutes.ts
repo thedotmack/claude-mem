@@ -694,6 +694,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
+        const normalizedReason = normalizeAbortReason(reason);
         // Quota surfaced as assistant prose — or Claude's proactive usage guard
         // — aborts without throwing, so it never reaches the catch; book it
         // here, arming the breaker too, or the prose path keeps the
@@ -701,7 +702,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // A thrown classified error was already booked by the catch, once: it
         // is never re-booked here as a spent allowance (a rate limit is not
         // one), nor given a breaker over a cmem fallback's window.
-        if (normalizeAbortReason(reason) === 'quota' && !failureBooked) {
+        if (normalizedReason === 'quota' && !failureBooked) {
           const quotaMessage = 'Provider reported the inference allowance exhausted';
           recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
           // Quota returned as assistant prose never throws, so it never reaches
@@ -710,6 +711,25 @@ export class SessionRoutes extends BaseRouteHandler {
           // class: the allowance is spent, no observation will ever store, and
           // the user is told nothing.
           recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
+        }
+        // A signed-out Claude observer answers with the CLI's own prose ("Not
+        // logged in · Please run /login"). ResponseProcessor resets the batch to
+        // pending and aborts with 'auth:observer_text' rather than throwing, so
+        // it never reaches the .catch above. Without this the observer-health
+        // ledger stays green through a full auth outage — every observation is
+        // dropped, yet /api/health and the session-start warning report healthy
+        // (#4150). Only that Claude prose path is booked here: a classified auth
+        // error is booked by the .catch with the provider's own words, and the
+        // cmem gateway's key_invalid is the trial-expiry fallback, not an outage.
+        // It is booked as the refused credential it is (auth_invalid), so the
+        // SessionStart banner shows at once with the /login remedy rather than
+        // waiting out the failure threshold and then offering a restart.
+        if (reason === 'auth:observer_text' && provider === 'claude' && !failureBooked) {
+          recordObserverFailure(provider, {
+            message: 'Claude Code reported the observer as signed out',
+            kind: 'auth_invalid',
+            action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
+          });
         }
         if (reason !== null) {
           // Abort accounting lives HERE, where the reason is consumed — the
@@ -720,7 +740,7 @@ export class SessionRoutes extends BaseRouteHandler {
             outcome: 'aborted',
             provider,
             model: session.lastModelId ?? 'unknown',
-            abort_reason: normalizeAbortReason(reason),
+            abort_reason: normalizedReason,
             hook: session.lastGeneratorSource,
             ide: session.platformSource,
             observed_model: session.observedModel,
