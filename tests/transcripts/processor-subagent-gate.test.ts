@@ -7,16 +7,25 @@ import { CODEX_SUBAGENT_SOURCE } from '../../src/services/transcripts/config.js'
 import * as realSessionInit from '../../src/cli/handlers/session-init.js';
 import * as realIngest from '../../src/services/worker/http/shared.js';
 import * as realProjectName from '../../src/utils/project-name.js';
+import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 
 const realSessionInitSnapshot = { ...realSessionInit };
 const realIngestSnapshot = { ...realIngest };
 const realProjectNameSnapshot = { ...realProjectName };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 afterAll(() => {
   mock.module('../../src/cli/handlers/session-init.js', () => realSessionInitSnapshot);
   mock.module('../../src/services/worker/http/shared.js', () => realIngestSnapshot);
   mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
+
+// A subagent turn's session_end queues a summary; never reach a live worker from a test.
+mock.module('../../src/shared/worker-utils.js', () => ({
+  ...realWorkerUtilsSnapshot,
+  ensureWorkerRunning: async () => false,
+}));
 
 const sessionInitIds: string[] = [];
 const observationSessionIds: string[] = [];
@@ -171,6 +180,34 @@ describe('TranscriptEventProcessor subagent gating', () => {
 
     expect(sessionInitIds).toEqual(['s1']);
     expect(observationSessionIds).toEqual(['s1']);
+  });
+
+  // R4-12: Codex ends a session per turn (turn_completed, task_complete) but
+  // marks the rollout only on its first line. Forgetting the marker with the
+  // rest of the turn state dropped every later turn of the same subagent.
+  it('keeps capturing a subagent rollout after its first turn ends', async () => {
+    const watch = makeWatch({ subagentOnly: true, subagentSource });
+    await processor.processEntry(metaEntry(SUBAGENT_SOURCE), watch, schemaWithEnd);
+    await processor.processEntry(userEntry, watch, schemaWithEnd);
+    await processor.processEntry(obsEntry, watch, schemaWithEnd);
+    await processor.processEntry(endEntry, watch, schemaWithEnd);
+    await processor.processEntry(userEntry, watch, schemaWithEnd);
+    await processor.processEntry(obsEntry, watch, schemaWithEnd);
+
+    expect(sessionInitIds).toEqual(['s1', 's1']);
+    expect(observationSessionIds).toEqual(['s1', 's1']);
+  });
+
+  it('still suppresses a top-level rollout after its first turn ends', async () => {
+    const watch = makeWatch({ subagentOnly: true, subagentSource });
+    await processor.processEntry(metaEntry('cli'), watch, schemaWithEnd);
+    await processor.processEntry(userEntry, watch, schemaWithEnd);
+    await processor.processEntry(endEntry, watch, schemaWithEnd);
+    await processor.processEntry(userEntry, watch, schemaWithEnd);
+    await processor.processEntry(obsEntry, watch, schemaWithEnd);
+
+    expect(sessionInitIds).toEqual([]);
+    expect(observationSessionIds).toEqual([]);
   });
 
   it('drops a suppressed top-level session from the map on session_end', async () => {
