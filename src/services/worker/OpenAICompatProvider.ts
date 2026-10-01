@@ -301,6 +301,18 @@ export function classifyOpenAICompatError(input: {
   });
 }
 
+/**
+ * The reply without a leading `<think>…</think>` block. Reasoning models on an
+ * OpenAI-compatible endpoint (MiniMax's M2 family, DeepSeek R1 or Qwen3 on
+ * Ollama and vLLM) can put their thinking inline at the start of `content`.
+ * It is not the answer: kept, it lands in the conversation and is re-sent with
+ * every later request. Only a closed block at the very start is removed, so an
+ * answer that merely mentions the tag is left alone.
+ */
+export function stripLeadingThinkBlock(content: string): string {
+  return content.replace(/^\s*<think>[\s\S]*?<\/think>\s*/i, '');
+}
+
 /** Endpoint a key was last withheld from, so a status poll logs it once, not per read. */
 let lastWithheldKeyUrl: string | null = null;
 
@@ -529,8 +541,9 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     });
 
     const choice = data.choices?.[0];
-    // Text blocks only: reasoning and tool-call arguments are never the answer.
-    const content = assistantText(choice?.message?.content);
+    // Text blocks only: reasoning and tool-call arguments are never the answer,
+    // and neither is a leading <think> block in the text itself.
+    const content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
     const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
     if (finishReason === 'length') {
       logger.warn('SDK', `${label} reply was cut off at the output-token limit`, {

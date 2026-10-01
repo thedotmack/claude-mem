@@ -19,6 +19,7 @@ import {
   isWorkerUnavailableError,
 } from '../shared/worker-utils.js';
 import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
+import { canonicalIntegrationId } from '../shared/integration-id.js';
 import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
@@ -73,7 +74,8 @@ async function executeHookPipeline(
   return exitCode;
 }
 
-export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
+export async function hookCommand(rawPlatform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
+  const platform = canonicalIntegrationId(rawPlatform);
   resetHookIoState();
   resetWorkerUnreachableState();
   // Register the hook event for the threshold-gated hook_failed telemetry
