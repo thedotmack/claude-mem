@@ -78,6 +78,7 @@ All free models support:
 | `CLAUDE_MEM_OPENROUTER_BASE_URL` | string | — | Optional: custom OpenAI-compatible base URL (see [Custom OpenAI-compatible gateways](#custom-openai-compatible-gateways)) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
+| `CLAUDE_MEM_OPENROUTER_EXTRA_BODY` | JSON object | — | Optional: extra request fields (see [Extra request fields](#extra-request-fields)). Settings file or environment only |
 
 ### Using the Settings UI
 
@@ -150,6 +151,23 @@ For example, IO Intelligence:
 ```
 
 Model ids are org/name pairs from the [IO Intelligence model list](https://api.intelligence.io.solutions/api/v1/models), for example `deepseek-ai/DeepSeek-R1-0528` or `zai-org/GLM-4.6`. A trailing slash on the base URL is fine; `/chat/completions` is appended automatically.
+
+### Extra request fields
+
+`CLAUDE_MEM_OPENROUTER_EXTRA_BODY` merges a JSON object into every request, for provider-specific fields claude-mem does not set itself. The common case is a reasoning model that spends the whole output budget thinking and answers with nothing. Turn its reasoning off:
+
+```json
+{
+  "CLAUDE_MEM_OPENROUTER_EXTRA_BODY": { "reasoning": { "enabled": false } }
+}
+```
+
+As an environment variable it is the same object as a string: `CLAUDE_MEM_OPENROUTER_EXTRA_BODY='{"reasoning":{"enabled":false}}'`. A custom gateway may use its vendor's own field instead, for example `{"thinking":{"type":"disabled"}}`.
+
+- The value must be a JSON object. Anything else is ignored with a warning in the worker log.
+- It cannot replace `model`, `models`, `messages`, `stream`, `max_tokens` or `max_completion_tokens`. Those fields are dropped with a warning. Set the output cap with `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS`.
+- It is never sent to the claude-mem observer.
+- Set it in `~/.claude-mem/settings.json` or the environment. The settings UI and API do not write it.
 
 ## Model Selection Guide
 
