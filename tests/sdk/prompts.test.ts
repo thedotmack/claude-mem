@@ -354,3 +354,53 @@ describe('buildObservationPrompt strips the MCP image block shape', () => {
     expect(prompt).not.toContain('image data withheld from the observer');
   });
 });
+
+describe('buildObservationPrompt elides an inlined data:image URL wherever it sits', () => {
+  // A browser tool can return a screenshot as a plain string field of an
+  // ordinary object — no content block around it.
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+
+  function build(toolOutput: unknown) {
+    return buildObservationPrompt({
+      id: 14,
+      tool_name: 'mcp__cua_repl__js',
+      tool_input: JSON.stringify({}),
+      tool_output: JSON.stringify(toolOutput),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+  }
+
+  it('replaces the payload with a marker that keeps the mime type and byte count', () => {
+    const prompt = build({
+      _meta: { 'codex/toolSurface': { screenshot: {
+        pageUrl: 'http://127.0.0.1:8765/', tabId: '1', url: 'data:image/jpeg;base64,' + BASE64,
+      } } },
+    });
+
+    expect(/A{200,}/.test(prompt)).toBe(false);
+    expect(prompt).toContain(`data:image/jpeg;base64,<elided ${BASE64.length} bytes>`);
+    expect(prompt).toContain('http://127.0.0.1:8765/');
+    expect(prompt).toContain('"tabId": "1"');
+  });
+
+  it('elides an uppercase DATA: URL in a string the same way', () => {
+    const prompt = build({ shots: ['DATA:image/png;base64,' + BASE64] });
+
+    expect(/A{200,}/.test(prompt)).toBe(false);
+    expect(prompt).toContain(`<elided ${BASE64.length} bytes>`);
+  });
+
+  it('leaves a small data URL alone — an icon is cheap and may carry signal', () => {
+    const icon = 'data:image/png;base64,' + 'B'.repeat(100);
+    const prompt = build({ favicon: icon });
+
+    expect(prompt).toContain(icon);
+  });
+
+  it('leaves a data URL that is not an image alone', () => {
+    const prompt = build({ note: 'data:text/plain;base64,' + 'C'.repeat(2_000) });
+
+    expect(/C{2000}/.test(prompt)).toBe(true);
+  });
+});

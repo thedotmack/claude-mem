@@ -176,7 +176,24 @@ function elideImageSource(source: Record<string, unknown>, dataKey: string = 'da
   return elided;
 }
 
+// A screenshot can also arrive as a bare string field of an ordinary object
+// ({ screenshot: { pageUrl, tabId, url: 'data:image/jpeg;base64,…' } }), with
+// no content block around it. Below this size a data URL is an icon, not a
+// payload worth withholding.
+const DATA_IMAGE_URL_ELIDE_MIN_CHARS = 1024;
+const DATA_IMAGE_URL_PREFIX = /^data:(image\/[^;,]+)[^,]*;base64,/i;
+
+function elideDataImageUrl(value: string): string {
+  if (value.length < DATA_IMAGE_URL_ELIDE_MIN_CHARS) return value;
+  // Matched on the head only: the prefix is short, and a regex run over a
+  // few hundred KB of base64 is the cost this exists to avoid.
+  const prefix = DATA_IMAGE_URL_PREFIX.exec(value.slice(0, 256));
+  if (!prefix) return value;
+  return `data:${prefix[1]};base64,<elided ${value.length - prefix[0].length} bytes>`;
+}
+
 function stripImagePayloads(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return elideDataImageUrl(value);
   if (depth > MAX_SANITIZE_DEPTH || value === null || typeof value !== 'object') return value;
 
   if (Array.isArray(value)) {
