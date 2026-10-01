@@ -9,6 +9,7 @@ import { windsurfAdapter } from './windsurf.js';
 
 export function getPlatformAdapter(platform: string): PlatformAdapter {
   switch (platform) {
+    case 'claude':
     case 'claude-code': return claudeCodeAdapter;
     case 'codex': return codexAdapter;
     case 'cursor': return cursorAdapter;

@@ -191,6 +191,7 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
+import { canonicalIntegrationId } from '../../shared/integration-id.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 function registerMarketplace(): void {
@@ -2455,9 +2456,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   let selectedIDEs: string[];
   if (options.ide) {
-    selectedIDEs = [options.ide];
+    const ideId = canonicalIntegrationId(options.ide);
+    selectedIDEs = [ideId];
     const allIDEs = detectInstalledIDEs();
-    const match = allIDEs.find((i) => i.id === options.ide);
+    const match = allIDEs.find((i) => i.id === ideId);
     if (!match) {
       log.error(`Unknown IDE: ${options.ide}`);
       log.info(`Available IDEs: ${allIDEs.map((i) => i.id).join(', ')}`);
