@@ -94,6 +94,8 @@ endpoint or model you pinned yourself.
 | `nvidia-nim` | `https://integrate.api.nvidia.com/v1` | yes |
 | `orcarouter` | `https://api.orcarouter.ai/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
+| `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
+| `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
 | `groq` | `https://api.groq.com/openai/v1` | yes |
 | `together` | `https://api.together.xyz/v1` | yes |
 | `ollama` | `http://localhost:11434/v1` | no |
@@ -107,6 +109,23 @@ Set `CLAUDE_MEM_OPENAI_COMPAT_MODEL` to whatever `ollama list` (or your server)
 reports, or the provider reports itself unconfigured and dispatch falls through
 to Claude.
 </Note>
+
+## OpenCode Go and Zen
+
+An [OpenCode](https://opencode.ai) Go subscription or Zen key works here.
+`opencode-go` defaults to `kimi-k3`; `opencode-zen` ships no default, so set the
+model too. Pick ids from `https://opencode.ai/zen/go/v1/models` or
+`https://opencode.ai/zen/v1/models`. Only models served on `/chat/completions`
+work.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "opencode-zen",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your OpenCode key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-v4-flash"
+}
+```
 
 ## Settings
 

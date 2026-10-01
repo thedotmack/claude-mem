@@ -79,6 +79,22 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Answers the case #2622 raised, without borrowing the OpenRouter settings keys.',
   },
   {
+    id: 'opencode-go',
+    label: 'OpenCode Go (opencode.ai)',
+    baseUrl: 'https://opencode.ai/zen/go/v1',
+    defaultModel: 'kimi-k3',
+    requiresApiKey: true,
+    hint: 'OpenCode Go subscription key; model ids from opencode.ai/zen/go/v1/models.',
+  },
+  {
+    id: 'opencode-zen',
+    label: 'OpenCode Zen (opencode.ai)',
+    baseUrl: 'https://opencode.ai/zen/v1',
+    defaultModel: '',
+    requiresApiKey: true,
+    hint: 'Zen key. Only models Zen serves on /chat/completions work here.',
+  },
+  {
     id: 'groq',
     label: 'Groq',
     baseUrl: 'https://api.groq.com/openai/v1',
