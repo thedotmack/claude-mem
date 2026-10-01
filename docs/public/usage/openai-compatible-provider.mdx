@@ -143,6 +143,10 @@ work.
 An unknown preset id degrades to `custom` rather than failing, because settings
 are read during status polling and a typo should not crash a poll.
 
+The viewer's **Settings → Advanced** panel edits the provider, preset, base URL
+and model. The API key is set in `~/.claude-mem/settings.json` or
+`~/.claude-mem/.env` only, never through the viewer.
+
 ## MiniMax
 
 `minimax` is MiniMax's global endpoint and `minimax-cn` the mainland-China one;

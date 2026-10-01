@@ -3,6 +3,8 @@ import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
 import { DEFAULT_SETTINGS } from '../constants/settings';
+import { isClaudeMemObserverBaseUrl } from '../utils/observer-endpoint';
+import { OPENAI_COMPAT_PRESET_OPTIONS, openAICompatPresetOption } from '../constants/openai-compat-presets';
 
 interface ContextSettingsModalProps {
   isOpen: boolean;
@@ -131,6 +133,9 @@ export function ContextSettingsModal({
   saveStatus
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
+  // From the saved settings, not the form: the field stays editable while a
+  // user types any other URL, and read-only for the observer's own endpoint.
+  const observerManagesBaseUrl = isClaudeMemObserverBaseUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
 
   useEffect(() => {
     setFormState(settings);
@@ -344,7 +349,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), or OpenRouter — also used by the claude-mem observer"
+                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), OpenRouter (also used by the claude-mem observer), or any OpenAI-compatible endpoint"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -353,6 +358,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
+                  <option value="openai-compatible">OpenAI-compatible endpoint (BYOK)</option>
                 </select>
               </FormField>
 
@@ -437,6 +443,20 @@ export function ContextSettingsModal({
                     />
                   </FormField>
                   <FormField
+                    label="OpenRouter Base URL"
+                    tooltip={observerManagesBaseUrl
+                      ? 'Managed by the claude-mem observer. Run npx claude-mem install to use your own endpoint.'
+                      : 'Optional OpenAI-compatible base URL. Leave blank to use openrouter.ai.'}
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_BASE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_BASE_URL', e.target.value)}
+                      placeholder="https://openrouter.ai/api/v1"
+                      readOnly={observerManagesBaseUrl}
+                    />
+                  </FormField>
+                  <FormField
                     label="Site URL (Optional)"
                     tooltip="Your site URL for OpenRouter analytics (optional)"
                   >
@@ -458,6 +478,51 @@ export function ContextSettingsModal({
                       placeholder="claude-mem"
                     />
                   </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'openai-compatible' && (
+                <>
+                  <FormField
+                    label="Endpoint preset"
+                    tooltip="Fills in the base URL and default model; the fields below override it"
+                  >
+                    <select
+                      value={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).id}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_PRESET', e.target.value)}
+                    >
+                      {OPENAI_COMPAT_PRESET_OPTIONS.map(preset => (
+                        <option key={preset.id} value={preset.id}>{preset.label}</option>
+                      ))}
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Base URL"
+                    tooltip="Leave blank to use the preset's endpoint"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', e.target.value)}
+                      placeholder={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).baseUrl || 'https://my-gateway.example.com/v1'}
+                    />
+                  </FormField>
+                  <FormField
+                    label="Model"
+                    tooltip="Model id, passed verbatim. Leave blank to use the preset's default"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_MODEL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_MODEL', e.target.value)}
+                      placeholder={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).defaultModel || 'model id'}
+                    />
+                  </FormField>
+                  <span className="toggle-description">
+                    The API key is set outside the viewer: <code>CLAUDE_MEM_OPENAI_COMPAT_API_KEY</code> in{' '}
+                    <code>~/.claude-mem/settings.json</code>, or <code>OPENAI_COMPAT_API_KEY</code> in{' '}
+                    <code>~/.claude-mem/.env</code>. Local servers need none.
+                  </span>
                 </>
               )}
 
