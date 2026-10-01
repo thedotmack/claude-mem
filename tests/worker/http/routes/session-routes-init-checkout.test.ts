@@ -180,4 +180,20 @@ describe('session-init keys a checkout-only host with the shared resolver (#3803
       project_key_source: 'environment',
     });
   });
+
+  // Such a host cannot check the user's exclusions before it calls (the CLI
+  // hooks do), so the route skips an excluded checkout before creating a row
+  // (#3556, the OMP hook).
+  it('creates no session for a checkout the user excluded', async () => {
+    fixtureRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-init-excluded-'));
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = path.basename(fixtureRoot);
+    try {
+      const response = await postInit({ contentSessionId: 'init-excluded', prompt: 'secret work', cwd: fixtureRoot });
+
+      expect(await response.json()).toEqual({ skipped: true, reason: 'project_excluded' });
+      expect(store!.db.prepare('SELECT COUNT(*) AS n FROM sdk_sessions').get()).toEqual({ n: 0 });
+    } finally {
+      delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+    }
+  });
 });

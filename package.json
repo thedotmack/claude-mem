@@ -50,7 +50,8 @@
     "plugin/sqlite",
     "plugin/skills",
     "plugin/ui",
-    "openclaw"
+    "openclaw",
+    "omp"
   ],
   "engines": {
     "node": ">=20.12.0",

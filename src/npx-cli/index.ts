@@ -60,7 +60,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
 
 ${styleText('bold', 'IDE Identifiers')}:
-  claude-code, cursor, grok-bot, opencode, openclaw,
+  claude-code, cursor, grok-bot, opencode, openclaw, omp,
   windsurf, codex-cli, kimi, copilot-cli, antigravity, goose,
   roo-code, warp
 `);

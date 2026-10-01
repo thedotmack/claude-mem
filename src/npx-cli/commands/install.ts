@@ -427,6 +427,23 @@ export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescrip
       };
     }
 
+    case 'omp': {
+      return {
+        title: 'OMP: installing hooks',
+        task: async (message) => {
+          message('Loading OMP installer…');
+          const { installOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');
+          message('Installing OMP hooks…');
+          const { result, output } = await bufferConsole(() => installOmpHooks());
+          if (result !== 0) {
+            recordFailure('OMP: hook installation failed', output);
+            return `OMP: hook installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `OMP: hooks installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'windsurf': {
       return {
         title: 'Windsurf: installing hooks',
@@ -751,6 +768,7 @@ function copyPluginToMarketplace(): void {
     'plugin',
     'package-lock.json',
     'openclaw',
+    'omp',
     'dist',
     'LICENSE',
     'README.md',
