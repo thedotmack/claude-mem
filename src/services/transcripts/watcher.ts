@@ -1,10 +1,11 @@
-import { existsSync, statSync, watch as fsWatch, createReadStream } from 'fs';
+import { existsSync, statSync, watch as fsWatch, createReadStream, openSync, readSync, closeSync } from 'fs';
 import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
 import { TranscriptEventProcessor } from './processor.js';
+import { decompressZstdFrame, isZstdSupported, scanZstdFrames, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
   offset: number;
@@ -16,19 +17,53 @@ interface TailState {
 // after startup with an mtime just before it.
 const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
 
+/**
+ * Concatenated-frame Zstandard session logs (DeepSeek Harness writes
+ * `session.jsonl.zstd`): every durable write appends one independently
+ * decodable frame of JSONL.
+ */
+const ZSTD_TRANSCRIPT_SUFFIX = '.jsonl.zstd';
+
+/**
+ * Where startAtEnd resumes a zstd file: after its last complete frame, never
+ * inside a torn one (a resume must land on a frame boundary).
+ */
+function zstdResumeOffset(filePath: string, size: number): number {
+  try {
+    return scanZstdFrames(readByteRange(filePath, 0, size)).tornStart ?? size;
+  } catch {
+    return size;
+  }
+}
+
+function readByteRange(filePath: string, start: number, length: number): Buffer {
+  const fd = openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    const bytesRead = readSync(fd, buffer, 0, length, start);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 class FileTailer {
   private watcher: ReturnType<typeof fsWatch> | null = null;
   private tailState: TailState;
   private readTask: Promise<void> | null = null;
   private readPending = false;
+  private readonly isZstd: boolean;
 
   constructor(
     private filePath: string,
     initialOffset: number,
     private onLine: (line: string) => Promise<void>,
-    private onOffset: (offset: number) => void
+    private onOffset: (offset: number, partial?: string) => void,
+    // zstd only: the unterminated JSONL prefix persisted with the frame-aligned offset.
+    initialPartial = ''
   ) {
-    this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: '' };
+    this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
+    this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
   }
 
   start(): void {
@@ -91,6 +126,11 @@ class FileTailer {
 
     if (size === this.tailState.readOffset) return;
 
+    if (this.isZstd) {
+      await this.readNewZstdFrames(size);
+      return;
+    }
+
     const stream = createReadStream(this.filePath, {
       start: this.tailState.readOffset,
       end: size - 1,
@@ -118,6 +158,56 @@ class FileTailer {
     this.tailState.offset = checkpointOffset;
     this.onOffset(checkpointOffset);
   }
+
+  /**
+   * zstd mode. The offset always sits on a frame boundary, so only the bytes
+   * after it are read, and only complete frames are decoded. A torn trailing
+   * frame (an interrupted write) is left for the next change event. A frame
+   * that fails to decode stops the pass without advancing past it, so it is
+   * retried rather than skipped. Each frame's lines are dispatched before the
+   * offset moves past it (the same dispatch-then-checkpoint order as JSONL).
+   */
+  private async readNewZstdFrames(size: number): Promise<void> {
+    const start = this.tailState.offset;
+    let bytes: Buffer;
+    let scan: ZstdScanResult;
+    try {
+      bytes = readByteRange(this.filePath, start, size - start);
+      scan = scanZstdFrames(bytes);
+    } catch (error: unknown) {
+      logger.warn('TRANSCRIPT', 'Failed to read zstd transcript frames', {
+        file: this.filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    let processedEnd = 0;
+    for (const frame of scan.frames) {
+      let plain: string;
+      try {
+        plain = decompressZstdFrame(bytes, frame);
+      } catch {
+        // decompressZstdFrame logged it; retried on the next change event.
+        break;
+      }
+      const lines = (this.tailState.partial + plain).split('\n');
+      this.tailState.partial = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        await this.onLine(trimmed);
+      }
+      processedEnd = frame.end;
+    }
+    if (processedEnd === 0) return;
+
+    this.tailState.offset = start + processedEnd;
+    this.tailState.readOffset = this.tailState.offset;
+    // A frame can end mid-record, and the offset is resumable only at frame
+    // boundaries, so the unterminated prefix is persisted with it.
+    this.onOffset(this.tailState.offset, this.tailState.partial);
+  }
 }
 
 export class TranscriptWatcher {
@@ -126,6 +216,7 @@ export class TranscriptWatcher {
   private state: TranscriptWatchState;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
   private startedAtMs = 0;
+  private warnedZstdUnsupported = false;
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
@@ -250,8 +341,10 @@ export class TranscriptWatcher {
       try {
         const stat = statSync(inputPath);
         if (stat.isDirectory()) {
-          const pattern = join(inputPath, '**', '*.jsonl');
-          return this.scanGlob(this.normalizeGlobPattern(pattern));
+          return [
+            ...this.scanGlob(this.normalizeGlobPattern(join(inputPath, '**', '*.jsonl'))),
+            ...this.scanGlob(this.normalizeGlobPattern(join(inputPath, '**', `*${ZSTD_TRANSCRIPT_SUFFIX}`))),
+          ];
         }
         return [inputPath];
       } catch (error: unknown) {
@@ -287,6 +380,17 @@ export class TranscriptWatcher {
     filePath = expandHomePath(filePath);
     if (this.tailers.has(filePath)) return;
 
+    const isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
+    if (isZstd && !isZstdSupported()) {
+      if (!this.warnedZstdUnsupported) {
+        this.warnedZstdUnsupported = true;
+        logger.warn('TRANSCRIPT', 'Skipping zstd transcripts: this runtime has no zlib.zstdDecompressSync (update Bun or Node)', {
+          file: filePath,
+        });
+      }
+      return;
+    }
+
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
@@ -302,7 +406,7 @@ export class TranscriptWatcher {
         const stat = statSync(filePath);
         const writtenSinceStartup =
           discoveredAfterStartup && stat.mtimeMs >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
-        if (!writtenSinceStartup) offset = stat.size;
+        if (!writtenSinceStartup) offset = isZstd ? zstdResumeOffset(filePath, stat.size) : stat.size;
       } catch (error: unknown) {
         logger.debug('WORKER', 'Failed to stat file for startAtEnd offset', { file: filePath }, error instanceof Error ? error : undefined);
         offset = 0;
@@ -315,10 +419,16 @@ export class TranscriptWatcher {
       async (line: string) => {
         await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
       },
-      (newOffset: number) => {
+      (newOffset: number, partial = '') => {
         this.state.offsets[filePath] = newOffset;
+        if (partial) {
+          (this.state.partials ??= {})[filePath] = partial;
+        } else if (this.state.partials) {
+          delete this.state.partials[filePath];
+        }
         saveWatchState(this.statePath, this.state);
-      }
+      },
+      this.state.partials?.[filePath] ?? ''
     );
 
     tailer.start();
