@@ -30,14 +30,14 @@ const prompts: string[] = [];
 const commands: unknown[] = [];
 const cwds: string[] = [];
 
+const fakeSessionInit = async (input: { prompt: string; cwd: string }) => {
+  prompts.push(input.prompt);
+  cwds.push(input.cwd);
+  return { continue: true, suppressOutput: true };
+};
 mock.module('../../src/cli/handlers/session-init.js', () => ({
-  sessionInitHandler: {
-    execute: async (input: { prompt: string; cwd: string }) => {
-      prompts.push(input.prompt);
-      cwds.push(input.cwd);
-      return { continue: true, suppressOutput: true };
-    },
-  },
+  sessionInitHandler: { execute: fakeSessionInit },
+  recordSessionPrompt: fakeSessionInit,
 }));
 mock.module('../../src/services/worker/http/shared.js', () => ({
   ingestObservation: async (payload: { toolInput: unknown }) => {

@@ -23,17 +23,17 @@ const sessionInitCalls: Array<{ sessionId?: string; prompt?: string; platform?: 
 // Set to make the next session-init call fail, as an unreachable worker does.
 let failNextSessionInit = false;
 
+const fakeSessionInit = async (input: { sessionId?: string; prompt?: string; platform?: string }) => {
+  if (failNextSessionInit) {
+    failNextSessionInit = false;
+    throw new Error('Unable to connect (ECONNREFUSED)');
+  }
+  sessionInitCalls.push(input);
+  return { continue: true, suppressOutput: true };
+};
 mock.module('../../src/cli/handlers/session-init.js', () => ({
-  sessionInitHandler: {
-    execute: async (input: { sessionId?: string; prompt?: string; platform?: string }) => {
-      if (failNextSessionInit) {
-        failNextSessionInit = false;
-        throw new Error('Unable to connect (ECONNREFUSED)');
-      }
-      sessionInitCalls.push(input);
-      return { continue: true, suppressOutput: true };
-    },
-  },
+  sessionInitHandler: { execute: fakeSessionInit },
+  recordSessionPrompt: fakeSessionInit,
 }));
 
 mock.module('../../src/shared/worker-utils.js', () => ({
@@ -138,8 +138,9 @@ describe('TranscriptWatcher with a failed anchor (#3653)', () => {
     watcher.stop();
 
     expect(sessionInitCalls).toHaveLength(0);
+    // Checkpointed AT the failed turn's line (the first line here), not past it.
     const offsets = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')).offsets : {};
-    expect(offsets[filePath]).toBeUndefined();
+    expect(offsets[filePath] ?? 0).toBe(0);
 
     const restarted = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
     await (restarted as any).addTailer(filePath, fileWatch, schema);

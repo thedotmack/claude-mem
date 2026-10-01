@@ -30,13 +30,13 @@ mock.module('../../src/shared/worker-utils.js', () => ({
 const sessionInitIds: string[] = [];
 const observationSessionIds: string[] = [];
 
+const fakeSessionInit = async (input: { sessionId: string }) => {
+  sessionInitIds.push(input.sessionId);
+  return { continue: true, suppressOutput: true };
+};
 mock.module('../../src/cli/handlers/session-init.js', () => ({
-  sessionInitHandler: {
-    execute: async (input: { sessionId: string }) => {
-      sessionInitIds.push(input.sessionId);
-      return { continue: true, suppressOutput: true };
-    },
-  },
+  sessionInitHandler: { execute: fakeSessionInit },
+  recordSessionPrompt: fakeSessionInit,
 }));
 
 mock.module('../../src/services/worker/http/shared.js', () => ({
