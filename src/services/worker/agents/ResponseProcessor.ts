@@ -1,5 +1,6 @@
 
 import { logger } from '../../../utils/logger.js';
+import { hasStorableTitle } from '../../sqlite/observations/store.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
@@ -308,7 +309,9 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string,
   modelId?: string,
-  responseContext?: ResponseContext
+  responseContext?: ResponseContext,
+  /** Why an empty turn was empty (block kinds only, never content), for the idle WARN line. */
+  emptyOutputReason?: string
 ): Promise<void> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
@@ -450,6 +453,9 @@ export async function processAgentResponse(
       // name it, so a truncation is not mistaken for a skip (#3868).
       ...(finishReason ? { finishReason, truncated: finishReason === 'length' || finishReason === 'MAX_TOKENS' } : {}),
       consecutiveContextOverflows: session.consecutiveContextOverflows,
+      // Only an idle turn has a shape worth naming: blank text, thinking or
+      // tool_use blocks only, or no content blocks at all (#3454).
+      ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
     });
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
@@ -467,6 +473,16 @@ export async function processAgentResponse(
   clearDebtForAnsweredWork(session);
 
   if (!session.memorySessionId) {
+    // A valid <skip_summary/> stores nothing, so it does not wait for the
+    // memory session id: confirm it now. Resetting it to pending re-asked the
+    // same batch, for the same final answer, until the id appeared.
+    if (parsed.summary?.skipped) {
+      session.lastSummaryStored = false;
+      await sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
     });
@@ -507,7 +523,18 @@ export async function processAgentResponse(
     memorySessionId: registeredMemorySessionId
   });
 
-  const labeledObservations = sanitizedObservations.map(obs => ({
+  // Storage skips an observation without a title, and everything after it pairs
+  // parsed observations with stored ids by position (Chroma sync, SSE, alerts,
+  // the brainbeat webhook). Drop them here so one list feeds both sides: a
+  // skipped row in the middle would shift every later id onto the wrong one.
+  const storableObservations = sanitizedObservations.filter(obs => hasStorableTitle(obs.title));
+  if (storableObservations.length < sanitizedObservations.length) {
+    logger.debug('DB', 'Dropped observations without a title before storage', {
+      sessionId: session.sessionDbId,
+      dropped: sanitizedObservations.length - storableObservations.length,
+    });
+  }
+  const labeledObservations = storableObservations.map(obs => ({
     ...obs,
     agent_type: context.pendingAgentType,
     agent_id: context.pendingAgentId
