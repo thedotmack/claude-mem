@@ -8,6 +8,7 @@ import { TranscriptEventProcessor } from './processor.js';
 
 interface TailState {
   offset: number;
+  readOffset: number;
   partial: string;
 }
 
@@ -27,14 +28,21 @@ class FileTailer {
     private onLine: (line: string) => Promise<void>,
     private onOffset: (offset: number) => void
   ) {
-    this.tailState = { offset: initialOffset, partial: '' };
+    this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: '' };
   }
 
   start(): void {
     this.requestRead();
-    this.watcher = fsWatch(this.filePath, { persistent: true }, () => {
-      this.requestRead();
-    });
+    try {
+      this.watcher = fsWatch(this.filePath, { persistent: true }, () => {
+        this.requestRead();
+      });
+    } catch (error: unknown) {
+      // The file can disappear between the glob scan and this watch call. A file
+      // that is already gone needs no tailer, so log and leave the watcher null.
+      logger.debug('WORKER', 'Failed to watch transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
+      this.watcher = null;
+    }
   }
 
   close(): void {
@@ -75,15 +83,16 @@ class FileTailer {
       return;
     }
 
-    if (size < this.tailState.offset) {
+    if (size < this.tailState.readOffset) {
       this.tailState.offset = 0;
+      this.tailState.readOffset = 0;
       this.tailState.partial = '';
     }
 
-    if (size === this.tailState.offset) return;
+    if (size === this.tailState.readOffset) return;
 
     const stream = createReadStream(this.filePath, {
-      start: this.tailState.offset,
+      start: this.tailState.readOffset,
       end: size - 1,
       encoding: 'utf8'
     });
@@ -92,19 +101,22 @@ class FileTailer {
     for await (const chunk of stream) {
       data += chunk as string;
     }
-
-    this.tailState.offset = size;
-    this.onOffset(this.tailState.offset);
+    this.tailState.readOffset = size;
 
     const combined = this.tailState.partial + data;
     const lines = combined.split('\n');
     this.tailState.partial = lines.pop() ?? '';
 
+    // Keep live reads at EOF while restart recovery resumes before any partial record.
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       await this.onLine(trimmed);
     }
+
+    const checkpointOffset = size - Buffer.byteLength(this.tailState.partial, 'utf8');
+    this.tailState.offset = checkpointOffset;
+    this.onOffset(checkpointOffset);
   }
 }
 
@@ -188,7 +200,9 @@ export class TranscriptWatcher {
     const matches = this.resolveWatchFiles(resolvedPath);
     for (const filePath of matches) {
       if (!this.tailers.has(filePath)) {
-        void this.addTailer(filePath, watch, schema, true);
+        void this.addTailer(filePath, watch, schema, true).catch(error => {
+          logger.debug('TRANSCRIPT', 'Failed to add transcript tailer', { file: filePath, watch: watch.name }, error instanceof Error ? error : undefined);
+        });
       }
     }
   }
@@ -267,6 +281,10 @@ export class TranscriptWatcher {
     schema: TranscriptSchema,
     discoveredAfterStartup: boolean = false
   ): Promise<void> {
+    // Expand a leading tilde here, the single point every path feeds through.
+    // Some path sources skip expandHomePath, so a literal '~' can reach fs.watch
+    // and can never resolve to a real file.
+    filePath = expandHomePath(filePath);
     if (this.tailers.has(filePath)) return;
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);

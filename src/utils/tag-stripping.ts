@@ -68,3 +68,29 @@ export function isInternalProtocolPayload(text: string): boolean {
   if (text.length > MAX_PROTOCOL_PAYLOAD_BYTES) return false;
   return PROTOCOL_ONLY_REGEX.test(text);
 }
+
+/**
+ * The openings of the prompts Codex and the Codex app send, through the same
+ * UserPromptSubmit hook as a user turn, for their own helper threads. Each
+ * became a claude-mem session and spent observer tokens on Codex's internals.
+ * Each pattern is the helper's own opening line, never a phrase a person
+ * would type.
+ */
+const CODEX_INTERNAL_PROMPT_OPENINGS: readonly RegExp[] = [
+  // Codex app: names a task.
+  /^You are a helpful assistant\. You will be presented with a user prompt, and your job is to provide a short title/,
+  // Codex memories: the consolidation pass.
+  /^## Memory Writing Agent: Phase 2 \(Consolidation\)/,
+  // Codex app: onboarding suggestions.
+  /^# Overview\r?\n(?:\r?\n)?Generate 0 to 3 hyperpersonalized suggestions/,
+];
+
+/**
+ * Whether a prompt is one of Codex's internal helper prompts. Callers apply it
+ * only to platformSource 'codex': the same text from any other host is a
+ * person's prompt.
+ */
+export function isCodexInternalPrompt(text: string): boolean {
+  const opening = text.trimStart();
+  return CODEX_INTERNAL_PROMPT_OPENINGS.some(pattern => pattern.test(opening));
+}

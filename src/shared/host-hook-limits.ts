@@ -2,9 +2,10 @@ import { HOOK_TIMEOUTS, getTimeout, hookProcessOverheadMs } from './hook-constan
 
 /**
  * The per-hook timeout the Antigravity CLI installer registers for every
- * claude-mem hook (AntigravityCliHooksInstaller reads it from here).
+ * claude-mem hook. AntigravityCliHooksInstaller writes it to hooks.json in
+ * seconds, the unit agy reads (#4196); 30 s is agy's own default.
  */
-export const ANTIGRAVITY_HOOK_TIMEOUT_MS = 10_000;
+export const ANTIGRAVITY_HOOK_TIMEOUT_MS = 30_000;
 
 /**
  * How long each host lets the SessionStart context hook run before it kills
