@@ -48,7 +48,7 @@ describe('npx claude-mem memory ingest', () => {
     runMemoryIngestCommand(['--dry-run']);
 
     expect(spawned).toEqual([{
-      args: [workerScript, 'memory', 'ingest', '--dry-run', '--cwd', process.cwd()],
+      args: [workerScript, 'memory', 'ingest', '--cwd', process.cwd(), '--dry-run'],
       cwd: pluginRoot,
     }]);
   });

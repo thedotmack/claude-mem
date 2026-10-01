@@ -287,8 +287,8 @@ export function runTranscriptWatchCommand(): void {
 }
 
 // The worker script runs from the plugin root, so the directory the user ran
-// this in travels as --cwd, as it does for adopt. It goes last so an explicit
-// --cwd from the user still wins.
+// this in travels as --cwd, as it does for adopt. Another checkout is chosen
+// with --source, which resolves against this directory.
 export function runMemoryIngestCommand(extraArgs: string[] = []): void {
-  spawnBunWorkerCommand('memory', ['ingest', ...extraArgs, '--cwd', process.cwd()]);
+  spawnBunWorkerCommand('memory', ['ingest', '--cwd', process.cwd(), ...extraArgs]);
 }

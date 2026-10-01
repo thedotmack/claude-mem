@@ -35,7 +35,7 @@ const USAGE =
 function resolveSource(args: string[]): { source: string; all: boolean } {
   const all = hasFlag(args, '--all');
   if (all) return { source: claudeProjectsDir(), all: true };
-  const callerCwd = getArgValue(args, '--cwd') ?? process.cwd();
+  const callerCwd = resolve(getArgValue(args, '--cwd') ?? process.cwd());
   const explicit = getArgValue(args, '--source');
   if (explicit) return { source: resolve(callerCwd, expandHome(explicit)), all: false };
   return { source: memoryDirForCwd(callerCwd), all: false };

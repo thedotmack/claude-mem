@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import * as workerUtils from '../../src/shared/worker-utils.js';
+import { cwdToDashed } from '../../src/services/context/ObservationCompiler.js';
 import { runMemoryCommand } from '../../src/services/memory/cli.js';
 import { memoryDirForCwd, type MemoryIngestReport } from '../../src/services/memory/ingest.js';
 
@@ -38,6 +40,44 @@ describe('memory ingest CLI', () => {
     expect(await runMemoryCommand('ingest', ['--dry-run', '--cwd', callerCheckout, '--source', 'notes'])).toBe(1);
 
     expect(errors).toEqual([`memory ingest source not found: ${join(callerCheckout, 'notes')}`]);
+  });
+
+  it('resolves a relative --cwd before deriving its memory dir', async () => {
+    const errors = captureErrors();
+
+    expect(await runMemoryCommand('ingest', ['--dry-run', '--cwd', 'claude-mem-r55-relative-checkout'])).toBe(1);
+
+    expect(errors).toEqual([
+      `memory ingest source not found: ${memoryDirForCwd(resolve('claude-mem-r55-relative-checkout'))}`,
+    ]);
+  });
+
+  // The projects directory is fixed when the module loads, so a populated
+  // checkout is dry-run in a child process pointed at a scratch config dir,
+  // started somewhere else: the notes can only be found through --cwd.
+  it("dry-runs the notes in the caller's checkout (R5-5)", () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'claude-mem-r55-config-'));
+    try {
+      const checkout = join(configDir, 'code', 'app');
+      const memoryDir = join(configDir, 'projects', cwdToDashed(checkout), 'memory');
+      mkdirSync(memoryDir, { recursive: true });
+      writeFileSync(join(memoryDir, 'decisions.md'), '# Decisions\n\nTests run under bun.\n');
+      const cliModule = join(import.meta.dir, '../../src/services/memory/cli.ts');
+      const script =
+        `import(${JSON.stringify(cliModule)}).then(async ({ runMemoryCommand }) => {` +
+        ` process.exitCode = await runMemoryCommand('ingest', ['--dry-run', '--cwd', ${JSON.stringify(checkout)}]); });`;
+
+      const child = Bun.spawnSync({
+        cmd: [process.execPath, '-e', script],
+        cwd: configDir,
+        env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, DO_NOT_TRACK: '1', CLAUDE_MEM_TELEMETRY: '0' },
+      });
+
+      expect({ exitCode: child.exitCode, stderr: child.stderr.toString() }).toMatchObject({ exitCode: 0 });
+      expect(child.stdout.toString()).toContain('TOTAL: 1 memory dirs → 1 files');
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
   });
 
   it('names every skipped note and its reason', async () => {
