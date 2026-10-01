@@ -250,11 +250,21 @@ export async function startGeneratorWithProvider(
         // exception, booked just above with its own remedy and aging. A
         // transient error that did not pause the run (Claude's overloaded or
         // unknown errors) ended it, and is booked below like any other failure.
-        logger.debug('SESSION', 'Observer paused on a transient provider failure; buffered work kept', {
+        const pauseContext = {
           sessionId: session.sessionDbId,
           provider,
           ...(classified.requestId ? { requestId: classified.requestId } : {}),
-        }, describeProviderError(classified));
+        };
+        const pauseLine = 'Observer paused on a transient provider failure; buffered work kept';
+        // A fault that names its own remedy (#4115: a local-network host the
+        // worker may not be allowed to reach) is logged where the user will
+        // see it. A plain blip stays at debug; our own deadline is booked
+        // above with its remedy.
+        if (classified.action && classified.code !== DEADLINE_EXCEEDED_CODE) {
+          logger.warn('SESSION', pauseLine, pauseContext, describeProviderError(classified));
+        } else {
+          logger.debug('SESSION', pauseLine, pauseContext, describeProviderError(classified));
+        }
       } else if (classified) {
         // The single error-level line for a classified provider failure:
         // code, message, action, link, and request id — same words the

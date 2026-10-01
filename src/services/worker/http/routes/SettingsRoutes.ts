@@ -80,6 +80,13 @@ function isUnchangedMaskedSecret(incoming: unknown, stored: unknown): boolean {
   return JSON.stringify(incoming) === JSON.stringify(maskSecretValue(stored));
 }
 
+/** The posted settings whose value differs from the one GET shows now. */
+function settingsChangedBy(posted: Record<string, unknown>, current: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(posted).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(current[key])),
+  );
+}
+
 function redactSecretSettings<T extends object>(settings: T): T {
   const redacted: Record<string, unknown> = { ...(settings as Record<string, unknown>) };
   for (const key of SECRET_SETTING_KEYS) {
@@ -180,7 +187,15 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
-    const validation = this.validateSettings(req.body);
+    const settingsPath = paths.settings();
+
+    // The viewer posts every setting back, edited or not, so judge only what
+    // this save changes. A value hand-edited into settings.json that the
+    // worker already ignores (it falls back to the default) would otherwise
+    // fail every later save of an unrelated field.
+    const validation = this.validateSettings(
+      settingsChangedBy(req.body, SettingsDefaultsManager.loadFromFile(settingsPath) as unknown as Record<string, unknown>),
+    );
     if (!validation.valid) {
       res.status(400).json({
         success: false,
@@ -188,8 +203,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       });
       return;
     }
-
-    const settingsPath = paths.settings();
 
     // Write whitelist. POST /api/settings has no authentication — the worker
     // trusts loopback — so any page that can reach this origin could set one
