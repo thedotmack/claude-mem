@@ -5,6 +5,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { ClaudeProvider } from '../ClaudeProvider.js';
 import type { GeminiProvider } from '../GeminiProvider.js';
 import type { OpenRouterProvider } from '../OpenRouterProvider.js';
+import type { CodexProvider } from '../CodexProvider.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { recordCmemFallbackIfEligible, releaseCmemGatewayProbe } from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
@@ -19,7 +20,7 @@ import {
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
 import { recordObserverFailure } from '../../../shared/observer-health.js';
-import { recordClaudeSetupRequired } from '../../../shared/dependency-health.js';
+import { recordClaudeSetupRequired, recordCodexCliSetupRequired } from '../../../shared/dependency-health.js';
 import { isMemoryOnCmemGateway } from '../../../shared/cmem-gateway.js';
 import {
   releaseQuotaProbe,
@@ -34,6 +35,8 @@ export interface GeneratorRunnerDependencies {
   sdkAgent: ClaudeProvider;
   geminiAgent: GeminiProvider;
   openRouterAgent: OpenRouterProvider;
+  /** Absent only in harnesses that never select Codex. */
+  codexAgent?: CodexProvider;
   workerService: WorkerService;
   completionHandler: SessionCompletionHandler;
   ensureGeneratorRunning: (sessionDbId: number, source: string) => Promise<void>;
@@ -63,7 +66,7 @@ export interface GeneratorRunnerDependencies {
  * request runs on to its deadline with nobody waiting for the answer.
  */
 function recordDeadlineExpiry(
-  provider: 'claude' | 'gemini' | 'openrouter',
+  provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
   session: ActiveSession,
   error: unknown,
   sessionManager: SessionManager,
@@ -80,7 +83,7 @@ function recordDeadlineExpiry(
 
 export async function startGeneratorWithProvider(
   session: ActiveSession | undefined,
-  provider: 'claude' | 'gemini' | 'openrouter',
+  provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
   source: string,
   /** The quota probe this run claimed, or null when it was admitted without one. */
   quotaProbeClaimId: number | null,
@@ -88,7 +91,7 @@ export async function startGeneratorWithProvider(
   gatewayProbeClaimId: number | null,
   deps: GeneratorRunnerDependencies,
 ): Promise<void> {
-  const { sessionManager, sdkAgent, geminiAgent, openRouterAgent, workerService,
+  const { sessionManager, sdkAgent, geminiAgent, openRouterAgent, codexAgent, workerService,
     completionHandler, ensureGeneratorRunning, maybeSelfHealStaleClaudeSpawn } = deps;
   if (!session) return;
 
@@ -113,8 +116,9 @@ export async function startGeneratorWithProvider(
     session.abortController = new AbortController();
   }
 
-  const agent = provider === 'openrouter' ? openRouterAgent : (provider === 'gemini' ? geminiAgent : sdkAgent);
-  const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+  const agent = provider === 'codex' ? codexAgent : provider === 'openrouter' ? openRouterAgent : (provider === 'gemini' ? geminiAgent : sdkAgent);
+  const agentName = provider === 'codex' ? 'Codex' : provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+  if (!agent) throw new Error('Codex provider is not configured');
 
   const actualQueueDepth = sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
@@ -161,6 +165,20 @@ export async function startGeneratorWithProvider(
         recordClaudeSetupRequired(error);
         maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
         logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
+          sessionId: session.sessionDbId,
+          provider,
+          error: error.message,
+        });
+        return;
+      }
+      // The same shape for Codex: a missing CLI or ChatGPT login fails every
+      // retry the same way, so the buffered work waits behind the codex_cli
+      // gate instead of being finalized.
+      if (provider === 'codex' && isClassified(error) && error.kind === 'setup_required') {
+        skipGeneratorExitFinalization = true;
+        session.pausedReason = 'setup_required';
+        recordCodexCliSetupRequired(error.message);
+        logger.warn('SESSION', 'Codex generator requires setup; future Codex starts will be skipped until repaired', {
           sessionId: session.sessionDbId,
           provider,
           error: error.message,
@@ -423,7 +441,7 @@ export async function startGeneratorWithProvider(
  */
 function bookClassifiedFailure(
   session: ActiveSession,
-  provider: 'claude' | 'gemini' | 'openrouter',
+  provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
   error: ClassifiedProviderError,
 ): number | null {
   let resumeAfterMs: number | null = null;
@@ -439,12 +457,15 @@ function bookClassifiedFailure(
       recordAuthCooldown(provider, error.message, session.observerProfile);
       break;
     case 'rate_limit': {
-      // Never a spent allowance. The provider already retried in place, and
-      // when it said how long to wait (the gateway envelope always does), the
-      // session resumes after that — a bounded number of times in a row.
-      // With no Retry-After (OpenRouter's daily free-model limit is such a
-      // 429) or once the resumes run out, the limit may last hours: withhold
-      // requests behind the breaker instead of resuming into it.
+      // Never a spent allowance: a limit that names a day or longer is
+      // classified quota_exhausted by the provider (Gemini's per-day quotaId,
+      // OpenRouter's free-models-per-day). The provider already retried in
+      // place, and when it said how long to wait (the gateway envelope always
+      // does; Gemini's body RetryInfo does), the session resumes after that —
+      // a bounded number of times in a row. With no Retry-After, or once the
+      // resumes run out, withhold requests behind the breaker instead of
+      // resuming into it; a 'rate_limit' window holds for the short throttle
+      // cooldown (resolveQuotaCooldownMs), not the quota one.
       // On the cmem gateway the resume also draws on the unattended budget it
       // shares with transport and fallback resumes; once that is spent, the
       // breaker takes over here too.

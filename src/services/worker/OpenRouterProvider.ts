@@ -129,6 +129,16 @@ function isContextOverflowBody(body: string): boolean {
 }
 
 /**
+ * A 429 that names a limit of a day or longer ("Rate limit exceeded:
+ * free-models-per-day"). That is a spent allowance until the period turns
+ * over, not a throttle: as a rate limit it would hold only the short breaker
+ * window (quota-cooldown's RATE_LIMIT_RECHECK_COOLDOWN_MS) and send a doomed
+ * probe every ninety seconds until the reset. The per-minute limits
+ * ("free-models-per-min") stay rate limits.
+ */
+const PERIOD_RATE_LIMIT = /limit exceeded:\s*[\w-]*per-(day|week|month)\b/;
+
+/**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
  * at the boundary right after `fetch()` returns or throws.
  */
@@ -197,6 +207,7 @@ export function classifyOpenRouterError(input: {
     // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
     // marker only applies off the 429 path (the key-limit marker always wins).
     (lower.includes('limit exceeded') && status !== 429) ||
+    (status === 429 && PERIOD_RATE_LIMIT.test(lower)) ||
     lower.includes('negative credit') ||
     status === 402
   ) {
@@ -267,6 +278,23 @@ export function classifyOpenRouterError(input: {
   if (status === undefined) {
     return new ClassifiedProviderError(
       `OpenRouter network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
+      { kind: 'transient', cause: input.cause, ...detail },
+    );
+  }
+
+  // litellm (behind OpenRouter) can fail to parse the downstream model's
+  // response and surface it as a body-level error inside a 200 envelope, e.g.
+  // `{ error: { code: 200, message: "Unable to get json response - Expecting
+  // value: line 45 column 1" } }`. Because the body-error path forwards the
+  // success status verbatim, none of the HTTP-status branches above match and
+  // it would otherwise fall through to `unrecoverable` and never retry. These
+  // are transient upstream hiccups that usually succeed on a retry, so detect
+  // the tell-tale litellm markers and route them to the retry loop.
+  // Kept marker-scoped on purpose: OpenRouter also delivers genuine auth/quota
+  // errors inside 200 envelopes, which must stay non-transient.
+  if (lower.includes('unable to get json') || lower.includes('expecting value')) {
+    return new ClassifiedProviderError(
+      describe('transient upstream parse failure'),
       { kind: 'transient', cause: input.cause, ...detail },
     );
   }

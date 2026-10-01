@@ -887,6 +887,32 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       projects: ['acme/api', 'api', 'old-folder'],
     }));
   });
+
+  // Gate P2-14: the keyword fallback after a Chroma error was the one search
+  // path without a catch, so a query that broke both surfaced as a failed
+  // request instead of an empty answer (the Chroma-less path already caught).
+  it('answers instead of throwing when Chroma fails and the keyword fallback fails too', async () => {
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => { throw new Error('Expression tree is too large (maximum depth 1000)'); }),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
+      } as any,
+      { queryChroma: mock(() => Promise.reject(new Error('chroma-mcp tool "chroma_query_documents" returned error'))) } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await manager.search({ query: 'a pasted wall of text', format: 'json', limit: 10 });
+
+    expect(result).toEqual(expect.objectContaining({ observations: [], totalResults: 0 }));
+  });
 });
 
 describe('SearchManager searchObservations date grouping', () => {
@@ -1136,5 +1162,63 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       expect(result.observations).toHaveLength(3);
       expect(result.prompts.map((p: { id: number }) => p.id)).toEqual([promptId]);
     });
+  });
+});
+
+describe('SearchManager dates survive a host whose date formatter cannot initialize (#4126)', () => {
+  // Bun/JavaScriptCore on Windows with an unresolvable system time zone: every
+  // toLocale* call throws. #4126 guarded the shared helpers; these four dates
+  // in SearchManager still called toLocaleString() directly.
+  const ts = '2025-01-04T21:34:56.000Z';
+  const originalToLocaleString = Date.prototype.toLocaleString;
+
+  beforeEach(() => {
+    Date.prototype.toLocaleString = (() => {
+      throw new TypeError('failed to initialize DateTimeFormat');
+    }) as typeof Date.prototype.toLocaleString;
+  });
+
+  afterEach(() => {
+    Date.prototype.toLocaleString = originalToLocaleString;
+  });
+
+  it('renders recent session context instead of failing', async () => {
+    const manager = new SearchManager(
+      {} as any,
+      {
+        getRecentSessionsWithStatus: () => [
+          { memory_session_id: 'summarized', has_summary: true, status: 'completed', started_at: ts, user_prompt: 'one' },
+          { memory_session_id: 'running', has_summary: false, status: 'active', started_at: ts, user_prompt: 'two' },
+          { memory_session_id: 'stopped', has_summary: false, status: 'failed', started_at: ts, user_prompt: 'three' },
+        ],
+        getSummaryForSession: () => ({ request: 'Fix the worker', created_at: ts, prompt_number: 1 }),
+        getObservationsForSession: () => [],
+      } as any,
+      null,
+      {} as any,
+      {} as any,
+    );
+
+    const rendered = await manager.getRecentContext({ project: 'dates-project', limit: 3 });
+    const text = rendered.content[0].text as string;
+
+    expect(text.match(/\*\*Date:\*\* 2025-01-04 9:34 PM UTC/g)).toHaveLength(3);
+  });
+
+  it('renders timeline anchor matches instead of failing', async () => {
+    const manager = new SearchManager(
+      {
+        searchObservations: () => [{ id: 7, title: 'Anchor', subtitle: null, type: 'bugfix', created_at_epoch: Date.parse(ts) }],
+      } as any,
+      {} as any,
+      null,
+      {} as any,
+      {} as any,
+    );
+
+    const rendered = await manager.getTimelineByQuery({ query: 'anchor', mode: 'interactive' });
+    const text = rendered.content[0].text as string;
+
+    expect(text).toContain('   - Date: 2025-01-04 9:34 PM UTC');
   });
 });

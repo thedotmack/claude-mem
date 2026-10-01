@@ -79,7 +79,9 @@ import {
 } from '../../../../src/services/worker/provider-dispatch.js';
 import {
   getQuotaCooldown,
+  isQuotaCooldownActive,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  RATE_LIMIT_RECHECK_COOLDOWN_MS,
   recordQuotaExhausted,
   resetQuotaCooldownsForTesting,
 } from '../../../../src/shared/quota-cooldown.js';
@@ -805,7 +807,7 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       expect(health?.lastErrorKind).toBe('transient');
     });
 
-    it('a 429 without Retry-After (OpenRouter\'s daily free-model limit) arms the breaker and never resumes', async () => {
+    it('OpenRouter\'s daily free-model limit is a spent allowance: the quota breaker, never resumed', async () => {
       const id = 923004;
       seedSettings({
         CLAUDE_MEM_OPENROUTER_BASE_URL: '',
@@ -821,16 +823,44 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       await routes.ensureGeneratorRunning(id, 'observation');
       await settle(id);
 
-      expect(openRouterRequests()).toHaveLength(3);
-      expect(getQuotaCooldown('openrouter')?.window).toBe('rate_limit');
-      expect(readObserverHealth()?.lastErrorKind).toBe('rate_limit');
+      // The limit names a day, so it lasts until the daily reset: no in-place
+      // retries, and the full quota cooldown rather than the short throttle
+      // window, which would probe every ninety seconds until midnight UTC.
+      expect(openRouterRequests()).toHaveLength(1);
+      const cooldown = getQuotaCooldown('openrouter');
+      expect(cooldown?.window).toBeUndefined();
+      expect(isQuotaCooldownActive('openrouter', cooldown!.armedAtMs + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1)).toBe(true);
+      expect(readObserverHealth()?.lastErrorKind).toBe('quota_exhausted');
 
-      // No Retry-After: the limit may last until its daily reset, so nothing
-      // resumes on its own and the next capture is withheld by the breaker.
+      // Nothing resumes on its own and the next capture is withheld by the breaker.
       await new Promise(resolve => setTimeout(resolve, 50));
       await routes.ensureGeneratorRunning(id, 'observation');
       await settle(id);
+      expect(openRouterRequests()).toHaveLength(1);
+    });
+
+    it('OpenRouter\'s per-minute free-model limit holds only the short throttle window', async () => {
+      const id = 923007;
+      seedSettings({
+        CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+        CLAUDE_MEM_OPENROUTER_MODEL: 'some/model:free',
+        CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-personal-test-key',
+      });
+      respond = async () => new Response(JSON.stringify({
+        error: { message: 'Rate limit exceeded: free-models-per-min.', code: 429 },
+      }), { status: 429 });
+      const { routes } = makeHarness([id]);
+      const openRouterRequests = () => requests.filter(request => request.url.startsWith('https://openrouter.ai/'));
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
       expect(openRouterRequests()).toHaveLength(3);
+      const cooldown = getQuotaCooldown('openrouter');
+      expect(cooldown?.window).toBe('rate_limit');
+      expect(readObserverHealth()?.lastErrorKind).toBe('rate_limit');
+      // A minute's throttle is not held for half an hour.
+      expect(isQuotaCooldownActive('openrouter', cooldown!.armedAtMs + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1)).toBe(false);
     });
 
     it('caps consecutive Retry-After resumes, then arms the breaker', async () => {
@@ -1022,9 +1052,11 @@ describe('SessionRoutes — cmem gateway integrity', () => {
     it('keeps memory on claude, without taking the probe claim, while an openrouter breaker outlives the fallback window', async () => {
       const id = 921301;
       seedSettings({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsedFallbackAt() });
-      // A rate limit's breaker armed 20 minutes ago: live for 10 more, so the
-      // gateway start gate would refuse any re-probe.
-      recordQuotaExhausted('openrouter', 'Too many observer requests in the last minute.', 'rate_limit', Date.now() - 20 * 60_000);
+      // A breaker on the full quota cooldown armed 20 minutes ago: live for 10
+      // more, so the gateway start gate would refuse any re-probe. (A rate
+      // limit's breaker holds only the short throttle window, so it can no
+      // longer outlive the fallback window.)
+      recordQuotaExhausted('openrouter', 'Spend cap reached', undefined, Date.now() - 20 * 60_000);
       respond = async () => gatewayRejection('bad_request');
       const { routes, claudeAgent } = makeHarness([id]);
 

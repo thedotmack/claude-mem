@@ -63,6 +63,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
     );
@@ -102,6 +103,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
     );
@@ -138,6 +140,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         getObservationsByIds: mock(() => [observation]),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
     );
@@ -184,6 +187,7 @@ describe('SearchOrchestrator per-category SQLite supplement', () => {
         getObservationsByIds: mocks.getObservationsByIds ?? mock(() => []),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mocks.getUserPromptsByIds ?? mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma: mocks.queryChroma } as any,
     );

@@ -2,7 +2,7 @@ export type DependencyStatusKind =
   | 'setup_required'
   | 'vector_search_unavailable';
 
-export type DependencyName = 'claude_cli' | 'observer_dir' | 'uvx' | 'chroma';
+export type DependencyName = 'claude_cli' | 'codex_cli' | 'observer_dir' | 'uvx' | 'chroma';
 
 export interface DependencyStatus {
   dependency: DependencyName;
@@ -17,6 +17,17 @@ export const CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS = 30_000;
 export const CLAUDE_CLI_SETUP_REMEDIATION =
   'Install or update Claude Code CLI, then restart claude-mem. Try `claude update`, ' +
   '`npm install -g @anthropic-ai/claude-code@latest`, or set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json.';
+
+/**
+ * A Codex start that fails on setup (no CLI on PATH, no ChatGPT login, an
+ * auth file other users can read) fails the same way on every retry, so
+ * Codex starts wait this long before one goes through as the recovery probe.
+ */
+export const CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS = 5 * 60_000;
+
+export const CODEX_CLI_SETUP_REMEDIATION =
+  'Install the Codex CLI and run `codex login` with your ChatGPT account as the user running claude-mem, ' +
+  'or set CLAUDE_MEM_CODEX_PATH in ~/.claude-mem/settings.json. Codex starts check again every 5 minutes.';
 
 export const OBSERVER_DIR_SETUP_REMEDIATION =
   'Make the claude-mem data directory (CLAUDE_MEM_DATA_DIR, ~/.claude-mem by default) a writable directory: ' +
@@ -78,6 +89,10 @@ export function recordClaudeSetupRequired(error: { message: string; code?: strin
     return recordDependencyStatus('observer_dir', 'setup_required', error.message, OBSERVER_DIR_SETUP_REMEDIATION);
   }
   return recordClaudeCliSetupRequired(error.message);
+}
+
+export function recordCodexCliSetupRequired(message: string): DependencyStatus {
+  return recordDependencyStatus('codex_cli', 'setup_required', message, CODEX_CLI_SETUP_REMEDIATION);
 }
 
 export function recordUvxVectorSearchUnavailable(message: string): DependencyStatus {
