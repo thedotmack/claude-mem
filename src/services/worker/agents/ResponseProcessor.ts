@@ -308,11 +308,17 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string,
   modelId?: string,
-  responseContext?: ResponseContext
+  responseContext?: ResponseContext,
+  /** Why an empty turn was empty (block kinds only, never content), for the idle WARN line. */
+  emptyOutputReason?: string
 ): Promise<void> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
+  // Scoped to the reply that produced `text`: consumed here, before any branch,
+  // so a later reply (from any provider) never reads one an earlier turn set.
+  const finishReason = session.lastFinishReason ?? null;
+  session.lastFinishReason = null;
 
   // Classify rejections BEFORE growing the window. "Prompt is too long", quota
   // prose and auth prose are refusals, not conversational turns; appending them
@@ -442,7 +448,13 @@ export async function processAgentResponse(
       sessionId: session.sessionDbId,
       outputClass,
       preview,
+      // An HTTP reply cut off at the output-token cap reads as xml/prose here;
+      // name it, so a truncation is not mistaken for a skip (#3868).
+      ...(finishReason ? { finishReason, truncated: finishReason === 'length' || finishReason === 'MAX_TOKENS' } : {}),
       consecutiveContextOverflows: session.consecutiveContextOverflows,
+      // Only an idle turn has a shape worth naming: blank text, thinking or
+      // tool_use blocks only, or no content blocks at all (#3454).
+      ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
     });
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
@@ -460,6 +472,16 @@ export async function processAgentResponse(
   clearDebtForAnsweredWork(session);
 
   if (!session.memorySessionId) {
+    // A valid <skip_summary/> stores nothing, so it does not wait for the
+    // memory session id: confirm it now. Resetting it to pending re-asked the
+    // same batch, for the same final answer, until the id appeared.
+    if (parsed.summary?.skipped) {
+      session.lastSummaryStored = false;
+      await sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
     });

@@ -33,6 +33,12 @@ export const ENV_PRESERVE = new Set([
   // back to /tmp, so the child hit that directory and exited 1 on every spawn
   // — the user's only documented escape did nothing.
   'CLAUDE_CODE_TMPDIR',
+  // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
+  // path to the claude binary, documented as settable from the file OR the
+  // env. Every daemon spawn passes through sanitizeEnv, and the worker reads
+  // the env override (SettingsDefaultsManager.applyEnvOverrides), so
+  // stripping it silently dropped the env form.
+  'CLAUDE_CODE_PATH',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
