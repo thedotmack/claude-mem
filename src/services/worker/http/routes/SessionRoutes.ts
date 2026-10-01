@@ -19,7 +19,7 @@ import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { getProjectContext } from '../../../../utils/project-name.js';
+import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
@@ -252,6 +252,20 @@ export class SessionRoutes extends BaseRouteHandler {
   private async ensureGeneratorRunningLocked(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    // Nothing is buffered, so a generator would only open with its INIT turn
+    // and idle out: one paid request per user prompt, including prompts that
+    // never use a tool (#3454). Gated BEFORE provider selection, so this path
+    // never takes the single cmem-gateway re-probe (or a quota probe) that it
+    // would then have to release. The first observation or summarize enqueues
+    // work and starts the generator, INIT turn included, through this same
+    // method. Resume sources (overflow-recycle, response-stall, rate-limit,
+    // cmem-fallback, the periodic sweep) pass the same gate: with nothing
+    // buffered there is nothing to resume.
+    if (this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId) === 0) {
+      logger.debug('SESSION', 'Skipping generator start with an empty queue', { sessionId: sessionDbId, source });
+      return;
+    }
 
     // The claiming variant: this path is about to SEND, so it must take the
     // single gateway re-probe rather than merely reading the clock.
@@ -932,6 +946,9 @@ export class SessionRoutes extends BaseRouteHandler {
     prompt: z.string().optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
+    // The checkout `project` was resolved from, and how (gate P1-2).
+    cwd: z.string().optional(),
+    projectKeySource: z.string().optional(),
   }).passthrough();
 
   private static readonly observationsByClaudeIdSchema = z.object({
@@ -1129,6 +1146,15 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+
+    // The checkout the hook resolved `project` from, and how it derived it, so a
+    // session that never reports an observation still leaves evidence for
+    // worktree adoption (gate P1-2). An unknown key source is not recorded as
+    // anything: the next observation's ingest records the checkout itself.
+    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
+    if (checkoutCwd.trim() && isProjectKeySource(req.body.projectKeySource)) {
+      store.setSessionCwd(sessionDbId, checkoutCwd, req.body.projectKeySource);
+    }
 
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
