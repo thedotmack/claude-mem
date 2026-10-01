@@ -3,6 +3,7 @@ import {
   StrategySearchOptions,
   StrategySearchResult,
   SEARCH_CONSTANTS,
+  isCategoryRequested,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
@@ -31,20 +32,21 @@ export class SQLiteSearchStrategy {
       limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
       offset = 0,
       project,
+      projects,
       platformSource,
       dateRange,
       orderBy = 'date_desc'
     } = options;
 
-    const searchObservations = searchType === 'all' || searchType === 'observations';
-    const searchSessions = searchType === 'all' || searchType === 'sessions';
-    const searchPrompts = searchType === 'all' || searchType === 'prompts';
+    const searchObservations = isCategoryRequested(searchType, 'observations');
+    const searchSessions = isCategoryRequested(searchType, 'sessions');
+    const searchPrompts = isCategoryRequested(searchType, 'prompts');
 
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
 
-    const baseOptions = { limit, offset, orderBy, project, platformSource, dateRange };
+    const baseOptions = { limit, offset, orderBy, project, projects, platformSource, dateRange };
 
     logger.debug('SEARCH', 'SQLiteSearchStrategy: SQLite query', {
       searchType,
@@ -96,7 +98,7 @@ export class SQLiteSearchStrategy {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy = 'date_desc' } = options;
-    return this.sessionSearch.findByFile(filePath, { limit, project, platformSource, dateRange, orderBy });
+    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, projects, platformSource, dateRange, orderBy = 'date_desc', isFolder } = options;
+    return this.sessionSearch.findByFile(filePath, { limit, project, projects, platformSource, dateRange, orderBy, isFolder });
   }
 }

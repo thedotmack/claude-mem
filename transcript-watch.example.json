@@ -3,8 +3,8 @@
   "schemas": {
     "codex": {
       "name": "codex",
-      "version": "0.3",
-      "description": "Schema for Codex session JSONL files under ~/.codex/sessions.",
+      "version": "0.4",
+      "description": "Schema for Codex session JSONL files under ~/.codex/sessions. Reads the conversation from response items (payload.type == message, discriminated by payload.role), which is how Codex 0.155 emits it; the older user_message/agent_message events belong to the approval sub-agent and are no longer used for prompts.",
       "events": [
         {
           "name": "session-meta",
@@ -25,18 +25,31 @@
         },
         {
           "name": "user-message",
-          "match": { "path": "payload.type", "equals": "user_message" },
+          "match": {
+            "all": [
+              { "path": "payload.type", "equals": "message" },
+              { "path": "payload.role", "equals": "user" },
+              { "path": "payload.content[0].text", "exists": true },
+              { "path": "payload.content[0].text", "not_starts_with": "<recommended_plugins>" },
+              { "path": "payload.content[0].text", "not_starts_with": "<skills_instructions>" }
+            ]
+          },
           "action": "session_init",
           "fields": {
-            "prompt": "payload.message"
+            "prompt": "payload.content[0].text"
           }
         },
         {
           "name": "assistant-message",
-          "match": { "path": "payload.type", "equals": "agent_message" },
+          "match": {
+            "all": [
+              { "path": "payload.type", "equals": "message" },
+              { "path": "payload.role", "equals": "assistant" }
+            ]
+          },
           "action": "assistant_message",
           "fields": {
-            "message": "payload.message"
+            "message": "payload.content[0].text"
           }
         },
         {
