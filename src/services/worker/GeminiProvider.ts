@@ -11,7 +11,13 @@ import { ClassifiedProviderError, rateLimitUntilNextKey } from './provider-error
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
-import { parseGeminiErrorDetails } from '../../shared/gemini-error-details.js';
+import {
+  GEMINI_REGION_REFUSAL_ACTION,
+  GEMINI_REGION_REFUSAL_CODE,
+  geminiRegionRefusalMessage,
+  isGeminiRegionRefusal,
+  parseGeminiErrorDetails,
+} from '../../shared/gemini-error-details.js';
 import { readGeminiAnswerText, type GeminiPart } from '../../shared/gemini-answer-text.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
@@ -78,19 +84,13 @@ export function classifyGeminiError(input: {
     );
   }
 
-  // Google serves the Gemini API in some regions only; elsewhere every request
-  // answers "User location is not supported" (a 400 FAILED_PRECONDITION, or a
-  // 403). No retry helps and the batch is not at fault, so it pauses the way a
-  // refused key does (buffered work kept, one cooldown) and says what to change.
-  if ((status === 400 || status === 403) && lower.includes('location is not supported')) {
+  // Outside the regions Google serves (gemini-error-details.ts): pause the way
+  // a refused key does (buffered work kept, one cooldown) and say what to
+  // change. The key pool never rotates on this code.
+  if (status !== undefined && isGeminiRegionRefusal(status, body)) {
     return new ClassifiedProviderError(
-      `Gemini is not available in this region (status ${status})`,
-      {
-        kind: 'auth_invalid',
-        cause,
-        code: 'location_unsupported',
-        action: 'The Gemini API does not serve this region. Set CLAUDE_MEM_PROVIDER to another provider.',
-      },
+      geminiRegionRefusalMessage(status),
+      { kind: 'auth_invalid', cause, code: GEMINI_REGION_REFUSAL_CODE, action: GEMINI_REGION_REFUSAL_ACTION },
     );
   }
 
