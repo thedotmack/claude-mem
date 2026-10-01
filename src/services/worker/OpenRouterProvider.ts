@@ -3,6 +3,7 @@ import { getCredential } from '../../shared/EnvManager.js';
 import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
+import { describeNetworkFailure, networkFailureSuffix } from '../../shared/network-failure.js';
 import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -149,6 +150,8 @@ export function classifyOpenRouterError(input: {
   headers?: Headers | { get(name: string): string | null };
   cause: unknown;
   requestId?: string;
+  /** The URL a request with no response was sent to, named in the network-error message. */
+  requestUrl?: string;
 }): ClassifiedProviderError {
   const status = input.status;
   const body = input.bodyText ?? '';
@@ -275,11 +278,18 @@ export function classifyOpenRouterError(input: {
     );
   }
 
-  // Network errors (no status) — treat as transient.
+  // Network errors (no status) — treat as transient. The runtime's error code
+  // and the host say what failed where (#4092).
   if (status === undefined) {
+    const network = describeNetworkFailure(input.cause, input.requestUrl);
     return new ClassifiedProviderError(
-      `OpenRouter network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
-      { kind: 'transient', cause: input.cause, ...detail },
+      `OpenRouter network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}${networkFailureSuffix(network)}`,
+      {
+        kind: 'transient',
+        cause: input.cause,
+        ...detail,
+        ...(network.localNetworkHint ? { action: network.localNetworkHint } : {}),
+      },
     );
   }
 
@@ -743,7 +753,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     reasoningEffort?: OpenRouterReasoningEffort,
   ): Promise<Response> {
     const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort });
-    return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
+    // Bound, so a runtime whose fetch needs its receiver still gets it.
+    return fetchWithOpenRouterTokenCompatibility(fetch.bind(globalThis), apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -795,7 +806,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
-        throw classifyOpenRouterError({ cause: err });
+        throw classifyOpenRouterError({ cause: err, requestUrl: apiUrl });
       }
 
       const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
