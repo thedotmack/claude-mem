@@ -15,6 +15,7 @@ import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
 import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
+import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -211,6 +212,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
       'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
       'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
       'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
@@ -426,6 +428,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (!['narrative', 'facts'].includes(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD)) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT
+      && !parseOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT)) {
+      return { valid: false, error: `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT must be empty or one of: ${OPENROUTER_REASONING_EFFORTS.join(', ')}` };
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {

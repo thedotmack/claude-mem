@@ -368,6 +368,31 @@ export interface OpenRouterConfig {
    * Never set for the cmem gateway.
    */
   extraBody?: Record<string, unknown>;
+  /** CLAUDE_MEM_OPENROUTER_REASONING_EFFORT; sent to openrouter.ai only. */
+  reasoningEffort?: OpenRouterReasoningEffort;
+}
+
+/**
+ * CLAUDE_MEM_OPENROUTER_REASONING_EFFORT values (OpenRouter's documented
+ * effort scale, the token-saving end of it). Unset sends nothing.
+ */
+export const OPENROUTER_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'] as const;
+export type OpenRouterReasoningEffort = typeof OPENROUTER_REASONING_EFFORTS[number];
+
+/** The setting as an effort, or undefined when unset or not one of the values. */
+export function parseOpenRouterReasoningEffort(raw: unknown): OpenRouterReasoningEffort | undefined {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return (OPENROUTER_REASONING_EFFORTS as readonly string[]).includes(value)
+    ? value as OpenRouterReasoningEffort
+    : undefined;
+}
+
+/**
+ * OpenRouter's `reasoning` field for an effort. `none` is sent as
+ * `{ enabled: false }`, the shape the wrap-up already uses.
+ */
+function reasoningControl(effort: OpenRouterReasoningEffort): Record<string, unknown> {
+  return effort === 'none' ? { enabled: false } : { effort };
 }
 
 function hasProcessEnvOverride(key: string): boolean {
@@ -431,9 +456,12 @@ export function buildOpenRouterRequestBody(input: {
   maxOutputTokens?: number;
   /** CLAUDE_MEM_OPENROUTER_EXTRA_BODY; merged last, but never to the cmem gateway. */
   extraBody?: Record<string, unknown>;
+  /** CLAUDE_MEM_OPENROUTER_REASONING_EFFORT; openrouter.ai only. */
+  reasoningEffort?: OpenRouterReasoningEffort;
 }): Record<string, unknown> {
   const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
+  const typedReasoning = isOpenRouter && !input.plainText && input.reasoningEffort !== undefined;
   return withOpenRouterExtraBody({
     ...(useFallbacks
       ? { models: [input.model, ...input.fallbackModels] }
@@ -448,11 +476,26 @@ export function buildOpenRouterRequestBody(input: {
       response_format: { type: 'text' },
       reasoning: { enabled: false },
     } : {}),
+    // The reasoning-effort setting, for openrouter.ai only: a custom gateway's
+    // strict schema rejects the field, and the cmem gateway sets its own
+    // reasoning policy. A wrap-up keeps its own control above.
+    ...(typedReasoning && input.reasoningEffort
+      ? { reasoning: reasoningControl(input.reasoningEffort) }
+      : {}),
     // Ask openrouter.ai for usage accounting (token counts + cost).
     // Only sent to openrouter.ai — strict custom gateways may reject
     // unknown body fields.
     ...(isOpenRouter ? { usage: { include: true } } : {}),
-  }, input.extraBody, input.apiUrl, input.plainText);
+  }, typedReasoning ? withoutReasoning(input.extraBody) : input.extraBody, input.apiUrl, input.plainText);
+}
+
+/**
+ * The extra body without its `reasoning` field: the typed
+ * CLAUDE_MEM_OPENROUTER_REASONING_EFFORT setting decides reasoning when set.
+ */
+function withoutReasoning(extraBody: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!extraBody || !('reasoning' in extraBody)) return extraBody;
+  return Object.fromEntries(Object.entries(extraBody).filter(([key]) => key !== 'reasoning'));
 }
 
 /** The CLAUDE_MEM_OPENROUTER_EXTRA_BODY value a warning was last logged for: once per value, not per status poll. */
@@ -575,6 +618,11 @@ export function resolveOpenRouterConfig(
   // Off the gateway only: the gateway sets its own request policy on traffic
   // it pays for (the request body itself drops it there too).
   const extraBody = resolveExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+  const reasoningEffort = resolveReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
+  if (reasoningEffort && extraBody && 'reasoning' in extraBody && !warnedReasoningOverlap) {
+    warnedReasoningOverlap = true;
+    logger.warn('SDK', 'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT is set, so the reasoning field in CLAUDE_MEM_OPENROUTER_EXTRA_BODY is ignored');
+  }
 
   return {
     apiKey: apiKey || apiKeys[0] || '',
@@ -585,7 +633,25 @@ export function resolveOpenRouterConfig(
     siteUrl,
     appName,
     ...(extraBody ? { extraBody } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
   };
+}
+
+/** The reasoning-effort value a warning was last logged for: once per value, not per status poll. */
+let lastWarnedReasoningEffort: string | null = null;
+
+/** Whether the effort-overrides-extra-body warning was logged (once per process). */
+let warnedReasoningOverlap = false;
+
+/** The configured effort, warning once about a value that is not one. Never throws. */
+function resolveReasoningEffort(raw: unknown): OpenRouterReasoningEffort | undefined {
+  const effort = parseOpenRouterReasoningEffort(raw);
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!effort && text && lastWarnedReasoningEffort !== text) {
+    lastWarnedReasoningEffort = text;
+    logger.warn('SDK', `Ignoring CLAUDE_MEM_OPENROUTER_REASONING_EFFORT "${text}": use one of ${OPENROUTER_REASONING_EFFORTS.join(', ')}, or leave it empty`);
+  }
+  return effort;
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -650,7 +716,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter' },
       ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
         history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
-        signal, config.plainText, perAttemptTimeoutMs, config.extraBody,
+        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort,
       ),
     );
   }
@@ -669,8 +735,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     maxOutputTokens: number,
     plainText?: boolean,
     extraBody?: Record<string, unknown>,
+    reasoningEffort?: OpenRouterReasoningEffort,
   ): Promise<Response> {
-    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody });
+    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort });
     return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
@@ -697,6 +764,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     plainText?: boolean,
     perAttemptTimeoutMs?: number,
     extraBody?: Record<string, unknown>,
+    reasoningEffort?: OpenRouterReasoningEffort,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -719,7 +787,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });

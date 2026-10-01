@@ -171,6 +171,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
+  CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: string;
   CLAUDE_MEM_OPENAI_COMPAT_PRESET: string;
   CLAUDE_MEM_OPENAI_COMPAT_API_KEY: string;
   CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: string;
@@ -391,6 +392,7 @@ export class SettingsDefaultsManager {
     // JSON object of provider-specific request fields, e.g. {"reasoning":{"enabled":false}}.
     // Settings file or env only (never the HTTP settings API); never sent to the cmem gateway.
     CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',
+    CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: '',  // none | minimal | low | medium | high. Empty sends nothing. openrouter.ai only.
     CLAUDE_MEM_OPENAI_COMPAT_PRESET: '',  // Named endpoint preset for the openai-compatible provider (nvidia-nim, deepseek, groq, together, vllm, ollama, lmstudio). Empty = 'custom', configure the base URL by hand.
     CLAUDE_MEM_OPENAI_COMPAT_API_KEY: '',  // Key for the openai-compatible provider. Never shares the OpenRouter key or its attribution headers.
     CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: '',  // Optional extra keys (newline/comma separated) for the openai-compatible provider.
