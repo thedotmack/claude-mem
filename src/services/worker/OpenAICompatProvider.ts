@@ -25,6 +25,7 @@ import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { isKeyAllowedForEndpoint } from '../../shared/cmem-gateway.js';
+import { describeNetworkFailure, networkFailureSuffix } from '../../shared/network-failure.js';
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { logger } from '../../utils/logger.js';
@@ -196,6 +197,8 @@ export function classifyOpenAICompatError(input: {
   headers?: Headers | { get(name: string): string | null };
   cause: unknown;
   endpointLabel?: string;
+  /** The URL a request with no response was sent to, named in the network-error message. */
+  requestUrl?: string;
 }): ClassifiedProviderError {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
@@ -282,9 +285,11 @@ export function classifyOpenAICompatError(input: {
     // No status means the request never completed. For a localhost preset this
     // is nearly always "the server is not running", which is worth saying.
     const message = input.cause instanceof Error ? input.cause.message : String(input.cause);
-    return new ClassifiedProviderError(`${label} network error: ${message}`, {
+    const network = describeNetworkFailure(input.cause, input.requestUrl);
+    return new ClassifiedProviderError(`${label} network error: ${message}${networkFailureSuffix(network)}`, {
       kind: 'transient',
       cause: input.cause,
+      ...(network.localNetworkHint ? { action: network.localNetworkHint } : {}),
     });
   }
 
@@ -503,7 +508,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         response = await this.fetchChatCompletion(config, apiKey, messages, maxOutputTokens, attemptSignal);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
-        throw classifyOpenAICompatError({ cause: err, endpointLabel: label });
+        throw classifyOpenAICompatError({ cause: err, endpointLabel: label, requestUrl: config.apiUrl });
       }
 
       if (!response.ok) {
