@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -190,10 +190,98 @@ describe('OMP Claude Mem hook', () => {
 
     await handlers.session_start?.();
     await handlers.before_agent_start?.({ prompt: 'secret work' }, { cwd: '/tmp/omp-excluded' });
+    await drainMicrotasks();
+    // Once the worker says the checkout is excluded, nothing more is sent.
+    await handlers.tool_result?.({ toolName: 'read', content: 'secret file' }, { cwd: '/tmp/omp-excluded' });
+    await handlers.before_agent_start?.({ prompt: 'more secret work' }, { cwd: '/tmp/omp-excluded' });
     await handlers.session_shutdown?.();
     await drainMicrotasks();
 
     expect(requests.map(request => request.path)).toEqual(['/api/sessions/init']);
+  });
+
+  it('records every user prompt, not only the first (R5-6)', async () => {
+    const requests: CapturedRequest[] = [];
+    installFetchCapture(requests);
+    const handlers = registerHook();
+
+    await handlers.session_start?.();
+    for (const prompt of ['first prompt', 'second prompt', 'third prompt']) {
+      await handlers.before_agent_start?.({ prompt }, { cwd: '/tmp/omp-every-prompt' });
+      await drainMicrotasks();
+    }
+
+    const inits = requests.filter(request => request.path === '/api/sessions/init');
+    expect(inits.map(request => request.body.prompt)).toEqual(['first prompt', 'second prompt', 'third prompt']);
+    expect(new Set(inits.map(request => request.body.contentSessionId)).size).toBe(1);
+  });
+
+  it('never inits from a tool result that arrives before a prompt (R5-6)', async () => {
+    const requests: CapturedRequest[] = [];
+    installFetchCapture(requests);
+    const handlers = registerHook();
+
+    await handlers.session_start?.();
+    await handlers.tool_result?.(
+      { toolName: 'read', input: { path: 'a.ts' }, content: 'file text' },
+      { cwd: '/tmp/omp-tool-first' },
+    );
+    await drainMicrotasks();
+    await handlers.before_agent_start?.({ prompt: 'the real prompt' }, { cwd: '/tmp/omp-tool-first' });
+    await drainMicrotasks();
+
+    // A prompt-less init would pin the session to "[media prompt]" and, being
+    // the only init, keep the real prompt from ever being recorded.
+    expect(requests.map(request => request.path)).toEqual(['/api/sessions/observations', '/api/sessions/init']);
+    expect(requests[1]?.body).toMatchObject({
+      contentSessionId: requests[0]?.body.contentSessionId,
+      prompt: 'the real prompt',
+    });
+  });
+
+  it('bounds every worker request with a timeout that counts as a breaker failure (R5-7)', async () => {
+    // Every request's timeout has already elapsed: fetch rejects with the
+    // signal's reason, as it does for a hung worker. A request with no signal
+    // could never be cut short.
+    const timeouts: number[] = [];
+    const timeoutSpy = spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds: number) => {
+      timeouts.push(milliseconds);
+      return AbortSignal.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+    });
+    const paths: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      paths.push(new URL(String(input)).pathname);
+      throw init?.signal?.reason ?? new Error('unbounded request');
+    }) as typeof fetch;
+    const handlers = registerHook();
+    const conversation = { messages: [{ role: 'user', content: 'hi' }] };
+    const cwd = { cwd: '/tmp/omp-hung-worker' };
+
+    try {
+      await handlers.session_start?.();
+      await handlers.before_agent_start?.({ prompt: 'p' }, cwd);
+      await drainMicrotasks();
+      await handlers.tool_result?.({ toolName: 'read', content: 'x' }, cwd);
+      await drainMicrotasks();
+      expect(await handlers.context?.(conversation, cwd)).toBeUndefined();
+
+      expect(paths).toEqual(['/api/sessions/init', '/api/sessions/observations', '/api/context/inject']);
+      expect(timeouts).toEqual([5_000, 5_000, 5_000]);
+
+      // Three timeouts opened the breaker: the next model call skips the worker.
+      expect(await handlers.context?.(conversation, cwd)).toBeUndefined();
+      expect(paths).toHaveLength(3);
+    } finally {
+      // The breaker is module state: once its 30 s window has passed, one
+      // successful request closes it again for the tests that follow.
+      timeoutSpy.mockRestore();
+      const afterTheBreakerWindow = Date.now() + 31_000;
+      const nowSpy = spyOn(Date, 'now').mockReturnValue(afterTheBreakerWindow);
+      globalThis.fetch = (async () => new Response('', { status: 200 })) as typeof fetch;
+      await handlers.context?.(conversation, cwd);
+      nowSpy.mockRestore();
+      await handlers.session_shutdown?.();
+    }
   });
 
   it('asks the worker for context by cwd and keeps the conversation', async () => {
