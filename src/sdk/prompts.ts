@@ -1,5 +1,6 @@
 
 import { logger } from '../utils/logger.js';
+import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../utils/redaction.js';
 import type { ModeConfig } from '../services/domain/types.js';
 
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
@@ -287,7 +288,16 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }
 
-export function buildObservationPrompt(obs: Observation): string {
+/**
+ * `fieldMaxChars` caps each of <parameters> and <outcome>; callers pass the
+ * observer model's window-aware cap (observationFieldMaxChars).
+ */
+export function buildObservationPrompt(
+  obs: Observation,
+  fieldMaxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
+  /** The previous reply drifted off the schema (#3461): restate it once. */
+  restateSchema: boolean = false,
+): string {
   let toolInput: any;
   let toolOutput: any;
 
@@ -309,19 +319,27 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;
   }
 
+  const parameters = truncateObservationField(stripImagePayloadsFromField(toolInput), fieldMaxChars);
+  const outcome = truncateObservationField(stripImagePayloadsFromField(toolOutput), fieldMaxChars);
+  const redactionHint = hasRedactionMarker(parameters + outcome) ? `\n${REDACTION_MARKER_HINT}\n` : '';
+
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
-  <parameters>${truncateObservationField(stripImagePayloadsFromField(toolInput))}</parameters>
-  <outcome>${truncateObservationField(stripImagePayloadsFromField(toolOutput))}</outcome>
+  <parameters>${parameters}</parameters>
+  <outcome>${outcome}</outcome>
 </observed_from_primary_session>
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
-
+${redactionHint}
 Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" /> if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
-Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
+Never reply with an empty response, or with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Only <observation> blocks or the <skip_summary /> sentinel complete this tool use; anything else is asked again once, then discarded.${restateSchema ? `\n${OBSERVATION_SCHEMA_REMINDER}` : ''}`;
 }
+
+/** Restated once after a reply that used tags outside the observation schema (#3461). */
+export const OBSERVATION_SCHEMA_REMINDER =
+  'Your previous reply used tags outside the observation format. Use only <type>, <title>, <subtitle>, <facts>, <narrative>, <concepts>, <files_read> and <files_modified> inside each <observation>.';
 
 export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
   const lastAssistantMessage = session.last_assistant_message || (() => {
@@ -342,7 +360,7 @@ ${mode.prompts.summary_instruction}
 
 ${mode.prompts.summary_context_label}
 ${lastAssistantMessage}
-
+${hasRedactionMarker(lastAssistantMessage) ? `\n${REDACTION_MARKER_HINT}\n` : ''}
 ${mode.prompts.summary_format_instruction}
 <summary>
   <request>${mode.prompts.xml_summary_request_placeholder}</request>
@@ -354,6 +372,7 @@ ${mode.prompts.summary_format_instruction}
 </summary>
 
 REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
+If there is genuinely nothing to summarize, reply with exactly <skip_summary reason="nothing durable" /> instead of an empty response or prose.
 ${mode.prompts.summary_footer}`;
 }
 
@@ -387,4 +406,26 @@ ${mode.prompts.continuation_instruction}
 ${observationSkeleton(mode)}
 
 ${mode.prompts.header_memory_continued}`;
+}
+
+/** The user-request block buildInitPrompt and buildContinuationPrompt embed. */
+const USER_REQUEST_BLOCK = /<observed_from_primary_session>\s*<user_request>[\s\S]*?<\/observed_from_primary_session>/;
+
+/**
+ * Split an init or continuation prompt into the observer's instructions and
+ * the user's request (#3868). HTTP providers send the instructions as the
+ * system message and the request as the first user turn: a small model keeps
+ * the output schema in view that way, where the same text sent as one user
+ * turn drifts out of its attention as the conversation grows. `userRequest`
+ * is null when the prompt carries no request block.
+ */
+export function splitFramingPrompt(prompt: string): { instructions: string; userRequest: string | null } {
+  const match = prompt.match(USER_REQUEST_BLOCK);
+  if (!match) {
+    return { instructions: prompt, userRequest: null };
+  }
+  return {
+    instructions: prompt.replace(match[0], '').replace(/\n{3,}/g, '\n\n').trim(),
+    userRequest: match[0],
+  };
 }

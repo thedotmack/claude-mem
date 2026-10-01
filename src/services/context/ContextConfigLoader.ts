@@ -5,6 +5,12 @@ import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ContextConfig } from './types.js';
 
+/** Reinforcement weight; anything non-numeric or negative means off. */
+function parseReinforcementAlpha(raw: string | undefined): number {
+  const alpha = Number(raw);
+  return Number.isFinite(alpha) && alpha > 0 ? alpha : 0;
+}
+
 function parseCsvSetting(raw: string | undefined): string[] | null {
   const values = (raw ?? '').split(',').map(v => v.trim()).filter(v => v !== '');
   return values.length > 0 ? values : null;
@@ -61,5 +67,7 @@ export function loadContextConfig(): ContextConfig {
     fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
     showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
     showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
+    mainAgentOnly: settings.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY !== 'false',
+    reinforcementAlpha: parseReinforcementAlpha(settings.CLAUDE_MEM_REINFORCE_ALPHA),
   };
 }

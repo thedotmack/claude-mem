@@ -254,4 +254,29 @@ describe('what the fitted block delivers (#3811 review)', () => {
     expect(delivered.stats.observation_count).toBe(3);
     expect(delivered.stats.has_session_summary).toBe(true);
   });
+
+  it('renders the terminal once from the model-fitted items and config, retaining health warnings', () => {
+    const queried = Array.from({ length: 50 }, (_, i) => obs(i));
+    const config = makeConfig();
+    const model = fitContextForDelivery(
+      queried, [], config, WARNING, renderBlock, CONTEXT_OUTPUT_LIMIT, false,
+    );
+    let previewCalls = 0;
+    const preview = fitContextForDelivery(
+      queried, [], config, WARNING, renderBlock, CONTEXT_OUTPUT_LIMIT, false,
+      (selected, fittedConfig) => {
+        previewCalls++;
+        expect(selected).toEqual(queried.slice(0, model.stats.observation_count));
+        expect(fittedConfig.fullObservationCount).toBe(0);
+        expect(fittedConfig.sessionCount).toBe(0);
+        expect(fittedConfig.showLastSummary).toBe(false);
+        return selected.map(item => `#${item.id} ${'verbose '.repeat(100)}`).join('\n');
+      },
+    );
+    expect(previewCalls).toBe(1);
+    expect(preview.stats).toEqual(model.stats);
+    expect(preview.text.length).toBeLessThanOrEqual(CONTEXT_OUTPUT_LIMIT);
+    expect(preview.text).toContain('Terminal preview truncated');
+    expect(preview.text.endsWith(`\x1b[31m${WARNING}\x1b[0m`)).toBe(true);
+  });
 });

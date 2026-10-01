@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 
@@ -244,6 +244,8 @@ function makeFreshPlugin(
 
   const fakeBunScript = [
     '#!/usr/bin/env bash',
+    // The install marker records bun's version (#3092).
+    'if [ "$1" = "--version" ]; then echo 9.9.9; exit 0; fi',
     'if [ "$1" = "install" ]; then',
     `  : > "${join(pluginRoot, BUN_INVOKED_MARKER)}"`,
     ...installBody,
@@ -497,5 +499,73 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
     // And the repair must have populated the plugin's OWN tree.
     expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'))).toBe(true);
+  });
+});
+
+// #3092: only the npx installer writes .install-version, so every
+// marketplace-only install used to print "runtime not yet set up" on every
+// Setup run. The Setup hook now records the marker itself once the dependency
+// closure checks complete, and hints only when modules are still missing.
+describe.skipIf(SKIP_NON_UNIX)('version-check install marker self-heal (#3092)', () => {
+  const RUNTIME_NOT_SET_UP_HINT = 'runtime not yet set up';
+
+  function readMarker(pluginRoot: string): Record<string, unknown> {
+    return JSON.parse(readFileSync(join(pluginRoot, '.install-version'), 'utf-8'));
+  }
+
+  test('writes the marker for a complete marketplace-only install and stays quiet', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('marker-missing-complete');
+    rmSync(join(pluginRoot, '.install-version'));
+    writeFakePackage(pluginRoot, 'zod', ZOD_COMPLETE_EXPORTS);
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).not.toContain(RUNTIME_NOT_SET_UP_HINT);
+    expect(bunWasInvoked(pluginRoot)).toBe(false);
+    const marker = readMarker(pluginRoot);
+    expect(marker.version).toBe('0.0.0');
+    expect(typeof marker.installedAt).toBe('string');
+    // isInstallCurrent() treats a marker without `bun` as stale whenever bun is
+    // present, so the hook records the bun it found (the fake reports 9.9.9).
+    expect(marker.bun).toBe('9.9.9');
+  });
+
+  test('writes the marker after it installs the missing dependencies', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('marker-missing-installs');
+    rmSync(join(pluginRoot, '.install-version'));
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(stderr).not.toContain(RUNTIME_NOT_SET_UP_HINT);
+    expect(readMarker(pluginRoot).version).toBe('0.0.0');
+  });
+
+  test('refreshes a stale marker instead of nagging when the closure is complete', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('marker-stale-complete');
+    writeFileSync(join(pluginRoot, '.install-version'), JSON.stringify({ version: '0.0.0-old' }));
+    writeFakePackage(pluginRoot, 'zod', ZOD_COMPLETE_EXPORTS);
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).not.toContain('upgraded to v');
+    expect(readMarker(pluginRoot).version).toBe('0.0.0');
+  });
+
+  test('keeps the marker absent and names the missing modules when the install fails', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('marker-missing-install-fails', 'partial-then-fail');
+    rmSync(join(pluginRoot, '.install-version'));
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain('plugin dependencies missing (zod');
+    expect(stderr).toContain('npx claude-mem@latest install');
+    expect(existsSync(join(pluginRoot, '.install-version'))).toBe(false);
+    // The partial tree is preserved (#3972): no forced delete-and-reinstall.
+    expect(existsSync(join(pluginRoot, PARTIAL_FETCH_ARTIFACT_REL))).toBe(true);
   });
 });

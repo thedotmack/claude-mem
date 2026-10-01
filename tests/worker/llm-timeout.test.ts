@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { resolveLlmTimeoutMs, withRetry } from '../../src/services/worker/retry.js';
-import { isClassified } from '../../src/services/worker/provider-errors.js';
+import { resolveLlmTimeoutMs, resolveFieldOptimizeTimeoutMs, withRetry } from '../../src/services/worker/retry.js';
+import { DEADLINE_EXCEEDED_CODE, isClassified } from '../../src/services/worker/provider-errors.js';
+import { DEFAULT_LLM_TIMEOUT_MS, SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { FIELD_OPTIMIZE_TIMEOUT_MS } from '../../src/services/worker/field-optimizer.js';
 
 // Every resolve reads a settings file; point it at a scratch one so the tests
 // never see (or seed) the real ~/.claude-mem/settings.json.
@@ -29,8 +31,28 @@ function writeSettings(settings: Record<string, unknown>): void {
 // reported Ollama backend had a p99 of 29.8s against a 30s deadline — and the
 // only workaround was editing the installed bundle after every update.
 describe('resolveLlmTimeoutMs', () => {
-  it('defaults to 30s when nothing is configured', () => {
-    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(30_000);
+  // The cmem.ai gateway's normal tail runs past 30s (p90 40–72s, p99 ~100–140s),
+  // so a 30s deadline abandoned ~20% of served requests, which the gateway can
+  // still complete and bill. 180s clears the worst observed daily p99 and stays
+  // under the gateway's own 240s request timeout.
+  it('defaults to 180s when nothing is configured', () => {
+    expect(DEFAULT_LLM_TIMEOUT_MS).toBe(180_000);
+    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(180_000);
+  });
+
+  // Every settings.json seeded since #4125 has the old default frozen on disk,
+  // and a persisted value wins over the default — without the migration the
+  // raise would never reach those installs.
+  it('moves an install seeded with the old 30s default onto the new deadline', () => {
+    writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '30000' });
+    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(DEFAULT_LLM_TIMEOUT_MS);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LLM_TIMEOUT_MS)
+      .toBe(String(DEFAULT_LLM_TIMEOUT_MS));
+  });
+
+  it('keeps an explicitly chosen shorter deadline', () => {
+    writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '15000' });
+    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(15_000);
   });
 
   // The key was env-only, so a value in settings.json — where every other
@@ -47,7 +69,7 @@ describe('resolveLlmTimeoutMs', () => {
 
   it('validates a settings.json value like an env value', () => {
     writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '90000ms' });
-    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(30_000);
+    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(DEFAULT_LLM_TIMEOUT_MS);
   });
 
   // loadFromFile returns JSON values as-is, so a bare number used to reach
@@ -60,7 +82,7 @@ describe('resolveLlmTimeoutMs', () => {
   it('falls back without throwing on an out-of-range number or a non-string, non-number value', () => {
     for (const value of [300001, 499, true]) {
       writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: value });
-      expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(30_000);
+      expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(DEFAULT_LLM_TIMEOUT_MS);
     }
   });
 
@@ -68,7 +90,7 @@ describe('resolveLlmTimeoutMs', () => {
   it('falls back on an array or an object value', () => {
     for (const value of [[90000], { ms: 90000 }]) {
       writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: value });
-      expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(30_000);
+      expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(DEFAULT_LLM_TIMEOUT_MS);
     }
   });
 
@@ -83,8 +105,73 @@ describe('resolveLlmTimeoutMs', () => {
     // worker for hours. Both keep the default, matching the other
     // CLAUDE_MEM_*_TIMEOUT_MS settings.
     for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
-      expect(resolveLlmTimeoutMs({ CLAUDE_MEM_LLM_TIMEOUT_MS: value }, settingsPath)).toBe(30_000);
+      expect(resolveLlmTimeoutMs({ CLAUDE_MEM_LLM_TIMEOUT_MS: value }, settingsPath)).toBe(DEFAULT_LLM_TIMEOUT_MS);
     }
+  });
+});
+
+// #4134: the oversized-field condensation pass (field-optimizer.ts) raced a
+// bounded model call against a hardcoded 30s that no setting could change, so a
+// slow or proxied backend lost field detail with no supported override. This
+// resolver gives the field pass the same env-first, then settings.json rules as
+// the sibling per-attempt deadline.
+describe('resolveFieldOptimizeTimeoutMs', () => {
+  // The field pass is one request to the same backend as the observer request,
+  // and the heaviest one: the whole oversized field in, up to 12.8K characters
+  // back. At 30s it expired on the gateway's ordinary latency (p90 40–72s) and
+  // fell back to truncation while the abandoned request could still be billed.
+  it('defaults to 180s, the same per-request deadline as the observer request', () => {
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
+    expect(FIELD_OPTIMIZE_TIMEOUT_MS).toBe(DEFAULT_LLM_TIMEOUT_MS);
+  });
+
+  // The module's own fallback is a copy (field-optimizer.ts stays free of the
+  // settings module); this stops it drifting from the shipped default.
+  it('falls back to the same value the settings default ships', () => {
+    expect(String(FIELD_OPTIMIZE_TIMEOUT_MS)).toBe(
+      SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS,
+    );
+  });
+
+  it('moves an install seeded with the old 30s budget onto the new default', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '30000' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).toBe('180000');
+  });
+
+  it('keeps an explicitly chosen shorter budget', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '15000' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(15_000);
+  });
+
+  it('reads settings.json when the env var is unset', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '120000' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(120_000);
+  });
+
+  it('lets the env var override settings.json', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '120000' });
+    expect(resolveFieldOptimizeTimeoutMs({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '45000' }, settingsPath)).toBe(45_000);
+  });
+
+  it('honors a numeric settings.json value and rejects a typo', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: 90000 });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(90_000);
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '90000ms' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
+  });
+
+  it('falls back to the default rather than trusting a value out of range', () => {
+    for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
+      expect(resolveFieldOptimizeTimeoutMs({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: value }, settingsPath)).toBe(180_000);
+    }
+  });
+
+  // The two deadlines are independent knobs: setting one must not move the other.
+  it('resolves independently of CLAUDE_MEM_LLM_TIMEOUT_MS', () => {
+    writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(180_000);
+    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(120_000);
   });
 });
 
@@ -124,6 +211,51 @@ describe('per-attempt deadline', () => {
     expect(isClassified(error)).toBe(true);
     expect(isClassified(error) && error.kind).toBe('transient');
     expect((error as Error).message).toMatch(/exceeded the 20ms per-attempt deadline/);
+  });
+
+  // Since #4125 an expiry is a quiet pause, not an error. The code is what keeps
+  // an abandoned (possibly still billed) request countable apart from a network
+  // fault, and the action is the remedy the health warning shows.
+  it('marks an expired deadline with its own code and remedy', async () => {
+    const error = await withRetry(
+      signal => new Promise<string>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
+      }),
+      { label: 'probe', perAttemptTimeoutMs: 20, maxRetries: 0 },
+    ).catch((err: unknown) => err);
+
+    expect(isClassified(error) && error.code).toBe(DEADLINE_EXCEEDED_CODE);
+    expect(isClassified(error) && error.action).toContain('Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
+    // The remedy lives in the action alone, so the warning does not print it twice.
+    expect((error as Error).message).not.toContain('Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
+  });
+
+  // Whenever the env var is set it wins over settings.json (an unusable value
+  // falls back to the default, not to the file), so advice to edit settings.json
+  // would change nothing. Review on #4278.
+  it('points the remedy at the environment when the env var overrides settings.json', async () => {
+    const expire = () => withRetry(
+      signal => new Promise<string>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
+      }),
+      { label: 'probe', perAttemptTimeoutMs: 20, maxRetries: 0 },
+    ).catch((err: unknown) => err);
+    const prior = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+    try {
+      delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+      const fromSettings = await expire();
+      expect(isClassified(fromSettings) && fromSettings.action).toContain('in ~/.claude-mem/settings.json');
+      expect(isClassified(fromSettings) && fromSettings.action).not.toContain('environment');
+
+      process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '120000';
+      const fromEnv = await expire();
+      expect(isClassified(fromEnv) && fromEnv.action).toContain('Raise CLAUDE_MEM_LLM_TIMEOUT_MS');
+      expect(isClassified(fromEnv) && fromEnv.action).toContain('set in your environment, which overrides ~/.claude-mem/settings.json');
+      expect(isClassified(fromEnv) && fromEnv.action).not.toContain('in ~/.claude-mem/settings.json');
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+      else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = prior;
+    }
   });
 
   it('still retries a genuine transient failure', async () => {
