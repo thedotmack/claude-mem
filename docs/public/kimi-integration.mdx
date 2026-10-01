@@ -24,6 +24,7 @@ Kimi Code CLI
   ├── SessionStart (startup|resume) ──→ worker start
   ├── UserPromptSubmit ───────────────→ Init session + context injection (first prompt of session only)
   ├── PostToolUse ────────────────────→ Record observation
+  ├── PostToolUseFailure ─────────────→ Record observation (failed call)
   ├── PreToolUse (Read) ──────────────→ File-context observation
   ├── Stop ───────────────────────────→ Summarize session
   └── PreCompact (manual|auto) ───────→ Summarize session
@@ -66,7 +67,8 @@ Kimi Code CLI
 | --- | --- | --- | --- |
 | `SessionStart` | `startup\|resume` | worker start | warms up the worker only |
 | `UserPromptSubmit` | (all) | `session-init-context` | composite hook; blockable event; we always exit 0; timeline stdout is appended to Kimi context on the first prompt of a session only |
-| `PostToolUse` | (all) | `observation` | success-only; `PostToolUseFailure` unused in v1 |
+| `PostToolUse` | (all) | `observation` | the payload carries `tool_output` |
+| `PostToolUseFailure` | (all) | `observation` | a failed tool call; the payload carries `error` |
 | `PreToolUse` | `Read` | `file-context` | mirrors Claude's matcher |
 | `Stop` | (all) | `summarize` | |
 | `PreCompact` | `manual\|auto` | `summarize` | also clears the injection marker so context re-injects after compaction |
@@ -104,7 +106,7 @@ npx claude-mem kimi uninstall
 
 ### What Gets Installed
 
-The installer writes a marker-delimited managed block into `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`) containing six `[[hooks]]` rules:
+The installer writes a marker-delimited managed block into `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`) containing seven `[[hooks]]` rules:
 
 ```toml
 # >>> claude-mem kimi hooks (managed by claude-mem; do not edit) >>>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { deriveKimiTranscriptPath, kimiAdapter } from '../../../src/cli/adapters/kimi.js';
@@ -53,6 +53,47 @@ describe('kimiAdapter.normalizeInput', () => {
     const input = kimiAdapter.normalizeInput({ session_id: 'session_abc', cwd: process.cwd() });
     expect(input.transcriptPath).toBe(wire);
     rmSync(home, { recursive: true, force: true });
+  });
+});
+
+// Payload shapes pinned from Kimi Code's source (tests/fixtures/hosts/kimi-code-hooks.json).
+describe('kimiAdapter against Kimi Code payloads', () => {
+  const fixture = JSON.parse(
+    readFileSync(path.join(import.meta.dir, '..', '..', 'fixtures', 'hosts', 'kimi-code-hooks.json'), 'utf-8'),
+  ) as { payloads: Record<string, Record<string, unknown>> };
+
+  test('reads tool_output and tool_call_id from PostToolUse', () => {
+    const input = kimiAdapter.normalizeInput(fixture.payloads.PostToolUse);
+    expect(input.toolName).toBe('Bash');
+    expect(input.toolInput).toEqual({ command: 'ls' });
+    expect(input.toolResponse).toBe('README.md\nsrc\n');
+    expect(input.toolUseId).toBe('call_1');
+  });
+
+  test('records the error of a PostToolUseFailure as the tool response', () => {
+    const input = kimiAdapter.normalizeInput(fixture.payloads.PostToolUseFailure);
+    expect(input.toolResponse).toEqual(fixture.payloads.PostToolUseFailure.error);
+    expect(input.hookEventName).toBe('PostToolUseFailure');
+  });
+
+  test('joins the text parts of a ContentPart[] prompt', () => {
+    expect(kimiAdapter.normalizeInput(fixture.payloads.UserPromptSubmit).prompt).toBe('fix the login redirect');
+    const mixed = {
+      ...fixture.payloads.UserPromptSubmit,
+      prompt: [
+        { type: 'text', text: 'compare these' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+        { type: 'text', text: 'two screenshots' },
+      ],
+    };
+    expect(kimiAdapter.normalizeInput(mixed).prompt).toBe('compare these\ntwo screenshots');
+  });
+
+  test('leaves an image-only prompt empty, and still takes a plain string', () => {
+    const base = fixture.payloads.UserPromptSubmit;
+    expect(kimiAdapter.normalizeInput({ ...base, prompt: [{ type: 'image_url', image_url: { url: 'x' } }] }).prompt)
+      .toBeUndefined();
+    expect(kimiAdapter.normalizeInput({ ...base, prompt: 'plain text' }).prompt).toBe('plain text');
   });
 });
 
