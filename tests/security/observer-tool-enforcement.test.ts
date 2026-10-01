@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { readFileSync, existsSync, rmSync } from 'fs';
+import { readFileSync, existsSync, rmSync, mkdtempSync, writeFileSync, chmodSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import {
   buildHardenedSdkOptions,
   OBSERVER_DISALLOWED_TOOLS,
@@ -9,6 +12,7 @@ import {
   getObserverAuditLogPath,
 } from '../../src/utils/observer-audit.js';
 import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
+import { createSdkSpawnFactory, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
 
 const BASE_INPUT = {
   source: 'Observer' as const,
@@ -29,7 +33,7 @@ function readAuditLines(): Array<Record<string, unknown>> {
 
 describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () => {
   describe('belt + suspenders + braces: option surface', () => {
-    it('sets tools to an empty array (disables ALL built-in tools)', () => {
+    it('sets tools to an empty array (disables ALL built-in tools on the SDK path)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       expect(Array.isArray(opts.tools)).toBe(true);
       expect(opts.tools).toHaveLength(0);
@@ -41,14 +45,21 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       expect(opts.allowedTools).toHaveLength(0);
     });
 
-    it('keeps the full disallowedTools deny-list (12 tools)', () => {
+    it('keeps the full disallowedTools deny-list (14 tools)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       const denied = opts.disallowedTools ?? [];
       for (const tool of OBSERVER_DISALLOWED_TOOLS) {
         expect(denied).toContain(tool);
       }
       expect(denied).toHaveLength(OBSERVER_DISALLOWED_TOOLS.length);
-      expect(OBSERVER_DISALLOWED_TOOLS).toHaveLength(12);
+      expect(OBSERVER_DISALLOWED_TOOLS).toHaveLength(14);
+    });
+
+    it('denies the peer-session tools that let a toolless Observer borrow authority', () => {
+      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
+      const denied = opts.disallowedTools ?? [];
+      expect(denied).toContain('SendMessage');
+      expect(denied).toContain('ListAgents');
     });
 
     it("uses the most restrictive non-interactive permissionMode ('dontAsk')", () => {
@@ -201,4 +212,71 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       expect(observer).toEqual(knowledge);
     });
   });
+});
+
+/**
+ * F1 — `tools: []` must reach the Claude CLI on the Observer spawn path.
+ *
+ * The SDK serializes `tools: []` as the argv pair `--tools ""`. The Observer
+ * spawn factory used to drop every `--flag ""` pair (an old workaround for
+ * cmd.exe losing empty arguments), so the CLI never saw `--tools` and ran with
+ * its full default tool set; only the deny-list, `dontAsk` and `canUseTool`
+ * were enforcing. The pair is now kept as the single token `--tools=`, which
+ * the CLI reads exactly like `--tools ""` (no built-in tools) and which
+ * survives cmd.exe.
+ */
+describe('F1: the empty tool list reaches the Claude CLI', () => {
+  it('normalizeSpawnSdkArgs keeps an empty SDK value as a single --flag= token', () => {
+    expect(normalizeSpawnSdkArgs(['--tools', '', '--disallowedTools', 'Bash,Read'])).toEqual([
+      '--tools=',
+      '--disallowedTools',
+      'Bash,Read',
+    ]);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'the spawned Observer argv carries --tools= (SDK serialization -> spawn factory -> child argv)',
+    async () => {
+      const fakeCliDir = mkdtempSync(join(tmpdir(), 'claude-mem-fake-cli-'));
+      const argvOutPath = join(fakeCliDir, 'argv.txt');
+      const fakeCliPath = join(fakeCliDir, 'claude');
+      // A stand-in `claude` that records its argv, one token per line, and exits.
+      writeFileSync(fakeCliPath, `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done > '${argvOutPath}'\n`);
+      chmodSync(fakeCliPath, 0o755);
+      const sessionDbId = 1_000_000 + process.pid;
+
+      try {
+        const observerQuery = query({
+          prompt: 'observe',
+          options: buildHardenedSdkOptions({
+            ...BASE_INPUT,
+            sessionDbId,
+            env: { ...process.env },
+            pathToClaudeCodeExecutable: fakeCliPath,
+            spawnClaudeCodeProcess: createSdkSpawnFactory(sessionDbId),
+          }),
+        });
+        try {
+          for await (const _message of observerQuery) {
+            // The fake CLI exits without speaking stream-json; the query ends or throws.
+          }
+        } catch {
+          // Expected: the stand-in CLI is not a real Claude Code process.
+        }
+
+        // One token per line; drop only the final newline so an empty token stays visible.
+        const spawnedArgv = readFileSync(argvOutPath, 'utf8').replace(/\n$/, '').split('\n');
+        expect(spawnedArgv).toContain('--tools=');
+        expect(spawnedArgv).not.toContain('--tools');
+        expect(spawnedArgv).not.toContain('');
+        // The other layers stay in place as defense in depth.
+        expect(spawnedArgv).toContain('--disallowedTools');
+        expect(spawnedArgv).toContain('--permission-mode');
+        expect(spawnedArgv).toContain('dontAsk');
+      } finally {
+        rmSync(fakeCliDir, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
 });
