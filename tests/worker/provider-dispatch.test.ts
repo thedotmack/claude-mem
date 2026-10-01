@@ -483,17 +483,40 @@ describe('provider-dispatch', () => {
       expect(selectProviderForGenerator().provider).toBe('gemini');
     });
 
-    it('never sends a fallback to the cmem gateway while it is turning the account away', () => {
+    it('skips the cmem gateway as a fallback only inside its trial-expiry window', () => {
+      pinGeminiPrimary('openrouter', {
+        CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_GATEWAY_BASE,
+        CLAUDE_MEM_OPENROUTER_API_KEY: CMEM_MEMORY_KEY,
+        CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString(),
+      });
+      recordQuotaExhausted('gemini', 'Daily limit reached');
+      expect(selectProviderForGenerator()).toEqual({ provider: 'gemini', gatewayProbeClaimId: null });
+      expect(quotaFallbackTarget('gemini')).toBeNull();
+      // With the gateway serving the account again, it is a fallback like any other.
+      process.env.CLAUDE_MEM_PRO_FALLBACK_AT = '';
+      expect(selectProviderForGenerator()).toEqual({ provider: 'openrouter', gatewayProbeClaimId: null, fallbackFrom: 'gemini' });
+    });
+
+    it('re-probes a refusing gateway fallback once per window, through the single gateway probe claim', () => {
+      // One subscription_inactive must not disqualify the gateway forever:
+      // once the marker's window elapses, exactly one caller tries it again.
       pinGeminiPrimary('openrouter', {
         CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_GATEWAY_BASE,
         CLAUDE_MEM_OPENROUTER_API_KEY: CMEM_MEMORY_KEY,
         CLAUDE_MEM_PRO_FALLBACK_AT: new Date(Date.now() - 2 * CMEM_FALLBACK_RETRY_MS).toISOString(),
       });
       recordQuotaExhausted('gemini', 'Daily limit reached');
-      expect(selectProviderForGenerator().provider).toBe('gemini');
-      // With the gateway serving the account again, it is a fallback like any other.
-      process.env.CLAUDE_MEM_PRO_FALLBACK_AT = '';
-      expect(selectProviderForGenerator()).toEqual({ provider: 'openrouter', gatewayProbeClaimId: null, fallbackFrom: 'gemini' });
+      expect(quotaFallbackTarget('gemini')).toBe('openrouter');
+
+      const probe = selectProviderForGenerator();
+      expect(probe.provider).toBe('openrouter');
+      expect(probe.fallbackFrom).toBe('gemini');
+      expect(probe.gatewayProbeClaimId).not.toBeNull();
+      // While that probe is out, everyone else stays with the held primary.
+      expect(selectProviderForGenerator()).toEqual({ provider: 'gemini', gatewayProbeClaimId: null });
+
+      releaseCmemGatewayProbe(probe.gatewayProbeClaimId);
+      expect(selectProviderForGenerator().gatewayProbeClaimId).not.toBeNull();
     });
 
     it('returns the primary once its window elapses with no probe in flight, so it can claim the probe', () => {
