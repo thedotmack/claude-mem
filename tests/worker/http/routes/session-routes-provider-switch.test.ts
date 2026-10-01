@@ -90,7 +90,9 @@ function makeFakeSession(sessionDbId: number): ActiveSession {
 
 function makeFakeMessageBuffer() {
   return {
-    getPendingCount: mock(() => 0),
+    // One message buffered: a generator only starts (or switches) when there
+    // is queued work — an empty queue is gated before provider selection.
+    getPendingCount: mock(() => 1),
     peekTypes: mock(() => [] as Array<{ message_type: string; tool_name?: string }>),
   };
 }
@@ -218,7 +220,6 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     expect(isSessionParkedForSlot(sessionDbId)).toBe(true);
 
     const originalAbortController = session.abortController;
-    const originalConversationHistory = session.conversationHistory;
     const originalClaimedMessageIds = session.claimedMessageIds;
 
     // #2756 round-2 review finding (important): normalizeAbortReason's new
@@ -252,8 +253,9 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     expect(session.abortController).not.toBe(originalAbortController);
     expect(session.abortController.signal.aborted).toBe(false);
 
-    // Queue/conversationHistory preserved across the switch (#2756 requirement).
-    expect(session.conversationHistory).toBe(originalConversationHistory);
+    // The queue survives the switch (#2756 requirement). The transcript need
+    // not: the new provider's generator opens a new generation seeded from the
+    // session's memory (#3800, #3479).
     expect(session.claimedMessageIds).toBe(originalClaimedMessageIds);
     expect(session.abortReason ?? null).toBeNull(); // consumed by handleGeneratorExit
 
