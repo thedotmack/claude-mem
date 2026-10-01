@@ -5,9 +5,10 @@ import type { SessionManager } from '../SessionManager.js';
 import type { ClaudeProvider } from '../ClaudeProvider.js';
 import type { GeminiProvider } from '../GeminiProvider.js';
 import type { OpenRouterProvider } from '../OpenRouterProvider.js';
+import type { OpenAICompatProvider } from '../OpenAICompatProvider.js';
 import type { CodexProvider } from '../CodexProvider.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
-import { recordCmemFallbackIfEligible, releaseCmemGatewayProbe } from '../provider-dispatch.js';
+import { recordCmemFallbackIfEligible, releaseCmemGatewayProbe, type SelectableProvider } from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
 import { normalizeAbortReason } from './abort-reason.js';
 import {
@@ -37,6 +38,8 @@ export interface GeneratorRunnerDependencies {
   openRouterAgent: OpenRouterProvider;
   /** Absent only in harnesses that never select Codex. */
   codexAgent?: CodexProvider;
+  /** Absent only in harnesses that never select openai-compatible. */
+  openAICompatAgent?: OpenAICompatProvider;
   workerService: WorkerService;
   completionHandler: SessionCompletionHandler;
   ensureGeneratorRunning: (sessionDbId: number, source: string) => Promise<void>;
@@ -66,7 +69,7 @@ export interface GeneratorRunnerDependencies {
  * request runs on to its deadline with nobody waiting for the answer.
  */
 function recordDeadlineExpiry(
-  provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
+  provider: SelectableProvider,
   session: ActiveSession,
   error: unknown,
   sessionManager: SessionManager,
@@ -83,7 +86,7 @@ function recordDeadlineExpiry(
 
 export async function startGeneratorWithProvider(
   session: ActiveSession | undefined,
-  provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
+  provider: SelectableProvider,
   source: string,
   /** The quota probe this run claimed, or null when it was admitted without one. */
   quotaProbeClaimId: number | null,
@@ -91,7 +94,7 @@ export async function startGeneratorWithProvider(
   gatewayProbeClaimId: number | null,
   deps: GeneratorRunnerDependencies,
 ): Promise<void> {
-  const { sessionManager, sdkAgent, geminiAgent, openRouterAgent, codexAgent, workerService,
+  const { sessionManager, sdkAgent, geminiAgent, openRouterAgent, codexAgent, openAICompatAgent, workerService,
     completionHandler, ensureGeneratorRunning, maybeSelfHealStaleClaudeSpawn } = deps;
   if (!session) return;
 
@@ -116,9 +119,25 @@ export async function startGeneratorWithProvider(
     session.abortController = new AbortController();
   }
 
-  const agent = provider === 'codex' ? codexAgent : provider === 'openrouter' ? openRouterAgent : (provider === 'gemini' ? geminiAgent : sdkAgent);
-  const agentName = provider === 'codex' ? 'Codex' : provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
-  if (!agent) throw new Error('Codex provider is not configured');
+  const agent = provider === 'codex'
+    ? codexAgent
+    : provider === 'openrouter'
+      ? openRouterAgent
+      : provider === 'gemini'
+        ? geminiAgent
+        : provider === 'openai-compatible'
+          ? openAICompatAgent
+          : sdkAgent;
+  const agentName = provider === 'codex'
+    ? 'Codex'
+    : provider === 'openrouter'
+      ? 'OpenRouter'
+      : provider === 'gemini'
+        ? 'Gemini'
+        : provider === 'openai-compatible'
+          ? 'OpenAI-compatible'
+          : 'Claude SDK';
+  if (!agent) throw new Error(`${agentName} provider is not configured`);
 
   const actualQueueDepth = sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
@@ -441,7 +460,7 @@ export async function startGeneratorWithProvider(
  */
 function bookClassifiedFailure(
   session: ActiveSession,
-  provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
+  provider: SelectableProvider,
   error: ClassifiedProviderError,
 ): number | null {
   let resumeAfterMs: number | null = null;

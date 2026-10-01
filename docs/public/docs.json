@@ -38,6 +38,7 @@
           "usage/getting-started",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "usage/openai-compatible-provider",
           "usage/multi-key-rotation",
           "usage/search-tools",
           "usage/knowledge-agents",

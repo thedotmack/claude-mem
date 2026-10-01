@@ -11,8 +11,9 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
+import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
-import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -83,6 +84,8 @@ export class SessionRoutes extends BaseRouteHandler {
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
     private codexAgent?: CodexProvider,
+    // After codexAgent, so every existing positional caller keeps its argument order.
+    private openAICompatAgent?: OpenAICompatProvider,
   ) {
     super();
     this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
@@ -152,6 +155,9 @@ export class SessionRoutes extends BaseRouteHandler {
           return await this.geminiAgent.formatTelegramWrapup(input, activeModelId);
         case 'openrouter':
           return await this.openRouterAgent.formatTelegramWrapup(input, activeModelId);
+        case 'openai-compatible':
+          if (!this.openAICompatAgent) throw new Error('OpenAI-compatible provider is not available');
+          return await this.openAICompatAgent.formatTelegramWrapup(input, activeModelId);
         default:
           return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
       }
@@ -408,7 +414,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private async admitAndStartGenerator(
     session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
     sessionDbId: number,
-    selectedProvider: 'claude' | 'gemini' | 'openrouter' | 'codex',
+    selectedProvider: SelectableProvider,
     source: string,
     gatewayProbeClaimId: number | null,
     /** The parked generator a provider switch is replacing, if any. */
@@ -503,7 +509,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
+    provider: SelectableProvider,
     source: string,
     /** The quota probe this run claimed, or null when it was admitted without one. */
     quotaProbeClaimId: number | null,
@@ -516,6 +522,7 @@ export class SessionRoutes extends BaseRouteHandler {
       geminiAgent: this.geminiAgent,
       openRouterAgent: this.openRouterAgent,
       codexAgent: this.codexAgent,
+      openAICompatAgent: this.openAICompatAgent,
       workerService: this.workerService,
       completionHandler: this.completionHandler,
       ensureGeneratorRunning: (id, trigger) => this.ensureGeneratorRunning(id, trigger),

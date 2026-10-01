@@ -57,6 +57,31 @@ export interface ProviderQueryResult {
 /** The first user turn of an observer request when the framing prompt carries no request block. */
 const OBSERVER_KICKOFF = 'Start observing the primary session.';
 
+/** One message of an OpenAI-shaped `/chat/completions` request. */
+export interface OpenAIChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+/** Sent when every turn is empty, so a request never carries `messages: []`. */
+const EMPTY_HISTORY_FALLBACK = '(context unavailable)';
+
+/**
+ * The answer text of an OpenAI-shaped reply's `message.content`. Gateways may
+ * send content blocks instead of a string; only text blocks count, and
+ * reasoning or tool-call arguments are never substituted for the answer
+ * (#4017). Anything else reads as no text.
+ */
+export function assistantText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((part): part is { type: 'text'; text: string } =>
+      part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text)
+    .join('\n');
+}
+
 /**
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
  * (Gemini, OpenRouter). The session lifecycle — synthetic memory-session-id
@@ -92,6 +117,19 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   /** Throw a provider-specific "API key not configured" error. */
   protected abstract missingApiKeyError(): Error;
+
+  /**
+   * Whether an empty API key is a misconfiguration for this provider.
+   *
+   * True for every hosted endpoint, and the default so Gemini and OpenRouter
+   * keep failing fast exactly as before. A local OpenAI-compatible server
+   * (Ollama, LM Studio, an unauthenticated vLLM) accepts any bearer token or
+   * none, so for those an empty key is the correct configuration and must not
+   * be treated as an unconfigured provider.
+   */
+  protected requiresApiKey(_config: TConfig): boolean {
+    return true;
+  }
 
   /**
    * Issue the actual HTTP request and normalize its response.
@@ -137,7 +175,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     activeModelId?: string,
   ): Promise<string> {
     const config = this.getConfig();
-    if (!config.apiKey) {
+    if (!config.apiKey && this.requiresApiKey(config)) {
       throw this.missingApiKeyError();
     }
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -188,6 +226,57 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   }
 
   /**
+   * The chat messages for an OpenAI-shaped request. An observer generation's
+   * framing prompt goes out as the system message and its user request as the
+   * first user turn (anchorFraming). After it, empty turns are dropped,
+   * consecutive same-role turns are merged and a leading assistant turn is
+   * skipped (#3491): the strict chat templates behind vLLM, Ollama and LM
+   * Studio reject all three, and an empty init reply or an empty observation
+   * reply produces them. A request never carries an empty message list.
+   */
+  protected conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIChatMessage[] {
+    const { system, turns } = this.anchorFraming(history);
+    const anchor: OpenAIChatMessage[] = system ? [{ role: 'system', content: system }] : [];
+
+    let newestNonEmptyContent: string | null = null;
+    for (const msg of turns) {
+      const trimmed = msg.content.trim();
+      if (trimmed.length > 0) {
+        newestNonEmptyContent = trimmed;
+      }
+    }
+
+    const messages: OpenAIChatMessage[] = [];
+    for (const msg of turns) {
+      const trimmed = msg.content.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const role = msg.role === 'assistant' ? 'assistant' : 'user';
+      if (messages.length === 0 && role === 'assistant') {
+        continue;
+      }
+
+      const previous = messages[messages.length - 1];
+      if (previous?.role === role) {
+        previous.content = `${previous.content}\n\n${msg.content}`;
+      } else {
+        messages.push({ role, content: msg.content });
+      }
+    }
+
+    if (messages.length === 0) {
+      return [...anchor, {
+        role: 'user',
+        content: newestNonEmptyContent ?? EMPTY_HISTORY_FALLBACK,
+      }];
+    }
+
+    return [...anchor, ...messages];
+  }
+
+  /**
    * The observer model's context window in tokens (#3625). This default knows
    * only the CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW override and the fallback;
    * providers with a model map or catalogue override it.
@@ -215,7 +304,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.lastModelId = model;
     this.prepareSessionExtras(session, config);
 
-    if (!apiKey) {
+    if (!apiKey && this.requiresApiKey(config)) {
       throw this.missingApiKeyError();
     }
 
