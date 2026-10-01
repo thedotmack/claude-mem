@@ -9,7 +9,7 @@ claude-mem can automatically detect and redact common secrets before observation
 
 ## How it works
 
-When enabled, redaction runs at the same single point where `<private>` tags are stripped, so it covers every capture path at once: tool inputs and outputs, your prompts (including stored prompt history), the assistant's last message used for summaries, and server-beta events. Content is scanned for a curated set of high-confidence secret patterns, and matches are replaced inline with a self-closing `<redacted type='...'/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
+When enabled, redaction runs at the same single point where `<private>` tags are stripped, so it covers every capture path at once: tool inputs and outputs, your prompts (including stored prompt history) and the assistant's last message used for summaries. The [server runtime](/hosted-server) also redacts every text value of an event body before it stores the event, and the worker and hook logs redact the tool line they write (for example a `Bash` command). Content is scanned for a curated set of high-confidence secret patterns, and matches are replaced inline with a self-closing `<redacted type='...'/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
 
 ```
 Before:  curl -H "Authorization: Bearer sk-abc123def456..." …
@@ -85,6 +85,7 @@ Writes a `pattern,count` line per invocation to the worker log. The original mat
 - **Fails closed on huge fields**: a single field over about 1M characters (UTF-16 code units) is replaced whole by `<redacted type='oversize'/>` rather than stored unscanned, and a warning is logged. There is no cap on the number of matches: every match is redacted.
 - **`aws_secret_key` shape**: the lookbehind only anchors `KEY=val` (shell) and `KEY: val` (yaml) styles. JSON-style `"AWS_SECRET_ACCESS_KEY": "value"` is **not** matched because the lookbehind expects `=` or `:` directly after the key name. If you commonly handle JSON config, write a custom pattern for it.
 - **Coverage gap**: Built-ins do not cover Azure / GCP service-account JSON / IBM Cloud / private IDC tokens — use custom patterns for those.
+- **Unreadable settings.json**: if the file stops parsing (for example after a bad hand edit) while redaction is on, claude-mem keeps redacting, with the last configuration that loaded or the built-in patterns, and logs a warning. It does not fall back to the default (off). Repair the file to change the configuration, or set `CLAUDE_MEM_REDACT_ENABLED=false` in the environment to turn redaction off.
 - **Server-beta scope**: in multi-tenant `server-beta` deployments, the redaction config is currently read from the worker's local `~/.claude-mem/settings.json` rather than from tenant-scoped settings. For team deployments, configure redaction at the worker level. A future change will source tenant-scoped redaction config.
 - **Destructive**: this is destructive replacement, not encryption. Redacted bytes cannot be recovered. If you need reversible protection, use the `<private>` tag and keep the secrets out of the conversation entirely.
 

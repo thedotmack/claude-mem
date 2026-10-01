@@ -17,6 +17,7 @@ import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
   querySummariesMulti,
+  withMergedProjects,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
   buildTimeline,
@@ -519,7 +520,7 @@ export async function generateContextWithStats(
 
   try {
     const db = { db: rawDb };
-    const queryProjects = scope.projects.length > 1 ? scope.projects : [scope.project];
+    const queryProjects = withMergedProjects(db, scope.projects.length > 1 ? scope.projects : [scope.project]);
     const observations = queryObservationsMulti(db, queryProjects, scope.config, scope.platformSource);
     const summaries = querySummariesMulti(db, queryProjects, scope.config, scope.platformSource);
     return renderContextFromRows({ observations, summaries }, input, forHuman, scope);

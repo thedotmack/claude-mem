@@ -5,7 +5,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { discoverGrokBotAgentDataRoot } from './GrokBotInstaller.js';
-import { fencedLine, sanitizeUntrustedText } from './grok-bot-untrusted-text.mjs';
+import { formatRecalledObservationLine } from './grok-bot-untrusted-text.mjs';
 
 export const GROK_BOT_AWARENESS_PILOT_AGENT_IDS = [
   '521e962d-2ec3-4488-bfbc-54d5209ce118', // LFG
@@ -75,14 +75,7 @@ export function observationMatchesAwarenessNeedle(
  * are fenced; a long detail is cut inside the fence.
  */
 export function formatAwarenessLine(obs: ParsedObservation, now: Date = new Date()): string {
-  const date = now.toISOString().slice(0, 10);
-  const title = sanitizeUntrustedText(obs.title ?? '');
-  const subtitle = sanitizeUntrustedText(obs.subtitle ?? '');
-  const fact = sanitizeUntrustedText(obs.facts[0] ?? '');
-  const headline = [title, subtitle].filter(Boolean).join(': ');
-  const detail = [headline, fact].filter(Boolean).join('. ');
-  const lead = `- ${date} ${AWARENESS_TAG} ${sanitizeUntrustedText(obs.type)}`;
-  return detail ? fencedLine(`${lead} — `, detail, MAX_LINE_CHARS) : lead;
+  return formatRecalledObservationLine(AWARENESS_TAG, obs, now, MAX_LINE_CHARS);
 }
 
 export function awarenessLineBody(line: string): string {
