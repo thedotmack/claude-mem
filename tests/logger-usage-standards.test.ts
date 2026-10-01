@@ -51,6 +51,7 @@ const EXCLUDED_PATTERNS = [
   /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
   /sqlite\/project-read-keys\.ts$/,  // Pure project-scope SQL builders plus one read query; logging happens at the search/context call sites
   /servers\/checkout-search-scope\.ts$/,  // Pure MCP search-args transform; no side effects or error paths
+  /sync\/prompt-text-clamp\.ts$/,  // Pure prompt_text bound (SQL column fragment + clamp); CloudSync logs and quarantines at the drain (#3537)
 ];
 
 const HIGH_PRIORITY_PATTERNS = [

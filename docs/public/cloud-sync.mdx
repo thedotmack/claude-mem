@@ -25,7 +25,7 @@ Three kinds of rows are replicated between your devices:
 
 - **Observations** — the compressed memories claude-mem generates from your sessions.
 - **Session summaries** — the per-session overview records.
-- **User prompts** — the prompts you typed (clamped to 200&nbsp;KB per field).
+- **User prompts** — the prompts you typed. A prompt over 200&nbsp;KB uploads as its first 200&nbsp;KB plus a truncation note; the full prompt stays on the device that captured it.
 
 Alongside the rows, three kinds of **mutations** travel through the same log
 so later edits converge everywhere: session **title** changes, **prompt→session
@@ -104,10 +104,9 @@ URL are non-empty — there is no separate enable flag; blank any one of them to
 turn sync off.
 
 1. A **cmem.ai Pro sync token and user id** (from **cmem.ai → Connect**).
-2. A **sync hub URL** in `CLAUDE_MEM_CLOUD_SYNC_HUB_URL`. The hub is a
-   Cloudflare Workers service (source in `workers/sync-hub/` with its own
-   deploy runbook); use the hub URL your cmem.ai account documentation
-   provides for it.
+2. A **sync hub URL** in `CLAUDE_MEM_CLOUD_SYNC_HUB_URL`: `https://sync.cmem.ai`,
+   which the installer writes for you (source in `services/sync-api/`). A hub
+   URL pinned to the older Cloudflare Workers hub is moved to it automatically.
 
 To connect, run `npx claude-mem install` in your terminal and choose **CMEM
 Pro**. The installer signs you in through the browser, writes all three values
