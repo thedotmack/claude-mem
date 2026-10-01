@@ -5,7 +5,7 @@ import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -744,6 +744,14 @@ export class SessionRoutes extends BaseRouteHandler {
     if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_protocol' });
+      return;
+    }
+
+    // Codex's own helper threads (task titles, memory consolidation,
+    // suggestions) arrive like a user turn; Codex only (see the hook handler).
+    if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_system_prompt' });
       return;
     }
 

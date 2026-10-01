@@ -69,27 +69,28 @@ export function isInternalProtocolPayload(text: string): boolean {
   return PROTOCOL_ONLY_REGEX.test(text);
 }
 
-export function isInternalSystemPrompt(text: string): boolean {
-  if (!text) return false;
+/**
+ * The openings of the prompts Codex and the Codex app send, through the same
+ * UserPromptSubmit hook as a user turn, for their own helper threads. Each
+ * became a claude-mem session and spent observer tokens on Codex's internals.
+ * Each pattern is the helper's own opening line, never a phrase a person
+ * would type.
+ */
+const CODEX_INTERNAL_PROMPT_OPENINGS: readonly RegExp[] = [
+  // Codex app: names a task.
+  /^You are a helpful assistant\. You will be presented with a user prompt, and your job is to provide a short title/,
+  // Codex memories: the consolidation pass.
+  /^## Memory Writing Agent: Phase 2 \(Consolidation\)/,
+  // Codex app: onboarding suggestions.
+  /^# Overview\r?\n(?:\r?\n)?Generate 0 to 3 hyperpersonalized suggestions/,
+];
 
-  const trimmed = text.trim();
-
-  // 1. Codex-app session title generation prompt
-  if (trimmed.startsWith('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title')) {
-    return true;
-  }
-
-  // 2. Memory Writing Agent consolidation prompt
-  if (trimmed.startsWith('## Memory Writing Agent: Phase 2 (Consolidation)') || trimmed.startsWith('## Memory Writing Agent')) {
-    return true;
-  }
-
-  // 3. Codex onboarding/suggestions prompt
-  if (trimmed.startsWith('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions') || 
-      trimmed.startsWith('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions') ||
-      trimmed.startsWith('# Overview\nGenerate 0 to 3 hyperpersonalized suggestions')) {
-    return true;
-  }
-
-  return false;
+/**
+ * Whether a prompt is one of Codex's internal helper prompts. Callers apply it
+ * only to platformSource 'codex': the same text from any other host is a
+ * person's prompt.
+ */
+export function isCodexInternalPrompt(text: string): boolean {
+  const opening = text.trimStart();
+  return CODEX_INTERNAL_PROMPT_OPENINGS.some(pattern => pattern.test(opening));
 }

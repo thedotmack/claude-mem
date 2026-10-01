@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTags, isInternalProtocolPayload, isInternalSystemPrompt } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTags, isInternalProtocolPayload, isCodexInternalPrompt } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -447,32 +447,36 @@ after`;
     });
   });
 
-  describe('isInternalSystemPrompt', () => {
+  describe('isCodexInternalPrompt', () => {
     it('returns false for empty input', () => {
-      expect(isInternalSystemPrompt('')).toBe(false);
+      expect(isCodexInternalPrompt('')).toBe(false);
     });
 
     it('returns false for general user queries', () => {
-      expect(isInternalSystemPrompt('How do I run a backup?')).toBe(false);
-      expect(isInternalSystemPrompt('Memory Writing Agent is cool.')).toBe(false);
-      expect(isInternalSystemPrompt('Tell me about the task title generator.')).toBe(false);
+      expect(isCodexInternalPrompt('How do I run a backup?')).toBe(false);
+      expect(isCodexInternalPrompt('Memory Writing Agent is cool.')).toBe(false);
+      expect(isCodexInternalPrompt('Tell me about the task title generator.')).toBe(false);
+    });
+
+    it('does not match a bare "## Memory Writing Agent" heading a person might write', () => {
+      expect(isCodexInternalPrompt('## Memory Writing Agent\n\nYour job: consolidate')).toBe(false);
+      expect(isCodexInternalPrompt('## Memory Writing Agent design notes')).toBe(false);
     });
 
     it('returns true for Codex-app title generation prompt', () => {
-      expect(isInternalSystemPrompt('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task.')).toBe(true);
-      expect(isInternalSystemPrompt('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a ta')).toBe(true);
-      expect(isInternalSystemPrompt('   You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task')).toBe(true);
+      expect(isCodexInternalPrompt('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task.')).toBe(true);
+      expect(isCodexInternalPrompt('You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a ta')).toBe(true);
+      expect(isCodexInternalPrompt('   You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task')).toBe(true);
     });
 
     it('returns true for Memory Writing Agent consolidation system prompt', () => {
-      expect(isInternalSystemPrompt('## Memory Writing Agent: Phase 2 (Consolidation)\n\nYou are a Memory Writing Agent.\n\nYour job: consolidate raw memories')).toBe(true);
-      expect(isInternalSystemPrompt('## Memory Writing Agent\n\nYour job: consolidate')).toBe(true);
+      expect(isCodexInternalPrompt('## Memory Writing Agent: Phase 2 (Consolidation)\n\nYou are a Memory Writing Agent.\n\nYour job: consolidate raw memories')).toBe(true);
     });
 
     it('returns true for Codex onboarding/suggestions prompt', () => {
-      expect(isInternalSystemPrompt('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project.')).toBe(true);
-      expect(isInternalSystemPrompt('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
-      expect(isInternalSystemPrompt(' # Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
+      expect(isCodexInternalPrompt('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project.')).toBe(true);
+      expect(isCodexInternalPrompt('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
+      expect(isCodexInternalPrompt(' # Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
     });
   });
 });
