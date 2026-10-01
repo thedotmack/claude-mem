@@ -32,7 +32,8 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
-import { ClassifiedProviderError } from './provider-errors.js';
+import { ClassifiedProviderError, rateLimitUntilNextKey } from './provider-errors.js';
+import { isContextOverflowBody } from './OpenRouterProvider.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { resolveObserverMaxOutputTokens } from './context-window.js';
 import {
@@ -225,10 +226,27 @@ export function classifyOpenAICompatError(input: {
     });
   }
 
+  // The request did not fit the model's context window (vLLM, llama.cpp, the
+  // OpenAI shape), or the server refused its size outright (413). Retiring the
+  // conversation fixes both, so neither may finalize the session as a bad
+  // request (#3625). Local models have small windows, so this is common here.
+  if (status === 413 || (status === 400 && isContextOverflowBody(body))) {
+    return new ClassifiedProviderError(describe('context overflow'), {
+      kind: 'context_overflow',
+      cause: input.cause,
+    });
+  }
+
+  // A structured rate-limit marker outranks the transport status: an endpoint
+  // that reports the throttle in a 200 body must still retry and rotate.
+  const rateLimitCoded = structuredErrorMarkers(envelope).some(marker => RATE_LIMIT_ERROR_CODES.has(marker));
+
   // Quota / credit exhaustion. Body markers win over status, because a 429 is
   // used for both a per-minute throttle and a spent allowance, and 402 is not
   // universal. The markers below are the ones actually emitted by NVIDIA NIM,
-  // DeepSeek, Groq, Together and the OpenAI shape itself.
+  // DeepSeek, Groq, Together and the OpenAI shape itself. "billing" alone is
+  // weaker: Groq and OpenAI end a per-minute throttle with a link to their
+  // billing page, so it never outranks a 429 or a rate-limit code.
   if (
     lower.includes('insufficient_quota')
     || lower.includes('insufficient quota')
@@ -238,7 +256,7 @@ export function classifyOpenAICompatError(input: {
     || lower.includes('insufficient balance')
     || lower.includes('out of credits')
     || lower.includes('credit limit')
-    || lower.includes('billing')
+    || (lower.includes('billing') && status !== 429 && !rateLimitCoded)
     || status === 402
   ) {
     return new ClassifiedProviderError(describe('quota exhausted'), {
@@ -247,9 +265,7 @@ export function classifyOpenAICompatError(input: {
     });
   }
 
-  // A structured rate-limit marker outranks the transport status: an endpoint
-  // that reports the throttle in a 200 body must still retry and rotate.
-  if (status === 429 || structuredErrorMarkers(envelope).some(marker => RATE_LIMIT_ERROR_CODES.has(marker))) {
+  if (status === 429 || rateLimitCoded) {
     return new ClassifiedProviderError(describe('rate limit'), {
       kind: 'rate_limit',
       cause: input.cause,
@@ -450,7 +466,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       throw this.missingApiKeyError();
     }
     return withKeyPool(
-      { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label },
+      { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
       ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs),
     );
   }
