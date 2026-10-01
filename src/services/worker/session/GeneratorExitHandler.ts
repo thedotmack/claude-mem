@@ -3,6 +3,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
+import { abortCategoryOf, PRESERVED_ABORT_CATEGORIES } from './abort-reason.js';
 
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
@@ -71,15 +72,17 @@ export async function handleGeneratorExit(
   // wiping the very queue the switch is meant to preserve. The transcript is
   // not carried over: every generator start opens a new generation seeded from
   // the session's memory (#3800, #3479), so the queue is what must survive.
-  const abortCategory = (reason ?? '').split(':')[0];
+  const abortCategory = abortCategoryOf(reason);
   // Every category listed here has ALREADY called resetProcessingToPending
   // (except provider_switch, which parks a live buffer for a provider change).
   // Falling through to finalizeSession would remove the session and undo that
   // preservation — the second half of #3752.
   // 'output_retry' is a queued batch whose reply was neither XML nor the skip
   // sentinel: ResponseProcessor reset it to pending for one more try in a
-  // fresh generation, which the runner starts on the next tick.
-  const PRESERVES_CLAIMED_WORK = ['quota', 'rate_limit', 'auth', 'overflow', 'provider_switch', 'transport', 'output_retry'];
+  // fresh generation, which the runner starts on the next tick. 'drift' ends a
+  // generation that kept leaving the observation schema; its batches were
+  // already stored, and buffered work continues in a fresh generation.
+  // The full list lives in abort-reason.ts, beside the telemetry enum.
   // Every transport pause resumes on the transport backoff — a deadline or an
   // upstream fault that outlived the provider's retries, whatever code it
   // carries, and a transport failure the Claude CLI returned as text — except a
@@ -90,7 +93,7 @@ export async function handleGeneratorExit(
   if (!resumesOnTransportBackoff) {
     sessionManager.clearTransportResume?.(sessionDbId);
   }
-  if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
+  if (PRESERVED_ABORT_CATEGORIES.has(abortCategory)) {
     session.pausedReason = abortCategory;
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
