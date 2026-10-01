@@ -1,13 +1,43 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import * as workerUtils from '../../src/shared/worker-utils.js';
 import { runMemoryCommand } from '../../src/services/memory/cli.js';
-import type { MemoryIngestReport } from '../../src/services/memory/ingest.js';
+import { memoryDirForCwd, type MemoryIngestReport } from '../../src/services/memory/ingest.js';
 
 describe('memory ingest CLI', () => {
   const spies: Array<{ mockRestore(): void }> = [];
 
   afterEach(() => {
     for (const spy of spies.splice(0)) spy.mockRestore();
+  });
+
+  function captureErrors(): string[] {
+    const errors: string[] = [];
+    spies.push(spyOn(console, 'error').mockImplementation((line: unknown) => {
+      errors.push(String(line));
+    }));
+    return errors;
+  }
+
+  // R5-5: the npx CLI runs this from the plugin root, so the caller's checkout
+  // arrives as --cwd. A checkout with no memory dir names the dir it looked in.
+  const callerCheckout = join(tmpdir(), 'claude-mem-r55-checkout-without-memory');
+
+  it("defaults to the memory dir of the caller's --cwd, not the process cwd (R5-5)", async () => {
+    const errors = captureErrors();
+
+    expect(await runMemoryCommand('ingest', ['--dry-run', '--cwd', callerCheckout])).toBe(1);
+
+    expect(errors).toEqual([`memory ingest source not found: ${memoryDirForCwd(callerCheckout)}`]);
+  });
+
+  it("resolves a relative --source against the caller's --cwd (R5-5)", async () => {
+    const errors = captureErrors();
+
+    expect(await runMemoryCommand('ingest', ['--dry-run', '--cwd', callerCheckout, '--source', 'notes'])).toBe(1);
+
+    expect(errors).toEqual([`memory ingest source not found: ${join(callerCheckout, 'notes')}`]);
   });
 
   it('names every skipped note and its reason', async () => {

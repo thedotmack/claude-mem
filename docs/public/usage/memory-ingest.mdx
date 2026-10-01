@@ -59,7 +59,7 @@ npx claude-mem memory ingest --all
 
 | Flag | Effect |
 |------|--------|
-| *(none)* | Source = the current repo's memory dir, resolved from `cwd`. |
+| *(none)* | Source = the memory dir of the repo you run the command in. |
 | `--source <dir>` | Ingest from an explicit `memory/` directory. It must be inside Claude Code's projects directory (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`); anything else, including a symlink that leads outside it, is refused. |
 | `--all` | Sweep every `~/.claude/projects/*/memory/` directory. |
 | `--dry-run` | Zero-spend parse + count only. No worker, no DB writes. Run this first. |
@@ -71,8 +71,8 @@ npx claude-mem memory ingest --all
   touches no worker and no database, and spends nothing.
 - The **real ingest** stores into the SQLite observation database, which lives
   in the worker. The CLI starts the worker if needed and drives the import over
-  HTTP (`POST /api/memory/ingest`), mirroring how transcript ingest and
-  summaries reach the worker. Bulk imports are not time-limited.
+  HTTP (`POST /api/memory/ingest`), as summaries reach the worker. Bulk
+  imports are not time-limited.
 - A file that cannot be read is reported as `failed`; the rest of the import
   carries on. A symlinked note is never followed and a note over 64 KB is not
   read; both are reported as `skipped`, each named with its reason. A note
@@ -120,5 +120,3 @@ MEMORY INGEST: 12 stored, 38 already-imported, 0 skipped, 0 failed, of 50 files 
 ## Related
 
 - [Memory Export/Import](/usage/export-import) — share memory sets between installations.
-- Transcript backfill (`claude-mem transcript ingest`) — the sibling path that
-  imports raw Claude Code session JSONL and *does* run generation.

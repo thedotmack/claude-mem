@@ -528,7 +528,7 @@ export function formatMemoryDryRunReport(report: MemoryDryRunReport): string {
 // The store path. Mechanical — NO Haiku. Each memory file becomes one
 // observation whose `narrative` IS the file body. Runs inside the worker (the
 // SQLite store lives there), driven by injected deps so it stays unit-testable
-// without a live worker — mirroring the transcript ingest orchestrator.
+// without a live worker.
 
 /** One observation to store, derived purely from a memory file (no model). */
 export interface MemoryObservationToStore {
