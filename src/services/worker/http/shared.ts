@@ -63,7 +63,9 @@ export function setIngestContext(next: IngestContext): void {
 export function attachIngestGeneratorStarter(
   ensureGeneratorRunning: (sessionDbId: number, source: string) => void | Promise<void>,
 ): void {
-  requireContext().ensureGeneratorRunning = ensureGeneratorRunning;
+  const context = requireContext();
+  context.ensureGeneratorRunning = ensureGeneratorRunning;
+  context.sessionManager.setGeneratorStarter?.(ensureGeneratorRunning);
 }
 
 function requireContext(): IngestContext {

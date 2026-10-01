@@ -99,10 +99,12 @@ describe('Claude setup-required generator gate', () => {
     let findAttempts = 0;
     let finalizerCalls = 0;
     let removeSessionImmediateCalls = 0;
+    let clearTransportResumeCalls = 0;
     let repairedRunResolve: (() => void) | null = null;
 
     const sessionManager = {
       getSession: () => activeSession,
+      clearTransportResume: () => { clearTransportResumeCalls += 1; },
       getMessageBuffer: () => ({
         getPendingCount: () => 1,
         peekTypes: () => [],
@@ -153,6 +155,7 @@ describe('Claude setup-required generator gate', () => {
     });
     expect(activeSession).toBe(session);
     expect(session.generatorPromise).toBeNull();
+    expect(clearTransportResumeCalls).toBe(1);
     expect(finalizerCalls).toBe(0);
     expect(removeSessionImmediateCalls).toBe(0);
 

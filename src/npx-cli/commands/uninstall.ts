@@ -232,12 +232,16 @@ function removeStrayClaudeMemPaths(): number {
  */
 export function uninstallShutdownNotice(result: ShutdownResult): { level: 'info' | 'warn'; message: string } | null {
   if (result.stopped) return result.workerWasRunning ? { level: 'info', message: 'Worker service stopped.' } : null;
-  if (result.blocker?.kind === 'port-held-by-other-process') {
-    return { level: 'info', message: 'The worker port is held by another process, not a claude-mem worker; nothing to stop.' };
+  switch (result.blocker.kind) {
+    case 'port-held-by-other-process':
+      return { level: 'info', message: 'The worker port is held by another process, not a claude-mem worker; nothing to stop.' };
+    case 'port-rebound': {
+      const owner = result.blocker.ownerPid === null ? 'another process' : `another claude-mem worker (PID ${result.blocker.ownerPid})`;
+      return { level: 'warn', message: `Worker service stopped, but ${owner} took its port again; continuing uninstall cleanup.` };
+    }
+    case 'worker-still-running':
+      return { level: 'warn', message: `Worker service (PID ${result.blocker.pid}) did not confirm shutdown; continuing uninstall cleanup.` };
   }
-  const pid = result.blocker?.kind === 'worker-still-running' ? result.blocker.pid : null;
-  const worker = pid === null ? 'Worker service' : `Worker service (PID ${pid})`;
-  return { level: 'warn', message: `${worker} did not confirm shutdown; continuing uninstall cleanup.` };
 }
 
 export async function runUninstallCommand(): Promise<void> {

@@ -25,6 +25,7 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { paths, USER_SETTINGS_PATH } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { updateSettingsDocument } from './settings-document.js';
 import { emitDiagnostic } from './hook-io.js';
 import { proTrialUrl } from './pro-promo.js';
@@ -71,6 +72,19 @@ export function isCmemGatewayUrl(url: string | undefined | null): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether memory is set up to run on the cmem.ai gateway: the OpenRouter
+ * provider selected, with the gateway as its base URL — whether or not a
+ * fallback has memory on the Anthropic plan right now. Settings only, the same
+ * predicates dispatch applies. Unattended retries are bounded on this setup,
+ * because each one spends plan tokens.
+ */
+export function isMemoryOnCmemGateway(settingsPath: string = USER_SETTINGS_PATH): boolean {
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return settings.CLAUDE_MEM_PROVIDER === 'openrouter'
+    && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
 }
 
 /**

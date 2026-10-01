@@ -11,6 +11,7 @@ import {
   parseHostWithoutPort,
 } from '../../../server/middleware/request-auth-helpers.js';
 import { logger } from '../../../utils/logger.js';
+import { redactForLog } from '../../../utils/redaction.js';
 
 export function createMiddleware(): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
@@ -517,7 +518,7 @@ export function summarizeRequestBody(method: string, path: string, body: any): s
   if (path.includes('/observations')) {
     const toolName = body.tool_name || '?';
     const toolInput = body.tool_input;
-    const toolSummary = logger.formatTool(toolName, toolInput);
+    const toolSummary = redactForLog(logger.formatTool(toolName, toolInput));
     return `tool=${toolSummary}`;
   }
 
