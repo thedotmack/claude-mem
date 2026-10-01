@@ -6,7 +6,7 @@ import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
-import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
+import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -23,6 +23,19 @@ export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
   return match?.[1];
 }
 
+/**
+ * The worker did not record a transcript turn's user prompt. The watcher stops
+ * the pass on it, before checkpointing, so the turn is replayed rather than its
+ * observations being filed under no prompt.
+ */
+export class TranscriptAnchorError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`session init failed for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptAnchorError';
+    this.cause = cause;
+  }
+}
+
 interface SessionState {
   sessionId: string;
   platformSource: string;
@@ -31,6 +44,7 @@ interface SessionState {
   lastUserMessage?: string;
   lastAssistantMessage?: string;
   pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
+  isSubagent?: boolean;
 }
 
 export class TranscriptEventProcessor {
@@ -131,6 +145,29 @@ export class TranscriptEventProcessor {
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
 
+    // Codex writes the subagent marker on the first (session_meta) line, as an
+    // object; learn it from whichever line carries it so later ingest events
+    // can be gated. Its presence is the test, not its contents.
+    if (watch.subagentSource && !session.isSubagent) {
+      const marker = getValueByPath(entry, watch.subagentSource.path);
+      if (marker !== undefined && marker !== null) {
+        session.isSubagent = true;
+      }
+    }
+
+    // When native hooks own top-level sessions, ingest only confirmed subagent
+    // rollouts. session_context still runs so a later marker line can flip the
+    // session on; session_end still runs so the suppressed session is dropped
+    // from the map instead of lingering.
+    if (
+      watch.subagentOnly &&
+      !session.isSubagent &&
+      event.action !== 'session_context' &&
+      event.action !== 'session_end'
+    ) {
+      return;
+    }
+
     const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
 
     switch (event.action) {
@@ -143,12 +180,16 @@ export class TranscriptEventProcessor {
           await this.updateContext(session, watch);
         }
         break;
-      case 'user_message':
-        if (typeof fields.message === 'string') session.lastUserMessage = fields.message;
-        if (typeof fields.prompt === 'string') session.lastUserMessage = fields.prompt;
+      case 'user_message': {
+        // A user turn is anchored like a hook-captured prompt. Kept only in
+        // memory, it left the session at prompt 0, so the observer got a
+        // continuation with no user request and the batch was dropped (#3653).
+        const prompt = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt);
+        if (prompt) await this.anchorUserPrompt(session, prompt);
         break;
+      }
       case 'assistant_message':
-        if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
+        session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
         break;
       case 'tool_use':
         await this.handleToolUse(session, watch, fields);
@@ -177,19 +218,51 @@ export class TranscriptEventProcessor {
     if (project) session.project = project;
   }
 
+  /**
+   * Normalize a message field to text. Transcripts that store messages as
+   * content-block arrays (e.g. DeepSeek Harness assistant messages with
+   * reasoning/text blocks) are joined by newline; strings pass through.
+   */
+  private resolveMessageText(value: unknown): string | undefined {
+    if (typeof value === 'string') return value;
+    if (!Array.isArray(value)) return undefined;
+    const parts: string[] = [];
+    for (const block of value) {
+      if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
+        parts.push((block as { text: string }).text);
+      }
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  }
+
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
+    await this.anchorUserPrompt(session, prompt);
+  }
+
+  /**
+   * Record the turn's user prompt through the init path the hooks use, so the
+   * worker has a user_prompts row for it. A failure throws
+   * TranscriptAnchorError: the watcher then stops before checkpointing past
+   * the turn, so it is replayed instead of its observations being filed under
+   * no prompt.
+   */
+  private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
     const cwd = session.cwd ?? process.cwd();
     if (prompt) {
       session.lastUserMessage = prompt;
     }
 
-    await sessionInitHandler.execute({
-      sessionId: session.sessionId,
-      cwd,
-      prompt,
-      platform: session.platformSource
-    });
+    try {
+      await sessionInitHandler.execute({
+        sessionId: session.sessionId,
+        cwd,
+        prompt,
+        platform: session.platformSource
+      });
+    } catch (error: unknown) {
+      throw new TranscriptAnchorError(session.sessionId, error);
+    }
   }
 
   private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
@@ -321,8 +394,12 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
-    await this.queueSummary(session);
-    await this.updateContext(session, watch);
+    // A suppressed top-level session reaches here only to be cleaned up; its
+    // summary and context belong to the native hooks, not the transcript watch.
+    if (!watch.subagentOnly || session.isSubagent) {
+      await this.queueSummary(session);
+      await this.updateContext(session, watch);
+    }
     session.pendingTools?.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);

@@ -10,7 +10,7 @@ import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveDateBound } from '../../shared/date-bounds.js';
-import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
+import { formatDate, formatTime, formatDateTime, formatSystemLocaleDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
 import {
@@ -21,6 +21,7 @@ import type { SearchResults, StrategySearchResult } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
+import { buildProjectWhereFilter, projectReadKeysFor } from './search/project-where-filter.js';
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
@@ -83,13 +84,7 @@ export class SearchManager {
   private buildDocTypeWhereFilter(docType: string, project?: string, platformSource?: string): Record<string, any> {
     const filters: Array<Record<string, any>> = [{ doc_type: docType }];
     if (project) {
-      const projectFilter = {
-        $or: [
-          { project },
-          { merged_into_project: project }
-        ]
-      };
-      filters.push(projectFilter);
+      filters.push(buildProjectWhereFilter(projectReadKeysFor(this.sessionStore, project, undefined)));
     }
     if (platformSource) {
       filters.push({ platform_source: normalizePlatformSource(platformSource) });
@@ -436,6 +431,7 @@ export class SearchManager {
           orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
+          projects: options.projects,
           platformSource: options.platformSource
         });
       }
@@ -444,6 +440,7 @@ export class SearchManager {
           orderBy: requestedDateOrder ?? 'date_desc',
           limit: options.limit,
           project: options.project,
+          projects: options.projects,
           platformSource: options.platformSource
         });
       }
@@ -493,6 +490,15 @@ export class SearchManager {
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    // Gate P2-5: every key the requested projects are stored under, so a
+    // checkout's search reaches what it wrote before a re-key. The SQLite paths
+    // receive the same list (scopedProjects prefers `projects` over `project`).
+    const projectReadKeys = projectReadKeysFor(this.sessionStore, options.project, options.projects);
+    if (projectReadKeys.length > 0) {
+      options.projects = projectReadKeys;
+    } else {
+      delete options.projects;
+    }
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -511,7 +517,7 @@ export class SearchManager {
     const { category, effectiveObsType } = this.resolveTypeFilters(type, obs_type);
     assertSearchHasQueryOrFilter({
       query,
-      project: options.project,
+      project: options.project ?? options.projects?.[0],
       platformSource: options.platformSource,
       dateRange: options.dateRange,
       obsType: effectiveObsType,
@@ -550,13 +556,8 @@ export class SearchManager {
         whereFilters.push({ doc_type: 'user_prompt' });
       }
 
-      if (options.project) {
-        whereFilters.push({
-          $or: [
-            { project: options.project },
-            { merged_into_project: options.project }
-          ]
-        });
+      if (projectReadKeys.length > 0) {
+        whereFilters.push(buildProjectWhereFilter(projectReadKeys));
       }
 
       if (options.platformSource) {
@@ -597,14 +598,21 @@ export class SearchManager {
         logger.warn('SEARCH', 'ChromaDB semantic search failed, falling back to FTS5 keyword search', {}, errorObject);
         chromaFailed = true;
 
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
+        // As on the Chroma-less path below: a keyword search that fails too
+        // leaves an empty answer, not a failed request.
+        try {
+          if (searchObservations) {
+            observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
+          }
+          if (searchSessions) {
+            sessions = this.sessionSearch.searchSessions(query, options);
+          }
+          if (searchPrompts) {
+            prompts = this.sessionSearch.searchUserPrompts(query, options);
+          }
+        } catch (ftsError) {
+          const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
+          logger.error('WORKER', 'FTS5 fallback search failed after a Chroma error', {}, ftsErrorObject);
         }
       }
 
@@ -1120,7 +1128,7 @@ export class SearchManager {
             }
           }
 
-          const date = new Date(summary.created_at).toLocaleString();
+          const date = formatSystemLocaleDateTime(summary.created_at);
           lines.push(`**Date:** ${date}`);
         }
       } else if (session.status === 'active') {
@@ -1146,7 +1154,7 @@ export class SearchManager {
         lines.push('');
         lines.push('**Status:** Active - summary pending');
 
-        const date = new Date(session.started_at).toLocaleString();
+        const date = formatSystemLocaleDateTime(session.started_at);
         lines.push(`**Date:** ${date}`);
       } else {
         lines.push(`**${session.status.charAt(0).toUpperCase() + session.status.slice(1)}**`);
@@ -1159,7 +1167,7 @@ export class SearchManager {
         lines.push('');
         lines.push(`**Status:** ${session.status} - no summary available`);
 
-        const date = new Date(session.started_at).toLocaleString();
+        const date = formatSystemLocaleDateTime(session.started_at);
         lines.push(`**Date:** ${date}`);
       }
 
@@ -1229,7 +1237,7 @@ export class SearchManager {
     for (let i = 0; i < results.length; i++) {
       const obs = results[i];
       const title = obs.title || `Observation #${obs.id}`;
-      const date = new Date(obs.created_at_epoch).toLocaleString();
+      const date = formatSystemLocaleDateTime(obs.created_at_epoch);
       const type = obs.type ? `[${obs.type}]` : '';
 
       lines.push(`${i + 1}. **${type} ${title}**`);

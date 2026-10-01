@@ -1,13 +1,15 @@
 import { describe, it, expect } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import * as pluginEntry from "../../src/integrations/opencode-plugin/index";
+import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
 import {
-  ClaudeMemPlugin,
   parseSearchResponse,
   REGISTERED_OPENCODE_HOOKS,
   REAL_OPENCODE_EVENT_TYPES,
-} from "../../src/integrations/opencode-plugin/index";
+} from "../../src/integrations/opencode-plugin/contract";
 import { normalizePlatformSource } from "../../src/shared/platform-source";
 import { isConnectionRefusedError } from "../../src/shared/connection-errors";
 
@@ -29,6 +31,9 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "chat.message",
   "event",
   "experimental.session.compacting",
+  // (input: { sessionID?, model }, output: { system: string[] }) in OpenCode's
+  // plugin Hooks type (packages/plugin/src/index.ts).
+  "experimental.chat.system.transform",
   "tool.execute.before",
   "permission.ask",
   "auth",
@@ -55,6 +60,68 @@ const pluginCtx = {
 };
 
 describe("OpenCode plugin event contract", () => {
+  it("shipped bundle exports only a functional default factory", async () => {
+    // Regression guard for #4197, coordinated with #3803: opencode's loader
+    // iterates every named export of the plugin file and calls each as a
+    // plugin factory. If a non-function export (e.g. the contract constants)
+    // leaks into the bundle, the whole plugin fails to load with
+    // "Plugin export is not a function".
+    //
+    // This must exercise the GENERATED bundle (the file users receive), not
+    // the TypeScript entry: importing the entry cannot catch exports the
+    // bundler itself introduces or leaks. It builds with the options
+    // scripts/build-hooks.js uses (scripts/opencode-plugin-build-options.js),
+    // into a temp dir so the test stays self-contained. #3803 moved the entry
+    // module to a default-only export; this test pins the shipped artifact to
+    // that contract.
+    const { buildSync } = await import("esbuild");
+    const { OPENCODE_PLUGIN_BUILD_OPTIONS } = await import("../../scripts/opencode-plugin-build-options.js");
+    const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-"));
+    const outfile = join(dir, "index.js");
+    try {
+      buildSync({ ...OPENCODE_PLUGIN_BUILD_OPTIONS, outfile });
+      const bundle = await import(pathToFileURL(outfile).href);
+      const exportNames = Object.keys(bundle).sort();
+      expect(exportNames).toEqual(["default"]);
+      expect(typeof bundle.default).toBe("function");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a bundle that leaks a non-function export (negative control)", async () => {
+    // Guards the guard: proves the assertion above can actually catch a
+    // leaked non-function export, so a future green run is meaningful.
+    const { buildSync } = await import("esbuild");
+    const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-neg-"));
+    const entry = join(dir, "entry.ts");
+    const outfile = join(dir, "index.js");
+    try {
+      writeFileSync(
+        entry,
+        "export const LEAKED = [1, 2, 3];\nexport default function plugin() { return {}; }\n",
+      );
+      buildSync({
+        entryPoints: [entry],
+        bundle: true,
+        platform: "node",
+        target: "node18",
+        format: "esm",
+        outfile,
+        minify: true,
+        logLevel: "error",
+        external: [],
+      });
+      const bundle = await import(pathToFileURL(outfile).href);
+      // Exact export list: proves the synthetic leak was actually emitted, so a
+      // green run of this control is meaningful (per review feedback).
+      expect(Object.keys(bundle).sort()).toEqual(["LEAKED", "default"]);
+      expect(Array.isArray((bundle as Record<string, unknown>).LEAKED)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reads the worker port from persisted settings without importing worker-utils", () => {
     const source = readFileSync(
       "src/integrations/opencode-plugin/index.ts",
@@ -84,7 +151,7 @@ describe("OpenCode plugin event contract", () => {
     }) as typeof fetch;
 
     try {
-      const { ClaudeMemPlugin: ReloadedPlugin } = await import(
+      const { default: ReloadedPlugin } = await import(
         `../../src/integrations/opencode-plugin/index.ts?opencode-settings-${Date.now()}`
       );
       const plugin = await ReloadedPlugin(pluginCtx);
@@ -172,7 +239,7 @@ describe("OpenCode plugin event contract", () => {
 
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
       const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect(initPost, "tool.execute.after should lazily init the session").toBeTruthy();
+      expect(initPost, "tool.execute.after must not manufacture a user prompt").toBeUndefined();
       expect(obsPost, "tool.execute.after should POST an observation").toBeTruthy();
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
@@ -216,6 +283,11 @@ describe("OpenCode plugin event contract", () => {
         ),
         "experimental.session.compacting": () => plugin["experimental.session.compacting"]({ sessionID: "ses_contract_compact" }),
         event: () => plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_contract_idle" } } }),
+        // Reads context (a GET); it writes nothing.
+        "experimental.chat.system.transform": () => plugin["experimental.chat.system.transform"](
+          { sessionID: "ses_contract_system" },
+          { system: [] },
+        ),
       };
       for (const hook of REGISTERED_OPENCODE_HOOKS) {
         const invoke = postHookInvocations[hook];
@@ -224,15 +296,11 @@ describe("OpenCode plugin event contract", () => {
       }
 
       const posts = requests.filter((request) => request.method === "POST");
-      expect(posts).toHaveLength(8);
+      expect(posts).toHaveLength(4);
       expect(posts.map((request) => request.url)).toEqual([
-        expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/observations"),
-        expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/observations"),
-        expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/summarize"),
-        expect.stringContaining("/api/sessions/init"),
         expect.stringContaining("/api/sessions/summarize"),
       ]);
       for (const post of posts) {
@@ -273,7 +341,7 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
-  it("retains output args as the fallback when input args are absent", async () => {
+  it("does not read output args when input args are absent", async () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -289,7 +357,7 @@ describe("OpenCode plugin event contract", () => {
       );
 
       const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({ path: "/fallback" });
+      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -341,6 +409,165 @@ describe("OpenCode plugin event contract", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("reads tool arguments from the hook INPUT, not the output (#3678)", async () => {
+    // OpenCode passes tool arguments on the first hook argument; the output
+    // never carries them. The old `output.args || {}` read shipped an empty
+    // tool_input for every observation, and the compressor dismissed them
+    // all — the "loads but captures nothing" symptom of #3678.
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "edit", sessionID: "ses_args", callID: "c2", args: { filePath: "/a/b.ts" } },
+        { title: "Edit", output: "applied", metadata: {} },
+      );
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect(obsPost, "observation should POST").toBeTruthy();
+      const obsBody = obsPost!.body as Record<string, unknown>;
+      expect(obsBody.tool_input).toEqual({ filePath: "/a/b.ts" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("OpenCode plugin entry-module export contract", () => {
+  // OpenCode's loader treats EVERY export of the plugin entry module as a
+  // plugin factory: each must be a function, and each gets invoked. A
+  // non-function export (the v13.x data constants) fails the whole plugin
+  // load with "Plugin export is not a function"; an extra function export
+  // would run as a second plugin instance. The data constants therefore live
+  // in contract.ts, and this test pins the entry module to factory-only
+  // exports (#3330).
+  it("exports only the plugin factory (every export must be a function)", () => {
+    const exports = Object.entries(pluginEntry);
+    expect(exports.length, "the entry module must have exports").toBeGreaterThan(0);
+    for (const [name, value] of exports) {
+      expect(typeof value, `export "${name}" must be a function`).toBe("function");
+    }
+  });
+});
+
+describe("OpenCode plugin attribution contract", () => {
+  const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const originalFetch = globalThis.fetch;
+
+  const captureFetch = () => {
+    posts.length = 0;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+  };
+
+  const restoreFetch = () => {
+    globalThis.fetch = originalFetch;
+  };
+
+  it("sends platform_source=opencode on every worker POST", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        directory: "/tmp/repo",
+        worktree: "/tmp/repo",
+      });
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_src", callID: "c1" },
+        { title: "Read", output: "x", metadata: {}, args: {} },
+      );
+      await plugin["chat.message"](
+        {},
+        { message: { role: "user", sessionID: "ses_src" }, parts: [{ type: "text", text: "hi" }] },
+      );
+      await plugin["chat.message"](
+        {},
+        { message: { role: "assistant", sessionID: "ses_src" }, parts: [{ type: "text", text: "hello" }] },
+      );
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_src" });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_src" } } });
+
+      // observation(tool) + init(user prompt) + observation(assistant) +
+      // summarize(compacting) + summarize(idle). Only a real user prompt may
+      // post init; all other endpoints create their session row themselves
+      // (#3803).
+      const workerPosts = posts.filter((p) => p.url.includes("/api/sessions/"));
+      expect(workerPosts.length).toBe(5);
+      for (const post of workerPosts) {
+        expect(post.body.platform_source, `${post.url} must carry the platform source`).toBe(
+          "opencode",
+        );
+      }
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("sends the checkout for the worker to key, never project.name", async () => {
+    // project.name is "opencode" for every project. The worker keys the
+    // session from the checkout with the same resolver it applies to the
+    // plugin's observations (tests/worker/http/routes/session-routes-init-checkout.test.ts).
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        project: { name: "opencode", path: "/tmp/x" },
+        directory: "/tmp/my-repo/sub/dir",
+        worktree: "/tmp/my-repo",
+      });
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_proj", callID: "c1", args: { path: "/a" } },
+        { title: "Read", output: "x", metadata: {} },
+      );
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_proj" },
+          parts: [{ type: "text", text: "remember this project" }],
+        },
+      );
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect(initPost, "a real user prompt should initialize the session").toBeTruthy();
+      expect(initPost!.body.project).toBeUndefined();
+      expect(initPost!.body.cwd).toBe("/tmp/my-repo/sub/dir");
+      expect(initPost!.body.cwd).toBe(obsPost!.body.cwd);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("records the real user prompt at session init instead of [media prompt]", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_prompt" },
+          parts: [{ type: "text", text: "investigate the flaky test" }],
+        },
+      );
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "chat.message(user) should lazily init the session").toBeTruthy();
+      expect(initPost!.body.prompt).toBe("investigate the flaky test");
+    } finally {
+      restoreFetch();
+    }
+  });
 });
 
 describe("OpenCode search client response-shape contract", () => {
@@ -382,6 +609,133 @@ describe("OpenCode search client response-shape contract", () => {
     const rendered = parseSearchResponse(emptyResponse, "zzz");
     expect(rendered).toContain("No observations found");
   });
+});
+
+describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
+  const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const originalFetch = globalThis.fetch;
+
+  const captureFetch = () => {
+    posts.length = 0;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+  };
+
+  const restoreFetch = () => {
+    globalThis.fetch = originalFetch;
+  };
+
+  it("records the real user prompt even when a tool ran before it", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_toolfirst", callID: "c1" },
+        { title: "Read", output: "x", metadata: {}, args: {} },
+      );
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_toolfirst" },
+          parts: [{ type: "text", text: "the real prompt" }],
+        },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      expect(initPosts.length, "only the real user prompt may post init").toBe(1);
+      expect(initPosts[0]!.body.prompt).toBe("the real prompt");
+      expect(posts.some((p) => p.body.prompt === "")).toBe(false);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("does not initialize consecutive activity-only calls", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_lazy", callID: "c1" },
+        { title: "Read", output: "x", metadata: {}, args: {} },
+      );
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_lazy", callID: "c2" },
+        { title: "Read", output: "y", metadata: {}, args: {} },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      const observationPosts = posts.filter((p) => p.url.includes("/api/sessions/observations"));
+      expect(initPosts.length, "activity-only paths must not post init").toBe(0);
+      expect(observationPosts.length, "activity-only paths must still post observations").toBe(2);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("does not initialize an empty user message", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_empty_prompt" },
+          parts: [{ type: "image" }, { type: "text", text: "" }],
+        },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      expect(initPosts.length, "empty user messages must not post init").toBe(0);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("summarizes compaction and idle events without initializing a prompt", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_summarize_only" });
+      await plugin.event({
+        event: { type: "session.idle", properties: { sessionID: "ses_summarize_only" } },
+      });
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      const summarizePosts = posts.filter((p) => p.url.includes("/api/sessions/summarize"));
+      expect(initPosts.length, "summarize-only paths must not post init").toBe(0);
+      expect(summarizePosts.length, "both events must post summarize").toBe(2);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("initializes each separate user prompt", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_two_prompts" },
+          parts: [{ type: "text", text: "first prompt" }],
+        },
+      );
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_two_prompts" },
+          parts: [{ type: "text", text: "second prompt" }],
+        },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      expect(initPosts.length).toBe(2);
+      expect(initPosts.map((p) => p.body.prompt)).toEqual(["first prompt", "second prompt"]);
+    } finally {
+      restoreFetch();
+    }
+  });
+
 });
 
 describe("isConnectionRefusedError (worker-down warning suppression)", () => {
@@ -469,6 +823,137 @@ describe("isConnectionRefusedError (worker-down warning suppression)", () => {
     } finally {
       globalThis.fetch = originalFetch;
       console.warn = originalWarn;
+    }
+  });
+});
+
+describe("OpenCode plugin lifecycle (#3208)", () => {
+  type Request = { method: string; url: URL; body: Record<string, unknown> | null; signal: unknown };
+
+  function captureRequests(
+    requests: Request[],
+    reply: (url: URL) => Response = () => new Response("{}", { status: 200 }),
+  ): void {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      requests.push({
+        method: init?.method || "GET",
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+        signal: init?.signal,
+      });
+      return reply(url);
+    }) as typeof fetch;
+  }
+
+  it("injects memory context into the system prompt once per session, keyed by the checkout", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests, (url) =>
+      url.pathname === "/api/context/inject" ? new Response("# memory context", { status: 200 }) : new Response("{}"));
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      const firstTurn = { system: ["base prompt"] };
+      await transform({ sessionID: "ses_ctx_a" }, firstTurn);
+      const secondTurn = { system: ["base prompt"] };
+      await transform({ sessionID: "ses_ctx_a" }, secondTurn);
+      await transform({ sessionID: "ses_ctx_b" }, { system: [] });
+
+      expect(firstTurn.system).toEqual(["base prompt", "# memory context"]);
+      expect(secondTurn.system).toEqual(["base prompt", "# memory context"]);
+      const injects = requests.filter((request) => request.url.pathname === "/api/context/inject");
+      expect(injects).toHaveLength(2);
+      expect(injects[0].url.searchParams.get("cwd")).toBe(pluginCtx.directory);
+      expect(injects[0].url.searchParams.get("projects")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("retries a failed context fetch on the next build instead of caching the failure", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    const requests: Request[] = [];
+    let workerUp = false;
+    captureRequests(requests, () => (workerUp ? new Response("# late context") : new Response("down", { status: 503 })));
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      const beforeWorker = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, beforeWorker);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      workerUp = true;
+      const afterWorker = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_retry" }, afterWorker);
+
+      expect(beforeWorker.system).toEqual([]);
+      expect(afterWorker.system).toEqual(["# late context"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+    }
+  });
+
+  it("sends the latest completed assistant reply when the session idles or compacts", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests);
+    const listed: unknown[] = [];
+    const client = {
+      session: {
+        async messages(options: { path: { id: string } }) {
+          listed.push(options);
+          return {
+            data: [
+              { info: { role: "user", time: { completed: 1 } }, parts: [{ type: "text", text: "fix the bug" }] },
+              { info: { role: "assistant", time: { completed: 2 } }, parts: [{ type: "text", text: "first reply" }] },
+              { info: { role: "assistant", time: { completed: 3 } }, parts: [{ type: "text", text: "final reply" }] },
+              { info: { role: "assistant", summary: true, time: { completed: 4 } }, parts: [{ type: "text", text: "a compaction summary" }] },
+              { info: { role: "assistant", time: {} }, parts: [{ type: "text", text: "still streaming" }] },
+            ],
+          };
+        },
+      },
+    };
+    try {
+      const plugin = await ClaudeMemPlugin({ ...pluginCtx, client });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_reply" } } });
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_reply" });
+
+      const summaries = requests.filter((request) => request.url.pathname === "/api/sessions/summarize");
+      expect(summaries.map((request) => request.body?.last_assistant_message)).toEqual(["final reply", "final reply"]);
+      expect(listed).toEqual([
+        { path: { id: "ses_reply" }, query: { directory: pluginCtx.directory } },
+        { path: { id: "ses_reply" }, query: { directory: pluginCtx.directory } },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("bounds every worker request with a timeout signal", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests);
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_bounded", callID: "c1", args: {} },
+        { title: "Read", output: "x", metadata: {} },
+      );
+      await plugin["experimental.chat.system.transform"]({ sessionID: "ses_bounded" }, { system: [] });
+      await plugin.tool.claude_mem_search.execute({ query: "auth" });
+
+      expect(requests.length).toBeGreaterThanOrEqual(3);
+      for (const request of requests) {
+        expect(request.signal).toBeInstanceOf(AbortSignal);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });

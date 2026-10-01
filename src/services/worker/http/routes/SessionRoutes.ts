@@ -5,49 +5,48 @@ import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
-import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
+import type { CodexProvider } from '../../CodexProvider.js';
+import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
+import { MEDIA_PROMPT_PLACEHOLDER } from '../../../sqlite/prompt-storage.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { getProjectContext } from '../../../../utils/project-name.js';
-import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
-import {
-  MAX_CONSECUTIVE_STALL_RESUMES,
-  RESPONSE_STALL_RESUME_DELAY_MS,
-  planResponseStallResume,
-} from '../../session/response-pacer.js';
-import { telemetryBuffer } from '../../../telemetry/buffer.js';
+import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
+import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
+import { isProjectExcluded } from '../../../../utils/project-filter.js';
+import { startGeneratorWithProvider } from '../../session/GeneratorRunner.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS,
   clearDependencyStatus,
   getDependencyStatus,
   isDependencyStatusInCooldown,
   recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
+import { executableFingerprint } from '../../../../shared/executable-fingerprint.js';
 import { findClaudeExecutable, isClaudeExecutableUnspawnable } from '../../../../shared/find-claude-executable.js';
-import { recordObserverFailure } from '../../../../shared/observer-health.js';
 import {
   tryAdmitQuotaProbe,
   releaseQuotaProbe,
-  recordQuotaExhausted,
   getQuotaCooldown,
   isQuotaCooldownActive,
-  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  cooldownAppliesToCurrentAccount,
+  resolveQuotaCooldownMs,
 } from '../../../../shared/quota-cooldown.js';
-import { isClassified, ClassifiedProviderError, describeProviderError } from '../../provider-errors.js';
+import { isClassified, type ClassifiedProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
 import {
@@ -60,25 +59,6 @@ import {
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
-
-/**
- * Collapse session.abortReason onto a closed telemetry enum. The raw value can
- * carry free text after a colon (e.g. 'quota:<provider message>') — never emit
- * it verbatim. Unknown or absent reasons map to 'none'.
- */
-function normalizeAbortReason(
-  reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'provider_switch' | 'none' {
-  switch ((reason ?? '').split(':')[0]) {
-    case 'idle': return 'idle';
-    case 'shutdown': return 'shutdown';
-    case 'overflow': return 'overflow';
-    case 'restart-guard': return 'restart_guard';
-    case 'quota': return 'quota';
-    case 'provider_switch': return 'provider_switch';
-    default: return 'none';
-  }
-}
 
 export class SessionRoutes extends BaseRouteHandler {
   // #2756 round 3: ensureGeneratorRunning is called from independent HTTP
@@ -105,6 +85,9 @@ export class SessionRoutes extends BaseRouteHandler {
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
+    private codexAgent?: CodexProvider,
+    // After codexAgent, so every existing positional caller keeps its argument order.
+    private openAICompatAgent?: OpenAICompatProvider,
   ) {
     super();
     this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
@@ -165,13 +148,29 @@ export class SessionRoutes extends BaseRouteHandler {
 
     try {
       switch (selection.provider) {
+        case 'codex':
+          if (!this.codexAgent) throw new Error('Codex provider is not available');
+          return await this.codexAgent.formatTelegramWrapup(
+            input, activeModelId === 'codex-default' ? undefined : activeModelId,
+          );
         case 'gemini':
           return await this.geminiAgent.formatTelegramWrapup(input, activeModelId);
         case 'openrouter':
           return await this.openRouterAgent.formatTelegramWrapup(input, activeModelId);
+        case 'openai-compatible':
+          if (!this.openAICompatAgent) throw new Error('OpenAI-compatible provider is not available');
+          return await this.openAICompatAgent.formatTelegramWrapup(input, activeModelId);
         default:
           return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
       }
+    } catch (error) {
+      // A wrap-up is a gateway request like any other: a terminal rejection
+      // records the fallback, and when this wrap-up holds the post-window
+      // re-probe claim, its failure keeps memory on Claude.
+      if (selection.provider === 'openrouter') {
+        recordCmemFallbackIfEligible(error, selection.gatewayProbeClaimId);
+      }
+      throw error;
     } finally {
       releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
     }
@@ -184,15 +183,20 @@ export class SessionRoutes extends BaseRouteHandler {
    * nothing is scheduled while the breaker withholds requests, since every
    * attempt would only log a skip (#4127 counted 159 of those). Once the window
    * elapses, one session per tick goes through to carry the recovery probe; the
-   * rest follow after that probe succeeds and clears the breaker. The operator
-   * retry (`POST /api/processing`) is not paced.
+   * rest follow after that probe succeeds and clears the breaker. A breaker
+   * armed under another Claude account paces nothing: admission would drop it
+   * and admit, so holding this account's backlog behind it only delays it.
+   * The operator retry (`POST /api/processing`) is not paced.
    */
   public resumePendingSessions(source: string, includeOperatorOnly: boolean = false): number {
     let sessionIds = this.sessionManager.getResumableSessionIds(includeOperatorOnly);
     if (!includeOperatorOnly && sessionIds.length > 0) {
       const provider = getSelectedProvider();
-      if (isQuotaCooldownActive(provider)) return 0;
-      if (getQuotaCooldown(provider)) sessionIds = sessionIds.slice(0, 1);
+      const cooldown = getQuotaCooldown(provider);
+      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
+        if (isQuotaCooldownActive(provider)) return 0;
+        sessionIds = sessionIds.slice(0, 1);
+      }
     }
     for (const sessionDbId of sessionIds) {
       void this.ensureGeneratorRunning(sessionDbId, source).catch((error: unknown) => {
@@ -234,6 +238,20 @@ export class SessionRoutes extends BaseRouteHandler {
   private async ensureGeneratorRunningLocked(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    // Nothing is buffered, so a generator would only open with its INIT turn
+    // and idle out: one paid request per user prompt, including prompts that
+    // never use a tool (#3454). Gated BEFORE provider selection, so this path
+    // never takes the single cmem-gateway re-probe (or a quota probe) that it
+    // would then have to release. The first observation or summarize enqueues
+    // work and starts the generator, INIT turn included, through this same
+    // method. Resume sources (overflow-recycle, response-stall, rate-limit,
+    // cmem-fallback, the periodic sweep) pass the same gate: with nothing
+    // buffered there is nothing to resume.
+    if (this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId) === 0) {
+      logger.debug('SESSION', 'Skipping generator start with an empty queue', { sessionId: sessionDbId, source });
+      return;
+    }
 
     // The claiming variant: this path is about to SEND, so it must take the
     // single gateway re-probe rather than merely reading the clock.
@@ -278,7 +296,23 @@ export class SessionRoutes extends BaseRouteHandler {
           }
 
           try {
-            findClaudeExecutable('SDK');
+            const resolvedPath = findClaudeExecutable('SDK');
+            // A spawn failure recorded the executable it could not launch (a
+            // .cmd/.bat shim passes discovery but not the SDK's spawn). While
+            // discovery still resolves that same, unchanged file, a start would
+            // fail the same way: keep skipping. A repair in place (reinstalling
+            // over the same path) changes the fingerprint and gets one start.
+            if (claudeStatus.executablePath === resolvedPath
+              && claudeStatus.executableFingerprint === executableFingerprint(resolvedPath)) {
+              recordClaudeCliSetupRequired(claudeStatus.message, resolvedPath);
+              logger.warn('SESSION', 'Claude executable still cannot be launched; skipping until it changes', {
+                sessionId: sessionDbId,
+                source,
+                executablePath: resolvedPath,
+              });
+              releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+              return;
+            }
             clearDependencyStatus('claude_cli');
             clearClaudeCliSelfHealAttempts();
             logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {
@@ -312,8 +346,33 @@ export class SessionRoutes extends BaseRouteHandler {
             return;
           }
         }
+
+        // An unusable observer working directory has its own recheck (#4117):
+        // until the directory can be created, a start only repeats the slot
+        // wait, the keychain read and the same failure. Creating it is the
+        // whole probe.
+        if (getDependencyStatus('observer_dir')) {
+          try {
+            ensureObserverSessionsDir();
+          } catch (error) {
+            logger.warn('SESSION', 'Skipping Claude generator start until the observer working directory is usable', {
+              sessionId: sessionDbId,
+              source,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+            return;
+          }
+          clearDependencyStatus('observer_dir');
+          logger.info('SESSION', 'Observer working directory repaired; resuming generator start', {
+            sessionId: sessionDbId,
+            source,
+          });
+        }
       }
-      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      await this.admitAndStartGenerator(
+        session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, null, selection.fallbackFrom ?? null,
+      );
       return;
     }
 
@@ -342,16 +401,10 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortReason = 'provider_switch';
       session.abortController.abort();
 
-      // Must fully await the OLD generator's .catch().finally() chain (which
-      // runs handleGeneratorExit) before starting a new one: handleGeneratorExit
-      // nulls session.generatorPromise/currentProvider unconditionally with no
-      // identity check, so racing this would let the old generator's async
-      // cleanup stomp the freshly-started generator's state.
-      if (oldGeneratorPromise) {
-        await oldGeneratorPromise;
-      }
-
-      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      await this.admitAndStartGenerator(
+        session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId, oldGeneratorPromise,
+        selection.fallbackFrom ?? null,
+      );
       return;
     }
 
@@ -366,8 +419,9 @@ export class SessionRoutes extends BaseRouteHandler {
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider
-      // The shared conversationHistory ensures context is preserved
+      // Let current generator finish naturally, next one will use new provider.
+      // The buffered queue carries over; the next generator opens a new
+      // generation seeded from this session's memory (#3800, #3479).
     }
   }
 
@@ -381,310 +435,123 @@ export class SessionRoutes extends BaseRouteHandler {
   private async admitAndStartGenerator(
     session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
     sessionDbId: number,
-    selectedProvider: 'claude' | 'gemini' | 'openrouter',
+    selectedProvider: SelectableProvider,
     source: string,
     gatewayProbeClaimId: number | null,
+    /** The parked generator a provider switch is replacing, if any. */
+    previousGenerator: Promise<void> | null = null,
+    /** The provider this run stands in for when dispatch took the quota fallback, else null. */
+    fallbackFrom: SelectableProvider | null = null,
   ): Promise<void> {
-    // Quota breaker (#3634). Without this, an exhausted allowance produced one
-    // doomed request per captured tool call for the rest of the billing cycle:
-    // the generator exits on the refusal, and the next observation starts a
-    // fresh one that earns the same refusal. Withhold requests for a cooldown,
-    // then let exactly one through to re-probe.
-    // Claim the probe rather than merely reading the clock: every live session
-    // sees the window elapse at the same instant, so a bare check would let
-    // them all through together.
-    const admission = tryAdmitQuotaProbe(selectedProvider);
-    if (!admission.admitted) {
-      // This run is not starting, so it must not hold the gateway re-probe.
-      releaseCmemGatewayProbe(gatewayProbeClaimId);
-      const cooldown = getQuotaCooldown(selectedProvider);
-      logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
-        sessionId: sessionDbId,
-        source,
-        provider: selectedProvider,
-        ...(cooldown?.window ? { window: cooldown.window } : {}),
-        probeInFlight: cooldown?.probeInFlightSinceMs !== null,
-        retryInMs: cooldown
-          ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
-          : 0,
-      });
-      return;
-    }
+    let quotaProbeClaimId: number | null = null;
+    try {
+      // Must fully await the OLD generator's .catch().finally() chain (which
+      // runs handleGeneratorExit) before starting a new one: handleGeneratorExit
+      // nulls session.generatorPromise/currentProvider unconditionally with no
+      // identity check, so racing this would let the old generator's async
+      // cleanup stomp the freshly-started generator's state.
+      if (previousGenerator) {
+        await previousGenerator;
+      }
 
-    await this.applyTierRouting(session);
-    // The claim travels with the run that took it: only that run may release
-    // it, or an earlier generator's exit would clear a later session's probe.
-    await this.startGeneratorWithProvider(
-      session, selectedProvider, source, admission.claimId, gatewayProbeClaimId,
-    );
+      // A missing Codex CLI or ChatGPT login (codex_cli) has its own recheck,
+      // like the Claude CLI's: until it is repaired, a start only fails the same
+      // way. Once the window elapses, the start is the probe: if setup is still
+      // broken its first request records the status again, and every request
+      // queued behind it is withheld (CodexProvider's beforeSend).
+      if (selectedProvider === 'codex') {
+        const codexStatus = getDependencyStatus('codex_cli');
+        if (codexStatus && isDependencyStatusInCooldown(codexStatus, CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS)) {
+          releaseCmemGatewayProbe(gatewayProbeClaimId);
+          logger.warn('SESSION', 'Skipping Codex generator start until setup is repaired', {
+            sessionId: sessionDbId,
+            source,
+            message: codexStatus.message,
+          });
+          return;
+        }
+        if (codexStatus) clearDependencyStatus('codex_cli');
+      }
+
+      // Quota breaker (#3634). Without this, an exhausted allowance produced one
+      // doomed request per captured tool call for the rest of the billing cycle:
+      // the generator exits on the refusal, and the next observation starts a
+      // fresh one that earns the same refusal. Withhold requests for a cooldown,
+      // then let exactly one through to re-probe.
+      // Claim the probe rather than merely reading the clock: every live session
+      // sees the window elapse at the same instant, so a bare check would let
+      // them all through together.
+      const admission = tryAdmitQuotaProbe(selectedProvider);
+      if (!admission.admitted) {
+        // This run is not starting, so it must not hold the gateway re-probe.
+        releaseCmemGatewayProbe(gatewayProbeClaimId);
+        const cooldown = getQuotaCooldown(selectedProvider);
+        logger.warn('SESSION', 'Skipping generator start while the provider cooldown is active', {
+          sessionId: sessionDbId,
+          source,
+          provider: selectedProvider,
+          ...(cooldown?.cause ? { cause: cooldown.cause } : {}),
+          ...(cooldown?.window ? { window: cooldown.window } : {}),
+          probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+          // Asked of the window for the same reason the breaker is: a throttle
+          // resolves in ninety seconds, and reporting the quota cooldown here
+          // would log a half-hour wait that nobody is actually serving.
+          retryInMs: cooldown
+            ? Math.max(0, resolveQuotaCooldownMs(cooldown.window) - (Date.now() - cooldown.armedAtMs))
+            : 0,
+        });
+        return;
+      }
+      quotaProbeClaimId = admission.claimId;
+
+      await this.applyTierRouting(session);
+      // Tier routing yields before the generator is installed. Deletion can
+      // remove the session in that gap; do not restart its aborted controller or
+      // retain either probe claim for an orphaned generator.
+      if (this.sessionManager.getSession(sessionDbId) !== session
+        || this.sessionManager.isSessionDeleting?.(sessionDbId)
+        || session.abortReason === 'shutdown') {
+        releaseQuotaProbe(selectedProvider, quotaProbeClaimId);
+        releaseCmemGatewayProbe(gatewayProbeClaimId);
+        return;
+      }
+      this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
+      // The claim travels with the run that took it: only that run may release
+      // it, or an earlier generator's exit would clear a later session's probe.
+      await this.startGeneratorWithProvider(
+        session, selectedProvider, source, quotaProbeClaimId, gatewayProbeClaimId,
+      );
+    } catch (error) {
+      // Neither claim may outlive a run that never started, or it wedges its
+      // probe shut until it goes stale. A generator that did start releases
+      // its own on exit; releasing again is a no-op, scoped to the claim id.
+      releaseQuotaProbe(selectedProvider, quotaProbeClaimId);
+      releaseCmemGatewayProbe(gatewayProbeClaimId);
+      throw error;
+    }
   }
 
-  private async startGeneratorWithProvider(
+  private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: SelectableProvider,
     source: string,
     /** The quota probe this run claimed, or null when it was admitted without one. */
     quotaProbeClaimId: number | null,
     /** The cmem-gateway re-probe this run claimed, or null when it took none. */
     gatewayProbeClaimId: number | null = null,
   ): Promise<void> {
-    if (!session) return;
-
-    // A generator is starting, so a pending stall resume has nothing left to do.
-    if (session.stallResumeTimer !== undefined) {
-      clearTimeout(session.stallResumeTimer);
-      session.stallResumeTimer = undefined;
-    }
-    // The last pause no longer describes this session; if this run pauses
-    // too, its exit records a fresh reason. Without this, one auth pause would
-    // keep the session out of every automatic sweep for good.
-    session.pausedReason = null;
-
-    if (session.abortController.signal.aborted) {
-      logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
-        sessionId: session.sessionDbId
-      });
-      session.abortController = new AbortController();
-    }
-
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
-
-    const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
-
-    logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
-      sessionId: session.sessionDbId,
-      queueDepth: actualQueueDepth,
-      historyLength: session.conversationHistory.length
+    return startGeneratorWithProvider(session, provider, source, quotaProbeClaimId, gatewayProbeClaimId, {
+      sessionManager: this.sessionManager,
+      sdkAgent: this.sdkAgent,
+      geminiAgent: this.geminiAgent,
+      openRouterAgent: this.openRouterAgent,
+      codexAgent: this.codexAgent,
+      openAICompatAgent: this.openAICompatAgent,
+      workerService: this.workerService,
+      completionHandler: this.completionHandler,
+      ensureGeneratorRunning: (id, trigger) => this.ensureGeneratorRunning(id, trigger),
+      maybeSelfHealStaleClaudeSpawn: (error, trigger, id) => this.maybeSelfHealStaleClaudeSpawn(error, trigger, id),
     });
-
-    session.currentProvider = provider;
-    session.lastGeneratorActivity = Date.now();
-    // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
-    // the fallback when a generator dies before dispatching its first prompt.
-    session.lastGeneratorSource = source;
-
-    const myController = session.abortController;
-
-    let skipGeneratorExitFinalization = false;
-    let generatorPromise: Promise<void>;
-
-    generatorPromise = agent.startSession(session, this.workerService)
-      .catch(async error => {
-        if (myController.signal.aborted) {
-          logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
-          return;
-        }
-
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
-          skipGeneratorExitFinalization = true;
-          session.pausedReason = 'setup_required';
-          recordClaudeCliSetupRequired(error.message);
-          this.maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
-          logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
-            sessionId: session.sessionDbId,
-            provider,
-            error: error.message,
-          });
-          return;
-        }
-
-        if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
-          logger.warn('SESSION', 'Generator killed by external signal', {
-            sessionId: session.sessionDbId,
-            provider,
-            error: errorMsg
-          });
-          myController.abort();
-          return;
-        }
-
-        // No retry: the generator failed, the in-RAM batch is dropped, and the
-        // transcript is the recovery path. The next observation ingest will
-        // start a fresh generator via ensureGeneratorRunning.
-        //
-        // The local error line (full fidelity) and the scrubbed
-        // session_compressed rollup are one logical event.
-        // No abort_reason here: every site that sets abortReason aborts the
-        // controller on its next line, so aborted generators either resolve
-        // normally (quota/overflow break) or hit the signal-aborted early
-        // return above — this catch only ever sees non-abort rejections.
-        if (isClassified(error)) {
-          // The single error-level line for a classified provider failure:
-          // code, message, action, link, and request id — same words the
-          // gateway sent. Pass the rendered string (not the Error): classified
-          // errors are user-state (quota/auth/rate-limit), not bugs, so the
-          // errorSink/captureException isn't fired for them at all.
-          logger.error('SESSION', 'Observer failed', {
-            sessionId: session.sessionDbId,
-            provider,
-            kind: error.kind,
-            ...(error.code ? { code: error.code } : {}),
-            ...(error.requestId ? { requestId: error.requestId } : {}),
-          }, describeProviderError(error));
-        } else {
-          logger.error('SESSION', 'Generator failed', {
-            sessionId: session.sessionDbId,
-            provider,
-            error: errorMsg,
-          }, error);
-        }
-        // Trial-expiry fallback (plan 2026-08-26 Phase 6): a terminal quota/key
-        // rejection from the cmem gateway is the promised automatic switch to
-        // the Anthropic plan, not an outage — record the fallback marker (the
-        // next dispatch returns 'claude') and keep it OUT of the observer-health
-        // ledger so the scary session-start outage warning never fires for it.
-        //
-        // The quota breaker is NESTED in the else, not stacked ahead of this
-        // branch. Stacking them would run two cooldowns over one event with
-        // disagreeing periods (15 min here, 30 min there) and open a window
-        // where memory neither uses the gateway nor falls back. The gateway's
-        // own fallback marker IS the breaker on that path.
-        if (provider === 'openrouter' && isClassified(error) && recordCmemFallbackIfEligible(error)) {
-          logger.warn('SESSION', 'cmem gateway key is no longer funded; memory falls back to the Anthropic plan provider', {
-            sessionId: session.sessionDbId,
-            kind: error.kind,
-            ...(error.code ? { code: error.code } : {}),
-          });
-        } else {
-          // Observer-health ledger: repeated generator failures mean observations
-          // are being dropped — session-start context warns the user via this.
-          // Classified errors carry the structured detail (code/action/link/
-          // request id) so the warning shows the same words as the log line.
-          // A structured quota refusal arms the breaker, so the next observation
-          // does not immediately buy the same refusal again (#3634).
-          if (isClassified(error) && error.kind === 'quota_exhausted') {
-            recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile);
-          }
-          recordObserverFailure(provider, isClassified(error)
-            ? { message: error.message, kind: error.kind, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
-            : errorMsg);
-        }
-        telemetryBuffer.record('session_compressed', session.sessionDbId, {
-          outcome: 'error',
-          provider,
-          // Providers seed lastModelId when they start; 'unknown' covers a
-          // generator that died before resolving its model.
-          model: session.lastModelId ?? 'unknown',
-          error_category: 'provider_error',
-          hook: session.lastGeneratorSource,
-          ide: session.platformSource,
-          observed_model: session.observedModel,
-          observed_billing: session.observedBilling,
-        });
-      })
-      .finally(async () => {
-        if (skipGeneratorExitFinalization) {
-          if (session.generatorPromise === generatorPromise) {
-            session.generatorPromise = null;
-          }
-          if (session.currentProvider === provider) {
-            session.currentProvider = null;
-          }
-          // This run is over even though it skips finalization, so it must not
-          // keep holding the probe.
-          releaseQuotaProbe(provider, quotaProbeClaimId);
-          releaseCmemGatewayProbe(gatewayProbeClaimId);
-          return;
-        }
-
-        const reason = session.abortReason ?? null;
-        session.abortReason = null;  // consume the reason
-        // Quota surfaced as assistant prose aborts here rather than throwing, so
-        // it must arm the breaker too — otherwise the prose path keeps the
-        // per-observation request storm the classified path no longer has.
-        if (normalizeAbortReason(reason) === 'quota') {
-          const quotaMessage = 'Provider reported the inference allowance exhausted';
-          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
-          // Quota returned as assistant prose never throws, so it never reaches
-          // the .catch above and never armed the health ledger. Without this the
-          // session-start warning is structurally blind to an entire outage
-          // class: the allowance is spent, no observation will ever store, and
-          // the user is told nothing.
-          recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
-        }
-        if (reason !== null) {
-          // Abort accounting lives HERE, where the reason is consumed — the
-          // ONLY point every abort flow (idle / shutdown / overflow / quota)
-          // passes through. Emit the closed enum, never the raw
-          // string ('quota:…' carries a window suffix).
-          telemetryBuffer.record('session_compressed', session.sessionDbId, {
-            outcome: 'aborted',
-            provider,
-            model: session.lastModelId ?? 'unknown',
-            abort_reason: normalizeAbortReason(reason),
-            hook: session.lastGeneratorSource,
-            ide: session.platformSource,
-            observed_model: session.observedModel,
-            observed_billing: session.observedBilling,
-          });
-        }
-        // Every generator exit releases any probe this run claimed. Success
-        // already deleted the breaker and a fresh refusal already re-armed it;
-        // this covers aborts and crashes, so a claim can never outlive its
-        // request and wedge the provider shut.
-        releaseQuotaProbe(provider, quotaProbeClaimId);
-        releaseCmemGatewayProbe(gatewayProbeClaimId);
-
-        await handleGeneratorExit(session, reason, {
-          sessionManager: this.sessionManager,
-          completionHandler: this.completionHandler,
-        });
-
-        // A recycle is the one abort that should resume on its own. The batch
-        // was reset to pending and the conversation dropped; without this the
-        // work waits for the next captured tool call, so the final observation
-        // of a session is stranded when none arrives. Quota and auth pauses
-        // deliberately do NOT resume — those wait on the user.
-        if (reason === 'overflow:recycle') {
-          // Deferred a tick: `session.generatorPromise` is assigned after this
-          // chain is built, so resuming inline could be overwritten by that
-          // assignment and leave a settled promise blocking every later start.
-          const resume = setTimeout(() => {
-            void this.ensureGeneratorRunning(session.sessionDbId, 'overflow-recycle')
-              .catch(error => {
-                logger.error('SESSION', 'Failed to resume the observer after recycling its conversation', {
-                  sessionId: session.sessionDbId,
-                }, error instanceof Error ? error : new Error(String(error)));
-              });
-          }, 0);
-          resume.unref?.();
-        }
-
-        // A response stall preserved its claimed batch but, like a recycle, has
-        // no later ingest guaranteed to pick it up. Resume after a delay, a
-        // bounded number of times in a row; an answered queued-work turn resets
-        // the count (#4066).
-        if (reason === 'transport:response_stall') {
-          const { resume, attempts } = planResponseStallResume(session);
-          if (!resume) {
-            logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {
-              sessionId: session.sessionDbId,
-              consecutiveStalls: attempts,
-              maxResumes: MAX_CONSECUTIVE_STALL_RESUMES,
-            });
-          } else {
-            // The delayed retry may hit a quota cooldown and return without
-            // starting a generator. Keep this pause eligible for the periodic
-            // sweep after the timer fires; ordinary transport pauses still
-            // require an explicit retry, and exhausted stalls keep their cap.
-            session.pausedReason = 'response_stall';
-            const resume = setTimeout(() => {
-              session.stallResumeTimer = undefined;
-              void this.ensureGeneratorRunning(session.sessionDbId, 'response-stall')
-                .catch(error => {
-                  logger.error('SESSION', 'Failed to resume the observer after a response stall', {
-                    sessionId: session.sessionDbId,
-                  }, error instanceof Error ? error : new Error(String(error)));
-                });
-            }, RESPONSE_STALL_RESUME_DELAY_MS);
-            resume.unref?.();
-            session.stallResumeTimer = resume;
-          }
-        }
-      });
-    session.generatorPromise = generatorPromise;
   }
 
   setupRoutes(app: express.Application): void {
@@ -743,6 +610,9 @@ export class SessionRoutes extends BaseRouteHandler {
     prompt: z.string().optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
+    // The checkout `project` was resolved from, and how (gate P1-2).
+    cwd: z.string().optional(),
+    projectKeySource: z.string().optional(),
   }).passthrough();
 
   private static readonly observationsByClaudeIdSchema = z.object({
@@ -891,7 +761,6 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
 
-    const project = req.body.project || 'unknown';
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
     const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
@@ -901,6 +770,32 @@ export class SessionRoutes extends BaseRouteHandler {
       res.json({ skipped: true, reason: 'internal_protocol' });
       return;
     }
+
+    // Codex's own helper threads (task titles, memory consolidation,
+    // suggestions) arrive like a user turn; Codex only (see the hook handler).
+    if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_system_prompt' });
+      return;
+    }
+
+    // A host that runs inside another process (the OpenCode plugin) sends only
+    // its checkout: key it here with the resolver observation ingest uses for
+    // the same host, so init and capture agree (#3803). A hook that resolved
+    // the key itself sends `project` and `projectKeySource`, and those win.
+    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
+    const checkoutContext = !req.body.project && checkoutCwd.trim() ? getProjectContext(checkoutCwd) : null;
+    // Such a host cannot check the user's project exclusions either (the CLI
+    // hooks do, before they call): skip before any session row exists.
+    if (checkoutContext) {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+        res.json({ skipped: true, reason: 'project_excluded' });
+        return;
+      }
+    }
+    const project = req.body.project || checkoutContext?.primary || 'unknown';
+    const projectKeySource = checkoutContext ? checkoutContext.keySource : req.body.projectKeySource;
 
     const slashSkillId = firstPartySkillFromSlashPrompt(rawPrompt);
     if (slashSkillId) {
@@ -912,7 +807,7 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    let prompt = rawPrompt || '[media prompt]';
+    let prompt = rawPrompt || MEDIA_PROMPT_PLACEHOLDER;
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {
@@ -940,6 +835,14 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+
+    // The checkout `project` was resolved from, and how it was derived, so a
+    // session that never reports an observation still leaves evidence for
+    // worktree adoption (gate P1-2). An unknown key source is not recorded as
+    // anything: the next observation's ingest records the checkout itself.
+    if (checkoutCwd.trim() && isProjectKeySource(projectKeySource)) {
+      store.setSessionCwd(sessionDbId, checkoutCwd, projectKeySource);
+    }
 
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
@@ -1135,5 +1038,28 @@ export class SessionRoutes extends BaseRouteHandler {
     } else {
       session.modelOverride = undefined;
     }
+  }
+
+  /**
+   * On a quota-fallback run, run Claude on CLAUDE_MEM_QUOTA_FALLBACK_MODEL.
+   * Applied after tier routing so it wins for this run only; a deliberate
+   * Claude-primary run, or an empty setting, keeps whatever tier routing and
+   * CLAUDE_MEM_MODEL chose. Only ClaudeProvider reads modelOverride, which is
+   * why the setting does nothing for any other fallback.
+   */
+  private applyQuotaFallbackModel(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    provider: SelectableProvider,
+    fallbackFrom: SelectableProvider | null,
+  ): void {
+    if (fallbackFrom === null || provider !== 'claude') return;
+    const model = (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_QUOTA_FALLBACK_MODEL ?? '').trim();
+    if (!model) return;
+    session.modelOverride = model;
+    logger.info('SESSION', 'Quota fallback run uses the configured fallback model', {
+      sessionId: session.sessionDbId,
+      model,
+      fallbackFrom,
+    });
   }
 }

@@ -207,6 +207,17 @@ export class SessionMessageBuffer {
     }
   }
 
+  /** Claim only the immediate FIFO head, never wait or cross a rejected barrier. */
+  claimNextMatching(sessionDbId: number, accepts: (message: PendingMessageWithId) => boolean): PendingMessageWithId | null {
+    const next = this.buffers.get(sessionDbId)?.find(message => !message.claimed);
+    if (!next) return null;
+    const message = { ...next.message, _persistentId: next.id, _originalTimestamp: next.enqueuedAt };
+    if (!accepts(message)) return null;
+    next.claimed = true;
+    this.onMutate?.();
+    return message;
+  }
+
   private claimNext(sessionDbId: number): BufferedMessage | null {
     const list = this.buffers.get(sessionDbId);
     if (!list) return null;

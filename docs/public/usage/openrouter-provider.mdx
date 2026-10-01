@@ -72,11 +72,14 @@ All free models support:
 
 | Setting | Values | Default | Description |
 |---------|--------|---------|-------------|
-| `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
+| `CLAUDE_MEM_PROVIDER` | `claude`, `codex`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_OPENROUTER_API_KEY` | string | — | Your OpenRouter API key |
 | `CLAUDE_MEM_OPENROUTER_MODEL` | string or array | `cohere/north-mini-code:free` | Model identifier, or a list to fall back through (see [Model fallbacks](#model-fallbacks)) |
+| `CLAUDE_MEM_OPENROUTER_BASE_URL` | string | — | Optional: custom OpenAI-compatible base URL (see [Custom OpenAI-compatible gateways](#custom-openai-compatible-gateways)) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
+| `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT` | `none`, `minimal`, `low`, `medium`, `high` | — | Optional: reasoning effort for openrouter.ai models. `none` turns reasoning off, the fix for a model that spends the output budget thinking and answers with nothing. Unset sends nothing. Never sent to custom base URLs or the claude-mem observer |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
+| `CLAUDE_MEM_OPENROUTER_EXTRA_BODY` | JSON object | — | Optional: extra request fields (see [Extra request fields](#extra-request-fields)). Settings file or environment only |
 
 ### Using the Settings UI
 
@@ -132,6 +135,45 @@ export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
 ```
 
 The settings file takes precedence over the environment variable.
+
+### Custom OpenAI-compatible gateways
+
+The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to any server that speaks `/chat/completions`, such as DeepSeek (`https://api.deepseek.com`), LM Studio (`http://localhost:1234/v1`) or [IO Intelligence](https://io.net) by io.net. The model id is sent as-is, and the first id of a fallback list is used (plain OpenAI has no `models` field). Use the key that endpoint issued: a claude-mem observer key (`cm_pro_…`) is only ever sent to the claude-mem observer.
+
+<Tip>
+The [OpenAI-compatible provider](/usage/openai-compatible-provider) does the same job on settings of its own, with presets for common endpoints, and sends none of OpenRouter's attribution headers. Prefer it for an endpoint that is not OpenRouter.
+</Tip>
+
+For example, IO Intelligence:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://api.intelligence.io.solutions/api/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "meta-llama/Llama-3.3-70B-Instruct",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_IO_INTELLIGENCE_API_KEY"
+}
+```
+
+Model ids are org/name pairs from the [IO Intelligence model list](https://api.intelligence.io.solutions/api/v1/models), for example `deepseek-ai/DeepSeek-R1-0528` or `zai-org/GLM-4.6`. A trailing slash on the base URL is fine; `/chat/completions` is appended automatically.
+
+### Extra request fields
+
+`CLAUDE_MEM_OPENROUTER_EXTRA_BODY` merges a JSON object into every request, for provider-specific fields claude-mem does not set itself. The common case is a reasoning model that spends the whole output budget thinking and answers with nothing. Turn its reasoning off:
+
+```json
+{
+  "CLAUDE_MEM_OPENROUTER_EXTRA_BODY": { "reasoning": { "enabled": false } }
+}
+```
+
+As an environment variable it is the same object as a string: `CLAUDE_MEM_OPENROUTER_EXTRA_BODY='{"reasoning":{"enabled":false}}'`. A custom gateway may use its vendor's own field instead, for example `{"thinking":{"type":"disabled"}}`.
+
+- The value must be a JSON object. Anything else is ignored with a warning in the worker log.
+- It cannot replace `model`, `models`, `messages`, `stream`, `max_tokens` or `max_completion_tokens`. Those fields are dropped with a warning. Set the output cap with `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS`.
+- It is never sent to the claude-mem observer.
+- When `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT` is set, it decides `reasoning` and the extra body's `reasoning` field is ignored.
+- Set it in `~/.claude-mem/settings.json` or the environment. The settings UI and API do not write it.
 
 ## Model Selection Guide
 
@@ -321,3 +363,10 @@ Content-Type: application/json
 - [Gemini Provider](/usage/gemini-provider) - Alternative free provider
 - [Getting Started](/usage/getting-started) - Basic usage guide
 - [Troubleshooting](/troubleshooting) - Common issues
+
+## Multiple keys
+
+`CLAUDE_MEM_OPENROUTER_API_KEYS` accepts additional keys (newline- or comma-separated) alongside
+`CLAUDE_MEM_OPENROUTER_API_KEY`. When a key hits a rate limit, spends its quota, or is rejected as
+invalid, OpenRouter requests rotate to the next key instead of failing for the
+rest of the window. See [Multi-Key Rotation](/usage/multi-key-rotation).

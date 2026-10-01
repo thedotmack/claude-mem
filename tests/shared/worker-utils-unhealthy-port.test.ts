@@ -17,14 +17,17 @@ const realProcessManagerSnapshot = { ...realProcessManager };
 const realPortReclaimSnapshot = { ...realPortReclaim };
 const realSpawnGateSnapshot = { ...realSpawnGate };
 const spawnCalls: string[] = [];
+const spawnLaunchCaps: Array<number | undefined> = [];
 const classifierTimeouts: number[] = [];
-let occupancy: 'free' | 'occupied' | 'indeterminate' = 'occupied';
-let classifierResults: Array<'free' | 'occupied' | 'indeterminate'> = [];
+type Occupancy = 'free' | 'occupied' | 'unbindable' | 'indeterminate';
+let occupancy: Occupancy = 'occupied';
+let classifierResults: Occupancy[] = [];
 let versionMatch = { matches: true, pluginVersion: '13.15.2', workerVersion: '13.15.2' };
 let versionCheckCalls = 0;
 let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null;
 let spawnLockResult = true;
 const reclaimCalls: number[] = [];
+const reclaimDeadlines: Array<number | null | undefined> = [];
 let reclaimResult: { reclaimed: boolean; reason?: string; killedPids: number[] } = {
   reclaimed: false,
   reason: 'not-supported',
@@ -55,8 +58,9 @@ mock.module('../../src/supervisor/index.js', () => ({
 // Every lazy spawn goes through the one hidden-daemon helper (#3529).
 mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
   ...realProcessManagerSnapshot,
-  spawnDetachedWorkerDaemon: (runtimePath: string) => {
+  spawnDetachedWorkerDaemon: (runtimePath: string, _scriptPath: string, _env: unknown, _platform?: string, launchCapMs?: number) => {
     spawnCalls.push(runtimePath);
+    spawnLaunchCaps.push(launchCapMs);
     return 4343;
   },
 }));
@@ -64,8 +68,9 @@ mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
 // to netstat/lsof, so it is stubbed and asserted here.
 mock.module('../../src/shared/port-reclaim.js', () => ({
   ...realPortReclaimSnapshot,
-  reclaimGhostListeningPort: (port: number) => {
+  reclaimGhostListeningPort: (port: number, deps?: { deadlineAt?: number | null }) => {
     reclaimCalls.push(port);
+    reclaimDeadlines.push(deps?.deadlineAt);
     return Promise.resolve(reclaimResult);
   },
 }));
@@ -92,6 +97,8 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
     process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = scriptPath;
     spawnCalls.length = 0;
+    spawnLaunchCaps.length = 0;
+    reclaimDeadlines.length = 0;
     classifierTimeouts.length = 0;
     classifierResults = [];
     occupancy = 'occupied';
@@ -186,6 +193,9 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
 
   it('does not suppress verified stale-worker recycling when the port wait consumes the deadline', async () => {
     versionMatch = { matches: false, pluginVersion: '13.15.2', workerVersion: '13.14.0' };
+    // The killed worker's port binds free again (the release check after the
+    // kill is a bind probe since #3416; the recycle path skips the pre-spawn gate).
+    occupancy = 'free';
     delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
     const workerUtils = await importWorkerUtilsFresh();
     ownedPidInfo = { pid: 4242, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
@@ -285,6 +295,52 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('unbindable port (EACCES / EADDRNOTAVAIL): no spawn, no reclaim, and the error names the fix', async () => {
+    // #3219 called these 'indeterminate' ("could not be determined in time")
+    // and named no fix; spawning would only start a daemon that dies at listen().
+    occupancy = 'unbindable';
+    const workerUtils = await importWorkerUtilsFresh();
+    const errorSpy = spyOn(logger, 'error');
+    try {
+      expect(await workerUtils.ensureWorkerRunning()).toBe(false);
+      expect(spawnCalls).toHaveLength(0);
+      expect(reclaimCalls).toHaveLength(0);
+      const gateError = errorSpy.mock.calls.find(([, message]) => String(message).includes('cannot be bound'));
+      expect(gateError?.[2]).toMatchObject({ fix: expect.stringContaining('CLAUDE_MEM_WORKER_PORT') });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('passes the hook deadline into the port reclaim, and none for an unbudgeted caller', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    const workerUtils = await importWorkerUtilsFresh();
+    const before = Date.now();
+    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(false);
+    expect(reclaimDeadlines).toHaveLength(1);
+    expect(reclaimDeadlines[0]).toBeGreaterThan(before);
+    expect(reclaimDeadlines[0]).toBeLessThanOrEqual(Date.now() + 7000);
+
+    const unbudgeted = await importWorkerUtilsFresh();
+    expect(await unbudgeted.ensureWorkerRunning()).toBe(false);
+    expect(reclaimDeadlines[1]).toBeNull();
+  });
+
+  it('caps the lazy-spawn launch at what is left of the hook budget', async () => {
+    occupancy = 'free';
+    let healthCalls = 0;
+    global.fetch = mock(() => {
+      healthCalls += 1;
+      return Promise.resolve({ ok: healthCalls > 1, status: healthCalls > 1 ? 200 : 503, text: () => Promise.resolve('') } as unknown as Response);
+    });
+    const workerUtils = await importWorkerUtilsFresh();
+    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(true);
+    expect(spawnLaunchCaps).toHaveLength(1);
+    expect(spawnLaunchCaps[0]).toBeGreaterThan(0);
+    expect(spawnLaunchCaps[0]).toBeLessThanOrEqual(7000);
   });
 
   it('caches the failed fallback for later calls in the same hook process', async () => {

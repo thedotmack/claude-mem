@@ -5,9 +5,12 @@ import { SessionRoutes } from '../../../../src/services/worker/http/routes/Sessi
 import * as providerDispatch from '../../../../src/services/worker/provider-dispatch.js';
 import {
   clearQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  RATE_LIMIT_RECHECK_COOLDOWN_MS,
 } from '../../../../src/shared/quota-cooldown.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
 import { logger } from '../../../../src/utils/logger.js';
+import { ClassifiedProviderError } from '../../../../src/services/worker/provider-errors.js';
+import type { ActiveSession } from '../../../../src/services/worker-types.js';
 
 guardSharedQuotaCooldownSingleton('session-routes-resume.test.ts');
 
@@ -218,6 +221,55 @@ describe('paused in-memory session recovery', () => {
     expect(buffer.getPendingCount(1)).toBe(pending);
   });
 
+  it('retries a rate-limit pause once the breaker it armed lets a probe through', async () => {
+    // A 429 without Retry-After (or past the resume cap) arms the breaker and
+    // leaves the session paused for 'rate_limit', the same shape as a quota pause.
+    const { routes, manager, agent } = fixture();
+    manager.getSession(1)!.pausedReason = 'rate_limit';
+    const now = Date.now();
+    spyOn(Date, 'now').mockReturnValue(now);
+    recordQuotaExhausted('openrouter', 'Rate limit exceeded: free-models-per-min', 'rate_limit');
+
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+    await flushStarts();
+    expect(agent.startSession).not.toHaveBeenCalled();
+
+    // A throttle's window is the short one: the probe goes through after ninety
+    // seconds, not after the half-hour quota cooldown.
+    spyOn(Date, 'now').mockReturnValue(now + RATE_LIMIT_RECHECK_COOLDOWN_MS + 1);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await flushStarts();
+    expect(agent.startSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a rate-limit pause to its own Retry-After resume while that is pending', async () => {
+    const { routes, manager, agent } = fixture();
+    agent.startSession.mockImplementationOnce(async (session: ActiveSession) => {
+      // What OpenAICompatibleProvider does with a rate limit that outlived its
+      // retries: pause, then rethrow with the provider's Retry-After.
+      session.abortReason = 'rate_limit:rate_limit';
+      session.abortController.abort();
+      throw new ClassifiedProviderError('Too many observer requests', { kind: 'rate_limit', cause: null, retryAfterMs: 60_000 });
+    });
+    const session = manager.getSession(1)!;
+
+    await routes.ensureGeneratorRunning(1, 'observation');
+    await session.generatorPromise;
+    await flushStarts();
+
+    try {
+      expect(session.pausedReason).toBe('rate_limit');
+      // The periodic sweep must not start it before Retry-After has passed...
+      expect(manager.getResumableSessionIds()).toEqual([]);
+      expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+      expect(agent.startSession).toHaveBeenCalledTimes(1);
+      // ...while an operator retry still may.
+      expect(manager.getResumableSessionIds(true)).toEqual([1]);
+    } finally {
+      clearTimeout(session.scheduledResumeTimer);
+    }
+  });
+
   it('retries a stalled response after its timer fires during quota cooldown', async () => {
     const { routes, manager, agent } = fixture();
     const session = manager.getSession(1)!;
@@ -298,15 +350,33 @@ describe('paused in-memory session recovery', () => {
     expect(manager.getResumableSessionIds()).toEqual([1]);
   });
 
-  it('leaves a session out of the automatic sweep while its overflow cooldown runs', () => {
+  it('leaves an observer that spent its overflow recycles to the next event, even after its cooldown', () => {
+    // A message that fits no generation aborts again on every retry: the
+    // sweep retried it every cooldown (~11 min), forever.
     const { manager } = fixture();
-    const now = Date.now();
     const session = manager.getSession(1)!;
     session.pausedReason = 'overflow';
-    session.overflowPausedUntilMs = now + 60_000;
-    expect(manager.getResumableSessionIds(false, now)).toEqual([]);
-    expect(manager.getResumableSessionIds(true, now)).toEqual([1]);
-    expect(manager.getResumableSessionIds(false, now + 60_001)).toEqual([1]);
+    session.overflowPausedUntilMs = Date.now() - 1;
+    expect(manager.getResumableSessionIds()).toEqual([]);
+    expect(manager.getResumableSessionIds(true)).toEqual([1]);
+  });
+
+  it('still sweeps a recycled conversation whose own resume was turned away', () => {
+    const { manager } = fixture();
+    manager.getSession(1)!.pausedReason = 'overflow';
+    expect(manager.getResumableSessionIds()).toEqual([1]);
+  });
+
+  it('leaves a setup failure to the next event or an operator retry', async () => {
+    // Nothing on a timer repairs a missing Claude CLI or an unusable data
+    // directory; the start gate rechecks it when the next event arrives.
+    const { routes, manager, agent } = fixture();
+    manager.getSession(1)!.pausedReason = 'setup_required';
+    expect(manager.getResumableSessionIds()).toEqual([]);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+    await flushStarts();
+    expect(agent.startSession).not.toHaveBeenCalled();
+    expect(manager.getResumableSessionIds(true)).toEqual([1]);
   });
 
   it('refuses the operator retry from a non-local address', async () => {

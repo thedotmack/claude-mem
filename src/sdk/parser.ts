@@ -39,8 +39,25 @@ const OBSERVATION_TITLE_TRUNCATE_AT = 117;
 const observationGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 export type ParseResult =
-  | { valid: true; observations: ParsedObservation[]; summary: ParsedSummary | null }
+  | {
+      valid: true;
+      observations: ParsedObservation[];
+      summary: ParsedSummary | null;
+      /**
+       * Tags outside the observation schema found in blocks whose own fields
+       * were missing and whose content was salvaged — the model drifting off
+       * the schema (`<kind>`/`<detail>` for `<type>`/`<title>`, #3461). Sorted,
+       * lowercase; absent when there was no drift.
+       */
+      schemaDrift?: string[];
+    }
   | { valid: false };
+
+/** Every tag the observation schema defines, wrappers and elements alike. */
+const OBSERVATION_SCHEMA_TAGS = new Set([
+  'type', 'title', 'subtitle', 'narrative', 'facts', 'fact', 'concepts', 'concept',
+  'files_read', 'files_modified', 'file',
+]);
 
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -74,11 +91,17 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   const rootName = firstRoot[1].toLowerCase();
   if (rootName === 'observation') {
-    const observations = parseObservationBlocks(raw, correlationId);
+    const schemaDrift = new Set<string>();
+    const observations = parseObservationBlocks(raw, correlationId, schemaDrift);
     if (observations.length === 0) {
       return { valid: false };
     }
-    return { valid: true, observations, summary: null };
+    return {
+      valid: true,
+      observations,
+      summary: null,
+      ...(schemaDrift.size > 0 ? { schemaDrift: [...schemaDrift].sort() } : {}),
+    };
   }
 
   const summary = parseSummaryBlock(raw, correlationId);
@@ -88,7 +111,11 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
   return { valid: true, observations: [], summary };
 }
 
-function parseObservationBlocks(text: string, correlationId?: string | number): ParsedObservation[] {
+function parseObservationBlocks(
+  text: string,
+  correlationId?: string | number,
+  schemaDrift?: Set<string>,
+): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
   const observationRegex = /<observation>([\s\S]*?)<\/observation>/gi;
@@ -153,6 +180,10 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
       const salvage = extractObservationFallback(salvageNarrative);
       finalTitle = salvage.title;
       finalNarrative = salvage.narrative;
+      for (const tag of obsContent.matchAll(/<\/?([A-Za-z_][\w-]*)\b[^>]*>/g)) {
+        const name = tag[1].toLowerCase();
+        if (!OBSERVATION_SCHEMA_TAGS.has(name)) schemaDrift?.add(name);
+      }
       logger.warn('PARSER', 'Salvaged unstructured observation prose as narrative', {
         correlationId,
         type: finalType,

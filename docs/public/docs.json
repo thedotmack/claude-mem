@@ -38,12 +38,16 @@
           "usage/getting-started",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "usage/openai-compatible-provider",
+          "usage/multi-key-rotation",
+          "usage/quota-fallback",
           "usage/search-tools",
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
           "usage/auto-redaction",
           "usage/export-import",
+          "usage/memory-ingest",
           "usage/manual-recovery",
           "usage/folder-context"
         ]
@@ -94,7 +98,8 @@
           "branches",
           "troubleshooting",
           "platform-integration",
-          "openclaw-integration"
+          "openclaw-integration",
+          "kimi-integration"
         ]
       },
       {

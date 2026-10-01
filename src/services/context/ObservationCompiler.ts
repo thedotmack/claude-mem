@@ -6,8 +6,11 @@ import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
+import { poolSize, rankByStrength } from '../reinforcement/rank.js';
 import type {
   ContextConfig,
+  LocalObservation,
+  LocalSessionSummary,
   Observation,
   SessionSummary,
   SummaryTimelineItem,
@@ -41,13 +44,20 @@ export function queryObservationsMulti(
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): Observation[] {
-  return queryObservationsNewest(db, config, {
-    limit: config.totalObservationCount,
+): LocalObservation[] {
+  // Opt-in ACT-R ranking (CLAUDE_MEM_REINFORCE_ALPHA > 0): fetch a wider
+  // recency pool and let re-confirmed older observations climb into the
+  // window. With alpha = 0 the pool is exactly the configured count and the
+  // rows come back as queried, i.e. the N most recent.
+  const alpha = config.reinforcementAlpha ?? 0;
+  const pool = queryObservationsNewest(db, config, {
+    limit: poolSize(config.totalObservationCount, alpha),
     platformSource,
     projects,
     excludeSubagents: config.mainAgentOnly,
+    withReinforcementDates: alpha > 0,
   });
+  return rankByStrength(pool, config.totalObservationCount, alpha);
 }
 
 /**
@@ -72,16 +82,18 @@ export function queryObservationsNewest(
     projects?: string[];
     includeManualSaves?: boolean;
     excludeSubagents?: boolean;
+    /** Also select the reinforcement history (only needed while ranking is on). */
+    withReinforcementDates?: boolean;
   }
-): Observation[] {
+): LocalObservation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
   const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
   const projectClause = projects.length > 0
-    ? `AND (o.project IN (${projects.map(() => '?').join(',')})
-           OR o.merged_into_project IN (${projects.map(() => '?').join(',')}))`
+    ? `AND (o.project COLLATE NOCASE IN (${projects.map(() => '?').join(',')})
+           OR o.merged_into_project COLLATE NOCASE IN (${projects.map(() => '?').join(',')}))`
     : '';
 
   const manualClause = options.includeManualSaves
@@ -94,9 +106,11 @@ export function queryObservationsNewest(
   // and must stay injected, or `session_start_context` returns nothing for them.
   const agentFilter = options.excludeSubagents ? `AND ${mainAgentRowSql('o')}` : '';
 
+  const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
+
   return db.db.prepare(`
     SELECT
-      ${OBSERVATION_SELECT}
+      ${OBSERVATION_SELECT}${reinforcementColumn}
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (? IS NULL OR s.platform_source = ?)
@@ -118,7 +132,7 @@ export function queryObservationsNewest(
     ...typeArray,
     ...conceptArray,
     options.limit
-  ) as Observation[];
+  ) as LocalObservation[];
 }
 
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
@@ -128,8 +142,8 @@ export function countObservationsByProjects(db: DatabaseOwner, projects: string[
     SELECT COUNT(*) as count
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-       OR o.merged_into_project IN (${projectPlaceholders}))
+    WHERE (o.project COLLATE NOCASE IN (${projectPlaceholders})
+       OR o.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
   `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
   return row?.count ?? 0;
@@ -140,7 +154,7 @@ export function querySummariesMulti(
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): SessionSummary[] {
+): LocalSessionSummary[] {
   const projectPlaceholders = projects.map(() => '?').join(',');
 
   return db.db.prepare(`
@@ -158,8 +172,8 @@ export function querySummariesMulti(
       ss.project
     FROM session_summaries ss
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project IN (${projectPlaceholders})
-           OR ss.merged_into_project IN (${projectPlaceholders}))
+    WHERE (ss.project COLLATE NOCASE IN (${projectPlaceholders})
+           OR ss.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
@@ -169,7 +183,7 @@ export function querySummariesMulti(
     platformSource ?? null,
     platformSource ?? null,
     config.sessionCount + SUMMARY_LOOKAHEAD
-  ) as SessionSummary[];
+  ) as LocalSessionSummary[];
 }
 
 export function cwdToDashed(cwd: string): string {
@@ -288,7 +302,7 @@ export function buildTimeline(
   return timeline;
 }
 
-export function getFullObservationIds(observations: Observation[], count: number): Set<number> {
+export function getFullObservationIds(observations: Observation[], count: number): Set<Observation['id']> {
   return new Set(
     observations
       .slice(0, count)

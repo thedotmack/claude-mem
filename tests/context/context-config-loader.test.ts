@@ -41,4 +41,27 @@ describe('loadContextConfig', () => {
       loadSpy.mockRestore();
     }
   });
+
+  it('reads CLAUDE_MEM_REINFORCE_ALPHA from settings.json; off unless a positive number', () => {
+    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile');
+    const withAlpha = (value: string) => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_REINFORCE_ALPHA: value,
+    });
+
+    try {
+      loadSpy.mockReturnValue(SettingsDefaultsManager.getAllDefaults());
+      expect(loadContextConfig().reinforcementAlpha).toBe(0);
+
+      loadSpy.mockReturnValue(withAlpha('0.5'));
+      expect(loadContextConfig().reinforcementAlpha).toBe(0.5);
+
+      for (const off of ['-1', 'abc', '']) {
+        loadSpy.mockReturnValue(withAlpha(off));
+        expect(loadContextConfig().reinforcementAlpha).toBe(0);
+      }
+    } finally {
+      loadSpy.mockRestore();
+    }
+  });
 });

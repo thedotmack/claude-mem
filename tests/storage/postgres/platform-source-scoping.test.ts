@@ -220,6 +220,7 @@ describe('server-beta Postgres platform source scoping', () => {
       7,
       'cursor',
       null,
+      false,
     ]);
   });
 
@@ -236,7 +237,9 @@ describe('server-beta Postgres platform source scoping', () => {
     });
 
     expect(client.calls[0].text).toContain('server_sessions.platform_source = $5');
-    expect(client.calls[0].text).toContain("observations.metadata->>'project' = ANY($6::text[])");
+    // ASCII-only case folding on both sides, like SQLite's COLLATE NOCASE (#3536).
+    expect(client.calls[0].text).toContain(`lower((observations.metadata->>'project') COLLATE "C") = ANY(`);
+    expect(client.calls[0].text).toContain('SELECT lower(folder COLLATE "C") FROM unnest($6::text[]) AS folder');
     expect(client.calls[0].values).toEqual([
       'project-1',
       'team-1',
@@ -244,6 +247,19 @@ describe('server-beta Postgres platform source scoping', () => {
       50,
       'cursor',
       ['alpha'],
+      false,
     ]);
+  });
+
+  it('passes the main-agent-only flag that leaves subagent rows out', async () => {
+    const client = new CapturingClient();
+    const repo = new PostgresObservationRepository(client);
+
+    await repo.search({ projectId: 'project-1', teamId: 'team-1', limit: 50, excludeSubagents: true });
+
+    expect(client.calls[0].text).toContain('NOT $7::boolean');
+    expect(client.calls[0].text).toContain("COALESCE(agent_events.payload->>'agentId', '') <> ''");
+    expect(client.calls[0].text).toContain("COALESCE(agent_events.payload->>'agentType', '') <> ''");
+    expect(client.calls[0].values?.[6]).toBe(true);
   });
 });
