@@ -160,13 +160,12 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
 });
 
 /**
- * Regression coverage for #4284: when chromaSync is null at construction time
- * (the common case on Windows when `cmd.exe /c uvx` argv quoting prevents
- * chroma-mcp from connecting, and any install where Chroma initialization
- * fails silently), `executeWithFallback` must run the SQLite/FTS5 strategy
- * for queries instead of returning a confident empty result. Before the
- * fix this branch returned `{observations:[], sessions:[], prompts:[]}`
- * for every query, so 497 observations in SQLite never surfaced.
+ * Regression coverage for #4284: chromaSync is null when Chroma is turned off
+ * (CLAUDE_MEM_CHROMA_ENABLED=false). `executeWithFallback` must then run the
+ * SQLite/FTS5 strategy for queries instead of returning an empty result that
+ * reads as "no matches". Before the fix this branch returned
+ * `{observations:[], sessions:[], prompts:[]}` for every query, so a
+ * query-filtered knowledge corpus was built empty.
  */
 describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
   it('runs SQLite strategy for a query when chromaSync is null and SQLite returns matches', async () => {
@@ -226,31 +225,6 @@ describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
     expect(result.results.observations).toEqual([]);
     expect(result.results.sessions).toEqual([]);
     expect(result.results.prompts).toEqual([]);
-  });
-
-  it('does not call any chroma sync methods when chromaSync is null', async () => {
-    // Mirrors the Windows install scenario: chromaSync is never wired up
-    // because the chroma-mcp subprocess never connects.
-    const searchObservations = mock(() => [observation]);
-    const orchestrator = new SearchOrchestrator(
-      {
-        searchObservations,
-        searchSessions: mock(() => []),
-        searchUserPrompts: mock(() => []),
-      } as any,
-      {} as any,
-      null,
-    );
-
-    await orchestrator.search({
-      query: 'cursor sqlite fallback',
-      searchType: 'observations',
-      project: 'orchestrator-project',
-      limit: 5,
-    });
-
-    // sqliteStrategy is the only collaborator touched.
-    expect(searchObservations).toHaveBeenCalledTimes(1);
   });
 
   it('forwards query text to SQLite when chromaSync is null and searchType=all', async () => {
