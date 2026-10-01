@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import * as pluginEntry from "../../src/integrations/opencode-plugin/index";
 import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
 import {
@@ -445,7 +445,10 @@ describe("OpenCode plugin attribution contract", () => {
     }
   });
 
-  it("derives the project from the worktree basename, not project.name", async () => {
+  it("sends the checkout for the worker to key, never project.name", async () => {
+    // project.name is "opencode" for every project. The worker keys the
+    // session from the checkout with the same resolver it applies to the
+    // plugin's observations (tests/worker/http/routes/session-routes-init-checkout.test.ts).
     captureFetch();
     try {
       const plugin = await ClaudeMemPlugin({
@@ -454,6 +457,10 @@ describe("OpenCode plugin attribution contract", () => {
         directory: "/tmp/my-repo/sub/dir",
         worktree: "/tmp/my-repo",
       });
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_proj", callID: "c1", args: { path: "/a" } },
+        { title: "Read", output: "x", metadata: {} },
+      );
       await plugin["chat.message"](
         {},
         {
@@ -462,8 +469,11 @@ describe("OpenCode plugin attribution contract", () => {
         },
       );
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
       expect(initPost, "a real user prompt should initialize the session").toBeTruthy();
-      expect(initPost!.body.project).toBe("my-repo");
+      expect(initPost!.body.project).toBeUndefined();
+      expect(initPost!.body.cwd).toBe("/tmp/my-repo/sub/dir");
+      expect(initPost!.body.cwd).toBe(obsPost!.body.cwd);
     } finally {
       restoreFetch();
     }
@@ -655,70 +665,6 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
     }
   });
 
-  it("keys linked git worktrees by parent-repo/worktree-leaf", async () => {
-    // Real worktree shape on disk: a `.git` FILE pointing into the parent
-    // repo's .git/worktrees directory, exactly what git writes for
-    // `git worktree add`.
-    const base = mkdtempSync(join(tmpdir(), "claude-mem-wt-"));
-    try {
-      const parentRepo = join(base, "parent-repo");
-      mkdirSync(join(parentRepo, ".git", "worktrees", "leaf-worktree"), { recursive: true });
-      const worktreeDir = join(base, "leaf-worktree");
-      mkdirSync(worktreeDir);
-      writeFileSync(
-        join(worktreeDir, ".git"),
-        `gitdir: ${join(parentRepo, ".git", "worktrees", "leaf-worktree")}\n`,
-        "utf-8",
-      );
-
-      captureFetch();
-      try {
-        const plugin = await ClaudeMemPlugin({ ...pluginCtx, worktree: worktreeDir });
-        await plugin["chat.message"](
-          {},
-          {
-            message: { role: "user", sessionID: "ses_wt" },
-            parts: [{ type: "text", text: "worktree prompt" }],
-          },
-        );
-        const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
-        expect(initPost, "a real user prompt should initialize the session").toBeTruthy();
-        expect(initPost!.body.project).toBe("parent-repo/leaf-worktree");
-      } finally {
-        restoreFetch();
-      }
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  });
-
-  it("still uses the bare basename for a plain (non-worktree) directory", async () => {
-    // A `.git` DIRECTORY (a normal repo) is not a linked worktree; the
-    // existing leaf-basename behaviour must be preserved.
-    const base = mkdtempSync(join(tmpdir(), "claude-mem-plain-"));
-    try {
-      mkdirSync(join(base, ".git"), { recursive: true });
-
-      captureFetch();
-      try {
-        const plugin = await ClaudeMemPlugin({ ...pluginCtx, worktree: base });
-        await plugin["chat.message"](
-          {},
-          {
-            message: { role: "user", sessionID: "ses_plain" },
-            parts: [{ type: "text", text: "plain directory prompt" }],
-          },
-        );
-        const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
-        expect(initPost, "a real user prompt should initialize the session").toBeTruthy();
-        expect(initPost!.body.project).toBe(basename(base));
-      } finally {
-        restoreFetch();
-      }
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("isConnectionRefusedError (worker-down warning suppression)", () => {

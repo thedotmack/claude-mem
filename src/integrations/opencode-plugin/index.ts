@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { basename, dirname, join, resolve } from "node:path";
-import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import {
   parseSearchResponse,
@@ -135,61 +134,6 @@ async function workerGetText(path: string): Promise<string | null> {
   }
 }
 
-/**
- * Mirrors the shared identity logic (detectWorktree, #2663/#3262) locally:
- * a linked git worktree carries a `.git` FILE pointing at
- * `<parentRepo>/.git/worktrees/<leaf>`, and the rest of claude-mem keys such
- * worktrees by the compound `<parentRepoName>/<worktreeLeafName>`. Reproducing
- * this here instead of importing src/utils/project-name.ts is deliberate
- * (#3803): the esbuild bundle inlines everything but node builtins, so the
- * import would drag the file-writing logger and a synchronous
- * execFileSync("git", ...) into OpenCode's editor process. Any filesystem
- * throw (ENOENT, EACCES, anything) falls back to null — this runs inside
- * plugin load and must never throw.
- */
-function resolveWorktreeParentLeaf(worktree: string): string | null {
-  try {
-    const gitPath = join(worktree, ".git");
-    const stat = statSync(gitPath);
-    // A `.git` DIRECTORY is a normal repo, not a linked worktree.
-    if (!stat.isFile()) {
-      return null;
-    }
-    const content = readFileSync(gitPath, "utf-8").trim();
-    const gitdirMatch = content.match(/^gitdir:\s*(.+)$/);
-    if (!gitdirMatch) {
-      return null;
-    }
-    const gitdir = resolve(dirname(gitPath), gitdirMatch[1]);
-    const worktreesMatch = gitdir.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
-    if (!worktreesMatch) {
-      return null;
-    }
-    return `${basename(worktreesMatch[1])}/${basename(worktree)}`;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The project name claude-mem attributes the session to.
- *
- * `ctx.project?.name` is NOT the repository name in OpenCode — it resolves to
- * the constant "opencode", which lumps every project into one bucket. The
- * worktree root is the same repo-root identity the rest of claude-mem keys
- * projects by (for non-git projects OpenCode resolves the worktree to the
- * project directory, so this covers every launch). Linked worktrees get the
- * same compound parent/leaf key every other capture path uses (#3803), so
- * project-filtered context sees OpenCode captures too.
- */
-function resolveProjectName(ctx: OpenCodePluginContext): string {
-  const worktreeKey = resolveWorktreeParentLeaf(ctx.worktree);
-  if (worktreeKey) {
-    return worktreeKey;
-  }
-  return basename(ctx.worktree) || ctx.project?.name || "opencode";
-}
-
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
@@ -227,17 +171,25 @@ function resolveContentSessionId(openCodeSessionId: string): string {
  * Records a real user prompt with the worker. Every user prompt posts init,
  * matching the Claude Code path; the worker de-duplicates identical prompts
  * within its time window (#3803).
+ *
+ * The body carries the checkout, not a project key. `ctx.project?.name` is not
+ * the repository (it resolves to "opencode" for every project), and resolving
+ * the key here would mean a second copy of the identity rules (markers,
+ * environments, git-remote slugs, worktree and submodule composites) inside
+ * OpenCode's process. The worker keys the session with the same shared
+ * resolver it applies to this plugin's observations, so init and capture
+ * always agree.
  */
 function initializeSessionForUserPrompt(
   openCodeSessionId: string,
-  projectName: string,
+  cwd: string,
   prompt: string,
 ): string {
   const contentSessionId = resolveContentSessionId(openCodeSessionId);
   workerPostFireAndForget("/api/sessions/init", {
     contentSessionId,
-    project: projectName,
     prompt,
+    cwd,
     platform_source: PLATFORM_SOURCE,
   });
   return contentSessionId;
@@ -250,9 +202,7 @@ function truncate(text: string): string {
 }
 
 const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
-  const projectName = resolveProjectName(ctx);
-
-  console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
+  console.log(`[claude-mem] OpenCode plugin loading (directory: ${ctx.directory})`);
 
   return {
     // Capture every tool execution as an observation. This is the primary
@@ -293,7 +243,7 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           .join("\n")
           .trim();
         if (promptText) {
-          initializeSessionForUserPrompt(sessionID, projectName, promptText);
+          initializeSessionForUserPrompt(sessionID, ctx.directory, promptText);
         } else {
           resolveContentSessionId(sessionID);
         }
