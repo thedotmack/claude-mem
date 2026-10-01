@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { formatRecalledObservationLine } from './grok-bot-untrusted-text.mjs';
 
 // CCS Align — Phase 0 breathing slice + Phase 1 exclude marks.
 //
@@ -140,26 +141,14 @@ export function observationMatchesCcsAlignNeedle(
   return matchesType || matchesConcept;
 }
 
-function collapseWhitespace(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
 /**
- * `- YYYY-MM-DD [ccs-align] <type> — <title>: <subtitle>. <fact>`, truncated to
- * 500 chars. Copied verbatim from `formatAwarenessLine` (#3931) with the tag
- * swapped.
+ * `- YYYY-MM-DD [ccs-align] <type> — «<title>: <subtitle>. <fact>»` in at most
+ * 500 chars: the awareness line format (#3931) with the tag swapped, through
+ * the shared formatter, so the recalled text is sanitized and fenced like every
+ * other host-read line (#4146).
  */
 export function formatCcsAlignLine(obs: CcsAlignObservationInput, now: Date = new Date()): string {
-  const date = now.toISOString().slice(0, 10);
-  const title = collapseWhitespace(obs.title ?? '');
-  const subtitle = collapseWhitespace(obs.subtitle ?? '');
-  const fact = collapseWhitespace((obs.facts ?? [])[0] ?? '');
-  const headline = [title, subtitle].filter(Boolean).join(': ');
-  const detail = [headline, fact].filter(Boolean).join('. ');
-  const body = collapseWhitespace(`${obs.type}${detail ? ` — ${detail}` : ''}`);
-  const line = `- ${date} ${CCS_ALIGN_TAG} ${body}`.trimEnd();
-  if (line.length <= MAX_LINE_CHARS) return line;
-  return `${line.slice(0, MAX_LINE_CHARS - 1)}…`;
+  return formatRecalledObservationLine(CCS_ALIGN_TAG, obs, now, MAX_LINE_CHARS);
 }
 
 /**
