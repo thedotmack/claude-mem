@@ -25,6 +25,7 @@ import {
   OBSERVER_HEALTH_FILENAME,
   OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
 } from '../../../../src/shared/observer-health.js';
+import { resolveConfigDirProfileKey } from '../../../../src/shared/EnvManager.js';
 
 // The route reads the ledger from paths.dataDir() (CLAUDE_MEM_DATA_DIR, set to a
 // per-run temp dir by tests/preload.ts), so write it there for the health case.
@@ -177,6 +178,7 @@ describe('SearchRoutes Welcome Hint', () => {
       quotaCooldown: {
         active: true,
         provider: 'claude',
+        profile: resolveConfigDirProfileKey(), // pauses the account selected now
         armedAt: Date.now() - 60_000,
         until: Date.now() + 20 * 60_000,
         window: 'five_hour',

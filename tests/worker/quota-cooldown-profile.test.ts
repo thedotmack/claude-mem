@@ -21,6 +21,7 @@ import {
   readObserverHealth,
 } from '../../src/shared/observer-health.js';
 import { paths, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
+import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 
 // Quota is per Claude account, and CLAUDE_MEM_CLAUDE_CONFIG_DIR can move the
 // observer to another account between spawns. A 'claude' breaker armed while
@@ -31,6 +32,9 @@ describe('quota cooldown breaker — per-account claude profile', () => {
 
   beforeEach(() => {
     resetQuotaCooldownsForTesting();
+    // The SessionRoutes cases pass the Claude setup gate first: a setup status
+    // another file left behind (dependency-preflight) would turn them away.
+    resetDependencyStatusesForTesting();
     currentProfile = 'work';
     setClaudeProfileResolverForTesting(() => currentProfile);
   });

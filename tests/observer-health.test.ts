@@ -22,6 +22,7 @@ import {
   type ObserverHealthState,
 } from '../src/shared/observer-health.ts';
 import { QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS } from '../src/shared/quota-cooldown.ts';
+import { credentialProfileKey } from '../src/shared/EnvManager.ts';
 
 const repoRoot = process.cwd();
 
@@ -724,6 +725,9 @@ describe('ContextBuilder observer-health injection', () => {
     return JSON.parse(new TextDecoder().decode(result.stdout).trim());
   }
 
+  /** The Claude account the child bills: its CLAUDE_CONFIG_DIR is the data dir. */
+  const childProfile = () => credentialProfileKey({ configDir: dataDir, explicitConfigDir: true });
+
   it('shows the outage warning even when there is no database to render', () => {
     writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
     const { emptyDbText } = runContextChild(dataDir);
@@ -783,7 +787,7 @@ describe('ContextBuilder observer-health injection', () => {
         consecutiveFailures: 0,
         lastErrorAt: null,
         lastSuccessAt: Date.now(),
-        quotaCooldown: activeCooldown({ until: Date.now() + 20 * 60_000 }),
+        quotaCooldown: activeCooldown({ until: Date.now() + 20 * 60_000, profile: childProfile() }),
       }))
     );
     const { emptyDbText, humanText } = runContextChild(dataDir);
@@ -793,6 +797,23 @@ describe('ContextBuilder observer-health injection', () => {
     expect(humanText).toContain('paused while a provider quota cooldown is active');
     expect(humanText).toContain('TIMELINE_BODY');
     expect(humanText.indexOf('TIMELINE_BODY')).toBeLessThan(humanText.indexOf('quota cooldown'));
+  });
+
+  it('stays silent about a cooldown that pauses another Claude account', () => {
+    // CLAUDE_MEM_CLAUDE_CONFIG_DIR moved to this account after another one was
+    // paused: nothing withholds this account's requests.
+    writeFileSync(
+      join(dataDir, 'observer-health.json'),
+      JSON.stringify(unhealthyState({
+        consecutiveFailures: 0,
+        lastErrorAt: null,
+        lastSuccessAt: Date.now(),
+        quotaCooldown: activeCooldown({ until: Date.now() + 20 * 60_000, profile: 'work#0123abcd' }),
+      }))
+    );
+    const { emptyDbText, humanText } = runContextChild(dataDir);
+    expect(emptyDbText).not.toContain('quota cooldown');
+    expect(humanText).toBe('TIMELINE_BODY');
   });
 
   it('stays silent when a persisted cooldown has already expired', () => {

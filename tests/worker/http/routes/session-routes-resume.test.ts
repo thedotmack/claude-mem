@@ -347,15 +347,33 @@ describe('paused in-memory session recovery', () => {
     expect(manager.getResumableSessionIds()).toEqual([1]);
   });
 
-  it('leaves a session out of the automatic sweep while its overflow cooldown runs', () => {
+  it('leaves an observer that spent its overflow recycles to the next event, even after its cooldown', () => {
+    // A message that fits no generation aborts again on every retry: the
+    // sweep retried it every cooldown (~11 min), forever.
     const { manager } = fixture();
-    const now = Date.now();
     const session = manager.getSession(1)!;
     session.pausedReason = 'overflow';
-    session.overflowPausedUntilMs = now + 60_000;
-    expect(manager.getResumableSessionIds(false, now)).toEqual([]);
-    expect(manager.getResumableSessionIds(true, now)).toEqual([1]);
-    expect(manager.getResumableSessionIds(false, now + 60_001)).toEqual([1]);
+    session.overflowPausedUntilMs = Date.now() - 1;
+    expect(manager.getResumableSessionIds()).toEqual([]);
+    expect(manager.getResumableSessionIds(true)).toEqual([1]);
+  });
+
+  it('still sweeps a recycled conversation whose own resume was turned away', () => {
+    const { manager } = fixture();
+    manager.getSession(1)!.pausedReason = 'overflow';
+    expect(manager.getResumableSessionIds()).toEqual([1]);
+  });
+
+  it('leaves a setup failure to the next event or an operator retry', async () => {
+    // Nothing on a timer repairs a missing Claude CLI or an unusable data
+    // directory; the start gate rechecks it when the next event arrives.
+    const { routes, manager, agent } = fixture();
+    manager.getSession(1)!.pausedReason = 'setup_required';
+    expect(manager.getResumableSessionIds()).toEqual([]);
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+    await flushStarts();
+    expect(agent.startSession).not.toHaveBeenCalled();
+    expect(manager.getResumableSessionIds(true)).toEqual([1]);
   });
 
   it('refuses the operator retry from a non-local address', async () => {
