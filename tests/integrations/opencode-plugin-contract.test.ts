@@ -10,6 +10,7 @@ import {
   REAL_OPENCODE_EVENT_TYPES,
 } from "../../src/integrations/opencode-plugin/index";
 import { normalizePlatformSource } from "../../src/shared/platform-source";
+import { isConnectionRefusedError } from "../../src/shared/connection-errors";
 
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
@@ -457,5 +458,94 @@ describe("OpenCode search client response-shape contract", () => {
     });
     const rendered = parseSearchResponse(emptyResponse, "zzz");
     expect(rendered).toContain("No observations found");
+  });
+});
+
+describe("isConnectionRefusedError (worker-down warning suppression)", () => {
+  // The plugin stays quiet when the worker is simply not running. OpenCode
+  // hosts plugins under Bun, whose fetch rejects a refused connection with
+  // code 'ConnectionRefused' and no 'ECONNREFUSED' anywhere in the message;
+  // Node's undici puts ECONNREFUSED only on error.cause. A regression to
+  // message-only matching would spam a warning on every event while the
+  // worker is down.
+  it("recognizes Bun's ConnectionRefused shape", () => {
+    const bunRefusal = Object.assign(
+      new Error("Unable to connect. Is the computer able to access the url?"),
+      { code: "ConnectionRefused" }
+    );
+    expect(isConnectionRefusedError(bunRefusal)).toBe(true);
+  });
+
+  it("recognizes undici's fetch failed with cause ECONNREFUSED", () => {
+    const undiciRefusal = new TypeError("fetch failed");
+    (undiciRefusal as { cause?: unknown }).cause = Object.assign(
+      new Error("connect ECONNREFUSED 127.0.0.1:37777"),
+      { code: "ECONNREFUSED" }
+    );
+    expect(isConnectionRefusedError(undiciRefusal)).toBe(true);
+  });
+
+  it("recognizes a legacy message-embedded ECONNREFUSED", () => {
+    expect(isConnectionRefusedError(new Error("connect ECONNREFUSED 127.0.0.1:37777"))).toBe(true);
+  });
+
+  it("recognizes a refusal nested in an AggregateError (happy-eyeballs dual-stack connect)", () => {
+    const aggregate = new AggregateError(
+      [
+        Object.assign(new Error("connect ECONNRESET ::1:37777"), { code: "ECONNRESET" }),
+        Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:37777"), { code: "ECONNREFUSED" }),
+      ],
+      "all attempts failed",
+    );
+    const wrapped = new TypeError("fetch failed");
+    (wrapped as { cause?: unknown }).cause = aggregate;
+    expect(isConnectionRefusedError(wrapped)).toBe(true);
+  });
+
+  it("does not swallow unrelated failures", () => {
+    expect(isConnectionRefusedError(new Error("TLS handshake exploded"))).toBe(false);
+    expect(isConnectionRefusedError(new Error("Unable to connect. Is the computer able to access the url?"))).toBe(false);
+    expect(isConnectionRefusedError("string error")).toBe(false);
+  });
+
+  it("keeps the plugin bundle free of worker-only modules (dependency-free shared helper)", () => {
+    const pluginSource = readFileSync("src/integrations/opencode-plugin/index.ts", "utf8");
+    expect(pluginSource).toContain('from "../../shared/connection-errors.js"');
+    const helperSource = readFileSync("src/shared/connection-errors.ts", "utf8");
+    expect(helperSource).not.toMatch(/^import /m);
+  });
+
+  it("stays quiet on a Bun-shaped refusal but still warns on a real failure", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const runTool = () => plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_refused", callID: "c1" },
+        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+      );
+
+      globalThis.fetch = (async () => {
+        throw Object.assign(
+          new Error("Unable to connect. Is the computer able to access the url?"),
+          { code: "ConnectionRefused" },
+        );
+      }) as typeof fetch;
+      await runTool();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(warnings).toEqual([]);
+
+      globalThis.fetch = (async () => {
+        throw new Error("TLS handshake exploded");
+      }) as typeof fetch;
+      await runTool();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(warnings.some((line) => line.includes("TLS handshake exploded"))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.warn = originalWarn;
+    }
   });
 });

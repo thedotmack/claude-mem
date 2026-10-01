@@ -170,6 +170,25 @@ describe('flushSession() — observer_turn_rollup', () => {
     expect(p.outcomes_error).toBe(1);
     expect(p.outcomes_aborted).toBe(1);
     expect(p.outcomes_invalid_output).toBe(1);
+    expect(p.outcomes_aborted_deadline_exceeded).toBe(0);
+  });
+
+  // The rollup drops per-turn abort_reason, so without its own counter a request
+  // abandoned at the LLM deadline (and possibly still billed upstream) is just
+  // another abort — which is how the 30s-deadline waste went unnoticed after #4125.
+  it('counts deadline aborts as a subset of outcomes_aborted', () => {
+    const SID = 8;
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'aborted', abort_reason: 'deadline_exceeded' });
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'aborted', abort_reason: 'deadline_exceeded' });
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'aborted', abort_reason: 'idle' });
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'ok' });
+
+    telemetryBuffer.flushSession(SID, 'session_end');
+
+    const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
+    expect(p.outcomes_aborted).toBe(3);
+    expect(p.outcomes_aborted_deadline_exceeded).toBe(2);
+    expect(p.outcomes_ok).toBe(1);
   });
 
   it('omits top_model when no model strings are recorded', () => {
@@ -179,6 +198,29 @@ describe('flushSession() — observer_turn_rollup', () => {
 
     const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
     expect(p.top_model).toBeUndefined();
+  });
+
+  it('names the dominant abort_reason among aborted turns as top_abort_reason (#4150)', () => {
+    const SID = 11;
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'aborted', abort_reason: 'auth' });
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'ok' });
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'aborted', abort_reason: 'idle' });
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'aborted', abort_reason: 'auth' });
+    telemetryBuffer.flushSession(SID, 'session_end');
+
+    // Survives the scrubber too: the rollup reaches PostHog with the field.
+    const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
+    expect(p.outcomes_aborted).toBe(3);
+    expect(p.top_abort_reason).toBe('auth');
+  });
+
+  it('omits top_abort_reason when no turn aborted', () => {
+    const SID = 12;
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'ok' });
+    telemetryBuffer.flushSession(SID, 'session_end');
+
+    const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
+    expect(p.top_abort_reason).toBeUndefined();
   });
 
   it('carries last-seen ide, provider, observed_model, observed_billing on the rollup', () => {

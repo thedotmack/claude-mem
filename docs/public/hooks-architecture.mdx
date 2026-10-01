@@ -74,23 +74,24 @@ Claude Code's hook system provides exactly what we need:
 
 ## The Hook Scripts
 
-Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. Runtime setup is handled out-of-band by `npx claude-mem install` (and `npx claude-mem repair`); the Setup hook only runs a sub-100ms `version-check.js` to flag stale installs. SessionStart runs 2 hooks in sequence: worker-service start, then context-hook.
+Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. `npx claude-mem install` (and `npx claude-mem repair`) set up the runtime; the Setup hook runs `version-check.js`, which completes a plugin-marketplace install whose dependencies are missing and records the install marker. SessionStart runs 2 hooks: worker-service start, which is async so session start never waits on it, and the synchronous context hook, which starts the worker itself when needed.
 
 ### Setup Hook: Version Check
 
-**Purpose:** Detect stale installs caused by external plugin upgrades and prompt the user to repair.
+**Purpose:** Make sure the loaded plugin can start its worker: install the runtime dependencies the plugin marketplace left out, and record the `.install-version` marker.
 
-**Note:** Runtime installation (Bun, uv, `bun install` in the plugin cache) is performed by `npx claude-mem install` and `npx claude-mem repair` — the Setup hook itself never installs anything.
+**Note:** `npx claude-mem install` and `npx claude-mem repair` install Bun, uv and the plugin dependencies up front. The plugin marketplace (including `claude plugin update`) only extracts files, so the Setup hook completes a missing dependency tree itself.
 
 **When:** Claude Code Setup phase, before every session.
 
 **What it does:**
-1. Reads the `.install-version` marker written by the npx installer.
-2. Compares it against the currently loaded plugin version.
-3. On mismatch, writes `run: npx claude-mem repair` to stderr.
-4. Always exits 0 (non-blocking, sub-100ms).
+1. Checks that every dependency declared in the plugin's `package.json` (plus the `zod` subpaths the worker loads) is present in its `node_modules`, not just that the folder exists.
+2. If any are missing, runs `bun install --production` in the plugin root (up to 120s), then checks again. A partial tree is kept, never deleted.
+3. If dependencies are still missing, prints `claude-mem: plugin dependencies missing (…) - run: npx claude-mem@latest install`, naming the modules (stderr; Codex receives it as SessionStart context).
+4. If the closure is complete and `.install-version` is missing, unreadable or from another version, writes the marker itself (`{version, installedAt, bun}`) instead of sending a working install to the installer.
+5. Always exits 0 — never blocks a session.
 
-**Configuration:**
+**Configuration** (simplified; the shipped command first resolves the plugin root):
 ```json
 {
   "hooks": {
@@ -98,7 +99,7 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. Runtime setup 
       "hooks": [{
         "type": "command",
         "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/version-check.js",
-        "timeout": 60
+        "timeout": 300
       }]
     }]
   }
@@ -106,11 +107,12 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. Runtime setup 
 ```
 
 **Key Features:**
-- ✅ Sub-100ms version-marker check (no I/O beyond reading the marker)
+- ✅ Fast when the install is complete: a declared-dependency check, no install
+- ✅ Self-heals marketplace installs: installs missing dependencies and writes the marker, so a working install never sees a "run the installer" message
+- ✅ Names the missing modules when an install cannot be completed
 - ✅ Always exit 0 — never blocks a session
-- ✅ Clear repair instructions on stderr when the plugin was upgraded externally (e.g. `claude plugin update`)
 
-**Source:** `scripts/version-check.js`. The matching installer logic lives in `npx claude-mem install` / `npx claude-mem repair`, which install Bun + uv globally, run `bun install` in the plugin cache, and write the `.install-version` marker — all behind a visible clack spinner.
+**Source:** `plugin/scripts/version-check.js`. `npx claude-mem install` / `npx claude-mem repair` do the same work ahead of time — they install Bun + uv globally, run `bun install` in the plugin cache, and write the `.install-version` marker — behind a visible clack spinner.
 
 ---
 
@@ -118,7 +120,7 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. Runtime setup 
 
 **Purpose:** Inject relevant context from previous sessions
 
-**When:** Claude Code starts (runs after the worker-start SessionStart entry)
+**When:** Claude Code starts (runs alongside the async worker-start SessionStart entry)
 
 **What it does:**
 1. Extracts project name from current working directory
@@ -423,10 +425,10 @@ sequenceDiagram
 
 | Event | Timing | Blocking | Timeout | Output Handling |
 |-------|--------|----------|---------|-----------------|
-| **Setup (version-check)** | Before session | No | 60s | stderr hint on stale install (always exit 0) |
-| **SessionStart (worker-start)** | Before session | No | 60s | stderr (log only) |
+| **Setup (version-check)** | Before session | No | 300s | Installs missing plugin dependencies; stderr hint only if they are still missing (always exit 0) |
+| **SessionStart (worker-start)** | Session start (async) | No | 60s | stderr (log only) |
 | **SessionStart (context)** | Before session | No | 60s | JSON → additionalContext (silent) |
-| **UserPromptSubmit** | Before processing | No | 60s | stdout → context |
+| **UserPromptSubmit** | Before processing | No | 15s (10s internal budget; 7s on Windows) | stdout → context |
 | **PostToolUse** | After tool | No | 120s | Transcript only |
 | **Summary** | Worker triggered | No | 120s | Database |
 | **SessionEnd** | On exit | No | 120s | Log only |
@@ -686,18 +688,17 @@ claude --debug
 
 | Hook | Average | p95 | p99 |
 |------|---------|-----|-----|
-| Setup (version-check, marker matches) | 8ms | 20ms | 40ms |
-| Setup (version-check, marker mismatch — stderr hint, still non-blocking) | 10ms | 25ms | 50ms |
+| Setup (version-check, dependencies complete, marker current) | 8ms | 20ms | 40ms |
 | SessionStart (context) | 45ms | 120ms | 250ms |
 | SessionStart (user-message) | 5ms | 10ms | 15ms |
 | UserPromptSubmit | 12ms | 25ms | 50ms |
 | PostToolUse | 8ms | 15ms | 30ms |
 | SessionEnd | 5ms | 10ms | 20ms |
 
-**Why the Setup hook stays fast:**
-- The Setup hook only reads the `.install-version` marker — no `npm install`, no spawned subprocesses.
-- All heavy lifting (Bun + uv install, `bun install` inside the plugin cache) happens in `npx claude-mem install` / `npx claude-mem repair`, which run with a visible clack spinner outside the session lifecycle.
-- On marker mismatch the hook prints a one-line `run: npx claude-mem repair` hint to stderr and exits 0; the user opts into the slow path explicitly.
+**When the Setup hook is fast, and when it is not:**
+- With a complete dependency tree it only checks that the declared modules resolve, and rewrites the `.install-version` marker if it is missing or from another version — no install.
+- Only an incomplete tree — a plugin-marketplace install or `claude plugin update` whose dependencies were never installed — runs `bun install` (up to 120s, inside the Setup hook's 300s timeout). Setup runs once per Claude Code launch, so this never lands on the per-prompt path.
+- `npx claude-mem install` / `npx claude-mem repair` do the heavy lifting (Bun + uv, `bun install` inside the plugin cache) up front with a visible clack spinner, so installs made that way never pay it at session start.
 
 ### Database Performance
 
@@ -764,9 +765,9 @@ LIMIT 20
 
 **Privacy guarantees:**
 - All data stored locally in `~/.claude-mem/claude-mem.db`
-- No cloud uploads (API calls only for AI compression)
+- No cloud uploads (API calls only for AI compression). Local installs contact cmem.ai once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names); nothing else is sent to cmem.ai.
 - SQLite file permissions: user-only read/write
-- No analytics or telemetry
+- Product telemetry is opt-out and never carries prompts, code, or paths — see [Telemetry](/telemetry)
 
 ### API Key Protection
 
