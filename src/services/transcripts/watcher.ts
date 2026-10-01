@@ -5,7 +5,7 @@ import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
-import { TranscriptAnchorError, TranscriptEventProcessor } from './processor.js';
+import { TranscriptAnchorError, TranscriptEventProcessor, type TranscriptFileContext } from './processor.js';
 import { decompressZstdFrame, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
@@ -89,11 +89,22 @@ async function zstdResumeOffset(filePath: string, size: number): Promise<number>
  */
 const FIRST_LINE_MAX_BYTES = 1024 * 1024;
 
-/** The first line of a JSONL transcript, read from at most `limit` bytes; null when it does not end there. */
-async function readFirstLine(filePath: string, limit: number): Promise<string | null> {
-  const head = (await readByteRange(filePath, 0, Math.min(limit, FIRST_LINE_MAX_BYTES))).toString('utf8');
-  const newline = head.indexOf('\n');
-  return newline < 0 ? null : head.slice(0, newline);
+/**
+ * A transcript's first line: of a JSONL file, or of the text in a zstd file's
+ * first frame. Only the first `limit` bytes count; null when the line (or the
+ * frame) does not end within them.
+ */
+async function readFirstLine(filePath: string, isZstd: boolean, limit: number): Promise<string | null> {
+  let text: string;
+  if (isZstd) {
+    const { frames } = scanZstdFramesInFile(filePath, 0, Math.min(limit, FIRST_LINE_MAX_BYTES), 1);
+    if (frames.length === 0) return null;
+    text = decompressZstdFrame(await readByteRange(filePath, 0, frames[0].end), frames[0]);
+  } else {
+    text = (await readByteRange(filePath, 0, Math.min(limit, FIRST_LINE_MAX_BYTES))).toString('utf8');
+  }
+  const newline = text.indexOf('\n');
+  return newline < 0 ? null : text.slice(0, newline);
 }
 
 /**
@@ -104,16 +115,7 @@ async function readFirstLine(filePath: string, limit: number): Promise<string | 
  */
 async function firstRecordTimeMs(filePath: string, isZstd: boolean, size: number): Promise<number | null> {
   try {
-    let line: string | null;
-    if (isZstd) {
-      const { frames } = scanZstdFramesInFile(filePath, 0, size, 1);
-      if (frames.length === 0) return null;
-      const text = decompressZstdFrame(await readByteRange(filePath, 0, frames[0].end), frames[0]);
-      const newline = text.indexOf('\n');
-      line = newline < 0 ? null : text.slice(0, newline);
-    } else {
-      line = await readFirstLine(filePath, size);
-    }
+    const line = await readFirstLine(filePath, isZstd, size);
     if (line === null) return null;
     const record = JSON.parse(line) as Record<string, unknown> | null;
     for (const key of ['timestamp', 'time', 'createdAt']) {
@@ -611,19 +613,30 @@ export class TranscriptWatcher {
       }
     }
 
-    // A subagent-only watch learns the rollout's marker from its first line.
-    // A tail that resumes past it reads that line once, before the first new
-    // one, for its context only.
-    let primeFirstLine = offset > 0 && Boolean(watch.subagentSource) && !isZstd;
+    // The session's working directory, restored for a watcher that resumes
+    // past the line that reported it; saved with the next checkpoint.
+    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath] };
+    // A subagent-only watch learns the rollout's marker from its first line,
+    // and a session whose directory is not known yet learns it there too
+    // (DeepSeek Harness writes it on that line only; a turn without one is
+    // skipped). A tail that resumes past that line reads it once, before the
+    // first new one, for its context only.
+    let primeFirstLine = offset > 0 && (Boolean(watch.subagentSource) || !fileContext.cwd);
     const tailer = new FileTailer(
       filePath,
       offset,
       async (line: string) => {
-        if (primeFirstLine) {
-          primeFirstLine = false;
-          await this.primeFromFirstLine(filePath, offset, watch, schema, sessionIdOverride);
+        try {
+          if (primeFirstLine) {
+            primeFirstLine = false;
+            await this.primeFromFirstLine(filePath, offset, watch, schema, sessionIdOverride, fileContext);
+          }
+          await this.handleLine(line, watch, schema, filePath, sessionIdOverride, fileContext);
+        } finally {
+          if (fileContext.cwd && fileContext.cwd !== this.state.cwds?.[filePath]) {
+            (this.state.cwds ??= {})[filePath] = fileContext.cwd;
+          }
         }
-        await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
       },
       (newOffset: number, partial: string, frameLinesDone: number) => {
         this.state.offsets[filePath] = newOffset;
@@ -670,12 +683,13 @@ export class TranscriptWatcher {
     resumedAt: number,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    sessionIdOverride: string | null
+    sessionIdOverride: string | null,
+    fileContext: TranscriptFileContext
   ): Promise<void> {
     try {
-      const firstLine = await readFirstLine(filePath, resumedAt);
+      const firstLine = await readFirstLine(filePath, filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX), resumedAt);
       if (firstLine === null) return;
-      await this.processor.primeSessionContext(JSON.parse(firstLine), watch, schema, sessionIdOverride);
+      await this.processor.primeSessionContext(JSON.parse(firstLine), watch, schema, sessionIdOverride, fileContext);
     } catch (error: unknown) {
       logger.debug('TRANSCRIPT', 'Could not read the first line of a resumed transcript', {
         watch: watch.name,
@@ -689,11 +703,12 @@ export class TranscriptWatcher {
     watch: WatchTarget,
     schema: TranscriptSchema,
     filePath: string,
-    sessionIdOverride?: string | null
+    sessionIdOverride: string | null,
+    fileContext: TranscriptFileContext
   ): Promise<void> {
     try {
       const entry = JSON.parse(line);
-      await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined);
+      await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined, fileContext);
     } catch (error: unknown) {
       // A turn whose prompt the worker did not record stops the pass with the
       // checkpoint at its line (or frame), so it is retried, not misfiled.

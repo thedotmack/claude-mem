@@ -53,7 +53,7 @@ const corruptZstdFrame = (): Buffer => {
 };
 
 const userMessageEvent = (seq: number, text: string): string =>
-  JSON.stringify({ type: 'user/message', seq, time: Date.now(), data: { content: [{ type: 'text', text }] } });
+  JSON.stringify({ type: 'user/message', seq, time: Date.now(), cwd: '/tmp/project', data: { content: [{ type: 'text', text }] } });
 
 const dshSchema: TranscriptSchema = {
   name: 'dsh-test',
@@ -62,7 +62,7 @@ const dshSchema: TranscriptSchema = {
       name: 'user-message',
       match: { path: 'type', equals: 'user/message' },
       action: 'session_init',
-      fields: { prompt: 'data.content[0].text' },
+      fields: { prompt: 'data.content[0].text', cwd: 'cwd' },
     },
   ],
 };

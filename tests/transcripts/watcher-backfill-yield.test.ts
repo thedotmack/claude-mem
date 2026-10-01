@@ -56,7 +56,7 @@ describe('TranscriptWatcher backfill', () => {
     const lines = Array.from({ length: totalLines }, (_, i) =>
       JSON.stringify({
         type: 'event',
-        payload: { type: 'user_message', session_id: sessionId, message: `line ${i}` },
+        payload: { type: 'user_message', session_id: sessionId, cwd: '/tmp/codex-test-project', message: `line ${i}` },
       }),
     );
     writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
@@ -68,7 +68,7 @@ describe('TranscriptWatcher backfill', () => {
           name: 'user-message',
           match: { path: 'payload.type', equals: 'user_message' },
           action: 'session_init',
-          fields: { sessionId: 'payload.session_id', prompt: 'payload.message' },
+          fields: { sessionId: 'payload.session_id', cwd: 'payload.cwd', prompt: 'payload.message' },
         },
       ],
     };

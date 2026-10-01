@@ -187,12 +187,15 @@ describe('TranscriptEventProcessor subagent gating', () => {
   // rest of the turn state dropped every later turn of the same subagent.
   it('keeps capturing a subagent rollout after its first turn ends', async () => {
     const watch = makeWatch({ subagentOnly: true, subagentSource });
-    await processor.processEntry(metaEntry(SUBAGENT_SOURCE), watch, schemaWithEnd);
-    await processor.processEntry(userEntry, watch, schemaWithEnd);
-    await processor.processEntry(obsEntry, watch, schemaWithEnd);
-    await processor.processEntry(endEntry, watch, schemaWithEnd);
-    await processor.processEntry(userEntry, watch, schemaWithEnd);
-    await processor.processEntry(obsEntry, watch, schemaWithEnd);
+    // The watcher passes the rollout file's context, which keeps the session's
+    // working directory past session_end (a turn without one is skipped, R5-3).
+    const file = {};
+    await processor.processEntry(metaEntry(SUBAGENT_SOURCE), watch, schemaWithEnd, undefined, file);
+    await processor.processEntry(userEntry, watch, schemaWithEnd, undefined, file);
+    await processor.processEntry(obsEntry, watch, schemaWithEnd, undefined, file);
+    await processor.processEntry(endEntry, watch, schemaWithEnd, undefined, file);
+    await processor.processEntry(userEntry, watch, schemaWithEnd, undefined, file);
+    await processor.processEntry(obsEntry, watch, schemaWithEnd, undefined, file);
 
     expect(sessionInitIds).toEqual(['s1', 's1']);
     expect(observationSessionIds).toEqual(['s1', 's1']);
