@@ -138,9 +138,11 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     store = freshStore();
   });
 
-  it('hydrates the overage-included weekly window', () => {
-    // Claude Code fans out five_hour, seven_day, and seven_day_overage_included
-    // — the premium-model weekly counted with overage included.
+  // seven_day_overage_included is Claude Code's per-model "Fable limit". The CLI
+  // reports its figure on every response of an account that has the bucket,
+  // whatever model the request used, and a figure above 1 is usage that
+  // legitimately ran past the cap. A Haiku observer does not draw on it (#4132).
+  it('does not pause on the overage-included figure another model spent', () => {
     store.set({
       rateLimitType: 'five_hour',
       status: 'allowed',
@@ -150,11 +152,23 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
         seven_day_overage_included: { utilization: 0.94, resetsAt: FIXED_NOW + 5 * 24 * 60 * 60 * 1000 },
       },
     });
-    expect(store.get('seven_day_overage_included')?.utilization).toBe(0.94);
-    expect(store.getMostRecentByWindow().seven_day_overage_included?.utilization).toBe(0.94);
-    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision.abort).toBe(true);
-    expect(decision.window).toBe('seven_day_overage_included');
+    expect(store.get('seven_day_overage_included')).toBeUndefined();
+    expect(store.getMostRecentByWindow().seven_day_overage_included).toBeUndefined();
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({ abort: false });
+  });
+
+  it('does not pause on an overage-included warning, even past the cap', () => {
+    // The CLI derives this warning from the bucket's surpassed-threshold
+    // header, which carries no model scope: a Haiku response can bring it.
+    store.set({
+      rateLimitType: 'seven_day_overage_included',
+      status: 'allowed_warning',
+      utilization: 1.2,
+      surpassedThreshold: 1,
+      resetsAt: FIXED_NOW + 24 * 60 * 60 * 1000,
+    });
+    expect(store.getMostRecentByWindow().seven_day_overage_included?.utilization).toBe(1.2);
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({ abort: false });
   });
 
   it('aborts on a rejected overage-included weekly window', () => {
@@ -731,6 +745,22 @@ describe('RateLimitStore.set → unifiedWindows', () => {
       unifiedWindows: { overage: { utilization: 1, resetsAt: sevenDayResetsAt } },
     });
     expect(store.get('overage')).toBeUndefined();
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
+  });
+
+  it('leaves per-model buckets to the events that name them', () => {
+    const store = freshStore();
+    store.set({
+      ...fiveHourEvent,
+      unifiedWindows: {
+        ...fiveHourEvent.unifiedWindows,
+        seven_day_opus: { utilization: 0.99, resetsAt: sevenDayResetsAt },
+        seven_day_overage_included: { utilization: 1.4, resetsAt: sevenDayResetsAt },
+      },
+    });
+    expect(store.get('seven_day')?.utilization).toBe(0.24);
+    expect(store.get('seven_day_opus')).toBeUndefined();
+    expect(store.get('seven_day_overage_included')).toBeUndefined();
     expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(false);
   });
 
