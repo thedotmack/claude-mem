@@ -114,6 +114,21 @@ describe('configureKimiMcp', () => {
     // idempotent
     expect(configureKimiMcp()).toBe(0);
   });
+
+  test('uninstall removes only the mcp-search entry claude-mem wrote', () => {
+    const home = makeScratchHome();
+    writeFileSync(path.join(home, 'mcp.json'), JSON.stringify({ mcpServers: { context7: { url: 'https://mcp.context7.com/mcp' } } }, null, 2));
+    expect(configureKimiMcp()).toBe(0);
+    expect(uninstallKimiHooks()).toBe(0);
+    const mcp = JSON.parse(readFileSync(path.join(home, 'mcp.json'), 'utf-8'));
+    expect(mcp.mcpServers['mcp-search']).toBeUndefined();
+    expect(mcp.mcpServers.context7).toBeDefined();
+
+    const foreign = { mcpServers: { 'mcp-search': { type: 'stdio', command: 'other-tool', args: ['serve'] } } };
+    writeFileSync(path.join(home, 'mcp.json'), JSON.stringify(foreign, null, 2));
+    expect(uninstallKimiHooks()).toBe(0);
+    expect(JSON.parse(readFileSync(path.join(home, 'mcp.json'), 'utf-8'))).toEqual(foreign);
+  });
 });
 
 describe('buildKimiHooksBlock', () => {

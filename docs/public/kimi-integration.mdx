@@ -98,7 +98,7 @@ npx claude-mem kimi install
 # Check whether hooks and MCP are registered
 npx claude-mem kimi status
 
-# Remove the claude-mem managed block (preserves other config)
+# Remove the claude-mem managed block and its MCP entry (preserves other config)
 npx claude-mem kimi uninstall
 ```
 
@@ -141,7 +141,7 @@ Report whether the managed hook block is present in `config.toml`.
 
 ### `npx claude-mem kimi uninstall`
 
-Remove exactly the claude-mem managed block from `config.toml`, leaving all other Kimi configuration untouched.
+Remove exactly the claude-mem managed block from `config.toml`, and the `mcp-search` entry claude-mem wrote to `mcp.json` (an entry of that name pointing anywhere else is left alone). All other Kimi configuration is untouched. `npx claude-mem uninstall` runs the same cleanup.
 
 ## Error Handling
 

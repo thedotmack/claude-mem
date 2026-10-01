@@ -125,7 +125,30 @@ export function configureKimiMcp(): number {
   }
 }
 
+/**
+ * Remove the `mcp-search` server from mcp.json, but only the entry claude-mem
+ * wrote (its args point at our mcp-server.cjs): the name is generic, and
+ * configureKimiMcp leaves a pre-existing entry of that name alone.
+ */
+function removeKimiMcpServer(): void {
+  const mcpPath = kimiMcpJsonPath();
+  if (!existsSync(mcpPath)) return;
+  const config: { mcpServers?: Record<string, { args?: unknown }> } = JSON.parse(readFileSync(mcpPath, 'utf-8'));
+  const args = config.mcpServers?.['mcp-search']?.args;
+  const isOurs = Array.isArray(args) && args.some((arg) => typeof arg === 'string' && arg.endsWith('mcp-server.cjs'));
+  if (!isOurs) return;
+  delete config.mcpServers!['mcp-search'];
+  writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
+  console.log(`  Removed MCP server mcp-search from ${mcpPath}`);
+}
+
 export function uninstallKimiHooks(): number {
+  try {
+    removeKimiMcpServer();
+  } catch (error) {
+    console.error(`Failed to remove the Kimi MCP server: ${(error as Error).message}`);
+    return 1;
+  }
   const configPath = kimiConfigPath();
   if (!existsSync(configPath)) {
     console.log('  No Kimi config.toml found; nothing to uninstall');
