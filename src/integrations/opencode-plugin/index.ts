@@ -26,6 +26,25 @@ interface OpenCodeProject {
   path?: string;
 }
 
+interface OpenCodeMessageSnapshot {
+  info?: {
+    role?: string;
+    summary?: boolean;
+    time?: { completed?: number };
+  };
+  parts?: Array<{ type: string; text?: string; ignored?: boolean }>;
+}
+
+// The slice of OpenCode's SDK client this plugin reads (session message list).
+interface OpenCodeClient {
+  session?: {
+    messages?(options: {
+      path: { id: string };
+      query?: { directory?: string };
+    }): Promise<{ data?: OpenCodeMessageSnapshot[] }>;
+  };
+}
+
 interface OpenCodePluginContext {
   client: unknown;
   project: OpenCodeProject;
@@ -95,31 +114,47 @@ const PLATFORM_SOURCE = "opencode";
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
+// Every worker request is bounded, so a hung worker can neither hold a hook
+// open nor pile up pending requests inside OpenCode's process (plan-23 step 2).
+const WORKER_REQUEST_TIMEOUT_MS = 5_000;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // A refused connection means the worker is simply not running and must stay
 // quiet. isConnectionRefusedError recognizes Bun's and undici's shapes, which a
 // message.includes('ECONNREFUSED') check misses (OpenCode hosts plugins under Bun).
-function workerPostFireAndForget(
+async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({
-      ...body,
-      platformSource: normalizePlatformSource(PLATFORM_SOURCE),
-    }),
-  }).catch((error: unknown) => {
-    if (!isConnectionRefusedError(error)) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+): Promise<void> {
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        ...body,
+        platformSource: normalizePlatformSource(PLATFORM_SOURCE),
+      }),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
     }
-  });
+  } catch (error: unknown) {
+    if (!isConnectionRefusedError(error)) {
+      console.warn(`[claude-mem] Worker POST ${path} failed: ${errorMessage(error)}`);
+    }
+  }
 }
 
 async function workerGetText(path: string): Promise<string | null> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      headers: JSON_HEADERS,
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
@@ -127,8 +162,7 @@ async function workerGetText(path: string): Promise<string | null> {
     return await response.text();
   } catch (error: unknown) {
     if (!isConnectionRefusedError(error)) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
+      console.warn(`[claude-mem] Worker GET ${path} failed: ${errorMessage(error)}`);
     }
     return null;
   }
@@ -137,6 +171,63 @@ async function workerGetText(path: string): Promise<string | null> {
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
+
+// Memory context per OpenCode session: fetched on the session's first system
+// prompt build and reused for its later turns, as Claude Code injects once per
+// session. Compaction clears it, so the next build carries fresh context.
+const contextByOpenCodeSessionId = new Map<string, Promise<string | null>>();
+
+function memoryContextFor(openCodeSessionId: string, cwd: string): Promise<string | null> {
+  const cached = contextByOpenCodeSessionId.get(openCodeSessionId);
+  if (cached) return cached;
+
+  while (contextByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+    const oldestKey = contextByOpenCodeSessionId.keys().next().value;
+    if (oldestKey === undefined) break;
+    contextByOpenCodeSessionId.delete(oldestKey);
+  }
+  // The worker resolves the project keys from the checkout, as it does for init.
+  const request = workerGetText(
+    `/api/context/inject?cwd=${encodeURIComponent(cwd)}&platformSource=${PLATFORM_SOURCE}`,
+  );
+  contextByOpenCodeSessionId.set(openCodeSessionId, request);
+  // A failed fetch is retried on the next build instead of being cached.
+  void request.then((context) => {
+    if (!context && contextByOpenCodeSessionId.get(openCodeSessionId) === request) {
+      contextByOpenCodeSessionId.delete(openCodeSessionId);
+    }
+  });
+  return request;
+}
+
+/**
+ * The text of the session's latest completed assistant reply, for summarize's
+ * last_assistant_message. OpenCode fires chat.message for the user's message,
+ * so the reply is read from OpenCode's own message list when the session idles
+ * or compacts. Empty when the client offers no message list or it fails.
+ */
+async function latestAssistantText(client: unknown, openCodeSessionId: string, directory: string): Promise<string> {
+  const session = (client as OpenCodeClient | undefined)?.session;
+  if (typeof session?.messages !== "function") return "";
+  try {
+    const { data } = await session.messages({ path: { id: openCodeSessionId }, query: { directory } });
+    let latest: { completed: number; text: string } | null = null;
+    for (const message of data ?? []) {
+      const completed = message.info?.time?.completed;
+      if (message.info?.role !== "assistant" || message.info.summary === true || typeof completed !== "number") continue;
+      const text = (message.parts ?? [])
+        .filter((part) => part.type === "text" && part.ignored !== true && typeof part.text === "string")
+        .map((part) => part.text as string)
+        .join("\n")
+        .trim();
+      if (text && (!latest || completed >= latest.completed)) latest = { completed, text };
+    }
+    return latest?.text ?? "";
+  } catch (error: unknown) {
+    console.warn(`[claude-mem] OpenCode message list failed for ${openCodeSessionId}: ${errorMessage(error)}`);
+    return "";
+  }
+}
 
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
@@ -180,19 +271,18 @@ function resolveContentSessionId(openCodeSessionId: string): string {
  * resolver it applies to this plugin's observations, so init and capture
  * always agree.
  */
-function initializeSessionForUserPrompt(
+async function initializeSessionForUserPrompt(
   openCodeSessionId: string,
   cwd: string,
   prompt: string,
-): string {
+): Promise<void> {
   const contentSessionId = resolveContentSessionId(openCodeSessionId);
-  workerPostFireAndForget("/api/sessions/init", {
+  await workerPost("/api/sessions/init", {
     contentSessionId,
     prompt,
     cwd,
     platform_source: PLATFORM_SOURCE,
   });
-  return contentSessionId;
 }
 
 function truncate(text: string): string {
@@ -212,7 +302,7 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
       const contentSessionId = resolveContentSessionId(input.sessionID);
-      workerPostFireAndForget("/api/sessions/observations", {
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
         // OpenCode passes the tool arguments on the hook input; the output
@@ -243,7 +333,7 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           .join("\n")
           .trim();
         if (promptText) {
-          initializeSessionForUserPrompt(sessionID, ctx.directory, promptText);
+          await initializeSessionForUserPrompt(sessionID, ctx.directory, promptText);
         } else {
           resolveContentSessionId(sessionID);
         }
@@ -258,7 +348,7 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         .join("\n");
       if (!messageText) return;
 
-      workerPostFireAndForget("/api/sessions/observations", {
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: "assistant_message",
         tool_input: {},
@@ -274,11 +364,22 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: SessionCompactingInput,
     ): Promise<void> => {
       const contentSessionId = resolveContentSessionId(input.sessionID);
-      workerPostFireAndForget("/api/sessions/summarize", {
+      contextByOpenCodeSessionId.delete(input.sessionID);
+      await workerPost("/api/sessions/summarize", {
         contentSessionId,
-        last_assistant_message: "",
+        last_assistant_message: await latestAssistantText(ctx.client, input.sessionID, ctx.directory),
         platform_source: PLATFORM_SOURCE,
       });
+    },
+
+    // Inject memory context into the system prompt OpenCode builds for each
+    // request (the static AGENTS.md written at install time goes stale).
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string },
+      output: { system: string[] },
+    ): Promise<void> => {
+      const context = await memoryContextFor(input.sessionID ?? "", ctx.directory);
+      if (context?.trim()) output.system.push(context);
     },
 
     // Generic bus events. Only `session.idle` and `session.deleted` are real
@@ -295,15 +396,16 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           // source-scoped session lookup misses and summarizes into a fresh,
           // mis-attributed session row (#3678).
           const contentSessionId = resolveContentSessionId(sessionID);
-          workerPostFireAndForget("/api/sessions/summarize", {
+          await workerPost("/api/sessions/summarize", {
             contentSessionId,
-            last_assistant_message: "",
+            last_assistant_message: await latestAssistantText(ctx.client, sessionID, ctx.directory),
             platform_source: PLATFORM_SOURCE,
           });
           break;
         }
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
+          contextByOpenCodeSessionId.delete(sessionID);
           break;
         }
         default:
