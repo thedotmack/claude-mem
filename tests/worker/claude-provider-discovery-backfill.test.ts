@@ -188,6 +188,32 @@ describe('ClaudeProvider discovery-token correction from the result usage (#3664
     expect(session.cumulativeCacheReadTokens).toBe(50);
   });
 
+  // A turn the gateway streams back as several assistant frames, each with
+  // zero input: every row the turn stored gets the turn's cost, and the
+  // missed input is counted once, not once per frame.
+  it('corrects every row of a multi-frame zero-input turn and counts its input once', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    let nextId = 41;
+    harness.storeObservations.mockImplementation(() => {
+      const id = nextId++;
+      return { observationIds: [id], mergedIntoExisting: [false], insertedObservationIds: [id], summaryId: null, createdAtEpoch: 1700000000000 };
+    });
+
+    scriptedMessages = [
+      assistantFrame({ input_tokens: 0, output_tokens: 1 }),
+      assistantFrame({ input_tokens: 0, output_tokens: 2 }),
+      resultFrame({ input_tokens: 900, cache_creation_input_tokens: 100, output_tokens: 40 }),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).toHaveBeenCalledTimes(2);
+    expect(harness.updateDiscoveryTokens).toHaveBeenCalledTimes(1);
+    expect(harness.updateDiscoveryTokens).toHaveBeenCalledWith([41, 42], null, 900 + 100 + 40);
+    expect(session.cumulativeInputTokens).toBe(1000);
+  });
+
   it('leaves a turn whose frames reported input alone', async () => {
     const session = createSession();
     const harness = createHarness(session);
