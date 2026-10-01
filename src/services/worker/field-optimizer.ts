@@ -23,6 +23,7 @@
 
 import { OBS_PROMPT_FIELD_MAX_CHARS, stripImagePayloadsFromField } from '../../sdk/prompts.js';
 import { logger } from '../../utils/logger.js';
+import { condenseInputMaxChars, FALLBACK_CONTEXT_WINDOW_TOKENS } from './context-window.js';
 
 /**
  * A single bounded model call: condense `text` to at most `budgetChars`.
@@ -64,13 +65,6 @@ export const FIELD_OPTIMIZE_TIMEOUT_MS = 180_000;
  * away for missing the cap by a few characters.
  */
 const FIELD_OPTIMIZE_TARGET_RATIO = 0.8;
-
-/**
- * Largest field, as a multiple of the per-field budget, worth a condense call.
- * Measured on a local server: 230-935 KB fields made 300k-631k-token condense
- * prompts that no local model can serve, so each one was a failed call.
- */
-const FIELD_OPTIMIZE_MAX_INPUT_RATIO = 20;
 
 export function buildFieldCompressionPrompt(text: string, budgetChars: number): string {
   return `Condense the tool payload below to under ${budgetChars} characters.
@@ -117,13 +111,13 @@ export async function optimizeField(
   context: { sessionDbId: number; field: string; toolName?: string },
   maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
   timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
+  maxInputChars: number = condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS),
 ): Promise<unknown> {
   const raw = JSON.stringify(value, null, 2) ?? '';
   if (raw.length <= maxChars) {
     return value;
   }
 
-  const maxInputChars = maxChars * FIELD_OPTIMIZE_MAX_INPUT_RATIO;
   if (raw.length > maxInputChars) {
     logger.warn('SDK', 'Oversized field too large to condense; falling back to truncation', {
       sessionId: context.sessionDbId,
@@ -227,6 +221,7 @@ export async function optimizeObservationFields(
   context: { sessionDbId: number; toolName?: string },
   maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
   timeoutMs: number | (() => number) = FIELD_OPTIMIZE_TIMEOUT_MS,
+  maxInputChars: number = condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS),
 ): Promise<{ toolInput: unknown; toolOutput: unknown }> {
   // Inlined image payloads come out before anything measures or compresses the
   // field. `buildObservationPrompt` strips too, but it runs after this: a
@@ -241,9 +236,9 @@ export async function optimizeObservationFields(
   };
 
   const [toolInput, toolOutput] = await Promise.all([
-    optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs),
+    optimizeField(stripped.toolInput, compress, { ...context, field: 'parameters' }, maxChars, timeoutMs, maxInputChars),
     optimizeField(context.toolName === 'Edit' ? compactEditOutput(stripped, maxChars) : stripped.toolOutput,
-      compress, { ...context, field: 'outcome' }, maxChars, timeoutMs),
+      compress, { ...context, field: 'outcome' }, maxChars, timeoutMs, maxInputChars),
   ]);
   return { toolInput, toolOutput };
 }

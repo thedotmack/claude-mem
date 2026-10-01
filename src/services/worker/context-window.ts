@@ -238,6 +238,23 @@ export function observationFieldMaxChars(contextWindowTokens: number | undefined
   return Math.min(OBS_PROMPT_FIELD_MAX_CHARS, Math.floor(contextWindowTokens * FIELD_WINDOW_SHARE * CHARS_PER_TOKEN));
 }
 
+/**
+ * Share of the window one condense prompt's payload may take: the request also
+ * carries the instructions, and the condensed reply has to fit in it too.
+ */
+const CONDENSE_INPUT_SHARE = 0.5;
+
+/**
+ * Largest field, in chars, worth sending to the observer model in one condense
+ * pass (#3800). Above it the request cannot be served (a local 32k server
+ * refused 300k-631k-token condense prompts), so the field is truncated without
+ * a model call. An unknown window uses the fallback window.
+ */
+export function condenseInputMaxChars(contextWindowTokens: number | undefined): number {
+  const tokens = contextWindowTokens || FALLBACK_CONTEXT_WINDOW_TOKENS;
+  return Math.floor(tokens * CHARS_PER_TOKEN * CONDENSE_INPUT_SHARE);
+}
+
 /** Output-token cap per observer reply when CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS is unset or invalid. */
 export const DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS = 4096;
 

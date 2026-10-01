@@ -115,7 +115,8 @@ describe('observer image stripping on the real ingest path (#3606)', () => {
   });
 
   test('oversized text still goes to the compressor — the condense pass is untouched', async () => {
-    const wall = 'error: cannot open file\n'.repeat(12_000);
+    // Over the field cap, under the fallback window's condense ceiling.
+    const wall = 'error: cannot open file\n'.repeat(8_000);
     const queued = await ingest('Bash', { command: 'make' }, { stdout: wall });
     const { compressed } = await observe(queued);
 

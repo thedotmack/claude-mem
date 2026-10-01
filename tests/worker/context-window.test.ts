@@ -3,6 +3,7 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import {
   resolveContextWindowTokens,
   observationFieldMaxChars,
+  condenseInputMaxChars,
   FALLBACK_CONTEXT_WINDOW_TOKENS,
   MIN_CONTEXT_WINDOW_TOKENS,
   __resetContextWindowCacheForTests,
@@ -262,5 +263,17 @@ describe('observationFieldMaxChars', () => {
 
   it('keeps the fixed cap when the window is unknown', () => {
     expect(observationFieldMaxChars(undefined)).toBe(OBS_PROMPT_FIELD_MAX_CHARS);
+  });
+});
+
+describe('condenseInputMaxChars', () => {
+  it('gives a condense prompt half the window, in chars', () => {
+    expect(condenseInputMaxChars(32_768)).toBe(65_536);
+    expect(condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS)).toBe(262_144);
+    expect(condenseInputMaxChars(1_000_000)).toBe(2_000_000);
+  });
+
+  it('uses the fallback window when none is known', () => {
+    expect(condenseInputMaxChars(undefined)).toBe(condenseInputMaxChars(FALLBACK_CONTEXT_WINDOW_TOKENS));
   });
 });
