@@ -17,9 +17,16 @@ const realProjectNameSnapshot = { ...realProjectName };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const calls: unknown[][] = [];
+let includeAllSources = false;
+let showTerminalOutput = false;
+let workerUnreachable = false;
+const outageNoticeRequests: Array<string | undefined> = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
-  loadFromFileOnce: () => ({ CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'false' }),
+  loadFromFileOnce: () => ({
+    CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: String(showTerminalOutput),
+    CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: String(includeAllSources),
+  }),
 }));
 
 mock.module('../../../src/shared/oauth-token.js', () => ({ readStaleMarker: () => null }));
@@ -39,7 +46,11 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
     return 'context from worker';
   },
   getWorkerPort: () => 37777,
-  isWorkerFallback: () => false,
+  isWorkerFallback: () => workerUnreachable,
+  consumeWorkerOutageNotice: async (sessionId: string | undefined) => {
+    outageNoticeRequests.push(sessionId);
+    return 'claude-mem worker unreachable for 3 consecutive hooks';
+  },
 }));
 
 afterAll(() => {
@@ -85,5 +96,68 @@ describe('contextHandler SessionStart path', () => {
       undefined,
       undefined,
     ]]);
+  });
+
+  it('includes every source in both Claude startup renders when opted in', async () => {
+    calls.length = 0;
+    includeAllSources = true;
+    showTerminalOutput = true;
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-all-sources',
+        cwd: '/tmp/repo',
+        platform: 'claude-code',
+      });
+
+      expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+      expect(result.systemMessage).toContain('context from worker');
+      expect(calls.map(call => call[0])).toEqual([
+        '/api/context/inject?projects=parent-project%2Crepo-project',
+        '/api/context/inject?projects=parent-project%2Crepo-project&colors=true',
+      ]);
+    } finally {
+      includeAllSources = false;
+      showTerminalOutput = false;
+    }
+  });
+
+  it('shows the worker-outage notice as systemMessage when SessionStart falls back', async () => {
+    calls.length = 0;
+    outageNoticeRequests.length = 0;
+    workerUnreachable = true;
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-outage',
+        cwd: '/tmp/repo',
+        platform: 'claude-code',
+      });
+
+      expect(result.hookSpecificOutput?.additionalContext).toBe('');
+      expect(result.systemMessage).toBe('claude-mem worker unreachable for 3 consecutive hooks');
+      expect(outageNoticeRequests).toEqual(['session-outage']);
+    } finally {
+      workerUnreachable = false;
+    }
+  });
+
+  it('includes every source in Codex startup context when opted in', async () => {
+    calls.length = 0;
+    includeAllSources = true;
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      await contextHandler.execute({
+        sessionId: 'session-all-sources-codex',
+        cwd: '/tmp/repo',
+        platform: 'codex',
+      });
+
+      expect(calls.map(call => call[0])).toEqual([
+        '/api/context/inject?projects=parent-project%2Crepo-project',
+      ]);
+    } finally {
+      includeAllSources = false;
+    }
   });
 });

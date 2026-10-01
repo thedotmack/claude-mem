@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { resolveOpenRouterConfig, isOpenRouterAvailable, openRouterKeyPoolSize } from '../../src/services/worker/OpenRouterProvider.js';
+import { resolveOpenRouterConfig, isOpenRouterAvailable } from '../../src/services/worker/OpenRouterProvider.js';
 import { isGeminiAvailable } from '../../src/services/worker/GeminiProvider.js';
 
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
@@ -52,7 +52,7 @@ describe('key pool wiring', () => {
       process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = '';
 
       expect(resolveOpenRouterConfig().apiKeys).toEqual(['sk-or-one', 'sk-or-two', 'sk-or-three']);
-      expect(openRouterKeyPoolSize()).toBe(3);
+      expect(resolveOpenRouterConfig().apiKeys).toHaveLength(3);
     });
 
     it('stays available when keys come only from the list', () => {
@@ -69,14 +69,47 @@ describe('key pool wiring', () => {
       // user's personal keys. Rotating into it would send a personal credential
       // to the gateway — the same leak resolveOpenRouterConfig already refuses
       // to commit when a key-only override meets a persisted cmem base URL.
-      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = 'sk-or-delivered';
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = 'cm_pro_delivered';
       process.env.CLAUDE_MEM_OPENROUTER_API_KEYS = 'sk-or-personal-1,sk-or-personal-2';
       process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = CMEM_GATEWAY_BASE;
 
       const config = resolveOpenRouterConfig();
-      expect(config.apiKeys).toEqual(['sk-or-delivered']);
+      expect(config.apiKey).toBe('cm_pro_delivered');
+      expect(config.apiKeys).toEqual(['cm_pro_delivered']);
       expect(config.apiKeys).not.toContain('sk-or-personal-1');
       expect(config.apiKeys).not.toContain('sk-or-personal-2');
+    });
+
+    it('keeps the list off the gateway when the key pairing is withheld', () => {
+      // A personal primary key on the gateway URL is withheld (the cm_pro_ key
+      // lock); the pool must not route around that by rotating into the list.
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = 'sk-or-personal-0';
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEYS = 'sk-or-personal-1';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = CMEM_GATEWAY_BASE;
+
+      const config = resolveOpenRouterConfig();
+      expect(config.apiKey).toBe('');
+      expect(config.apiKeys).toEqual([]);
+    });
+
+    it('never rotates a cm_pro_ key to a non-gateway host', () => {
+      // The account-owned gateway key authenticates only against the gateway.
+      // Pasted into the rotation list, it must still never leave for another host.
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = 'sk-own-1';
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEYS = 'cm_pro_delivered,sk-own-2';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://api.deepseek.com/v1';
+
+      expect(resolveOpenRouterConfig().apiKeys).toEqual(['sk-own-1', 'sk-own-2']);
+    });
+
+    it('withholds a cm_pro_ primary from a non-gateway host and does not pool around it', () => {
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEY = 'cm_pro_delivered';
+      process.env.CLAUDE_MEM_OPENROUTER_API_KEYS = 'sk-own-2';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://api.deepseek.com/v1';
+
+      const config = resolveOpenRouterConfig();
+      expect(config.apiKey).toBe('');
+      expect(config.apiKeys).toEqual([]);
     });
 
     it('pools normally against a user-owned custom base URL', () => {
@@ -93,7 +126,7 @@ describe('key pool wiring', () => {
       process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = '';
 
       expect(isOpenRouterAvailable()).toBe(false);
-      expect(openRouterKeyPoolSize()).toBe(0);
+      expect(resolveOpenRouterConfig().apiKeys).toHaveLength(0);
     });
   });
 
