@@ -1417,15 +1417,6 @@ function buildWorkerOutageNotice(consecutiveFailures: number): string {
   return `claude-mem worker unreachable for ${consecutiveFailures} consecutive hooks — memory features are degraded, but your prompts are not blocked. ${recovery}`;
 }
 
-/**
- * Count one worker-unreachable hook. Never blocks and never exits: a memory
- * outage must not stop the user's prompt, Read or Stop (plan-17 step 2).
- *
- * When the count first reaches the fail-loud threshold, the latch trips once
- * per outage: send hook_failed telemetry and write the notice to stderr as an
- * operator diagnostic. The user sees the notice through
- * consumeWorkerOutageNotice on the next synchronous hook.
- */
 export function isWorkerUnavailableError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
@@ -1476,6 +1467,15 @@ export function resetWorkerUnreachableState(): void {
   workerUnreachableRecordedThisProcess = false;
 }
 
+/**
+ * Count one worker-unreachable hook. Never blocks and never exits: a memory
+ * outage must not stop the user's prompt, Read or Stop (plan-17 step 2).
+ *
+ * When the count first reaches the fail-loud threshold, the latch trips once
+ * per outage: send hook_failed telemetry and write the notice to stderr as an
+ * operator diagnostic. The user sees the notice through
+ * consumeWorkerOutageNotice on the next synchronous hook.
+ */
 export async function recordWorkerUnreachable(): Promise<number> {
   // The counter tracks consecutive hook invocations (processes), not individual
   // worker API attempts: a composite handler (e.g. Kimi's session-init-context)
