@@ -71,6 +71,14 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'One sk-orca- key for provider-scoped model ids such as anthropic/claude-haiku-4.5.',
   },
   {
+    id: 'api-route',
+    label: 'API Route (api-route.com)',
+    baseUrl: 'https://global.api-route.com/v1',
+    defaultModel: '',
+    requiresApiKey: true,
+    hint: 'API Route key; select a chat-completions model from your account catalog. Model ids are passed verbatim.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
