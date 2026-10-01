@@ -160,6 +160,37 @@ describe('summarizeHandler — observed model + billing in the summarize body', 
     expect(modelExtractCallCount).toBe(1);
   });
 
+  it('falls back to the transcript when Claude Code sends an empty last_assistant_message (session ended mid-tool-call)', async () => {
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    await summarizeHandler.execute({
+      sessionId: 'sess-empty-inline',
+      cwd: '/tmp',
+      platform: 'claude-code',
+      transcriptPath: '/tmp/fake.jsonl',
+      lastAssistantMessage: '',
+    });
+
+    const body = postedBody();
+    expect(body.last_assistant_message).toBe('A normal assistant turn.');
+    expect(body.observedModel).toBe('claude-test-model');
+    expect(modelExtractCallCount).toBe(1);
+  });
+
+  it('treats a whitespace-only last_assistant_message as missing too', async () => {
+    const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
+    await summarizeHandler.execute({
+      sessionId: 'sess-whitespace-inline',
+      cwd: '/tmp',
+      platform: 'claude-code',
+      transcriptPath: '/tmp/fake.jsonl',
+      lastAssistantMessage: '  \n\t ',
+    });
+
+    const body = postedBody();
+    expect(body.last_assistant_message).toBe('A normal assistant turn.');
+    expect(modelExtractCallCount).toBe(1);
+  });
+
   it('omits observedModel when there is no transcript (Codex inline message path)', async () => {
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
     await summarizeHandler.execute({

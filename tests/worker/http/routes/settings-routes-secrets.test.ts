@@ -53,6 +53,8 @@ const SECRET_ENV_KEYS = [
   'CLAUDE_MEM_TV_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
 ];
 
 describe('SettingsRoutes — credential redaction and host bind (#3861)', () => {
@@ -98,6 +100,8 @@ describe('SettingsRoutes — credential redaction and host bind (#3861)', () => 
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token-wxyz',
       CLAUDE_MEM_TV_TOKEN: 'tv-token-9999',
       CLAUDE_MEM_PRO_MEMORY_KEY: 'pro-memory-key-aaaa',
+      CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: 'brainbeat-secret-bbbb',
+      CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/hook?token=cccc',
     };
     writeFileSync(settingsPath, JSON.stringify({
       ...secrets,

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 // bun's mock.module is process-global and sticky: it is never auto-unregistered
@@ -66,6 +66,7 @@ afterAll(() => {
 });
 
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
+const { logger } = await import('../../src/utils/logger.js');
 
 const MEMORY_SESSION_ID = 'memory-session-3492';
 const QUEUED_TIMESTAMP = 1700000000000;
@@ -231,7 +232,10 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('still confirms and drops the batch when the frame carries an empty text block', async () => {
+  // Every mode names the <skip_summary /> sentinel, so an empty or prose reply
+  // to a queued batch did not answer it: the batch is asked for again once, in
+  // a fresh generation, instead of being confirmed away.
+  it('asks again for the batch when the frame carries an empty text block', async () => {
     const session = createSession();
     const harness = createHarness(session);
 
@@ -243,11 +247,12 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     await harness.provider.startSession(session);
 
     expect(harness.storeObservations).not.toHaveBeenCalled();
-    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
-    expect(harness.remainingClaimed()).toEqual([]);
+    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
+    expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
+    expect(session.abortReason).toBe('output_retry:idle');
   });
 
-  it('still confirms and drops the batch for idle prose', async () => {
+  it('asks again for the batch on idle prose', async () => {
     const session = createSession();
     const harness = createHarness(session);
 
@@ -261,8 +266,9 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     await harness.provider.startSession(session);
 
     expect(harness.storeObservations).not.toHaveBeenCalled();
-    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
-    expect(harness.remainingClaimed()).toEqual([]);
+    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
+    expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
+    expect(session.abortReason).toBe('output_retry:prose');
   });
 
   it('dispatches string content as text', async () => {
@@ -277,7 +283,7 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('confirms the batch once at the end of a turn that produced no text frame', async () => {
+  it('hands the batch back once at the end of a turn that produced no text frame', async () => {
     const session = createSession();
     const harness = createHarness(session);
 
@@ -289,12 +295,40 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     await harness.provider.startSession(session);
 
     // The turn said nothing at all, so the batch still gets the idle hand-off,
-    // just once and at turn granularity. Leaving it claimed would hand it to
-    // session teardown, which disposes the in-RAM buffer without a hand-off.
+    // just once and at turn granularity: it goes back to pending for one more
+    // try. Leaving it claimed would hand it to session teardown, which disposes
+    // the in-RAM buffer without a hand-off.
     expect(harness.storeObservations).not.toHaveBeenCalled();
-    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
-    expect(harness.remainingClaimed()).toEqual([]);
-    expect(session.claimedMessageIds).toEqual([]);
+    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
+    expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
+    expect(session.abortReason).toBe('output_retry:idle');
+  });
+
+  // #3454: the idle hand-off names why the turn was empty — block kinds only,
+  // never their content — so a thinking/tool_use-only turn is distinguishable
+  // from a deliberate empty reply in the field.
+  it('names the textless turn shape on the idle hand-off', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    const { logger } = await import('../../src/utils/logger.js');
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      scriptedMessages = [
+        assistantFrame([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { secret: 'do-not-log' } }]),
+        assistantFrame([{ type: 'thinking', thinking: 'private reasoning' }, { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: {} }]),
+        resultFrame(),
+      ];
+
+      await harness.provider.startSession(session);
+
+      const idleWarn = warn.mock.calls.find(([, message]) => String(message).includes('non-XML idle response'));
+      expect(idleWarn?.[2]).toMatchObject({ outputClass: 'idle', emptyOutputReason: 'non-text-blocks-only(thinking,tool_use)' });
+      expect(JSON.stringify(idleWarn)).not.toContain('do-not-log');
+      expect(JSON.stringify(idleWarn)).not.toContain('private reasoning');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not re-confirm at the result when the turn already dispatched text', async () => {
@@ -346,5 +380,59 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
     expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
     expect(harness.remainingClaimed()).toHaveLength(1);
+  });
+});
+
+describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
+  let infoSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    scriptedMessages = [];
+    infoSpy = spyOn(logger, 'info').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+  });
+
+  function memoryIdLines(): string[] {
+    return infoSpy.mock.calls
+      .map(call => String(call[1]))
+      .filter(message => message.startsWith('MEMORY_ID_CAPTURED') || message.startsWith('MEMORY_ID_CHANGED'));
+  }
+
+  it('is not logged for a spawn that only answers signed-out prose', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: 'Not logged in · Please run /login' }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    // The parser paused the generator and kept the batch; a log monitor must
+    // not read this spawn as a live observer.
+    expect(session.abortReason).toBe('auth:observer_text');
+    expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
+    expect(memoryIdLines()).toEqual([]);
+  });
+
+  it('is logged once the parser accepts real output', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
+    const lines = memoryIdLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith(`MEMORY_ID_CAPTURED | sessionDbId=3492 | memorySessionId=${MEMORY_SESSION_ID} |`);
   });
 });

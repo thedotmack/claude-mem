@@ -134,6 +134,30 @@ describe('sanitizeEnv', () => {
     expect(result.HOME).toBe('/home/user');
   });
 
+  it('preserves CLAUDE_CODE_TMPDIR so the SDK child avoids a root-owned /tmp/claude-<uid> (#4161)', () => {
+    const result = sanitizeEnv({
+      CLAUDE_CODE_TMPDIR: '/home/user/.cache/claude-tmp',
+      PATH: '/usr/bin',
+      HOME: '/home/user'
+    });
+
+    expect(result.CLAUDE_CODE_TMPDIR).toBe('/home/user/.cache/claude-tmp');
+    expect(result.PATH).toBe('/usr/bin');
+    expect(result.HOME).toBe('/home/user');
+  });
+
+  it('preserves CLAUDE_CODE_PATH, the documented env form of the claude-mem setting, across daemon spawns', () => {
+    const result = sanitizeEnv({
+      CLAUDE_CODE_PATH: 'C:\\Users\\me\\.local\\bin\\claude.exe',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      PATH: '/usr/bin',
+    });
+
+    expect(result.CLAUDE_CODE_PATH).toBe('C:\\Users\\me\\.local\\bin\\claude.exe');
+    expect(result.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
   it('preserves Azure AI Foundry auth vars through sanitization', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_USE_FOUNDRY: '1',

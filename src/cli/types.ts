@@ -18,6 +18,7 @@ export interface NormalizedHookInput {
   lastAssistantMessage?: string;
   reason?: string;
   turnId?: string;
+  /** Codex only; the Claude Code adapter deliberately leaves it unset (see claude-code.ts). */
   stopHookActive?: boolean;
   permissionMode?: string;
   model?: string;
@@ -25,6 +26,20 @@ export interface NormalizedHookInput {
   filePath?: string;
   edits?: unknown[];
   agentId?: string;
+  /**
+   * Text the human actually submitted, when the host can tell.
+   *
+   * Qwen Code sends `submitted_prompt` and fires `UserPromptSubmit` for
+   * supported model invocations, which on the core/headless path also covers
+   * ToolResult and Hook sends. Those carry no user text, and the host's own
+   * guidance is that absence of the field means "unavailable" rather than
+   * "fall back to prompt". Three states, all meaningful:
+   *
+   *   - `undefined` - the host did not send the field; legacy handling stands
+   *   - `string`   - the host sent real user-submitted text
+   *   - `null`     - the host sent the field with no text: not a user turn
+   */
+  submittedPrompt?: string | null;
   agentType?: string;    
 }
 

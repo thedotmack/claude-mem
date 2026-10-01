@@ -222,7 +222,7 @@ never here.
 
 ## FTS5 Full-Text Search
 
-SQLite FTS5 (Full-Text Search) virtual tables enable fast full-text search across observations, summaries, and user prompts.
+SQLite FTS5 (Full-Text Search) virtual tables enable fast full-text search across observations and session summaries. User prompts are searched by substring (`LIKE`) and have no FTS index.
 
 ### FTS5 Virtual Tables
 
@@ -256,19 +256,9 @@ CREATE VIRTUAL TABLE session_summaries_fts USING fts5(
 );
 ```
 
-#### user_prompts_fts
-
-```sql
-CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
-  prompt_text,
-  content='user_prompts',
-  content_rowid='id'
-);
-```
-
 ### Automatic Synchronization
 
-FTS5 tables stay in sync via triggers:
+FTS5 tables stay in sync via triggers. The update triggers fire only when an indexed column is written, so bookkeeping updates (sync revision, project merges, content hashes) never touch the index. Each index update appends a delete marker plus a re-insert of the row's text, so an unscoped update trigger would grow the index on every such write:
 
 ```sql
 -- Insert trigger example
@@ -277,8 +267,9 @@ CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
   VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
 END;
 
--- Update trigger example
-CREATE TRIGGER observations_au AFTER UPDATE ON observations BEGIN
+-- Update trigger example (fires only when an indexed column is written)
+CREATE TRIGGER observations_au
+AFTER UPDATE OF title, subtitle, narrative, text, facts, concepts ON observations BEGIN
   INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
   VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
   INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
