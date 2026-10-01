@@ -81,10 +81,10 @@ function isUnchangedMaskedSecret(incoming: unknown, stored: unknown): boolean {
   return JSON.stringify(incoming) === JSON.stringify(maskSecretValue(stored));
 }
 
-/** The posted settings whose value differs from the one GET shows now. */
-function settingsChangedBy(posted: Record<string, unknown>, current: Record<string, unknown>): Record<string, unknown> {
+/** The posted settings whose value differs from the one settings.json holds. */
+function settingsChangedBy(posted: Record<string, unknown>, onDisk: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(posted).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(current[key])),
+    Object.entries(posted).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(onDisk[key])),
   );
 }
 
@@ -96,6 +96,21 @@ function redactSecretSettings<T extends object>(settings: T): T {
     }
   }
   return redacted as T;
+}
+
+/**
+ * The posted settings minus those that only echo an environment override: the
+ * variable is set, and the viewer sent back what GET showed for it (masked,
+ * for a secret). The environment is that value's only source, so a save
+ * neither checks nor writes it. Written, it would outlive the variable, and a
+ * masked secret would replace the stored key.
+ */
+function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath: string): Record<string, unknown> {
+  const shown = redactSecretSettings(SettingsDefaultsManager.loadFromFile(settingsPath)) as unknown as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(posted).filter(([key, value]) =>
+      process.env[key] === undefined || JSON.stringify(value) !== JSON.stringify(shown[key])),
+  );
 }
 
 // Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
@@ -190,12 +205,15 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     const settingsPath = paths.settings();
 
-    // The viewer posts every setting back, edited or not, so judge only what
-    // this save changes. A value hand-edited into settings.json that the
-    // worker already ignores (it falls back to the default) would otherwise
-    // fail every later save of an unrelated field.
+    // The viewer posts every setting back, edited or not, as GET showed it:
+    // with environment overrides applied. Those echoes are dropped first. The
+    // rest is judged against settings.json itself, so only what this save
+    // changes is checked: a value hand-edited into the file that the worker
+    // already ignores (it falls back to the default) would otherwise fail
+    // every later save of an unrelated field.
+    const posted = withoutEnvironmentEchoes(req.body, settingsPath);
     const validation = this.validateSettings(
-      settingsChangedBy(req.body, SettingsDefaultsManager.loadFromFile(settingsPath) as unknown as Record<string, unknown>),
+      settingsChangedBy(posted, SettingsDefaultsManager.loadFromFile(settingsPath, false) as unknown as Record<string, unknown>),
     );
     if (!validation.valid) {
       res.status(400).json({
@@ -270,10 +288,10 @@ export class SettingsRoutes extends BaseRouteHandler {
     const result = updateSettingsDocument(settingsPath, {}, SettingsDefaultsManager.getAllDefaults(), target => {
       for (const key of settingKeys) {
         if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
-        if (req.body[key] === undefined) continue;
+        if (posted[key] === undefined) continue;
         // The viewer posts GET's masked secret back unchanged: keep the stored value.
-        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], target[key])) continue;
-        target[key] = req.body[key];
+        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(posted[key], target[key])) continue;
+        target[key] = posted[key];
       }
 
       // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
