@@ -2,21 +2,24 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { existsSync, renameSync } from 'fs';
 import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
+import { MIN_CONTEXT_WINDOW_TOKENS, OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS } from '../../context-window.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
+
+const updateSettingsSchema = z.object({}).passthrough();
 
 // GET /api/settings has no auth. Mask known secrets before they leave the
 // process. Explicit allowlist — a /API_KEY|_TOKEN|SECRET/i regex also matches
@@ -24,8 +27,14 @@ const toggleMcpSchema = z.object({
 // prefs) and corrupts them on every GET (#3680 / #3861).
 const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_GEMINI_API_KEY',
-  'CLAUDE_MEM_OPENCODE_API_KEY',
+  // The rotation pools hold credentials exactly like the singular keys above.
+  // Leaving them out would mask the primary key and hand back every rotation
+  // key in cleartext from an unauthenticated GET.
+  'CLAUDE_MEM_GEMINI_API_KEYS',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_API_KEYS',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS',
   'CLAUDE_MEM_CHROMA_API_KEY',
   'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
   'CLAUDE_MEM_TELEGRAM_BOT_TOKEN',
@@ -35,6 +44,10 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_TV_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
+  // Brainbeat webhook: the shared secret, and the URL (it can carry userinfo
+  // or query tokens). Both are file/env only — never on the POST whitelist.
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
 ]);
 
 function maskSecretValue(value: unknown): unknown {
@@ -61,6 +74,57 @@ function redactSecretSettings<T extends object>(settings: T): T {
   return redacted as T;
 }
 
+// Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
+// the HTTP write list below, this set keeps it from being persisted via POST.
+const FILE_ONLY_SETTING_KEYS = new Set([
+  'CLAUDE_CODE_PATH',
+  'CLAUDE_MEM_CODEX_PATH',
+]);
+
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function splitHostHeader(hostHeader: string): { hostname: string; port: string } {
+  if (hostHeader.startsWith('[')) {
+    const match = hostHeader.match(/^\[([^\]]+)\](?::(\d+))?$/);
+    return { hostname: match?.[1] ?? hostHeader, port: match?.[2] ?? '80' };
+  }
+  const colon = hostHeader.lastIndexOf(':');
+  if (colon === -1) return { hostname: hostHeader, port: '80' };
+  return { hostname: hostHeader.slice(0, colon), port: hostHeader.slice(colon + 1) };
+}
+
+/**
+ * True when a browser Origin is present and is not the same loopback host:port
+ * as this request. Used to reject settings writes from other localhost pages
+ * without adding a new auth scheme. Exported for unit tests.
+ */
+export function isForeignLoopbackBrowserWrite(req: Pick<Request, 'headers'>): boolean {
+  const rawOrigin = req.headers?.origin;
+  if (Array.isArray(rawOrigin)) return true;
+  const origin = rawOrigin;
+  if (typeof origin !== 'string' || origin.length === 0) return false;
+
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return true;
+  }
+  if (originUrl.protocol !== 'http:') return true;
+  if (!LOOPBACK_HOSTNAMES.has(originUrl.hostname)) return true;
+
+  const rawHost = req.headers?.host;
+  if (Array.isArray(rawHost)) return true;
+  const hostHeader = rawHost;
+  if (typeof hostHeader !== 'string' || hostHeader.length === 0) return true;
+
+  const { hostname, port } = splitHostHeader(hostHeader);
+  if (!LOOPBACK_HOSTNAMES.has(hostname)) return true;
+
+  const originPort = originUrl.port || '80';
+  return originPort !== port;
+}
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
@@ -70,7 +134,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.get('/api/settings', this.handleGetSettings.bind(this));
-    app.post('/api/settings', this.handleUpdateSettings.bind(this));
+    app.post('/api/settings', validateBody(updateSettingsSchema), this.handleUpdateSettings.bind(this));
     app.get('/api/settings/dependency-health', this.handleGetDependencyHealth.bind(this));
 
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
@@ -79,7 +143,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
+    ensureSettingsDocument(settingsPath, SettingsDefaultsManager.getAllDefaults());
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(redactSecretSettings(settings));
   });
@@ -89,6 +153,17 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
+    // Browser POSTs always send Origin. Reject cross-port loopback origins so
+    // another http://localhost:* page cannot write settings. Origin-less
+    // clients (hooks, CLI, curl) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const validation = this.validateSettings(req.body);
     if (!validation.valid) {
       res.status(400).json({
@@ -99,50 +174,42 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
-    let settings: any = {};
 
-    if (existsSync(settingsPath)) {
-      const settingsData = readFileSync(settingsPath, 'utf-8');
-      try {
-        settings = parseJsonWithBom(settingsData);
-      } catch (parseError) {
-        const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
-        logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
-        res.status(500).json({
-          success: false,
-          error: `Settings file is corrupted. Delete ${settingsPath} to reset.`
-        });
-        return;
-      }
-    }
-
-    // Write whitelist. Secrets are deliberately absent: the Observation TV token,
-    // and the Chroma / Telegram / CloudSync keys. POST /api/settings has no
-    // authentication, so any page the user visits could set one of its choosing.
-    // Keeping them off this list means only the filesystem or the env can set them.
+    // Write whitelist. POST /api/settings has no authentication — the worker
+    // trusts loopback — so any page that can reach this origin could set one
+    // of these. Secrets stay off this list except the two provider keys the
+    // viewer Settings UI must save (Gemini / OpenRouter); those are masked on
+    // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
+    // Telegram / CloudSync / Redis tokens remain file/env only.
+    //
+    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH) are also
+    // file/env only: each value is a binary the worker spawns, so it must not be
+    // HTTP-writable.
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES',
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_CODEX_MODEL',
+      'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
       'CLAUDE_MEM_GEMINI_API_KEY',
+      'CLAUDE_MEM_GEMINI_API_KEYS',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
+      'CLAUDE_MEM_OPENROUTER_API_KEYS',
       'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
-      'CLAUDE_MEM_OPENCODE_API_KEY',
-      'CLAUDE_MEM_OPENCODE_MODEL',
-      'CLAUDE_MEM_OPENCODE_BASE_URL',
+      'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
+      'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
-      'CLAUDE_CODE_PATH',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
@@ -155,27 +222,34 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
     ];
 
-    for (const key of settingKeys) {
-      if (req.body[key] !== undefined) {
-        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], settings[key])) {
-          continue;
-        }
-        settings[key] = req.body[key];
+    // Every rule runs inside the settings-document boundary's mutate callback,
+    // which sees the CURRENT on-disk settings (flat, or the env block of a
+    // wrapped document) and refuses — without writing — a corrupt file.
+    const result = updateSettingsDocument(settingsPath, {}, SettingsDefaultsManager.getAllDefaults(), target => {
+      for (const key of settingKeys) {
+        if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
+        if (req.body[key] === undefined) continue;
+        // The viewer posts GET's masked secret back unchanged: keep the stored value.
+        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], target[key])) continue;
+        target[key] = req.body[key];
       }
-    }
 
-    // Persist CLAUDE_CODE_PATH with any leading `~` expanded: it's fed straight
-    // to existsSync/posix_spawn (no shell), where a literal `~` fails with
-    // ENOENT and silently breaks all memory capture. Store the resolved path so
-    // the resolver never sees the tilde.
-    if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
-      settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
+      // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
+      // HTTP cannot set this key; the expand is only so a tilde written by the
+      // user in settings.json is resolved before posix_spawn sees it.
+      if (typeof target.CLAUDE_CODE_PATH === 'string' && target.CLAUDE_CODE_PATH) {
+        target.CLAUDE_CODE_PATH = expandTilde(target.CLAUDE_CODE_PATH);
+      }
+    });
+    if (result.status === 'refused') {
+      logger.error('HTTP', 'Failed to persist settings file', { settingsPath }, result.error instanceof Error ? result.error : new Error(String(result.error)));
+      res.status(500).json({ success: false, error: `Settings file could not be updated. Repair or restore ${settingsPath}.` });
+      return;
     }
-
-    writeJsonFileAtomic(settingsPath, settings);
 
     clearPortCache();
 
@@ -196,10 +270,16 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
+    for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
+      if (settings[key] !== undefined && typeof settings[key] !== 'string') {
+        return { valid: false, error: `${key} must be a string` };
+      }
+    }
+
     if (settings.CLAUDE_MEM_PROVIDER) {
-      const validProviders = ['claude', 'gemini', 'openrouter', 'opencode'];
-      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "opencode"' };
+    const validProviders = ['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'];
+    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", "codex", or "openai-compatible"' };
       }
     }
 
@@ -222,6 +302,30 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
       }
+    }
+
+    // Empty = resolve the window automatically. Otherwise whole tokens, at
+    // least the floor the resolver would clamp a smaller value up to.
+    if (settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW).trim();
+      if (!/^\d+$/.test(raw) || Number(raw) < MIN_CONTEXT_WINDOW_TOKENS) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW must be empty (automatic) or a whole number of tokens, at least ${MIN_CONTEXT_WINDOW_TOKENS}` };
+      }
+    }
+
+    // A whole number of tokens inside the bounds the resolver accepts; anything
+    // else would silently fall back to the default at request time.
+    if (settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS !== undefined) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS).trim();
+      const { min, max } = OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS;
+      if (!/^\d+$/.test(raw) || Number(raw) < min || Number(raw) > max) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS must be a whole number of tokens between ${min} and ${max}` };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== undefined
+      && !['true', 'false'].includes(settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES)) {
+      return { valid: false, error: 'CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES must be "true" or "false"' };
     }
 
     if (settings.CLAUDE_MEM_WORKER_PORT) {
@@ -278,6 +382,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
     ];
 
     for (const key of booleanSettings) {
@@ -354,17 +459,4 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
   }
 
-  private ensureSettingsFile(settingsPath: string): void {
-    if (!existsSync(settingsPath)) {
-      const defaults = SettingsDefaultsManager.getAllDefaults();
-
-      const dir = path.dirname(settingsPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-
-      writeJsonFileAtomic(settingsPath, defaults);
-      logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
-    }
-  }
 }

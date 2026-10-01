@@ -39,8 +39,25 @@ const OBSERVATION_TITLE_TRUNCATE_AT = 117;
 const observationGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 export type ParseResult =
-  | { valid: true; observations: ParsedObservation[]; summary: ParsedSummary | null }
+  | {
+      valid: true;
+      observations: ParsedObservation[];
+      summary: ParsedSummary | null;
+      /**
+       * Tags outside the observation schema found in blocks whose own fields
+       * were missing and whose content was salvaged — the model drifting off
+       * the schema (`<kind>`/`<detail>` for `<type>`/`<title>`, #3461). Sorted,
+       * lowercase; absent when there was no drift.
+       */
+      schemaDrift?: string[];
+    }
   | { valid: false };
+
+/** Every tag the observation schema defines, wrappers and elements alike. */
+const OBSERVATION_SCHEMA_TAGS = new Set([
+  'type', 'title', 'subtitle', 'narrative', 'facts', 'fact', 'concepts', 'concept',
+  'files_read', 'files_modified', 'file',
+]);
 
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -49,7 +66,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   raw = stripCodeFences(raw);
 
-  const skipMatch = /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/.exec(raw);
+  const skipMatch = /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/i.exec(raw);
   if (skipMatch) {
     return {
       valid: true,
@@ -74,11 +91,17 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   const rootName = firstRoot[1].toLowerCase();
   if (rootName === 'observation') {
-    const observations = parseObservationBlocks(raw, correlationId);
+    const schemaDrift = new Set<string>();
+    const observations = parseObservationBlocks(raw, correlationId, schemaDrift);
     if (observations.length === 0) {
       return { valid: false };
     }
-    return { valid: true, observations, summary: null };
+    return {
+      valid: true,
+      observations,
+      summary: null,
+      ...(schemaDrift.size > 0 ? { schemaDrift: [...schemaDrift].sort() } : {}),
+    };
   }
 
   const summary = parseSummaryBlock(raw, correlationId);
@@ -88,10 +111,14 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
   return { valid: true, observations: [], summary };
 }
 
-function parseObservationBlocks(text: string, correlationId?: string | number): ParsedObservation[] {
+function parseObservationBlocks(
+  text: string,
+  correlationId?: string | number,
+  schemaDrift?: Set<string>,
+): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
-  const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  const observationRegex = /<observation>([\s\S]*?)<\/observation>/gi;
 
   let match;
   while ((match = observationRegex.exec(text)) !== null) {
@@ -153,6 +180,10 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
       const salvage = extractObservationFallback(salvageNarrative);
       finalTitle = salvage.title;
       finalNarrative = salvage.narrative;
+      for (const tag of obsContent.matchAll(/<\/?([A-Za-z_][\w-]*)\b[^>]*>/g)) {
+        const name = tag[1].toLowerCase();
+        if (!OBSERVATION_SCHEMA_TAGS.has(name)) schemaDrift?.add(name);
+      }
       logger.warn('PARSER', 'Salvaged unstructured observation prose as narrative', {
         correlationId,
         type: finalType,
@@ -176,7 +207,7 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
 }
 
 function parseSummaryBlock(text: string, correlationId?: string | number): ParsedSummary | null {
-  const summaryRegex = /<summary>([\s\S]*?)<\/summary>/;
+  const summaryRegex = /<summary>([\s\S]*?)<\/summary>/i;
   const summaryMatch = summaryRegex.exec(text);
   if (!summaryMatch) return null;
 
@@ -219,7 +250,7 @@ function unwrapLabelWrappedTitle(title: string | null): string | null {
 }
 
 function extractField(content: string, fieldName: string): string | null {
-  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`);
+  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`, 'i');
   const match = regex.exec(content);
   if (!match) return null;
 
@@ -230,7 +261,7 @@ function extractField(content: string, fieldName: string): string | null {
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
   const elements: string[] = [];
 
-  const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`);
+  const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`, 'i');
   const arrayMatch = arrayRegex.exec(content);
 
   if (!arrayMatch) {
@@ -239,7 +270,7 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
 
   const arrayContent = arrayMatch[1];
 
-  const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'g');
+  const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'gi');
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
     const trimmed = elementMatch[1].trim();
@@ -258,7 +289,7 @@ function extractUnstructuredObservationText(content: string): string | null {
 
   const stripped = content
     .replace(
-      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/g,
+      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
       ' '
     )
     .replace(/<[^>]+>/g, ' ')

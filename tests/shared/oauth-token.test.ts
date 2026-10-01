@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -10,6 +11,7 @@ import {
   clearStaleMarker,
   readStaleMarker,
   resolveEffectiveClaudeConfigDir,
+  resolveClaudeCredentialProfile,
   deriveMacKeychainServiceName,
   readMacOsKeychain,
   sanitizeMacOsKeychainAccount,
@@ -331,8 +333,8 @@ describe('resolveEffectiveClaudeConfigDir (#2753)', () => {
     expect(resolvedFromTilde).toBe(absolute);
     // And the downstream keychain suffix derivation must therefore agree too —
     // this is the actual failure mode a missing expansion produces.
-    expect(deriveMacKeychainServiceName(resolvedFromTilde)).toBe(
-      deriveMacKeychainServiceName(resolvedFromAbsolute),
+    expect(deriveMacKeychainServiceName(resolveClaudeCredentialProfile(tilde))).toBe(
+      deriveMacKeychainServiceName(resolveClaudeCredentialProfile(absolute)),
     );
   });
 
@@ -352,14 +354,14 @@ describe('resolveEffectiveClaudeConfigDir (#2753)', () => {
   it('strips a trailing separator so "~/.claude/" resolves to the bare default, not a suffixed dir', () => {
     const resolvedFromTildeSlash = resolveEffectiveClaudeConfigDir('~/.claude/');
     expect(resolvedFromTildeSlash).toBe(DEFAULT_CLAUDE_CONFIG_DIR);
-    expect(deriveMacKeychainServiceName(resolvedFromTildeSlash)).toBe('Claude Code-credentials');
+    expect(deriveMacKeychainServiceName(resolveClaudeCredentialProfile('~/.claude/'))).toBe('Claude Code-credentials');
   });
 
   it('strips a trailing separator from an already-absolute setting value with a trailing slash', () => {
     const absoluteWithSlash = `${DEFAULT_CLAUDE_CONFIG_DIR}/`;
     const resolved = resolveEffectiveClaudeConfigDir(absoluteWithSlash);
     expect(resolved).toBe(DEFAULT_CLAUDE_CONFIG_DIR);
-    expect(deriveMacKeychainServiceName(resolved)).toBe('Claude Code-credentials');
+    expect(deriveMacKeychainServiceName(resolveClaudeCredentialProfile(absoluteWithSlash))).toBe('Claude Code-credentials');
   });
 
   it('strips a trailing separator so an instance dir with a trailing slash matches its no-slash suffix', () => {
@@ -368,8 +370,8 @@ describe('resolveEffectiveClaudeConfigDir (#2753)', () => {
     const resolvedNoSlash = resolveEffectiveClaudeConfigDir(noSlash);
     const resolvedWithSlash = resolveEffectiveClaudeConfigDir(withSlash);
     expect(resolvedWithSlash).toBe(resolvedNoSlash);
-    expect(deriveMacKeychainServiceName(resolvedWithSlash)).toBe(
-      deriveMacKeychainServiceName(resolvedNoSlash),
+    expect(deriveMacKeychainServiceName(resolveClaudeCredentialProfile(withSlash))).toBe(
+      deriveMacKeychainServiceName(resolveClaudeCredentialProfile(noSlash)),
     );
   });
 });
@@ -386,7 +388,7 @@ describe('resolveEffectiveClaudeConfigDir (#2753)', () => {
  */
 describe('deriveMacKeychainServiceName (#2753) — suffix-derivation table', () => {
   it('returns the bare "Claude Code-credentials" for the literal default config dir', () => {
-    expect(deriveMacKeychainServiceName(DEFAULT_CLAUDE_CONFIG_DIR)).toBe('Claude Code-credentials');
+    expect(deriveMacKeychainServiceName({ configDir: DEFAULT_CLAUDE_CONFIG_DIR, explicitConfigDir: false })).toBe('Claude Code-credentials');
   });
 
   const studioTable: Array<{ instance: string; configDir: string; suffix: string }> = [
@@ -400,9 +402,76 @@ describe('deriveMacKeychainServiceName (#2753) — suffix-derivation table', () 
 
   for (const { instance, configDir, suffix } of studioTable) {
     it(`suffixes ${instance} (${configDir}) as "Claude Code-credentials-${suffix}"`, () => {
-      expect(deriveMacKeychainServiceName(configDir)).toBe(`Claude Code-credentials-${suffix}`);
+      expect(deriveMacKeychainServiceName({ configDir, explicitConfigDir: true })).toBe(`Claude Code-credentials-${suffix}`);
     });
   }
+
+  // #4149 — Claude Code suffixes whenever CLAUDE_CONFIG_DIR is SET, even to
+  // the default path, so an explicit default export is a suffixed entry.
+  it('suffixes the default dir when it is explicitly configured', () => {
+    const expectedSuffix = createHash('sha256').update(DEFAULT_CLAUDE_CONFIG_DIR).digest('hex').slice(0, 8);
+    expect(deriveMacKeychainServiceName({ configDir: DEFAULT_CLAUDE_CONFIG_DIR, explicitConfigDir: true })).toBe(
+      `Claude Code-credentials-${expectedSuffix}`,
+    );
+  });
+
+  it('hashes the NFC form of the config dir, as Claude Code does', () => {
+    const decomposedConfigDir = '/Users/josé/.claude-work';
+    const composedConfigDir = '/Users/josé/.claude-work';
+    expect(deriveMacKeychainServiceName({ configDir: decomposedConfigDir, explicitConfigDir: true })).toBe(
+      deriveMacKeychainServiceName({ configDir: composedConfigDir, explicitConfigDir: true }),
+    );
+  });
+});
+
+/**
+ * #4149 — the one predicate the SDK child env and the keychain read share.
+ * Claude Code 2.1.285 treats a profile as the default iff CLAUDE_CONFIG_DIR is
+ * unset (or empty); the value does not matter.
+ */
+describe('resolveClaudeCredentialProfile (#4149)', () => {
+  const originalProcessEnvConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+  afterEach(() => {
+    if (originalProcessEnvConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = originalProcessEnvConfigDir;
+    }
+  });
+
+  it('empty setting, nothing exported: the default profile', () => {
+    delete process.env.CLAUDE_CONFIG_DIR;
+    expect(resolveClaudeCredentialProfile('').explicitConfigDir).toBe(false);
+  });
+
+  it('empty setting, CLAUDE_CONFIG_DIR exported as the default dir: explicit, like Claude Code', () => {
+    process.env.CLAUDE_CONFIG_DIR = DEFAULT_CLAUDE_CONFIG_DIR;
+    const profile = resolveClaudeCredentialProfile('');
+    expect(profile.explicitConfigDir).toBe(true);
+    expect(profile.configDir).toBe(resolveEffectiveClaudeConfigDir(''));
+  });
+
+  it('empty setting, CLAUDE_CONFIG_DIR exported as "": the default profile', () => {
+    process.env.CLAUDE_CONFIG_DIR = '';
+    expect(resolveClaudeCredentialProfile('').explicitConfigDir).toBe(false);
+  });
+
+  it('a setting naming the default dir is the default profile even when CLAUDE_CONFIG_DIR is exported', () => {
+    process.env.CLAUDE_CONFIG_DIR = '/Users/someone/.claude-work';
+    expect(resolveClaudeCredentialProfile('~/.claude')).toEqual({
+      configDir: DEFAULT_CLAUDE_CONFIG_DIR,
+      explicitConfigDir: false,
+    });
+  });
+
+  it('a setting naming any other dir is explicit', () => {
+    delete process.env.CLAUDE_CONFIG_DIR;
+    expect(resolveClaudeCredentialProfile('/custom/config/dir')).toEqual({
+      configDir: '/custom/config/dir',
+      explicitConfigDir: true,
+    });
+  });
 });
 
 /**
@@ -417,7 +486,10 @@ describe('deriveMacKeychainServiceName (#2753) — suffix-derivation table', () 
  */
 describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
   it('the default service name returns absent while a per-config-dir suffixed service name returns present ("default item empty, instance item valid")', async () => {
-    const instanceServiceName = deriveMacKeychainServiceName('/Users/matthewdnye/.ccs/instances/iveg50');
+    const instanceServiceName = deriveMacKeychainServiceName({
+      configDir: '/Users/matthewdnye/.ccs/instances/iveg50',
+      explicitConfigDir: true,
+    });
     const futureExpiresAt = Date.now() + 60 * 60 * 1000;
     const instancePayload = JSON.stringify({
       claudeAiOauth: { accessToken: 'sk-ant-oat01-instance-token', expiresAt: futureExpiresAt },
@@ -503,7 +575,7 @@ describe('readClaudeOAuthToken (#2753) — darwin dispatch wires the derived ser
   it('passes deriveMacKeychainServiceName(effectiveConfigDir) through — not the bare default — when the setting is non-empty', async () => {
     const instanceConfigDir = '/Users/matthewdnye/.ccs/instances/iveg50';
     stubSettingsFile(instanceConfigDir);
-    const expectedServiceName = deriveMacKeychainServiceName(instanceConfigDir);
+    const expectedServiceName = deriveMacKeychainServiceName(resolveClaudeCredentialProfile(instanceConfigDir));
     expect(expectedServiceName).not.toBe('Claude Code-credentials');
 
     const futureExpiresAt = Date.now() + 60 * 60 * 1000;
@@ -535,7 +607,7 @@ describe('readClaudeOAuthToken (#2753) — darwin dispatch wires the derived ser
     // expected value must track whatever this process's own CLAUDE_CONFIG_DIR
     // actually is, the same way resolveEffectiveClaudeConfigDir's own
     // fall-through tests do above.
-    const expectedServiceName = deriveMacKeychainServiceName(CLAUDE_CONFIG_DIR);
+    const expectedServiceName = deriveMacKeychainServiceName(resolveClaudeCredentialProfile(''));
 
     const futureExpiresAt = Date.now() + 60 * 60 * 1000;
     const payload = JSON.stringify({
@@ -551,6 +623,36 @@ describe('readClaudeOAuthToken (#2753) — darwin dispatch wires the derived ser
     expect(result.kind).toBe('present');
     if (result.kind === 'present') {
       expect(result.token).toBe('sk-ant-oat01-default-token');
+    }
+  });
+
+  it('#4149: reads the SUFFIXED entry when CLAUDE_CONFIG_DIR is explicitly exported as the default dir', async () => {
+    stubSettingsFile('');
+    const originalProcessEnvConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = DEFAULT_CLAUDE_CONFIG_DIR;
+    try {
+      const expectedServiceName = deriveMacKeychainServiceName({
+        configDir: resolveEffectiveClaudeConfigDir(''),
+        explicitConfigDir: true,
+      });
+      expect(expectedServiceName).not.toBe('Claude Code-credentials');
+
+      const payload = JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-ant-oat01-explicit-default', expiresAt: Date.now() + 60 * 60 * 1000 },
+      });
+      const fakeExecImpl = fakeExecFor(expectedServiceName, payload);
+
+      const result = await readClaudeOAuthToken(fakeExecImpl);
+
+      const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
+      expect(callArgs).toContain(expectedServiceName);
+      expect(result.kind).toBe('present');
+    } finally {
+      if (originalProcessEnvConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = originalProcessEnvConfigDir;
+      }
     }
   });
 });

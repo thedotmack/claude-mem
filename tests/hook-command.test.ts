@@ -1,10 +1,13 @@
-import { describe, it, expect, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach, spyOn } from 'bun:test';
 import {
   buildNoOpResult,
   hookCommand,
   isNonBlockingHookInputError,
   isWorkerUnavailableError,
 } from '../src/cli/hook-command.js';
+import { claudeCodeAdapter } from '../src/cli/adapters/claude-code.js';
+import { getEventHandler } from '../src/cli/handlers/index.js';
+import { HOOK_EXIT_CODES } from '../src/shared/hook-constants.js';
 import { getActiveHookType, setActiveHookType } from '../src/shared/worker-utils.js';
 import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
 import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
@@ -40,6 +43,27 @@ describe('buildNoOpResult', () => {
     for (const event of ['session-init', 'observation', 'summarize', 'user-message', 'file-edit', 'file-context']) {
       expect(buildNoOpResult(event)).toEqual({ continue: true, suppressOutput: true });
     }
+  });
+});
+
+describe('hookCommand tool-hook disable (#3106)', () => {
+  afterEach(() => {
+    delete process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS;
+    delete process.env.CLAUDE_MEM_DISABLE_OBSERVATION;
+    delete process.env.CLAUDE_MEM_DISABLE_FILE_CONTEXT;
+  });
+
+  it('exits success without reading stdin when CLAUDE_MEM_DISABLE_TOOL_HOOKS=1', async () => {
+    process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS = '1';
+    // No stdin JSON is provided; a disabled early-return must not hang on readJsonFromStdin.
+    const code = await hookCommand('claude-code', 'observation', { skipExit: true });
+    expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+  });
+
+  it('also no-ops file-context when CLAUDE_MEM_DISABLE_TOOL_HOOKS=1', async () => {
+    process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS = '1';
+    const code = await hookCommand('claude-code', 'file-context', { skipExit: true });
+    expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
   });
 });
 
@@ -116,6 +140,48 @@ describe('isNonBlockingHookInputError', () => {
   it('keeps unrelated errors with a reader phrase blocking', () => {
     expect(isNonBlockingHookInputError(new Error('Handler failed: Malformed JSON at stdin EOF: {"session_id":...'))).toBe(false);
   });
+});
+
+describe('hookCommand catch-all never blocks (#3161, plan-17 step 2)', () => {
+  const originalTelemetry = process.env.CLAUDE_MEM_TELEMETRY;
+
+  afterEach(() => {
+    if (originalTelemetry === undefined) delete process.env.CLAUDE_MEM_TELEMETRY;
+    else process.env.CLAUDE_MEM_TELEMETRY = originalTelemetry;
+  });
+
+  // Exit 2 used to answer these: UserPromptSubmit dropped the prompt,
+  // PreToolUse denied the tool, and Stop re-woke the agent in a loop.
+  for (const event of ['context', 'session-init', 'observation', 'file-context', 'summarize', 'session-end']) {
+    it(`answers an unexpected ${event} handler error with the no-op envelope and exit 0`, async () => {
+      // The catch-all awaits hook_failed telemetry; keep it off the network.
+      process.env.CLAUDE_MEM_TELEMETRY = '0';
+      const executeSpy = spyOn(getEventHandler(event), 'execute').mockImplementation(async () => {
+        throw new TypeError('unexpected handler bug');
+      });
+      const stdout: string[] = [];
+      console.log = (...args: unknown[]) => stdout.push(args.join(' '));
+      const stderr: string[] = [];
+      const realStderrWrite = process.stderr.write;
+      process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+        stderr.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+        return true;
+      }) as typeof process.stderr.write;
+      installFakeStdin(JSON.stringify({ session_id: 'catch-all-session', cwd: process.cwd() }));
+
+      try {
+        const exitCode = await hookCommand('claude-code', event, { skipExit: true });
+
+        expect(exitCode).toBe(HOOK_EXIT_CODES.SUCCESS);
+        expect(executeSpy).toHaveBeenCalledTimes(1);
+        expect(stdout).toEqual([JSON.stringify(claudeCodeAdapter.formatOutput(buildNoOpResult(event)))]);
+        expect(stderr.join('')).toContain('claude-mem: hook error, continuing without memory: unexpected handler bug');
+      } finally {
+        process.stderr.write = realStderrWrite;
+        executeSpy.mockRestore();
+      }
+    });
+  }
 });
 
 describe('isWorkerUnavailableError', () => {
