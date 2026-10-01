@@ -63,8 +63,8 @@ Uses 3-layer progressive disclosure: search → timeline → get_observations
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ 0. Setup Hook Fires (version-check.js)                          │
-│    Sub-100ms read of .install-version; on mismatch prints       │
-│    "run: npx claude-mem repair" to stderr. Always exits 0.      │
+│    Installs missing plugin dependencies (bun install), records  │
+│    .install-version once complete. Always exits 0.              │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -121,7 +121,7 @@ claude-mem/
 │   ├── .claude-plugin/plugin.json
 │   ├── hooks/hooks.json        # Hook registration (Setup + 5 lifecycle hooks)
 │   ├── scripts/                # Built executables
-│   │   ├── version-check.js    # Setup-phase marker check (sub-100ms)
+│   │   ├── version-check.js    # Setup phase: dependency check + install marker
 │   │   ├── bun-runner.js       # Resolves Bun and runs worker-service.cjs
 │   │   ├── worker-service.cjs  # Worker daemon + lifecycle hook dispatcher
 │   │   ├── worker-cli.js       # CLI shim
@@ -143,14 +143,14 @@ claude-mem/
 
 The plugin registers a Setup-phase `version-check.js` plus five lifecycle hooks. Each lifecycle event invokes `bun-runner.js` to spawn `worker-service.cjs` with a `hook claude-code <event>` argument; the worker process is the single dispatcher for all hook logic. Events:
 
-- **Setup** → `version-check.js` (sub-100ms marker check; never installs anything)
+- **Setup** → `version-check.js` (installs missing plugin dependencies, then records the install marker)
 - **SessionStart** → start worker, then `hook claude-code context` (context injection)
 - **UserPromptSubmit** → `hook claude-code session-init`
 - **PreToolUse** (matcher `Read`) → `hook claude-code file-context`
 - **PostToolUse** (matcher `*`) → `hook claude-code observation`
 - **Stop** → `hook claude-code summarize` (summary generation)
 
-The actual runtime install (Bun, uv, `bun install`) is performed by `npx claude-mem install` / `npx claude-mem repair` with a visible installer spinner; the Setup hook itself only reads the `.install-version` marker.
+The runtime install (Bun, uv, `bun install`) is performed by `npx claude-mem install` / `npx claude-mem repair` with a visible installer spinner. For plugin-marketplace installs, the Setup hook runs `bun install` itself when the plugin's dependencies are missing, and writes the `.install-version` marker once they are complete.
 
 See [Plugin Hooks](/architecture/hooks) for detailed hook documentation.
 
@@ -190,7 +190,7 @@ Skill-based search with progressive disclosure providing 10 search operations:
 See [Search Architecture](/architecture/search-architecture) for technical details and examples.
 
 ### 5. Viewer UI
-React + TypeScript web interface served by the worker on its configured port (default `http://127.0.0.1:<worker-port>`) featuring:
+React + TypeScript web interface served by the worker on its configured `CLAUDE_MEM_WORKER_PORT` featuring:
 - Real-time memory stream via Server-Sent Events
 - Infinite scroll pagination with automatic deduplication
 - Project filtering and settings persistence

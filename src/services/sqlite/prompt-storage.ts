@@ -1,11 +1,14 @@
-import { stripMemoryTagsFromPrompt } from '../../utils/tag-stripping.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { logger } from '../../utils/logger.js';
 
 export const MAX_STORED_PROMPT_CHARS = 4000;
 
+// Stand-in written when a session is initialized with no usable prompt text; later real prompts may replace this durable value.
+export const MEDIA_PROMPT_PLACEHOLDER = '[media prompt]';
+
 export function normalizeStoredPromptText(promptText: string): string {
   const trimmedRawPrompt = promptText.trim();
-  const strippedPrompt = stripMemoryTagsFromPrompt(promptText).trim();
+  const strippedPrompt = stripMemoryTags(promptText).trim();
   const preferredPrompt = strippedPrompt || trimmedRawPrompt;
 
   if (preferredPrompt.length <= MAX_STORED_PROMPT_CHARS) {

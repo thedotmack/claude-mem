@@ -75,23 +75,32 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
   const retryAfterMs = input.headers ? parseRetryAfterMs(input.headers.get('retry-after')) : undefined;
+  const cause = status === undefined
+    ? input.cause
+    : new Error(`${providerLabel} HTTP error (status ${status})`);
 
   if (
     lower.includes('quota exceeded') ||
     lower.includes('insufficient credits') ||
     lower.includes('insufficient_quota') ||
-    lower.includes('resource_exhausted')
+    lower.includes('resource_exhausted') ||
+    lower.includes('key limit exceeded') ||
+    // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
+    // marker only applies off the 429 path (the key-limit marker always wins).
+    (lower.includes('limit exceeded') && status !== 429) ||
+    lower.includes('negative credit') ||
+    status === 402
   ) {
     return new ServerClassifiedProviderError(
       `${providerLabel} quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
-      { kind: 'quota_exhausted', cause: input.cause },
+      { kind: 'quota_exhausted', cause },
     );
   }
 
   if (status === 429) {
     return new ServerClassifiedProviderError(`${providerLabel} rate limit (429)`, {
       kind: 'rate_limit',
-      cause: input.cause,
+      cause,
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
@@ -99,21 +108,21 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
   if (status === 401 || status === 403) {
     return new ServerClassifiedProviderError(`${providerLabel} auth error (status ${status})`, {
       kind: 'auth_invalid',
-      cause: input.cause,
+      cause,
     });
   }
 
   if (status === 400 || status === 404) {
     return new ServerClassifiedProviderError(`${providerLabel} bad request (status ${status})`, {
       kind: 'unrecoverable',
-      cause: input.cause,
+      cause,
     });
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
     return new ServerClassifiedProviderError(`${providerLabel} upstream error (status ${status})`, {
       kind: 'transient',
-      cause: input.cause,
+      cause,
     });
   }
 
@@ -125,8 +134,26 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
     });
   }
 
+  // litellm (behind OpenRouter) can fail to parse the downstream model's
+  // response and surface it as a body-level error inside a 200 envelope, e.g.
+  // `{ error: { code: 200, message: "Unable to get json response - Expecting
+  // value: line 45 column 1" } }`. Because the body-error path forwards the
+  // success status verbatim, none of the HTTP-status branches above match and
+  // it would otherwise fall through to `unrecoverable` and never retry. These
+  // are transient upstream hiccups that usually succeed on a retry, so detect
+  // the tell-tale litellm markers and route them to the retry loop.
+  // Kept marker-scoped on purpose: this classifier is shared with Gemini,
+  // which delivers genuine unrecoverable errors (FAILED_PRECONDITION, etc.)
+  // inside 200 envelopes that must stay non-transient.
+  if (lower.includes('unable to get json') || lower.includes('expecting value')) {
+    return new ServerClassifiedProviderError(
+      `${providerLabel} transient upstream parse failure (status ${status})`,
+      { kind: 'transient', cause },
+    );
+  }
+
   return new ServerClassifiedProviderError(
-    `${providerLabel} API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
-    { kind: 'unrecoverable', cause: input.cause },
+    `${providerLabel} API error (status ${status})`,
+    { kind: 'unrecoverable', cause },
   );
 }

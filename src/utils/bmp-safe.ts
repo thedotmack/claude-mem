@@ -23,6 +23,7 @@ const ASTRAL_FALLBACKS: Record<string, string> = {
   '🔵': '○', // discovery
   '🚨': '⚠', // security_alert
   '🔐': '⚷', // security_note
+  '🤫': '⊘', // sensitive
   '🛠': '⚒', // tool/build
   '🔍': '⌕', // search/discovery
   '🎯': '◎', // session
@@ -54,13 +55,4 @@ export function toBmpSafe(input: string): string {
     out += ASTRAL_FALLBACKS[ch] ?? FALLBACK_BULLET;
   }
   return out;
-}
-
-/** True if `input` contains any astral (non-BMP) code point or lone surrogate. */
-export function hasAstral(input: string): boolean {
-  for (const ch of input) {
-    const cp = ch.codePointAt(0)!;
-    if (cp > 0xffff || (cp >= 0xd800 && cp <= 0xdfff)) return true;
-  }
-  return false;
 }

@@ -9,7 +9,9 @@ export const ENV_EXACT_MATCHES = new Set([
   'CLAUDE_CODE_SESSION',
   'CLAUDE_CODE_ENTRYPOINT',
   'MCP_SESSION_ID',
-  // Proxy vars: strip so the SDK subprocess doesn't inherit a proxy config.
+]);
+
+export const ENV_PROXY_VARS = new Set([
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'ALL_PROXY',
@@ -20,13 +22,29 @@ export const ENV_EXACT_MATCHES = new Set([
   'no_proxy',
   'npm_config_proxy',
   'npm_config_https_proxy',
+  'npm_config_noproxy',
 ]);
 
 export const ENV_PRESERVE = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_GIT_BASH_PATH',
+  // The CLI documents CLAUDE_CODE_TMPDIR as the fix for a root-owned per-uid
+  // /tmp/claude-<uid> directory (#4161). Stripping it here sent the SDK child
+  // back to /tmp, so the child hit that directory and exited 1 on every spawn
+  // — the user's only documented escape did nothing.
+  'CLAUDE_CODE_TMPDIR',
+  // claude-mem's own setting, not a CLI knob (the CLI never reads it): the
+  // path to the claude binary, documented as settable from the file OR the
+  // env. Every daemon spawn passes through sanitizeEnv, and the worker reads
+  // the env override (SettingsDefaultsManager.applyEnvOverrides), so
+  // stripping it silently dropped the env form.
+  'CLAUDE_CODE_PATH',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+  'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+  'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
   'ANTHROPIC_BEDROCK_BASE_URL',
   'AWS_REGION',
   'AWS_PROFILE',
@@ -36,6 +54,7 @@ export const ENV_PRESERVE = new Set([
   'ANTHROPIC_VERTEX_PROJECT_ID',
   'CLOUD_ML_REGION',
   'GOOGLE_APPLICATION_CREDENTIALS',
+  ...ENV_PROXY_VARS,
 ]);
 
 export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

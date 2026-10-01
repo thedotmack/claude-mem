@@ -2,8 +2,8 @@
  * install-paths.ts — Rule B: installer-managed absolute-path bake helpers.
  *
  * See `CLAUDE.md` → "Spawn-Contract Resolution". Per-IDE config files that
- * claude-mem's own installers write (Cursor, Gemini, Windsurf, and the
- * MCP-only IDEs: Copilot CLI, Antigravity, Goose, Roo, Warp) MUST bake
+ * claude-mem's own installers write (Cursor, Windsurf, Antigravity CLI, and
+ * the MCP-only IDEs: Copilot CLI, Goose, Roo, Warp) MUST bake
  * absolute paths — those hosts perform NO `${CLAUDE_PLUGIN_ROOT}` shell
  * substitution on the `command`/`args` fields they exec. This module is the
  * single source of truth for resolving those absolute paths so each installer
@@ -17,6 +17,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { lookupWindowsCommand } from '../../shared/spawn.js';
 
 function firstExisting(candidates: string[]): string | null {
   for (const candidate of candidates) {
@@ -78,7 +79,11 @@ export function getWorkerServiceAbsolutePath(): string | null {
  * via PATH at exec time) when no known install location exists.
  */
 export function getBunAbsolutePath(): string {
+  const pathResolvedBun = process.platform === 'win32'
+    ? lookupWindowsCommand('bun')
+    : null;
   const candidates = [
+    ...(pathResolvedBun?.toLowerCase().endsWith('.exe') ? [pathResolvedBun] : []),
     path.join(homedir(), '.bun', 'bin', 'bun'),
     '/usr/local/bin/bun',
     '/usr/bin/bun',

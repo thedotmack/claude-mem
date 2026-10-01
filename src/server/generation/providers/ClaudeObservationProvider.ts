@@ -12,14 +12,14 @@ import type {
   ServerGenerationResult,
 } from './shared/types.js';
 
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
 // #2554 — the previous default `claude-3-5-sonnet-latest` is stale and 404s on
 // the current Anthropic Messages API. Align with the repo's canonical default
 // model (CLAUDE_MEM_MODEL in src/ui/viewer/constants/settings.ts and the
 // installer's model list) so a server with no explicit CLAUDE_MEM_SERVER_MODEL
 // generates against a valid model id instead of failing every job with a 404.
-export const DEFAULT_SERVER_CLAUDE_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_SERVER_CLAUDE_MODEL = 'claude-sonnet-5';
 const DEFAULT_MODEL = DEFAULT_SERVER_CLAUDE_MODEL;
 
 export interface ClaudeObservationProviderOptions {
@@ -27,6 +27,10 @@ export interface ClaudeObservationProviderOptions {
   model?: string;
   maxOutputTokens?: number;
   fetchImpl?: typeof fetch;
+  // Anthropic-API-compatible gateway base URL (no path suffix — `/v1/messages`
+  // is appended), for deployments that don't call api.anthropic.com directly.
+  // Defaults to the real Anthropic API.
+  baseUrl?: string;
 }
 
 interface AnthropicMessagesResponse {
@@ -41,6 +45,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private readonly model: string;
   private readonly maxOutputTokens: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly messagesUrl: string;
 
   constructor(options: ClaudeObservationProviderOptions) {
     if (!options.apiKey) {
@@ -53,13 +58,25 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    const baseUrl = (options.baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.messagesUrl = `${baseUrl}/v1/messages`;
   }
 
   async generate(
     context: ServerGenerationContext,
     signal?: AbortSignal,
   ): Promise<ServerGenerationResult> {
-    const { prompt, skippedAll } = buildServerGenerationPrompt(context);
+    const { prompt, skippedAll, noEvents } = buildServerGenerationPrompt(context);
+    // Nothing was loaded, so there is nothing to summarise and no question to
+    // ask a model. Answering it anyway bought `<skip_summary />` and recorded
+    // the result as an ordinary completion; the reason below names it instead.
+    if (noEvents) {
+      return {
+        rawText: '<skip_summary reason="no_events_loaded" />',
+        providerLabel: this.providerLabel,
+        modelId: this.model,
+      };
+    }
     if (skippedAll) {
       // All events were scrubbed by privacy stripping. Don't bill the
       // provider — return a synthetic skip response that parser accepts.
@@ -72,24 +89,11 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(ANTHROPIC_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.apiKey,
-          'anthropic-version': ANTHROPIC_VERSION,
-        },
-        body: JSON.stringify({
-          model: this.model,
-          max_tokens: this.maxOutputTokens,
-          temperature: 0.3,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal,
-      });
+      response = await this.postMessages(prompt, signal);
     } catch (networkError) {
+      const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyClaudeServerError({
-        cause: networkError,
+        cause: err,
       });
     }
 
@@ -107,9 +111,10 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     try {
       data = (await response.json()) as AnthropicMessagesResponse;
     } catch (parseError) {
+      const err = parseError instanceof Error ? parseError : new Error(String(parseError));
       throw new ServerClassifiedProviderError('Anthropic returned invalid JSON', {
         kind: 'parse_error',
-        cause: parseError,
+        cause: err,
       });
     }
 
@@ -148,6 +153,24 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       providerLabel: this.providerLabel,
       modelId: this.model,
     };
+  }
+
+  private postMessages(prompt: string, signal?: AbortSignal): Promise<Response> {
+    return this.fetchImpl(this.messagesUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: this.maxOutputTokens,
+        temperature: 0.3,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal,
+    });
   }
 }
 
@@ -247,7 +270,12 @@ export function classifyClaudeServerError(input: ClassifyInput): ServerClassifie
 async function safeReadBody(response: Response): Promise<string> {
   try {
     return await response.text();
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SDK', 'Failed to read Anthropic error response body', {
+      provider: 'claude',
+      status: response.status,
+    }, err);
     return '';
   }
 }
