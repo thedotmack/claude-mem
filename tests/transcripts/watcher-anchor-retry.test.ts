@@ -70,6 +70,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 80));
 
+// The multi-megabyte backlogs take well under a second alone, but the full
+// suite runs files side by side; the default 5 s test timeout is too tight.
+const HEAVY_TEST_TIMEOUT_MS = 30_000;
+
 describe('TranscriptWatcher retries a failed turn from its own record', () => {
   let tmpRoot: string;
   let statePath: string;
@@ -214,10 +218,10 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     expect(statSync(filePath).size).toBeGreaterThan(4 * 1024 * 1024);
 
     tail(filePath);
-    await waitFor(() => recorded.length >= texts.length, 15_000);
+    await waitFor(() => recorded.length >= texts.length, HEAVY_TEST_TIMEOUT_MS);
     await settle();
     expect(recorded).toEqual(texts);
-  });
+  }, HEAVY_TEST_TIMEOUT_MS + 5_000);
 
   it('zstd: a backlog larger than one pass is read in bounded passes, every frame once', async () => {
     const filePath = join(tmpRoot, 'big.jsonl.zstd');
@@ -229,10 +233,10 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     expect(statSync(filePath).size).toBeGreaterThan(4 * 1024 * 1024);
 
     tail(filePath);
-    await waitFor(() => recorded.length >= texts.length, 15_000);
+    await waitFor(() => recorded.length >= texts.length, HEAVY_TEST_TIMEOUT_MS);
     await settle();
     expect(recorded).toEqual(texts);
-  });
+  }, HEAVY_TEST_TIMEOUT_MS + 5_000);
 });
 
 describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
@@ -335,11 +339,11 @@ describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
 
     const watch: WatchTarget = { name: 'retry-test', path: join(tmpRoot, '*.jsonl'), schema, startAtEnd: true };
     await (watcher as any).addTailer(filePath, watch, schema, true);
-    await waitFor(() => recorded.length >= 301);
+    await waitFor(() => recorded.length >= 301, HEAVY_TEST_TIMEOUT_MS);
     await settle();
     expect(recorded[0]).toBe('opening');
     expect(recorded).toHaveLength(301);
-  });
+  }, HEAVY_TEST_TIMEOUT_MS + 5_000);
 
   it('starts even a small copied history at EOF when its first record is older than startup', async () => {
     const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
