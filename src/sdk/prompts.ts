@@ -298,6 +298,26 @@ export function buildObservationPrompt(
   /** The previous reply drifted off the schema (#3461): restate it once. */
   restateSchema: boolean = false,
 ): string {
+  return renderObservationPrompt(buildObservationPromptParts(obs, fieldMaxChars, restateSchema));
+}
+
+/**
+ * An observation prompt before rendering, with the tool payload kept apart
+ * from the wrapper, so a provider can bound the payload without cutting into
+ * tag text a tool's own output may contain (Codex batching).
+ */
+export interface ObservationPromptParts {
+  header: string;
+  parameters: string;
+  outcome: string;
+  restateSchema: boolean;
+}
+
+export function buildObservationPromptParts(
+  obs: Observation,
+  fieldMaxChars: number = OBS_PROMPT_FIELD_MAX_CHARS,
+  restateSchema: boolean = false,
+): ObservationPromptParts {
   let toolInput: any;
   let toolOutput: any;
 
@@ -319,13 +339,21 @@ export function buildObservationPrompt(
     toolOutput = obs.tool_output;
   }
 
-  const parameters = truncateObservationField(stripImagePayloadsFromField(toolInput), fieldMaxChars);
-  const outcome = truncateObservationField(stripImagePayloadsFromField(toolOutput), fieldMaxChars);
+  return {
+    header: `<observed_from_primary_session>
+  <what_happened>${obs.tool_name}</what_happened>
+  <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}`,
+    parameters: truncateObservationField(stripImagePayloadsFromField(toolInput), fieldMaxChars),
+    outcome: truncateObservationField(stripImagePayloadsFromField(toolOutput), fieldMaxChars),
+    restateSchema,
+  };
+}
+
+export function renderObservationPrompt(parts: ObservationPromptParts): string {
+  const { parameters, outcome, restateSchema } = parts;
   const redactionHint = hasRedactionMarker(parameters + outcome) ? `\n${REDACTION_MARKER_HINT}\n` : '';
 
-  return `<observed_from_primary_session>
-  <what_happened>${obs.tool_name}</what_happened>
-  <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
+  return `${parts.header}
   <parameters>${parameters}</parameters>
   <outcome>${outcome}</outcome>
 </observed_from_primary_session>

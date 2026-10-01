@@ -755,6 +755,19 @@ export class SessionManager {
     }
   }
 
+  /** Extend the current request without advancing the asynchronous iterator. */
+  claimNextObservation(sessionDbId: number, accepts: (message: PendingMessageWithId) => boolean): PendingMessageWithId | null {
+    const session = this.sessions.get(sessionDbId);
+    if (!session || session.abortController.signal.aborted) return null;
+    const message = this.buffer.claimNextMatching(sessionDbId,
+      candidate => candidate.type === 'observation' && accepts(candidate));
+    if (message) {
+      session.claimedMessageIds.push(message._persistentId);
+      session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp ?? message._originalTimestamp, message._originalTimestamp);
+    }
+    return message;
+  }
+
   /** Read-only access to the in-RAM buffer for diagnostics. */
   /** Whether a summarize is buffered for this session, claimed or not. */
   hasPendingSummarize(sessionDbId: number): boolean {

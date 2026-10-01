@@ -1,6 +1,6 @@
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import {
   CODEX_NO_AGENT_MESSAGE_CODE,
@@ -25,6 +25,8 @@ import {
   isDependencyStatusInCooldown,
   recordCodexCliSetupRequired,
 } from '../../shared/dependency-health.js';
+import { OBS_PROMPT_FIELD_MAX_CHARS, type ObservationPromptParts } from '../../sdk/prompts.js';
+import { observationMetadata, queuedObservationPrompt, boundObservationPrompt, sameObservationContext } from './codex-observation-batch.js';
 import { logger } from '../../utils/logger.js';
 
 interface CodexConfig {
@@ -155,6 +157,39 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       codexPath,
       reasoningEffort: settings.CLAUDE_MEM_CODEX_REASONING_EFFORT.trim() || null,
     };
+  }
+
+  protected override readonly rejectAbortedObservation = true;
+
+  /**
+   * A Codex backlog would pay one round trip, and one full history replay on
+   * a fresh ephemeral thread, per observation. Claim the queued observations
+   * already at the FIFO head that share this one's prompt number, agent and
+   * cwd into the same turn, within a count and character budget, without
+   * waiting for more. The claimed ids ride on the session, so the normal
+   * confirm/reset acknowledges or preserves the whole batch.
+   */
+  protected override observationTurnPrompt(session: ActiveSession, first: PendingMessageWithId, prompt: ObservationPromptParts): string {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const count = boundedInteger(settings.CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE, 8, 32);
+    const configuredChars = boundedInteger(settings.CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS, 32_000, 128_000);
+    const maxChars = configuredChars >= 4_000 ? configuredChars : 32_000;
+    let combined = boundObservationPrompt(prompt, maxChars, observationMetadata(first));
+    for (let size = 1; size < count; size++) {
+      let addition = '';
+      const next = this.sessionManager.claimNextObservation(session.sessionDbId, candidate => {
+        if (!sameObservationContext(first, candidate)) return false;
+        // Do not add an oversized field that would need its own compression pass.
+        if ([candidate.tool_input, candidate.tool_response].some(field =>
+          (JSON.stringify(field, null, 2) ?? '').length > OBS_PROMPT_FIELD_MAX_CHARS)) return false;
+        const rawChars = JSON.stringify([candidate.tool_input, candidate.tool_response]).length;
+        addition = queuedObservationPrompt(candidate);
+        return Math.max(rawChars, addition.length) + combined.length + 2 <= maxChars;
+      });
+      if (!next) break;
+      combined += '\n\n' + addition;
+    }
+    return combined;
   }
 
   protected missingApiKeyError(): Error {
