@@ -10,9 +10,11 @@ that hits a rate limit, spends its quota, or turns out to be invalid is set asid
 for a cooldown, and the next request uses the next key.
 
 <Tip>
-This is aimed at free tiers. A free Gemini or OpenRouter key has a daily
-allowance measured in a few hundred requests, and a busy day of capture spends
-it before evening. Two or three keys turn that from a stop into a shrug.
+This is for keys you already hold — a personal key next to a work or team key,
+or keys from separate billing accounts. When one runs into its limit, capture
+keeps going on the next instead of stopping for the rest of the window. Check
+your provider's terms first: some do not allow extra keys or accounts used only
+to get around their rate limits.
 </Tip>
 
 ## What it fixes
@@ -92,15 +94,13 @@ both use a salted fingerprint that is meaningless outside your install.
 - **The cmem.ai gateway never pools.** Its key is account-delivered, and the list
   is by definition your personal keys — sending those to the gateway would be a
   credential leak, so a gateway endpoint always uses exactly its one delivered
-  key.
+  key. The reverse holds too: a `cm_pro_` key placed in the list is never sent to
+  any other endpoint.
 
 ## Verifying
 
-```bash
-npx claude-mem doctor
-```
-
-Rotation events are logged at `warn` with the pool position and key
+Rotation events are logged at `warn` in the worker log
+(`~/.claude-mem/logs/worker-YYYY-MM-DD.log`) with the pool position and key
 fingerprint — never the key:
 
 ```

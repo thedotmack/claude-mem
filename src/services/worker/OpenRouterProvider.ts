@@ -840,14 +840,6 @@ export function isOpenRouterAvailable(settingsPath: string = USER_SETTINGS_PATH)
   return Boolean(resolveOpenRouterConfig(settingsPath).apiKey);
 }
 
-/**
- * Pool size for diagnostics (`/doctor`, status). Zero and one are both
- * "no rotation"; anything higher is an opted-in pool.
- */
-export function openRouterKeyPoolSize(settingsPath: string = USER_SETTINGS_PATH): number {
-  return resolveOpenRouterConfig(settingsPath).apiKeys.length;
-}
-
 export function isOpenRouterSelected(): boolean {
   const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
