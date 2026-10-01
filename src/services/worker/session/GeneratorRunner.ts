@@ -22,7 +22,7 @@ import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
 import { recordObserverFailure } from '../../../shared/observer-health.js';
 import { recordClaudeSetupRequired, recordCodexCliSetupRequired } from '../../../shared/dependency-health.js';
-import { isMemoryOnCmemGateway } from '../../../shared/cmem-gateway.js';
+import { canCmemGatewayServe } from '../../../shared/cmem-gateway.js';
 import {
   releaseQuotaProbe,
   recordAuthCooldown,
@@ -490,7 +490,7 @@ function bookClassifiedFailure(
       // breaker takes over here too.
       const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
       if (plan?.resume && error.retryAfterMs !== undefined
-        && planUnattendedGatewayResume(session, 'rate-limit', isMemoryOnCmemGateway()).resume) {
+        && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe()).resume) {
         resumeAfterMs = Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
       } else {
         recordQuotaExhausted(provider, error.message, 'rate_limit', undefined, session.observerProfile);

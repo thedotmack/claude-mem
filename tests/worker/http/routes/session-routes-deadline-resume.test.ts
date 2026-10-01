@@ -234,7 +234,9 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
   });
 
   describe('unattended resume cap on the cmem gateway (plan tokens)', () => {
-    const GATEWAY_ENV_KEYS = ['CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_BASE_URL', 'CMEM_PRO_ORIGIN'] as const;
+    const GATEWAY_ENV_KEYS = [
+      'CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_OPENROUTER_BASE_URL', 'CMEM_PRO_ORIGIN', 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
+    ] as const;
     let savedEnv: Record<string, string | undefined>;
 
     beforeEach(() => {
@@ -278,6 +280,27 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
       expect(harness.stats().processedId).toBe(harness.messageId);
       expect(harness.stats().confirmedCount).toBe(1);
       expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(0);
+    });
+
+    it('caps unattended resumes when the gateway serves as the opt-in quota fallback', async () => {
+      // Memory's own provider is Gemini, but the gateway can take the work as
+      // the quota fallback: every unattended resume there spends plan tokens too.
+      process.env.CLAUDE_MEM_PROVIDER = 'gemini';
+      process.env.CLAUDE_MEM_OPENROUTER_BASE_URL = 'https://cmem.ai/api/inference/v1';
+      process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'openrouter';
+      const harness = makeHarness(MAX_UNATTENDED_GATEWAY_RESUMES + 1);
+      await harness.startInitial();
+
+      for (let index = 0; index < MAX_UNATTENDED_GATEWAY_RESUMES; index++) {
+        expect(scheduled).toHaveLength(index + 1);
+        await harness.fireResume(index);
+      }
+
+      expect(scheduled).toHaveLength(MAX_UNATTENDED_GATEWAY_RESUMES);
+      expect(harness.buffer.getPendingCount(harness.session.sessionDbId)).toBe(1);
+      // The periodic sweep honours the same spent budget.
+      harness.session.pausedReason = 'quota';
+      expect(harness.sessionManager.getResumableSessionIds()).toEqual([]);
     });
 
     it('keeps resuming a user-owned OpenRouter key past the gateway cap', async () => {
