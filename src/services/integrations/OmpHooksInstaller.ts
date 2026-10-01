@@ -19,9 +19,19 @@ import { MARKETPLACE_ROOT } from '../../shared/paths.js';
  * regardless of project. Uninstall removes that single file.
  */
 
-const OMP_AGENT_HOOKS_PRE_DIR = path.join(homedir(), '.omp', 'agent', 'hooks', 'pre');
 const OMP_HOOK_FILENAME = 'claude-mem.ts';
-const OMP_HOOK_DESTINATION = path.join(OMP_AGENT_HOOKS_PRE_DIR, OMP_HOOK_FILENAME);
+
+/** OMP's user hook dir: `<agentDir>/hooks/pre`, where agentDir honours
+ *  PI_CODING_AGENT_DIR (oh-my-pi docs/hooks.md) and defaults to ~/.omp/agent.
+ *  Resolved per call so the environment at install time decides. */
+function ompHooksPreDir(): string {
+  const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), '.omp', 'agent');
+  return path.join(agentDir, 'hooks', 'pre');
+}
+
+function ompHookDestination(): string {
+  return path.join(ompHooksPreDir(), OMP_HOOK_FILENAME);
+}
 
 /** Trusted locations for the shipped hook. The marketplace root is the
  *  canonical, claude-mem-installed source. A repo/checkout source is honored
@@ -49,10 +59,11 @@ export async function installOmpHooks(): Promise<number> {
   }
 
   try {
-    mkdirSync(OMP_AGENT_HOOKS_PRE_DIR, { recursive: true });
-    writeFileSync(OMP_HOOK_DESTINATION, readFileSync(source, 'utf-8'), 'utf-8');
-    console.log(`  OMP hook installed to: ${OMP_HOOK_DESTINATION}`);
-    logger.info('OMP', 'Hook installed', { destination: OMP_HOOK_DESTINATION });
+    const destination = ompHookDestination();
+    mkdirSync(ompHooksPreDir(), { recursive: true });
+    writeFileSync(destination, readFileSync(source, 'utf-8'), 'utf-8');
+    console.log(`  OMP hook installed to: ${destination}`);
+    logger.info('OMP', 'Hook installed', { destination });
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -62,13 +73,14 @@ export async function installOmpHooks(): Promise<number> {
 }
 
 export function uninstallOmpHooks(): number {
-  if (!existsSync(OMP_HOOK_DESTINATION)) {
+  const destination = ompHookDestination();
+  if (!existsSync(destination)) {
     console.log('  OMP hook not installed; nothing to remove.');
     return 0;
   }
   try {
-    rmSync(OMP_HOOK_DESTINATION, { force: true });
-    console.log(`  Removed OMP hook: ${OMP_HOOK_DESTINATION}`);
+    rmSync(destination, { force: true });
+    console.log(`  Removed OMP hook: ${destination}`);
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -79,10 +91,12 @@ export function uninstallOmpHooks(): number {
 
 export function checkOmpStatus(): number {
   console.log('\nClaude-Mem OMP Integration Status\n');
-  console.log(`Hooks directory: ${OMP_AGENT_HOOKS_PRE_DIR}`);
-  console.log(`  Exists: ${existsSync(OMP_AGENT_HOOKS_PRE_DIR) ? 'yes' : 'no'}`);
-  console.log(`Hook file: ${OMP_HOOK_DESTINATION}`);
-  console.log(`  Installed: ${existsSync(OMP_HOOK_DESTINATION) ? 'yes' : 'no'}`);
+  const hooksDir = ompHooksPreDir();
+  const destination = ompHookDestination();
+  console.log(`Hooks directory: ${hooksDir}`);
+  console.log(`  Exists: ${existsSync(hooksDir) ? 'yes' : 'no'}`);
+  console.log(`Hook file: ${destination}`);
+  console.log(`  Installed: ${existsSync(destination) ? 'yes' : 'no'}`);
   console.log('');
   return 0;
 }

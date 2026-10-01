@@ -25,8 +25,14 @@
  *    promise so the first observation never lands before the session row exists.
  *  - All POSTs are fire-and-forget via detached chains; the handler returns
  *    synchronously and never blocks the tool dispatch (30s handler cap).
+ *  - The project is never named here: every request carries the session's cwd
+ *    and the worker resolves the project key from it, the same resolver the
+ *    Claude Code hooks use (worktrees, markers, environments).
  */
 
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 
 // ---------------------------------------------------------------------------
@@ -40,19 +46,49 @@ const CTX_CACHE_MS = 60_000; // /api/context/inject cache TTL (OpenClaw)
 // Worker endpoint
 // ---------------------------------------------------------------------------
 
-function port(): number {
-  // claude-mem default port derivation (docs/platform-integration.md).
-  const envP = Number(process.env.CLAUDE_MEM_WORKER_PORT);
-  if (Number.isFinite(envP) && envP > 0) return envP;
+/**
+ * claude-mem's settings.json, read the way claude-mem reads it: from
+ * CLAUDE_MEM_DATA_DIR (default ~/.claude-mem); its keys sit under `env` when
+ * that block holds CLAUDE_MEM_* keys, else at the root. Empty on any error.
+ */
+function readClaudeMemSettings(): Record<string, unknown> {
+  const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
   try {
-    const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-    return 37700 + (uid % 100);
+    const doc = JSON.parse(readFileSync(join(dataDir, "settings.json"), "utf8").replace(/^﻿/, ""));
+    const env = doc?.env;
+    const nested = env !== null && typeof env === "object" && !Array.isArray(env)
+      && Object.keys(env).some(key => key.startsWith("CLAUDE_MEM_"));
+    return nested ? env : (doc ?? {});
   } catch {
-    return 37700;
+    return {};
   }
 }
 
-const WORKER = `http://127.0.0.1:${port()}`;
+/** Env wins over settings.json, which wins over claude-mem's own default. */
+function setting(settings: Record<string, unknown>, key: string, fallback: string): string {
+  const fromEnv = process.env[key];
+  if (fromEnv) return fromEnv;
+  const fromFile = settings[key];
+  return typeof fromFile === "string" && fromFile ? fromFile : fallback;
+}
+
+function resolveWorkerBase(): string {
+  const settings = readClaudeMemSettings();
+  const defaultPort = String(37700 + ((process.getuid?.() ?? 77) % 100));
+  const port = setting(settings, "CLAUDE_MEM_WORKER_PORT", defaultPort);
+  const host = setting(settings, "CLAUDE_MEM_WORKER_HOST", "127.0.0.1");
+  const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `http://${urlHost}:${port}`;
+}
+
+// Resolved once per omp session (session_start clears it), so a port change in
+// settings.json is picked up by the next session without a restart.
+let workerBase: string | undefined;
+
+function worker(): string {
+  workerBase ??= resolveWorkerBase();
+  return workerBase;
+}
 
 // ---------------------------------------------------------------------------
 // Circuit breaker (OpenClaw pattern) — 3 consecutive failures => 30s OPEN
@@ -84,8 +120,9 @@ function onOk(): void {
 
 let sid: string | undefined;
 let initialized = false;
-let initPromise: Promise<void> | undefined;
-let ctxCache: { at: number; md: string } | null = null; // single project per omp process
+// Resolves true once the worker accepted init for `sid`, false if it failed.
+let initPromise: Promise<boolean> | undefined;
+let ctxCache: { at: number; cwd: string; md: string } | null = null;
 let lastAssistant = ""; // captured on agent_end, sent at summarize
 
 function newSid(): string {
@@ -93,14 +130,6 @@ function newSid(): string {
   initialized = false;
   initPromise = undefined;
   return sid;
-}
-
-function projectName(cwd: string | undefined): string {
-  // basename(cwd) — matches what Claude Code writes to claude-mem (verified in
-  // ~/.claude-mem/claude-mem.db: sdk_sessions.project = "maltpanel"). Cross-agent
-  // mem-search unifies on this exact key, so it must be basename, not the full path.
-  const parts = (cwd ?? "").split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? "unknown";
 }
 
 function textFromContent(content: unknown): string {
@@ -127,40 +156,45 @@ function lastMessageText(messages: unknown[], role: string): string {
 }
 
 // Fire /api/sessions/init exactly once per contentSessionId (observer awaits this).
-function fireInit(project: string, prompt?: string): Promise<void> {
-  if (breakerOpen()) return Promise.resolve();
+function fireInit(cwd: string | undefined, prompt?: string): Promise<boolean> {
+  if (breakerOpen()) return Promise.resolve(false);
   if (sid === undefined) newSid();
-  if (initialized) return initPromise ?? Promise.resolve();
+  if (initialized) return initPromise ?? Promise.resolve(false);
   initialized = true;
-  const body = {
+  const body: Record<string, unknown> = {
     contentSessionId: sid,
-    project,
     prompt: prompt ?? "",
     platformSource: "omp",
   };
+  if (cwd) body.cwd = cwd;
   // On any failure (network or HTTP) trip the breaker and release the init lock
   // so the next before_agent_start/tool_result can retry; observers awaiting this
   // promise proceed and the subsequent observation POST is gated by the breaker.
-  initPromise = fetch(`${WORKER}/api/sessions/init`, {
+  initPromise = fetch(`${worker()}/api/sessions/init`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   })
-    .then(r => {
+    .then(async r => {
       if (!r.ok) throw new Error(`init ${r.status}`);
       onOk();
+      // An excluded project is skipped before its session row exists, so it is
+      // not an init: finalizing that id would make the worker create one.
+      const reply = await r.json().catch(() => ({}));
+      return reply?.reason !== "project_excluded";
     })
     .catch(() => {
       onFail();
       initialized = false;
       initPromise = undefined;
+      return false;
     });
   return initPromise;
 }
 
 function post(path: string, body: unknown): Promise<void> {
   if (breakerOpen()) return Promise.resolve();
-  return fetch(`${WORKER}${path}`, {
+  return fetch(`${worker()}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -172,6 +206,22 @@ function post(path: string, body: unknown): Promise<void> {
     .catch(() => onFail());
 }
 
+// Finalize a session, but only once its init has succeeded: summarizing an id
+// the worker never initialized makes it create an empty-project sdk_sessions
+// row with an empty user_prompt. Chained onto the captured init promise, since
+// `initialized` flips synchronously inside fireInit, before the POST settles.
+function finalize(id: string | undefined, pendingInit: Promise<boolean> | undefined, assistantMessage: string): void {
+  if (!id || !pendingInit) return;
+  void pendingInit.then(initSucceeded => {
+    if (!initSucceeded) return;
+    return post("/api/sessions/summarize", {
+      contentSessionId: id,
+      last_assistant_message: assistantMessage,
+      platformSource: "omp",
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Hook factory
 // ---------------------------------------------------------------------------
@@ -181,6 +231,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // before_agent_start so we can capture the real user prompt (the worker records
   // and privacy-filters on it).
   pi.on("session_start", async () => {
+    workerBase = undefined;
     newSid();
   });
 
@@ -189,20 +240,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // ending, then rotate the id. The next before_agent_start re-inits with the
   // post-compact prompt.
   pi.on("session_compact", async () => {
-    const id = sid;
-    const pendingInit = initPromise;
-    const previousAssistant = lastAssistant;
-
-    if (id && initialized) {
-      void (pendingInit ?? Promise.resolve()).then(() =>
-        post("/api/sessions/summarize", {
-          contentSessionId: id,
-          last_assistant_message: previousAssistant,
-          platformSource: "omp",
-        })
-      );
-    }
-
+    finalize(sid, initPromise, lastAssistant);
     newSid();
     // lastAssistant belongs to the logical session that just ended. newSid()
     // resets sid/initialized/initPromise but not this field, so without the
@@ -217,7 +255,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // hooks/types.ts:281 and extensions/types.ts:705) — NOT in event.messages.
   // Never mint a new id here.
   pi.on("before_agent_start", async (event, ctx) => {
-    fireInit(projectName(ctx?.cwd), event?.prompt);
+    fireInit(ctx?.cwd, event?.prompt);
   });
 
   // tool_result: the observation pipeline. Fire-and-forget; handler returns void
@@ -239,7 +277,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
     if (ctx?.cwd) body.cwd = ctx.cwd;
 
     // Race-safe: wait for session init before the first observation lands.
-    const dep = initPromise ?? fireInit(projectName(ctx?.cwd));
+    const dep = initPromise ?? fireInit(ctx?.cwd);
     void dep.then(() => post("/api/sessions/observations", body));
   });
 
@@ -254,19 +292,20 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // append exactly one system message with the cached context markdown.
   pi.on("context", async (event, ctx) => {
     if (breakerOpen()) return;
-    const project = projectName(ctx?.cwd);
+    const cwd = ctx?.cwd;
+    if (!cwd) return;
     const now = Date.now();
 
-    if (!ctxCache || now - ctxCache.at > CTX_CACHE_MS) {
+    if (!ctxCache || ctxCache.cwd !== cwd || now - ctxCache.at > CTX_CACHE_MS) {
       try {
-        const url = `${WORKER}/api/context/inject?projects=${encodeURIComponent(project)}`;
+        const url = `${worker()}/api/context/inject?cwd=${encodeURIComponent(cwd)}&platformSource=omp`;
         const r = await fetch(url);
         if (!r.ok) throw new Error(`inject ${r.status}`);
         const md = (await r.text()) ?? "";
         onOk();
         // Only cache non-empty — an empty result means "no memory yet", caching it
         // would delay newly-arriving memory by CTX_CACHE_MS.
-        if (md.trim()) ctxCache = { at: now, md };
+        if (md.trim()) ctxCache = { at: now, cwd, md };
         else ctxCache = null;
       } catch {
         onFail();
@@ -282,37 +321,12 @@ export default function claudeMemBridge(pi: HookAPI): void {
   });
 
   // session_shutdown: finalize the claude-mem session and drop in-memory state.
-  // Only an initialized session is finalized: summarizing an id that never
-  // reached /api/sessions/init makes the worker create an empty-project
-  // sdk_sessions row for it (handleSummarizeByClaudeId calls createSDKSession
-  // with an empty project).
-  //
-  // The summarize is chained onto the captured init promise, exactly like
-  // session_compact: `initialized` flips synchronously inside fireInit, before
-  // the init POST settles, so an unchained summarize can reach the worker
-  // first. It would then INSERT the sdk_sessions row itself with
-  // user_prompt='' — a column only that INSERT ever writes, so the later init
-  // repairs `project` but never the prompt — and would queue a summarize
-  // generator against a session with no prompts and no observations.
-  //
   // id / pendingInit / previousAssistant are captured BEFORE the reset below:
   // the detached chain runs after this handler has returned and cleared the
   // module fields, so reading them inside the callback would send an empty
   // last_assistant_message.
   pi.on("session_shutdown", async () => {
-    const id = sid;
-    const pendingInit = initPromise;
-    const previousAssistant = lastAssistant;
-
-    if (id && initialized) {
-      void (pendingInit ?? Promise.resolve()).then(() =>
-        post("/api/sessions/summarize", {
-          contentSessionId: id,
-          last_assistant_message: previousAssistant,
-          platformSource: "omp",
-        })
-      );
-    }
+    finalize(sid, initPromise, lastAssistant);
 
     sid = undefined;
     initialized = false;

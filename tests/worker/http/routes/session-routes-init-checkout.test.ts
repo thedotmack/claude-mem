@@ -3,10 +3,14 @@
 // an observation still leaves evidence for worktree adoption.
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import express from 'express';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { SessionRoutes } from '../../../../src/services/worker/http/routes/SessionRoutes.js';
+import { getProjectContext } from '../../../../src/utils/project-name.js';
 import { logger } from '../../../../src/utils/logger.js';
 
 let server: Server | undefined;
@@ -114,5 +118,48 @@ describe('session-init records the checkout and how its key was derived (gate P1
     const response = await postInit({ contentSessionId: 'init-checkout-3', project: 'acme', prompt: PRIVATE_PROMPT });
     expect(response.status).toBe(200);
     expect(recordedCheckout('init-checkout-3')).toEqual({ cwd: null, project_key_source: null });
+  });
+});
+
+// A host that cannot run the project resolver itself (the in-process OMP hook,
+// #3556) sends only its cwd; the worker names the project with the same
+// resolver the CLI hooks use.
+describe('session-init resolves the project from a host cwd (#3556)', () => {
+  let checkout: string;
+
+  beforeEach(() => {
+    checkout = mkdtempSync(join(tmpdir(), 'omp-init-checkout-'));
+  });
+
+  afterEach(() => {
+    delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+    rmSync(checkout, { recursive: true, force: true });
+  });
+
+  it('names the project and records the checkout when the host sends no project', async () => {
+    const response = await postInit({ contentSessionId: 'init-cwd-1', prompt: PRIVATE_PROMPT, cwd: checkout });
+    expect(response.status).toBe(200);
+
+    const context = getProjectContext(checkout);
+    const row = store!.db
+      .prepare('SELECT project, cwd, project_key_source FROM sdk_sessions WHERE content_session_id = ?')
+      .get('init-cwd-1');
+    expect(row).toEqual({ project: context.primary, cwd: checkout, project_key_source: context.keySource });
+  });
+
+  it('keeps the project a hook resolved itself', async () => {
+    await postInit({ contentSessionId: 'init-cwd-2', project: 'acme/api', prompt: PRIVATE_PROMPT, cwd: checkout });
+    const row = store!.db
+      .prepare('SELECT project FROM sdk_sessions WHERE content_session_id = ?')
+      .get('init-cwd-2') as { project: string };
+    expect(row.project).toBe('acme/api');
+  });
+
+  it('creates no session for a checkout the user excluded', async () => {
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
+    const response = await postInit({ contentSessionId: 'init-cwd-3', prompt: 'secret work', cwd: checkout });
+
+    expect(await response.json()).toEqual({ skipped: true, reason: 'project_excluded' });
+    expect(store!.db.prepare('SELECT COUNT(*) AS n FROM sdk_sessions').get()).toEqual({ n: 0 });
   });
 });

@@ -19,6 +19,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
 import { getProjectContext, isProjectKeySource } from '../../../../utils/project-name.js';
+import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import { startGeneratorWithProvider } from '../../session/GeneratorRunner.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
@@ -698,7 +699,21 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
 
-    const project = req.body.project || 'unknown';
+    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
+    // A host that cannot run the project resolver itself (an in-process plugin
+    // such as the OMP hook) sends only its cwd. Resolve the key here with the
+    // resolver the CLI hooks use, as observation ingest already does, so its
+    // sessions land on the same key as Claude Code's for that checkout.
+    const resolvedFromCwd = !req.body.project && checkoutCwd.trim() ? getProjectContext(checkoutCwd) : null;
+    if (resolvedFromCwd) {
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+        res.json({ skipped: true, reason: 'project_excluded' });
+        return;
+      }
+    }
+    const project = req.body.project || resolvedFromCwd?.primary || 'unknown';
+    const projectKeySource = resolvedFromCwd?.keySource ?? req.body.projectKeySource;
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
     const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
@@ -752,9 +767,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // session that never reports an observation still leaves evidence for
     // worktree adoption (gate P1-2). An unknown key source is not recorded as
     // anything: the next observation's ingest records the checkout itself.
-    const checkoutCwd = typeof req.body.cwd === 'string' ? req.body.cwd : '';
-    if (checkoutCwd.trim() && isProjectKeySource(req.body.projectKeySource)) {
-      store.setSessionCwd(sessionDbId, checkoutCwd, req.body.projectKeySource);
+    if (checkoutCwd.trim() && isProjectKeySource(projectKeySource)) {
+      store.setSessionCwd(sessionDbId, checkoutCwd, projectKeySource);
     }
 
     const dbSession = store.getSessionById(sessionDbId);

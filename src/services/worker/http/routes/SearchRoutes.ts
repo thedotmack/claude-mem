@@ -14,6 +14,8 @@ import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { getProjectContext } from '../../../../utils/project-name.js';
+import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
@@ -298,7 +300,20 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const projectsParam = (req.query.projects as string) || (req.query.project as string);
+    let projectsParam = (req.query.projects as string) || (req.query.project as string);
+    const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    // A host that cannot run the project resolver itself (the OMP hook) sends
+    // its cwd instead: read the keys the CLI context hook sends for that checkout.
+    if (!projectsParam && hostCwd.trim()) {
+      const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
+        ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
+      if (isProjectExcluded(hostCwd, excludedProjects)) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.send('');
+        return;
+      }
+      projectsParam = getProjectContext(hostCwd).allProjects.join(',');
+    }
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);

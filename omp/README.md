@@ -4,7 +4,8 @@ An [OMP](https://omp.sh) hook adapter that records OMP sessions into the same
 claude-mem store that Claude Code, Cursor, and OpenCode already write to —
 one shared memory across all your agents.
 
-OMP loads hook modules from `~/.omp/agent/hooks/pre/*.ts` (user-global) or
+OMP loads hook modules from `~/.omp/agent/hooks/pre/*.ts` (user-global;
+`$PI_CODING_AGENT_DIR/hooks/pre` when that is set) or
 `<cwd>/.omp/hooks/pre/*.ts` (per-project) on every session start. This hook
 translates OMP lifecycle events into claude-mem's REST V1 event shape, so no
 OMP-side plugin or modification is required.
@@ -28,8 +29,15 @@ Behavioral notes (matching the OpenClaw adapter's conventions):
 - `memory_*` tool results are skipped to avoid recursion.
 - `tool_response` is capped at 1000 characters; `tool_input` is passed raw.
 - A circuit breaker opens for 30s after 3 consecutive worker failures.
-- The worker port resolves from `CLAUDE_MEM_WORKER_PORT` or the default
-  `37700 + (uid % 100)`.
+- The worker address resolves the way claude-mem's own clients resolve it:
+  `CLAUDE_MEM_WORKER_PORT` / `CLAUDE_MEM_WORKER_HOST` from the environment, then
+  `settings.json` in the data dir (`CLAUDE_MEM_DATA_DIR`, default `~/.claude-mem`),
+  then the per-user default port. It is re-read at every OMP session start.
+- The hook never names the project: each request carries the session's `cwd`,
+  and the worker resolves the project key with the same resolver the Claude Code
+  hooks use, so OMP and Claude Code sessions in one checkout share one project.
+  Excluded projects (`CLAUDE_MEM_EXCLUDED_PROJECTS`) are skipped.
+- A session is finalized only after the worker accepted its init.
 - The `context` handler always preserves the original conversation — it
   re-spreads `event.messages` and appends exactly one system message.
 
