@@ -13,7 +13,7 @@ import {
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
-import { processAgentResponse, snapshotResponseContext, type WorkerRef } from './agents/index.js';
+import { processAgentResponse, snapshotResponseContext, takeObserverSchemaReminder, type WorkerRef } from './agents/index.js';
 import {
   createSdkSpawnFactory,
   getSdkProcessForSession,
@@ -929,7 +929,7 @@ export class ClaudeProvider {
           tool_output: JSON.stringify(optimized.toolOutput),
           created_at_epoch: Date.now(),
           cwd: message.cwd
-        }, fieldMaxChars);
+        }, fieldMaxChars, takeObserverSchemaReminder(session));
         activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
