@@ -136,9 +136,9 @@ The settings file takes precedence over the environment variable.
 
 ### Custom OpenAI-compatible gateways
 
-The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to any server that speaks `/chat/completions` — the model id is sent as-is, and the first id of a fallback list is used (plain OpenAI has no `models` field).
+The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to any server that speaks `/chat/completions`, such as DeepSeek (`https://api.deepseek.com`), LM Studio (`http://localhost:1234/v1`) or [IO Intelligence](https://io.net) by io.net. The model id is sent as-is, and the first id of a fallback list is used (plain OpenAI has no `models` field). Use the key that endpoint issued: a claude-mem observer key (`cm_pro_…`) is only ever sent to the claude-mem observer.
 
-For example, [IO Intelligence](https://io.net) by io.net:
+For example, IO Intelligence:
 
 ```json
 {
