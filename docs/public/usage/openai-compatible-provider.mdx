@@ -98,6 +98,8 @@ endpoint or model you pinned yourself.
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
 | `groq` | `https://api.groq.com/openai/v1` | yes |
 | `together` | `https://api.together.xyz/v1` | yes |
+| `minimax` | `https://api.minimax.io/v1` | yes |
+| `minimax-cn` | `https://api.minimaxi.com/v1` | yes |
 | `ollama` | `http://localhost:11434/v1` | no |
 | `lmstudio` | `http://localhost:1234/v1` | no |
 | `vllm` | `http://localhost:8000/v1` | no |
@@ -140,6 +142,26 @@ work.
 
 An unknown preset id degrades to `custom` rather than failing, because settings
 are read during status polling and a typo should not crash a poll.
+
+## MiniMax
+
+`minimax` is MiniMax's global endpoint and `minimax-cn` the mainland-China one;
+use the preset that matches where your account lives. Both default to
+`MiniMax-M3`. Any model id MiniMax serves is passed verbatim:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "minimax",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<key from platform.minimax.io>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "MiniMax-M2.7"
+}
+```
+
+Reasoning models such as the M2 family can open their reply with a
+`<think>…</think>` block. claude-mem removes a leading block like that on every
+preset (it also covers DeepSeek R1 or Qwen3 on Ollama and vLLM), so the reasoning
+is never stored or re-sent with the next request.
 
 ## Any other endpoint
 
