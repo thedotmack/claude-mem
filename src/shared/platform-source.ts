@@ -15,6 +15,8 @@ export function normalizePlatformSource(value?: string | null): string {
   if (source.includes('cursor')) return 'cursor';
   if (source.includes('claude')) return 'claude';
   if (source.includes('kimi')) return 'kimi';
+  // Exact tokens only: a substring match on "agy" would catch unrelated names.
+  if (source === 'agy' || source === 'antigravity' || source.startsWith('antigravity-')) return 'antigravity-cli';
 
   return source;
 }
@@ -25,7 +27,7 @@ export function normalizePlatformSourceOrNull(value?: string | null): string | n
 }
 
 export function sortPlatformSources(sources: string[]): string[] {
-  const priority = ['claude', 'codex', 'cursor', 'kimi'];
+  const priority = ['claude', 'codex', 'antigravity-cli', 'cursor', 'kimi'];
 
   return [...sources].sort((a, b) => {
     const aPriority = priority.indexOf(a);

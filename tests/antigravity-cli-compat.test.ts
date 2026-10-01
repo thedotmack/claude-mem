@@ -341,6 +341,66 @@ describe('antigravityCliAdapter - normalizeInput (camelCase protojson stdin)', (
   });
 });
 
+describe('antigravityCliAdapter - native camelCase and toolCall support', () => {
+  it('normalizes Antigravity CLI camelCase conversationId, workspacePaths, and toolCall', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      conversationId: 'conv-12345',
+      workspacePaths: ['/path/to/project'],
+      toolCall: {
+        name: 'run_command',
+        args: { CommandLine: 'npm test' },
+      },
+    });
+
+    expect(result.sessionId).toBe('conv-12345');
+    expect(result.cwd).toBe('/path/to/project');
+    expect(result.toolName).toBe('run_command');
+    expect(result.toolInput).toEqual({ CommandLine: 'npm test' });
+  });
+
+  it('normalizes Antigravity CLI Stop event termination payload', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      conversationId: 'conv-999',
+      workspacePaths: ['/path/to/project'],
+      transcriptPath: '/path/to/transcript.jsonl',
+      terminationReason: 'model_stop',
+    });
+
+    expect(result.sessionId).toBe('conv-999');
+    expect(result.cwd).toBe('/path/to/project');
+    expect(result.transcriptPath).toBe('/path/to/transcript.jsonl');
+  });
+});
+
+describe('platform-source - antigravity-cli support', () => {
+  it('normalizes antigravity, agy, and antigravity-cli to antigravity-cli', async () => {
+    const { normalizePlatformSource, sortPlatformSources } = await import('../src/shared/platform-source.js');
+    expect(normalizePlatformSource('antigravity')).toBe('antigravity-cli');
+    expect(normalizePlatformSource('agy')).toBe('antigravity-cli');
+    expect(normalizePlatformSource('antigravity-cli')).toBe('antigravity-cli');
+    expect(normalizePlatformSource('ANTIGRAVITY')).toBe('antigravity-cli');
+
+    expect(normalizePlatformSource('Antigravity CLI')).toBe('antigravity-cli');
+
+    const sorted = sortPlatformSources(['cursor', 'antigravity-cli', 'codex', 'claude']);
+    expect(sorted).toEqual(['claude', 'codex', 'antigravity-cli', 'cursor']);
+  });
+
+  it('matches whole tokens only, so unrelated names are left alone', async () => {
+    const { normalizePlatformSource } = await import('../src/shared/platform-source.js');
+    expect(normalizePlatformSource('legacy-agy-tool')).toBe('legacy-agy-tool');
+    expect(normalizePlatformSource('agyle')).toBe('agyle');
+  });
+
+  it('gives the source a badge colour in the viewer and on Observation TV', () => {
+    const viewer = readFileSync(join(import.meta.dir, '../src/ui/viewer-template.html'), 'utf-8');
+    const tv = readFileSync(join(import.meta.dir, '../src/ui/tv.html'), 'utf-8');
+    expect(viewer).toContain('.source-antigravity-cli {');
+    expect(viewer).toContain('[data-theme="dark"] .source-antigravity-cli {');
+    expect(tv).toContain("'antigravity-cli': '#0284c7'");
+  });
+});
+
 describe('antigravityCliAdapter - formatOutput (strict protojson stdout)', () => {
   it('emits {"decision":"allow"} for a PreToolUse (toolCall, no error)', () => {
     antigravityCliAdapter.normalizeInput({

@@ -77,6 +77,22 @@ export function classifyGeminiError(input: {
     );
   }
 
+  // Google serves the Gemini API in some regions only; elsewhere every request
+  // answers "User location is not supported" (a 400 FAILED_PRECONDITION, or a
+  // 403). No retry helps and the batch is not at fault, so it pauses the way a
+  // refused key does (buffered work kept, one cooldown) and says what to change.
+  if ((status === 400 || status === 403) && lower.includes('location is not supported')) {
+    return new ClassifiedProviderError(
+      `Gemini is not available in this region (status ${status})`,
+      {
+        kind: 'auth_invalid',
+        cause,
+        code: 'location_unsupported',
+        action: 'The Gemini API does not serve this region. Set CLAUDE_MEM_PROVIDER to another provider.',
+      },
+    );
+  }
+
   if (status === 401 || status === 403) {
     // API_KEY_INVALID, PERMISSION_DENIED, etc.
     if (lower.includes('api key not valid') || lower.includes('api_key_invalid') || lower.includes('api key expired')) {
