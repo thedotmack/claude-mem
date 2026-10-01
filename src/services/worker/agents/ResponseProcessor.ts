@@ -1,5 +1,6 @@
 
 import { logger } from '../../../utils/logger.js';
+import { hasStorableTitle } from '../../sqlite/observations/store.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
@@ -507,7 +508,18 @@ export async function processAgentResponse(
     memorySessionId: registeredMemorySessionId
   });
 
-  const labeledObservations = sanitizedObservations.map(obs => ({
+  // Storage skips an observation without a title, and everything after it pairs
+  // parsed observations with stored ids by position (Chroma sync, SSE, alerts,
+  // the brainbeat webhook). Drop them here so one list feeds both sides: a
+  // skipped row in the middle would shift every later id onto the wrong one.
+  const storableObservations = sanitizedObservations.filter(obs => hasStorableTitle(obs.title));
+  if (storableObservations.length < sanitizedObservations.length) {
+    logger.debug('DB', 'Dropped observations without a title before storage', {
+      sessionId: session.sessionDbId,
+      dropped: sanitizedObservations.length - storableObservations.length,
+    });
+  }
+  const labeledObservations = storableObservations.map(obs => ({
     ...obs,
     agent_type: context.pendingAgentType,
     agent_id: context.pendingAgentId
