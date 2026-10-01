@@ -31,6 +31,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
+  ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
   ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
   ${styleText('cyan', 'npx claude-mem version')}              Print version
@@ -53,12 +54,14 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem hook cursor <event>')}    Run Cursor hook forwarding
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
+  ${styleText('cyan', 'npx claude-mem project merge <from> <into> [--dry-run]')}    Fold one project's memory into another (non-destructive, syncs)
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
 
 ${styleText('bold', 'IDE Identifiers')}:
   claude-code, cursor, grok-bot, opencode, openclaw,
-  windsurf, codex-cli, copilot-cli, antigravity, goose,
+  windsurf, codex-cli, kimi, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
 }
@@ -186,6 +189,12 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'prune': {
+      const { runPruneCommand } = await import('./commands/prune.js');
+      await runPruneCommand(args.slice(1));
+      break;
+    }
+
     case 'telemetry': {
       const { runTelemetryCommand } = await import('./commands/telemetry.js');
       await runTelemetryCommand(args.slice(1));
@@ -201,6 +210,15 @@ async function main(): Promise<void> {
     case 'antigravity-cli': {
       const { handleAntigravityCliCommand } = await import('../services/integrations/AntigravityCliHooksInstaller.js');
       const exitCode = await handleAntigravityCliCommand(args[1]?.toLowerCase(), args.slice(2));
+      if (typeof exitCode === 'number') {
+        process.exit(exitCode);
+      }
+      break;
+    }
+
+    case 'kimi': {
+      const { handleKimiCommand } = await import('../services/integrations/KimiHooksInstaller.js');
+      const exitCode = await handleKimiCommand(args[1]?.toLowerCase(), args.slice(2));
       if (typeof exitCode === 'number') {
         process.exit(exitCode);
       }
@@ -234,6 +252,12 @@ async function main(): Promise<void> {
     case 'adopt': {
       const { runAdoptCommand } = await import('./commands/runtime.js');
       runAdoptCommand(args.slice(1));
+      break;
+    }
+
+    case 'project': {
+      const { runProjectCommand } = await import('./commands/runtime.js');
+      runProjectCommand(args.slice(1));
       break;
     }
 

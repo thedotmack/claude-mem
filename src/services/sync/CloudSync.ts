@@ -41,11 +41,10 @@
 // before acknowledgment state changes and enters the normal backoff path.
 
 import type { Database } from 'bun:sqlite';
-import { existsSync, readFileSync } from 'fs';
 import { hostname } from 'os';
 import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import {
@@ -59,6 +58,7 @@ import {
   type CanonicalWireOp,
   type ContentKind,
 } from './CanonicalContent.js';
+import { PROMPT_TEXT_COLUMNS_SQL, clampPromptTextForSync } from './prompt-text-clamp.js';
 import {
   classifySyncAuthFailure,
   friendlySyncError,
@@ -422,6 +422,9 @@ const KINDS: KindSpec[] = [
     // `unknown` sentinel because canonical v2 requires it. session_db_id NEVER travels (a
     // device-local rowid, re-resolved on apply).
     //
+    // prompt_text is bounded at the SELECT, never after it: a pasted multi-MB
+    // prompt must not cross the FFI boundary in full (prompt-text-clamp.ts).
+    //
     // ACCEPTED LIMITATION (join-field drift): the body embeds JOINED session
     // fields, but the op's rev covers only the prompt row itself — a later
     // change to the owning session (e.g. a project remap) does not bump
@@ -431,8 +434,7 @@ const KINDS: KindSpec[] = [
     selectSql: `
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
         up.content_session_id AS content_session_id,
-        up.prompt_number AS prompt_number,
-        up.prompt_text AS prompt_text,
+        up.prompt_number AS prompt_number,${PROMPT_TEXT_COLUMNS_SQL},
         up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
@@ -442,8 +444,7 @@ const KINDS: KindSpec[] = [
     selectOneSql: `
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
         up.content_session_id AS content_session_id,
-        up.prompt_number AS prompt_number,
-        up.prompt_text AS prompt_text,
+        up.prompt_number AS prompt_number,${PROMPT_TEXT_COLUMNS_SQL},
         up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
@@ -452,7 +453,7 @@ const KINDS: KindSpec[] = [
     toBody: (r) => ({
       content_session_id: r.content_session_id ?? null,
       prompt_number: decimalPayload(r.prompt_number, 'prompt_number'),
-      prompt_text: r.prompt_text ?? null,
+      prompt_text: clampPromptTextForSync(r.prompt_text, r.prompt_text_head),
       created_at: r.created_at ?? null,
       created_at_epoch: decimalPayload(r.created_at_epoch, 'created_at_epoch'),
       memory_session_id: r.memory_session_id ?? null,
@@ -2039,18 +2040,11 @@ export class CloudSync {
 
   // Same read-mutate-write pattern as SettingsRoutes.handleUpdateSettings.
   private persistDeviceId(deviceId: string): void {
-    let settings: Record<string, unknown>;
-    if (existsSync(this.settingsPath)) {
-      settings = parseJsonWithBom<Record<string, unknown>>(readFileSync(this.settingsPath, 'utf-8'));
-    } else {
-      settings = { ...SettingsDefaultsManager.getAllDefaults() };
-    }
-    // Settings files are flat post-migration, but tolerate the legacy nested
-    // {env:{...}} shape rather than writing a mixed schema.
-    const target = settings.env && typeof settings.env === 'object'
-      ? settings.env as Record<string, unknown>
-      : settings;
-    target.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID = deviceId;
-    writeJsonFileAtomic(this.settingsPath, settings);
+    const result = updateSettingsDocument(
+      this.settingsPath,
+      { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: deviceId },
+      SettingsDefaultsManager.getAllDefaults(),
+    );
+    if (result.status === 'refused') throw result.error instanceof Error ? result.error : new Error(String(result.error));
   }
 }

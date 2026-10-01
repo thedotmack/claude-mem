@@ -101,7 +101,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'days_since_last_obs',
   // search_performed retrieval quality — result_count is an integer,
   // chroma_available a boolean, fallback_reason one of OUR enum values
-  // (none | chroma_connection | chroma_error | chroma_not_initialized).
+  // (none | chroma_connection | chroma_error | chroma_not_initialized | chroma_zero_results).
   // Never the query, never an error message.
   'result_count',
   'chroma_available',
@@ -109,7 +109,8 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // session_compressed trust signals — booleans, counters, and our own
   // closed enums (invalid_output_class: xml | idle | prose, where 'xml' means
   // XML-shaped output that still failed to parse; abort_reason:
-  // idle | shutdown | overflow | restart_guard | quota | provider_switch | none).
+  // idle | shutdown | overflow | restart_guard | quota | rate_limit | auth |
+  // provider_switch | deadline_exceeded | output_retry | drift | none).
   // Never model output, never raw abort strings.
   'invalid_output_class',
   'consecutive_invalid_outputs',
@@ -134,9 +135,9 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'threshold_tripped',
   // usage_limit_hit — the SDK's rate_limit_info projected to closed enums:
   // limit_window (five_hour | seven_day | seven_day_opus | seven_day_sonnet |
-  // overage | unknown), overage_status (allowed | allowed_warning | rejected |
-  // unknown), a boolean, and whole minutes until the window resets. Never the
-  // provider's limit message text.
+  // seven_day_overage_included | overage | unknown), overage_status (allowed |
+  // allowed_warning | rejected | unknown), a boolean, and whole minutes until
+  // the window resets. Never the provider's limit message text.
   'limit_window',
   'overage_status',
   'is_using_overage',
@@ -176,8 +177,14 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_ok',
   'outcomes_error',
   'outcomes_aborted',
+  // Integer subset of outcomes_aborted: turns abandoned at the LLM deadline.
+  'outcomes_aborted_deadline_exceeded',
   'outcomes_invalid_output',
   'top_model',
+  // top_abort_reason: the dominant normalized abort_reason among the session's
+  // aborted turns (same closed enum as abort_reason above). Present only when a
+  // turn aborted; never a raw abort string.
+  'top_abort_reason',
   // Observed-session identity (NOT the observer): the model id the user's IDE
   // session ran (from its transcript) and a closed-enum billing posture
   // (max | pro | team | enterprise | subscription | api_key | bedrock | vertex | foundry | unknown).

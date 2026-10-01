@@ -5,6 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'url';
+import { allowScriptsMap } from './postinstall-allowlist.js';
+import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -96,13 +98,18 @@ const TRANSCRIPT_WATCHER = {
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
  * "Spawn-Contract Resolution".
  */
+// Claude Code's UserPromptSubmit timeout (seconds). It must stay above the
+// session-init budget (HOOK_TIMEOUTS.SESSION_INIT_REQUEST, 10 s by default;
+// CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS allows up to 14 s) plus hook startup (#3434).
+const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
+
 function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
   const claudeHook = (tail, extra = {}) => buildShellCommand({
     host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
+    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', failOpen: true, ...extra,
   });
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
@@ -131,7 +138,10 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         // the top of every session. Let `start` speak for itself.
         'SessionStart.0.0': claudeHook(['start']),
         'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
-        'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
+        'UserPromptSubmit.0.0': {
+          command: claudeHook(['hook', 'claude-code', 'session-init']),
+          timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
+        },
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
@@ -225,7 +235,7 @@ async function verifyShellTemplateCanonical() {
           entry.command = expectedCommand;
           dirty = true;
         }
-        if (typeof expected !== 'string') {
+        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'commandWindows')) {
           const actualWindows = entry?.commandWindows ?? null;
           if (actualWindows !== expected.commandWindows) {
             if (!writeMode || !entry) {
@@ -237,6 +247,17 @@ async function verifyShellTemplateCanonical() {
             entry.commandWindows = expected.commandWindows;
             dirty = true;
           }
+        }
+        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'timeout')
+          && entry?.timeout !== expected.timeout) {
+          if (!writeMode || !entry) {
+            throw new Error(
+              `Hand-edited timeout detected in ${filePath} (${dottedPath}). It no longer matches scripts/build-hooks.js. ` +
+              `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+            );
+          }
+          entry.timeout = expected.timeout;
+          dirty = true;
         }
       }
     }
@@ -331,6 +352,11 @@ async function buildHooks() {
       trustedDependencies: [
         'tree-sitter-cli'
       ],
+      // npm 11.16+ runs dependency install scripts only for packages listed in
+      // `allowScripts` — npm's counterpart to bun's `trustedDependencies` above.
+      // Sourced from scripts/postinstall-allowlist.js so it can never drift from
+      // the CI guard.
+      allowScripts: allowScriptsMap(),
       engines: {
         node: '>=20.12.0',
         bun: '>=1.1.31'
@@ -365,6 +391,8 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
         'cohere-ai',
         'ollama',
@@ -480,6 +508,8 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
       ],
       define: {
@@ -735,18 +765,8 @@ async function buildHooks() {
         fs.mkdirSync(opencodeOutDir, { recursive: true });
       }
       await build({
-        entryPoints: ['src/integrations/opencode-plugin/index.ts'],
-        bundle: true,
-        platform: 'node',
-        target: 'node18',
-        format: 'esm',
+        ...OPENCODE_PLUGIN_BUILD_OPTIONS,
         outfile: `${opencodeOutDir}/index.js`,
-        minify: true,
-        logLevel: 'error',
-        external: [
-          'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
-          'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
-        ],
       });
 
       const opencodeStats = fs.statSync(`${opencodeOutDir}/index.js`);

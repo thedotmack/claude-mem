@@ -17,6 +17,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSyn
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { loadFromFileOnce } from './hook-settings.js';
+import { viewerBaseUrl } from './viewer-url.js';
+import { relayedLine, relayedLink } from './relayed-text.js';
 import { logger } from '../utils/logger.js';
 
 export interface ObserverHealthState {
@@ -69,6 +71,12 @@ export interface ObserverHealthState {
 export interface ObserverQuotaCooldown {
   active: boolean;
   provider: string;
+  /**
+   * 'claude' only: the config-dir profile (Claude account) the breaker pauses.
+   * A reader shows the pause only while that account is selected
+   * (quota-cooldown's cooldownAppliesToCurrentAccount).
+   */
+  profile?: string;
   /** Epoch ms when the breaker was armed. */
   armedAt: number;
   /** Epoch ms when the next probe is allowed. */
@@ -77,6 +85,13 @@ export interface ObserverQuotaCooldown {
   window?: string;
   /** Provider-reported reason, already free of any user prompt text. */
   message?: string;
+  /**
+   * Where memory capture runs while this provider is held: the configured
+   * quota fallback, or the recovered primary when the fallback's own breaker
+   * is the one mirrored. Absent when no fallback is configured or nothing
+   * else can serve; the notice then says capture is paused.
+   */
+  servingProvider?: string;
 }
 
 /**
@@ -298,10 +313,12 @@ export function recordObserverQuotaCooldown(
       quotaCooldown: {
         active: true,
         provider: cooldown.provider,
+        ...(cooldown.profile ? { profile: cooldown.profile } : {}),
         armedAt: cooldown.armedAt,
         until: cooldown.until,
         ...(cooldown.window ? { window: cooldown.window } : {}),
         ...(cooldown.message ? { message: scrubErrorMessage(cooldown.message) } : {}),
+        ...(cooldown.servingProvider ? { servingProvider: cooldown.servingProvider } : {}),
       },
     }, filePath);
   });
@@ -319,8 +336,12 @@ export function clearObserverQuotaCooldown(
 }
 
 export function isObserverUnhealthy(state: ObserverHealthState | null): state is ObserverHealthState {
+  // The threshold lets a blip self-heal before it warns. A refused credential
+  // is not a blip — the provider said so — and the cooldown armed with it
+  // allows no second attempt for a while, so waiting for the threshold would
+  // hide the one remedy (a new key) for over an hour.
   return state !== null
-    && state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD
+    && (state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD || isAuthFailure(state))
     && (state.lastErrorAt ?? 0) > (state.lastSuccessAt ?? 0);
 }
 
@@ -334,13 +355,16 @@ export function describeDuration(ms: number): string {
 }
 
 /**
- * Where the one-click restart lives. Read through hook-settings rather than
- * worker-utils' getWorkerPort: this module is imported by hooks as well as the
- * worker, and must not drag in the supervisor, telemetry and process-management
- * tree just to format a URL.
+ * Where the one-click restart lives: the same base the viewer is printed at, so
+ * it stays reachable when the worker runs behind a port-forward
+ * (`CLAUDE_MEM_PUBLIC_URL`). Read through hook-settings rather than
+ * worker-utils: this module is imported by hooks as well as the worker, and
+ * must not drag in the supervisor, telemetry and process-management tree just
+ * to format a URL.
  */
 export function workerRestartUrl(): string {
-  return `http://localhost:${loadFromFileOnce().CLAUDE_MEM_WORKER_PORT}/restart`;
+  const settings = loadFromFileOnce();
+  return `${viewerBaseUrl(settings.CLAUDE_MEM_WORKER_PORT, settings.CLAUDE_MEM_PUBLIC_URL)}/restart`;
 }
 
 /**
@@ -364,6 +388,78 @@ export function workerRestartUrl(): string {
  */
 export function isQuotaFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'quota_exhausted';
+}
+
+/** True when the current outage is the provider refusing the observer's credential. */
+export function isAuthFailure(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'auth_invalid';
+}
+
+/**
+ * How old a quota failure has to be before the banner stops asserting it as a
+ * present fact.
+ *
+ * The number is `QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS` from `quota-cooldown.ts`,
+ * copied rather than imported because that module imports this one. The test
+ * suite asserts the two agree, so the copy cannot drift.
+ *
+ * Reusing that window rather than inventing a "provider reset interval" is the
+ * point: it is already this codebase's answer to "long enough that a reset (or
+ * a plan upgrade) is picked up". Once the breaker itself would let a probe
+ * through, a recorded failure has stopped being evidence of a present outage —
+ * it is the last thing we know, not the current state.
+ */
+export const OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS = 30 * 60_000;
+
+/** True once the recorded failure is at least one recheck window old. */
+function hasOutlivedRecheckWindow(state: ObserverHealthState, nowMs: number): boolean {
+  const lastErrorAt = state.lastErrorAt;
+  // `>=`, not `>`: `isObserverQuotaCooldownActive` calls the cooldown expired
+  // at `until > nowMs`, so at exactly the recheck interval the breaker has
+  // already released. A strict `>` left one instant where the breaker was
+  // open and the banner still called the outage current.
+  return lastErrorAt !== null && nowMs - lastErrorAt >= OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
+}
+
+/**
+ * True when a quota outage is old enough that it may well be over.
+ *
+ * `observer-health.json` only heals as a side effect of the next SUCCESSFUL
+ * generation, and that cannot happen until traffic arrives — which is after
+ * SessionStart has already read the file. So the first session following any
+ * recovered outage is guaranteed to read a stale ledger, however long ago the
+ * allowance reset (#4083: a 63-hour-old error rendered as a live outage while
+ * the worker stored observations four minutes later in the same session).
+ *
+ * Only failures that clear on their own age out: this one and a deadline
+ * expiry (isDeadlineFailureStale). A bad key or a missing base URL stays true
+ * until someone fixes it, so its banner should keep saying so.
+ */
+export function isQuotaFailureStale(
+  state: ObserverHealthState,
+  nowMs: number = Date.now(),
+): boolean {
+  return isQuotaFailure(state) && hasOutlivedRecheckWindow(state, nowMs);
+}
+
+/**
+ * True when a deadline outage — requests running past CLAUDE_MEM_LLM_TIMEOUT_MS
+ * with nothing stored — is old enough that it may well be over.
+ *
+ * The #4083 trap again: a slow or stalled backend recovers on its own, but the
+ * ledger only heals on the next save, which comes after SessionStart has read
+ * it. The window is the quota one: once nothing has re-tested the backend for
+ * that long, the expiry is the last thing we know, not the current state; if it
+ * is still slow, the next expiry restores the full warning. The code is
+ * provider-errors' DEADLINE_EXCEEDED_CODE, compared as a literal like
+ * 'model_unavailable' below so this module stays free of worker imports. Any
+ * other transient failure never reaches the ledger.
+ */
+export function isDeadlineFailureStale(
+  state: ObserverHealthState,
+  nowMs: number = Date.now(),
+): boolean {
+  return state.lastErrorCode === 'deadline_exceeded' && hasOutlivedRecheckWindow(state, nowMs);
 }
 
 /**
@@ -397,7 +493,16 @@ export function renderObserverQuotaCooldownNotice(
     ? `${new Date(until).toISOString()} (${describeDuration(Math.max(0, until - nowMs))} from now)`
     : 'the next probe window';
   const windowText = cooldown?.window ? ` (${cooldown.window})` : '';
-  const message = cooldown?.message ? scrubErrorMessage(cooldown.message) : null;
+
+  // Another provider is serving: nothing is paused, so none of the pause copy
+  // below applies — least of all "do not restart", advice about a problem
+  // that is not happening. No primary/fallback wording: the held provider can
+  // be either one.
+  if (cooldown?.servingProvider) {
+    return `ℹ️ claude-mem's ${provider} provider is in a quota cooldown${windowText}; memory capture continues on ${cooldown.servingProvider} until it clears at ${untilText}.`;
+  }
+
+  const message = relayedProviderText(cooldown?.message) || null;
 
   return [
     '⚠️ Heads up: claude-mem is paused while a provider quota cooldown is active.',
@@ -418,6 +523,62 @@ export function renderObserverQuotaCooldownNotice(
   ].join('\n');
 }
 
+/**
+ * The provider's words as the banner may relay them. They come from an error
+ * body and reach model context, so each is one plain bounded line with its
+ * credentials scrubbed, and a link only when approved (relayed-text.ts).
+ */
+function relayedProviderText(text: string | null | undefined): string {
+  return text ? relayedLine(scrubErrorMessage(text)) : '';
+}
+
+/** The latest error plus the classified remedy, shared by every warning shape. */
+function renderFailureDetailLines(state: ObserverHealthState, action: string | null): string[] {
+  const link = relayedLink(state.lastErrorUrl);
+  const requestId = relayedLine(state.lastErrorRequestId);
+  return [
+    `Latest error: ${relayedProviderText(state.lastErrorMessage) || 'unknown'}`,
+    ...(action ? [`What to do: ${action}`] : []),
+    ...(link ? [`Link: ${link}`] : []),
+    ...(requestId ? [`Request id: ${requestId}`] : []),
+  ];
+}
+
+/**
+ * The note for a failure that clears on its own, once nothing has re-tested it
+ * (isQuotaFailureStale, isDeadlineFailureStale). Same facts, stated as what
+ * they are: the last thing we know, not the current state. No "nothing will be
+ * remembered", because that would be a claim about right now that nothing has
+ * checked; and no instruction to lead the reply with an outage report, because
+ * the likeliest case by far is that the condition cleared and capture is
+ * working.
+ */
+function renderLastKnownFailureNote(
+  state: ObserverHealthState,
+  nowMs: number,
+  action: string | null,
+  shape: { failedWith: string; remedyLabel: string; recovery: string },
+): string {
+  const provider = state.lastErrorProvider ?? 'unknown provider';
+  const age = state.lastErrorAt ? describeDuration(nowMs - state.lastErrorAt) : 'an unknown time';
+  const link = relayedLink(state.lastErrorUrl);
+  return [
+    `ℹ️ claude-mem: the memory observer last failed with ${shape.failedWith} on`,
+    `${provider}, ${age} ago. Nothing has re-tested it since — the health ledger only`,
+    'updates on the next successful save, which happens after this message is written.',
+    '',
+    `Last error: ${relayedProviderText(state.lastErrorMessage) || 'unknown'}`,
+    ...(action ? [`${shape.remedyLabel}: ${action}`] : []),
+    ...(link ? [`Link: ${link}`] : []),
+    '',
+    `${shape.recovery}, so memory capture may already be working. If it is`,
+    'not, the next failed save brings the full warning back.',
+    '',
+    '(Assistant: do not open your reply with this. Mention it only if the user asks why',
+    'something was not remembered, or if a later message reports a save failing.)',
+  ].join('\n');
+}
+
 export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: number = Date.now()): string {
   const since = state.failingSinceAt ?? state.lastErrorAt;
   const sinceText = since
@@ -425,7 +586,22 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     : 'for an unknown amount of time';
   const provider = state.lastErrorProvider ?? 'unknown provider';
   const count = state.consecutiveFailures;
-  const action = state.lastErrorAction ? scrubErrorMessage(state.lastErrorAction) : null;
+  const action = relayedProviderText(state.lastErrorAction) || null;
+
+  if (isQuotaFailureStale(state, nowMs)) {
+    return renderLastKnownFailureNote(state, nowMs, action, {
+      failedWith: 'a spent allowance',
+      remedyLabel: 'If it is still spent',
+      recovery: 'Allowances reset on their own',
+    });
+  }
+  if (isDeadlineFailureStale(state, nowMs)) {
+    return renderLastKnownFailureNote(state, nowMs, action, {
+      failedWith: 'requests running past their deadline',
+      remedyLabel: 'If it is still slow',
+      recovery: 'A slow backend usually recovers on its own',
+    });
+  }
 
   // A spent allowance is the one outage a restart cannot clear. Worse, the
   // restart link is the code path that clears the quota breaker (the process
@@ -439,10 +615,7 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       '',
       `The memory observer's allowance on ${provider} is used up (since ${sinceText.replace(/^for .*?\(since /, '').replace(/\)$/, '')}).`,
       '',
-      `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
-      ...(action ? [`What to do: ${action}`] : []),
-      ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
-      ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+      ...renderFailureDetailLines(state, action),
       '',
       "Until the allowance resets or you add capacity, nothing from this session — or any",
       'other — will be remembered.',
@@ -461,15 +634,57 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     ].join('\n');
   }
 
+  // A retired or unknown model is the other outage a restart cannot clear:
+  // every fresh generator asks for the same model and gets the same refusal.
+  // Only changing the model fixes it, so relay that remedy, not a restart link.
+  if (state.lastErrorCode === 'model_unavailable') {
+    return [
+      "⚠️ Heads up: claude-mem can't save memories right now.",
+      '',
+      `The memory observer (provider: ${provider}) has failed ${count} time${count === 1 ? '' : 's'} in a row ${sinceText}: its configured model is no longer available.`,
+      '',
+      ...renderFailureDetailLines(state, action),
+      '',
+      "Until the model is changed, nothing from this session — or any other — will be remembered.",
+      '',
+      'Restarting will NOT help here: after a restart the observer asks for the same model',
+      'and gets the same refusal.',
+      '',
+      '(Assistant: tell the user about this outage at the very start of your first reply,',
+      'quoting the error and the "What to do" line above. Do NOT suggest restarting the worker.)',
+    ].join('\n');
+  }
+
+  // A refused credential cannot be cleared by a restart either: the provider
+  // rejected the key (or the account), and nothing is wedged. Relay the
+  // provider's remedy instead of offering a restart that changes nothing.
+  if (isAuthFailure(state)) {
+    return [
+      "⚠️ Heads up: claude-mem can't save memories right now.",
+      '',
+      `The memory observer's credentials have been refused by ${provider} ${sinceText}.`,
+      '',
+      ...renderFailureDetailLines(state, action),
+      '',
+      "Until that's fixed, nothing from this session — or any other — will be remembered.",
+      '',
+      'Restarting will NOT help here: the provider refused the credentials, so nothing is broken to restart.',
+      ...(action ? [] : [
+        "Check the observer provider's API key in ~/.claude-mem/settings.json, or switch the",
+        'observer to another provider there.',
+      ]),
+      '',
+      '(Assistant: tell the user about this outage at the very start of your first reply,',
+      'quoting the error above. Do NOT restart the worker and do NOT suggest restarting it.)',
+    ].join('\n');
+  }
+
   const lines = [
     "⚠️ Heads up: claude-mem can't save memories right now.",
     '',
     `The memory observer (provider: ${provider}) has failed ${count} time${count === 1 ? '' : 's'} in a row ${sinceText}.`,
     '',
-    `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
-    ...(action ? [`What to do: ${action}`] : []),
-    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
-    ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+    ...renderFailureDetailLines(state, action),
     '',
     "Until it's fixed, nothing from this session — or any other — will be remembered.",
     '',

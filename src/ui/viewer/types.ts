@@ -1,6 +1,7 @@
 export interface Observation {
   id: number;
   memory_session_id: string;
+  content_session_id: string;
   project: string;
   merged_into_project?: string | null;
   platform_source: string;
@@ -41,72 +42,24 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
+export interface SessionCatalogEntry {
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  custom_title: string | null;
+  started_at_epoch: number;
+  item_count: number;
+}
+
 export type FeedItem =
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
-export interface GeminiModelInfo {
-  id: string;
-  displayName: string;
-  category: 'pro' | 'flash' | 'gemma' | 'omni' | 'lite';
-  rank: number;
-  rpmLimit: number;
-  tpmLimit: number;
-  rpdLimit: number;
-  contextWindow: number;
-  outputLimit: number;
-  description?: string;
-  isPerpetualAlias?: boolean;
-  isPreview?: boolean;
-}
-
-export interface ModelUsageState {
-  rpmUsed: number;
-  rpmLimit: number;
-  tpmUsed: number;
-  tpmLimit: number;
-  rpdUsed: number;
-  rpdLimit: number;
-  status: 'active' | 'ready' | 'cooldown' | 'exhausted' | 'unsupported';
-  cooldownUntilMs?: number;
-  cooldownReason?: string;
-  totalRequestsServed: number;
-}
-
-export interface GeminiRateLimitsStatus {
-  provider: 'gemini';
-  activeModel: string;
-  autoFallback: boolean;
-  models: Record<string, ModelUsageState>;
-  cascade: GeminiModelInfo[];
-  queue: {
-    depth: number;
-    isProcessing: boolean;
-    isWaitingForQuota: boolean;
-    quotaWaitRemainingMs: number;
-    lastEvent?: string;
-  };
-  lastUpdated: number;
-  lastSwitchEvent?: {
-    fromModel: string;
-    toModel: string;
-    reason: string;
-    timestamp: number;
-  };
-}
+export type FeedItemType = 'observation' | 'summary' | 'prompt';
 
 export interface StreamEvent {
-  type:
-    | 'initial_load'
-    | 'new_observation'
-    | 'new_summary'
-    | 'new_prompt'
-    | 'processing_status'
-    | 'gemini_status_update'
-    | 'gemini_model_switched'
-    | 'gemini_queue_paused'
-    | 'gemini_queue_resumed';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status' | 'item_deleted' | 'session_deleted';
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
@@ -116,7 +69,11 @@ export interface StreamEvent {
   prompt?: UserPrompt;
   isProcessing?: boolean;
   queueDepth?: number;
-  data?: any;
+  itemType?: FeedItemType;
+  id?: number;
+  /** session_deleted */
+  platformSource?: string;
+  contentSessionId?: string;
 }
 
 export interface ProjectCatalog {
@@ -128,18 +85,28 @@ export interface ProjectCatalog {
 export interface Settings {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES?: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
 
   CLAUDE_MEM_PROVIDER?: string;  
   CLAUDE_MEM_GEMINI_API_KEY?: string;
+  CLAUDE_MEM_GEMINI_API_KEYS?: string;
   CLAUDE_MEM_GEMINI_MODEL?: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED?: string;  
-  CLAUDE_MEM_GEMINI_AUTO_FALLBACK?: string;  
   CLAUDE_MEM_OPENROUTER_API_KEY?: string;
+  CLAUDE_MEM_OPENROUTER_API_KEYS?: string;
+  CLAUDE_MEM_OPENROUTER_BASE_URL?: string;
   CLAUDE_MEM_OPENROUTER_MODEL?: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL?: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_PRESET?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_API_KEY?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_API_KEYS?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL?: string;
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL?: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER?: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_MODEL?: string;
 
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;
