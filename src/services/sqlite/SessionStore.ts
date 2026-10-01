@@ -15,7 +15,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
-import { computeObservationContentHash } from './observations/store.js';
+import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -35,6 +35,7 @@ import {
   type DedupRuntimeConfig,
 } from './dedup-store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
+import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
@@ -3477,7 +3478,7 @@ export class SessionStore {
     // storeObservations skips empty-title rows, which would leave no id to return here.
     // This wrapper stores exactly one observation, so require a title up front rather than
     // returning an undefined id.
-    if (!observation.title || observation.title.trim() === '') {
+    if (!hasStorableTitle(observation.title)) {
       throw new Error('storeObservation requires a non-empty title');
     }
 
@@ -3619,15 +3620,20 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
-        // Skip observations with an empty title. They're malformed, low-signal rows that
-        // just take up space in the recency-based recall window without adding any facts.
-        if (!observation.title || observation.title.trim() === '') {
+        // Skip observations with an empty title (see hasStorableTitle). The worker
+        // drops them before calling, so its stored ids stay paired by position.
+        if (!hasStorableTitle(observation.title)) {
           logger.debug('DB', 'Skipping observation with empty title');
           continue;
         }
 
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-        const titleNormKey = computeTitleNormKey(project, sessionPlatform, observation.title);
+        const titleNormKey = computeTitleNormKey(
+          project,
+          sessionPlatform,
+          observation.title,
+          isSubagentEvent(observation.agent_id, observation.agent_type)
+        );
 
         // Tier-0 (#3038): cross-session normalized-title duplicate (incl. earlier items
         // in THIS batch — already inserted and visible in-transaction) → bump + reuse.

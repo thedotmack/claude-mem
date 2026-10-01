@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { mainAgentRowSql } from '../../src/shared/subagent-predicate.js';
 
 const ENV_KEYS = ['CLAUDE_MEM_DEDUP_ENABLED', 'CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS'] as const;
 const saved: Record<string, string | undefined> = {};
@@ -27,6 +28,24 @@ describe('storeObservation dedup integration (#3038)', () => {
   }
   const rowCount = (project = 'p') => (store.db.prepare('SELECT COUNT(*) c FROM observations WHERE project = ?').get(project) as any).c;
   const candCount = () => (store.db.prepare('SELECT COUNT(*) c FROM observation_dedup_candidates').get() as any).c;
+
+  it('Tier-0 keeps main-agent and subagent rows apart, so main-agent work never hides in a subagent row (#3310)', () => {
+    process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
+    const t = Date.now();
+    const sub = store.storeObservation(session('s1'), 'p', { ...obs('Fixed the flaky test'), agent_id: 'agent-1', agent_type: 'Explore' }, 1, 0, t);
+    const main = store.storeObservation(session('s2'), 'p', obs('fixed the flaky test.'), 1, 0, t + 1000);
+    expect(main.id).not.toBe(sub.id);
+    expect(main.mergedIntoExisting).toBe(false);
+    // What SessionStart reads with CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY=true.
+    const mainAgentIds = (store.db.prepare(`SELECT id FROM observations o WHERE ${mainAgentRowSql('o')}`).all() as { id: number }[]).map(r => r.id);
+    expect(mainAgentIds).toEqual([main.id]);
+
+    // Same scope still merges: another subagent, and a transcript-watch row (agent id alone = main agent).
+    const sub2 = store.storeObservation(session('s3'), 'p', { ...obs('FIXED the flaky test!'), agent_id: 'agent-2', agent_type: 'Plan' }, 1, 0, t + 2000);
+    expect(sub2.id).toBe(sub.id);
+    const seat = store.storeObservation(session('s4'), 'p', { ...obs('Fixed the flaky test'), agent_id: 'seat-1' }, 1, 0, t + 3000);
+    expect(seat.id).toBe(main.id);
+  });
 
   it('Tier-0: collapses a normalized-equal title across sessions and bumps occurrence_count', () => {
     process.env.CLAUDE_MEM_DEDUP_ENABLED = 'true';
