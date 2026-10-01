@@ -31,6 +31,7 @@ import {
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
+import { describeObserverOutputShape, formatEmptyOutputReason } from '../../sdk/output-classifier.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveSummaryTierModel, resolveTierAlias } from './model-aliases.js';
 import { accumulateClaudeUsage, observerUsageLogFields } from './observer-usage.js';
@@ -389,6 +390,9 @@ export class ClaudeProvider {
       // without one still needs the idle hand-off, otherwise the claimed batch
       // is left dangling for session teardown to discard.
       let turnDispatchedText = false;
+      // Shape of the turn's last textless frame (block kinds only, never
+      // content), so an idle hand-off can say WHY the turn was empty (#3454).
+      let turnEmptyOutputReason: string | undefined;
       // One re-queue per generator pass for a batch a failed turn never read.
       let retriedAfterErrorResult = false;
       // The MEMORY_ID_CAPTURED/CHANGED line is a spawn-health signal for log
@@ -507,6 +511,7 @@ export class ClaudeProvider {
           const hasTextBlock = Array.isArray(content)
             ? content.some((c: any) => c?.type === 'text')
             : typeof content === 'string';
+          const emptyOutputReason = formatEmptyOutputReason(describeObserverOutputShape(content));
           const textContent = Array.isArray(content)
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
@@ -536,6 +541,7 @@ export class ClaudeProvider {
           }
 
           if (!hasTextBlock) {
+            turnEmptyOutputReason = emptyOutputReason;
             logger.debug('SDK', 'Assistant frame carried no text block, leaving queued batch intact', {
               sessionId: session.sessionDbId,
               promptNumber: session.lastPromptNumber,
@@ -577,7 +583,8 @@ export class ClaudeProvider {
               'SDK',
               cwdTracker.lastCwd,
               modelId,
-              activeResponseContext.current
+              activeResponseContext.current,
+              emptyOutputReason
             );
           } finally {
             pacer.processingFinished();
@@ -670,7 +677,8 @@ export class ClaudeProvider {
                   'SDK',
                   cwdTracker.lastCwd,
                   modelId,
-                  activeResponseContext.current
+                  activeResponseContext.current,
+                  turnEmptyOutputReason ?? 'no-content-blocks'
                 );
               } finally {
                 pacer.processingFinished();
@@ -683,6 +691,7 @@ export class ClaudeProvider {
             retriedAfterErrorResult = false;
           }
           turnDispatchedText = false;
+          turnEmptyOutputReason = undefined;
           // The result frame is the one turn boundary every outcome passes
           // through — XML, empty/prose, and the failed-turn re-queue above,
           // which never reaches processAgentResponse. Opening the feed per text
