@@ -909,12 +909,9 @@ export class WorkerService implements WorkerRef {
       return;
     }
 
-    const allowCodexTranscriptIngestion = settings.CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION === 'true';
-    const skipSubagentObservations = settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS === 'true';
     const { config: transcriptConfig, scoped, removed } = scopeNativeHookBackedCodexWatches(
       loadTranscriptWatchConfig(configPath),
-      allowCodexTranscriptIngestion,
-      skipSubagentObservations,
+      settings,
     );
     const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
 
@@ -926,9 +923,9 @@ export class WorkerService implements WorkerRef {
       });
     }
     if (removed > 0) {
-      logger.info('TRANSCRIPT', 'Skipped Codex transcript watch: native hooks own top-level sessions and subagent observations are off', {
+      logger.info('TRANSCRIPT', 'Skipped Codex transcript watch: native hooks own top-level sessions; Codex subagent capture is opt-in', {
         removed,
-        setting: 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS',
+        subagentOptInSetting: 'CLAUDE_MEM_CODEX_SUBAGENT_INGESTION=true',
       });
     }
 
