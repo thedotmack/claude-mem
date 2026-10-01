@@ -44,6 +44,19 @@ describe('dedup-scan: backfill + sweep (#3038)', () => {
     expect(docCount()).toBe(3);
   });
 
+  it('backfill keys a subagent row apart from a main-agent row with the same title (#3310)', () => {
+    seed(['Fixed The Flaky Test', 'fixed the flaky test!']);
+    const [mainRow, subRow] = store.db.prepare('SELECT id FROM observations ORDER BY id').all() as { id: number }[];
+    store.db.prepare("UPDATE observations SET agent_id = 'agent-1', agent_type = 'Explore' WHERE id = ?").run(subRow.id);
+
+    backfillProjectDedup(store.db, 'p');
+
+    const keyOf = (id: number) => (store.db.prepare('SELECT title_norm_key FROM observations WHERE id = ?').get(id) as any).title_norm_key;
+    expect(keyOf(mainRow.id)).toBe(computeTitleNormKey('p', 'claude', 'Fixed The Flaky Test'));
+    expect(keyOf(subRow.id)).toBe(computeTitleNormKey('p', 'claude', 'Fixed The Flaky Test', true));
+    expect(keyOf(subRow.id)).not.toBe(keyOf(mainRow.id));
+  });
+
   it('sweep finds an existing reorder near-dup and persists a review-only candidate', () => {
     seed([
       'alpha bravo charlie', 'delta echo foxtrot', 'golf hotel india',
