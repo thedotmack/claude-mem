@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { REQUIRED_PROMPT_KEYS, validateMode } from '../../src/services/domain/mode-validation.js';
@@ -8,9 +9,7 @@ const projectRoot = path.resolve(import.meta.dir, '../..');
 const tempDirs: string[] = [];
 
 function makeTempDir(): string {
-  const scratchDir = path.join(projectRoot, '.agent-jobs');
-  mkdirSync(scratchDir, { recursive: true });
-  const dir = mkdtempSync(path.join(scratchDir, 'mode-manager-'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'claude-mem-mode-manager-'));
   tempDirs.push(dir);
   return dir;
 }
