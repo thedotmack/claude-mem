@@ -1,5 +1,20 @@
-import { zstdDecompressSync } from 'node:zlib';
+import * as zlib from 'node:zlib';
 import { logger } from '../../utils/logger.js';
+
+type ZstdDecompressSync = (data: Uint8Array) => Buffer;
+
+// zlib.zstdDecompressSync exists only on newer runtimes (Node 22.15+, recent
+// Bun). A named import would fail the whole transcript-watcher module at load
+// on an older one, so it is looked up at call time instead.
+function zstdDecompressor(): ZstdDecompressSync | undefined {
+  const candidate = (zlib as unknown as { zstdDecompressSync?: unknown }).zstdDecompressSync;
+  return typeof candidate === 'function' ? (candidate as ZstdDecompressSync) : undefined;
+}
+
+/** Whether this runtime can decode Zstandard frames at all. */
+export function isZstdSupported(): boolean {
+  return zstdDecompressor() !== undefined;
+}
 
 /**
  * Zstandard frame utilities for concatenated-frame session containers.
@@ -94,7 +109,9 @@ export function scanZstdFrames(buffer: Buffer, maxFrames = Number.POSITIVE_INFIN
  */
 export function decompressZstdFrame(buffer: Buffer, frame: ZstdFrameRange): string {
   try {
-    const decoded = zstdDecompressSync(buffer.subarray(frame.start, frame.end));
+    const decompress = zstdDecompressor();
+    if (!decompress) throw new Error('this runtime cannot decode Zstandard (zlib.zstdDecompressSync is missing)');
+    const decoded = decompress(buffer.subarray(frame.start, frame.end));
     return decoded.toString('utf8');
   } catch (error) {
     logger.warn('TRANSCRIPT', 'Failed to decompress Zstandard frame', {
@@ -104,17 +121,4 @@ export function decompressZstdFrame(buffer: Buffer, frame: ZstdFrameRange): stri
     });
     throw error;
   }
-}
-
-/**
- * Decompress the complete frames of a concatenated-frame container and return
- * the concatenated plaintext. Torn (incomplete) trailing frames are skipped.
- */
-export function decompressZstdContainer(buffer: Buffer): string {
-  const { frames } = scanZstdFrames(buffer);
-  const parts: string[] = [];
-  for (const frame of frames) {
-    parts.push(decompressZstdFrame(buffer, frame));
-  }
-  return parts.join('');
 }

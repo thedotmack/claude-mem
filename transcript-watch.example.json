@@ -174,7 +174,8 @@
     {
       "name": "dsh",
       "path": "~/.dsh/sessions",
-      "schema": "dsh"
+      "schema": "dsh",
+      "startAtEnd": true
     }
   ],
   "stateFile": "~/.claude-mem/transcript-watch-state.json"

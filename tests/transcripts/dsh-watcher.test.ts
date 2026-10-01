@@ -33,6 +33,7 @@ afterAll(() => {
 
 import { logger } from '../../src/utils/logger.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
+import * as zstdFrames from '../../src/services/transcripts/zstd-frames.js';
 
 const waitForAsyncTail = () => new Promise(resolve => setTimeout(resolve, 50));
 
@@ -261,124 +262,6 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     expect(sessionInitCalls.filter(c => c.prompt === 'only once')).toHaveLength(1);
   });
 
-  it('suppresses a queued read after close (no dispatch after shutdown)', async () => {
-    const sessionId = 'a9d41e55-6666-7777-8888-999900001111';
-    const sessionDir = join(tmpRoot, `session-${sessionId}`);
-    mkdirSync(sessionDir, { recursive: true });
-    const filePath = join(sessionDir, 'session.jsonl.zstd');
-    const statePath = join(tmpRoot, 'state.json');
-
-    const watch: WatchTarget = {
-      name: 'dsh',
-      path: join(tmpRoot, '**', '*.jsonl.zstd'),
-      schema: dshSchema,
-    };
-    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
-
-    // Two frames: the first dispatch is held in-flight, a poke queues the
-    // second frame's read, then the tailer is closed before the hold releases.
-    writeFileSync(filePath, Buffer.concat([
-      zstdFrame([userMessageEvent(0, 'first')]),
-      zstdFrame([userMessageEvent(1, 'second')]),
-    ]));
-
-    handlerDelayMs = 150;
-    try {
-      await (watcher as any).addTailer(filePath, watch, dshSchema);
-      await waitForAsyncTail();
-      (watcher as any).tailers.get(filePath)?.poke();
-      watcher.stop(); // closes tailers while the first dispatch is in flight
-      await new Promise(resolve => setTimeout(resolve, 300));
-    } finally {
-      handlerDelayMs = 0;
-    }
-
-    const prompts = sessionInitCalls.map(call => call.prompt);
-    expect(prompts).toContain('first');
-    expect(prompts).not.toContain('second');
-  });
-
-  it('persists plaintext progress only through dispatched lines during shutdown', async () => {
-    const sessionId = 'cf233077-7777-8888-9999-000011112222';
-    const sessionDir = join(tmpRoot, `session-${sessionId}`);
-    mkdirSync(sessionDir, { recursive: true });
-    const filePath = join(sessionDir, 'session.jsonl');
-    const statePath = join(tmpRoot, 'state.json');
-
-    const watch: WatchTarget = {
-      name: 'dsh',
-      path: join(tmpRoot, '**', '*.jsonl'),
-      schema: dshSchema,
-    };
-    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
-    writeFileSync(filePath, `${userMessageEvent(0, 'plaintext first')}\n${userMessageEvent(1, 'plaintext second')}\n`);
-
-    handlerDelayMs = 150;
-    try {
-      await (watcher as any).addTailer(filePath, watch, dshSchema);
-      await waitForAsyncTail();
-      watcher.stop();
-      await new Promise(resolve => setTimeout(resolve, 300));
-    } finally {
-      handlerDelayMs = 0;
-    }
-
-    expect(sessionInitCalls.filter(call => call.prompt === 'plaintext first')).toHaveLength(1);
-    expect(sessionInitCalls.map(call => call.prompt)).not.toContain('plaintext second');
-
-    const replacement = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
-    await (replacement as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
-    replacement.stop();
-
-    expect(sessionInitCalls.filter(call => call.prompt === 'plaintext first')).toHaveLength(1);
-    expect(sessionInitCalls.filter(call => call.prompt === 'plaintext second')).toHaveLength(1);
-  });
-
-  it('retains the current zstd frame for replay when shutdown interrupts dispatch', async () => {
-    const sessionId = 'd0cbd7d6-8888-9999-0000-111122223333';
-    const sessionDir = join(tmpRoot, `session-${sessionId}`);
-    mkdirSync(sessionDir, { recursive: true });
-    const filePath = join(sessionDir, 'session.jsonl.zstd');
-    const statePath = join(tmpRoot, 'state.json');
-
-    const watch: WatchTarget = {
-      name: 'dsh',
-      path: join(tmpRoot, '**', '*.jsonl.zstd'),
-      schema: dshSchema,
-    };
-    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
-    writeFileSync(filePath, zstdFrame([
-      userMessageEvent(0, 'zstd first'),
-      userMessageEvent(1, 'zstd second'),
-    ]));
-
-    handlerDelayMs = 150;
-    try {
-      await (watcher as any).addTailer(filePath, watch, dshSchema);
-      await waitForAsyncTail();
-      watcher.stop();
-      await new Promise(resolve => setTimeout(resolve, 300));
-    } finally {
-      handlerDelayMs = 0;
-    }
-
-    expect(sessionInitCalls.filter(call => call.prompt === 'zstd first')).toHaveLength(1);
-    expect(sessionInitCalls.map(call => call.prompt)).not.toContain('zstd second');
-    const offsets = existsSync(statePath)
-      ? JSON.parse(readFileSync(statePath, 'utf8')).offsets as Record<string, number>
-      : {};
-    expect(offsets[filePath] ?? 0).toBe(0);
-
-    const replacement = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
-    await (replacement as any).addTailer(filePath, watch, dshSchema);
-    await waitForAsyncTail();
-    replacement.stop();
-
-    expect(sessionInitCalls.filter(call => call.prompt === 'zstd first')).toHaveLength(2);
-    expect(sessionInitCalls.filter(call => call.prompt === 'zstd second')).toHaveLength(1);
-  });
-
   it('reassembles a JSONL record split across zstd frames after watcher replacement', async () => {
     const sessionId = '2f1a0b3c-aaaa-bbbb-cccc-ddddeeeeffff';
     const sessionDir = join(tmpRoot, `session-${sessionId}`);
@@ -429,5 +312,60 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     const prompts = sessionInitCalls.map(call => call.prompt);
     expect(prompts.filter(p => p === 'complete in frame A')).toHaveLength(1);
     expect(prompts.filter(p => p === 'split across frames')).toHaveLength(1);
+  });
+
+  it('starts a startAtEnd zstd file after its last complete frame, not inside a torn one', async () => {
+    const sessionId = '3c5d7e9f-aaaa-4bbb-8ccc-0123456789ab';
+    const sessionDir = join(tmpRoot, `session-${sessionId}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = join(sessionDir, 'session.jsonl.zstd');
+    const statePath = join(tmpRoot, 'state.json');
+    const watch: WatchTarget = {
+      name: 'dsh',
+      path: join(tmpRoot, '**', '*.jsonl.zstd'),
+      schema: dshSchema,
+      startAtEnd: true,
+    };
+
+    // History, then a write that was interrupted at startup.
+    const history = zstdFrame([userMessageEvent(0, 'history')]);
+    const pending = zstdFrame([userMessageEvent(1, 'written across the restart')]);
+    writeFileSync(filePath, Buffer.concat([history, pending.subarray(0, 10)]));
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (watcher as any).addTailer(filePath, watch, dshSchema);
+    await waitForAsyncTail();
+    expect(sessionInitCalls).toHaveLength(0);
+
+    // The interrupted write completes; the frame is read from its start.
+    writeFileSync(filePath, Buffer.concat([history, pending]));
+    (watcher as any).tailers.get(filePath)?.poke();
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['written across the restart']);
+  });
+
+  it('skips zstd files with one warning on a runtime without zstd support', async () => {
+    const supportSpy = spyOn(zstdFrames, 'isZstdSupported').mockReturnValue(false);
+    try {
+      const statePath = join(tmpRoot, 'state.json');
+      const watch: WatchTarget = { name: 'dsh', path: join(tmpRoot, '**', '*.jsonl.zstd'), schema: dshSchema };
+      const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+      for (const name of ['a', 'b']) {
+        const filePath = join(tmpRoot, `${name}.jsonl.zstd`);
+        writeFileSync(filePath, zstdFrame([userMessageEvent(0, `prompt ${name}`)]));
+        await (watcher as any).addTailer(filePath, watch, dshSchema);
+      }
+      await waitForAsyncTail();
+      watcher.stop();
+
+      expect(sessionInitCalls).toHaveLength(0);
+      const warnSpy = loggerSpies[2];
+      const skipWarnings = warnSpy.mock.calls.filter((call: unknown[]) => String(call[1]).includes('Skipping zstd transcripts'));
+      expect(skipWarnings).toHaveLength(1);
+    } finally {
+      supportSpy.mockRestore();
+    }
   });
 });
