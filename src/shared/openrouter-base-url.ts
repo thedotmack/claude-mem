@@ -86,3 +86,20 @@ export function resolveOpenRouterChatCompletionsUrl(baseUrl: string | undefined 
 
   return url.href;
 }
+
+/**
+ * True only when the URL hostname is exactly `openrouter.ai`.
+ *
+ * Path text and lookalike hosts must not inherit OpenRouter-only behavior —
+ * the `models`/`usage` body fields (strict OpenAI-compatible gateways 400 on
+ * those) or the retired-default settings migration. Malformed URLs fail closed
+ * (treat as non-OpenRouter). Shared by the worker request body,
+ * `session.endpointClass` and SettingsDefaultsManager so the sites cannot drift.
+ */
+export function isOpenRouterApiUrl(apiUrl: string): boolean {
+  try {
+    return new URL(apiUrl).hostname.toLowerCase() === 'openrouter.ai';
+  } catch {
+    return false;
+  }
+}

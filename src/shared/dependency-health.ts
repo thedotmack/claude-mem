@@ -2,7 +2,7 @@ export type DependencyStatusKind =
   | 'setup_required'
   | 'vector_search_unavailable';
 
-export type DependencyName = 'claude_cli' | 'uvx' | 'chroma';
+export type DependencyName = 'claude_cli' | 'observer_dir' | 'uvx' | 'chroma';
 
 export interface DependencyStatus {
   dependency: DependencyName;
@@ -17,6 +17,17 @@ export const CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS = 30_000;
 export const CLAUDE_CLI_SETUP_REMEDIATION =
   'Install or update Claude Code CLI, then restart claude-mem. Try `claude update`, ' +
   '`npm install -g @anthropic-ai/claude-code@latest`, or set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json.';
+
+export const OBSERVER_DIR_SETUP_REMEDIATION =
+  'Make the claude-mem data directory (CLAUDE_MEM_DATA_DIR, ~/.claude-mem by default) a writable directory: ' +
+  'not a file, and not on a read-only volume. The next captured event checks it again.';
+
+/**
+ * Code on the classified `setup_required` error for a Claude observer working
+ * directory that cannot be created (ensureObserverSessionsDir), so the failure
+ * is booked under 'observer_dir' rather than as a missing Claude CLI.
+ */
+export const OBSERVER_DIR_UNUSABLE_CODE = 'observer_dir_unusable';
 
 export const UVX_VECTOR_SEARCH_REMEDIATION =
   'Install uv/uvx and make uvx visible to the worker PATH, then restart claude-mem. ' +
@@ -52,6 +63,21 @@ export function recordDependencyStatus(
 
 export function recordClaudeCliSetupRequired(message: string): DependencyStatus {
   return recordDependencyStatus('claude_cli', 'setup_required', message, CLAUDE_CLI_SETUP_REMEDIATION);
+}
+
+/**
+ * Book a Claude generator start that failed on setup under what is actually
+ * missing, so the recheck before the next start probes that and the
+ * remediation names it. An unusable observer working directory is not a
+ * Claude CLI problem: booked as one, the CLI probe passed, the status cleared,
+ * and every recheck spawned a generator (and read the keychain) only to fail
+ * on the directory again (#4117).
+ */
+export function recordClaudeSetupRequired(error: { message: string; code?: string }): DependencyStatus {
+  if (error.code === OBSERVER_DIR_UNUSABLE_CODE) {
+    return recordDependencyStatus('observer_dir', 'setup_required', error.message, OBSERVER_DIR_SETUP_REMEDIATION);
+  }
+  return recordClaudeCliSetupRequired(error.message);
 }
 
 export function recordUvxVectorSearchUnavailable(message: string): DependencyStatus {

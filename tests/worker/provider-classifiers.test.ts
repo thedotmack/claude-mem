@@ -56,6 +56,68 @@ describe('classifyGeminiError', () => {
     expect(err.retryAfterMs).toBe(5000);
   });
 
+  // Gemini answers a momentary throttle and a spent allowance with the same
+  // status and the same `RESOURCE_EXHAUSTED` marker, so the two tests above
+  // pass only because their bodies are shapes this endpoint never returns.
+  // The window named in the QuotaFailure is the part that differs, and the two
+  // bodies below are captures from the live endpoint.
+  const quotaFailure = (...quotaIds: string[]) => JSON.stringify({
+    error: {
+      code: 429,
+      status: 'RESOURCE_EXHAUSTED',
+      message: 'You exceeded your current quota, please check your plan and billing details.',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+          violations: quotaIds.map((quotaId) => ({ quotaId })),
+        },
+        {
+          '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+          retryDelay: '6s',
+        },
+      ],
+    },
+  });
+
+  it('classifies a 429 naming only a per-minute window as rate_limit', () => {
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: quotaFailure('GenerateRequestsPerMinutePerProjectPerModel-FreeTier'),
+      cause: new Error('rate limited'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    // The retry hint lives in the body: Google sends no Retry-After here.
+    expect(err.retryAfterMs).toBe(6000);
+  });
+
+  it('classifies a 429 naming a per-day window as quota_exhausted', () => {
+    // A spent day quota lists its per-minute window too; the period window is
+    // what makes it a spent allowance rather than a throttle.
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: quotaFailure(
+        'GenerateRequestsPerMinutePerProjectPerModel-FreeTier',
+        'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+      ),
+      cause: new Error('quota spent'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('treats a 429 it cannot place as a throttle, not a spent allowance', () => {
+    // Defaulting the unplaceable case to `rate_limit` is deliberate, and the
+    // asymmetry is the whole point: a throttle misread as a spent allowance
+    // costs a half-hour outage that repeats on every expiry, while a spent
+    // allowance misread as a throttle costs a few probes the breaker's next
+    // refusal corrects.
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: 'RESOURCE_EXHAUSTED',
+      cause: new Error('resource exhausted'),
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
   it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
     const err = classifyGeminiError({
       status: 500,
@@ -159,6 +221,32 @@ describe('classifyOpenRouterError', () => {
     expect(err.retryAfterMs).toBe(10_000);
   });
 
+  // A 429 naming a daily limit lasts until the day turns over. As a rate limit
+  // it would hold only the short throttle window and probe every ninety
+  // seconds until then.
+  it('classifies the free-models-per-day 429 as quota_exhausted', () => {
+    const err = classifyOpenRouterError({
+      status: 429,
+      bodyText: JSON.stringify({ error: {
+        message: 'Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day',
+        code: 429,
+      } }),
+      headers: new Headers(),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('keeps the free-models-per-min 429 a rate_limit', () => {
+    const err = classifyOpenRouterError({
+      status: 429,
+      bodyText: JSON.stringify({ error: { message: 'Rate limit exceeded: free-models-per-min.', code: 429 } }),
+      headers: new Headers(),
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
   it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
     const err = classifyOpenRouterError({
       status: 500,
@@ -186,6 +274,32 @@ describe('classifyOpenRouterError', () => {
     expect(err.kind).toBe('auth_invalid');
   });
 
+  // OpenRouter refuses a flagged INPUT with a 403. It says nothing about the
+  // key: the next observation goes through. As auth_invalid it would pause all
+  // memory for a cooldown under "credentials refused".
+  it('classifies a moderation 403 (input flagged) as unrecoverable, not auth_invalid', () => {
+    const err = classifyOpenRouterError({
+      status: 403,
+      bodyText: JSON.stringify({ error: {
+        code: 403,
+        message: 'openai/gpt-4o-mini requires moderation on OpenAI. Your input was flagged for "harassment".',
+        metadata: { reasons: ['harassment'], flagged_input: 'the observed tool output', provider_name: 'OpenAI', model_slug: 'openai/gpt-4o-mini' },
+      } }),
+      cause: new Error('403'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.message).toContain('Your input was flagged');
+  });
+
+  it('keeps a 403 that refuses the key itself as auth_invalid', () => {
+    const err = classifyOpenRouterError({
+      status: 403,
+      bodyText: JSON.stringify({ error: { code: 403, message: 'This API key has been disabled.' } }),
+      cause: new Error('403'),
+    });
+    expect(err.kind).toBe('auth_invalid');
+  });
+
   it('classifies 502 as transient', () => {
     const err = classifyOpenRouterError({
       status: 502,
@@ -199,6 +313,107 @@ describe('classifyOpenRouterError', () => {
     const cause = new Error('ECONNRESET');
     const err = classifyOpenRouterError({ cause });
     expect(err.kind).toBe('transient');
+  });
+
+  it('classifies a 200 body-level litellm parse error as transient (retryable)', () => {
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: '200 Unable to get json response - Expecting value: line 45 column 1',
+      cause: new Error('OpenRouter API error: 200 - Unable to get json response'),
+    });
+    expect(err.kind).toBe('transient');
+  });
+
+  it('classifies the litellm error envelope the query path forwards (numeric code, 200) as transient', () => {
+    const message = 'Unable to get json response - Expecting value: line 45 column 1 (char 44)';
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: JSON.stringify({ error: { code: 200, message } }),
+      cause: new Error(`OpenRouter API error: 200 - ${message}`),
+      requestId: 'or-req-litellm',
+    });
+    expect(err.kind).toBe('transient');
+    expect(err.message).toBe(`OpenRouter transient upstream parse failure (status 200): ${message}`);
+    expect(err.requestId).toBe('or-req-litellm');
+  });
+
+  it('classifies litellm "expecting value" markers as transient regardless of a non-standard status', () => {
+    const err = classifyOpenRouterError({
+      status: 418,
+      bodyText: 'Expecting value: line 1 column 1 (char 0)',
+      cause: new Error('418'),
+    });
+    expect(err.kind).toBe('transient');
+  });
+
+  it('still classifies a plain 400 bad request as unrecoverable', () => {
+    const err = classifyOpenRouterError({
+      status: 400,
+      bodyText: 'invalid model',
+      cause: new Error('400'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+  });
+
+  // --- Model unavailable (#3659): the configured model id itself is gone ---
+
+  it.each([
+    [404, 'This model has been deprecated. It is recommended to migrate to xiaomi/mimo-v2.5'],
+    [400, 'xiaomi/mimo-v2-flash:free is not a valid model ID'],
+    [404, 'No endpoints found for xiaomi/mimo-v2-flash:free.'],
+  ])('classifies a %i "%s" as model_unavailable with a change-the-model remedy', (status, message) => {
+    const err = classifyOpenRouterError({
+      status,
+      bodyText: JSON.stringify({ error: { message, code: status } }),
+      cause: new Error(String(status)),
+      requestId: 'req-1',
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.code).toBe('model_unavailable');
+    expect(err.message).toBe(`OpenRouter model unavailable (status ${status}): ${message}`);
+    expect(err.action).toContain('CLAUDE_MEM_OPENROUTER_MODEL');
+    expect(err.url).toBe('https://openrouter.ai/models');
+    expect(err.requestId).toBe('req-1');
+  });
+
+  it('classifies a model deprecation inside a 200 error envelope as model_unavailable', () => {
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: JSON.stringify({ error: { message: 'This model has been deprecated', code: 404 } }),
+      cause: new Error('200 error envelope'),
+    });
+    expect(err.code).toBe('model_unavailable');
+  });
+
+  it('keeps an unrelated 400/404 a plain bad request', () => {
+    const unrelated = classifyOpenRouterError({
+      status: 400,
+      bodyText: JSON.stringify({ error: { message: 'Input required: specify "prompt" or "messages"', code: 400 } }),
+      cause: new Error('400'),
+    });
+    expect(unrelated.kind).toBe('unrecoverable');
+    expect(unrelated.code).toBeUndefined();
+    expect(unrelated.message).toContain('bad request');
+
+    // Free-model privacy settings, not a missing model: the upstream message
+    // already carries its own remedy link.
+    const dataPolicy = classifyOpenRouterError({
+      status: 404,
+      bodyText: JSON.stringify({ error: { message: 'No endpoints found matching your data policy (Free model publication). Configure: https://openrouter.ai/settings/privacy', code: 404 } }),
+      cause: new Error('404'),
+    });
+    expect(dataPolicy.code).toBeUndefined();
+    expect(dataPolicy.message).toContain('bad request');
+  });
+
+  it('only reads model-unavailable phrasing on a 400/404 or a 200 envelope', () => {
+    const upstream = classifyOpenRouterError({
+      status: 503,
+      bodyText: 'No endpoints found for vendor/model.',
+      cause: new Error('503'),
+    });
+    expect(upstream.kind).toBe('transient');
+    expect(upstream.code).toBeUndefined();
   });
 
   // --- Gateway taxonomy envelope: { error: { code, message, action, url, request_id } } ---
