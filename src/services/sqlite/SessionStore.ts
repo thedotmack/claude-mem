@@ -1,4 +1,4 @@
-import { Database, type SQLQueryBindings } from 'bun:sqlite';
+import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -205,6 +205,8 @@ const REINFORCEMENT_SCHEMA_VERSION = 57;
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
+  /** See cachedStatement. Keyed by SQL text; only fixed SQL ever goes in. */
+  private readonly statementCache = new Map<string, Statement>();
 
   constructor(dbPathOrDb: string | Database = DB_PATH, options: SessionStoreOptions = {}) {
     this.syncOpsEnabled = options.syncOpsEnabled ?? true;
@@ -2431,6 +2433,9 @@ export class SessionStore {
    * (ack lost mid-flight) is ordered before the newer op in the hub log and
    * converges the same way. This bounds the outbox at one
    * set_prompt_session row per prompt regardless of re-registration count.
+   *
+   * Its statements are cached (cachedStatement): requeuePromptSync calls this
+   * once per prompt.
    */
   private enqueueMutationOp(rev: string | number, body: CanonicalMutation): void {
     if (!this.syncOpsEnabled) return;
@@ -2449,7 +2454,7 @@ export class SessionStore {
       // precedent); every writer stores JSON.stringify output. No rev guard:
       // the sync_rev bump above each enqueue makes revs monotonic per
       // target, so the incoming op always supersedes what is queued.
-      this.db.prepare(`
+      this.cachedStatement(`
         DELETE FROM sync_outbox
         WHERE json_valid(body)
           AND json_extract(body, '$.op') = 'set_prompt_session'
@@ -2460,7 +2465,7 @@ export class SessionStore {
         String(body.target?.origin_local_id ?? ''),
       );
     }
-    this.db.prepare(`
+    this.cachedStatement(`
       INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
       VALUES (?, ?, ?, ?)
     `).run(randomUUID(), String(rev), JSON.stringify(body), Date.now());
@@ -2498,7 +2503,9 @@ export class SessionStore {
    */
   private requeuePromptSync(sessionDbId: number): void {
     if (!this.syncOpsEnabled) return;
-    const session = this.db.prepare(`
+    // Cached statements throughout (cachedStatement): this runs on every
+    // session registration, once per prompt inside the loop below.
+    const session = this.cachedStatement(`
       SELECT memory_session_id, project, content_session_id, platform_source
       FROM sdk_sessions WHERE id = ?
     `).get(sessionDbId) as {
@@ -2510,18 +2517,19 @@ export class SessionStore {
     if (!session?.memory_session_id) return;
 
     const tx = this.db.transaction(() => {
-      const prompts = this.db.prepare(`
+      const prompts = this.cachedStatement(`
         SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev FROM user_prompts
         WHERE session_db_id = ? AND origin_device_id IS NULL
       `).all(sessionDbId) as Array<{ id: string; sync_rev: string }>;
       if (prompts.length === 0) return;
 
+      const bumpPromptRev = this.cachedStatement(`
+        UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
+        WHERE id = ? AND origin_device_id IS NULL
+      `);
       for (const prompt of prompts) {
         const nextRev = incrementCanonicalDecimal(prompt.sync_rev);
-        this.db.prepare(`
-          UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
-          WHERE id = ? AND origin_device_id IS NULL
-        `).run(nextRev, prompt.id);
+        bumpPromptRev.run(nextRev, prompt.id);
         this.enqueueMutationOp(nextRev, {
           op: 'set_prompt_session',
           target: { origin_device_id: null, origin_local_id: prompt.id },
@@ -4058,6 +4066,26 @@ export class SessionStore {
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * One prepared statement per SQL text, for this store's hot write paths.
+   *
+   * requeuePromptSync bumps and enqueues once per prompt of a session on every
+   * registration. A fresh `prepare()` per call made a native statement that
+   * lived until GC finalized it, and on long sessions they piled up until
+   * prepare() itself ran out of memory (#3537). bun's own `db.query()` cache is
+   * shared by every caller on the connection and bounded
+   * (Database.MAX_QUERY_CACHE_SIZE, 20 by default), so whether a statement
+   * stays cached there depends on what else ran.
+   */
+  private cachedStatement(sql: string): Statement {
+    let statement = this.statementCache.get(sql);
+    if (!statement) {
+      statement = this.db.prepare(sql);
+      this.statementCache.set(sql, statement);
+    }
+    return statement;
   }
 
   importSdkSession(session: {

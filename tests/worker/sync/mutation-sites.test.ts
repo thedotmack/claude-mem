@@ -11,7 +11,7 @@
 // runOneTimeCwdRemap against a real pending_messages fixture — both open the
 // DB file themselves, exactly as in production.
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -174,6 +174,23 @@ describe('mutation sites', () => {
           content_session_id: 'sess-1',
           platform_source: 'claude',
         });
+      }
+    });
+
+    it('prepares the repair statements once per store, not once per prompt (#3537)', () => {
+      store.updateMemorySessionId(1, 'mem-a');
+      const prepare = spyOn(db, 'prepare');
+      try {
+        // Re-registration re-runs the whole repair: per prompt a rev bump, a
+        // supersede DELETE and an INSERT.
+        store.updateMemorySessionId(1, 'mem-b');
+        const repairPrepares = prepare.mock.calls
+          .map(([sql]) => String(sql))
+          .filter(sql => /sync_outbox|FROM user_prompts|SET sync_rev = \?/.test(sql));
+        expect(repairPrepares).toEqual([]);
+        expect(outboxRows(db).map(op => op.body.fields.memory_session_id)).toEqual(['mem-b', 'mem-b']);
+      } finally {
+        prepare.mockRestore();
       }
     });
 
