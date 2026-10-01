@@ -3,7 +3,9 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { getProjectContext } from '../../utils/project-name.js';
 import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
 
@@ -115,7 +117,8 @@ function buildHookCommand(bunPath: string, workerServicePath: string, eventName:
 
   const hookCommand = eventToCommand[eventName] ?? 'observation';
 
-  return `"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
+  const callOperator = process.platform === 'win32' ? '& ' : '';
+  return `${callOperator}"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
 }
 
 function mergeAndWriteHooksJson(
@@ -128,7 +131,7 @@ function mergeAndWriteHooksJson(
   let existingConfig: WindsurfHooksJson = { hooks: {} };
   if (existsSync(WINDSURF_HOOKS_JSON_PATH)) {
     try {
-      existingConfig = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
+      existingConfig = parseJsonWithBom<WindsurfHooksJson>(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
       if (!existingConfig.hooks) {
         existingConfig.hooks = {};
       }
@@ -228,7 +231,7 @@ Next steps:
 
 async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void> {
   const port = getWorkerPort();
-  const projectName = path.basename(workspaceRoot);
+  const projectName = getProjectContext(workspaceRoot).primary;
   let contextGenerated = false;
 
   console.log(`  Generating initial context...`);
@@ -315,7 +318,7 @@ export function uninstallWindsurfHooks(): number {
 }
 
 function removeClaudeMemHookEntries(): void {
-  const parsed = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8')) as Partial<WindsurfHooksJson>;
+  const parsed = parseJsonWithBom<Partial<WindsurfHooksJson>>(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
   const config: WindsurfHooksJson = { hooks: parsed.hooks ?? {} };
 
   for (const eventName of WINDSURF_HOOK_EVENTS) {
@@ -362,7 +365,7 @@ export function checkWindsurfHooksStatus(): number {
 
     let parsedConfig: Partial<WindsurfHooksJson> | null = null;
     try {
-      parsedConfig = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
+      parsedConfig = parseJsonWithBom(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       logger.error('WORKER', 'Unable to parse hooks.json', { path: WINDSURF_HOOKS_JSON_PATH }, normalizedError);

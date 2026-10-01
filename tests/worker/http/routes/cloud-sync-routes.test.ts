@@ -33,6 +33,18 @@ function buildHandler(routes: CloudSyncRoutes): (req: Request, res: Response) =>
   return handler!;
 }
 
+async function invoke(
+  handler: (req: Request, res: Response) => void,
+  req: Partial<Request>,
+  res: Partial<Response>,
+  jsonSpy: ReturnType<typeof mock>,
+): Promise<void> {
+  handler(req as Request, res as Response);
+  for (let index = 0; index < 100 && jsonSpy.mock.calls.length === 0; index++) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+}
+
 describe('CloudSyncRoutes — GET /api/sync/status', () => {
   beforeEach(() => {
     loggerSpies = [
@@ -49,59 +61,80 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     mock.restore();
   });
 
-  it('returns the service status with pending counts when cloud sync is configured', () => {
+  it('performs the authenticated Hub probe even when pending counts are zero', async () => {
     const status: CloudSyncStatus = {
       configured: true,
       deviceId: 'device-fixture',
-      pending: { observations: 3, summaries: 2, prompts: 1 },
+      pending: { observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 },
+      quarantine: { count: 0, latestReason: null },
       lastFlushAt: 1751990400000,
       lastError: null,
+      hub: {
+        checkedAt: 1751990400100,
+        reachable: true,
+        epoch: '10',
+        headSeq: '20',
+        projectedSeq: '20',
+        error: null,
+      },
     };
+    const probe = mock(async () => status);
     const mockDbManager = {
-      getCloudSync: () => ({ status: () => status }),
+      getCloudSync: () => ({ statusWithHubProbe: probe }),
     };
     const handler = buildHandler(new CloudSyncRoutes(mockDbManager as any));
 
     const { req, res, jsonSpy, statusSpy } = createMockReqRes();
-    handler(req as Request, res as Response);
+    await invoke(handler, req, res, jsonSpy);
 
+    expect(probe).toHaveBeenCalledTimes(1);
     expect(jsonSpy).toHaveBeenCalledTimes(1);
     expect(jsonSpy).toHaveBeenCalledWith(status);
     expect(statusSpy).not.toHaveBeenCalled(); // implicit 200
   });
 
-  it('returns {configured: false} with 200 (not 500) when no service exists', () => {
+  it('returns {configured: false} with 200 (not 500) when no service exists', async () => {
     const mockDbManager = {
       getCloudSync: () => null,
     };
     const handler = buildHandler(new CloudSyncRoutes(mockDbManager as any));
 
     const { req, res, jsonSpy, statusSpy } = createMockReqRes();
-    handler(req as Request, res as Response);
+    await invoke(handler, req, res, jsonSpy);
 
     expect(jsonSpy).toHaveBeenCalledTimes(1);
     expect(jsonSpy).toHaveBeenCalledWith({ configured: false });
     expect(statusSpy).not.toHaveBeenCalled(); // no error status set
   });
 
-  it('never leaks the sync token in the response payload', () => {
+  it('surfaces Hub probe failure and never leaks the sync token', async () => {
     const mockDbManager = {
       getCloudSync: () => ({
-        status: () => ({
+        statusWithHubProbe: async () => ({
           configured: true,
           deviceId: 'device-fixture',
-          pending: { observations: 0, summaries: 0, prompts: 0 },
+          pending: { observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 },
+          quarantine: { count: 0, latestReason: null },
           lastFlushAt: null,
           lastError: null,
+          hub: {
+            checkedAt: 1751990400100,
+            reachable: false,
+            epoch: null,
+            headSeq: null,
+            projectedSeq: null,
+            error: 'sync hub status 401: denied',
+          },
         }),
       }),
     };
     const handler = buildHandler(new CloudSyncRoutes(mockDbManager as any));
 
     const { req, res, jsonSpy } = createMockReqRes();
-    handler(req as Request, res as Response);
+    await invoke(handler, req, res, jsonSpy);
 
     const payload = (jsonSpy.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(payload.hub).toMatchObject({ reachable: false, error: 'sync hub status 401: denied' });
     const keys = Object.keys(payload).map(k => k.toLowerCase());
     expect(keys.some(k => k.includes('token'))).toBe(false);
     expect(JSON.stringify(payload).toLowerCase()).not.toContain('token');

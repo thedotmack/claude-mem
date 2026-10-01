@@ -10,8 +10,12 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
+// v1beta is required: the current Gemini 3.x models and the Google-maintained
+// `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
+// models 404 ("no longer available to new users") for freshly created API keys.
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
  * Classify a Gemini fetch failure into ClassifiedProviderError. Called at
@@ -66,9 +70,11 @@ export function classifyGeminiError(input: {
 
   if (status === 400) {
     const category = categorizeGeminiBadRequest(body);
+    // A request too large for the window is fixed by retiring the
+    // conversation, not by the user (#3625).
     return new ClassifiedProviderError(
       `Gemini bad request: ${category}`,
-      { kind: 'unrecoverable', cause },
+      { kind: category === 'context_limit' ? 'context_overflow' : 'unrecoverable', cause },
     );
   }
 
@@ -93,22 +99,22 @@ export function classifyGeminiError(input: {
   );
 }
 
+// Only models currently served to new API keys. The 2.x / 2.0 IDs were removed
+// because Google 404s them for freshly created keys, and bare `gemini-3-flash`
+// (no `-preview`) is not a real ID. `*-latest` are Google-maintained aliases
+// that track the current GA release, so they never go stale on new keys.
 export type GeminiModel =
-  | 'gemini-2.5-flash-lite'
-  | 'gemini-2.5-flash'
-  | 'gemini-2.5-pro'
-  | 'gemini-2.0-flash'
-  | 'gemini-2.0-flash-lite'
-  | 'gemini-3-flash'
+  | 'gemini-flash-latest'
+  | 'gemini-flash-lite-latest'
+  | 'gemini-3.5-flash'
+  | 'gemini-3.1-flash-lite'
   | 'gemini-3-flash-preview';
 
 const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
-  'gemini-2.5-flash-lite': 10,
-  'gemini-2.5-flash': 10,
-  'gemini-2.5-pro': 5,
-  'gemini-2.0-flash': 15,
-  'gemini-2.0-flash-lite': 30,
-  'gemini-3-flash': 10,
+  'gemini-flash-latest': 10,
+  'gemini-flash-lite-latest': 15,
+  'gemini-3.5-flash': 10,
+  'gemini-3.1-flash-lite': 15,
   'gemini-3-flash-preview': 5,
 };
 
@@ -198,6 +204,8 @@ interface GeminiResponse {
         text?: string;
       }>;
     };
+    /** 'STOP', 'MAX_TOKENS', 'SAFETY', … */
+    finishReason?: string;
   }>;
   usageMetadata?: {
     promptTokenCount?: number;
@@ -232,6 +240,10 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
   protected missingApiKeyError(): Error {
     return new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
+  }
+
+  protected resolveContextWindow(config: GeminiConfig): Promise<number> {
+    return resolveContextWindowTokens('gemini', config.model);
   }
 
   protected estimateTokens(text: string): number {
@@ -289,13 +301,22 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return contents;
   }
 
-  protected async query(history: ConversationMessage[], config: GeminiConfig): Promise<ProviderQueryResult> {
-    return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled);
+  protected async query(
+    history: ConversationMessage[],
+    config: GeminiConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+  ): Promise<ProviderQueryResult> {
+    return this.queryGeminiMultiTurn(
+      history, config.apiKey, config.model, config.rateLimitingEnabled, signal, perAttemptTimeoutMs,
+    );
   }
 
   private fetchGenerateContent(
     url: string,
     contents: GeminiContent[],
+    systemInstruction: string | null,
+    maxOutputTokens: number,
     priorRequestId: string | null,
     attemptSignal: AbortSignal
   ): Promise<Response> {
@@ -306,10 +327,12 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
       body: JSON.stringify({
+        // The observer's instructions and schema, anchored (#3868).
+        ...(systemInstruction ? { systemInstruction: { parts: [{ text: systemInstruction }] } } : {}),
         contents,
         generationConfig: {
           temperature: 0.3,  // Lower temperature for structured extraction
-          maxOutputTokens: 4096,
+          maxOutputTokens,
         },
       }),
       signal: attemptSignal,
@@ -320,14 +343,21 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     history: ConversationMessage[],
     apiKey: string,
     model: GeminiModel,
-    rateLimitingEnabled: boolean
+    rateLimitingEnabled: boolean,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
-    const contents = this.conversationToGeminiContents(history);
+    // An observer generation's framing prompt goes out as systemInstruction,
+    // its user request as the first user turn (anchorFraming, #3868).
+    const { system, turns } = this.anchorFraming(history);
+    const contents = this.conversationToGeminiContents(turns);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    const maxOutputTokens = resolveObserverMaxOutputTokens();
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
       turns: history.length,
-      totalChars
+      totalChars,
+      maxOutputTokens,
     });
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
@@ -336,11 +366,13 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     // Track request-id (best-effort dedup) across retries.
     let priorRequestId: string | null = null;
+    // The id of the response actually returned, for the cut-off warning.
+    let finalRequestId: string | undefined;
 
     const data = await withRetry<GeminiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchGenerateContent(url, contents, priorRequestId, attemptSignal);
+        response = await this.fetchGenerateContent(url, contents, system, maxOutputTokens, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         // Network failures, aborts, DNS, etc.
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
@@ -350,6 +382,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       }
 
       const requestId = response.headers.get('x-goog-request-id') ?? response.headers.get('x-request-id');
+      finalRequestId = requestId ?? undefined;
       if (requestId) {
         priorRequestId = requestId;
       } else {
@@ -368,21 +401,38 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       }
 
       return await response.json() as GeminiResponse;
-    }, { label: `Gemini ${model}` });
+    }, { label: `Gemini ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}) });
 
-    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      logger.error('SDK', 'Empty response from Gemini');
-      return { content: '' };
+    const candidate = data.candidates?.[0];
+    const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : undefined;
+    const text = candidate?.content?.parts?.[0]?.text;
+    // MAX_TOKENS: the output-token cap cut the reply off. A block cut mid-tag
+    // never closes, so the parser drops it. Named before the empty-reply exit
+    // so a reply cut off before any text is named too (parity with OpenRouter).
+    if (finishReason === 'MAX_TOKENS') {
+      logger.warn('SDK', 'Gemini reply was cut off at the output-token limit', {
+        model,
+        requestId: finalRequestId,
+        maxTokens: maxOutputTokens,
+        outputTokens: data.usageMetadata?.candidatesTokenCount,
+        contentChars: text?.length ?? 0,
+        messagesInContext: history.length,
+      });
     }
 
-    const content = data.candidates[0].content.parts[0].text;
+    if (!text) {
+      logger.error('SDK', 'Empty response from Gemini');
+      return { content: '', ...(finishReason ? { finishReason } : {}) };
+    }
+
     const tokensUsed = data.usageMetadata?.totalTokenCount;
 
     return {
-      content,
+      content: text,
       tokensUsed,
       inputTokens: data.usageMetadata?.promptTokenCount,
       outputTokens: data.usageMetadata?.candidatesTokenCount,
+      ...(finishReason ? { finishReason } : {}),
     };
   }
 
@@ -392,15 +442,13 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
 
-    const defaultModel: GeminiModel = 'gemini-2.5-flash';
+    const defaultModel: GeminiModel = 'gemini-flash-latest';
     const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
     const validModels: GeminiModel[] = [
-      'gemini-2.5-flash-lite',
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-3-flash',
+      'gemini-flash-latest',
+      'gemini-flash-lite-latest',
+      'gemini-3.5-flash',
+      'gemini-3.1-flash-lite',
       'gemini-3-flash-preview',
     ];
 

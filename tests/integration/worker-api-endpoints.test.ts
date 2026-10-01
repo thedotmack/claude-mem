@@ -24,6 +24,7 @@ import {
 } from '../../src/shared/dependency-health.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+const serialIt = it.serial;
 
 describe('Worker API Endpoints Integration', () => {
   let server: Server;
@@ -50,6 +51,13 @@ describe('Worker API Endpoints Integration', () => {
         authMethod: 'cli',
         lastInteraction: null,
       }),
+      getChromaCrashState: () => ({
+        count: 1,
+        lastExit: { timestamp: '2026-07-23T12:00:00.000Z', code: null, signal: 'SIGSEGV' },
+        chromaMcpVersion: '0.2.6',
+        dependencyOverrides: ['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9'],
+        prewarm: { consecutiveFailures: 0, state: 'ok' },
+      }),
     };
 
     testPort = 40000 + Math.floor(Math.random() * 10000);
@@ -75,7 +83,7 @@ describe('Worker API Endpoints Integration', () => {
 
   describe('Health/Readiness/Version Endpoints', () => {
     describe('GET /api/health', () => {
-      it('should return status, initialized, mcpReady, platform, pid', async () => {
+      serialIt('should return status, initialized, mcpReady, platform, pid', async () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
@@ -92,7 +100,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(typeof body.pid).toBe('number');
       });
 
-      it('should reflect uninitialized state', async () => {
+      serialIt('should reflect uninitialized state', async () => {
         const uninitOptions: ServerOptions = {
           getInitializationComplete: () => false,
           getMcpReady: () => false,
@@ -113,7 +121,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(body.mcpReady).toBe(false);
       });
 
-      it('includes dependency health and stays HTTP 200 for dependency-only degradation', async () => {
+      serialIt('includes dependency health and stays HTTP 200 for dependency-only degradation', async () => {
         recordDependencyStatus(
           'uvx',
           'vector_search_unavailable',
@@ -144,7 +152,7 @@ describe('Worker API Endpoints Integration', () => {
     });
 
     describe('GET /api/readiness', () => {
-      it('should return 200 with status ready when initialized', async () => {
+      serialIt('should return 200 with status ready when initialized', async () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
@@ -156,7 +164,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(body.mcpReady).toBe(true);
       });
 
-      it('should return 503 with status initializing when not ready', async () => {
+      serialIt('should return 503 with status initializing when not ready', async () => {
         const uninitOptions: ServerOptions = {
           getInitializationComplete: () => false,
           getMcpReady: () => false,
@@ -179,7 +187,7 @@ describe('Worker API Endpoints Integration', () => {
     });
 
     describe('GET /api/version', () => {
-      it('should return version string', async () => {
+      serialIt('should return version string', async () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
@@ -193,7 +201,7 @@ describe('Worker API Endpoints Integration', () => {
     });
 
     describe('GET /api/settings/dependency-health', () => {
-      it('passes through WorkerService initialization guard while initialization is incomplete', async () => {
+      serialIt('passes through WorkerService initialization guard while initialization is incomplete', async () => {
         recordDependencyStatus(
           'claude_cli',
           'setup_required',
@@ -229,7 +237,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   describe('Error Handling', () => {
-    it('includes dependency health in admin doctor output', async () => {
+    serialIt('includes dependency health in admin doctor output', async () => {
       recordDependencyStatus(
         'claude_cli',
         'setup_required',
@@ -255,10 +263,17 @@ describe('Worker API Endpoints Integration', () => {
           },
         ],
       });
+      expect(body.health.chroma).toEqual({
+        count: 1,
+        lastExit: { timestamp: '2026-07-23T12:00:00.000Z', code: null, signal: 'SIGSEGV' },
+        chromaMcpVersion: '0.2.6',
+        dependencyOverrides: ['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9'],
+        prewarm: { consecutiveFailures: 0, state: 'ok' },
+      });
     });
 
     describe('404 Not Found', () => {
-      it('should return 404 for unknown GET routes', async () => {
+      serialIt('should return 404 for unknown GET routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
@@ -270,7 +285,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(body.error).toBe('NotFound');
       });
 
-      it('should return 404 for unknown POST routes', async () => {
+      serialIt('should return 404 for unknown POST routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
@@ -283,7 +298,7 @@ describe('Worker API Endpoints Integration', () => {
         expect(response.status).toBe(404);
       });
 
-      it('should return 404 for nested unknown routes', async () => {
+      serialIt('should return 404 for nested unknown routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
         await server.listen(testPort, '127.0.0.1');
@@ -294,7 +309,7 @@ describe('Worker API Endpoints Integration', () => {
     });
 
     describe('Method handling', () => {
-      it('should handle OPTIONS requests', async () => {
+      serialIt('should handle OPTIONS requests', async () => {
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
 
@@ -307,7 +322,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   describe('Content-Type Handling', () => {
-    it('should accept application/json content type', async () => {
+    serialIt('should accept application/json content type', async () => {
       server = new Server(mockOptions);
       server.finalizeRoutes();
       await server.listen(testPort, '127.0.0.1');
@@ -321,7 +336,7 @@ describe('Worker API Endpoints Integration', () => {
       expect(response.status).toBe(404);
     });
 
-    it('should return JSON responses with correct content type', async () => {
+    serialIt('should return JSON responses with correct content type', async () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
@@ -333,7 +348,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   describe('Server State Management', () => {
-    it('should track initialization state dynamically', async () => {
+    serialIt('should track initialization state dynamically', async () => {
       let initialized = false;
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => initialized,
@@ -356,7 +371,7 @@ describe('Worker API Endpoints Integration', () => {
       expect(response.status).toBe(200);
     });
 
-    it('should track MCP ready state dynamically', async () => {
+    serialIt('should track MCP ready state dynamically', async () => {
       let mcpReady = false;
       const dynamicOptions: ServerOptions = {
         getInitializationComplete: () => true,
@@ -383,7 +398,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   describe('Server Lifecycle', () => {
-    it('should start listening on specified port', async () => {
+    serialIt('should start listening on specified port', async () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
@@ -392,7 +407,7 @@ describe('Worker API Endpoints Integration', () => {
       expect(httpServer!.listening).toBe(true);
     });
 
-    it('should close gracefully', async () => {
+    serialIt('should close gracefully', async () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
@@ -411,7 +426,7 @@ describe('Worker API Endpoints Integration', () => {
       }
     });
 
-    it('should handle port conflicts', async () => {
+    serialIt('should handle port conflicts', async () => {
       server = new Server(mockOptions);
       const server2 = new Server(mockOptions);
 
@@ -425,7 +440,7 @@ describe('Worker API Endpoints Integration', () => {
       }
     });
 
-    it('should allow restart on same port after close', async () => {
+    serialIt('should allow restart on same port after close', async () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
@@ -451,7 +466,7 @@ describe('Worker API Endpoints Integration', () => {
   });
 
   describe('Route Registration', () => {
-    it('should register route handlers', () => {
+    serialIt('should register route handlers', () => {
       server = new Server(mockOptions);
 
       const setupRoutesMock = mock(() => {});
@@ -465,7 +480,7 @@ describe('Worker API Endpoints Integration', () => {
       expect(setupRoutesMock).toHaveBeenCalledWith(server.app);
     });
 
-    it('should register multiple route handlers', () => {
+    serialIt('should register multiple route handlers', () => {
       server = new Server(mockOptions);
 
       const handler1Mock = mock(() => {});

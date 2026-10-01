@@ -1,14 +1,21 @@
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
+import { resolveHookProjectPath } from '../../utils/project-name.js';
 
 const MAX_AGENT_FIELD_LEN = 128;
 const pickAgentField = (v: unknown): string | undefined =>
   typeof v === 'string' && v.length > 0 && v.length <= MAX_AGENT_FIELD_LEN ? v : undefined;
+const pickStringField = (v: unknown): string | undefined =>
+  typeof v === 'string' ? v : undefined;
 
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
-    const cwd = r.cwd ?? process.cwd();
+    const inputCwd = r.cwd ?? process.cwd();
+    if (!isValidCwd(inputCwd)) {
+      throw new AdapterRejectedInput('invalid_cwd');
+    }
+    const cwd = resolveHookProjectPath(inputCwd);
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
@@ -19,7 +26,15 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolName: r.tool_name,
       toolInput: r.tool_input,
       toolResponse: r.tool_response,
+      toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
+      // stop_hook_active is deliberately not mapped. Claude Code sets it once a
+      // Stop hook has blocked the stop and Claude kept working. claude-mem's
+      // Stop hook never blocks (it always exits 0 with continue: true), so the
+      // flag can only come from another plugin and never marks a loop
+      // claude-mem must break. Honoring it (#3168) dropped the summary and the
+      // advisor capture for every turn after such a hook fired.
+      reason: pickStringField(r.reason),
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),
     };

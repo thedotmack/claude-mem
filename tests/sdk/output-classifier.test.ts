@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
+  describeObserverOutputShape,
+  formatEmptyOutputReason,
+  isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
+  isTransportFailureObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
 
@@ -63,6 +68,30 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the wordings Claude Code actually writes on a limit hit', () => {
+    expect(
+      isQuotaLimitedObserverOutput("You've hit your session limit · resets 5:50pm (America/Los_Angeles)"),
+    ).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+      ),
+    ).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        "You're out of usage credits. Run /usage-credits to keep using Fable 5 or /model to switch models.",
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat XML that mentions a limit as quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        '<observation><title>Hit the session limit while testing</title></observation>',
+      ),
+    ).toBe(false);
+  });
+
   it('does not treat context-window prose as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput('I hit the context window and cannot produce valid XML.'),
@@ -71,6 +100,76 @@ describe('isQuotaLimitedObserverOutput', () => {
 
   it('does not treat ordinary observer prose as quota prose', () => {
     expect(isQuotaLimitedObserverOutput('No observations to record.')).toBe(false);
+  });
+});
+
+describe('isAuthFailureObserverOutput', () => {
+  it('detects common authentication-failure prose', () => {
+    expect(isAuthFailureObserverOutput('Failed to authenticate. API Error: 401')).toBe(true);
+    expect(isAuthFailureObserverOutput('Authentication failed with HTTP 403.')).toBe(true);
+    expect(isAuthFailureObserverOutput('Authentication failure; please run /login.')).toBe(true);
+    expect(isAuthFailureObserverOutput('Please run /login to authenticate again.')).toBe(true);
+    expect(isAuthFailureObserverOutput('Authentication required, run /login to continue.')).toBe(true);
+    expect(isAuthFailureObserverOutput('401 Unauthorized')).toBe(true);
+    expect(isAuthFailureObserverOutput('403 Forbidden')).toBe(true);
+    expect(isAuthFailureObserverOutput('Status: 401')).toBe(true);
+    expect(isAuthFailureObserverOutput('Request failed with 403')).toBe(true);
+  });
+
+  it('does not classify XML, ordinary prose, or unrelated numeric output as auth failure', () => {
+    expect(isAuthFailureObserverOutput('<observation><title>HTTP 401</title></observation>')).toBe(false);
+    expect(isAuthFailureObserverOutput('The request returned 500 and produced no XML.')).toBe(false);
+    expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
+    expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
+    expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isContextOverflowObserverOutput (#3800)', () => {
+  it('recognises the exact wording reported in the field', () => {
+    // The reporter logged this verbatim, 2,264 times in one day.
+    expect(isContextOverflowObserverOutput('Prompt is too long')).toBe(true);
+  });
+
+  it('recognises other provider phrasings of a context-window overflow', () => {
+    expect(isContextOverflowObserverOutput('Input is too long')).toBe(true);
+    expect(isContextOverflowObserverOutput('The conversation is too long.')).toBe(true);
+    expect(isContextOverflowObserverOutput(
+      "This model's maximum context length is 200000 tokens."
+    )).toBe(true);
+    expect(isContextOverflowObserverOutput('context window exceeded')).toBe(true);
+    expect(isContextOverflowObserverOutput(
+      'Your messages exceed the context window for this model.'
+    )).toBe(true);
+    expect(isContextOverflowObserverOutput(
+      'Please reduce the length of the messages and try again.'
+    )).toBe(true);
+  });
+
+  it('does not classify XML output as overflow, even when it discusses long prompts', () => {
+    expect(isContextOverflowObserverOutput(
+      '<observation><title>Prompt is too long</title></observation>'
+    )).toBe(false);
+    expect(isContextOverflowObserverOutput('<skip_summary/>')).toBe(false);
+  });
+
+  it('does not classify empty, unrelated, quota, or auth prose as overflow', () => {
+    expect(isContextOverflowObserverOutput('')).toBe(false);
+    expect(isContextOverflowObserverOutput('   ')).toBe(false);
+    expect(isContextOverflowObserverOutput(42)).toBe(false);
+    expect(isContextOverflowObserverOutput('No observations to record.')).toBe(false);
+    expect(isContextOverflowObserverOutput('The file is too long to read in one go.')).toBe(false);
+    expect(isContextOverflowObserverOutput(
+      'You have reached your Claude usage limit. Try again later.'
+    )).toBe(false);
+    expect(isContextOverflowObserverOutput('Authentication failed; run /login.')).toBe(false);
+  });
+
+  it('is disjoint from the quota and auth classifiers on real overflow text', () => {
+    const overflow = 'Prompt is too long';
+    expect(isContextOverflowObserverOutput(overflow)).toBe(true);
+    expect(isQuotaLimitedObserverOutput(overflow)).toBe(false);
+    expect(isAuthFailureObserverOutput(overflow)).toBe(false);
   });
 });
 
@@ -88,5 +187,442 @@ describe('previewOutput', () => {
 
   it('describes non-string input', () => {
     expect(previewOutput(42)).toContain('non-string');
+  });
+});
+
+describe('isAuthFailureObserverOutput recognises the CLI signed-out wording (#3606)', () => {
+  // Reported from a 25-session fleet: after a reboot logged the default
+  // ~/.claude profile out, every batch came back as this prose. None of the
+  // existing patterns mention it — they all key on the word "authentication" —
+  // so the response fell through to the prose branch, which calls
+  // confirmClaimedMessages. 857 batches were confirmed and dropped over three
+  // hours, and no observation was written.
+  const SIGNED_OUT = [
+    'Not logged in · Please run /login',
+    'Not logged in',
+    'Invalid API key · Please run /login',
+    'Please run /login',
+    // The status line may stand alone, or introduce its remediation.
+    'Not logged in.',
+    'Not logged in: run /login',
+    'Not logged in — Please run /login',
+  ];
+
+  for (const output of SIGNED_OUT) {
+    it(`preserves the batch for: ${output}`, () => {
+      expect(isAuthFailureObserverOutput(output)).toBe(true);
+    });
+  }
+
+  // The same words in a completed observation must stay prose. Preserving a
+  // batch that already succeeded pauses the generator and retries it, so a
+  // false positive here is the mirror of the bug being fixed.
+  const NARRATIVE = [
+    'The observer noted the session was not logged in during the reboot window.',
+    'Please run /login in the observed project instructions.',
+    'The project authentication guide says to run /login before testing.',
+    'Documented that "Not logged in" is the wording the CLI uses when signed out.',
+    // Reported on review: anchoring alone does not separate the CLI's status
+    // line from an observation that OPENS with the same words. Preserving one
+    // of these resets a batch that already succeeded and pauses the generator.
+    'Not logged in during the reboot window; the observer recorded no new findings.',
+    'Not logged in. The observer recorded no new findings for this batch.',
+    'Not logged in sessions were reviewed and the retry path documented.',
+    // Reported on the second review round: a separator after the status is
+    // not enough either, so the status must be the WHOLE response.
+    'Not logged in — the observer recorded nothing new.',
+    'Not logged in: sessions were reviewed and the retry path documented.',
+    'Not logged in · the reboot window is documented in the runbook.',
+  ];
+
+  for (const prose of NARRATIVE) {
+    it(`leaves prose alone: ${prose.slice(0, 45)}…`, () => {
+      expect(isAuthFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  it('still leaves XML alone', () => {
+    expect(isAuthFailureObserverOutput('<observation><title>Not logged in</title></observation>')).toBe(false);
+  });
+});
+
+describe('isTransportFailureObserverOutput (#3752)', () => {
+  it('classifies the CLI error the child returns instead of crashing', () => {
+    // Verbatim from the issue report.
+    expect(isTransportFailureObserverOutput(
+      'API Error: Connection refused - a firewall or proxy may be blocking it (ConnectionRefused)'
+    )).toBe(true);
+  });
+
+  it('classifies the common transport surfaces', () => {
+    expect(isTransportFailureObserverOutput('connect ECONNREFUSED 127.0.0.1:443')).toBe(true);
+    expect(isTransportFailureObserverOutput('getaddrinfo ENOTFOUND api.anthropic.com')).toBe(true);
+    expect(isTransportFailureObserverOutput('fetch failed')).toBe(true);
+    expect(isTransportFailureObserverOutput('Error: socket hang up ECONNRESET')).toBe(true);
+    expect(isTransportFailureObserverOutput('API Error: 503 Service Unavailable')).toBe(true);
+    expect(isTransportFailureObserverOutput('Request failed with 502')).toBe(true);
+  });
+
+  // A false positive requeues the batch AND pauses the generator, so the
+  // detector has to stay off observer narrative that merely discusses network
+  // failure — exactly the kind of thing this project's own observations say.
+  it('does not classify observer prose that merely talks about connectivity', () => {
+    expect(isTransportFailureObserverOutput(
+      'Traced the flake to a proxy that drops idle sockets; the retry now handles the connection reset.'
+    )).toBe(false);
+    expect(isTransportFailureObserverOutput('No observations to record.')).toBe(false);
+    expect(isTransportFailureObserverOutput('')).toBe(false);
+    expect(isTransportFailureObserverOutput(null)).toBe(false);
+  });
+
+  it('does not steal XML output', () => {
+    expect(isTransportFailureObserverOutput(
+      '<observation><title>fetch failed on cold start</title></observation>'
+    )).toBe(false);
+  });
+
+  // 401/403 must keep reaching the auth branch, which gives the user a /login
+  // remediation instead of retrying against a provider that will keep refusing.
+  it('leaves authentication failures to the auth detector', () => {
+    expect(isTransportFailureObserverOutput('API Error: 401 Unauthorized')).toBe(false);
+    expect(isTransportFailureObserverOutput('Authentication failed. Please run /login to authenticate.')).toBe(false);
+  });
+});
+
+
+describe('isTransportFailureObserverOutput rejects narrative (review on #3752)', () => {
+  // The three cases the reviewer reproduced. Each contains a transport term
+  // that an unanchored search matched, and each is an ordinary completed
+  // observation — confirming it is correct, requeueing it is a retry loop.
+  const NARRATIVES = [
+    'The observer noted that fetch failed during the previous deploy and the rollback restored service.',
+    'The observer documented ECONNRESET on the idle pool and the fix that followed.',
+    'The observer recorded that the upstream returned HTTP 503 for four minutes.',
+  ];
+
+  for (const prose of NARRATIVES) {
+    it(`does not classify: ${prose.slice(0, 44)}…`, () => {
+      expect(isTransportFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  it('still classifies the same terms when they lead the response', () => {
+    expect(isTransportFailureObserverOutput('fetch failed')).toBe(true);
+    expect(isTransportFailureObserverOutput('ECONNRESET')).toBe(true);
+    expect(isTransportFailureObserverOutput('HTTP 503 Service Unavailable')).toBe(true);
+    expect(isTransportFailureObserverOutput('503 Service Unavailable')).toBe(true);
+    expect(isTransportFailureObserverOutput('socket hang up')).toBe(true);
+  });
+
+  it('does not classify a narrative that merely opens with the word error', () => {
+    expect(isTransportFailureObserverOutput(
+      'Error handling in the fetch layer was reviewed; no changes were needed.'
+    )).toBe(false);
+  });
+});
+
+describe('isTransportFailureObserverOutput separates envelope from diagnosis (review on #3752)', () => {
+  // `API Error:` is what the CLI prefixes to everything it failed at. It fronts
+  // a dead socket and a rejected request the same way, and the two want
+  // opposite handling: the transport branch resets the claimed batch to pending
+  // and aborts the session for a later retry, which for a request the server
+  // understood and refused is a loop that never terminates.
+  const PERSISTENT = [
+    'API Error: 400 Bad Request',
+    'API Error: invalid model',
+    'API Error: model not found: claude-nonexistent',
+    'HTTP error: 404 Not Found',
+    'Request error: unsupported parameter "max_tokens"',
+    'API Error: 422 Unprocessable Entity',
+  ];
+
+  for (const output of PERSISTENT) {
+    it(`does not requeue a persistent failure: ${output}`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(false);
+    });
+  }
+
+  // The same envelope, now naming a condition that means the request never got
+  // an answer. These must still requeue.
+  const TRANSPORT = [
+    'API Error: Connection refused - a firewall or proxy may be blocking it (ConnectionRefused)',
+    'API Error: fetch failed',
+    'API Error: socket hang up',
+    'HTTP error: ETIMEDOUT',
+    'Request error: getaddrinfo ENOTFOUND api.anthropic.com',
+    'API Error: TLS handshake failed',
+    'API Error: 503 Service Unavailable',
+    'Request error: 502',
+  ];
+
+  for (const output of TRANSPORT) {
+    it(`still requeues: ${output}`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(true);
+    });
+  }
+
+  // The nouns that ARE the condition need no separate diagnosis — but they do
+  // have to be reporting an error rather than naming one.
+  it('keeps the self-describing envelopes free of a condition requirement', () => {
+    expect(isTransportFailureObserverOutput('Fetch error: upstream closed')).toBe(true);
+    expect(isTransportFailureObserverOutput('Network error')).toBe(true);
+    expect(isTransportFailureObserverOutput('Connection error - ECONNRESET')).toBe(true);
+    expect(isTransportFailureObserverOutput('Connection error: peer reset the stream')).toBe(true);
+  });
+
+  // Anchoring does not save the self-describing envelopes: this prose STARTS
+  // with the token. Reported on the first round of this branch, and the whole
+  // reason the report test exists.
+  const ENVELOPE_PROSE = [
+    'Connection error handling was reviewed; no changes were needed.',
+    'Network error recovery is already covered by the retry wrapper.',
+    'Fetch error paths were consolidated into one helper.',
+    'API error handling for connection resets was reviewed.',
+    'Request error messages now include the socket address.',
+  ];
+
+  for (const prose of ENVELOPE_PROSE) {
+    it(`does not requeue completed prose: ${prose.slice(0, 40)}…`, () => {
+      expect(isTransportFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  // Punctuation does not make an envelope a report — the narrative can be
+  // punctuated too. Reported on this branch after the rebase; the unpunctuated
+  // list above was the whole test, so a colon walked straight through it.
+  const PUNCTUATED_ENVELOPE_PROSE = [
+    'Network error: recovery is already covered by the retry wrapper',
+    'Connection error: handling was reviewed, and no changes were needed',
+    'Fetch error: paths were consolidated into one helper',
+    'Network error: connection handling is being refactored this sprint',
+  ];
+
+  for (const prose of PUNCTUATED_ENVELOPE_PROSE) {
+    it(`does not requeue punctuated prose: ${prose.slice(0, 40)}…`, () => {
+      expect(isTransportFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  // The API and bare-`Error:` families had the same hole, and a network
+  // condition did not close it: the generic noun the prose is *about* is the
+  // same noun the condition list is made of.
+  const PUNCTUATED_ENVELOPE_PROSE_WITH_CONDITION = [
+    'API Error: connection handling was reviewed',
+    'HTTP error: the socket timeout has been raised to 30s',
+    'Request error: proxy support was added to the client',
+    'Error: connection pooling is now handled by the driver',
+  ];
+
+  for (const prose of PUNCTUATED_ENVELOPE_PROSE_WITH_CONDITION) {
+    it(`does not requeue an explained condition: ${prose.slice(0, 40)}…`, () => {
+      expect(isTransportFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  // The 5xx path is independent of all of this, which is what makes the clause
+  // test affordable on the API family: a real server failure is still caught
+  // however its prose reads.
+  it('still reports a 5xx behind an API envelope, clause or not', () => {
+    expect(
+      isTransportFailureObserverOutput('API Error: 503 Service Unavailable, the gateway is down')
+    ).toBe(true);
+    expect(isTransportFailureObserverOutput('Request error: 502')).toBe(true);
+  });
+
+  // …and the clause test must not swallow a real failure that happens to be
+  // written as one. A concrete failure word re-admits it; a generic network
+  // noun deliberately does not, since that is what the prose above is made of.
+  it('still reports a clause that names a concrete failure', () => {
+    expect(
+      isTransportFailureObserverOutput('Connection error: the connection was reset by peer')
+    ).toBe(true);
+    expect(
+      isTransportFailureObserverOutput('Network error: the provider is unreachable')
+    ).toBe(true);
+    expect(
+      isTransportFailureObserverOutput('Fetch error: the request has timed out')
+    ).toBe(true);
+  });
+
+  // A 4xx must not slip through on the strength of an unrelated number.
+  it('does not treat a 4xx as retryable because a 5xx-shaped number appears later', () => {
+    expect(isTransportFailureObserverOutput('API Error: 400 Bad Request')).toBe(false);
+    expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+  });
+});
+
+// #3460 (danemil): CLI stream cuts and deadlines that the anchored detector
+// missed. Each was classified prose, so its claimed batch was confirmed away.
+describe('isTransportFailureObserverOutput — CLI stream cuts and deadlines (#3460)', () => {
+  const cliFailures = [
+    'API Error: Connection closed mid-response. The response above may be incomplete.',
+    'API Error: Connection closed mid-response',
+    'Connection closed mid-response. The response above may be incomplete.',
+    'API ERROR:   Connection   Closed\n  Mid-Response.',
+    'API Error: Request timed out.',
+    'Request error: request timed out',
+    'API Error: premature close',
+    'Error: premature close',
+    'Error: stream ended unexpectedly',
+  ];
+  for (const output of cliFailures) {
+    it(`preserves the batch for: ${output.replace(/\s+/g, ' ').slice(0, 60)}`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(true);
+    });
+  }
+
+  // The same words inside an observer's narrative must stay prose: a false
+  // positive requeues completed work and pauses the generator.
+  const prose = [
+    'The Read tool failed with ECONNRESET while fetching the config file.',
+    'Connection closed mid-response handling was reviewed and is covered by the retry wrapper.',
+    'The observed test run showed the stream ended unexpectedly; the retry wrapper now handles it.',
+    'API Error: request timed out handling was added to the retry wrapper',
+    'Request timed out errors are now retried with backoff.',
+  ];
+  for (const output of prose) {
+    it(`leaves prose alone: ${output.slice(0, 50)}…`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(false);
+    });
+  }
+
+  it('does not steal XML that mentions a dropped connection', () => {
+    expect(
+      isTransportFailureObserverOutput(
+        '<observation><title>Connection closed mid-response in the retry path</title></observation>'
+      )
+    ).toBe(false);
+    expect(
+      isTransportFailureObserverOutput('<skip_summary reason="premature close in observed code"/>')
+    ).toBe(false);
+  });
+});
+
+describe('describeObserverOutputShape and formatEmptyOutputReason (#3454)', () => {
+  it('returns no-content-blocks for null', () => {
+    const r = describeObserverOutputShape(null);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBe('no-content-blocks');
+  });
+
+  it('returns no-content-blocks for undefined', () => {
+    const r = describeObserverOutputShape(undefined);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(formatEmptyOutputReason(r)).toBe('no-content-blocks');
+  });
+
+  it('returns unrecognized-content for a plain object', () => {
+    const r = describeObserverOutputShape({});
+    expect(r.shape).toBe('unrecognized-content');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBe('unrecognized-content');
+  });
+
+  it('returns unrecognized-content for a number', () => {
+    const r = describeObserverOutputShape(42);
+    expect(r.shape).toBe('unrecognized-content');
+  });
+
+  it('returns no-content-blocks for an empty array', () => {
+    const r = describeObserverOutputShape([]);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(r.blockKinds).toEqual([]);
+  });
+
+  it('returns text for a non-blank string', () => {
+    const r = describeObserverOutputShape('<observation/>');
+    expect(r.shape).toBe('text');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBeUndefined();
+  });
+
+  it('returns blank-text for whitespace string', () => {
+    const r = describeObserverOutputShape('   ');
+    expect(r.shape).toBe('blank-text');
+    expect(formatEmptyOutputReason(r)).toBe('blank-text');
+  });
+
+  it('returns text for array with non-blank text block', () => {
+    const r = describeObserverOutputShape([{ type: 'text', text: 'hello' }]);
+    expect(r.shape).toBe('text');
+    expect(r.blockKinds).toEqual(['text']);
+    expect(formatEmptyOutputReason(r)).toBeUndefined();
+  });
+
+  it('returns blank-text for array with blank text block', () => {
+    const r = describeObserverOutputShape([{ type: 'text', text: '' }]);
+    expect(r.shape).toBe('blank-text');
+    expect(r.blockKinds).toEqual(['text']);
+    expect(formatEmptyOutputReason(r)).toBe('blank-text');
+  });
+
+  it('returns non-text-blocks-only(tool_use) for tool_use block', () => {
+    const r = describeObserverOutputShape([{ type: 'tool_use', name: 'bash', input: {} }]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['tool_use']);
+    expect(formatEmptyOutputReason(r)).toBe('non-text-blocks-only(tool_use)');
+  });
+
+  it('returns non-text-blocks-only(thinking,tool_use) for mixed non-text blocks', () => {
+    const r = describeObserverOutputShape([
+      { type: 'thinking', thinking: 'thought' },
+      { type: 'tool_use', name: 'bash', input: {} },
+    ]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['thinking', 'tool_use']);
+    expect(formatEmptyOutputReason(r)).toBe('non-text-blocks-only(thinking,tool_use)');
+  });
+
+  it('whitelist boundary: unknown type becomes "other" and output contains no input substring', () => {
+    const malicious = 'wat-<script>alert(1)</script>';
+    const r = describeObserverOutputShape([{ type: malicious }]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['other']);
+    const reason = formatEmptyOutputReason(r);
+    expect(reason).toBe('non-text-blocks-only(other)');
+    expect(reason).not.toContain(malicious);
+  });
+
+  it('totality: nested array [[]]] does not throw', () => {
+    expect(() => describeObserverOutputShape([[]])).not.toThrow();
+  });
+
+  it('totality: array with null element does not throw', () => {
+    expect(() => describeObserverOutputShape([null])).not.toThrow();
+    const r = describeObserverOutputShape([null]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: array of primitives does not throw', () => {
+    expect(() => describeObserverOutputShape([1, 'raw', true, undefined])).not.toThrow();
+    const r = describeObserverOutputShape([1, 'raw', true, undefined]);
+    expect(r.blockKinds).toEqual(['other']);
+  });
+
+  it('totality: array with plain object (no type) does not throw', () => {
+    expect(() => describeObserverOutputShape([{}])).not.toThrow();
+    const r = describeObserverOutputShape([{}]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: block with throwing type getter does not throw', () => {
+    const evil = Object.defineProperty({}, 'type', {
+      get() { throw new Error('boom'); },
+    });
+    expect(() => describeObserverOutputShape([evil])).not.toThrow();
+    const r = describeObserverOutputShape([evil]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: block with throwing text getter does not throw (Preservation Invariant 2)', () => {
+    const block = Object.defineProperties({}, {
+      type: { get() { return 'text'; }, enumerable: true },
+      text: { get() { throw new Error('boom'); }, enumerable: true },
+    });
+    expect(() => describeObserverOutputShape([block])).not.toThrow();
+    const r = describeObserverOutputShape([block]);
+    expect(r.blockKinds).toContain('text');
+    expect(r.shape).toBe('blank-text');
   });
 });
