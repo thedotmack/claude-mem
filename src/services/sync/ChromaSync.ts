@@ -56,8 +56,13 @@ export interface ChromaDocument {
  */
 export type BackfillAbortReason = 'shutdown' | 'write_failures' | 'collection_dropped';
 
-/** 'completed' when a project's backfill attempted every row, else why it stopped. */
-export type BackfillOutcome = 'completed' | BackfillAbortReason;
+/**
+ * 'completed' when a project's backfill attempted every row and every write
+ * landed; 'rows_pending' when it attempted every row but some writes failed
+ * (those rows stay pending and the next run retries only them); else why it
+ * stopped early.
+ */
+export type BackfillOutcome = 'completed' | 'rows_pending' | BackfillAbortReason;
 
 /**
  * Outcome of one backfillKind() pass (#4069). `writtenDocs` counts documents
@@ -66,7 +71,7 @@ export type BackfillOutcome = 'completed' | BackfillAbortReason;
  * of being reported missing on every sweep. `writeFailures` is true when some
  * row's write failed even though the pass walked every row: unlike
  * `abortReason`, it does not stop the pipeline, so the remaining kinds still
- * run and the project reports 'write_failures' instead of 'completed' (#4264).
+ * run and the project reports 'rows_pending' instead of 'completed' (#4264).
  */
 export interface BackfillKindResult {
   writtenDocs: number;
@@ -1153,9 +1158,10 @@ export class ChromaSync {
 
   /**
    * Backfill one project's rows above its watermarks. Resolves 'completed' when
-   * every row's documents actually landed; otherwise why the project is not
-   * fully synced (a worker shutdown or write failures), in which case the next
-   * run resumes from the watermarks.
+   * every row's documents actually landed, 'rows_pending' when every row was
+   * attempted but some writes failed, otherwise why the run stopped early (a
+   * worker shutdown, repeated write failures, or a dropped collection). The
+   * next run resumes from the watermarks and pending rows.
    */
   async ensureBackfilled(project: string, store: SessionStore): Promise<BackfillOutcome> {
     if (shutdownBegan()) {
@@ -1188,7 +1194,10 @@ export class ChromaSync {
 
     try {
       const outcome = await this.runBackfillPipeline(store, project, watermarks);
-      if (rebuilding && outcome === 'completed') {
+      // A rebuild is done once every row was attempted. Rows that failed are
+      // pending, and finishRebuild keeps them; restarting the rebuild from
+      // zero would re-embed the whole project just to retry those rows.
+      if (rebuilding && (outcome === 'completed' || outcome === 'rows_pending')) {
         ChromaSyncState.finishRebuild(project);
       }
       return outcome;
@@ -1218,7 +1227,7 @@ export class ChromaSync {
 
     // An isolated write failure stops neither its own kind's run nor the kinds
     // after it: the failed rows stay pending for the next sweep, and the
-    // project reports 'write_failures' rather than claiming it finished (#4264).
+    // project reports 'rows_pending' rather than claiming it finished (#4264).
     const writeFailures = observations.writeFailures || summaries.writeFailures || prompts.writeFailures;
 
     logger.info('CHROMA_SYNC',
@@ -1233,7 +1242,7 @@ export class ChromaSync {
       emptyRows: observations.emptyRows + summaries.emptyRows + prompts.emptyRows,
       watermarks: ChromaSyncState.get(backfillProject)
     });
-    return writeFailures ? 'write_failures' : 'completed';
+    return writeFailures ? 'rows_pending' : 'completed';
   }
 
   /**
@@ -1243,7 +1252,7 @@ export class ChromaSync {
    * (worker shutdown, the consecutive-failure guard, or a dropped collection).
    * Isolated write failures do not stop the run: the kind reports them via
    * `writeFailures` instead of `abortReason`, so the pipeline keeps going and
-   * the project is reported as 'write_failures' rather than claimed complete
+   * the project is reported as 'rows_pending' rather than claimed complete
    * while a document is missing.
    *
    * Watermark durability is row-atomic, not batch-atomic: one observation or
@@ -1414,10 +1423,7 @@ export class ChromaSync {
     // not a completed backfill: the failed rows stay pending for the next run,
     // but a document is still missing now. Report that without aborting the
     // pipeline, so the remaining kinds still run (#4264).
-    if (hadWriteFailures) {
-      return { writtenDocs, emptyRows, abortReason: null, writeFailures: true };
-    }
-    return { writtenDocs, emptyRows, abortReason: null, writeFailures: false };
+    return { writtenDocs, emptyRows, abortReason: null, writeFailures: hadWriteFailures };
   }
 
   /**

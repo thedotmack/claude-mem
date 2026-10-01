@@ -815,7 +815,7 @@ describe('ChromaSync title-only rows and truthful backfill outcomes (#4069)', ()
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 3]);
   });
 
-  it('reports write_failures when an isolated row fails but later rows succeed', async () => {
+  it('reports rows_pending when an isolated row fails but later rows succeed', async () => {
     const store = makeStoreFromRows(project, [1, 2, 3].map(id => makeObservationRow(id, project)));
     const sync = new ChromaSync(project) as ChromaSync & {
       addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
@@ -828,7 +828,7 @@ describe('ChromaSync title-only rows and truthful backfill outcomes (#4069)', ()
       return calls === 1 ? 0 : documents.length;
     };
 
-    expect(await sync.ensureBackfilled(project, store)).toBe('write_failures');
+    expect(await sync.ensureBackfilled(project, store)).toBe('rows_pending');
     expect(ChromaSyncState.get(project).observations).toBe(3);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1]);
   });
@@ -857,7 +857,7 @@ describe('ChromaSync title-only rows and truthful backfill outcomes (#4069)', ()
       return documents.length;
     };
 
-    expect(await sync.ensureBackfilled(project, store)).toBe('write_failures');
+    expect(await sync.ensureBackfilled(project, store)).toBe('rows_pending');
     expect(ChromaSyncState.get(project).observations).toBe(3);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1]);
     // The isolated observation failure must not stop the rest of the pipeline.

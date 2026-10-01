@@ -406,6 +406,38 @@ describe('ChromaSync rebuild after a dropped collection (#3202)', () => {
     expect(ChromaSyncState.get('proj').observations).toBe(0);
   });
 
+  it('finishes a rebuild that attempted every row; an isolated failed row stays pending and is retried alone', async () => {
+    let failRowTwo = true;
+    const written: string[] = [];
+    installCallTool(async (tool, args) => {
+      if (tool !== 'chroma_add_documents') return {};
+      const ids = args.ids as string[];
+      if (failRowTwo && ids.includes('obs_2_narrative')) {
+        throw new Error('embedding failed for one document');
+      }
+      written.push(...ids);
+      return {};
+    });
+    ChromaSyncState.replace('proj', { observations: 3, summaries: 0, prompts: 0, rebuildPending: true });
+    const sync = new ChromaSync('claude-mem');
+    const store = makeStore('proj', [1, 2, 3, 4, 5]);
+
+    const outcome = await sync.ensureBackfilled('proj', store);
+
+    // Restarting the rebuild from zero would re-embed the whole project on
+    // every start just to retry row 2; the pending mark already covers it.
+    expect(ChromaSyncState.isRebuildPending('proj')).toBe(false);
+    expect(ChromaSyncState.getPending('proj', 'observations')).toEqual([2]);
+    expect(ChromaSyncState.get('proj').observations).toBe(5);
+    expect(outcome).toBe('rows_pending');
+
+    failRowTwo = false;
+    written.length = 0;
+    expect(await sync.ensureBackfilled('proj', store)).toBe('completed');
+    expect(written).toEqual(['obs_2_narrative']);
+    expect(ChromaSyncState.getPending('proj', 'observations')).toEqual([]);
+  });
+
   it('stops a run whose collection is dropped mid-run without bumping anything', async () => {
     let adds = 0;
     installCallTool(async (tool) => {
