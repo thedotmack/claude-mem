@@ -59,6 +59,39 @@ describe('oversized observation fields are condensed, not cut (#3800)', () => {
     expect(await optimizeField(oversized, compress, CTX, MAX)).toBe(oversized);
   });
 
+  it('gives up on a compressor that outlasts the supplied deadline, then truncation applies', async () => {
+    // A compressor slower than the deadline: the pass aborts and returns the
+    // original so the caller's truncation still runs (#4134). Resolving on a
+    // real backend that needs more than the deadline is exactly this case.
+    const compress: FieldCompressor = (_t, _b, signal) =>
+      new Promise(resolve => {
+        signal.addEventListener('abort', () => resolve(null), { once: true });
+      });
+
+    const out = await optimizeField(oversized, compress, CTX, MAX, 20);
+    expect(out).toBe(oversized);
+  });
+
+  it('condenses within a generous deadline instead of timing out', async () => {
+    const compress: FieldCompressor = async () => 'condensed under a roomy deadline';
+    const out = await optimizeField(oversized, compress, CTX, MAX, 10_000) as string;
+    expect(out).toContain('condensed under a roomy deadline');
+  });
+
+  it('resolves a lazy deadline only when a field is actually oversized', async () => {
+    // The providers pass resolveFieldOptimizeTimeoutMs (which reads settings.json
+    // from disk); it must stay unread on the common turn where everything fits.
+    let resolved = 0;
+    const timeout = () => { resolved++; return 10_000; };
+    const compress: FieldCompressor = async () => 'condensed';
+
+    expect(await optimizeField({ small: 'fits' }, compress, CTX, MAX, timeout)).toEqual({ small: 'fits' });
+    expect(resolved).toBe(0);
+
+    await optimizeField(oversized, compress, CTX, MAX, timeout);
+    expect(resolved).toBe(1);
+  });
+
   it('tries once per field — a failure never becomes a retry ladder', async () => {
     let calls = 0;
     const compress: FieldCompressor = async () => { calls++; return null; };

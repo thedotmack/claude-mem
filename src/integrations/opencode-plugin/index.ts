@@ -7,6 +7,8 @@ import {
   type RealOpenCodeEventType,
 } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
+// Dependency-free, so it stays bundle-safe for the plugin (no worker-only imports).
+import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 
 /**
  * OpenCode plugin entry module.
@@ -94,6 +96,9 @@ const PLATFORM_SOURCE = "opencode";
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
+// A refused connection means the worker is simply not running and must stay
+// quiet. isConnectionRefusedError recognizes Bun's and undici's shapes, which a
+// message.includes('ECONNREFUSED') check misses (OpenCode hosts plugins under Bun).
 function workerPostFireAndForget(
   path: string,
   body: Record<string, unknown>,
@@ -106,8 +111,8 @@ function workerPostFireAndForget(
       platformSource: normalizePlatformSource(PLATFORM_SOURCE),
     }),
   }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
+    if (!isConnectionRefusedError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
       console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
   });
@@ -122,8 +127,8 @@ async function workerGetText(path: string): Promise<string | null> {
     }
     return await response.text();
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
+    if (!isConnectionRefusedError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
       console.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
     }
     return null;

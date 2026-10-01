@@ -90,19 +90,56 @@ function stripTrailingSep(dir: string): string {
 }
 
 /**
+ * The Claude Code credential profile the worker and its SDK child must agree on.
+ * `explicitConfigDir` is whether Claude Code treats the profile as explicitly
+ * configured: only then does the child carry CLAUDE_CONFIG_DIR and does the
+ * macOS keychain entry carry a suffix.
+ */
+export interface ClaudeCredentialProfile {
+  configDir: string;
+  explicitConfigDir: boolean;
+}
+
+/**
+ * #4149 — Claude Code decides whether a profile is the default from whether
+ * CLAUDE_CONFIG_DIR is SET, not from its value (CLI 2.1.285:
+ * `isDefault = !process.env.CLAUDE_CONFIG_DIR`). A user who exports
+ * CLAUDE_CONFIG_DIR=~/.claude therefore logs in under the SUFFIXED keychain
+ * entry, while a user with nothing exported logs in under the bare one.
+ *
+ *   - Setting non-empty: the setting names the profile; it is explicit unless
+ *     it resolves to the default dir (`~/.claude` typed in settings means
+ *     "my normal profile").
+ *   - Setting empty: mirror the CLI — explicit iff the inherited
+ *     CLAUDE_CONFIG_DIR is set to a non-empty value.
+ *
+ * Both the SDK child env (EnvManager.buildIsolatedEnv) and the keychain read
+ * (deriveMacKeychainServiceName) consume this one result, so they cannot
+ * disagree about which credential the child will look for.
+ */
+export function resolveClaudeCredentialProfile(settingValue?: string): ClaudeCredentialProfile {
+  const configDir = resolveEffectiveClaudeConfigDir(settingValue);
+  const explicitConfigDir = settingValue?.trim()
+    ? configDir !== DEFAULT_CLAUDE_CONFIG_DIR
+    : Boolean(process.env.CLAUDE_CONFIG_DIR);
+  return { configDir, explicitConfigDir };
+}
+
+/**
  * #2753 — macOS derivation, empirically verified on the Studio (see #2756/
- * #2753 background table): Claude Code stores per-config-dir credentials
- * under 'Claude Code-credentials' for the default config dir, and under
+ * #2753 background table): Claude Code stores credentials under
+ * 'Claude Code-credentials' for the default profile, and under
  * 'Claude Code-credentials-<suffix>' (suffix = first 8 hex chars of
- * sha256(effectiveConfigDir path string)) for every other config dir.
+ * sha256(NFC config dir path)) for an explicitly configured one — including
+ * an explicit export of the default path (#4149).
  *
  * Windows/Linux are NOT covered by this function — see readWindowsCredentialManager /
  * readLinuxLibsecret for why those two paths are left on the bare service
  * name (no verified evidence in this repo of their suffix scheme).
  */
-export function deriveMacKeychainServiceName(effectiveConfigDir: string): string {
-  if (effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR) return KEYCHAIN_SERVICE_NAME;
-  const suffix = createHash('sha256').update(effectiveConfigDir).digest('hex').slice(0, 8);
+export function deriveMacKeychainServiceName(profile: ClaudeCredentialProfile): string {
+  if (!profile.explicitConfigDir) return KEYCHAIN_SERVICE_NAME;
+  const suffix = createHash('sha256').update(profile.configDir.normalize('NFC')).digest('hex').slice(0, 8);
   return `${KEYCHAIN_SERVICE_NAME}-${suffix}`;
 }
 
@@ -399,7 +436,9 @@ function parseKeychainPayload(raw: string): OAuthTokenResult {
   if (isExpired(effectiveExpiresAt)) {
     return {
       kind: 'expired',
-      reason: 'Claude Desktop OAuth token has expired — re-login via Claude Desktop to refresh',
+      // The Claude Code CLI writes and refreshes this entry (`claude auth
+      // login`, /login); re-logging into Claude Desktop never repairs it (#4150).
+      reason: 'The Claude Code login in the credential store has expired',
       expiresAt: effectiveExpiresAt,
     };
   }
@@ -446,15 +485,15 @@ export async function readClaudeOAuthToken(
 ): Promise<OAuthTokenResult> {
   let keychainResult: OAuthTokenResult;
 
-  // #2753 — resolve the effective config dir (setting > env > default) once
-  // per call; only the macOS branch currently has a verified per-config-dir
-  // service-name suffix, so it's the only branch that consumes it.
+  // #2753 / #4149 — resolve the credential profile (setting > env > default)
+  // once per call; only the macOS branch currently has a verified
+  // per-config-dir service-name suffix, so it's the only branch that consumes it.
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-  const effectiveConfigDir = resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  const credentialProfile = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
 
   switch (process.platform) {
     case 'darwin':
-      keychainResult = await readMacOsKeychain(deriveMacKeychainServiceName(effectiveConfigDir), execImpl);
+      keychainResult = await readMacOsKeychain(deriveMacKeychainServiceName(credentialProfile), execImpl);
       break;
     case 'win32':
       keychainResult = await readWindowsCredentialManager();
@@ -487,7 +526,7 @@ export async function readClaudeOAuthToken(
     if (isExpired(effectiveExpiresAt)) {
       return {
         kind: 'expired',
-        reason: 'CLAUDE_CODE_OAUTH_TOKEN env var expired (per sidecar/JWT) — re-login via Claude Desktop',
+        reason: 'CLAUDE_CODE_OAUTH_TOKEN env var expired (per sidecar/JWT)',
         expiresAt: effectiveExpiresAt,
       };
     }
@@ -506,7 +545,7 @@ export async function readClaudeOAuthToken(
 /**
  * Marker file pattern: when a recent spawn returned `expired`, write a marker
  * at `${DATA_DIR}/oauth-stale.marker` so the session-start hook can surface a
- * clear "re-login via Claude Desktop" message to the user. The marker is
+ * clear "run /login in Claude Code" message to the user. The marker is
  * cleared once the token is refreshed and a `present` result is observed.
  */
 export function writeStaleMarker(reason: string): void {

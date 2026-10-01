@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { delimiter, join } from 'path';
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import {
   codexSpawn,
@@ -122,17 +125,47 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
     expect(resolveCodexCommand('darwin', () => null, () => null)).toBe('codex');
   });
 
-  it('codexSpawn is exported and invokable (no crash on a bogus codex)', () => {
-    // We can't assume codex is installed in CI. The contract under test is that
-    // codexSpawn returns a SpawnSyncReturns rather than throwing synchronously.
-    // Running `--version` either succeeds (codex present) or returns an
-    // error/non-zero (codex absent); both are acceptable.
-    expect(typeof codexSpawn).toBe('function');
-    const result = codexSpawn(['--version']);
-    expect(result).toBeDefined();
-    // status is a number when the binary ran; error is set when not found.
-    expect(result.status !== undefined || result.error !== undefined).toBe(true);
-  });
+  it('codexSpawn resolves codex from PATH and runs it (a stub, never the real CLI)', () => {
+    // The contract under test is that codexSpawn resolves the command (through
+    // `where` to the .cmd shim on Windows, #2695) and returns a SpawnSyncReturns
+    // rather than throwing. A stub first on PATH keeps it off whatever codex the
+    // machine has: running the real `codex --version` timed out under load.
+    //
+    // Bun's spawnSync resolves a command, and builds the child's environment,
+    // from the environment the process started with, not from later edits to
+    // process.env, and codexSpawn passes no env. So the call runs in a child
+    // started with the stub first on PATH.
+    const stubDir = mkdtempSync(join(tmpdir(), 'codex-stub-'));
+    try {
+      if (process.platform === 'win32') {
+        writeFileSync(join(stubDir, 'codex.cmd'), '@echo codex-cli 0.0.0-stub\r\n');
+      } else {
+        writeFileSync(join(stubDir, 'codex'), '#!/bin/sh\necho "codex-cli 0.0.0-stub"\n');
+        chmodSync(join(stubDir, 'codex'), 0o755);
+      }
+      const installer = join(import.meta.dir, '../../../src/services/integrations/CodexCliInstaller.ts');
+      const probe = join(stubDir, 'probe.ts');
+      writeFileSync(probe, [
+        `import { codexSpawn } from ${JSON.stringify(installer)};`,
+        `const result = codexSpawn(['--version']);`,
+        `process.stdout.write(JSON.stringify({ status: result.status, stdout: result.stdout, error: result.error ? String(result.error) : null }));`,
+      ].join('\n'));
+
+      const child = spawnSync(process.execPath, [probe], {
+        encoding: 'utf-8',
+        env: { ...process.env, PATH: `${stubDir}${delimiter}${process.env.PATH ?? ''}` },
+        timeout: 30_000,
+      });
+
+      expect(child.status).toBe(0);
+      const result = JSON.parse(child.stdout);
+      expect(result.error).toBeNull();
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('codex-cli 0.0.0-stub');
+    } finally {
+      rmSync(stubDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe('macOS Codex Desktop bundle resolution', () => {
