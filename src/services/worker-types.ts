@@ -4,6 +4,11 @@ import type { Response } from 'express';
 export interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * Set on a generation's init or continuation prompt (openObserverGeneration).
+   * HTTP providers send its instructions as the system message (#3868).
+   */
+  framing?: boolean;
 }
 
 export interface ActiveSession {
@@ -128,6 +133,13 @@ export interface ActiveSession {
    * reading is never recorded (#2957).
    */
   lastContextTokens?: number;
+  /**
+   * The finish reason an HTTP provider reported for the reply about to be
+   * processed ('length' / 'MAX_TOKENS' = cut off at the output-token cap).
+   * processAgentResponse consumes and clears it, so it never outlives the
+   * reply that set it (#3868).
+   */
+  lastFinishReason?: string | null;
   /**
    * session_compressed properties stashed by ResponseProcessor on the claude
    * path: the streamed assistant message's output_tokens is an early-streaming

@@ -10,7 +10,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
-import { resolveContextWindowTokens } from './context-window.js';
+import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
 
 // v1beta is required: the current Gemini 3.x models and the Google-maintained
 // `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
@@ -204,6 +204,8 @@ interface GeminiResponse {
         text?: string;
       }>;
     };
+    /** 'STOP', 'MAX_TOKENS', 'SAFETY', … */
+    finishReason?: string;
   }>;
   usageMetadata?: {
     promptTokenCount?: number;
@@ -313,6 +315,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
   private fetchGenerateContent(
     url: string,
     contents: GeminiContent[],
+    systemInstruction: string | null,
+    maxOutputTokens: number,
     priorRequestId: string | null,
     attemptSignal: AbortSignal
   ): Promise<Response> {
@@ -323,10 +327,12 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
       body: JSON.stringify({
+        // The observer's instructions and schema, anchored (#3868).
+        ...(systemInstruction ? { systemInstruction: { parts: [{ text: systemInstruction }] } } : {}),
         contents,
         generationConfig: {
           temperature: 0.3,  // Lower temperature for structured extraction
-          maxOutputTokens: 4096,
+          maxOutputTokens,
         },
       }),
       signal: attemptSignal,
@@ -341,12 +347,17 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
   ): Promise<ProviderQueryResult> {
-    const contents = this.conversationToGeminiContents(history);
+    // An observer generation's framing prompt goes out as systemInstruction,
+    // its user request as the first user turn (anchorFraming, #3868).
+    const { system, turns } = this.anchorFraming(history);
+    const contents = this.conversationToGeminiContents(turns);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    const maxOutputTokens = resolveObserverMaxOutputTokens();
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
       turns: history.length,
-      totalChars
+      totalChars,
+      maxOutputTokens,
     });
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
@@ -355,11 +366,13 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     // Track request-id (best-effort dedup) across retries.
     let priorRequestId: string | null = null;
+    // The id of the response actually returned, for the cut-off warning.
+    let finalRequestId: string | undefined;
 
     const data = await withRetry<GeminiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchGenerateContent(url, contents, priorRequestId, attemptSignal);
+        response = await this.fetchGenerateContent(url, contents, system, maxOutputTokens, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         // Network failures, aborts, DNS, etc.
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
@@ -369,6 +382,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       }
 
       const requestId = response.headers.get('x-goog-request-id') ?? response.headers.get('x-request-id');
+      finalRequestId = requestId ?? undefined;
       if (requestId) {
         priorRequestId = requestId;
       } else {
@@ -389,19 +403,36 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       return await response.json() as GeminiResponse;
     }, { label: `Gemini ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}) });
 
-    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      logger.error('SDK', 'Empty response from Gemini');
-      return { content: '' };
+    const candidate = data.candidates?.[0];
+    const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : undefined;
+    const text = candidate?.content?.parts?.[0]?.text;
+    // MAX_TOKENS: the output-token cap cut the reply off. A block cut mid-tag
+    // never closes, so the parser drops it. Named before the empty-reply exit
+    // so a reply cut off before any text is named too (parity with OpenRouter).
+    if (finishReason === 'MAX_TOKENS') {
+      logger.warn('SDK', 'Gemini reply was cut off at the output-token limit', {
+        model,
+        requestId: finalRequestId,
+        maxTokens: maxOutputTokens,
+        outputTokens: data.usageMetadata?.candidatesTokenCount,
+        contentChars: text?.length ?? 0,
+        messagesInContext: history.length,
+      });
     }
 
-    const content = data.candidates[0].content.parts[0].text;
+    if (!text) {
+      logger.error('SDK', 'Empty response from Gemini');
+      return { content: '', ...(finishReason ? { finishReason } : {}) };
+    }
+
     const tokensUsed = data.usageMetadata?.totalTokenCount;
 
     return {
-      content,
+      content: text,
       tokensUsed,
       inputTokens: data.usageMetadata?.promptTokenCount,
       outputTokens: data.usageMetadata?.candidatesTokenCount,
+      ...(finishReason ? { finishReason } : {}),
     };
   }
 

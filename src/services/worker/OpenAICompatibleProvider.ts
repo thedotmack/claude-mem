@@ -3,7 +3,7 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, splitFramingPrompt } from '../../sdk/prompts.js';
 import { pruneProcessedObservationPayloads } from './history-pruning.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
@@ -44,7 +44,17 @@ export interface ProviderQueryResult {
   costUsd?: number;
   /** The model that actually served the request, when reported. */
   servedModel?: string;
+  /**
+   * Why generation stopped, as the provider reported it: OpenRouter's
+   * finish_reason ('stop', 'length', …) or Gemini's finishReason ('STOP',
+   * 'MAX_TOKENS', …). 'length' / 'MAX_TOKENS' mean the output-token cap cut
+   * the reply off (#3868).
+   */
+  finishReason?: string;
 }
+
+/** The first user turn of an observer request when the framing prompt carries no request block. */
+const OBSERVER_KICKOFF = 'Start observing the primary session.';
 
 /**
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
@@ -152,6 +162,29 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   /** Hook for per-session setup that runs once config is resolved (e.g. endpointClass). */
   protected prepareSessionExtras(_session: ActiveSession, _config: TConfig): void {}
+
+  /**
+   * The system anchor for a request, and the turns sent after it (#3868).
+   *
+   * A generation's framing prompt carries the observer's instructions and the
+   * output schema. Sent as a user turn, a small model loses the schema as the
+   * conversation grows, and the batch comes back schema-less. Its instructions
+   * go out as the system message instead, and its user-request block (or a
+   * fixed kickoff) stays the first user turn, so every request, the init one
+   * included, carries at least one user message. A history with no framing
+   * prompt (a standalone field condensation or wrap-up request) is sent as is.
+   */
+  protected anchorFraming(history: ConversationMessage[]): { system: string | null; turns: ConversationMessage[] } {
+    const first = history[0];
+    if (!first?.framing) {
+      return { system: null, turns: history };
+    }
+    const { instructions, userRequest } = splitFramingPrompt(first.content);
+    return {
+      system: instructions,
+      turns: [{ role: 'user', content: userRequest ?? OBSERVER_KICKOFF }, ...history.slice(1)],
+    };
+  }
 
   /**
    * The observer model's context window in tokens (#3625). This default knows
@@ -383,6 +416,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // Appending it here too stored every reply twice (#3619), inflating the
     // window — and therefore every subsequent request — by ~50%.
     if (obsResponse.content || this.forwardEmptyMessageResponse) {
+      // Scoped to this reply: processAgentResponse consumes and clears it.
+      session.lastFinishReason = obsResponse.finishReason ?? null;
       await processAgentResponse(
         obsResponse.content || '', session, this.dbManager, this.sessionManager,
         worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model, responseContext
@@ -441,6 +476,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     // Appended once, by processAgentResponse below — see processObservationMessage.
     if (summaryResponse.content || this.forwardEmptyMessageResponse) {
+      session.lastFinishReason = summaryResponse.finishReason ?? null;
       await processAgentResponse(
         summaryResponse.content || '', session, this.dbManager, this.sessionManager,
         worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? summaryConfig.model, responseContext

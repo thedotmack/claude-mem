@@ -314,6 +314,10 @@ export async function processAgentResponse(
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
+  // Scoped to the reply that produced `text`: consumed here, before any branch,
+  // so a later reply (from any provider) never reads one an earlier turn set.
+  const finishReason = session.lastFinishReason ?? null;
+  session.lastFinishReason = null;
 
   // Classify rejections BEFORE growing the window. "Prompt is too long", quota
   // prose and auth prose are refusals, not conversational turns; appending them
@@ -443,6 +447,9 @@ export async function processAgentResponse(
       sessionId: session.sessionDbId,
       outputClass,
       preview,
+      // An HTTP reply cut off at the output-token cap reads as xml/prose here;
+      // name it, so a truncation is not mistaken for a skip (#3868).
+      ...(finishReason ? { finishReason, truncated: finishReason === 'length' || finishReason === 'MAX_TOKENS' } : {}),
       consecutiveContextOverflows: session.consecutiveContextOverflows,
     });
 
