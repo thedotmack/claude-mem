@@ -11,6 +11,7 @@ import {
   parseHostWithoutPort,
 } from '../../../server/middleware/request-auth-helpers.js';
 import { logger } from '../../../utils/logger.js';
+import { redactForLog } from '../../../utils/redaction.js';
 
 export function createMiddleware(): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
@@ -113,6 +114,62 @@ function isSameHostOrigin(origin: string, rawHost: string | undefined): boolean 
   } catch {
     return false;
   }
+}
+
+const LOOPBACK_URL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Whether a browser Origin is the worker's own page: an allowlisted origin
+ * (CLAUDE_MEM_ALLOWED_ORIGINS, which includes the CLAUDE_MEM_PUBLIC_URL
+ * viewer), the host:port the request was sent to (the viewer at localhost,
+ * 127.0.0.1, a LAN address or a trusted machine name), or another loopback
+ * name for that same port. Every other page CORS admits, such as any
+ * http://localhost:* dev server, belongs to someone else. Safe only behind the
+ * Host check, like isSameHostOrigin.
+ */
+export function isOwnPageOrigin(origin: string, rawHost: string | undefined, policy: WorkerOriginPolicy): boolean {
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') return false;
+  if (policy.allowedOrigins.includes(originUrl.origin)) return true;
+  if (!rawHost) return false;
+  if (isSameHostOrigin(origin, rawHost)) return true;
+  let hostUrl: URL;
+  try {
+    hostUrl = new URL(`${originUrl.protocol}//${rawHost.trim().toLowerCase()}`);
+  } catch {
+    return false;
+  }
+  return LOOPBACK_URL_HOSTNAMES.has(originUrl.hostname)
+    && LOOPBACK_URL_HOSTNAMES.has(hostUrl.hostname)
+    && originUrl.port === hostUrl.port;
+}
+
+/**
+ * Refuses a DELETE sent by a browser page other than the worker's own (see
+ * isOwnPageOrigin). Deletes are tombstoned for cloud sync, so a page that CORS
+ * lets read the API (any http://localhost:* page) must not be able to remove
+ * memories on every device. Reads stay open to those pages, and clients that
+ * send no Origin (hooks, the CLI, curl) keep the loopback-trust model. Worker
+ * runtime only, mounted right after the Host check.
+ */
+export function createForeignPageDeleteGuard(policy: WorkerOriginPolicy): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const origin = req.headers.origin;
+    if (req.method !== 'DELETE' || origin === undefined || isOwnPageOrigin(origin, req.headers.host, policy)) {
+      next();
+      return;
+    }
+    logger.warn('SECURITY', 'Refused a DELETE from a page other than the viewer', { origin, method: req.method, path: req.path });
+    res.status(403).json({
+      error: 'Forbidden',
+      message: 'Deletes are accepted only from the claude-mem viewer itself (or an origin in CLAUDE_MEM_ALLOWED_ORIGINS), not from other pages.',
+    });
+  };
 }
 
 // Names that only ever refer to this machine (or, from inside a container, to
@@ -461,7 +518,7 @@ export function summarizeRequestBody(method: string, path: string, body: any): s
   if (path.includes('/observations')) {
     const toolName = body.tool_name || '?';
     const toolInput = body.tool_input;
-    const toolSummary = logger.formatTool(toolName, toolInput);
+    const toolSummary = redactForLog(logger.formatTool(toolName, toolInput));
     return `tool=${toolSummary}`;
   }
 

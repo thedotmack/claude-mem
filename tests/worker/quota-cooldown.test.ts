@@ -54,7 +54,7 @@ describe('quota cooldown breaker (#3634)', () => {
 
   it('lets exactly one probe through once the window elapses', () => {
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
 
     const justBefore = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1;
     const justAfter = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
@@ -103,7 +103,7 @@ describe('quota cooldown breaker (#3634)', () => {
     // The reported machine ran 28-69 live sessions; they all observe the window
     // elapse at the same instant, so a bare time check would let them all send.
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
     const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     const admitted = Array.from({ length: 28 }, () =>
@@ -115,7 +115,7 @@ describe('quota cooldown breaker (#3634)', () => {
 
   it('keeps withholding while the claimed probe is still in flight', () => {
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
     const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     expect(tryAdmitQuotaProbe('claude', afterExpiry).admitted).toBe(true);
@@ -125,7 +125,7 @@ describe('quota cooldown breaker (#3634)', () => {
 
   it('re-admits once a claimed probe goes stale, so a dead generator cannot wedge the provider shut', () => {
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
     const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     expect(tryAdmitQuotaProbe('claude', afterExpiry).admitted).toBe(true);
@@ -134,7 +134,7 @@ describe('quota cooldown breaker (#3634)', () => {
 
   it('releases the claim on a generator exit that neither succeeded nor re-armed', () => {
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
     const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     const claim = tryAdmitQuotaProbe('claude', afterExpiry);
@@ -155,7 +155,7 @@ describe('quota cooldown breaker (#3634)', () => {
     expect(sessionA).toEqual({ admitted: true, claimId: null });
 
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
     const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     const sessionB = tryAdmitQuotaProbe('claude', afterExpiry);
@@ -171,7 +171,7 @@ describe('quota cooldown breaker (#3634)', () => {
 
   it('does not let the owner of a stale probe release the takeover that replaced it', () => {
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
     const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     const abandoned = tryAdmitQuotaProbe('claude', afterExpiry);
@@ -191,7 +191,7 @@ describe('quota cooldown breaker (#3634)', () => {
 
   it('does not let a probe from a cleared breaker release the probe of the next one', () => {
     const firstArmedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, firstArmedAt);
     const afterFirstExpiry = firstArmedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     const first = tryAdmitQuotaProbe('claude', afterFirstExpiry);
@@ -201,7 +201,7 @@ describe('quota cooldown breaker (#3634)', () => {
     clearQuotaCooldown('claude');
     // ...and a later exhaustion armed a fresh one that has since expired.
     const secondArmedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, secondArmedAt);
     const afterSecondExpiry = secondArmedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     const second = tryAdmitQuotaProbe('claude', afterSecondExpiry);
@@ -215,7 +215,7 @@ describe('quota cooldown breaker (#3634)', () => {
 
   it('clears the in-flight claim when the probe fails and re-arms', () => {
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
     const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
     expect(tryAdmitQuotaProbe('claude', afterExpiry).admitted).toBe(true);
 
@@ -228,9 +228,13 @@ describe('quota cooldown breaker (#3634)', () => {
   });
 
   it('scopes the probe claim per provider', () => {
+    // One start time for both records. By default each record reads the clock
+    // itself, and the claude one first loads settings.json to resolve its
+    // credential profile (#4272), so under load the openrouter window opened a
+    // few ms after armedAt and afterExpiry fell inside it.
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
-    recordQuotaExhausted('openrouter', 'Spend cap reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
+    recordQuotaExhausted('openrouter', 'Spend cap reached', undefined, armedAt);
     const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
 
     expect(tryAdmitQuotaProbe('claude', afterExpiry).admitted).toBe(true);
@@ -242,7 +246,7 @@ describe('quota cooldown breaker (#3634)', () => {
     // Reproduces the reported shape: a capped user keeps working, so a tool call
     // arrives every few seconds for the rest of the billing cycle.
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, armedAt);
 
     let requestsSent = 0;
     for (let elapsed = 0; elapsed < QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS * 2; elapsed += 5_000) {
@@ -282,7 +286,7 @@ describe('quota cooldown breaker (#3634)', () => {
   it('stops mirroring a cooldown once its window has elapsed, but keeps its admission state (#4114)', () => {
     const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
     const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly');
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly', armedAt);
     expect(readObserverHealth(healthPath)!.quotaCooldown!.active).toBe(true);
 
     // A mirror pass after the window elapsed must not report the pause active —

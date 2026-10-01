@@ -53,6 +53,8 @@ describe('#2737 — named environments', () => {
     expect(ctx.primary).toBe('acme');
     expect(ctx.parent).toBeNull();
     expect(ctx.allProjects).toEqual(['api', 'acme']);
+    expect(ctx.keySource).toBe('environment');
+    expect(getProjectContext(outside).keySource).toBe('path');
   });
 
   it('falls back to the derived names when the setting is invalid', () => {

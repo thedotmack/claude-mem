@@ -19,8 +19,37 @@ describe('settings document boundary', () => {
   it('classifies flat, nested, mixed, and unrelated env documents', () => {
     expect(classifySettingsDocument({ CLAUDE_MEM_MODEL: 'flat' })).toBe('flat');
     expect(classifySettingsDocument({ env: { CLAUDE_MEM_MODEL: 'nested' } })).toBe('nested');
-    expect(classifySettingsDocument({ CLAUDE_MEM_MODEL: 'root', env: { CLAUDE_MEM_MODEL: 'nested' } })).toBe('flat');
+    // An env block holding claude-mem's keys is where they live; root copies
+    // beside it are the old viewer's stale (masked) writes.
+    expect(classifySettingsDocument({ CLAUDE_MEM_MODEL: 'root', env: { CLAUDE_MEM_MODEL: 'nested' } })).toBe('nested');
+    // An env block without claude-mem's keys is Claude Code's own.
+    expect(classifySettingsDocument({ CLAUDE_MEM_MODEL: 'root', env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' } })).toBe('flat');
+    expect(classifySettingsDocument({ env: { CLAUDE_CODE_USE_BEDROCK: '1' } })).toBe('flat');
     expect(classifySettingsDocument({ env: { PATH: '/bin' }, hooks: [] })).toBe('flat');
+  });
+
+  it('drops the stale root copies an old viewer left beside a wrapped document, never merging them', () => {
+    const path = tempFile(JSON.stringify({
+      theme: 'dark',
+      CLAUDE_MEM_OPENROUTER_API_KEY: '****',
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
+      env: { CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-real', CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token' },
+    }));
+
+    expect(updateSettingsDocument(path, { CLAUDE_MEM_MODEL: 'new' }).status).toBe('updated');
+
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+      theme: 'dark',
+      env: { CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-real', CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token', CLAUDE_MEM_MODEL: 'new' },
+    });
+  });
+
+  it('writes at the root of a flat document and leaves the Claude Code env block beside it alone', () => {
+    const path = tempFile(JSON.stringify({ CLAUDE_MEM_MODEL: 'old', env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' } }));
+
+    updateSettingsDocument(path, { CLAUDE_MEM_MODEL: 'new' });
+
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ CLAUDE_MEM_MODEL: 'new', env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' } });
   });
 
   it('refuses invalid existing bytes and never rewrites them', () => {

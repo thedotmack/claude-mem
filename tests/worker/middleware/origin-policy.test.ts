@@ -4,7 +4,9 @@ import http from 'http';
 import {
   buildWorkerOriginPolicy,
   createCorsMiddleware,
+  createForeignPageDeleteGuard,
   createWorkerHostGuard,
+  isOwnPageOrigin,
   parseAllowedOriginsSetting,
   type WorkerOriginPolicy,
 } from '../../../src/services/worker/http/middleware.js';
@@ -161,6 +163,93 @@ describe('worker CORS', () => {
   });
 });
 
+// A delete is tombstoned for cloud sync, so a stray DELETE from any page CORS
+// lets read (every http://localhost:* page) would remove memories on every
+// device. Deletes are accepted only from the worker's own page, an allowlisted
+// origin, or a client that sends no Origin (hooks, the CLI, curl).
+describe('browser deletes', () => {
+  async function workerAppWithDelete(policy: WorkerOriginPolicy, deleted: string[]): Promise<number> {
+    const app = express();
+    app.use(createWorkerHostGuard(policy));
+    app.use(createForeignPageDeleteGuard(policy));
+    app.use(createCorsMiddleware(policy));
+    app.delete('/api/observation/:id', (req, res) => { deleted.push(req.params.id); res.json({ success: true }); });
+    app.get('/api/observation/:id', (_req, res) => { res.json({ ok: true }); });
+    return listen(app);
+  }
+
+  it('refuses a DELETE from another localhost page, which may still read', async () => {
+    const deleted: string[] = [];
+    const port = await workerAppWithDelete(defaultPolicy, deleted);
+    const headers = { Host: `localhost:${port}`, Origin: 'http://localhost:5173' };
+
+    const refused = await request(port, { method: 'DELETE', path: '/api/observation/7', headers });
+    expect(refused.status).toBe(403);
+    expect(JSON.parse(refused.body).error).toBe('Forbidden');
+    expect(deleted).toEqual([]);
+
+    expect((await request(port, { method: 'GET', path: '/api/observation/7', headers })).status).toBe(200);
+  });
+
+  it('refuses a DELETE from a page on another loopback port or with an opaque origin', async () => {
+    const deleted: string[] = [];
+    const port = await workerAppWithDelete(defaultPolicy, deleted);
+    for (const origin of ['http://127.0.0.1:3000', 'null', 'chrome-extension://abcdef']) {
+      const response = await request(port, {
+        method: 'DELETE',
+        path: '/api/observation/1',
+        headers: { Host: `127.0.0.1:${port}`, Origin: origin },
+      });
+      expect(response.status).toBe(403);
+    }
+    expect(deleted).toEqual([]);
+  });
+
+  it('lets the viewer delete from its own page, on loopback or a LAN address', async () => {
+    const deleted: string[] = [];
+    const port = await workerAppWithDelete(defaultPolicy, deleted);
+    for (const [host, origin] of [
+      [`localhost:${port}`, `http://localhost:${port}`],
+      [`127.0.0.1:${port}`, `http://127.0.0.1:${port}`],
+      ['192.168.1.20:37777', 'http://192.168.1.20:37777'],
+    ]) {
+      const response = await request(port, { method: 'DELETE', path: '/api/observation/2', headers: { Host: host, Origin: origin } });
+      expect(response.status).toBe(200);
+    }
+    expect(deleted).toEqual(['2', '2', '2']);
+  });
+
+  it('lets hooks, the CLI and curl delete (no Origin header)', async () => {
+    const deleted: string[] = [];
+    const port = await workerAppWithDelete(defaultPolicy, deleted);
+    const response = await request(port, { method: 'DELETE', path: '/api/observation/3', headers: { Host: `127.0.0.1:${port}` } });
+    expect(response.status).toBe(200);
+    expect(deleted).toEqual(['3']);
+  });
+
+  it('lets an allowlisted origin delete, such as the CLAUDE_MEM_PUBLIC_URL viewer behind a port-forward', async () => {
+    const deleted: string[] = [];
+    const policy = buildWorkerOriginPolicy({ CLAUDE_MEM_PUBLIC_URL: 'https://37700.host.example' });
+    const port = await workerAppWithDelete(policy, deleted);
+    const response = await request(port, {
+      method: 'DELETE',
+      path: '/api/observation/4',
+      headers: { Host: `127.0.0.1:${port}`, Origin: 'https://37700.host.example' },
+    });
+    expect(response.status).toBe(200);
+    expect(deleted).toEqual(['4']);
+  });
+
+  it('decides "own page" from the Origin and Host alone', () => {
+    expect(isOwnPageOrigin('http://localhost:37777', 'localhost:37777', defaultPolicy)).toBe(true);
+    expect(isOwnPageOrigin('http://localhost:37777', '127.0.0.1:37777', defaultPolicy)).toBe(true);
+    expect(isOwnPageOrigin('http://[::1]:37777', '[::1]:37777', defaultPolicy)).toBe(true);
+    expect(isOwnPageOrigin('http://localhost:3000', 'localhost:37777', defaultPolicy)).toBe(false);
+    expect(isOwnPageOrigin('http://localhost:37777', undefined, defaultPolicy)).toBe(false);
+    expect(isOwnPageOrigin('not a url', 'localhost:37777', defaultPolicy)).toBe(false);
+  });
+});
+
 describe('settings', () => {
   it('parses CLAUDE_MEM_ALLOWED_ORIGINS into exact, lowercased origins', () => {
     expect(parseAllowedOriginsSetting(' https://App.Example.com/, http://mybox.local:37777 ,, ')).toEqual([
@@ -180,7 +269,7 @@ describe('settings', () => {
 });
 
 describe('Server wiring', () => {
-  function server(originPolicy?: WorkerOriginPolicy): Server {
+  function server(originPolicy?: WorkerOriginPolicy, routes?: (app: express.Application) => void): Server {
     const instance = new Server({
       getInitializationComplete: () => true,
       getMcpReady: () => true,
@@ -190,6 +279,7 @@ describe('Server wiring', () => {
       getAiStatus: () => ({ provider: 'disabled', authMethod: 'none', lastInteraction: null }),
       ...(originPolicy ? { originPolicy } : {}),
     });
+    if (routes) instance.registerRoutes({ setupRoutes: routes });
     instance.finalizeRoutes();
     return instance;
   }
@@ -217,6 +307,31 @@ describe('Server wiring', () => {
     try {
       expect((await request(port, { path: '/api/health', headers: { Host: 'evil.example' } })).status).toBe(403);
       expect((await request(port, { path: '/api/health', headers: { Host: `127.0.0.1:${port}` } })).status).toBe(200);
+    } finally {
+      await stop(instance);
+    }
+  });
+
+  it('refuses a DELETE from another localhost page when the worker passes a policy', async () => {
+    const deleted: string[] = [];
+    const instance = server(defaultPolicy, app => {
+      app.delete('/api/observation/:id', (req, res) => { deleted.push(req.params.id); res.json({ success: true }); });
+    });
+    const port = await start(instance);
+    try {
+      const foreign = await request(port, {
+        method: 'DELETE',
+        path: '/api/observation/9',
+        headers: { Host: `localhost:${port}`, Origin: 'http://localhost:5173' },
+      });
+      expect(foreign.status).toBe(403);
+      const ownPage = await request(port, {
+        method: 'DELETE',
+        path: '/api/observation/9',
+        headers: { Host: `localhost:${port}`, Origin: `http://localhost:${port}` },
+      });
+      expect(ownPage.status).toBe(200);
+      expect(deleted).toEqual(['9']);
     } finally {
       await stop(instance);
     }

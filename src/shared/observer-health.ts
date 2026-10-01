@@ -71,6 +71,12 @@ export interface ObserverHealthState {
 export interface ObserverQuotaCooldown {
   active: boolean;
   provider: string;
+  /**
+   * 'claude' only: the config-dir profile (Claude account) the breaker pauses.
+   * A reader shows the pause only while that account is selected
+   * (quota-cooldown's cooldownAppliesToCurrentAccount).
+   */
+  profile?: string;
   /** Epoch ms when the breaker was armed. */
   armedAt: number;
   /** Epoch ms when the next probe is allowed. */
@@ -300,6 +306,7 @@ export function recordObserverQuotaCooldown(
       quotaCooldown: {
         active: true,
         provider: cooldown.provider,
+        ...(cooldown.profile ? { profile: cooldown.profile } : {}),
         armedAt: cooldown.armedAt,
         until: cooldown.until,
         ...(cooldown.window ? { window: cooldown.window } : {}),

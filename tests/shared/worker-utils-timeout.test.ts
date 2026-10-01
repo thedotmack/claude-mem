@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
-import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, maxSessionInitRequestTimeoutMs } from '../../src/shared/hook-constants.js';
 // Eagerly evaluate src/shared/paths.ts BEFORE any per-test env override:
 // paths.ts freezes its DATA_DIR const at first evaluation, and without this
 // import the dynamic `import('../../src/shared/worker-utils.js')` calls
@@ -156,6 +156,28 @@ describe('worker-utils API timeout resolution', () => {
     expect(workerUtils.getSessionInitRequestTimeoutMs()).toBeLessThan(HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP);
   });
 
+  it('cuts a longer saved session-init budget to what fits under the cap on Windows', async () => {
+    // A settings.json seeded while 10 s was the default everywhere, or a user
+    // override: on Windows the hook's start-up and exit leave only 7 s.
+    const settings = SettingsDefaultsManager.getAllDefaults();
+    settings.CLAUDE_MEM_DATA_DIR = tempDir;
+    settings.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = '10000';
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    const workerUtils = await import('../../src/shared/worker-utils.js');
+    const originalPlatform = process.platform;
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      workerUtils.clearPortCache();
+      expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(maxSessionInitRequestTimeoutMs('win32'));
+      expect(maxSessionInitRequestTimeoutMs('win32')).toBe(7000);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      workerUtils.clearPortCache();
+    }
+    // Elsewhere the same saved value is kept.
+    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(10000);
+  });
+
   it('rejects session-init overrides that exceed the host hook cap (#3434)', async () => {
     writeSettings('45000');
     process.env.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = String(HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP + 1000);
@@ -166,7 +188,7 @@ describe('worker-utils API timeout resolution', () => {
 
     workerUtils.clearPortCache();
 
-    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(HOOK_TIMEOUTS.SESSION_INIT_REQUEST);
+    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(defaultSessionInitRequestTimeoutMs());
     expect(warnSpy).toHaveBeenCalledWith(
       'SYSTEM',
       'Invalid CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS, using default',
