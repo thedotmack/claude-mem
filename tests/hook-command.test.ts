@@ -184,6 +184,27 @@ describe('hookCommand catch-all never blocks (#3161, plan-17 step 2)', () => {
   }
 });
 
+describe("hook claude <event> is Claude Code (#2835)", () => {
+  it('hands handlers the canonical platform id, so claude-code branches apply', async () => {
+    const platforms: unknown[] = [];
+    const executeSpy = spyOn(getEventHandler('session-init'), 'execute').mockImplementation(async (input) => {
+      platforms.push(input.platform);
+      return { continue: true, suppressOutput: true };
+    });
+    console.log = () => {};
+    installFakeStdin(JSON.stringify({ session_id: 'alias-session', cwd: process.cwd(), prompt: 'hello' }));
+
+    try {
+      const exitCode = await hookCommand('claude', 'session-init', { skipExit: true });
+
+      expect(exitCode).toBe(HOOK_EXIT_CODES.SUCCESS);
+      expect(platforms).toEqual(['claude-code']);
+    } finally {
+      executeSpy.mockRestore();
+    }
+  });
+});
+
 describe('isWorkerUnavailableError', () => {
   describe('transport failures → true (graceful)', () => {
     it('should classify ECONNREFUSED as worker unavailable', () => {

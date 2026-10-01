@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import * as pluginEntry from "../../src/integrations/opencode-plugin/index";
 import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
 import {
@@ -56,6 +57,68 @@ const pluginCtx = {
 };
 
 describe("OpenCode plugin event contract", () => {
+  it("shipped bundle exports only a functional default factory", async () => {
+    // Regression guard for #4197, coordinated with #3803: opencode's loader
+    // iterates every named export of the plugin file and calls each as a
+    // plugin factory. If a non-function export (e.g. the contract constants)
+    // leaks into the bundle, the whole plugin fails to load with
+    // "Plugin export is not a function".
+    //
+    // This must exercise the GENERATED bundle (the file users receive), not
+    // the TypeScript entry: importing the entry cannot catch exports the
+    // bundler itself introduces or leaks. It builds with the options
+    // scripts/build-hooks.js uses (scripts/opencode-plugin-build-options.js),
+    // into a temp dir so the test stays self-contained. #3803 moved the entry
+    // module to a default-only export; this test pins the shipped artifact to
+    // that contract.
+    const { buildSync } = await import("esbuild");
+    const { OPENCODE_PLUGIN_BUILD_OPTIONS } = await import("../../scripts/opencode-plugin-build-options.js");
+    const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-"));
+    const outfile = join(dir, "index.js");
+    try {
+      buildSync({ ...OPENCODE_PLUGIN_BUILD_OPTIONS, outfile });
+      const bundle = await import(pathToFileURL(outfile).href);
+      const exportNames = Object.keys(bundle).sort();
+      expect(exportNames).toEqual(["default"]);
+      expect(typeof bundle.default).toBe("function");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a bundle that leaks a non-function export (negative control)", async () => {
+    // Guards the guard: proves the assertion above can actually catch a
+    // leaked non-function export, so a future green run is meaningful.
+    const { buildSync } = await import("esbuild");
+    const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-neg-"));
+    const entry = join(dir, "entry.ts");
+    const outfile = join(dir, "index.js");
+    try {
+      writeFileSync(
+        entry,
+        "export const LEAKED = [1, 2, 3];\nexport default function plugin() { return {}; }\n",
+      );
+      buildSync({
+        entryPoints: [entry],
+        bundle: true,
+        platform: "node",
+        target: "node18",
+        format: "esm",
+        outfile,
+        minify: true,
+        logLevel: "error",
+        external: [],
+      });
+      const bundle = await import(pathToFileURL(outfile).href);
+      // Exact export list: proves the synthetic leak was actually emitted, so a
+      // green run of this control is meaningful (per review feedback).
+      expect(Object.keys(bundle).sort()).toEqual(["LEAKED", "default"]);
+      expect(Array.isArray((bundle as Record<string, unknown>).LEAKED)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reads the worker port from persisted settings without importing worker-utils", () => {
     const source = readFileSync(
       "src/integrations/opencode-plugin/index.ts",

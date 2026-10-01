@@ -98,6 +98,17 @@ export function isCmemMemoryKey(apiKey: string | undefined | null): boolean {
   return (apiKey ?? '').trim().startsWith('cm_pro_');
 }
 
+/**
+ * Whether a key may be sent to an endpoint: the cmem gateway and its keys go
+ * together, both ways. A cm_pro_ key goes only to the gateway, and the gateway
+ * only gets a cm_pro_ key (#4276). Every provider that sends a bearer key
+ * checks the pair here, so a key pasted into any provider's settings can never
+ * leave for the wrong host.
+ */
+export function isKeyAllowedForEndpoint(apiUrl: string, apiKey: string): boolean {
+  return isCmemGatewayUrl(apiUrl) === isCmemMemoryKey(apiKey);
+}
+
 /** What the gateway said about the rejection that armed the fallback. */
 export interface ProFallbackNotice {
   message?: string;

@@ -191,6 +191,7 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
+import { canonicalIntegrationId } from '../../shared/integration-id.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 function registerMarketplace(): void {
@@ -310,7 +311,7 @@ async function resolveClaudeAutoMemoryChoice(
   return choice;
 }
 
-function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | null {
+export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
     // Route every per-IDE failure through the central decision point. A single
     // IDE failure is FAIL_LOUD_PER_IDE (partial install); the summary headline
@@ -370,14 +371,53 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
+    case 'kimi': {
+      return {
+        title: 'Kimi Code: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading Kimi installer…');
+          const { installKimiHooks, configureKimiMcp } = await import('../../services/integrations/KimiHooksInstaller.js');
+          message('Installing Kimi hooks…');
+          const { result: hooksResult, output: hooksOutput } = await bufferConsole(async () => installKimiHooks());
+          if (hooksResult !== 0) {
+            recordFailure('Kimi Code: hook installation failed', hooksOutput);
+            return `Kimi Code: hook installation failed ${styleText('red', 'FAIL')}`;
+          }
+          message('Configuring Kimi MCP…');
+          const { result: mcpResult } = await bufferConsole(async () => configureKimiMcp());
+          if (mcpResult === 0) {
+            return `Kimi Code: hooks + MCP installed ${styleText('green', 'OK')}`;
+          }
+          return `Kimi Code: hooks installed; MCP setup failed — run \`npx claude-mem kimi install\` ${styleText('yellow', '!')}`;
+        },
+      };
+    }
+
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',
         task: async (message) => {
           message('Loading OpenCode installer…');
-          const { installOpenCodeIntegration } = await import('../../services/integrations/OpenCodeInstaller.js');
+          const {
+            installOpenCodeIntegration,
+            OPENCODE_MCP_REGISTRATION_INCOMPLETE,
+          } = await import('../../services/integrations/OpenCodeInstaller.js');
           message('Installing OpenCode plugin…');
           const { result, output } = await bufferConsole(() => installOpenCodeIntegration());
+          if (result === OPENCODE_MCP_REGISTRATION_INCOMPLETE) {
+            // The plugin and AGENTS.md context are installed; only the MCP entry
+            // is missing. That is a partial install, not a failed IDE: record a
+            // WARN_CONTINUE warning (exit 0) and keep the integration's captured
+            // output so its remediation reaches the user after the spinners.
+            installerError(ErrorSeverity.WARN_CONTINUE, {
+              component: 'opencode',
+              phase: 'ide-install',
+              cause: new Error('OpenCode plugin + context installed, but MCP registration is incomplete (mcp-server.cjs not found).'),
+              remediation: 'Restore the plugin build, then re-run `npx claude-mem install --ide=opencode` to register the MCP server.',
+              details: output,
+            }, summary);
+            return `OpenCode: plugin + context installed; MCP registration incomplete ${styleText('yellow', '!')}`;
+          }
           if (result !== 0) {
             recordFailure('OpenCode: plugin installation failed', output);
             return `OpenCode: plugin installation failed ${styleText('red', 'FAIL')}`;
@@ -2451,9 +2491,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   let selectedIDEs: string[];
   if (options.ide) {
-    selectedIDEs = [options.ide];
+    const ideId = canonicalIntegrationId(options.ide);
+    selectedIDEs = [ideId];
     const allIDEs = detectInstalledIDEs();
-    const match = allIDEs.find((i) => i.id === options.ide);
+    const match = allIDEs.find((i) => i.id === ideId);
     if (!match) {
       log.error(`Unknown IDE: ${options.ide}`);
       log.info(`Available IDEs: ${allIDEs.map((i) => i.id).join(', ')}`);
