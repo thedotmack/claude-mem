@@ -77,16 +77,22 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
+      id: 'kimi',
+      label: 'Kimi Code',
+      detected: existsSync(join(home, '.kimi-code')) || isCommandInPath('kimi'),
+      hint: 'hooks + MCP integration',
+    },
+    {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
       hint: 'hooks + MCP integration',
     },
     {
-      id: 'kimi-code',
-      label: 'Kimi Code CLI',
-      detected: existsSync(join(home, '.kimi-code')),
-      hint: 'hooks + MCP integration',
+      id: 'grok-bot',
+      label: 'Grok Bot',
+      detected: existsSync(join(home, '.cursor')),
+      hint: 'transcript watch + MCP integration',
     },
     {
       id: 'copilot-cli',

@@ -5,8 +5,12 @@ import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
+import { poolSize, rankByStrength } from '../reinforcement/rank.js';
 import type {
   ContextConfig,
+  LocalObservation,
+  LocalSessionSummary,
   Observation,
   SessionSummary,
   SummaryTimelineItem,
@@ -17,21 +21,7 @@ import { SUMMARY_LOOKAHEAD } from './types.js';
 
 type DatabaseOwner = { db: Database };
 
-export function queryObservationsMulti(
-  db: DatabaseOwner,
-  projects: string[],
-  config: ContextConfig,
-  platformSource?: string
-): Observation[] {
-  const typeArray = Array.from(config.observationTypes);
-  const typePlaceholders = typeArray.map(() => '?').join(',');
-  const conceptArray = Array.from(config.observationConcepts);
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
-
-  const projectPlaceholders = projects.map(() => '?').join(',');
-
-  return db.db.prepare(`
-    SELECT
+const OBSERVATION_SELECT = `
       o.id,
       o.memory_session_id,
       COALESCE(s.platform_source, 'claude') as platform_source,
@@ -47,27 +37,102 @@ export function queryObservationsMulti(
       o.created_at,
       o.created_at_epoch,
       o.project
+`;
+
+export function queryObservationsMulti(
+  db: DatabaseOwner,
+  projects: string[],
+  config: ContextConfig,
+  platformSource?: string
+): LocalObservation[] {
+  // Opt-in ACT-R ranking (CLAUDE_MEM_REINFORCE_ALPHA > 0): fetch a wider
+  // recency pool and let re-confirmed older observations climb into the
+  // window. With alpha = 0 the pool is exactly the configured count and the
+  // rows come back as queried, i.e. the N most recent.
+  const alpha = config.reinforcementAlpha ?? 0;
+  const pool = queryObservationsNewest(db, config, {
+    limit: poolSize(config.totalObservationCount, alpha),
+    platformSource,
+    projects,
+    excludeSubagents: config.mainAgentOnly,
+    withReinforcementDates: alpha > 0,
+  });
+  return rankByStrength(pool, config.totalObservationCount, alpha);
+}
+
+/**
+ * Newest observations matching the active mode filters.
+ *
+ * Pass `projects` to stay on the SessionStart / `/api/context/inject` path
+ * (strict project scope). Omit `projects` for a house-wide newest feed — used
+ * only by the Grok Bot INDEX writer when a seat diary is thin. Do not add a
+ * house-fallback query param to `/api/context/inject`.
+ *
+ * `includeManualSaves` also admits rows from `/api/memory/save` (session
+ * `manual-<project>`), which are stored with no concepts and so never pass the
+ * mode concept filter. The Grok Bot seat query sets it so seat self-saves land
+ * in the live INDEX.
+ */
+export function queryObservationsNewest(
+  db: DatabaseOwner,
+  config: ContextConfig,
+  options: {
+    limit: number;
+    platformSource?: string;
+    projects?: string[];
+    includeManualSaves?: boolean;
+    excludeSubagents?: boolean;
+    /** Also select the reinforcement history (only needed while ranking is on). */
+    withReinforcementDates?: boolean;
+  }
+): LocalObservation[] {
+  const typeArray = Array.from(config.observationTypes);
+  const typePlaceholders = typeArray.map(() => '?').join(',');
+  const conceptArray = Array.from(config.observationConcepts);
+  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+  const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
+  const projectClause = projects.length > 0
+    ? `AND (o.project COLLATE NOCASE IN (${projects.map(() => '?').join(',')})
+           OR o.merged_into_project COLLATE NOCASE IN (${projects.map(() => '?').join(',')}))`
+    : '';
+
+  const manualClause = options.includeManualSaves
+    ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
+    : '';
+
+  // #3274: SessionStart injection opts in. The seat INDEX passes `projects`
+  // too, and must keep agent-tagged rows. A subagent row carries BOTH agent_id
+  // and agent_type: transcript-watch rows (Grok Bot seats) carry agent_id alone
+  // and must stay injected, or `session_start_context` returns nothing for them.
+  const agentFilter = options.excludeSubagents ? `AND ${mainAgentRowSql('o')}` : '';
+
+  const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
+
+  return db.db.prepare(`
+    SELECT
+      ${OBSERVATION_SELECT}${reinforcementColumn}
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-           OR o.merged_into_project IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
+    WHERE (? IS NULL OR s.platform_source = ?)
+      ${projectClause}
+      ${agentFilter}
+      AND (${manualClause} (
+        type IN (${typePlaceholders})
+        AND EXISTS (
+          SELECT 1 FROM json_each(o.concepts)
+          WHERE value IN (${conceptPlaceholders})
+        )
+      ))
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
   `).all(
-    ...projects,
-    ...projects,
-    platformSource ?? null,
-    platformSource ?? null,
+    options.platformSource ?? null,
+    options.platformSource ?? null,
+    ...(projects.length > 0 ? [...projects, ...projects] : []),
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
-  ) as Observation[];
+    options.limit
+  ) as LocalObservation[];
 }
 
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
@@ -77,8 +142,8 @@ export function countObservationsByProjects(db: DatabaseOwner, projects: string[
     SELECT COUNT(*) as count
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-       OR o.merged_into_project IN (${projectPlaceholders}))
+    WHERE (o.project COLLATE NOCASE IN (${projectPlaceholders})
+       OR o.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
   `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
   return row?.count ?? 0;
@@ -89,7 +154,7 @@ export function querySummariesMulti(
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): SessionSummary[] {
+): LocalSessionSummary[] {
   const projectPlaceholders = projects.map(() => '?').join(',');
 
   return db.db.prepare(`
@@ -107,8 +172,8 @@ export function querySummariesMulti(
       ss.project
     FROM session_summaries ss
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project IN (${projectPlaceholders})
-           OR ss.merged_into_project IN (${projectPlaceholders}))
+    WHERE (ss.project COLLATE NOCASE IN (${projectPlaceholders})
+           OR ss.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
@@ -118,7 +183,7 @@ export function querySummariesMulti(
     platformSource ?? null,
     platformSource ?? null,
     config.sessionCount + SUMMARY_LOOKAHEAD
-  ) as SessionSummary[];
+  ) as LocalSessionSummary[];
 }
 
 export function cwdToDashed(cwd: string): string {
@@ -237,7 +302,7 @@ export function buildTimeline(
   return timeline;
 }
 
-export function getFullObservationIds(observations: Observation[], count: number): Set<number> {
+export function getFullObservationIds(observations: Observation[], count: number): Set<Observation['id']> {
   return new Set(
     observations
       .slice(0, count)

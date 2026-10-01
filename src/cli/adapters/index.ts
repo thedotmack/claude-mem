@@ -12,9 +12,9 @@ export function getPlatformAdapter(platform: string): PlatformAdapter {
     case 'claude-code': return claudeCodeAdapter;
     case 'codex': return codexAdapter;
     case 'cursor': return cursorAdapter;
+    case 'kimi': return kimiAdapter;
     case 'windsurf': return windsurfAdapter;
     case 'antigravity': case 'antigravity-cli': return antigravityCliAdapter;
-    case 'kimi': case 'kimi-code': return kimiAdapter;
     case 'raw': return rawAdapter;
     default: return rawAdapter;
   }

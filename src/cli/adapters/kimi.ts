@@ -1,114 +1,92 @@
-// SPDX-License-Identifier: Apache-2.0
-
-// Kimi Code platform adapter.
-//
-// Payload facts below were verified against live Kimi Code (v2, Node engine)
-// hook payloads — see https://github.com/thedotmack/claude-mem/pull/2908 for
-// the original integration this corrects:
-//
-//  - PostToolUse payloads carry `tool_output` / `tool_call_id`, NOT Claude
-//    Code's `tool_response` / `tool_use_id`.
-//  - Stop payloads carry only {cwd, hook_event_name, session_id,
-//    stop_hook_active} — no transcript_path and no last_assistant_message,
-//    so we synthesize a transcript from Kimi's wire.jsonl session log.
-//  - Kimi appends a hook's raw stdout to the model context on
-//    UserPromptSubmit, and ignores SessionStart hook stdout entirely. A JSON
-//    hook envelope would be injected verbatim, so context is emitted as
-//    plain text and everything else stays silent.
-//  - SessionStart sources are 'startup' | 'resume'.
-
-import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import { existsSync, readdirSync } from 'fs';
+import path from 'path';
+import type { HookResult, NormalizedHookInput, PlatformAdapter } from '../types.js';
+import { kimiCodeHome } from '../../shared/kimi-paths.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
-import { synthesizeKimiTranscript } from './kimi-transcript.js';
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+// Kimi session ids are opaque workDir-scoped identifiers. Restrict to a safe
+// character set so a malicious sessionId from stdin cannot escape
+// ~/.kimi-code/sessions via path separators, '..' segments, or null bytes
+// (security review on PR #3676).
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+const transcriptPathCache = new Map<string, string | undefined>();
+
+/**
+ * Kimi hook payloads carry no transcript path. Wire logs live at
+ * sessions/<workDirKey>/<sessionId>/agents/main/wire.jsonl; the workDirKey
+ * bucket is derived from cwd, so scan the (small) sessions root instead of
+ * reimplementing the bucket hash. Bounded by the directory entry count.
+ *
+ * The result is memoized per sessionId so repeated hook events for the same
+ * session do not rescan the sessions directory.
+ */
+export function deriveKimiTranscriptPath(sessionId: string): string | undefined {
+  const cacheKey = `${kimiCodeHome()}|${sessionId}`;
+  const cached = transcriptPathCache.get(cacheKey);
+  if (cached !== undefined || transcriptPathCache.has(cacheKey)) {
+    return cached;
+  }
+  if (!SAFE_SESSION_ID_RE.test(sessionId)) {
+    transcriptPathCache.set(cacheKey, undefined);
+    return undefined;
+  }
+  const sessionsRoot = path.join(kimiCodeHome(), 'sessions');
+  let workDirs: string[];
+  try {
+    workDirs = readdirSync(sessionsRoot);
+  } catch {
+    transcriptPathCache.set(cacheKey, undefined);
+    return undefined;
+  }
+  for (const workDir of workDirs) {
+    const candidate = path.join(sessionsRoot, workDir, sessionId, 'agents', 'main', 'wire.jsonl');
+    if (existsSync(candidate)) {
+      transcriptPathCache.set(cacheKey, candidate);
+      return candidate;
+    }
+  }
+  transcriptPathCache.set(cacheKey, undefined);
+  return undefined;
+}
 
 export const kimiAdapter: PlatformAdapter = {
   normalizeInput(raw): NormalizedHookInput {
-    const r = (raw ?? {}) as any;
-
-    const cwd = r.cwd
-      ?? process.env.KIMI_CWD
-      ?? process.env.KIMI_PROJECT_DIR
-      ?? process.env.CLAUDE_PROJECT_DIR
-      ?? process.cwd();
+    const r = (raw ?? {}) as Record<string, unknown>;
+    const cwd = typeof r.cwd === 'string' ? r.cwd : process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
-
-    const sessionId = r.session_id ?? process.env.KIMI_SESSION_ID ?? undefined;
+    const sessionId = stringOrUndefined(r.session_id);
     if (!sessionId) {
       throw new AdapterRejectedInput('missing_session_id');
     }
-
-    const hookEventName: string | undefined = r.hook_event_name;
-
-    const toolName: string | undefined = r.tool_name;
-    const toolInput: unknown = r.tool_input;
-    // Kimi sends tool_output where Claude Code sends tool_response.
-    const toolResponse: unknown = r.tool_response ?? r.tool_output;
-
-    // Kimi sends the user prompt on UserPromptSubmit. Coerce to string to guard against
-    // multimodal payloads where prompt may be an object/array.
-    const rawField: unknown = r.prompt ?? r.query ?? r.input ?? r.message;
-    let prompt: string | undefined;
-    if (typeof rawField === 'string') {
-      prompt = rawField;
-    } else if (Array.isArray(rawField)) {
-      prompt = rawField
-        .map((part: any) => {
-          if (typeof part === 'string') return part;
-          if (part && typeof part.text === 'string') return part.text;
-          return '';
-        })
-        .join('\n')
-        .trim();
-      if (prompt.length === 0) prompt = undefined;
-    } else if (rawField && typeof rawField === 'object' && typeof (rawField as any).text === 'string') {
-      prompt = (rawField as any).text;
-    }
-
-    // Kimi's Stop payload has no transcript_path / last_assistant_message.
-    // Convert the session's wire.jsonl to Claude Code transcript format so
-    // the summarize handler can extract the final assistant message.
-    let transcriptPath: string | undefined = r.transcript_path;
-    if (hookEventName === 'Stop' && !transcriptPath && r.last_assistant_message === undefined) {
-      try {
-        transcriptPath = synthesizeKimiTranscript(sessionId) ?? undefined;
-      } catch {
-        // Best effort — the summarize handler degrades to a logged skip
-        // when no transcript is available.
-      }
-    }
-
+    const source = r.source;
     return {
       sessionId,
       cwd,
-      prompt,
-      toolName,
-      toolInput,
-      toolResponse,
-      transcriptPath,
-      lastAssistantMessage: r.last_assistant_message,
-      turnId: r.turn_id,
-      stopHookActive: r.stop_hook_active,
-      permissionMode: r.permission_mode,
-      model: r.model,
-      sessionSource: r.source === 'startup' || r.source === 'resume'
-        ? r.source
-        : undefined,
-      filePath: r.file_path,
-      edits: r.edits,
+      prompt: stringOrUndefined(r.prompt),
+      toolName: stringOrUndefined(r.tool_name),
+      toolInput: r.tool_input,
+      toolResponse: r.tool_response,
+      transcriptPath: deriveKimiTranscriptPath(sessionId),
+      model: stringOrUndefined(r.model),
+      sessionSource: source === 'startup' || source === 'resume' ? source : undefined,
+      // Kimi binds both Stop and PreCompact to the same internal `summarize`
+      // event; the raw event name is the only way handlers can tell them apart.
+      hookEventName: stringOrUndefined(r.hook_event_name),
     };
   },
 
-  formatOutput(result): string | undefined {
-    // Kimi appends raw hook stdout to the model context on UserPromptSubmit;
-    // anything else written to stdout is UI noise. Emit the context text
-    // plain (no JSON envelope) and stay silent otherwise — exit code 0
-    // already means "continue".
-    const ctx = result.hookSpecificOutput?.additionalContext;
-    if (typeof ctx === 'string' && ctx.trim()) {
-      return ctx;
-    }
-    return undefined;
-  }
+  formatOutput(result: HookResult): unknown {
+    // Kimi appends plain stdout text to context; it does not understand the
+    // Claude/Codex hookSpecificOutput JSON envelope for context injection.
+    const context = result?.hookSpecificOutput?.additionalContext;
+    if (typeof context === 'string' && context.length > 0) return context;
+    return '';
+  },
 };
