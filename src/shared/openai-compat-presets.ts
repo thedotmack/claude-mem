@@ -87,6 +87,22 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Pick a model id from api.together.ai/models.',
   },
   {
+    id: 'minimax',
+    label: 'MiniMax (global)',
+    baseUrl: 'https://api.minimax.io/v1',
+    defaultModel: 'MiniMax-M3',
+    requiresApiKey: true,
+    hint: 'Key from platform.minimax.io; the model id is passed verbatim (e.g. MiniMax-M2.7).',
+  },
+  {
+    id: 'minimax-cn',
+    label: 'MiniMax (China)',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    defaultModel: 'MiniMax-M3',
+    requiresApiKey: true,
+    hint: 'Mainland-China accounts (platform.minimaxi.com).',
+  },
+  {
     id: 'ollama',
     label: 'Ollama (local)',
     baseUrl: 'http://localhost:11434/v1',
