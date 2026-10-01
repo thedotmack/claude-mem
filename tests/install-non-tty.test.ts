@@ -187,6 +187,18 @@ describe('Install Non-TTY Support', () => {
       expect(copyRegion).not.toContain("'.mcp.json'");
     });
 
+    it('copies the OMP hook to the marketplace directory the OMP installer reads (#3556)', () => {
+      const copyRegion = installSource.slice(
+        installSource.indexOf('const allowedTopLevelEntries = ['),
+        installSource.indexOf('function copyPluginToCache'),
+      );
+      // OmpHooksInstaller resolves <marketplace>/omp/hooks/claude-mem.ts; shipping
+      // omp/ in the npm package alone never puts it there.
+      expect(copyRegion).toContain("'omp'");
+      const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+      expect(packageJson.files).toContain('omp');
+    });
+
     it('publishes the Claude marketplace root manifest in the npm package (#3424)', () => {
       const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
       expect(packageJson.files).toContain('.claude-plugin');

@@ -728,6 +728,7 @@ function copyPluginToMarketplace(): void {
     'plugin',
     'package-lock.json',
     'openclaw',
+    'omp',
     'dist',
     'LICENSE',
     'README.md',
