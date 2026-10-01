@@ -231,7 +231,7 @@ export function ContextSettingsModal({
           <div className="preview-column">
             <div className="preview-content">
               {error ? (
-                <div style={{ color: '#ff6b6b' }}>
+                <div style={{ color: 'var(--color-accent-error)' }}>
                   Error loading preview: {error}
                 </div>
               ) : (

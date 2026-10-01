@@ -67,12 +67,12 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore 
           }
         })}
         {items.length === 0 && !isLoading && (
-          <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
+          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-muted)' }}>
             No items to display
           </div>
         )}
         {isLoading && (
-          <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e' }}>
+          <div style={{ textAlign: 'center', padding: '20px', color: 'var(--color-text-muted)' }}>
             <div className="spinner" style={{ display: 'inline-block', marginRight: '10px' }}></div>
             Loading more...
           </div>
@@ -81,7 +81,7 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore 
           <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
         )}
         {!hasMore && items.length > 0 && (
-          <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e', fontSize: '14px' }}>
+          <div style={{ textAlign: 'center', padding: '20px', color: 'var(--color-text-muted)', fontSize: '14px' }}>
             No more items to load
           </div>
         )}
