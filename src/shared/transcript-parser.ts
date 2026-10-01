@@ -108,6 +108,25 @@ function contentToText(msgContent: unknown): string | null {
 }
 
 /**
+ * Last-resort stand-in for a tool-only assistant turn: names the tools it
+ * called, so a session that ended mid-tool-call (every assistant turn is
+ * tool_use only) still has something to summarize. A Bash command is clipped
+ * to 60 characters; the observer already saw the full tool inputs.
+ */
+function synthesizeToolDescription(msgContent: any[]): string {
+  const toolUses = msgContent.filter((c: any) => c?.type === 'tool_use');
+  if (toolUses.length === 0) return '';
+  const labels = toolUses.map((t: any) => {
+    const name: string = t.name ?? 'unknown';
+    const input = t.input ?? {};
+    if (input.file_path) return `${name}(${input.file_path})`;
+    if (input.command) return `${name}(${String(input.command).slice(0, 60)})`;
+    return name;
+  });
+  return `[Session ended mid-task. Last tools used: ${labels.join(', ')}]`;
+}
+
+/**
  * Extract last message from a JSONL transcript.
  *
  * Supports three field conventions for the per-line role marker:
@@ -164,6 +183,12 @@ export function extractLastMessageFromJsonl(
     // tool-only turns" if every later turn is empty.
     if (lastEmptyText === null) {
       lastEmptyText = text;
+      // If this turn was tool-only, synthesize a description as a last resort
+      // so the summarizer has something rather than silently skipping the session.
+      if (!lastEmptyText.trim() && Array.isArray(msgContent)) {
+        const toolSummary = synthesizeToolDescription(msgContent);
+        if (toolSummary) lastEmptyText = toolSummary;
+      }
     }
   }
 

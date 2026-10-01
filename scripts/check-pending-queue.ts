@@ -42,6 +42,7 @@ interface SetProcessingResponse {
   isProcessing: boolean;
   queueDepth: number;
   activeSessions: number;
+  scheduledSessions: number;
 }
 
 async function fetchWithTimeout(
@@ -95,7 +96,7 @@ async function triggerProcessing(): Promise<SetProcessingResponse> {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      body: JSON.stringify({ isProcessing: false })
     },
     'Failed to trigger processing',
   );
@@ -199,6 +200,7 @@ What is this for?
   console.log(`  Is processing:    ${result.isProcessing ? 'yes' : 'no'}`);
   console.log(`  Queue depth:      ${result.queueDepth}`);
   console.log(`  Active sessions:  ${result.activeSessions}`);
+  console.log(`  Resume attempts:  ${result.scheduledSessions}`);
 
   console.log('\nProcessing handled by worker. Check status again in a few minutes.\n');
 }

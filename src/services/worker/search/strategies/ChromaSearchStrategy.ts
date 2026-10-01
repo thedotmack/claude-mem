@@ -3,6 +3,7 @@ import {
   StrategySearchOptions,
   StrategySearchResult,
   SEARCH_CONSTANTS,
+  isCategoryRequested,
   ChromaMetadata,
   DateRange,
   ObservationSearchResult,
@@ -13,6 +14,8 @@ import { ChromaSync } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { resolveDateBound } from '../../../../shared/date-bounds.js';
+import { buildProjectWhereFilter, projectReadKeysFor } from '../project-where-filter.js';
 
 export class ChromaSearchStrategy {
   constructor(
@@ -37,26 +40,33 @@ export class ChromaSearchStrategy {
       files,
       limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
       project,
+      projects,
       platformSource,
       dateRange,
-      orderBy = 'date_desc'
+      orderBy = 'date_desc',
+      ignoreDefaultRecencyWindow = false
     } = options;
 
     if (!query) {
       return this.emptyResult('chroma');
     }
 
-    const searchObservations = searchType === 'all' || searchType === 'observations';
-    const searchSessions = searchType === 'all' || searchType === 'sessions';
-    const searchPrompts = searchType === 'all' || searchType === 'prompts';
+    const searchObservations = isCategoryRequested(searchType, 'observations');
+    const searchSessions = isCategoryRequested(searchType, 'sessions');
+    const searchPrompts = isCategoryRequested(searchType, 'prompts');
 
-    const whereFilter = this.buildWhereFilter(searchType, project, platformSource);
+    // The keys SearchManager scopes a search by, so this path agrees with it:
+    // the requested projects, their stored spellings, and one merge hop.
+    const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
+    const whereFilter = this.buildWhereFilter(searchType, readKeys, platformSource);
 
     logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType });
 
     return await this.executeChromaSearch(query, whereFilter, {
       searchObservations, searchSessions, searchPrompts,
-      obsType, concepts, files, orderBy, limit, project, platformSource, dateRange
+      obsType, concepts, files, orderBy, limit, project,
+      projects: readKeys.length > 0 ? readKeys : undefined,
+      platformSource, dateRange, ignoreDefaultRecencyWindow
     });
   }
 
@@ -73,8 +83,10 @@ export class ChromaSearchStrategy {
       orderBy: 'relevance' | 'date_desc' | 'date_asc';
       limit: number;
       project?: string;
+      projects?: string[];
       platformSource?: string;
       dateRange?: DateRange;
+      ignoreDefaultRecencyWindow: boolean;
     }
   ): Promise<StrategySearchResult> {
     const chromaResults = await this.chromaSync.queryChroma(
@@ -91,7 +103,7 @@ export class ChromaSearchStrategy {
       };
     }
 
-    const recentItems = this.filterByRecency(chromaResults, options.dateRange);
+    const recentItems = this.filterByRecency(chromaResults, options.dateRange, options.ignoreDefaultRecencyWindow);
     const categorized = this.categorizeByDocType(recentItems, options);
 
     let observations: ObservationSearchResult[] = [];
@@ -108,6 +120,7 @@ export class ChromaSearchStrategy {
         orderBy: sqlOrderBy,
         limit: options.limit,
         project: options.project,
+        projects: options.projects,
         platformSource: options.platformSource
       };
       observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
@@ -118,6 +131,7 @@ export class ChromaSearchStrategy {
         orderBy: sqlOrderBy,
         limit: options.limit,
         project: options.project,
+        projects: options.projects,
         platformSource: options.platformSource
       });
     }
@@ -127,6 +141,7 @@ export class ChromaSearchStrategy {
         orderBy: sqlOrderBy,
         limit: options.limit,
         project: options.project,
+        projects: options.projects,
         platformSource: options.platformSource
       });
     }
@@ -138,7 +153,7 @@ export class ChromaSearchStrategy {
     };
   }
 
-  private buildWhereFilter(searchType: string, project?: string, platformSource?: string): Record<string, any> | undefined {
+  private buildWhereFilter(searchType: string, readKeys: string[], platformSource?: string): Record<string, any> | undefined {
     const filters: Array<Record<string, any>> = [];
 
     switch (searchType) {
@@ -155,13 +170,8 @@ export class ChromaSearchStrategy {
         break;
     }
 
-    if (project) {
-      filters.push({
-        $or: [
-          { project },
-          { merged_into_project: project }
-        ]
-      });
+    if (readKeys.length > 0) {
+      filters.push(buildProjectWhereFilter(readKeys));
     }
 
     if (platformSource) {
@@ -180,22 +190,18 @@ export class ChromaSearchStrategy {
   private filterByRecency(chromaResults: {
     ids: number[];
     metadatas: ChromaMetadata[];
-  }, dateRange?: DateRange): Array<{ id: number; meta: ChromaMetadata }> {
+  }, dateRange: DateRange | undefined, ignoreDefaultRecencyWindow: boolean): Array<{ id: number; meta: ChromaMetadata }> {
     let startEpoch: number | undefined;
     let endEpoch: number | undefined;
 
     if (dateRange) {
       if (dateRange.start) {
-        startEpoch = typeof dateRange.start === 'number'
-          ? dateRange.start
-          : new Date(dateRange.start).getTime();
+        startEpoch = resolveDateBound(dateRange.start, 'start');
       }
       if (dateRange.end) {
-        endEpoch = typeof dateRange.end === 'number'
-          ? dateRange.end
-          : new Date(dateRange.end).getTime();
+        endEpoch = resolveDateBound(dateRange.end, 'end');
       }
-    } else {
+    } else if (!ignoreDefaultRecencyWindow) {
       startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
     }
 
