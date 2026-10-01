@@ -207,6 +207,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TRANSCRIPTS_ENABLED: string;  
   CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;  
   CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: string;
+  CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: string;
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
   CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: string;
   CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: string;  // Observer model context window in tokens; '' = resolve automatically
@@ -426,6 +427,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TRANSCRIPTS_ENABLED: 'true',
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
+    // Codex subagent rollouts through the transcript watch: each one's tool
+    // calls are new observer spend (the gateway allowance, or the user's own
+    // plan), so capture is opt-in (Wave 3 gate R4-5).
+    CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
     CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: '400000',  // Retire an observer conversation past this size and start a fresh generation (#3800)
     CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '',  // Observer model context window in tokens; '' = resolve it (OpenRouter catalogue, Gemini/Claude maps). Lowers the budget above to half the window (#3625)
