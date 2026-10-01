@@ -333,6 +333,8 @@ Settings are managed in `~/.claude-mem/settings.json` (auto-created with default
 
 To include observations from every harness in Claude Code and Codex SessionStart context, set `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"` in that file, or enable **Include all sources at session start** in the viewer settings. The default is `"false"`, which limits startup context to the current harness. The observation count limit still applies across the selected sources.
 
+Codex native hooks preserve `tool_use_id` for tool-call deduplication and durable tool-use records. They also preserve `agent_id` and `agent_type`, so subagent capture settings apply to Codex activity and saved records retain agent attribution. Agent fields accept non-empty strings up to 128 characters, matching the Claude Code adapter. Codex writes retain `platform_source=codex`.
+
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
 ### Mode & Language Configuration
