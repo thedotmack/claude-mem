@@ -23,6 +23,14 @@ export type ProviderErrorClass =
 export const DEADLINE_EXCEEDED_CODE = 'deadline_exceeded';
 
 /**
+ * `code` on a Codex request that was never sent because the Codex breaker or
+ * the codex_cli setup gate is armed. It repeats a failure another request
+ * already booked, so nothing books it again: not the breaker (re-arming would
+ * end the probe that clears it), not the setup gate, not observer-health.
+ */
+export const CODEX_COOLDOWN_REFUSAL_CODE = 'codex_cooldown_active';
+
+/**
  * Optional structured detail carried alongside a classified error. Populated
  * when the upstream (e.g. the cmem.ai gateway) returns a taxonomy envelope
  * `{ code, message, action, url, request_id }`; the worker carries these

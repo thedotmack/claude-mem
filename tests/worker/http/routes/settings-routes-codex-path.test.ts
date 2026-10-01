@@ -62,3 +62,49 @@ describe('SettingsRoutes — CLAUDE_MEM_CODEX_PATH is not HTTP-writable', () => 
     });
   }
 });
+
+// R4-3: an effort Codex does not know fails every Codex request, and Codex
+// itself no longer types the field, so the settings boundary checks it.
+describe('SettingsRoutes — CLAUDE_MEM_CODEX_REASONING_EFFORT is one of Codex\'s efforts', () => {
+  const settingsPath = paths.settings();
+  let prior: string | undefined;
+
+  beforeEach(() => {
+    prior = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : undefined;
+  });
+
+  afterEach(() => {
+    if (prior === undefined) rmSync(settingsPath, { force: true });
+    else writeFileSync(settingsPath, prior, 'utf-8');
+  });
+
+  it('rejects an effort Codex does not know, naming the accepted ones', () => {
+    const original = JSON.stringify({ CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low' });
+    writeFileSync(settingsPath, original);
+    const { json, status } = postSettings({ CLAUDE_MEM_CODEX_REASONING_EFFORT: 'maximum' });
+    expect(status).toHaveBeenCalledWith(400);
+    const [[body]] = json.mock.calls as unknown as [[{ success: boolean; error: string }]];
+    expect(body.success).toBe(false);
+    expect(body.error).toContain('CLAUDE_MEM_CODEX_REASONING_EFFORT');
+    expect(body.error).toContain('xhigh');
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
+  });
+
+  for (const effort of ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
+    it(`accepts ${JSON.stringify(effort)}`, () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CODEX_REASONING_EFFORT: 'low' }));
+      const { json } = postSettings({ CLAUDE_MEM_CODEX_REASONING_EFFORT: effort });
+      expect(json).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
+      expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe(effort);
+    });
+  }
+
+  // The viewer posts the whole settings object back. A value already in
+  // settings.json must not turn every unrelated save into a 400.
+  it('lets the viewer echo a hand-edited effort it cannot change', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CODEX_REASONING_EFFORT: 'hand-edited' }));
+    const { json } = postSettings({ CLAUDE_MEM_CODEX_REASONING_EFFORT: 'hand-edited', CLAUDE_MEM_LOG_LEVEL: 'DEBUG' });
+    expect(json).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_LOG_LEVEL).toBe('DEBUG');
+  });
+});

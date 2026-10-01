@@ -21,7 +21,11 @@ import {
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
 import { recordObserverFailure } from '../../../shared/observer-health.js';
-import { recordClaudeSetupRequired, recordCodexCliSetupRequired } from '../../../shared/dependency-health.js';
+import {
+  CODEX_CLI_SETUP_REMEDIATION,
+  recordClaudeSetupRequired,
+  recordCodexCliSetupRequired,
+} from '../../../shared/dependency-health.js';
 import { isMemoryOnCmemGateway } from '../../../shared/cmem-gateway.js';
 import {
   releaseQuotaProbe,
@@ -29,7 +33,13 @@ import {
   recordQuotaExhausted,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../shared/quota-cooldown.js';
-import { DEADLINE_EXCEEDED_CODE, isClassified, describeProviderError, type ClassifiedProviderError } from '../provider-errors.js';
+import {
+  CODEX_COOLDOWN_REFUSAL_CODE,
+  DEADLINE_EXCEEDED_CODE,
+  isClassified,
+  describeProviderError,
+  type ClassifiedProviderError,
+} from '../provider-errors.js';
 
 export interface GeneratorRunnerDependencies {
   sessionManager: SessionManager;
@@ -190,13 +200,26 @@ export async function startGeneratorWithProvider(
         });
         return;
       }
-      // The same shape for Codex: a missing CLI or ChatGPT login fails every
-      // retry the same way, so the buffered work waits behind the codex_cli
-      // gate instead of being finalized.
+      // The same shape for Codex: a missing CLI or ChatGPT login, or a model,
+      // effort or isolation Codex refuses, fails every retry the same way, so
+      // the buffered work waits behind the codex_cli gate instead of being
+      // finalized. Unlike a Claude setup failure it is booked in observer-health
+      // too, so SessionStart says memory has stopped and how to fix it. A
+      // request the gate itself withheld repeats the failure that armed it:
+      // booking it again would restart the recheck window and count one outage
+      // many times.
       if (provider === 'codex' && isClassified(error) && error.kind === 'setup_required') {
         skipGeneratorExitFinalization = true;
         session.pausedReason = 'setup_required';
-        recordCodexCliSetupRequired(error.message);
+        if (error.code !== CODEX_COOLDOWN_REFUSAL_CODE) {
+          recordCodexCliSetupRequired(error.message, error.action);
+          recordObserverFailure(provider, {
+            message: error.message,
+            kind: error.kind,
+            code: error.code,
+            action: error.action ?? CODEX_CLI_SETUP_REMEDIATION,
+          });
+        }
         logger.warn('SESSION', 'Codex generator requires setup; future Codex starts will be skipped until repaired', {
           sessionId: session.sessionDbId,
           provider,
@@ -255,6 +278,16 @@ export async function startGeneratorWithProvider(
           provider,
           ...(classified.requestId ? { requestId: classified.requestId } : {}),
         }, describeProviderError(classified));
+      } else if (classified?.code === CODEX_COOLDOWN_REFUSAL_CODE) {
+        // Withheld by the armed Codex breaker, never sent: the request that
+        // armed it was booked once. Booking this one too would re-arm the
+        // breaker, ending the probe whose success clears it, and count one
+        // outage once per withheld request.
+        logger.debug('SESSION', 'Observer request withheld while the Codex breaker is armed', {
+          sessionId: session.sessionDbId,
+          provider,
+          kind: classified.kind,
+        });
       } else if (classified) {
         // The single error-level line for a classified provider failure:
         // code, message, action, link, and request id — same words the
