@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'fs';
+import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -14,11 +15,24 @@ function readLogs(dataDir: string): string {
   return readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), 'utf-8')).join('\n');
 }
 
+/** The bind error this machine gives for `host:port`, or null when the bind succeeds. */
+function bindErrorCode(host: string, port: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once('error', (error: NodeJS.ErrnoException) => resolve(error.code ?? 'unknown'));
+    server.listen(port, host, () => server.close(() => resolve(null)));
+  });
+}
+
 describe('worker daemon on a host and port the system will not bind', () => {
-  it('exits as a boot failure naming the errno, never as a duplicate (exit 0)', () => {
+  it('exits as a boot failure naming the errno, never as a duplicate (exit 0)', async () => {
     // #3219 classified every bind error but EADDRINUSE as "port in use", so the
     // daemon's duplicate gate exited 0 with "refusing to start duplicate" and
     // the errno was never reported.
+    //
+    // Precondition: a host that allows non-local binds (ip_nonlocal_bind=1)
+    // would let a real daemon boot here, so stop before spawning one.
+    expect(await bindErrorCode('192.0.2.1', 37988)).toBe('EADDRNOTAVAIL');
     const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-unbindable-'));
     try {
       const result = spawnSync('bun', [WORKER_SERVICE, '--daemon'], {
