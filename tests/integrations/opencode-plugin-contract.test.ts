@@ -926,6 +926,8 @@ describe("OpenCode plugin lifecycle (#3208)", () => {
 
       const summaries = requests.filter((request) => request.url.pathname === "/api/sessions/summarize");
       expect(summaries.map((request) => request.body?.last_assistant_message)).toEqual(["final reply", "final reply"]);
+      // The checkout rides along so the worker can skip an excluded one (R5-1).
+      expect(summaries.map((request) => request.body?.cwd)).toEqual([pluginCtx.directory, pluginCtx.directory]);
       expect(listed).toEqual([
         { path: { id: "ses_reply" }, query: { directory: pluginCtx.directory } },
         { path: { id: "ses_reply" }, query: { directory: pluginCtx.directory } },
