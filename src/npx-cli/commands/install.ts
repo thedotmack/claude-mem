@@ -979,12 +979,13 @@ export function mergeSettings(
   return true;
 }
 
-type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'host';
+type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
- * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'codex' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands 'claude' |
+ * 'codex' | 'gemini' | 'openrouter' | 'openai-compatible', so 'cmem' must never
+ * reach settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1170,7 +1171,8 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(
+/** Exported for tests: the provider step of `install` and `update`. */
+export async function promptProvider(
   options: InstallOptions,
   /**
    * Null only when login was skipped for an explicit local provider.
@@ -1319,6 +1321,13 @@ async function promptProvider(
     }
     log.info(`Configured host observer for ${observerModel}.`);
     return 'openrouter';
+  }
+
+  if (selectedProvider === 'openai-compatible') {
+    // Only a persisted configuration carries this provider, and it returned
+    // above. The installer has no setup flow for it: the endpoint, model and
+    // key are set in ~/.claude-mem/settings.json.
+    throw new Error('The openai-compatible provider is configured in ~/.claude-mem/settings.json, not by the installer.');
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -2111,7 +2120,11 @@ export function providerNeedsAccount(provider: InstallOptions['provider']): bool
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'host';
+  /**
+   * `openai-compatible` is never a flag value: it is only ever kept from
+   * settings.json by a non-interactive run (`providerSource: 'persisted'`).
+   */
+  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
   /**
    * How `provider` was decided. `flag` for an explicit `--provider` (and the
    * grok-bot implicit cmem default set in index.ts), `default` when a fresh
@@ -2321,6 +2334,28 @@ export async function requireWorkerStopped(
   }
 }
 
+function holdsKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(holdsKey);
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+/**
+ * Whether a personal Gemini or OpenRouter setup holds a key the worker can use.
+ * The worker reads the single key and the rotation pool (which may hold every
+ * key, with the single key left empty) from settings.json, the environment and
+ * ~/.claude-mem/.env, so each of those counts. Read for validation only: an
+ * exported or .env key is never copied to disk.
+ */
+function hasPersonalProviderKey(provider: 'gemini' | 'openrouter', persisted: Record<string, unknown>): boolean {
+  const vendor = provider === 'gemini' ? 'GEMINI' : 'OPENROUTER';
+  const credentials = loadClaudeMemEnv() as Record<string, string | undefined>;
+  return [`${vendor}_API_KEY`, `${vendor}_API_KEYS`].some(name =>
+    holdsKey(persisted[`CLAUDE_MEM_${name}`])
+    || holdsKey(process.env[`CLAUDE_MEM_${name}`])
+    || holdsKey(credentials[name]),
+  );
+}
+
 /** Exported for the non-interactive contract tests; not part of the CLI surface. */
 export function validateNonInteractiveProvider(
   options: InstallOptions,
@@ -2342,27 +2377,29 @@ export function validateNonInteractiveProvider(
     // keeps its memory key in CLAUDE_MEM_OPENROUTER_API_KEY by design.
     const persisted = readPersistedInstallerSettings();
     const persistedProvider = persisted.CLAUDE_MEM_PROVIDER;
-    if (persistedProvider === 'claude' || persistedProvider === 'codex' || persistedProvider === 'gemini' || persistedProvider === 'openrouter') {
+    if (
+      persistedProvider === 'claude' || persistedProvider === 'codex' || persistedProvider === 'gemini'
+      || persistedProvider === 'openrouter' || persistedProvider === 'openai-compatible'
+    ) {
       // Codex, like claude, authenticates through a local login rather than a
-      // saved key, so there is nothing to validate before keeping it.
-      if (persistedProvider !== 'claude' && persistedProvider !== 'codex') {
+      // saved key, and openai-compatible may point at a local server that takes
+      // no key at all, so there is nothing to validate before keeping them.
+      if (persistedProvider === 'gemini' || persistedProvider === 'openrouter') {
         const persistedKeyName = persistedProvider === 'gemini'
           ? 'CLAUDE_MEM_GEMINI_API_KEY'
           : 'CLAUDE_MEM_OPENROUTER_API_KEY';
-        const persistedKey = String(persisted[persistedKeyName] ?? '').trim();
-        // The worker reads a personal key from the environment ahead of
-        // settings.json, so an env-only key is a working configuration; it is
-        // consulted here for validation only and never written to disk. A
-        // persisted cmem gateway tuple is the exception: the worker locks it to
-        // the saved key and ignores a key-only override, so that key must be
-        // on disk. An exported base URL unlocks the tuple (the worker then runs
-        // on the exported URL and key), so the lock is mirrored exactly:
+        // A persisted cmem gateway tuple is locked by the worker to the saved
+        // key: it ignores a key-only override and never pools, so only that
+        // key counts. An exported base URL unlocks the tuple (the worker then
+        // runs on the exported URL and key), so the lock is mirrored exactly:
         // gateway URL on disk AND no base-URL override in the environment.
         const persistedCmemGateway = persistedProvider === 'openrouter'
           && isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))
           && !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');
-        const envKey = persistedCmemGateway ? '' : String(process.env[persistedKeyName] ?? '').trim();
-        if (!persistedKey && !envKey) {
+        const hasKey = persistedCmemGateway
+          ? holdsKey(persisted[persistedKeyName])
+          : hasPersonalProviderKey(persistedProvider, persisted);
+        if (!hasKey) {
           installerError(ErrorSeverity.ABORT, {
             component: 'provider-credentials',
             phase: 'non-interactive-validation',

@@ -7,7 +7,7 @@ import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
-import { ClassifiedProviderError } from './provider-errors.js';
+import { ClassifiedProviderError, rateLimitUntilNextKey } from './provider-errors.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
@@ -360,7 +360,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     // still owns transient failures against one key, and this outer sweep moves
     // on only for the kinds that mean the key itself is spent.
     return withKeyPool(
-      { poolId: 'gemini', keys: resolvePoolKeys(config), label: 'Gemini' },
+      { poolId: 'gemini', keys: resolvePoolKeys(config), label: 'Gemini', rateLimitUntilNextKey },
       ({ key, poolSize }) => this.queryGeminiMultiTurn(
         history, key, poolSize, config.model, config.rateLimitingEnabled, signal, perAttemptTimeoutMs,
       ),
