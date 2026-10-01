@@ -14,9 +14,11 @@ import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
-import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
+import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
 import { parseOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
+import { keysForEndpoint } from '../../shared/cmem-gateway.js';
+import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { buildServerGenerationPrompt } from '../generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerService } from './ServerService.js';
@@ -366,7 +368,8 @@ export async function loadCustomServerGenerationProvider(): Promise<ServerGenera
   });
 }
 
-async function instantiateServerGenerationProvider(provider: string): Promise<ServerGenerationProvider | null> {
+/** Exported for tests. */
+export async function instantiateServerGenerationProvider(provider: string): Promise<ServerGenerationProvider | null> {
   if (provider === 'claude' || provider === 'anthropic') {
     const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
     if (!apiKey) return null;
@@ -377,8 +380,13 @@ async function instantiateServerGenerationProvider(provider: string): Promise<Se
     return new ClaudeObservationProvider(opts);
   }
   if (provider === 'gemini') {
-    const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
-    if (!apiKey) return null;
+    const configuredKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
+    // The shared cmem key lock: a cm_pro_ account key is never sent to Google.
+    const [apiKey] = keysForEndpoint(GEMINI_API_URL, configuredKey ? [configuredKey] : []);
+    if (!apiKey) {
+      if (configuredKey) logger.warn('SYSTEM', 'server: refusing a cmem.ai memory key (cm_pro_) as the Gemini key; it only works on the cmem gateway');
+      return null;
+    }
     const opts: { apiKey: string; model?: string; maxOutputTokens?: number } = { apiKey };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
     const maxOutputTokens = resolveServerMaxOutputTokens();
@@ -386,12 +394,18 @@ async function instantiateServerGenerationProvider(provider: string): Promise<Se
     return new GeminiObservationProvider(opts);
   }
   if (provider === 'openrouter') {
-    const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
-    if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number; extraBody?: Record<string, unknown> } = { apiKey };
-    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    const configuredKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
     // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
     const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
+    // The shared cmem key lock: a cm_pro_ key only with the gateway, and the
+    // gateway only with a cm_pro_ key.
+    const [apiKey] = keysForEndpoint(resolveOpenRouterChatCompletionsUrl(baseUrl), configuredKey ? [configuredKey] : []);
+    if (!apiKey) {
+      if (configuredKey) logger.warn('SYSTEM', 'server: withholding the OpenRouter key: a cmem.ai memory key (cm_pro_) only goes to the cmem gateway, and the gateway only takes one');
+      return null;
+    }
+    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number; extraBody?: Record<string, unknown> } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
     if (baseUrl) opts.baseUrl = baseUrl;
     const maxOutputTokens = resolveServerMaxOutputTokens();
     if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;

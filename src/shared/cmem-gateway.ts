@@ -125,6 +125,24 @@ export function isKeyAllowedForEndpoint(apiUrl: string, apiKey: string): boolean
   return isCmemGatewayUrl(apiUrl) === isCmemMemoryKey(apiKey);
 }
 
+/**
+ * The keys a provider may send to an endpoint, from its configured keys in
+ * priority order: the one lock every key pool goes through.
+ *  - The cmem gateway gets the first cm_pro_ key and nothing else. Its key is
+ *    account-delivered, so there is no pool to rotate through: several
+ *    cm_pro_ keys would mean rotating across accounts, and a personal key is
+ *    never sent there.
+ *  - Every other host gets the keys that are not cm_pro_, so an account key
+ *    pasted into any provider's settings never leaves for a third party.
+ */
+export function keysForEndpoint(apiUrl: string, keys: readonly string[]): string[] {
+  if (isCmemGatewayUrl(apiUrl)) {
+    const accountKey = keys.find(key => isCmemMemoryKey(key));
+    return accountKey ? [accountKey] : [];
+  }
+  return keys.filter(key => !isCmemMemoryKey(key));
+}
+
 /** What the gateway said about the rejection that armed the fallback. */
 export interface ProFallbackNotice {
   message?: string;

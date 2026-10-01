@@ -52,6 +52,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
+import { GEMINI_REGION_REFUSAL_CODE } from './gemini-error-details.js';
 
 /** Which pools exist. One per provider that resolves an HTTP API key. */
 export type KeyPoolId = 'gemini' | 'openrouter' | 'openai-compatible';
@@ -129,6 +130,7 @@ export function retryPolicyForPool(poolSize: number): { nonRetryableKinds?: read
 interface ClassifiedLike {
   kind: string;
   retryAfterMs?: number;
+  code?: string;
 }
 
 function asClassified(err: unknown): ClassifiedLike | null {
@@ -136,11 +138,22 @@ function asClassified(err: unknown): ClassifiedLike | null {
   const kind = (err as { kind?: unknown }).kind;
   if (typeof kind !== 'string') return null;
   const retryAfterMs = (err as { retryAfterMs?: unknown }).retryAfterMs;
+  const code = (err as { code?: unknown }).code;
   return {
     kind,
     ...(typeof retryAfterMs === 'number' ? { retryAfterMs } : {}),
+    ...(typeof code === 'string' ? { code } : {}),
   };
 }
+
+/**
+ * Refusals that name the account or the region, not the key: every key gets
+ * the same answer. Gemini outside the regions Google serves
+ * (gemini-error-details.ts) is classified like a refused key so the worker
+ * pauses with its work kept, but rotating on it would send a doomed request
+ * per key and park each one for the refused-key window.
+ */
+const NOT_THE_KEY_CODES: ReadonlySet<string> = new Set([GEMINI_REGION_REFUSAL_CODE]);
 
 /**
  * True when a classified error should retire the key that earned it and move
@@ -150,7 +163,9 @@ function asClassified(err: unknown): ClassifiedLike | null {
  */
 export function shouldRotateKey(err: unknown): boolean {
   const classified = asClassified(err);
-  return classified !== null && ROTATE_KINDS.has(classified.kind);
+  return classified !== null
+    && ROTATE_KINDS.has(classified.kind)
+    && !(classified.code !== undefined && NOT_THE_KEY_CODES.has(classified.code));
 }
 
 /**
