@@ -1,394 +1,329 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
-
-mock.module('../../../src/services/domain/ModeManager.js', () => ({
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        name: 'code',
-        prompts: {},
-        observation_types: [
-          { id: 'decision', icon: 'D' },
-          { id: 'bugfix', icon: 'B' },
-          { id: 'feature', icon: 'F' },
-          { id: 'refactor', icon: 'R' },
-          { id: 'discovery', icon: 'I' },
-          { id: 'change', icon: 'C' }
-        ],
-        observation_concepts: [],
-      }),
-      getObservationTypes: () => [
-        { id: 'decision', icon: 'D' },
-        { id: 'bugfix', icon: 'B' },
-        { id: 'feature', icon: 'F' },
-        { id: 'refactor', icon: 'R' },
-        { id: 'discovery', icon: 'I' },
-        { id: 'change', icon: 'C' }
-      ],
-      getTypeIcon: (type: string) => {
-        const icons: Record<string, string> = {
-          decision: 'D',
-          bugfix: 'B',
-          feature: 'F',
-          refactor: 'R',
-          discovery: 'I',
-          change: 'C'
-        };
-        return icons[type] || '?';
-      },
-      getWorkEmoji: () => 'W',
-    }),
-  },
-}));
-
+import { describe, it, expect, mock } from 'bun:test';
 import { SearchOrchestrator } from '../../../src/services/worker/search/SearchOrchestrator.js';
-import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../src/services/worker/search/types.js';
 
-const mockObservation: ObservationSearchResult = {
-  id: 1,
-  memory_session_id: 'session-123',
-  project: 'test-project',
-  text: 'Test observation',
-  type: 'decision',
-  title: 'Test Decision',
-  subtitle: 'Subtitle',
-  facts: '["fact1"]',
-  narrative: 'Narrative',
-  concepts: '["concept1"]',
-  files_read: '["file1.ts"]',
-  files_modified: '["file2.ts"]',
+const observation = {
+  id: 21,
+  memory_session_id: 'cursor-memory',
+  project: 'orchestrator-project',
+  text: null,
+  type: 'discovery',
+  title: 'cursor sqlite fallback',
+  subtitle: null,
+  facts: '[]',
+  narrative: 'fallback through sqlite strategy',
+  concepts: '[]',
+  files_read: '[]',
+  files_modified: '[]',
   prompt_number: 1,
-  discovery_tokens: 100,
-  created_at: '2025-01-01T12:00:00.000Z',
-  created_at_epoch: Date.now() - 1000 * 60 * 60 * 24
+  discovery_tokens: 0,
+  created_at: '2025-01-01T00:00:00.000Z',
+  created_at_epoch: 1735689600000,
 };
 
-const mockSession: SessionSummarySearchResult = {
-  id: 1,
-  memory_session_id: 'session-123',
-  project: 'test-project',
-  request: 'Test request',
-  investigated: 'Investigated',
-  learned: 'Learned',
-  completed: 'Completed',
-  next_steps: 'Next steps',
-  files_read: '["file1.ts"]',
-  files_edited: '["file2.ts"]',
-  notes: 'Notes',
-  prompt_number: 1,
-  discovery_tokens: 500,
-  created_at: '2025-01-01T12:00:00.000Z',
-  created_at_epoch: Date.now() - 1000 * 60 * 60 * 24
-};
+describe('SearchOrchestrator Chroma zero fallback', () => {
+  it('normalizes date_from/date_to filters into dateRange for SQLite search', async () => {
+    const searchObservations = mock(() => [observation]);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+    );
 
-const mockPrompt: UserPromptSearchResult = {
-  id: 1,
-  content_session_id: 'content-123',
-  prompt_number: 1,
-  prompt_text: 'Test prompt',
-  created_at: '2025-01-01T12:00:00.000Z',
-  created_at_epoch: Date.now() - 1000 * 60 * 60 * 24
-};
+    const result = await orchestrator.search({
+      searchType: 'observations',
+      date_from: '2025-01-01',
+      date_to: '2025-01-31',
+    });
 
-describe('SearchOrchestrator', () => {
-  let orchestrator: SearchOrchestrator;
-  let mockSessionSearch: any;
-  let mockSessionStore: any;
-  let mockChromaSync: any;
-
-  beforeEach(() => {
-    mockSessionSearch = {
-      searchObservations: mock(() => [mockObservation]),
-      searchSessions: mock(() => [mockSession]),
-      searchUserPrompts: mock(() => [mockPrompt]),
-      findByConcept: mock(() => [mockObservation]),
-      findByType: mock(() => [mockObservation]),
-      findByFile: mock(() => ({ observations: [mockObservation], sessions: [mockSession] }))
-    };
-
-    mockSessionStore = {
-      getObservationsByIds: mock(() => [mockObservation]),
-      getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [mockPrompt])
-    };
-
-    mockChromaSync = {
-      queryChroma: mock(() => Promise.resolve({
-        ids: [1],
-        distances: [0.1],
-        metadatas: [{ sqlite_id: 1, doc_type: 'observation', created_at_epoch: Date.now() - 1000 }]
-      }))
-    };
+    expect(searchObservations).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      dateRange: {
+        start: '2025-01-01',
+        end: '2025-01-31',
+      },
+    }));
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
   });
 
-  describe('with Chroma available', () => {
-    beforeEach(() => {
-      orchestrator = new SearchOrchestrator(mockSessionSearch, mockSessionStore, mockChromaSync);
+  it('falls back to SQLiteStrategy when platform-scoped Chroma search returns no rows', async () => {
+    const queryChroma = mock(() => Promise.resolve({ ids: [], distances: [], metadatas: [] }));
+    const searchObservations = mock(() => [observation]);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
+      } as any,
+      { queryChroma } as any,
+    );
+
+    const result = await orchestrator.search({
+      query: 'legacy docs',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      platform_source: 'Cursor',
+      limit: 5,
     });
 
-    describe('search', () => {
-      it('should select SQLite strategy for filter-only queries (no query text)', async () => {
-        const result = await orchestrator.search({
-          project: 'test-project',
-          limit: 10
-        });
-
-        expect(result.strategy).toBe('sqlite');
-        expect(result.usedChroma).toBe(false);
-        expect(mockSessionSearch.searchObservations).toHaveBeenCalled();
-        expect(mockChromaSync.queryChroma).not.toHaveBeenCalled();
-      });
-
-      it('should select Chroma strategy for query-only', async () => {
-        const result = await orchestrator.search({
-          query: 'semantic search query'
-        });
-
-        expect(result.strategy).toBe('chroma');
-        expect(result.usedChroma).toBe(true);
-        expect(mockChromaSync.queryChroma).toHaveBeenCalled();
-      });
-
-      it('should throw ChromaUnavailableError (HTTP 503) when Chroma fails', async () => {
-        mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma unavailable')));
-
-        await expect(
-          orchestrator.search({ query: 'test query' })
-        ).rejects.toMatchObject({
-          name: 'ChromaUnavailableError',
-          statusCode: 503,
-          code: 'CHROMA_UNAVAILABLE'
-        });
-      });
-
-      it('should normalize comma-separated concepts', async () => {
-        await orchestrator.search({
-          concepts: 'concept1, concept2, concept3',
-          limit: 10
-        });
-
-        const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-        expect(callArgs[1].concepts).toEqual(['concept1', 'concept2', 'concept3']);
-      });
-
-      it('should normalize comma-separated files', async () => {
-        await orchestrator.search({
-          files: 'file1.ts, file2.ts',
-          limit: 10
-        });
-
-        const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-        expect(callArgs[1].files).toEqual(['file1.ts', 'file2.ts']);
-      });
-
-      it('should normalize dateStart/dateEnd into dateRange object', async () => {
-        await orchestrator.search({
-          dateStart: '2025-01-01',
-          dateEnd: '2025-01-31'
-        });
-
-        const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-        expect(callArgs[1].dateRange).toEqual({
-          start: '2025-01-01',
-          end: '2025-01-31'
-        });
-      });
-
-      it('should map type to searchType for observations/sessions/prompts', async () => {
-        await orchestrator.search({
-          type: 'observations'
-        });
-
-        expect(mockSessionSearch.searchObservations).toHaveBeenCalled();
-        expect(mockSessionSearch.searchSessions).not.toHaveBeenCalled();
-        expect(mockSessionSearch.searchUserPrompts).not.toHaveBeenCalled();
-      });
-    });
-
-    describe('findByConcept', () => {
-      it('should use hybrid strategy when Chroma available', async () => {
-        const result = await orchestrator.findByConcept('test-concept', {
-          limit: 10
-        });
-
-        expect(mockSessionSearch.findByConcept).toHaveBeenCalled();
-        expect(mockChromaSync.queryChroma).toHaveBeenCalled();
-      });
-
-      it('should return observations matching concept', async () => {
-        const result = await orchestrator.findByConcept('test-concept', {});
-
-        expect(result.results.observations.length).toBeGreaterThanOrEqual(0);
-      });
-    });
-
-    describe('findByType', () => {
-      it('should use hybrid strategy', async () => {
-        const result = await orchestrator.findByType('decision', {});
-
-        expect(mockSessionSearch.findByType).toHaveBeenCalled();
-      });
-
-      it('should handle array of types', async () => {
-        await orchestrator.findByType(['decision', 'bugfix'], {});
-
-        expect(mockSessionSearch.findByType).toHaveBeenCalledWith(['decision', 'bugfix'], expect.any(Object));
-      });
-    });
-
-    describe('findByFile', () => {
-      it('should return observations and sessions for file', async () => {
-        const result = await orchestrator.findByFile('/path/to/file.ts', {});
-
-        expect(result.observations.length).toBeGreaterThanOrEqual(0);
-        expect(mockSessionSearch.findByFile).toHaveBeenCalled();
-      });
-
-      it('should include usedChroma in result', async () => {
-        const result = await orchestrator.findByFile('/path/to/file.ts', {});
-
-        expect(typeof result.usedChroma).toBe('boolean');
-      });
-    });
-
-    describe('isChromaAvailable', () => {
-      it('should return true when Chroma is available', () => {
-        expect(orchestrator.isChromaAvailable()).toBe(true);
-      });
-    });
-
-    describe('formatSearchResults', () => {
-      it('should format results as markdown', () => {
-        const results = {
-          observations: [mockObservation],
-          sessions: [mockSession],
-          prompts: [mockPrompt]
-        };
-
-        const formatted = orchestrator.formatSearchResults(results, 'test query');
-
-        expect(formatted).toContain('test query');
-        expect(formatted).toContain('result');
-      });
-
-      it('should handle empty results', () => {
-        const results = {
-          observations: [],
-          sessions: [],
-          prompts: []
-        };
-
-        const formatted = orchestrator.formatSearchResults(results, 'no matches');
-
-        expect(formatted).toContain('No results found');
-      });
-
-      it('should indicate Chroma failure when chromaFailed is true', () => {
-        const results = {
-          observations: [],
-          sessions: [],
-          prompts: []
-        };
-
-        const formatted = orchestrator.formatSearchResults(results, 'test', true);
-
-        expect(formatted).toContain('Semantic search');
-        expect(formatted).toContain('Falling back to keyword search');
-      });
-    });
+    expect(queryChroma).toHaveBeenCalledWith(
+      'legacy docs',
+      100,
+      { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'orchestrator-project' }, { merged_into_project: 'orchestrator-project' }] }, { platform_source: 'cursor' }] },
+    );
+    expect(searchObservations).toHaveBeenCalledWith('legacy docs', expect.objectContaining({
+      project: 'orchestrator-project',
+      platformSource: 'cursor',
+    }));
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
   });
 
-  describe('without Chroma (null)', () => {
-    beforeEach(() => {
-      orchestrator = new SearchOrchestrator(mockSessionSearch, mockSessionStore, null);
+  it('falls back to SQLiteStrategy when unscoped Chroma search returns no rows', async () => {
+    const queryChroma = mock(() => Promise.resolve({ ids: [], distances: [], metadatas: [] }));
+    const searchObservations = mock(() => [observation]);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
+      } as any,
+      { queryChroma } as any,
+    );
+
+    const result = await orchestrator.search({
+      query: 'legacy docs',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
     });
 
-    describe('isChromaAvailable', () => {
-      it('should return false when Chroma is null', () => {
-        expect(orchestrator.isChromaAvailable()).toBe(false);
-      });
-    });
-
-    describe('search', () => {
-      it('should return empty results for query search without Chroma', async () => {
-        const result = await orchestrator.search({
-          query: 'semantic query'
-        });
-
-        expect(result.results.observations).toHaveLength(0);
-        expect(result.usedChroma).toBe(false);
-      });
-
-      it('should still work for filter-only queries', async () => {
-        const result = await orchestrator.search({
-          project: 'test-project'
-        });
-
-        expect(result.strategy).toBe('sqlite');
-        expect(result.results.observations).toHaveLength(1);
-      });
-    });
-
-    describe('findByConcept', () => {
-      it('should fall back to SQLite-only', async () => {
-        const result = await orchestrator.findByConcept('test-concept', {});
-
-        expect(result.usedChroma).toBe(false);
-        expect(result.strategy).toBe('sqlite');
-        expect(mockSessionSearch.findByConcept).toHaveBeenCalled();
-      });
-    });
-
-    describe('findByType', () => {
-      it('should fall back to SQLite-only', async () => {
-        const result = await orchestrator.findByType('decision', {});
-
-        expect(result.usedChroma).toBe(false);
-        expect(result.strategy).toBe('sqlite');
-      });
-    });
-
-    describe('findByFile', () => {
-      it('should fall back to SQLite-only', async () => {
-        const result = await orchestrator.findByFile('/path/to/file.ts', {});
-
-        expect(result.usedChroma).toBe(false);
-        expect(mockSessionSearch.findByFile).toHaveBeenCalled();
-      });
-    });
+    expect(searchObservations).toHaveBeenCalledWith('legacy docs', expect.objectContaining({
+      project: 'orchestrator-project',
+    }));
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
   });
 
-  describe('parameter normalization', () => {
-    beforeEach(() => {
-      orchestrator = new SearchOrchestrator(mockSessionSearch, mockSessionStore, null);
+  it('keeps non-empty Chroma matches final', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [21],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 21, doc_type: 'observation', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => [observation]);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => [observation]),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
+      } as any,
+      { queryChroma } as any,
+    );
+
+    const result = await orchestrator.search({
+      query: 'legacy docs',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
     });
 
-    it('should parse obs_type into obsType array', async () => {
-      await orchestrator.search({
-        obs_type: 'decision, bugfix'
-      });
+    expect(searchObservations).not.toHaveBeenCalled();
+    expect(result.usedChroma).toBe(true);
+    expect(result.strategy).toBe('chroma');
+    expect(result.results.observations).toEqual([observation]);
+  });
+});
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-      expect(callArgs[1].type).toEqual(['decision', 'bugfix']);
+describe('SearchOrchestrator per-category SQLite supplement', () => {
+  const userPrompt = {
+    id: 7,
+    content_session_id: 'session-7',
+    prompt_number: 1,
+    prompt_text: 'テストを実行して',
+    created_at: '2025-01-01T00:00:00.000Z',
+    created_at_epoch: Date.now(),
+  };
+
+  function buildOrchestrator(mocks: {
+    searchObservations?: ReturnType<typeof mock>;
+    searchSessions?: ReturnType<typeof mock>;
+    searchUserPrompts?: ReturnType<typeof mock>;
+    queryChroma: ReturnType<typeof mock>;
+    getUserPromptsByIds?: ReturnType<typeof mock>;
+    getObservationsByIds?: ReturnType<typeof mock>;
+  }) {
+    return new SearchOrchestrator(
+      {
+        searchObservations: mocks.searchObservations ?? mock(() => []),
+        searchSessions: mocks.searchSessions ?? mock(() => []),
+        searchUserPrompts: mocks.searchUserPrompts ?? mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mocks.getObservationsByIds ?? mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mocks.getUserPromptsByIds ?? mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
+      } as any,
+      { queryChroma: mocks.queryChroma } as any,
+    );
+  }
+
+  it('supplements empty observations from SQLite FTS when Chroma only returns prompts (CJK query)', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => [observation]);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    const result = await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
     });
 
-    it('should handle already-array concepts', async () => {
-      await orchestrator.search({
-        concepts: ['concept1', 'concept2']
-      });
+    expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({ limit: 5 }));
+    expect(result.usedChroma).toBe(true);
+    expect(result.strategy).toBe('hybrid');
+    expect(result.results.observations).toEqual([observation]);
+    expect(result.results.prompts).toEqual([userPrompt]);
+  });
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-      expect(callArgs[1].concepts).toEqual(['concept1', 'concept2']);
+  it('keeps pure Chroma result untouched when every requested category has matches', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchUserPrompts = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchUserPrompts, getUserPromptsByIds });
+
+    const result = await orchestrator.search({
+      query: 'テスト',
+      searchType: 'prompts',
+      limit: 5,
     });
 
-    it('should handle empty string filters', async () => {
-      await orchestrator.search({
-        concepts: '',
-        files: ''
-      });
+    expect(searchUserPrompts).not.toHaveBeenCalled();
+    expect(result.usedChroma).toBe(true);
+    expect(result.strategy).toBe('chroma');
+    expect(result.results.prompts).toEqual([userPrompt]);
+  });
 
-      const callArgs = mockSessionSearch.searchObservations.mock.calls[0];
-      expect(callArgs[1].concepts).toEqual('');
-      expect(callArgs[1].files).toEqual('');
+  it('does not supplement categories that were not requested', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, searchSessions, getUserPromptsByIds });
+
+    const result = await orchestrator.search({
+      query: 'テスト',
+      searchType: 'prompts',
+      limit: 5,
     });
+
+    expect(searchObservations).not.toHaveBeenCalled();
+    expect(searchSessions).not.toHaveBeenCalled();
+    expect(result.results.observations).toHaveLength(0);
+  });
+
+  it('keeps chroma strategy when supplement also finds nothing', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    const result = await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalled();
+    expect(result.usedChroma).toBe(true);
+    expect(result.strategy).toBe('chroma');
+    expect(result.results.prompts).toEqual([userPrompt]);
+    expect(result.results.observations).toHaveLength(0);
+  });
+
+
+  it('does not narrow the SQLite supplement to a recency window when no dateRange is given', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+    });
+
+    const supplementOptions = (searchObservations.mock.calls[0] as any[])[1];
+    expect(supplementOptions.dateRange).toBeUndefined();
+  });
+
+  it('preserves an explicit dateRange in supplement queries', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    const dateRange = { start: 123, end: 456 };
+    await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+      dateRange,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({
+      dateRange,
+    }));
   });
 });

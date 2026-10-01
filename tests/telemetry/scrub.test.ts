@@ -78,6 +78,22 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps bounded installer offer experiment properties', () => {
+    const result = scrubProperties({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+
+    expect(result).toEqual({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+  });
+
   it('keeps the depth/economics keys with primitive values', () => {
     const result = scrubProperties({
       observation_count: 50,
@@ -152,21 +168,31 @@ describe('scrubProperties', () => {
 
   it('keeps the compression trust keys with primitive values', () => {
     const result = scrubProperties({
-      fabrication_detected: true,
-      fabricated_count: 2,
-      invalid_output_class: 'poisoned',
-      consecutive_invalid_outputs: 3,
-      respawn_triggered: true,
+      invalid_output_class: 'prose',
+      consecutive_invalid_outputs: 0,
+      respawn_triggered: false,
       abort_reason: 'restart_guard',
     });
 
-    expect(Object.keys(result)).toHaveLength(6);
-    expect(result.fabrication_detected).toBe(true);
-    expect(result.fabricated_count).toBe(2);
-    expect(result.invalid_output_class).toBe('poisoned');
-    expect(result.consecutive_invalid_outputs).toBe(3);
-    expect(result.respawn_triggered).toBe(true);
+    expect(Object.keys(result)).toHaveLength(4);
+    expect(result.invalid_output_class).toBe('prose');
+    expect(result.consecutive_invalid_outputs).toBe(0);
+    expect(result.respawn_triggered).toBe(false);
     expect(result.abort_reason).toBe('restart_guard');
+  });
+
+  it('keeps the deadline-abort reason and its rollup counter', () => {
+    const result = scrubProperties({
+      abort_reason: 'deadline_exceeded',
+      outcomes_aborted: 4,
+      outcomes_aborted_deadline_exceeded: 3,
+    });
+
+    expect(result).toEqual({
+      abort_reason: 'deadline_exceeded',
+      outcomes_aborted: 4,
+      outcomes_aborted_deadline_exceeded: 3,
+    });
   });
 
   it('keeps the worker lifecycle keys with primitive values', () => {
@@ -204,6 +230,20 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps the observed-session identity keys with primitive values', () => {
+    const result = scrubProperties({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+
+    expect(result).toEqual({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+  });
+
   it('drops unknown keys silently', () => {
     const result = scrubProperties({
       version: '1.0.0',
@@ -212,6 +252,20 @@ describe('scrubProperties', () => {
     });
 
     expect(result).toEqual({ version: '1.0.0' });
+  });
+
+  it('keeps the skill_invoked identity keys with primitive values', () => {
+    const result = scrubProperties({
+      skill_id: 'mem-search',
+      skill_source: 'first_party',
+      skill_trigger: 'tool',
+    });
+
+    expect(result).toEqual({
+      skill_id: 'mem-search',
+      skill_source: 'first_party',
+      skill_trigger: 'tool',
+    });
   });
 
   it('drops sensitive-looking keys even if present', () => {
@@ -236,8 +290,30 @@ describe('scrubProperties', () => {
     expect(Object.keys(result)).not.toContain('ip');
   });
 
+  it('drops skill args / raw skill / prompt keys even when skill identity is present', () => {
+    const result = scrubProperties({
+      skill_id: 'other',
+      skill_source: 'third_party',
+      skill_trigger: 'tool',
+      skill: 'someone-else:evil',
+      args: '/Users/alice/secret --pr 42',
+      command: '/foo do the thing',
+      prompt: '/foo leak this body',
+    });
+
+    expect(result).toEqual({
+      skill_id: 'other',
+      skill_source: 'third_party',
+      skill_trigger: 'tool',
+    });
+    expect(Object.keys(result)).not.toContain('skill');
+    expect(Object.keys(result)).not.toContain('args');
+    expect(Object.keys(result)).not.toContain('command');
+    expect(Object.keys(result)).not.toContain('prompt');
+  });
+
   it('whitelist never contains sensitive keys', () => {
-    for (const key of ['path', 'cwd', 'prompt', 'query', 'project_name', 'email', 'ip']) {
+    for (const key of ['path', 'cwd', 'prompt', 'query', 'project_name', 'email', 'ip', 'args', 'skill', 'command']) {
       expect(ALLOWED_PROPERTY_KEYS.has(key)).toBe(false);
     }
   });
@@ -309,6 +385,17 @@ describe('scrubProperties', () => {
 
   it('returns an empty object for empty input', () => {
     expect(scrubProperties({})).toEqual({});
+  });
+
+  it('redacts URL-shaped secrets even on a whitelisted key', () => {
+    const result = scrubProperties({
+      endpoint: 'https://api.example.com/v1/data?token=secret123',
+      outcome: 'success',
+    });
+
+    expect(result.outcome).toBe('success');
+    expect(String(result.endpoint)).not.toContain('secret123');
+    expect(String(result.endpoint)).not.toContain('token=');
   });
 
   it('never throws on hostile input', () => {

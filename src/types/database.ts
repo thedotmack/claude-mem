@@ -4,6 +4,7 @@ export interface TableColumnInfo {
   name: string;
   type: string;
   notnull: number;
+  dflt_value: string | null;
   pk: number;
 }
 
@@ -53,6 +54,7 @@ export interface SessionSummaryRecord {
 
 export interface UserPromptRecord {
   id: number;
+  session_db_id?: number | null;
   content_session_id: string;
   prompt_number: number;
   prompt_text: string;
@@ -62,8 +64,27 @@ export interface UserPromptRecord {
   created_at_epoch: number;
 }
 
+export interface AdvisorCallRecord {
+  id: number;
+  session_db_id: number;
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  tool_use_id: string;
+  advisor_model: string | null;
+  cwd: string | null;
+  last_user_message: string | null;
+  transcript_path: string | null;
+  transcript_byte_offset: number | null;
+  advice: string;
+  occurred_at_epoch: number;
+  created_at: string;
+  created_at_epoch: number;
+}
+
 export interface LatestPromptResult {
   id: number;
+  session_db_id?: number | null;
   content_session_id: string;
   memory_session_id: string;
   project: string;
@@ -72,4 +93,3 @@ export interface LatestPromptResult {
   prompt_text: string;
   created_at_epoch: number;
 }
-

@@ -1,12 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ProjectCatalog, Settings } from '../types';
-import { authFetch } from '../utils/api';
 
 interface UseContextPreviewResult {
   preview: string;
   isLoading: boolean;
   error: string | null;
-  refresh: () => Promise<void>;
   projects: string[];
   sources: string[];
   selectedSource: string | null;
@@ -39,7 +37,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     async function fetchProjects() {
       let data: ProjectCatalog;
       try {
-        const response = await authFetch('/api/projects');
+        const response = await fetch('/api/projects');
         data = await response.json() as ProjectCatalog;
       } catch (err: unknown) {
         console.error('Failed to fetch projects:', err instanceof Error ? err.message : String(err));
@@ -54,7 +52,9 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
 
       setCatalog(nextCatalog);
 
-      const preferredSource = getPreferredSource(nextCatalog.sources);
+      const preferredSource = settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'
+        ? null
+        : getPreferredSource(nextCatalog.sources);
       setSelectedSource(preferredSource);
 
       if (preferredSource) {
@@ -69,6 +69,12 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     }
     fetchProjects();
   }, []);
+
+  useEffect(() => {
+    setSelectedSource(settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === 'true'
+      ? null
+      : getPreferredSource(catalog.sources));
+  }, [settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES, catalog.sources]);
 
   useEffect(() => {
     if (!selectedSource) {
@@ -100,7 +106,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     }
 
     try {
-      const response = await authFetch(`/api/context/preview?${params}`);
+      const response = await fetch(`/api/context/preview?${params}`);
       const text = await response.text();
 
       if (response.ok) {
@@ -127,7 +133,6 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     preview,
     isLoading,
     error,
-    refresh,
     projects,
     sources: catalog.sources,
     selectedSource,

@@ -1,18 +1,17 @@
 
-import type { ActiveSession } from '../../worker-types.js';
-import type { ParsedObservation, ParsedSummary } from '../../../sdk/parser.js';
-
 export interface WorkerRef {
   sseBroadcaster?: {
     broadcast(event: SSEEventPayload): void;
   };
   broadcastProcessingStatus?: () => void;
+  recordAiInteraction?: (result: { success: boolean; error?: string; provider: string }) => void;
 }
 
 export interface ObservationSSEPayload {
   id: number;
   memory_session_id: string | null;
   session_id: string;
+  content_session_id: string;
   platform_source: string;
   type: string;
   title: string | null;
@@ -49,33 +48,11 @@ export type SSEEventPayload =
 
 export interface StorageResult {
   observationIds: number[];
+  /**
+   * Parallel to observationIds: true where a Tier-0 dedup merge (#3038) reused
+   * an existing row instead of storing a new one. Absent = nothing merged.
+   */
+  mergedIntoExisting?: boolean[];
   summaryId: number | null;
   createdAtEpoch: number;
 }
-
-export interface ResponseProcessingContext {
-  session: ActiveSession;
-  worker: WorkerRef | undefined;
-  discoveryTokens: number;
-  originalTimestamp: number | null;
-}
-
-export interface ParsedResponse {
-  observations: ParsedObservation[];
-  summary: ParsedSummary | null;
-}
-
-export interface BaseAgentConfig {
-  dbManager: import('../DatabaseManager.js').DatabaseManager;
-  sessionManager: import('../SessionManager.js').SessionManager;
-}
-
-export const FALLBACK_ERROR_PATTERNS = [
-  '429',           // Rate limit
-  '500',           // Internal server error
-  '502',           // Bad gateway
-  '503',           // Service unavailable
-  'ECONNREFUSED',  // Connection refused
-  'ETIMEDOUT',     // Timeout
-  'fetch failed',  // Network failure
-] as const;

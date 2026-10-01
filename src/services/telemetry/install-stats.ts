@@ -1,5 +1,6 @@
 import { statSync } from 'fs';
 import type { Database } from 'bun:sqlite';
+import { asMs } from './common.js';
 
 /**
  * Aggregate, content-free snapshot of an install's memory database, attached
@@ -14,16 +15,6 @@ import type { Database } from 'bun:sqlite';
  * docs/public/telemetry.mdx.
  */
 
-/**
- * Epoch columns hold mixed units historically: a few hundred legacy rows were
- * written in seconds, everything since in milliseconds. Normalize to ms in
- * SQL before any date math (10^12 ms ≈ 2001, 10^12 s ≈ year 33658 — no
- * plausible value is ambiguous).
- */
-function asMs(col: string): string {
-  return `CASE WHEN ${col} < 1000000000000 THEN ${col} * 1000 ELSE ${col} END`;
-}
-
 const DAY_MS = 86_400_000;
 
 export function collectInstallStats(db: Database): Record<string, number> {
@@ -33,21 +24,7 @@ export function collectInstallStats(db: Database): Record<string, number> {
   // Each block is independently best-effort: a missing table on a fresh or
   // partially-migrated install drops that block's keys, never the event.
   try {
-    const counts = db
-      .query(
-        `SELECT
-           (SELECT COUNT(*) FROM observations) AS observations,
-           (SELECT COUNT(*) FROM session_summaries) AS summaries,
-           (SELECT COUNT(*) FROM sdk_sessions) AS sessions,
-           (SELECT COUNT(DISTINCT project) FROM sdk_sessions) AS projects`
-      )
-      .get() as { observations: number; summaries: number; sessions: number; projects: number } | null;
-    if (counts) {
-      stats.db_observation_count = counts.observations;
-      stats.db_summary_count = counts.summaries;
-      stats.db_session_count = counts.sessions;
-      stats.db_project_count = counts.projects;
-    }
+    collectRowCounts(db, stats);
   } catch {
     // Table not created yet — counts arrive once the schema exists.
   }
@@ -64,25 +41,7 @@ export function collectInstallStats(db: Database): Record<string, number> {
   }
 
   try {
-    const obsEpochMs = asMs('created_at_epoch');
-    const activity = db
-      .query(
-        `SELECT
-           MAX(${obsEpochMs}) AS latest,
-           COUNT(CASE WHEN ${obsEpochMs} >= ?1 THEN 1 END) AS last_7d,
-           COUNT(CASE WHEN ${obsEpochMs} >= ?2 THEN 1 END) AS last_30d
-         FROM observations`
-      )
-      .get(now - 7 * DAY_MS, now - 30 * DAY_MS) as
-      | { latest: number | null; last_7d: number; last_30d: number }
-      | null;
-    if (activity) {
-      stats.obs_count_7d = activity.last_7d;
-      stats.obs_count_30d = activity.last_30d;
-      if (activity.latest) {
-        stats.days_since_last_obs = Math.max(0, Math.floor((now - activity.latest) / DAY_MS));
-      }
-    }
+    collectObservationActivity(db, stats, now);
   } catch {
     // No observations table yet.
   }
@@ -96,4 +55,44 @@ export function collectInstallStats(db: Database): Record<string, number> {
   }
 
   return stats;
+}
+
+function collectRowCounts(db: Database, stats: Record<string, number>): void {
+  const counts = db
+    .query(
+      `SELECT
+         (SELECT COUNT(*) FROM observations) AS observations,
+         (SELECT COUNT(*) FROM session_summaries) AS summaries,
+         (SELECT COUNT(*) FROM sdk_sessions) AS sessions,
+         (SELECT COUNT(DISTINCT project) FROM sdk_sessions) AS projects`
+    )
+    .get() as { observations: number; summaries: number; sessions: number; projects: number } | null;
+  if (counts) {
+    stats.db_observation_count = counts.observations;
+    stats.db_summary_count = counts.summaries;
+    stats.db_session_count = counts.sessions;
+    stats.db_project_count = counts.projects;
+  }
+}
+
+function collectObservationActivity(db: Database, stats: Record<string, number>, now: number): void {
+  const obsEpochMs = asMs('created_at_epoch');
+  const activity = db
+    .query(
+      `SELECT
+         MAX(${obsEpochMs}) AS latest,
+         COUNT(CASE WHEN ${obsEpochMs} >= ?1 THEN 1 END) AS last_7d,
+         COUNT(CASE WHEN ${obsEpochMs} >= ?2 THEN 1 END) AS last_30d
+       FROM observations`
+    )
+    .get(now - 7 * DAY_MS, now - 30 * DAY_MS) as
+    | { latest: number | null; last_7d: number; last_30d: number }
+    | null;
+  if (activity) {
+    stats.obs_count_7d = activity.last_7d;
+    stats.obs_count_30d = activity.last_30d;
+    if (activity.latest) {
+      stats.days_since_last_obs = Math.max(0, Math.floor((now - activity.latest) / DAY_MS));
+    }
+  }
 }

@@ -65,6 +65,21 @@ npm run worker:logs           # View worker logs
 npm run worker:status         # Check worker status
 ```
 
+## Supported Harnesses
+
+The worker API is harness-agnostic. claude-mem ships first-party installers and adapters for the following platforms:
+
+| Harness | Platform identifier | Hook / MCP config location | Installer command |
+| --- | --- | --- | --- |
+| Claude Code | `claude` | Native plugin hooks (`~/.claude/...`) | `/plugin marketplace add thedotmack/claude-mem` |
+| Codex CLI | `codex` | `~/.codex/config.toml` | `npx claude-mem install --ide codex` |
+| Cursor | `cursor` | `~/.cursor/hooks.json`, `~/.cursor/mcp.json` | `npx claude-mem install --ide cursor` |
+| Windsurf | `windsurf` | `~/.codeium/windsurf/hooks.json` | `npx claude-mem install --ide windsurf` |
+| OpenCode | `opencode` | `~/.config/opencode/opencode.json` | `npx claude-mem install --ide opencode` |
+| OpenClaw | `openclaw` | OpenClaw gateway plugin config | `curl -fsSL https://install.cmem.ai/openclaw.sh \| bash` |
+| Antigravity CLI | `antigravity-cli` | `~/.gemini/settings.json`, `~/.gemini/.../mcp_config.json` | `npx claude-mem install --ide antigravity` |
+| Kimi Code | `kimi` | `~/.kimi-code/config.toml`, `~/.kimi-code/mcp.json` | `npx claude-mem kimi install` |
+
 ## Worker Architecture
 
 ### Request Flow
@@ -137,7 +152,7 @@ Platform Hook/Extension
   <Accordion title="SettingsRoutes" icon="gear">
     - User settings
     - MCP toggle
-    - Git branch switching
+    - Dependency health
   </Accordion>
 </AccordionGroup>
 
@@ -347,9 +362,15 @@ GET /api/processing-status
 ```json Response
 {
   "isProcessing": boolean,
-  "queueDepth": number
+  "queueDepth": number,
+  "parkedSessions": number
 }
 ```
+
+`parkedSessions` counts sessions currently parked waiting for a free
+concurrency slot (e.g. blocked behind `CLAUDE_MEM_MAX_CONCURRENT_AGENTS`).
+It is independent of `queueDepth`, which counts buffered messages —
+a session can be parked with or without buffered messages.
 
 ### Search Operations (SearchRoutes)
 
@@ -443,42 +464,10 @@ GET /api/timeline?anchor=123&depth_before=10&depth_after=10&project=my-project
 ]
 ```
 
-#### Semantic Shortcuts
-
-<CardGroup cols={3}>
-  <Card title="Decisions" icon="check-circle">
-    ```http
-    GET /api/decisions?format=index&limit=20
-    ```
-  </Card>
-  <Card title="Changes" icon="code-commit">
-    ```http
-    GET /api/changes?format=index&limit=20
-    ```
-  </Card>
-  <Card title="How It Works" icon="lightbulb">
-    ```http
-    GET /api/how-it-works?format=index&limit=20
-    ```
-  </Card>
-</CardGroup>
-
-#### Search by Concept
-
-```http
-GET /api/search/by-concept?concept=discovery&format=index&limit=10&project=my-project
-```
-
 #### Search by File Path
 
 ```http
 GET /api/search/by-file?filePath=src/services/worker-service.ts&format=index&limit=10
-```
-
-#### Search by Type
-
-```http
-GET /api/search/by-type?type=bugfix&format=index&limit=10
 ```
 
 #### Get Recent Context
@@ -561,41 +550,6 @@ Body: { "enabled": true }
 ```
 </CodeGroup>
 
-#### Git Branch Operations
-
-<Tabs>
-  <Tab title="Get Status">
-    ```http
-    GET /api/branch/status
-    ```
-    ```json
-    {
-      "current": "main",
-      "remote": "origin/main",
-      "ahead": 0,
-      "behind": 0
-    }
-    ```
-  </Tab>
-  <Tab title="Switch Branch">
-    ```http
-    POST /api/branch/switch
-    Body: { "branch": "feature/new-feature" }
-    ```
-    ```json
-    { "success": true }
-    ```
-  </Tab>
-  <Tab title="Update Branch">
-    ```http
-    POST /api/branch/update
-    ```
-    ```json
-    { "success": true, "updated": boolean }
-    ```
-  </Tab>
-</Tabs>
-
 ### Viewer & Real-Time Updates (ViewerRoutes)
 
 #### Health Check
@@ -672,19 +626,6 @@ interface PendingMessage {
 ### Database Entities
 
 <Tabs>
-  <Tab title="SDK Session">
-    ```typescript
-    interface SDKSessionRow {
-      id: number;
-      claude_session_id: string;
-      sdk_session_id: string;
-      project: string;
-      user_prompt: string;
-      created_at_epoch: number;
-      completed_at_epoch?: number;
-    }
-    ```
-  </Tab>
   <Tab title="Observation">
     ```typescript
     interface ObservationRow {

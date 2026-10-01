@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
 const VERSION_CHECK_SCRIPT = join(import.meta.dir, '..', 'plugin', 'scripts', 'version-check.js');
+const versionCheckSource = readFileSync(VERSION_CHECK_SCRIPT, 'utf-8');
 
 function runVersionCheck(root: string) {
   const env = { ...process.env, CLAUDE_PLUGIN_ROOT: root };
@@ -56,14 +57,23 @@ describe('plugin/scripts/version-check.js install marker compatibility', () => {
     expect(result.stderr).toBe('');
   });
 
-  it('emits an upgrade hint for a mismatched legacy plain-text marker', () => {
+  it('refreshes a mismatched legacy marker instead of nagging when dependencies are complete (#3092)', () => {
     writeFileSync(join(tempDir, '.install-version'), '12.4.3\n');
 
     const result = runVersionCheck(tempDir);
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain(
-      'claude-mem: upgraded to v12.4.4 - run: npx claude-mem@latest install',
-    );
+    expect(result.stderr).not.toContain('upgraded to');
+    const marker = JSON.parse(readFileSync(join(tempDir, '.install-version'), 'utf-8'));
+    expect(marker.version).toBe('12.4.4');
+  });
+});
+
+describe('plugin/scripts/version-check.js Windows bun lookup', () => {
+  it('uses where as argv with windowsHide and no shell', () => {
+    const windowsCallMatch = versionCheckSource.match(/spawnSync\('where',\s*\['bun'\],\s*\{([^}]+)\}/);
+    expect(windowsCallMatch).not.toBeNull();
+    expect(windowsCallMatch![1]).toContain('windowsHide: true');
+    expect(windowsCallMatch![1]).not.toContain('shell');
   });
 });
