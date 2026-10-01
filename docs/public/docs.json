@@ -38,10 +38,12 @@
           "usage/getting-started",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "usage/multi-key-rotation",
           "usage/search-tools",
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/auto-redaction",
           "usage/export-import",
           "usage/manual-recovery",
           "usage/folder-context"
@@ -54,6 +56,13 @@
           "cursor/index",
           "cursor/gemini-setup",
           "cursor/openrouter-setup"
+        ]
+      },
+      {
+        "group": "Grok Bot Integration",
+        "icon": "robot",
+        "pages": [
+          "grok-bot/index"
         ]
       },
       {
@@ -94,7 +103,8 @@
         "icon": "cloud",
         "pages": [
           "hosted-server",
-          "cloud-sync"
+          "cloud-sync",
+          "cmem-pro-headless"
         ]
       },
       {

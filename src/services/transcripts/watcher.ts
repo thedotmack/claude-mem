@@ -11,9 +11,15 @@ interface TailState {
   partial: string;
 }
 
+// Coarse filesystem clocks (HFS+ 1 s, FAT 2 s) can stamp a file written just
+// after startup with an mtime just before it.
+const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
+
 class FileTailer {
   private watcher: ReturnType<typeof fsWatch> | null = null;
   private tailState: TailState;
+  private readTask: Promise<void> | null = null;
+  private readPending = false;
 
   constructor(
     private filePath: string,
@@ -25,10 +31,10 @@ class FileTailer {
   }
 
   start(): void {
-    this.readNewData().catch(() => undefined);
+    this.requestRead();
     try {
       this.watcher = fsWatch(this.filePath, { persistent: true }, () => {
-        this.readNewData().catch(() => undefined);
+        this.requestRead();
       });
     } catch (error: unknown) {
       // The file can disappear between the glob scan and this watch call. A file
@@ -44,7 +50,25 @@ class FileTailer {
   }
 
   poke(): void {
-    this.readNewData().catch(() => undefined);
+    this.requestRead();
+  }
+
+  private requestRead(): void {
+    if (this.readTask) {
+      this.readPending = true;
+      return;
+    }
+
+    this.readTask = this.drainReads().finally(() => {
+      this.readTask = null;
+    });
+  }
+
+  private async drainReads(): Promise<void> {
+    do {
+      this.readPending = false;
+      await this.readNewData().catch(() => undefined);
+    } while (this.readPending);
   }
 
   private async readNewData(): Promise<void> {
@@ -60,6 +84,7 @@ class FileTailer {
 
     if (size < this.tailState.offset) {
       this.tailState.offset = 0;
+      this.tailState.partial = '';
     }
 
     if (size === this.tailState.offset) return;
@@ -95,12 +120,14 @@ export class TranscriptWatcher {
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
+  private startedAtMs = 0;
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
   }
 
   async start(): Promise<void> {
+    this.startedAtMs = Date.now();
     for (const watch of this.config.watches) {
       await this.setupWatch(watch);
     }
@@ -168,7 +195,7 @@ export class TranscriptWatcher {
     const matches = this.resolveWatchFiles(resolvedPath);
     for (const filePath of matches) {
       if (!this.tailers.has(filePath)) {
-        void this.addTailer(filePath, watch, schema).catch(error => {
+        void this.addTailer(filePath, watch, schema, true).catch(error => {
           logger.debug('TRANSCRIPT', 'Failed to add transcript tailer', { file: filePath, watch: watch.name }, error instanceof Error ? error : undefined);
         });
       }
@@ -232,7 +259,7 @@ export class TranscriptWatcher {
   }
 
   private scanGlob(pattern: string): string[] {
-    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true }));
+    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true, dot: true }));
   }
 
   private normalizeGlobPattern(inputPath: string): string {
@@ -246,7 +273,8 @@ export class TranscriptWatcher {
   private async addTailer(
     filePath: string,
     watch: WatchTarget,
-    schema: TranscriptSchema
+    schema: TranscriptSchema,
+    discoveredAfterStartup: boolean = false
   ): Promise<void> {
     // Expand a leading tilde here, the single point every path feeds through.
     // Some path sources skip expandHomePath, so a literal '~' can reach fs.watch
@@ -257,9 +285,19 @@ export class TranscriptWatcher {
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
+    // `startAtEnd` means "do not replay history that predates this worker".
+    // A transcript created after startup is read from byte 0: by the time the
+    // recursive root watch reports it, session_meta and the opening turns are
+    // already on disk, and jumping to EOF drops the user prompt the schema
+    // exists to capture (#4211). A historical file moved in after startup is
+    // still history: a rename keeps its old mtime (it does bump ctime, so ctime
+    // cannot tell the two apart), so it starts at EOF like the initial scan.
     if (offset === 0 && watch.startAtEnd) {
       try {
-        offset = statSync(filePath).size;
+        const stat = statSync(filePath);
+        const writtenSinceStartup =
+          discoveredAfterStartup && stat.mtimeMs >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
+        if (!writtenSinceStartup) offset = stat.size;
       } catch (error: unknown) {
         logger.debug('WORKER', 'Failed to stat file for startAtEnd offset', { file: filePath }, error instanceof Error ? error : undefined);
         offset = 0;

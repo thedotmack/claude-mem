@@ -44,6 +44,8 @@ export interface ShellTemplateOptions {
   trailingJson?: object;
   /** stderr message when no candidate root resolves. */
   notFoundMessage: string;
+  /** Runtime hooks that observe memory should degrade to no-memory, not block the host prompt. */
+  failOpen?: boolean;
   /**
    * MCP-only: extra candidate roots enumerated before the cache directories
    * (e.g. '$PWD/plugin', '$PWD'). Ignored for non-mcp hosts.
@@ -58,10 +60,10 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
-
-const CLAUDE_CODE_SETUP_PATH_PRELUDE =
-  'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
+// Prepend common tool locations without spawning a login shell on every hook
+// invocation. Setup already used this shape; runtime hooks now match (#3190).
+const CLAUDE_CODE_HOOK_PATH_PRELUDE =
+  'export PATH="$HOME/.nvm/versions/node/v$(ls "$HOME/.nvm/versions/node" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
 const CODEX_CLI_PATH_PRELUDE =
@@ -72,9 +74,8 @@ const CODEX_CLI_PATH_PRELUDE =
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
     case 'claude-code':
-      return CLAUDE_CODE_PATH_PRELUDE;
     case 'claude-code-setup':
-      return CLAUDE_CODE_SETUP_PATH_PRELUDE;
+      return CLAUDE_CODE_HOOK_PATH_PRELUDE;
     case 'codex-cli':
       // Trailing space is intentional: join() adds one more → double space
       // before `_C=`, matching the hand-authored codex-hooks.json.
@@ -111,7 +112,11 @@ function fileExistsClause(options: ShellTemplateOptions): string {
 function candidateBlock(options: ShellTemplateOptions): string {
   const isMcp = options.host === 'mcp';
 
-  const lines: string[] = [`[ -n "$_E" ] && printf '%s\\n' "$_E";`];
+  const lines: string[] = [];
+
+  if (isMcp) {
+    lines.push(`[ -n "$_E" ] && printf '%s\\n' "$_E";`);
+  }
 
   if (isMcp && options.mcpExtraCandidates && options.mcpExtraCandidates.length > 0) {
     const quoted = options.mcpExtraCandidates.map((candidate) => `"${candidate}"`).join(' ');
@@ -149,15 +154,34 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const trimAssignment = isMcp ? '' : ' _R="${_R%/}";';
   const fileClause = fileExistsClause(options);
 
-  return (
+  const fallbackBlock = (
     `_F=; _P=$({ ${lines.join(' ')} } | while IFS= read -r _R; do` +
     `${trimAssignment} [ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
     `${fileClause} && [ -z "$_F" ] && { _F=1; printf '%s\\n' "$_Q"; }; done);`
+  );
+
+  if (isMcp) {
+    return fallbackBlock;
+  }
+
+  // The host-injected root is overwhelmingly the common path. Resolve it
+  // directly so every hook does not enumerate and sort versioned caches even
+  // when the host already supplied a usable installation root.
+  return (
+    `_P=; if [ -n "$_E" ]; then _R="\${_E%/}"; ` +
+    `[ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
+    `${fileClause} && _P="$_Q"; fi; ` +
+    `if [ -z "$_P" ]; then ${fallbackBlock} fi;`
   );
 }
 
 const CYGPATH_CLAUSE =
   `command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w "$_P" 2>/dev/null); [ -n "$_W" ] && _P="$_W"; };`;
+const FAIL_OPEN_EXIT_STATUS_VAR = '_S';
+const FAIL_OPEN_COMMAND_MESSAGE = 'claude-mem: hook command failed';
+/** Fail-open hooks degrade to no-memory; fail-loud hooks surface the failure to the host. */
+const FAIL_OPEN_EXIT_CODE = '0';
+const FAIL_LOUD_EXIT_CODE = '1';
 
 /**
  * Translate a shell-token candidate (`$PWD`, `$PWD/x`, `$HOME/x`, `$_C/x`) into
@@ -244,10 +268,6 @@ function jsArray(values: string[]): string {
   return `[${values.map(jsSingleQuoted).join(',')}]`;
 }
 
-export interface CodexWindowsCommandOptions {
-  startupVersionCheck?: boolean;
-}
-
 /**
  * Codex hook contract supports `commandWindows` as the Windows-only command
  * override. Keep this Node-based so Codex App on Windows can execute hooks from
@@ -255,7 +275,6 @@ export interface CodexWindowsCommandOptions {
  */
 export function buildCodexWindowsCommand(
   workerArgs: string[],
-  options: CodexWindowsCommandOptions = {},
 ): string {
   const parts = [
     "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
@@ -277,13 +296,6 @@ export function buildCodexWindowsCommand(
     "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
     "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
   ];
-
-  if (options.startupVersionCheck) {
-    parts.push(
-      "const v=c.spawnSync(process.execPath,[p.join(R,'scripts','version-check.js')],{encoding:'utf8',env});",
-      "if(v.stdout&&v.stdout.trim()){process.stdout.write(v.stdout);if(!v.stdout.endsWith('\\n'))process.stdout.write('\\n');process.exit(0)}",
-    );
-  }
 
   parts.push(
     `const workerArgs=${jsArray(workerArgs)};`,
@@ -320,7 +332,8 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push('_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";');
   parts.push('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";');
   parts.push(candidateBlock(options));
-  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit 1; };`);
+  const notFoundExitCode = options.failOpen ? FAIL_OPEN_EXIT_CODE : FAIL_LOUD_EXIT_CODE;
+  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit ${notFoundExitCode}; };`);
 
   // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
   // uses the Node launcher), so every host reaching here needs the clause.
@@ -340,6 +353,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   let command = `${envPrefix}${options.trailingCommand.join(' ')}`;
   if (options.trailingJson) {
     command += `; echo '${JSON.stringify(options.trailingJson)}'`;
+  }
+  if (options.failOpen) {
+    command = `{ ${command}; } || { ${FAIL_OPEN_EXIT_STATUS_VAR}=$?; echo "${FAIL_OPEN_COMMAND_MESSAGE} (exit $${FAIL_OPEN_EXIT_STATUS_VAR})" >&2; exit ${FAIL_OPEN_EXIT_CODE}; }`;
   }
   parts.push(command);
 

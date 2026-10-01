@@ -10,7 +10,7 @@ description: "Add persistent memory to Antigravity CLI with claude-mem"
 Antigravity CLI (`agy`) is Google's standalone successor to Gemini CLI — it reuses Gemini CLI's `~/.gemini/` config tree and, per Google, "keeps the most critical features of Gemini CLI: Agent Skills, Hooks, Subagents, and Extensions." Claude-mem changes what happens across sessions by capturing observations, decisions, and patterns — then injecting relevant context into each new session.
 
 <Info>
-**How it works:** Claude-mem installs lifecycle hooks into Antigravity CLI's shared `~/.gemini/settings.json` that capture tool usage, agent responses, and session events. A local worker service extracts semantic observations and injects relevant history at session start — via `GEMINI.md`, an MCP server, and a rules file.
+**How it works:** Claude-mem installs lifecycle hooks into Antigravity CLI's `~/.gemini/config/hooks.json` that capture tool usage, agent responses, and session events. A local worker service extracts semantic observations and injects relevant history at session start — via `GEMINI.md`, an MCP server, and a rules file.
 </Info>
 
 <Note>
@@ -33,7 +33,7 @@ npx claude-mem install --ide antigravity
 
 The installer will:
 1. Auto-detect Antigravity CLI (checks for `agy` in `PATH`, or an existing `~/.gemini/antigravity` directory)
-2. Install 8 lifecycle hooks into `~/.gemini/settings.json`
+2. Install the Antigravity CLI lifecycle hooks into `~/.gemini/config/hooks.json`
 3. Inject context configuration into `~/.gemini/GEMINI.md`
 4. Register claude-mem's MCP server in `~/.gemini/antigravity/mcp_config.json` **and** `~/.gemini/config/mcp_config.json`
 5. Write a rules/context placeholder to `~/.agents/rules/claude-mem-context.md`
@@ -44,10 +44,10 @@ The installer will:
 Claude-mem needs an AI provider to extract observations from your sessions. Choose one:
 
 <Tabs>
-  <Tab title="Gemini API (Free)">
+  <Tab title="Gemini API">
     The simplest option — use Gemini's own API for observation extraction:
 
-    1. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey)
+    1. Create an API key in [Google AI Studio](https://aistudio.google.com/apikey)
     2. Add it to your settings:
 
     ```bash
@@ -61,7 +61,7 @@ Claude-mem needs an AI provider to extract observations from your sessions. Choo
     ```
 
     <Tip>
-    **Free tier:** generous daily quota with `gemini-flash-latest`. Enable billing on Google Cloud for higher RPM without charges.
+    **No billing required:** You can create a Gemini API key without enabling billing. Enable billing for higher rate limits only after reviewing Google's current quota and billing terms.
     </Tip>
   </Tab>
   <Tab title="Claude SDK">
@@ -103,7 +103,7 @@ Claude-mem needs an AI provider to extract observations from your sessions. Choo
 npx claude-mem status
 
 # Check hooks are installed — look for claude-mem entries
-cat ~/.gemini/settings.json | grep claude-mem
+cat ~/.gemini/config/hooks.json | grep claude-mem
 
 # Check MCP registration in either candidate config path
 cat ~/.gemini/antigravity/mcp_config.json | grep claude-mem
@@ -124,20 +124,19 @@ On session start, you'll see claude-mem context injected with your recent observ
 
 ## What gets captured
 
-Claude-mem registers all 8 confirmed Antigravity CLI lifecycle hooks (verified against a live install):
+Claude-mem registers the five lifecycle hooks Antigravity CLI (`agy` 1.2.1) actually fires:
 
 | Hook | Internal event | Purpose |
 |------|-----------------|---------|
-| **SessionStart** | `context` | Injects memory context into the session |
-| **BeforeAgent** | `session-init` | Captures user prompts |
-| **AfterAgent** | `observation` | Records full agent responses |
-| **BeforeTool** | `observation` | Logs tool invocations before execution |
-| **AfterTool** | `observation` | Captures tool results after execution |
-| **Notification** | `observation` | Records system events (permissions, etc.) |
-| **PreCompress** | `summarize` | Captures session summary before compression |
-| **SessionEnd** | `session-complete` | Marks session complete |
+| **PreInvocation** | `context` | Injects memory context (via `injectSteps`) before the agent runs |
+| **PreToolUse** | `observation` | Records tool intent, returns `{"decision":"allow"}` so the call proceeds |
+| **PostToolUse** | `observation` | Captures tool results after execution |
+| **PostInvocation** | `observation` | Records the agent's response (from the transcript's `PLANNER_RESPONSE` node) |
+| **Stop** | `summarize` | Captures the session summary at turn/session end |
 
-All 8 events above are **confirmed** — verified directly against a live, already-installed Antigravity CLI's `~/.gemini/settings.json` (not assumed from Gemini CLI's schema alone).
+<Note>
+These are the real `agy` 1.2.1 event names. Earlier releases mistakenly registered Gemini CLI names (`SessionStart`, `BeforeAgent`, `AfterAgent`, `BeforeTool`, `AfterTool`) into `~/.gemini/settings.json` — none of which exist in the `agy` binary, so hooks never fired and no observations were recorded (issue [#4057](https://github.com/thedotmack/claude-mem/issues/4057)).
+</Note>
 
 ## MCP registration
 
@@ -150,17 +149,17 @@ This gives claude-mem's search tools (`search`, `smart_search`, `timeline`, etc.
 
 ## Future enhancement (not implemented in this release)
 
-Antigravity CLI ships a first-class plugin-marketplace subcommand system: `agy plugin {list,import,install,uninstall,enable,disable,validate,link}`. Notably, `agy plugin import gemini|claude` suggests native cross-tool plugin migration — structurally similar to Codex CLI's `.codex-plugin/plugin.json` marketplace mechanism. This could eventually be a cleaner, more idiomatic way to bundle claude-mem's hooks + MCP + skills registration than hand-editing `settings.json`. It isn't implemented here because its manifest schema isn't discoverable without running `agy plugin import`/`install` against a real manifest, which would mutate a user's live local plugin state. Tracked as a candidate follow-up.
+Antigravity CLI ships a first-class plugin-marketplace subcommand system: `agy plugin {list,import,install,uninstall,enable,disable,validate,link}`. Notably, `agy plugin import gemini|claude` suggests native cross-tool plugin migration — structurally similar to Codex CLI's `.codex-plugin/plugin.json` marketplace mechanism. This could eventually be a cleaner, more idiomatic way to bundle claude-mem's hooks + MCP + skills registration than hand-editing `hooks.json`. It isn't implemented here because its manifest schema isn't discoverable without running `agy plugin import`/`install` against a real manifest, which would mutate a user's live local plugin state. Tracked as a candidate follow-up.
 
 ## Troubleshooting
 
 ### Hooks not firing
 
-1. Verify hooks exist in settings:
+1. Verify hooks exist in the hooks config:
    ```bash
-   cat ~/.gemini/settings.json
+   cat ~/.gemini/config/hooks.json
    ```
-   You should see entries like `"SessionStart"`, `"AfterTool"`, etc. with claude-mem commands.
+   You should see entries like `"PreInvocation"`, `"PostToolUse"`, `"Stop"`, etc. with claude-mem commands.
 
 2. Restart Antigravity CLI after installation.
 
@@ -202,7 +201,7 @@ npx claude-mem install --ide antigravity
 npx claude-mem uninstall
 ```
 
-This removes claude-mem's hooks from `~/.gemini/settings.json`, cleans up the context section in `~/.gemini/GEMINI.md`, removes claude-mem's entry from both MCP config files, and removes the rules context section — while preserving everything else in those files.
+This removes claude-mem's hooks from `~/.gemini/config/hooks.json` (and any legacy entries from `~/.gemini/settings.json`), cleans up the context section in `~/.gemini/GEMINI.md`, removes claude-mem's entry from both MCP config files, and removes the rules context section — while preserving everything else in those files.
 
 ## Next Steps
 
