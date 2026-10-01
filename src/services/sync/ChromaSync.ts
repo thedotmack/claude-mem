@@ -216,16 +216,17 @@ type MetadataPredicate = (metadata: Record<string, unknown>) => boolean;
  * Build a client-side equivalent of a chroma `where` clause, or null if the
  * clause uses anything we do not evaluate identically to chroma.
  *
- * Deliberately narrow: equality (a literal or `$eq`) on a string, number or
- * boolean, combined with `$and` / `$or`. That covers every clause the search
- * paths build, including the dual-project scoping
+ * Deliberately narrow: equality (a literal or `$eq`) or membership (`$in`) on
+ * strings, numbers or booleans, combined with `$and` / `$or`. That covers every
+ * clause the search paths build, including the dual-project scoping
  * `{ $or: [{ project }, { merged_into_project: project }] }` that scopes nearly
- * every project search. Everything else returns null so the query goes to
- * chroma unchanged: other operators ($in, $ne, ranges), and the shapes chroma
- * itself rejects (a clause with more than one key, an `$and` / `$or` with fewer
- * than two clauses), so an invalid filter still fails the way it did. A wrong
- * client-side filter would silently drop results, which is far worse than a
- * slow query.
+ * every project search, in every stored spelling of the project (an `$in` once
+ * a project has more than one, #3531). Everything else returns null so the
+ * query goes to chroma unchanged: other operators ($ne, $nin, ranges), and the
+ * shapes chroma itself rejects (a clause with more than one key, an `$and` /
+ * `$or` with fewer than two clauses, an `$in` that is empty or mixes types), so
+ * an invalid filter still fails the way it did. A wrong client-side filter
+ * would silently drop results, which is far worse than a slow query.
  */
 function buildClientSidePredicate(where: unknown): MetadataPredicate | null {
   if (!where || typeof where !== 'object' || Array.isArray(where)) return null;
@@ -246,14 +247,30 @@ function buildClientSidePredicate(where: unknown): MetadataPredicate | null {
   if (key.startsWith('$')) return null;
 
   const isOperatorObject = value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (isOperatorObject && Object.keys(value).length === 1 && '$in' in value) {
+    const allowed = (value as { $in: unknown }).$in;
+    if (
+      !Array.isArray(allowed) ||
+      allowed.length === 0 ||
+      !allowed.every(candidate => isMetadataScalar(candidate) && typeof candidate === typeof allowed[0])
+    ) {
+      return null;
+    }
+    // A document without the key never matches, exactly as in chroma.
+    return metadata => allowed.includes(metadata[key]);
+  }
   const expected = isOperatorObject && Object.keys(value).length === 1 && '$eq' in value
     ? (value as { $eq: unknown }).$eq
     : value;
-  if (typeof expected !== 'string' && typeof expected !== 'number' && typeof expected !== 'boolean') {
+  if (!isMetadataScalar(expected)) {
     return null;
   }
   // A document without the key never matches, exactly as in chroma.
   return metadata => metadata[key] === expected;
+}
+
+function isMetadataScalar(value: unknown): value is string | number | boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
 export class ChromaSync {

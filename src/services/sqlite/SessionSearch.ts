@@ -286,12 +286,23 @@ export class SessionSearch {
     new RegExp(`[${UNSEGMENTED_SCRIPT_RANGES}]+|[^\\s${UNSEGMENTED_SCRIPT_RANGES}]+`, 'g');
 
   /**
+   * The most distinct terms the substring predicate requires. It adds one LIKE group per
+   * term and SQLite caps an expression tree at a depth of 1000, so a pasted wall of text
+   * (~1,000 words, which FTS never matches, so it always lands here) failed with
+   * "Expression tree is too large". A query this long matches nothing by its full AND
+   * anyway; its leading terms are kept.
+   */
+  static readonly MAX_SUBSTRING_TERMS = 32;
+
+  /**
    * Build the substring predicate used when the index cannot represent the query. Each
    * term must appear in at least one column, and every term must appear somewhere. The
    * escaping matches {@link searchUserPrompts}, which has always searched by substring.
+   * A repeated term adds nothing to the AND, so terms are deduplicated before the cap.
    */
   private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
-    const terms: string[] = query.match(SessionSearch.UNSEGMENTED_RUN) ?? [];
+    const terms = [...new Set(query.match(SessionSearch.UNSEGMENTED_RUN) ?? [])]
+      .slice(0, SessionSearch.MAX_SUBSTRING_TERMS);
     if (terms.length === 0) {
       terms.push(query);
     }

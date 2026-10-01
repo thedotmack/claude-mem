@@ -10,6 +10,7 @@ import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { buildProjectWhereFilter } from '../project-where-filter.js';
 
 export class HybridSearchStrategy {
   constructor(
@@ -102,7 +103,9 @@ export class HybridSearchStrategy {
   private buildObservationWhereFilter(project?: string, platformSource?: string): Record<string, any> {
     const filters: Array<Record<string, any>> = [{ doc_type: 'observation' }];
     if (project) {
-      filters.push({ project });
+      // The same scoping SQLite matched the file by, or merged and case-variant
+      // rows drop out of the ranking.
+      filters.push(buildProjectWhereFilter(this.sessionStore, project));
     }
     if (platformSource) {
       filters.push({ platform_source: normalizePlatformSource(platformSource) });

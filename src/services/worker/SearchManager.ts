@@ -21,6 +21,7 @@ import type { SearchResults, StrategySearchResult } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
+import { buildProjectWhereFilter } from './search/project-where-filter.js';
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
@@ -76,23 +77,6 @@ export class SearchManager {
   }
 
   /**
-   * Chroma where-filter for one project: the row's own key or the project it
-   * was merged into, in every stored spelling of the name. SQLite reads compare
-   * project keys case-insensitively (#3531); Chroma compares exactly, so it is
-   * handed each case variant that exists.
-   */
-  private buildProjectWhereFilter(project: string): Record<string, any> {
-    const variants = this.sessionStore.getProjectKeyCaseVariants(project);
-    const match = variants.length === 1 ? variants[0] : { $in: variants };
-    return {
-      $or: [
-        { project: match },
-        { merged_into_project: match }
-      ]
-    };
-  }
-
-  /**
    * Build a Chroma where-filter scoped to a single doc_type, applying the
    * dual-project ($or: project + merged_into_project) scoping used by every
    * single-type hybrid search path.
@@ -100,7 +84,7 @@ export class SearchManager {
   private buildDocTypeWhereFilter(docType: string, project?: string, platformSource?: string): Record<string, any> {
     const filters: Array<Record<string, any>> = [{ doc_type: docType }];
     if (project) {
-      filters.push(this.buildProjectWhereFilter(project));
+      filters.push(buildProjectWhereFilter(this.sessionStore, project));
     }
     if (platformSource) {
       filters.push({ platform_source: normalizePlatformSource(platformSource) });
@@ -562,7 +546,7 @@ export class SearchManager {
       }
 
       if (options.project) {
-        whereFilters.push(this.buildProjectWhereFilter(options.project));
+        whereFilters.push(buildProjectWhereFilter(this.sessionStore, options.project));
       }
 
       if (options.platformSource) {
@@ -603,14 +587,21 @@ export class SearchManager {
         logger.warn('SEARCH', 'ChromaDB semantic search failed, falling back to FTS5 keyword search', {}, errorObject);
         chromaFailed = true;
 
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
+        // As on the Chroma-less path below: a keyword search that fails too
+        // leaves an empty answer, not a failed request.
+        try {
+          if (searchObservations) {
+            observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
+          }
+          if (searchSessions) {
+            sessions = this.sessionSearch.searchSessions(query, options);
+          }
+          if (searchPrompts) {
+            prompts = this.sessionSearch.searchUserPrompts(query, options);
+          }
+        } catch (ftsError) {
+          const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
+          logger.error('WORKER', 'FTS5 fallback search failed after a Chroma error', {}, ftsErrorObject);
         }
       }
 

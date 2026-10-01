@@ -841,6 +841,32 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       ],
     });
   });
+
+  // Gate P2-14: the keyword fallback after a Chroma error was the one search
+  // path without a catch, so a query that broke both surfaced as a failed
+  // request instead of an empty answer (the Chroma-less path already caught).
+  it('answers instead of throwing when Chroma fails and the keyword fallback fails too', async () => {
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => { throw new Error('Expression tree is too large (maximum depth 1000)'); }),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectKeyCaseVariants: (project: string) => [project],
+      } as any,
+      { queryChroma: mock(() => Promise.reject(new Error('chroma-mcp tool "chroma_query_documents" returned error'))) } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await manager.search({ query: 'a pasted wall of text', format: 'json', limit: 10 });
+
+    expect(result).toEqual(expect.objectContaining({ observations: [], totalResults: 0 }));
+  });
 });
 
 describe('SearchManager searchObservations date grouping', () => {

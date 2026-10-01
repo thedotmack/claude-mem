@@ -87,4 +87,27 @@ describe('search FTS query semantics', () => {
     expect(search.searchSessions('orphaned — plugin version', { project: 'fts-project' }).map(r => r.request))
       .toEqual(['Trace orphaned plugin version mismatch during startup']);
   });
+
+  // No row holds every word of a pasted wall of text, so the substring
+  // fallback answers it. One LIKE group per word used to exceed SQLite's
+  // expression-depth limit of 1000 ("Expression tree is too large").
+  it('answers a query of a thousand words without overflowing SQLite', () => {
+    const wallOfText = Array.from({ length: 1000 }, (_, index) => `word${index}`).join(' ');
+    expect(search.searchObservations(wallOfText, { project: 'fts-project' })).toEqual([]);
+    expect(search.searchSessions(wallOfText, { project: 'fts-project' })).toEqual([]);
+  });
+
+  it('matches by substring on each distinct term, up to a cap', () => {
+    const buildSubstringClause = (SessionSearch as unknown as {
+      buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] };
+    }).buildSubstringClause;
+
+    // A repeated term adds nothing to an AND.
+    expect(buildSubstringClause('plugin plugin version plugin', ['o.title']).params)
+      .toEqual(['%plugin%', '%version%']);
+    // The leading terms are kept, up to the cap.
+    const capped = buildSubstringClause(Array.from({ length: 1000 }, (_, index) => `w${index}`).join(' '), ['o.title']);
+    expect(capped.params).toHaveLength(SessionSearch.MAX_SUBSTRING_TERMS);
+    expect(capped.params[0]).toBe('%w0%');
+  });
 });

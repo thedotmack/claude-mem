@@ -15,6 +15,7 @@ import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { resolveDateBound } from '../../../../shared/date-bounds.js';
+import { buildProjectWhereFilter } from '../project-where-filter.js';
 
 export class ChromaSearchStrategy {
   constructor(
@@ -160,12 +161,7 @@ export class ChromaSearchStrategy {
     }
 
     if (project) {
-      filters.push({
-        $or: [
-          { project },
-          { merged_into_project: project }
-        ]
-      });
+      filters.push(buildProjectWhereFilter(this.sessionStore, project));
     }
 
     if (platformSource) {

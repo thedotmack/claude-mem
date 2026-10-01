@@ -71,7 +71,8 @@ describe('ChromaSearchStrategy', () => {
     mockSessionStore = {
       getObservationsByIds: mock(() => [mockObservation]),
       getSessionSummariesByIds: mock(() => [mockSession]),
-      getUserPromptsByIds: mock(() => [mockPrompt])
+      getUserPromptsByIds: mock(() => [mockPrompt]),
+      getProjectKeyCaseVariants: mock((project: string) => [project])
     };
 
     strategy = new ChromaSearchStrategy(mockChromaSync, mockSessionStore);
@@ -235,6 +236,24 @@ describe('ChromaSearchStrategy', () => {
         'test query',
         100,
         { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
+      );
+    });
+
+    it('should scope the project to every stored spelling of its name (#3531)', async () => {
+      mockSessionStore.getProjectKeyCaseVariants = mock(() => ['my-project', 'My-Project']);
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        project: 'my-project'
+      };
+
+      await strategy.search(options);
+
+      const spellings = { $in: ['my-project', 'My-Project'] };
+      expect(mockSessionStore.getProjectKeyCaseVariants).toHaveBeenCalledWith('my-project');
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { $or: [{ project: spellings }, { merged_into_project: spellings }] }
       );
     });
 
