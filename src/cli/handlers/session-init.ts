@@ -65,9 +65,14 @@ export function setSessionInitDependenciesForTesting(
 }
 
 /**
- * The worker did not record the prompt: it was unreachable, answered 429/5xx,
- * the budget ran out before the call, or the reply had no session id. Only
+ * The worker did not record the prompt for a reason that passes: it was
+ * unreachable, answered 429/5xx, or the budget ran out before the call. Only
  * recordSessionPrompt throws this; the hook handler stays fail-open.
+ *
+ * A rejection that does not pass (a server-runtime 4xx, a reply the hook
+ * cannot read) is not thrown: a retry could never succeed, and the transcript
+ * watcher would stop on that turn for good, holding back every later turn in
+ * the file. It is logged and the turn moves on.
  */
 export class SessionPromptNotRecordedError extends Error {
   constructor(readonly reason: string) {
@@ -185,6 +190,9 @@ const sessionInit = {
           });
           // fall through to worker fallback
         } else {
+          // Not thrown for recordSessionPrompt either: a rejection that does
+          // not pass would stop the transcript watcher on this turn for good
+          // (see SessionPromptNotRecordedError).
           logger.error('HOOK', 'Server session-start failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -239,9 +247,6 @@ const sessionInit = {
 
     if (typeof initResult?.sessionDbId !== 'number') {
       logger.failure('HOOK', 'Session initialization returned malformed response', { contentSessionId: sessionId, project });
-      // A deliberate skip by the worker (an internal or excluded prompt) is
-      // not a failure; anything else without a session id is.
-      if (requireRecordedPrompt && !initResult?.skipped) throw new SessionPromptNotRecordedError('malformed_response');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 

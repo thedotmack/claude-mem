@@ -15,6 +15,13 @@ export interface TranscriptWatchState {
    */
   partials?: Record<string, string>;
   /**
+   * zstd files only: how many lines of the frame at the offset were already
+   * dispatched when a turn later in that frame failed. The retry, in this
+   * process or after a restart, resumes at the failed line, not at the frame
+   * start.
+   */
+  frameLines?: Record<string, number>;
+  /**
    * The working directory each file's session last reported. Some hosts write
    * it only on a session's first line (DeepSeek Harness), and a restarted
    * watcher resumes past that line, so it is kept here. Older state files

@@ -173,6 +173,23 @@ describe('TranscriptWatcher retries a failed turn from its own record', () => {
     expect(recorded).toEqual(['A1', 'A2', 'B1', 'B2']);
   });
 
+  it('zstd: a restart after a turn failed inside a frame resumes at that line', async () => {
+    const filePath = join(tmpRoot, 'session.jsonl.zstd');
+    writeFileSync(filePath, Buffer.concat([zstdFrame(['A1', 'A2', 'A3']), zstdFrame(['B1'])]));
+    failOnce.add('A2');
+
+    const first = tail(filePath);
+    await waitFor(() => recorded.length >= 1);
+    await settle();
+    first.watcher.stop();
+    expect(recorded).toEqual(['A1']);
+
+    tail(filePath);
+    await waitFor(() => recorded.length >= 4);
+    await settle();
+    expect(recorded).toEqual(['A1', 'A2', 'A3', 'B1']);
+  });
+
   it('zstd: a restart after a failed turn resumes at that frame', async () => {
     const filePath = join(tmpRoot, 'session.jsonl.zstd');
     writeFileSync(filePath, Buffer.concat([zstdFrame(['Z1']), zstdFrame(['Z2']), zstdFrame(['Z3'])]));
@@ -306,6 +323,54 @@ describe('TranscriptWatcher startAtEnd discovery (R5-8)', () => {
     await waitFor(() => recorded.length >= 1);
     await settle();
     expect(recorded).toEqual(['live']);
+  });
+
+  it('reads a large file from byte 0 when its first record began after startup (a live session)', async () => {
+    const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
+    const filePath = join(tmpRoot, 'live-large.jsonl');
+    const opening = JSON.stringify({ type: 'turn', session: 'session-retry', text: 'opening', timestamp: new Date().toISOString() });
+    const padding = 'z'.repeat(1000);
+    writeFileSync(filePath, `${opening}\n${Array.from({ length: 300 }, (_, index) => `${turnLine(`turn-${index}`, padding)}\n`).join('')}`);
+    expect(statSync(filePath).size).toBeGreaterThan(256 * 1024);
+
+    const watch: WatchTarget = { name: 'retry-test', path: join(tmpRoot, '*.jsonl'), schema, startAtEnd: true };
+    await (watcher as any).addTailer(filePath, watch, schema, true);
+    await waitFor(() => recorded.length >= 301);
+    await settle();
+    expect(recorded[0]).toBe('opening');
+    expect(recorded).toHaveLength(301);
+  });
+
+  it('starts even a small copied history at EOF when its first record is older than startup', async () => {
+    const watcher = await startWatching(join(tmpRoot, '*.jsonl'));
+    const filePath = join(tmpRoot, 'copied-small.jsonl');
+    const oldOpening = JSON.stringify({ type: 'turn', session: 'session-retry', text: 'old opening', timestamp: '2026-01-02T03:04:05.000Z' });
+    writeFileSync(filePath, `${oldOpening}\n${turnLine('old turn')}\n`);
+
+    const watch: WatchTarget = { name: 'retry-test', path: join(tmpRoot, '*.jsonl'), schema, startAtEnd: true };
+    await (watcher as any).addTailer(filePath, watch, schema, true);
+    appendFileSync(filePath, `${turnLine('live')}\n`);
+    (watcher as any).tailers.get(filePath)?.poke();
+    await waitFor(() => recorded.length >= 1);
+    await settle();
+    expect(recorded).toEqual(['live']);
+  });
+
+  it('does not start a tailer that was still finding its start offset when the watcher stopped', async () => {
+    const filePath = join(tmpRoot, 'late.jsonl.zstd');
+    writeFileSync(filePath, zstdFrame(['before-stop']));
+    const watch: WatchTarget = { name: 'retry-test', path: join(tmpRoot, '*.jsonl.zstd'), schema, startAtEnd: true };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
+    watchers.push(watcher);
+
+    const adding = (watcher as any).addTailer(filePath, watch, schema) as Promise<void>;
+    watcher.stop();
+    await adding;
+    appendFileSync(filePath, zstdFrame(['after-stop']));
+    await settle();
+
+    expect((watcher as any).tailers.size).toBe(0);
+    expect(recorded).toEqual([]);
   });
 
   it('still reads a small new file from byte 0 when it appears after startup', async () => {

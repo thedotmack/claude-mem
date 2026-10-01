@@ -25,13 +25,17 @@ interface TailState {
 const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
 
 /**
- * A transcript discovered after startup with a fresh mtime is read from byte 0
- * only while it is this small: a session that just started (a Codex rollout's
- * session_meta line is ~15-25 KB). Copying or restoring an old transcript also
- * gives it a fresh mtime, and replaying that history from byte 0 would send
- * every old turn through the observer again.
+ * A transcript discovered after startup with a fresh mtime whose first record
+ * carries no timestamp is read from byte 0 only while it is this small: a
+ * session that just started (a Codex rollout's session_meta line is ~15-25
+ * KB). Copying or restoring an old transcript also gives it a fresh mtime, and
+ * replaying that history from byte 0 would send every old turn through the
+ * observer again.
  */
 const NEW_TRANSCRIPT_REPLAY_MAX_BYTES = 256 * 1024;
+
+/** A JSONL transcript's first record is looked for in this many leading bytes. */
+const FIRST_RECORD_PROBE_BYTES = 64 * 1024;
 
 /**
  * One read pass handles at most this many bytes (JSONL text, or complete zstd
@@ -81,6 +85,39 @@ async function zstdResumeOffset(filePath: string, size: number): Promise<number>
   }
 }
 
+/**
+ * When a transcript's first record says it was written: a top-level
+ * `timestamp` (Codex, Claude Code), `time` or `createdAt` (DeepSeek Harness),
+ * as an ISO string or epoch seconds/milliseconds. Null when the first record
+ * carries none or cannot be read.
+ */
+async function firstRecordTimeMs(filePath: string, isZstd: boolean, size: number): Promise<number | null> {
+  try {
+    let text: string;
+    if (isZstd) {
+      const { frames } = scanZstdFramesInFile(filePath, 0, size, 1);
+      if (frames.length === 0) return null;
+      const bytes = await readByteRange(filePath, 0, frames[0].end);
+      text = decompressZstdFrame(bytes, frames[0]);
+    } else {
+      text = (await readByteRange(filePath, 0, Math.min(size, FIRST_RECORD_PROBE_BYTES))).toString('utf8');
+    }
+    const newline = text.indexOf('\n');
+    if (newline === -1) return null;
+    const record = JSON.parse(text.slice(0, newline)) as Record<string, unknown> | null;
+    for (const key of ['timestamp', 'time', 'createdAt']) {
+      const value = record?.[key];
+      const ms = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value)
+        : typeof value === 'string' ? Date.parse(value)
+          : Number.NaN;
+      if (Number.isFinite(ms) && ms > 0) return ms;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function readByteRange(filePath: string, start: number, length: number): Promise<Buffer> {
   const file = await open(filePath, 'r');
   try {
@@ -102,20 +139,24 @@ class FileTailer {
   private pendingRecord: Buffer = Buffer.alloc(0);
   /**
    * zstd only: how many lines of the frame at `offset` were dispatched before
-   * a turn in it failed, so the in-process retry resumes at the failed line.
+   * a turn in it failed, so the retry resumes at the failed line. Persisted
+   * with the checkpoint.
    */
-  private frameLinesDone = 0;
+  private frameLinesDone: number;
 
   constructor(
     private filePath: string,
     initialOffset: number,
     private onLine: (line: string) => Promise<void>,
-    private onOffset: (offset: number, partial?: string) => void,
-    // zstd only: the unterminated JSONL prefix persisted with the frame-aligned offset.
-    initialPartial = ''
+    private onOffset: (offset: number, partial: string, frameLinesDone: number) => void,
+    // zstd only: the unterminated JSONL prefix and the lines of the frame at
+    // the offset already dispatched, persisted with the frame-aligned offset.
+    initialPartial = '',
+    initialFrameLinesDone = 0
   ) {
     this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
+    this.frameLinesDone = this.isZstd ? initialFrameLinesDone : 0;
   }
 
   start(): void {
@@ -194,7 +235,7 @@ class FileTailer {
   private checkpoint(offset: number, partial = ''): void {
     this.tailState.offset = offset;
     this.tailState.partial = partial;
-    this.onOffset(offset, partial);
+    this.onOffset(offset, partial, this.frameLinesDone);
   }
 
   /**
@@ -329,12 +370,15 @@ export class TranscriptWatcher {
   private startedAtMs = 0;
   private warnedZstdUnsupported = false;
   private startingTailers = new Set<string>();
+  /** Set by stop(): a tailer still awaiting its start offset then never starts. */
+  private stopped = false;
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
   }
 
   async start(): Promise<void> {
+    this.stopped = false;
     this.startedAtMs = Date.now();
     for (const watch of this.config.watches) {
       await this.setupWatch(watch);
@@ -342,6 +386,7 @@ export class TranscriptWatcher {
   }
 
   stop(): void {
+    this.stopped = true;
     for (const tailer of this.tailers.values()) {
       tailer.close();
     }
@@ -543,8 +588,9 @@ export class TranscriptWatcher {
         const stat = statSync(filePath);
         const writtenSinceStartup =
           discoveredAfterStartup && stat.mtimeMs >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
-        const replayFromStart = writtenSinceStartup && stat.size <= NEW_TRANSCRIPT_REPLAY_MAX_BYTES;
+        const replayFromStart = writtenSinceStartup && await this.startedAfterThisWatcher(filePath, isZstd, stat.size);
         if (!replayFromStart) offset = isZstd ? await zstdResumeOffset(filePath, stat.size) : stat.size;
+        if (this.stopped) return;
         this.state.offsets[filePath] = offset;
         // The initial scan saves once for all its files (setupWatch).
         if (discoveredAfterStartup) saveWatchState(this.statePath, this.state);
@@ -569,16 +615,22 @@ export class TranscriptWatcher {
           }
         }
       },
-      (newOffset: number, partial = '') => {
+      (newOffset: number, partial: string, frameLinesDone: number) => {
         this.state.offsets[filePath] = newOffset;
         if (partial) {
           (this.state.partials ??= {})[filePath] = partial;
         } else if (this.state.partials) {
           delete this.state.partials[filePath];
         }
+        if (frameLinesDone > 0) {
+          (this.state.frameLines ??= {})[filePath] = frameLinesDone;
+        } else if (this.state.frameLines) {
+          delete this.state.frameLines[filePath];
+        }
         saveWatchState(this.statePath, this.state);
       },
-      this.state.partials?.[filePath] ?? ''
+      this.state.partials?.[filePath] ?? '',
+      this.state.frameLines?.[filePath] ?? 0
     );
 
     tailer.start();
@@ -588,6 +640,19 @@ export class TranscriptWatcher {
       watch: watch.name,
       schema: schema.name
     });
+  }
+
+  /**
+   * Whether a transcript that appeared after startup with a fresh mtime holds
+   * a session that began after this watcher started. A copied or restored old
+   * transcript gets a fresh mtime too; its first record's own timestamp tells
+   * the two apart. A transcript whose first record has none counts as new only
+   * while it is small, as a session that just started is.
+   */
+  private async startedAfterThisWatcher(filePath: string, isZstd: boolean, size: number): Promise<boolean> {
+    const firstRecordAt = await firstRecordTimeMs(filePath, isZstd, size);
+    if (firstRecordAt !== null) return firstRecordAt >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
+    return size <= NEW_TRANSCRIPT_REPLAY_MAX_BYTES;
   }
 
   private async handleLine(
