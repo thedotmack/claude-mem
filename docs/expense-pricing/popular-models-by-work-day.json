@@ -1,0 +1,2368 @@
+{
+  "meta": {
+    "generated_at": "2026-09-09T04:18:16Z",
+    "row_count": 295
+  },
+  "rows": [
+    {
+      "date": "2026-07-01",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-01",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-01",
+      "rank": 3,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-01",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-01",
+      "rank": 5,
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-02",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-02",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-02",
+      "rank": 3,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-02",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-02",
+      "rank": 5,
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-03",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-03",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-03",
+      "rank": 3,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-03",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-03",
+      "rank": 5,
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-04",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-04",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-04",
+      "rank": 3,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-04",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-04",
+      "rank": 5,
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-05",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-05",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-05",
+      "rank": 3,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-05",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-05",
+      "rank": 5,
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "source": "HappyRock OpenRouter week-2 recap (2026-07-14): DeepSeek V4 Flash ended a 7-week #1 streak on Jul 6.",
+      "confidence": "nearest",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-06",
+      "rank": 1,
+      "model_id": "tencent/hy3:free",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-06",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-06",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-06",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-06",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-07",
+      "rank": 1,
+      "model_id": "tencent/hy3:free",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-07",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-07",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-07",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-07",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-08",
+      "rank": 1,
+      "model_id": "tencent/hy3:free",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-08",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-08",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-08",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-08",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-09",
+      "rank": 1,
+      "model_id": "tencent/hy3:free",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-09",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-09",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-09",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-09",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-10",
+      "rank": 1,
+      "model_id": "tencent/hy3:free",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-10",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-10",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-10",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-10",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-11",
+      "rank": 1,
+      "model_id": "tencent/hy3:free",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-11",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-11",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-11",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-11",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-12",
+      "rank": 1,
+      "model_id": "tencent/hy3:free",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-12",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-12",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-12",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-12",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "HappyRock week-of-Jul-6 ranking table (Hy3 free 6.13T, MiMo-V2.5 5.95T, V4 Flash 5.22T).",
+      "confidence": "exact_day",
+      "url": "https://happyrock.cloud/blog/2026-07-14_openrouter_week2_chinese_models_top6_hy3_token_economy_en/"
+    },
+    {
+      "date": "2026-07-13",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-13",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-13",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-13",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-13",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-14",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-14",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-14",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-14",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-14",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-15",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-15",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-15",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-15",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-15",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-16",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-16",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-16",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-16",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-16",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-17",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-17",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-17",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-17",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-17",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-18",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-18",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-18",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-18",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-18",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-19",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-19",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-19",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-19",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-19",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-20",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-20",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-20",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-20",
+      "rank": 4,
+      "model_id": "minimax/minimax-m3",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-20",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.2",
+      "source": "Carry-forward of Jul 6\u201312 table; Hy3:free last_seen 2026-07-20. Jul 22 week snapshot still has Hy3 (paid) #1.",
+      "confidence": "nearest",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-21",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-21",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-21",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-21",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-21",
+      "rank": 5,
+      "model_id": "minimax/minimax-m3",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-22",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-22",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-22",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-22",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-22",
+      "rank": 5,
+      "model_id": "minimax/minimax-m3",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-23",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-23",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-23",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-23",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-23",
+      "rank": 5,
+      "model_id": "minimax/minimax-m3",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-24",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-24",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-24",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-24",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.2",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-24",
+      "rank": 5,
+      "model_id": "minimax/minimax-m3",
+      "source": "modelgauntlet OpenRouter week view retrieved 2026-07-22 (Hy3 10.9T, MiMo-V2.5 9.4T, V4 Flash 5.4T).",
+      "confidence": "exact_day",
+      "url": "https://modelgauntlet.com/leaderboard/openrouter-usage/"
+    },
+    {
+      "date": "2026-07-29",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog: GPT-5.6 Luna/Terra discounts started Jul 27 (Luna tokens later 13.8x). Flash 0731 not listed until Jul 31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-29",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog: GPT-5.6 Luna/Terra discounts started Jul 27 (Luna tokens later 13.8x). Flash 0731 not listed until Jul 31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-29",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog: GPT-5.6 Luna/Terra discounts started Jul 27 (Luna tokens later 13.8x). Flash 0731 not listed until Jul 31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-29",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog: GPT-5.6 Luna/Terra discounts started Jul 27 (Luna tokens later 13.8x). Flash 0731 not listed until Jul 31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-29",
+      "rank": 5,
+      "model_id": "minimax/minimax-m3",
+      "source": "OpenRouter blog: GPT-5.6 Luna/Terra discounts started Jul 27 (Luna tokens later 13.8x). Flash 0731 not listed until Jul 31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-31",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-31",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-31",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-31",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-07-31",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-01",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-01",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-01",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-01",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-01",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-02",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-02",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-02",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-02",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-02",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-03",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-03",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-03",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-03",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-03",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-04",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-04",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-04",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-04",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-04",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-05",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-05",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-05",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-05",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-05",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-07",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-07",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-07",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-07",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-07",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-08",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-08",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-08",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-08",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-08",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-09",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-09",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-09",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-09",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-09",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-10",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-10",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-10",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-10",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-10",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-11",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-11",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-11",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-11",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-11",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-12",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-12",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-12",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-12",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-12",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-13",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-13",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-13",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-13",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-13",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-14",
+      "rank": 1,
+      "model_id": "tencent/hy3",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-14",
+      "rank": 2,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-14",
+      "rank": 3,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-14",
+      "rank": 4,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-14",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "OpenRouter blog discount window through Aug 14. Flash 0731 first_seen 2026-07-31.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/blog/insights/gpt-5-6-discounts-jevons-paradox/"
+    },
+    {
+      "date": "2026-08-16",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-16",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-16",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-16",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-16",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-17",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-17",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-17",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-17",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-17",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-18",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-18",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-18",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-18",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-18",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-19",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-19",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-19",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-19",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-19",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-20",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-20",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-20",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-20",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-20",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-21",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-21",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-21",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-21",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-21",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-23",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-23",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-23",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-23",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-23",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-25",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-25",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-25",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-25",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-25",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-26",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-26",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-26",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-26",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-26",
+      "rank": 5,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "Post-discount window. Flash 0731 became the 30-day volume leader by early Sep. Ox Alpha listed Aug 21\u201326.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-28",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-28",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-28",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-28",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-28",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-29",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-29",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-29",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-29",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-29",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-30",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-30",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-30",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-30",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-30",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-31",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-31",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-31",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-31",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-08-31",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-01",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-01",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-01",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-01",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-01",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-02",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-02",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-02",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-02",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-02",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-03",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-03",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-03",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-03",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-03",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-04",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-04",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-04",
+      "rank": 3,
+      "model_id": "tencent/hy3",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-04",
+      "rank": 4,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-04",
+      "rank": 5,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "GLM 5.3 Flash first_seen 2026-08-27; Hy4 preview first_seen 2026-08-28. Month table as of Sep 8 still has Flash 0731 #1.",
+      "confidence": "nearest",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-05",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-05",
+      "rank": 2,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-05",
+      "rank": 3,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-05",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-05",
+      "rank": 5,
+      "model_id": "google/gemini-2.5-flash-lite",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-06",
+      "rank": 1,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-06",
+      "rank": 2,
+      "model_id": "deepseek/deepseek-v4-flash",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-06",
+      "rank": 3,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-06",
+      "rank": 4,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-06",
+      "rank": 5,
+      "model_id": "google/gemini-2.5-flash-lite",
+      "source": "modelgrep classified 7-day share as of 2026-09-05 (Flash 0731 16.7%, Flash 0423 13.7%, Luna 13.6%).",
+      "confidence": "nearest",
+      "url": "https://modelgrep.com/most-used"
+    },
+    {
+      "date": "2026-09-08",
+      "rank": 1,
+      "model_id": "tencent/hy4-preview",
+      "source": "openrouter.ai/rankings top models today, usage data through Sep 8, 2026.",
+      "confidence": "exact_day",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-08",
+      "rank": 2,
+      "model_id": "openai/gpt-5.6-luna",
+      "source": "openrouter.ai/rankings top models today, usage data through Sep 8, 2026.",
+      "confidence": "exact_day",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-08",
+      "rank": 3,
+      "model_id": "z-ai/glm-5.3-flash",
+      "source": "openrouter.ai/rankings top models today, usage data through Sep 8, 2026.",
+      "confidence": "exact_day",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-08",
+      "rank": 4,
+      "model_id": "deepseek/deepseek-v4-flash-0731",
+      "source": "openrouter.ai/rankings top models today, usage data through Sep 8, 2026.",
+      "confidence": "exact_day",
+      "url": "https://openrouter.ai/rankings"
+    },
+    {
+      "date": "2026-09-08",
+      "rank": 5,
+      "model_id": "xiaomi/mimo-v2.5",
+      "source": "openrouter.ai/rankings top models today, usage data through Sep 8, 2026.",
+      "confidence": "exact_day",
+      "url": "https://openrouter.ai/rankings"
+    }
+  ]
+}

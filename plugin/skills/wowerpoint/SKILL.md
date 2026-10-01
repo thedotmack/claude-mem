@@ -103,7 +103,7 @@ if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$
   if [ -n "$API_ERROR" ] || [ -z "$DECK_ID" ]; then
     echo "WOWerpoint upload warning: ${API_ERROR:-missing id}"
   else
-    echo "Share URL: $WOWERPOINT_VIEWER_BASE/d/$DECK_ID"
+    echo "Share URL: $WOWERPOINT_VIEWER_BASE/$DECK_ID"
   fi
 fi
 ```
@@ -111,7 +111,7 @@ fi
 The returned `id` is a kebab-case slug derived from the title with a random creature suffix (e.g. `tokenrouter-quest-hawk`, or `velvet-comet-tiger` if the title is empty or non-ASCII). The share URL is:
 
 ```text
-$WOWERPOINT_VIEWER_BASE/d/<id>
+$WOWERPOINT_VIEWER_BASE/<id>
 ```
 
 It works immediately (shows a "still converting…" page that auto-reloads when ready). Conversion takes ~1–2 min per slide. Print the share URL in your final response.
@@ -170,7 +170,7 @@ Steps:
      if [ -n "$API_ERROR" ] || [ -z "$DECK_ID" ]; then
        echo "WOWerpoint upload warning: ${API_ERROR:-missing id}"
      else
-       echo "Share URL: $WOWERPOINT_VIEWER_BASE/d/$DECK_ID"
+       echo "Share URL: $WOWERPOINT_VIEWER_BASE/$DECK_ID"
      fi
    fi
    ```

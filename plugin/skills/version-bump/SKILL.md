@@ -1,6 +1,6 @@
 ---
 name: version-bump
-description: Automated semantic versioning and release workflow for Claude Code plugins. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. NPM publishing (so `npx claude-mem@X.Y.Z` resolves) is handed off to the human maintainer, who raised npm security.
+description: Automated semantic versioning and release workflow for Claude Code plugins. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. NPM publishing is the final human-required handoff because the maintainer raised npm security.
 ---
 
 # Version Bump & Release Workflow
@@ -33,33 +33,48 @@ description: Automated semantic versioning and release workflow for Claude Code 
 4.  **Commit**: `git add -A && git commit -m "chore: bump version to X.Y.Z"`.
 5.  **Tag**: `git tag -a vX.Y.Z -m "Version X.Y.Z"`.
 6.  **Push**: `git push origin main && git push origin vX.Y.Z`.
-7.  **Publish to npm — HAND OFF TO HUMAN.** The human maintainer raised npm
-    security, so publishing now requires credentials/2FA only they can provide.
-    The agent MUST NOT run `npm publish` (or `np` / `npm run release:*`, which
-    also publish) itself. **Hand off NPM publishing to the human now:** stop and
-    tell them the version is committed, tagged, and pushed, and that they must
-    publish to npm to make `npx claude-mem@X.Y.Z` resolve. Give them the command:
-    ```bash
-    npm publish   # run by the HUMAN — the prepublishOnly script rebuilds the package
-    ```
-    Wait for the human to confirm they published, then verify it landed:
-    ```bash
-    npm view claude-mem@X.Y.Z version   # should print X.Y.Z
-    ```
-    If the publish build touched local artifacts, run `npm run build-and-sync` again afterward.
-8.  **GitHub release**: `gh release create vX.Y.Z --title "vX.Y.Z" --notes "RELEASE_NOTES"`.
-9.  **Changelog**: Regenerate via the project's changelog script:
+7.  **GitHub release**: `gh release create vX.Y.Z --title "vX.Y.Z" --notes "RELEASE_NOTES"`.
+8.  **Changelog**: Regenerate via the project's changelog script:
     ```bash
     npm run changelog:generate
     ```
     (Runs `node scripts/generate-changelog.js`, which pulls releases from the GitHub API and rewrites `CHANGELOG.md`.)
-10. **Sync changelog**: Commit and push the updated `CHANGELOG.md`.
-11. **Notify**: Run the Discord notification from `~/Scripts/claude-mem/`, where the `.env` with Discord webhook details lives:
+9.  **Sync changelog**: Commit and push the updated `CHANGELOG.md`.
+10. **Pre-handoff audit**: Verify the release commit, tag, GitHub release, and
+    changelog are pushed; confirm the release worktree has no pending tracked
+    changes; and ensure its build dependencies are present because
+    `prepublishOnly` rebuilds the package. If `npm view claude-mem@X.Y.Z version`
+    already resolves, skip the handoff and continue with post-publish checks.
+11. **Final human handoff — publish to npm.** Do not stop in the middle of the
+    workflow for npm. Finish every agent-owned preparation above first, then
+    make this the final human-required action.
+
+    The human maintainer's credentials/2FA are required. The agent MUST NOT run
+    `npm publish` (or `np` / `npm run release:*`, which also publish). Give the
+    exact release-worktree path and this command as the only requested action:
+    ```bash
+    npm publish   # run by the HUMAN — prepublishOnly rebuilds the package
+    ```
+    Wait for confirmation. Do not ask the human to perform any other release
+    step afterward.
+12. **Post-publish verification and notification**: After confirmation, verify
+    both the exact version and the latest dist-tag:
+    ```bash
+    npm view claude-mem@X.Y.Z version
+    npm view claude-mem version
+    ```
+    If the publish build touched tracked artifacts, run `npm run build-and-sync`,
+    review the result, and commit/push any legitimate changes. Then run the
+    Discord notification from `~/Scripts/claude-mem/`, where the `.env` with
+    webhook details lives:
     ```bash
     cd ~/Scripts/claude-mem/ && npm run discord:notify vX.Y.Z
     ```
-    Do this even when the release worktree does not have a local `.env`.
-12. **Finalize**: `git status` — working tree must be clean.
+    Do this only after npm verification, and even when the release worktree does
+    not have a local `.env`.
+13. **Finalize**: `git status` — working tree must be clean and everything must
+    be pushed. Only automated verification, notification, and cleanup may occur
+    after the final human handoff.
 
 ## Checklist
 
@@ -67,8 +82,10 @@ description: Automated semantic versioning and release workflow for Claude Code 
 - [ ] `git grep` for old version returns zero hits
 - [ ] `npm run build-and-sync` succeeded
 - [ ] Git tag created and pushed
-- [ ] **NPM publishing handed off to the human** (agent does NOT run `npm publish` — human raised security); once they publish, `npm view claude-mem@X.Y.Z version` confirms it (so `npx claude-mem@X.Y.Z` resolves)
 - [ ] GitHub release created with notes
 - [ ] `CHANGELOG.md` updated and pushed
-- [ ] Discord notification run from `~/Scripts/claude-mem/`
+- [ ] Pre-handoff audit passed; no agent-owned release preparation remains
+- [ ] **NPM publishing handed off as the final human-required action** (agent does NOT run it)
+- [ ] Exact npm version and `latest` both verified after the human publishes
+- [ ] Discord notification run from `~/Scripts/claude-mem/` only after npm verification
 - [ ] `git status` shows clean tree
