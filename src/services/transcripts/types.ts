@@ -82,11 +82,13 @@ export interface WatchTarget {
    */
   subagentOnly?: boolean;
   /**
-   * How to recognise a subagent session from a transcript entry: read the value
-   * at `path` and treat the session as a subagent when it equals `value`. Codex
-   * marks subagent rollouts with session_meta.payload.source === 'thread_spawn'.
+   * How to recognise a subagent session from a transcript entry: the session
+   * is a subagent once a line has a value at `path`. Codex writes it on a
+   * subagent rollout's first (session_meta) line as
+   * payload.source = {"subagent":{"thread_spawn":{…}}}; a top-level session's
+   * source is a plain string ("cli", "vscode"), so the path is absent there.
    */
-  subagentSource?: { path: string; value: string };
+  subagentSource?: { path: string };
   /** Grok Bot (and similar) host agent id, carried from the watch path into ingest. */
   agentId?: string;
 }

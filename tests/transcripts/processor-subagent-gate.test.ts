@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 import { TranscriptEventProcessor } from '../../src/services/transcripts/processor.js';
+import { CODEX_SUBAGENT_SOURCE } from '../../src/services/transcripts/config.js';
 import * as realSessionInit from '../../src/cli/handlers/session-init.js';
 import * as realIngest from '../../src/services/worker/http/shared.js';
 import * as realProjectName from '../../src/utils/project-name.js';
@@ -83,9 +84,17 @@ const makeWatch = (overrides: Partial<WatchTarget>): WatchTarget => ({
   ...overrides,
 });
 
-const metaEntry = (source: string | undefined) => ({
+// The first line of a real Codex 0.147 subagent rollout (#3651): source is an
+// object. A top-level session's source is a plain string.
+const SUBAGENT_SOURCE = {
+  subagent: { thread_spawn: { parent_thread_id: '01a00b65-parent', depth: 1, agent_path: 'worker', agent_nickname: 'scout' } },
+};
+const metaEntry = (source: unknown) => ({
   type: 'session_meta',
-  payload: { id: 's1', cwd: join(tmpdir(), 'repo'), ...(source ? { source } : {}) },
+  payload: {
+    id: 's1', originator: 'codex-tui', cli_version: '0.147.0', cwd: join(tmpdir(), 'repo'),
+    ...(source !== undefined ? { source } : {}),
+  },
 });
 const userEntry = { type: 'event', payload: { type: 'user_message', id: 's1', message: 'hi' } };
 const obsEntry = {
@@ -102,7 +111,7 @@ const schemaWithEnd: TranscriptSchema = {
   ],
 };
 
-async function replay(processor: TranscriptEventProcessor, watch: WatchTarget, source?: string): Promise<void> {
+async function replay(processor: TranscriptEventProcessor, watch: WatchTarget, source?: unknown): Promise<void> {
   await processor.processEntry(metaEntry(source), watch, schema);
   await processor.processEntry(userEntry, watch, schema);
   await processor.processEntry(obsEntry, watch, schema);
@@ -122,14 +131,22 @@ describe('TranscriptEventProcessor subagent gating', () => {
     observationSessionIds.length = 0;
   });
 
-  const subagentSource = { path: 'payload.source', value: 'thread_spawn' };
+  const subagentSource = { ...CODEX_SUBAGENT_SOURCE };
 
   it('ingests a subagent session under a subagent-only watch', async () => {
     const watch = makeWatch({ subagentOnly: true, subagentSource });
-    await replay(processor, watch, 'thread_spawn');
+    await replay(processor, watch, SUBAGENT_SOURCE);
 
     expect(sessionInitIds).toEqual(['s1']);
     expect(observationSessionIds).toEqual(['s1']);
+  });
+
+  it('does not take the old string "thread_spawn" for a subagent marker', async () => {
+    const watch = makeWatch({ subagentOnly: true, subagentSource });
+    await replay(processor, watch, 'thread_spawn');
+
+    expect(sessionInitIds).toEqual([]);
+    expect(observationSessionIds).toEqual([]);
   });
 
   it('suppresses a top-level session under a subagent-only watch', async () => {

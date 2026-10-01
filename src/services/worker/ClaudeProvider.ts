@@ -634,7 +634,6 @@ export class ClaudeProvider {
             const finalOutput = resultUsage ? resultUsage.output_tokens || 0 : undefined;
             telemetryBuffer.record('session_compressed', session.sessionDbId, {
               ...pending,
-              platform: session.platformSource,
               tokens_input: finalInput,
               tokens_output: finalOutput,
               cost_usd: turnCostUsd,
@@ -712,10 +711,7 @@ export class ClaudeProvider {
       // (abort/kill) still ships — without token fields, per the no-estimates
       // rule — instead of being silently dropped.
       if (session.pendingCompressionEvent) {
-        telemetryBuffer.record('session_compressed', session.sessionDbId, {
-          ...session.pendingCompressionEvent,
-          platform: session.platformSource,
-        });
+        telemetryBuffer.record('session_compressed', session.sessionDbId, session.pendingCompressionEvent);
         session.pendingCompressionEvent = null;
       }
       const tracked = getSdkProcessForSession(session.sessionDbId);

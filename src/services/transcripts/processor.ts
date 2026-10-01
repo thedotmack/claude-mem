@@ -6,7 +6,7 @@ import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
-import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
+import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -132,11 +132,12 @@ export class TranscriptEventProcessor {
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
 
-    // Codex writes the subagent marker on the first (session_meta) line; learn
-    // it from whichever line carries it so later ingest events can be gated.
+    // Codex writes the subagent marker on the first (session_meta) line, as an
+    // object; learn it from whichever line carries it so later ingest events
+    // can be gated. Its presence is the test, not its contents.
     if (watch.subagentSource && !session.isSubagent) {
-      const marker = resolveFieldSpec({ path: watch.subagentSource.path }, entry, { watch, schema } as any);
-      if (typeof marker === 'string' && marker === watch.subagentSource.value) {
+      const marker = getValueByPath(entry, watch.subagentSource.path);
+      if (marker !== undefined && marker !== null) {
         session.isSubagent = true;
       }
     }
