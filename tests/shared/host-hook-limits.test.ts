@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import { HOOK_TIMEOUTS, hookProcessOverheadMs } from '../../src/shared/hook-constants.js';
 import {
   ANTIGRAVITY_HOOK_TIMEOUT_MS,
   SESSION_START_HOOK_LIMIT_MS,
-  hookProcessOverheadMs,
   serverSessionStartBudgetMs,
 } from '../../src/shared/host-hook-limits.js';
 

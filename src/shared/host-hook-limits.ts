@@ -1,4 +1,4 @@
-import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
+import { HOOK_TIMEOUTS, getTimeout, hookProcessOverheadMs } from './hook-constants.js';
 
 /**
  * The per-hook timeout the Antigravity CLI installer registers for every
@@ -23,19 +23,11 @@ export const SESSION_START_HOOK_LIMIT_MS: Readonly<Record<string, number>> = Obj
 });
 
 /**
- * Time a hook spends outside its handler, inside the host's limit: the shell
- * prelude, node and bun startup and the bundle load before it, rendering,
- * stdout and exit after it. Windows process creation is several times slower.
- */
-export function hookProcessOverheadMs(): number {
-  return process.platform === 'win32' ? 8_000 : 5_000;
-}
-
-/**
  * The request budget for the server-runtime SessionStart read (POST
  * /v1/context): what the host's SessionStart limit leaves after the hook's own
- * overhead, and never more than the client's default request timeout. A host
- * that registers no limit keeps that default.
+ * overhead (hookProcessOverheadMs, the same allowance the UserPromptSubmit
+ * budget uses), and never more than the client's default request timeout. A
+ * host that registers no limit keeps that default.
  */
 export function serverSessionStartBudgetMs(host: string | undefined): number {
   const clientDefaultMs = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
