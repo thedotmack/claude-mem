@@ -34,6 +34,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, rateLimitUntilNextKey } from './provider-errors.js';
 import { isContextOverflowBody } from './OpenRouterProvider.js';
+import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { resolveObserverMaxOutputTokens } from './context-window.js';
 import {
@@ -257,6 +258,10 @@ export function classifyOpenAICompatError(input: {
     || lower.includes('out of credits')
     || lower.includes('credit limit')
     || (lower.includes('billing') && status !== 429 && !rateLimitCoded)
+    // A 429 naming a daily cap is spent until the day turns over; as a rate
+    // limit it would be re-probed every 90 seconds (shared with the worker's
+    // OpenRouter classifier and the server runtime).
+    || (status === 429 && namesPeriodRateLimit(lower))
     || status === 402
   ) {
     return new ClassifiedProviderError(describe('quota exhausted'), {
