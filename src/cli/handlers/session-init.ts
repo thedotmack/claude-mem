@@ -88,7 +88,8 @@ export const sessionInitHandler: EventHandler = {
 
     const prompt = (!rawPrompt || !rawPrompt.trim()) ? '[media prompt]' : rawPrompt;
 
-    const project = getProjectContext(cwd).primary;
+    const projectContext = getProjectContext(cwd);
+    const project = projectContext.primary;
     const platformSource = normalizePlatformSource(input.platform);
     const settings = dependencies.loadFromFileOnce();
     const semanticInject =
@@ -153,6 +154,10 @@ export const sessionInitHandler: EventHandler = {
         project,
         prompt,
         platformSource,
+        // Where `project` was resolved from and how, so the worker can record
+        // the session's checkout even if it never reports an observation.
+        cwd,
+        projectKeySource: projectContext.keySource,
       },
       workerSessionInitOptions(platformSource, initTimeoutMs),
     );
