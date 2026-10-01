@@ -11,6 +11,7 @@ import { ClassifiedProviderError } from './provider-errors.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { parseGeminiErrorDetails } from '../../shared/gemini-error-details.js';
+import { readGeminiAnswerText, type GeminiPart } from '../../shared/gemini-answer-text.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
 
@@ -222,9 +223,7 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
 interface GeminiResponse {
   candidates?: Array<{
     content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
+      parts?: GeminiPart[];
     };
     /** 'STOP', 'MAX_TOKENS', 'SAFETY', … */
     finishReason?: string;
@@ -446,7 +445,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const candidate = data.candidates?.[0];
     const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : undefined;
-    const text = candidate?.content?.parts?.[0]?.text;
+    // The answer parts, joined — never a leading reasoning part (gemini-answer-text.ts).
+    const text = readGeminiAnswerText(candidate?.content?.parts);
     // MAX_TOKENS: the output-token cap cut the reply off. A block cut mid-tag
     // never closes, so the parser drops it. Named before the empty-reply exit
     // so a reply cut off before any text is named too (parity with OpenRouter).
