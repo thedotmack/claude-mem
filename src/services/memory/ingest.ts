@@ -1,25 +1,30 @@
 /**
- * Claude Code auto-memory ingest (sibling to the transcript backfill #2690).
+ * Claude Code auto-memory ingest.
  *
  * Claude Code writes "auto memory" — markdown it distills for itself — to
- *   ~/.claude/projects/<encoded-cwd>/memory/MEMORY.md   (an index of links)
- *   ~/.claude/projects/<encoded-cwd>/memory/<topic>.md  (distilled prose)
- * where <encoded-cwd> is the repo's absolute path with '/' replaced by '-'.
+ *   <CLAUDE_CONFIG_DIR>/projects/<encoded-cwd>/memory/MEMORY.md   (an index of links)
+ *   <CLAUDE_CONFIG_DIR>/projects/<encoded-cwd>/memory/<topic>.md  (distilled prose)
+ * where <encoded-cwd> is the repo's absolute path with '/' and '.' replaced by
+ * '-' (CLAUDE_CONFIG_DIR defaults to ~/.claude).
  *
  * Unlike transcripts, memory is ALREADY distilled — each topic file is the same
  * KIND of artifact the observation generator produces. So memory-ingest does NOT
- * run the Haiku generation pipeline. It stores each file's prose DIRECTLY as an
- * observation (mechanical store-direct), reusing claude-mem's existing
- * `storeObservation` seam (content-hash dedup + Chroma sync). Re-running Haiku on
- * already-distilled prose would be lossy and pay for negative value.
+ * run the generation pipeline. It stores each file's prose DIRECTLY as an
+ * observation (mechanical store-direct, zero model spend), reusing claude-mem's
+ * existing `storeObservation` seam (content-hash dedup + Chroma sync).
  *
- * This module is the spend-free, DB-free half: enumerate + parse + count. The
- * real store path (ingest.ts `ingestMemorySource`, added alongside) runs inside
- * the worker where the SQLite store lives.
+ * Reads stay inside Claude Code's projects directory: every source is resolved
+ * (symlinks included) and must lie within it. A sibling transcript is read only
+ * for its `cwd`, to key the project; transcript content is never ingested.
+ *
+ * This module is the DB-free half: enumerate + parse + count. The real store
+ * path (`ingestMemorySource`) runs inside the worker where the SQLite store lives.
  */
-import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'fs';
-import { basename, dirname, join } from 'path';
-import { homedir } from 'os';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync, openSync, readSync, closeSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative } from 'path';
+import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { expandHome } from '../../shared/expand-home.js';
+import { cwdToDashed } from '../context/ObservationCompiler.js';
 import { getProjectContext } from '../../utils/project-name.js';
 
 const MD_EXT = '.md';
@@ -30,26 +35,60 @@ const MEMORY_SUBDIR = 'memory';
 /** Bytes of a sibling transcript to sniff for the project's real cwd. */
 const CWD_SNIFF_BYTES = 16_384;
 
-/** Default root that holds every `<encoded-cwd>/memory/` directory. */
+/** Claude Code's projects directory: the only tree memory ingest reads. */
 export function claudeProjectsDir(): string {
-  return join(homedir(), '.claude', 'projects');
-}
-
-/** Minimal `~` expansion — kept local so this module is PR-independent of #2690. */
-export function expandHome(p: string): string {
-  if (p === '~') return homedir();
-  if (p.startsWith('~/')) return join(homedir(), p.slice(2));
-  return p;
+  return join(CLAUDE_CONFIG_DIR, 'projects');
 }
 
 /**
- * The `memory/` dir for a repo cwd, using Claude Code's path encoding
- * (absolute path with every '/' replaced by '-'). E.g.
+ * The `memory/` dir for a repo cwd, using Claude Code's path encoding (the same
+ * `cwdToDashed` the prior-session transcript lookup uses). E.g.
  *   /home/u/code/mm/observability → -home-u-code-mm-observability/memory
  */
 export function memoryDirForCwd(cwd: string): string {
-  const encoded = cwd.replace(/\//g, '-');
-  return join(claudeProjectsDir(), encoded, MEMORY_SUBDIR);
+  return join(claudeProjectsDir(), cwdToDashed(cwd), MEMORY_SUBDIR);
+}
+
+/** A source the caller asked for that cannot be read: reported as a bad request. */
+export class MemorySourceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MemorySourceError';
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isWithin(child: string, parent: string): boolean {
+  const rel = relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * Resolve `source` (with `~` and symlinks expanded) and require it to be a
+ * directory inside `root`. Throws MemorySourceError otherwise.
+ */
+function resolveSourceWithinRoot(source: string, root: string): { resolved: string; rootReal: string } {
+  const expanded = expandHome(source);
+  if (!existsSync(expanded)) {
+    throw new MemorySourceError(`memory ingest source not found: ${expanded}`);
+  }
+  if (!statSync(expanded).isDirectory()) {
+    throw new MemorySourceError(`memory ingest source is not a directory: ${expanded}`);
+  }
+  if (!existsSync(root)) {
+    throw new MemorySourceError(`Claude Code projects directory not found: ${root}`);
+  }
+  const resolved = realpathSync(expanded);
+  const rootReal = realpathSync(root);
+  if (!isWithin(resolved, rootReal)) {
+    throw new MemorySourceError(
+      `memory ingest reads only Claude Code's projects directory (${root}); ${expanded} is outside it`,
+    );
+  }
+  return { resolved, rootReal };
 }
 
 // ───────────────────────────── frontmatter ──────────────────────────────
@@ -171,11 +210,15 @@ export interface MemoryDirRef {
   files: MemoryFileRef[];
   /** The MEMORY.md index, recorded for reporting but never ingested. */
   indexFile?: MemoryFileRef;
+  /** Files (or the whole dir) that could not be read; reported as failed, never abort the run. */
+  unreadable: Array<{ fileName: string; reason: string }>;
 }
 
 export interface ScanOptions {
   /** Treat `source` as the projects root and sweep every `<encoded>/memory/`. */
   all?: boolean;
+  /** The directory every source must stay inside. Defaults to claudeProjectsDir(). */
+  root?: string;
 }
 
 /** Read the first JSONL line that carries a `cwd` from a sibling transcript. */
@@ -222,8 +265,8 @@ function fallbackProject(cwd: string | undefined, encodedName: string): string {
     } catch {
       // getProjectContext may probe git; fall through to the basename.
     }
-    const segs = cwd.split('/').filter(Boolean);
-    if (segs.length) return segs[segs.length - 1];
+    const leaf = basename(cwd);
+    if (leaf) return leaf;
   }
   // Last resort: the trailing segment of the encoded dir name.
   const segs = encodedName.replace(/^-+/, '').split('-').filter(Boolean);
@@ -236,29 +279,34 @@ function readMemoryDir(memoryDir: string): MemoryDirRef {
   const cwd = sniffCwd(projectDir);
   const project = fallbackProject(cwd, encodedName);
 
-  const ref: MemoryDirRef = { memoryDir, encodedName, cwd, project, files: [] };
+  const ref: MemoryDirRef = { memoryDir, encodedName, cwd, project, files: [], unreadable: [] };
 
   for (const name of readdirSync(memoryDir)) {
     if (!name.endsWith(MD_EXT)) continue;
     const filePath = join(memoryDir, name);
-    const stat = statSync(filePath);
-    if (!stat.isFile()) continue;
+    // One unreadable file is reported and skipped; it never aborts the run.
+    try {
+      const stat = statSync(filePath);
+      if (!stat.isFile()) continue;
 
-    const raw = readFileSync(filePath, 'utf-8');
-    const { frontmatter, body } = parseMemoryFrontmatter(raw);
-    const isIndex = name === INDEX_FILE;
-    const fileRef: MemoryFileRef = {
-      filePath,
-      fileName: name,
-      isIndex,
-      bytes: stat.size,
-      mtimeEpoch: Math.round(stat.mtimeMs),
-      title: deriveTitle(name, frontmatter, body),
-      frontmatter,
-      body,
-    };
-    if (isIndex) ref.indexFile = fileRef;
-    else ref.files.push(fileRef);
+      const raw = readFileSync(filePath, 'utf-8');
+      const { frontmatter, body } = parseMemoryFrontmatter(raw);
+      const isIndex = name === INDEX_FILE;
+      const fileRef: MemoryFileRef = {
+        filePath,
+        fileName: name,
+        isIndex,
+        bytes: stat.size,
+        mtimeEpoch: Math.round(stat.mtimeMs),
+        title: deriveTitle(name, frontmatter, body),
+        frontmatter,
+        body,
+      };
+      if (isIndex) ref.indexFile = fileRef;
+      else ref.files.push(fileRef);
+    } catch (error: unknown) {
+      ref.unreadable.push({ fileName: name, reason: errorMessage(error) });
+    }
   }
 
   ref.files.sort((a, b) => a.fileName.localeCompare(b.fileName));
@@ -277,42 +325,54 @@ function hasMemorySubdir(dir: string): boolean {
  *   - a `memory/` directory itself,
  *   - a `<encoded-cwd>` project directory that contains a `memory/` subdir,
  *   - (with `all: true`) the projects root, swept for every `<encoded>/memory/`.
+ *
+ * Every source must resolve inside `options.root` (Claude Code's projects dir
+ * by default); a symlinked memory dir that leads outside it is skipped (sweep)
+ * or refused (single target). Throws MemorySourceError for a source that is
+ * missing, not a directory, outside the root, or unreadable.
  */
 export function scanMemorySource(source: string, options: ScanOptions = {}): MemoryDirRef[] {
-  const resolved = expandHome(source);
-  if (!existsSync(resolved)) {
-    throw new Error(`memory ingest source not found: ${resolved}`);
-  }
-  if (!statSync(resolved).isDirectory()) {
-    throw new Error(`memory ingest source is not a directory: ${resolved}`);
-  }
+  const { resolved, rootReal } = resolveSourceWithinRoot(source, options.root ?? claudeProjectsDir());
 
   if (options.all) {
     const refs: MemoryDirRef[] = [];
     for (const name of readdirSync(resolved)) {
-      const projectDir = join(resolved, name);
+      const memoryDir = join(resolved, name, MEMORY_SUBDIR);
       try {
-        if (!statSync(projectDir).isDirectory()) continue;
+        if (!statSync(join(resolved, name)).isDirectory() || !hasMemorySubdir(join(resolved, name))) continue;
+        if (!isWithin(realpathSync(memoryDir), rootReal)) continue;
       } catch {
         continue;
       }
-      if (hasMemorySubdir(projectDir)) {
-        refs.push(readMemoryDir(join(projectDir, MEMORY_SUBDIR)));
+      try {
+        refs.push(readMemoryDir(memoryDir));
+      } catch (error: unknown) {
+        refs.push({
+          memoryDir,
+          encodedName: name,
+          project: name,
+          files: [],
+          unreadable: [{ fileName: MEMORY_SUBDIR, reason: errorMessage(error) }],
+        });
       }
     }
     refs.sort((a, b) => a.encodedName.localeCompare(b.encodedName));
     return refs;
   }
 
-  // Single target: accept either the memory/ dir or its parent project dir.
-  if (basename(resolved) === MEMORY_SUBDIR) {
-    return [readMemoryDir(resolved)];
+  // Single target: the memory/ dir itself, its parent project dir, or a
+  // directory of *.md with no memory/ subdir (treated as a memory dir).
+  const memoryDir = basename(resolved) === MEMORY_SUBDIR || !hasMemorySubdir(resolved)
+    ? resolved
+    : join(resolved, MEMORY_SUBDIR);
+  if (!isWithin(realpathSync(memoryDir), rootReal)) {
+    throw new MemorySourceError(`memory ingest reads only Claude Code's projects directory; ${memoryDir} leads outside it`);
   }
-  if (hasMemorySubdir(resolved)) {
-    return [readMemoryDir(join(resolved, MEMORY_SUBDIR))];
+  try {
+    return [readMemoryDir(memoryDir)];
+  } catch (error: unknown) {
+    throw new MemorySourceError(`memory ingest source cannot be read: ${errorMessage(error)}`);
   }
-  // A directory of *.md with no memory/ subdir — treat it as a memory dir.
-  return [readMemoryDir(resolved)];
 }
 
 // ───────────────────────────── dry-run ──────────────────────────────
@@ -325,6 +385,8 @@ export interface MemoryDirCounts {
   files: number;
   indexSkipped: boolean;
   bytes: number;
+  /** Files that could not be read; a real ingest reports them as failed. */
+  unreadable: number;
 }
 
 export interface MemoryDryRunReport {
@@ -337,6 +399,7 @@ export interface MemoryDryRunReport {
     files: number;
     bytes: number;
     cwdUnresolved: number;
+    unreadable: number;
   };
 }
 
@@ -355,6 +418,7 @@ export function dryRunMemorySource(source: string, options: ScanOptions = {}): M
     files: ref.files.length,
     indexSkipped: !!ref.indexFile,
     bytes: ref.files.reduce((n, f) => n + f.bytes, 0),
+    unreadable: ref.unreadable.length,
   }));
 
   return {
@@ -366,6 +430,7 @@ export function dryRunMemorySource(source: string, options: ScanOptions = {}): M
       files: dirs.reduce((n, d) => n + d.files, 0),
       bytes: dirs.reduce((n, d) => n + d.bytes, 0),
       cwdUnresolved: dirs.filter(d => !d.cwdResolved).length,
+      unreadable: dirs.reduce((n, d) => n + d.unreadable, 0),
     },
   };
 }
@@ -394,6 +459,9 @@ export function formatMemoryDryRunReport(report: MemoryDryRunReport): string {
       `WARNING: ${t.cwdUnresolved} dir(s) had no sibling transcript to resolve cwd — ` +
         `project key is a best-effort guess and may not merge with live capture.`
     );
+  }
+  if (t.unreadable) {
+    lines.push(`WARNING: ${t.unreadable} file(s) could not be read and would be reported as failed.`);
   }
   lines.push('NOTE: mechanical store — memory prose is stored as-is, no model spend. Dedup by content_hash.');
   return lines.join('\n');
@@ -504,7 +572,7 @@ export async function ingestMemorySource(
   options: MemoryIngestOptions,
   deps: MemoryIngestDeps
 ): Promise<MemoryIngestReport> {
-  const refs = scanMemorySource(source, { all: options.all });
+  const refs = scanMemorySource(source, { all: options.all, root: options.root });
 
   const report: MemoryIngestReport = {
     source: expandHome(source),
@@ -520,6 +588,11 @@ export async function ingestMemorySource(
   };
 
   for (const ref of refs) {
+    for (const { fileName, reason } of ref.unreadable) {
+      report.found++;
+      report.failed++;
+      report.files.push({ project: ref.project, file: fileName, status: 'failed', reason });
+    }
     for (const file of ref.files) {
       report.found++;
       const result: MemoryFileIngestResult = { project: ref.project, file: file.fileName, status: 'stored' };

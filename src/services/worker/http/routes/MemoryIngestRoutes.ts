@@ -1,21 +1,25 @@
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
+import '../../../sqlite/manual-session.js';
 import {
   ingestMemorySource,
   claudeProjectsDir,
+  MemorySourceError,
   type MemoryIngestDeps,
+  type MemoryIngestReport,
   type MemoryObservationToStore,
 } from '../../../memory/ingest.js';
 import { computeObservationContentHash } from '../../../sqlite/observations/store.js';
 import { logger } from '../../../../utils/logger.js';
 
 /**
- * Auto-memory ingest route (sibling to TranscriptRoutes). Stores Claude Code
- * memory files DIRECTLY as observations — mechanical, no Haiku — reusing the
- * same `storeObservation` + Chroma-sync seam as POST /api/memory/save, looped
- * over a directory tree. Runs inside the worker because the SQLite store lives
- * here; the CLI is a thin client that POSTs (dry-run stays client-side).
+ * Auto-memory ingest route. Stores Claude Code memory files DIRECTLY as
+ * observations — mechanical, no model call — through the same store seam as
+ * POST /api/memory/save, looped over a directory tree. Runs inside the worker
+ * because the SQLite store lives here; the CLI is a thin client that POSTs
+ * (dry-run stays client-side). Sources outside Claude Code's projects directory
+ * are refused with 400.
  */
 export class MemoryIngestRoutes extends BaseRouteHandler {
   constructor(private dbManager: DatabaseManager) {
@@ -46,8 +50,9 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
           metadata: JSON.stringify(obs.metadata),
         };
 
-        // Pre-check the content_hash so we can report deduped vs newly stored
-        // accurately (storeObservation's ON CONFLICT collapses silently).
+        // Re-running an import must not touch rows it already stored: an exact
+        // content_hash match is reported as deduped without calling the store
+        // (whose Tier-0 merge would count it as a repeat).
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
         const existing = sessionStore.db
           .prepare('SELECT id FROM observations WHERE memory_session_id = ? AND content_hash = ? LIMIT 1')
@@ -64,15 +69,17 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
           obs.createdAtEpoch
         );
 
-        if (chromaSync) {
+        // A Tier-0 merge re-confirmed an existing row whose vector already
+        // matches its stored text; re-syncing would overwrite it (as /api/memory/save).
+        if (chromaSync && !result.mergedIntoExisting) {
           chromaSync
-            .syncObservation(result.id, memorySessionId, obs.project, observation, 0, result.createdAtEpoch, 0)
+            .syncObservation(result.id, memorySessionId, obs.project, observation, 0, result.createdAtEpoch)
             .catch((err: unknown) => {
               logger.error('CHROMA', 'memory-ingest Chroma sync failed', { id: result.id }, err as Error);
             });
         }
 
-        return { id: result.id, deduped: false };
+        return { id: result.id, deduped: result.mergedIntoExisting };
       },
     };
   }
@@ -89,7 +96,16 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
     const effectiveSource = source || claudeProjectsDir();
 
     logger.info('INGEST', 'Memory ingest starting', { source: effectiveSource, all, requireCwd });
-    const report = await ingestMemorySource(effectiveSource, { all, requireCwd }, this.buildDeps());
+    let report: MemoryIngestReport;
+    try {
+      report = await ingestMemorySource(effectiveSource, { all, requireCwd }, this.buildDeps());
+    } catch (error: unknown) {
+      if (error instanceof MemorySourceError) {
+        this.badRequest(res, error.message);
+        return;
+      }
+      throw error;
+    }
     logger.info('INGEST', 'Memory ingest complete', {
       found: report.found,
       stored: report.stored,
@@ -97,6 +113,9 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
       skipped: report.skipped,
       failed: report.failed,
     });
+
+    // Every local write nudges cloud sync, as /api/memory/save does.
+    if (report.stored > 0) this.dbManager.getCloudSync()?.notify();
 
     res.json(report);
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -10,6 +10,7 @@ import {
   buildMemoryObservation,
   ingestMemorySource,
   memoryDirForCwd,
+  MemorySourceError,
   type MemoryDirRef,
   type MemoryFileRef,
   type MemoryObservationToStore,
@@ -72,6 +73,10 @@ describe('memoryDirForCwd', () => {
   it('encodes the cwd path with dashes', () => {
     expect(memoryDirForCwd('/home/u/code/mm/obs')).toContain('-home-u-code-mm-obs/memory');
   });
+
+  it('dashes dots too, as Claude Code names its project dirs', () => {
+    expect(memoryDirForCwd('/Users/john.doe/proj')).toContain('-Users-john-doe-proj/memory');
+  });
 });
 
 describe('scanMemorySource', () => {
@@ -97,7 +102,7 @@ describe('scanMemorySource', () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   it('enumerates topic files, skips the MEMORY.md index, resolves cwd', () => {
-    const [ref] = scanMemorySource(memDir);
+    const [ref] = scanMemorySource(memDir, { root });
     expect(ref.indexFile?.fileName).toBe('MEMORY.md');
     const names = ref.files.map(f => f.fileName);
     expect(names).toContain('recent-work.md');
@@ -107,12 +112,12 @@ describe('scanMemorySource', () => {
   });
 
   it('accepts the parent project dir and finds its memory/ subdir', () => {
-    const [ref] = scanMemorySource(join(root, '-home-u-code-mm-obs'));
+    const [ref] = scanMemorySource(join(root, '-home-u-code-mm-obs'), { root });
     expect(ref.files.some(f => f.fileName === 'recent-work.md')).toBe(true);
   });
 
   it('dry-run counts ingestable files and skips the index', () => {
-    const report = dryRunMemorySource(memDir);
+    const report = dryRunMemorySource(memDir, { root });
     // recent-work.md + empty.md are ingestable; MEMORY.md is not.
     expect(report.totals.files).toBe(2);
     expect(report.dirs[0].indexSkipped).toBe(true);
@@ -120,8 +125,52 @@ describe('scanMemorySource', () => {
   });
 
   it('throws on a missing source', () => {
-    expect(() => scanMemorySource(join(root, 'nope'))).toThrow();
+    expect(() => scanMemorySource(join(root, 'nope'), { root })).toThrow(MemorySourceError);
   });
+
+  it('refuses a source outside the projects directory', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'memscan-outside-'));
+    try {
+      writeFileSync(join(outside, 'secret.md'), '# not a memory\n');
+      expect(() => scanMemorySource(outside, { root })).toThrow(MemorySourceError);
+      expect(() => scanMemorySource(join(root, '..'), { root })).toThrow(MemorySourceError);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('does not follow a symlinked memory dir out of the projects directory', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'memscan-link-'));
+    try {
+      writeFileSync(join(outside, 'secret.md'), '# outside\n\nprivate notes');
+      const linkedProject = join(root, '-home-u-code-linked');
+      mkdirSync(linkedProject);
+      symlinkSync(outside, join(linkedProject, 'memory'), 'dir');
+
+      expect(() => scanMemorySource(linkedProject, { root })).toThrow(MemorySourceError);
+      const swept = scanMemorySource(root, { all: true, root });
+      expect(swept.map(ref => ref.encodedName)).toEqual(['-home-u-code-mm-obs']);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'reports an unreadable file and still reads the rest',
+    () => {
+      const locked = join(memDir, 'locked.md');
+      writeFileSync(locked, '# locked\n\nunreadable');
+      chmodSync(locked, 0o000);
+      try {
+        const [ref] = scanMemorySource(memDir, { root });
+        expect(ref.unreadable.map(entry => entry.fileName)).toEqual(['locked.md']);
+        expect(ref.files.map(f => f.fileName)).toContain('recent-work.md');
+        expect(dryRunMemorySource(memDir, { root }).totals.unreadable).toBe(1);
+      } finally {
+        chmodSync(locked, 0o644);
+      }
+    },
+  );
 });
 
 describe('buildMemoryObservation', () => {
@@ -171,7 +220,7 @@ describe('ingestMemorySource (fake deps)', () => {
 
   it('stores non-index, non-empty files and skips empty bodies', async () => {
     const stored: MemoryObservationToStore[] = [];
-    const report = await ingestMemorySource(memDir, {}, {
+    const report = await ingestMemorySource(memDir, { root }, {
       storeMemoryObservation: async obs => {
         stored.push(obs);
         return { id: stored.length, deduped: false };
@@ -184,10 +233,29 @@ describe('ingestMemorySource (fake deps)', () => {
   });
 
   it('reports deduped when the store says so (idempotency)', async () => {
-    const report = await ingestMemorySource(memDir, {}, {
+    const report = await ingestMemorySource(memDir, { root }, {
       storeMemoryObservation: async () => ({ id: 1, deduped: true }),
     });
     expect(report.stored).toBe(0);
     expect(report.deduped).toBe(1);
   });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'reports an unreadable file as failed and stores the rest (one bad file never aborts the run)',
+    async () => {
+      const locked = join(memDir, 'locked.md');
+      writeFileSync(locked, '# locked\n\nunreadable');
+      chmodSync(locked, 0o000);
+      try {
+        const report = await ingestMemorySource(memDir, { root }, {
+          storeMemoryObservation: async () => ({ id: 1, deduped: false }),
+        });
+        expect(report.stored).toBe(1);
+        expect(report.failed).toBe(1);
+        expect(report.files.find(f => f.file === 'locked.md')?.status).toBe('failed');
+      } finally {
+        chmodSync(locked, 0o644);
+      }
+    },
+  );
 });

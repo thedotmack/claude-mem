@@ -60,7 +60,7 @@ npx claude-mem memory ingest --all
 | Flag | Effect |
 |------|--------|
 | *(none)* | Source = the current repo's memory dir, resolved from `cwd`. |
-| `--source <dir>` | Ingest from an explicit `memory/` directory. |
+| `--source <dir>` | Ingest from an explicit `memory/` directory. It must be inside Claude Code's projects directory (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`); anything else, including a symlink that leads outside it, is refused. |
 | `--all` | Sweep every `~/.claude/projects/*/memory/` directory. |
 | `--dry-run` | Zero-spend parse + count only. No worker, no DB writes. Run this first. |
 | `--require-cwd` | Skip orphaned project dirs whose originating `cwd` cannot be resolved (instead of ingesting them under a fallback project). |
@@ -73,6 +73,12 @@ npx claude-mem memory ingest --all
   in the worker. The CLI starts the worker if needed and drives the import over
   HTTP (`POST /api/memory/ingest`), mirroring how transcript ingest and
   summaries reach the worker. Bulk imports are not time-limited.
+- A file that cannot be read is reported as `failed`; the rest of the import
+  carries on. A source outside the projects directory, or one that does not
+  exist, is a `400` from the worker.
+- Only the memory notes are imported. A sibling transcript is read for its
+  `cwd`, to key the project like live capture does; its content is never
+  ingested.
 
 ## Frontmatter
 
