@@ -20,6 +20,7 @@ import {
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
+import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 
 function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null; sourceType: 'agent_event' | 'session_summary' }> = {}): ServerGenerationContext {
   return {
@@ -274,6 +275,35 @@ describe('ClaudeObservationProvider', () => {
     const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: fakeFetch.fetch });
     await expect(provider.generate(makeContext())).rejects.toBeInstanceOf(ServerClassifiedProviderError);
   });
+
+  it('POSTs to api.anthropic.com when baseUrl is unset', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://api.anthropic.com/v1/messages');
+  });
+
+  it('POSTs to a custom gateway baseUrl, appending /v1/messages', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'sk-fake',
+      baseUrl: 'https://gateway.example.com/api/anthropic',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://gateway.example.com/api/anthropic/v1/messages');
+  });
+
+  it('trims whitespace and strips a trailing slash from baseUrl', async () => {
+    const capturing = new CapturingFetch(jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }));
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'sk-fake',
+      baseUrl: '  https://gateway.example.com/api/anthropic/  ',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://gateway.example.com/api/anthropic/v1/messages');
+  });
 });
 
 describe('GeminiObservationProvider', () => {
@@ -507,5 +537,20 @@ describe('OpenRouterObservationProvider', () => {
     await provider.generate(makeContext());
     const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
     expect(body.model).toBe('deepseek-chat');
+  });
+
+  it('defaults to the worker OpenRouter model, not the retired anthropic/claude-3.5-sonnet', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+
+    const result = await provider.generate(makeContext());
+
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
+    const workerDefault = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+    expect(body.model).toBe(workerDefault);
+    expect(body.model).not.toBe('anthropic/claude-3.5-sonnet');
+    expect(result.modelId).toBe(workerDefault);
   });
 });
