@@ -460,3 +460,44 @@ describe('stripImagePayloadsFromField looks inside string values that are themse
     expect(stripImagePayloadsFromField(parsedField)).toBe(parsedField);
   });
 });
+
+describe('stripImagePayloadsFromField is idempotent and bounded on the new shapes', () => {
+  // A field is stripped twice: before the condense pass and again at prompt
+  // build. The second pass must return what the first produced, unchanged.
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+  const cases: Record<string, unknown> = {
+    'MCP image block': { content: [{ type: 'image', data: BASE64, mimeType: 'image/png' }] },
+    'data:image URL string': { screenshot: { tabId: '1', url: 'data:image/jpeg;base64,' + BASE64 } },
+    'double-encoded field': JSON.stringify({ content: [{ type: 'image', data: BASE64 }] }),
+  };
+
+  for (const [name, payload] of Object.entries(cases)) {
+    it(`a second pass leaves the ${name} as the first pass left it`, () => {
+      const once = stripImagePayloadsFromField(JSON.stringify(payload));
+      expect(once).not.toBe(JSON.stringify(payload));
+      expect(stripImagePayloadsFromField(once)).toBe(once);
+      expect(stripImagePayloadsFromField(JSON.stringify(once))).toBe(JSON.stringify(once));
+    });
+  }
+
+  it('elides a data:image URL inside a nested JSON string', () => {
+    const field = { stdout: JSON.stringify({ tabId: '1', url: 'data:image/png;base64,' + BASE64 }) };
+    const out = stripImagePayloadsFromField(field) as { stdout: string };
+
+    expect(JSON.parse(out.stdout)).toEqual({ tabId: '1', url: `data:image/png;base64,<elided ${BASE64.length} bytes>` });
+  });
+
+  it('parses a nested JSON string only within the depth guard', () => {
+    const image = JSON.stringify({ type: 'image', data: BASE64 });
+    const nest = (levels: number): unknown => {
+      let node: unknown = image;
+      for (let i = 0; i < levels; i++) node = { a: node };
+      return node;
+    };
+
+    const shallow = nest(3);
+    expect(stripImagePayloadsFromField(shallow)).not.toBe(shallow);
+    const deep = nest(20);
+    expect(stripImagePayloadsFromField(deep)).toBe(deep);
+  });
+});
