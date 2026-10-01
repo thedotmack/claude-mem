@@ -74,6 +74,21 @@ export interface WatchTarget {
   project?: string;
   context?: WatchContextConfig;
   startAtEnd?: boolean;
+  /**
+   * Set when native platform hooks already capture this watch's top-level
+   * sessions. The watcher then ingests ONLY sessions it can positively identify
+   * as subagent rollouts (see subagentSource), so top-level sessions stay owned
+   * by the hooks and nothing is captured twice.
+   */
+  subagentOnly?: boolean;
+  /**
+   * How to recognise a subagent session from a transcript entry: the session
+   * is a subagent once a line has a value at `path`. Codex writes it on a
+   * subagent rollout's first (session_meta) line as
+   * payload.source = {"subagent":{"thread_spawn":{…}}}; a top-level session's
+   * source is a plain string ("cli", "vscode"), so the path is absent there.
+   */
+  subagentSource?: { path: string };
   /** Grok Bot (and similar) host agent id, carried from the watch path into ingest. */
   agentId?: string;
 }
