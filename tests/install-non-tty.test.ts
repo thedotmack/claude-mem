@@ -109,12 +109,21 @@ describe('Install Non-TTY Support', () => {
       const persistedAssign = installSource.indexOf("options.providerSource = 'persisted'", fnStart);
       const branch = installSource.slice(fnStart, persistedAssign);
       expect(branch).toContain("component: 'provider-credentials'");
-      // Runtime scenarios are covered in noninteractive-provider-validation.test.ts.
-      expect(branch).toContain('getCredential(');
-      expect(branch).toContain('if (!usableKey) {');
+      // An env-only key is a working configuration (the worker reads the same
+      // env var ahead of settings.json), so it must satisfy the check without
+      // ever being copied to disk.
+      expect(branch).toContain('const persistedKey = String(persisted[persistedKeyName] ?? \'\').trim();');
+      expect(branch).toContain("const envKey = persistedCmemGateway ? '' : String(process.env[persistedKeyName] ?? '').trim();");
+      expect(branch).toContain('if (!persistedKey && !envKey) {');
       expect(branch).not.toContain('mergeSettings');
+      // A persisted cmem gateway tuple is locked to its saved key by the
+      // worker, so an exported key must not satisfy the check for it.
       expect(branch).toContain("const persistedCmemGateway = persistedProvider === 'openrouter'");
-      expect(branch).toContain('const detachedCmemGateway =');
+      expect(branch).toContain("isCmemGatewayUrl(String(persisted.CLAUDE_MEM_OPENROUTER_BASE_URL ?? ''))");
+      // ...unless a base-URL override is exported: the worker then detaches
+      // from the gateway and runs on the exported URL and key, so the exported
+      // key counts again (mirrors lockPersistedCmemTuple in OpenRouterProvider).
+      expect(branch).toContain("&& !Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_MEM_OPENROUTER_BASE_URL');");
       // The cmem gateway rejection stays on the explicit-flag path only.
       expect(branch).not.toContain('configuredCmemKey');
     });
