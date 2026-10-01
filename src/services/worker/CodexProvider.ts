@@ -36,6 +36,8 @@ interface CodexConfig {
   codexPath: string;
   reasoningEffort: string | null;
   signal?: AbortSignal;
+  /** The session this config serves, for per-session fault counting. */
+  sessionDbId?: number;
 }
 
 type CodexErrorKind = ConstructorParameters<typeof ClassifiedProviderError>[1]['kind'];
@@ -79,10 +81,13 @@ const CODEX_PROTOCOL_REFUSAL = /RPC error -3260[0-2]\b|unexpected argument|unrec
 
 /**
  * The app-server's own JSON-RPC faults (-32603 internal error, -32700 parse
- * error): nothing about the request to fix, whatever the text quotes, so they
- * stay transient.
+ * error): nothing about the request or the account to act on, whatever the
+ * text quotes, so they stay transient.
  */
 const CODEX_SERVER_FAULT = /RPC error -(?:32603|32700)\b/;
+
+/** Sessions whose run of app-server faults is tracked at once (oldest dropped). */
+const MAX_TRACKED_FAULT_SESSIONS = 256;
 
 const CODEX_REQUEST_REMEDY =
   'Check CLAUDE_MEM_CODEX_MODEL and CLAUDE_MEM_CODEX_REASONING_EFFORT in ~/.claude-mem/settings.json '
@@ -120,6 +125,11 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     action = CODEX_ISOLATION_REMEDY;
   } else if (structuredKind && structuredKind !== CODEX_REFUSED_REQUEST) {
     kind = structuredKind;
+  } else if (CODEX_SERVER_FAULT.test(message)) {
+    // Whatever its text quotes (a usage limit, a login, a parser), a fault of
+    // the app-server neither arms the account breaker nor holds capture
+    // behind the setup gate.
+    kind = 'transient';
   } else if (code === CODEX_SETUP_REQUIRED_CODE || code === 'ENOENT' || /executable not found|command not found|ENOENT/i.test(message)) {
     // Fixed on this machine (install the CLI, `codex login`), never by retrying.
     kind = 'setup_required';
@@ -131,8 +141,7 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
     kind = 'rate_limit';
   } else if (/context (length|window)|prompt (is )?too long/i.test(message)) {
     kind = 'context_overflow';
-  } else if (structuredKind === CODEX_REFUSED_REQUEST
-    || (CODEX_PROTOCOL_REFUSAL.test(message) && !CODEX_SERVER_FAULT.test(message))) {
+  } else if (structuredKind === CODEX_REFUSED_REQUEST || CODEX_PROTOCOL_REFUSAL.test(message)) {
     // Refused the same way until the settings or the CLI change: a setup
     // failure, held behind the codex_cli gate and shown at SessionStart,
     // never a transport blip resumed forever.
@@ -189,8 +198,8 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   protected readonly providerName = 'Codex';
   protected readonly syntheticIdPrefix = 'codex';
   protected readonly forwardEmptyMessageResponse = true;
-  /** App-server internal faults since the last served request (see query). */
-  private consecutiveServerFaults = 0;
+  /** Per session: app-server faults since its last served request (see query). */
+  private readonly serverFaultsBySession = new Map<number, number>();
   private readonly appServer = new CodexAppServerPool(boundedInteger(
     SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS, 2, 8,
   ));
@@ -264,6 +273,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
 
   protected prepareSessionExtras(session: ActiveSession, config: CodexConfig): void {
     config.signal = session.abortController.signal;
+    config.sessionDbId = session.sessionDbId;
     session.lastModelId = config.model || 'codex-default';
   }
 
@@ -297,7 +307,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     try {
       result = await this.runTurnWithRetry(prompt, config, timeoutMs, abortSignal);
     } catch (error) {
-      this.noteServerFault(error);
+      this.noteServerFault(error, config.sessionDbId);
       // A turn that completes without any agent message gets withRetry's one
       // retry. A second one is passed on as an empty reply, for the skip
       // contract to settle, rather than pausing the batch as a transport fault
@@ -310,7 +320,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       });
       return { content: '' };
     }
-    this.consecutiveServerFaults = 0;
+    if (config.sessionDbId !== undefined) this.serverFaultsBySession.delete(config.sessionDbId);
     // A served request is the recovery probe succeeding.
     const quota = getQuotaCooldown('codex');
     if (quota && quota === admittedQuota) clearQuotaCooldown('codex');
@@ -321,15 +331,25 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   /**
    * An app-server internal fault is transient: the session resumes on the
    * transport backoff, which has no cap off the cmem gateway. From the second
-   * in a row, say at WARN what keeps failing and how many times, so a fault
-   * that never clears is not lost among routine retry lines.
+   * in a row for the same session, say at WARN what keeps failing and how many
+   * times, so a fault that never clears is not lost among routine retry lines.
+   * Counted per session: another session's served request does not hide one
+   * whose own requests keep failing.
    */
-  private noteServerFault(error: unknown): void {
+  private noteServerFault(error: unknown, sessionDbId: number | undefined): void {
+    if (sessionDbId === undefined) return;
     if (!isClassified(error) || error.kind !== 'transient' || !CODEX_SERVER_FAULT.test(error.message)) return;
-    this.consecutiveServerFaults += 1;
-    if (this.consecutiveServerFaults < 2) return;
+    const consecutive = (this.serverFaultsBySession.get(sessionDbId) ?? 0) + 1;
+    this.serverFaultsBySession.delete(sessionDbId);
+    this.serverFaultsBySession.set(sessionDbId, consecutive);
+    if (this.serverFaultsBySession.size > MAX_TRACKED_FAULT_SESSIONS) {
+      const oldest = this.serverFaultsBySession.keys().next().value;
+      if (oldest !== undefined) this.serverFaultsBySession.delete(oldest);
+    }
+    if (consecutive < 2) return;
     logger.warn('SDK', 'Codex app-server keeps failing with an internal error; retrying on the transport backoff', {
-      consecutive: this.consecutiveServerFaults,
+      sessionId: sessionDbId,
+      consecutive,
       message: error.message,
     });
   }
