@@ -1,4 +1,5 @@
-import { dirname, existsSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
 import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
 
