@@ -403,7 +403,7 @@ export async function processAgentResponse(
   responseContext?: ResponseContext,
   /** Why an empty turn was empty (block kinds only, never content), for the idle WARN line. */
   emptyOutputReason?: string
-): Promise<void> {
+): Promise<StorageResult | null> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
@@ -448,7 +448,7 @@ export async function processAgentResponse(
         'refused',
         `${agentName} refused the prompt as too long: ${previewOutput(text)}`,
       );
-      return;
+      return null;
     }
 
     if (isQuotaLimitedObserverOutput(text)) {
@@ -466,7 +466,7 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
-      return;
+      return null;
     }
 
     if (isAuthFailureObserverOutput(text)) {
@@ -487,7 +487,7 @@ export async function processAgentResponse(
         remediation: '/login',
         preview: previewOutput(text),
       });
-      return;
+      return null;
     }
 
     // A response that is the child's OWN transport/API failure is not the
@@ -509,7 +509,7 @@ export async function processAgentResponse(
         outputClass: 'transport',
         preview: previewOutput(text),
       });
-      return;
+      return null;
     }
 
     // Classify the non-XML output so a rejected batch is visible, not silent.
@@ -554,7 +554,7 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
-      return;
+      return null;
     }
 
     if (answersQueuedWork) {
@@ -577,7 +577,7 @@ export async function processAgentResponse(
     }
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
-    return;
+    return null;
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
@@ -596,7 +596,7 @@ export async function processAgentResponse(
       await sessionManager.confirmClaimedMessages(session.sessionDbId);
       session.earliestPendingTimestamp = null;
       worker?.broadcastProcessingStatus?.();
-      return;
+      return null;
     }
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
@@ -605,7 +605,7 @@ export async function processAgentResponse(
     // count as "in progress" and trigger a respawn loop while we wait for the
     // memory session id to appear. The next generator pass will re-claim them.
     await sessionManager.resetProcessingToPending(session.sessionDbId);
-    return;
+    return null;
   }
 
   const { observations, summary } = parsed;
@@ -864,6 +864,7 @@ export async function processAgentResponse(
   if (result.summaryId) {
     sessionManager.deliverRequestedSessionWrapup?.(session.sessionDbId);
   }
+  return result;
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {

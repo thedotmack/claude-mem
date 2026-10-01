@@ -395,6 +395,14 @@ export class ClaudeProvider {
       let turnEmptyOutputReason: string | undefined;
       // One re-queue per generator pass for a batch a failed turn never read.
       let retriedAfterErrorResult = false;
+      // #3664: whether any assistant frame of the current turn reported input,
+      // and the rows the turn stored. A gateway that synthesizes streaming
+      // reports zero input on every frame, so the session counters and the
+      // stored discovery_tokens miss the input; the turn's result message
+      // carries the real usage, applied at the turn boundary below.
+      let turnReportedInput = false;
+      let turnInsertedObservationIds: number[] = [];
+      let turnSummaryId: number | null = null;
       // The MEMORY_ID_CAPTURED/CHANGED line is a spawn-health signal for log
       // monitors, but the id arrives on the SDK's first system frame — before
       // any output is classified — so a spawn that only ever returns auth or
@@ -521,6 +529,7 @@ export class ClaudeProvider {
           const usage = message.message.usage;
           if (usage) {
             accumulateClaudeUsage(session, usage);
+            if (computeFullContextTokens(usage) > 0) turnReportedInput = true;
 
             // Real per-response usage for telemetry (tokens_input includes the
             // full context the model read: fresh + cache writes + cache reads).
@@ -572,7 +581,7 @@ export class ClaudeProvider {
 
           pacer.processingStarted();
           try {
-            await processAgentResponse(
+            const stored = await processAgentResponse(
               textContent,
               session,
               this.dbManager,
@@ -586,6 +595,10 @@ export class ClaudeProvider {
               activeResponseContext.current,
               emptyOutputReason
             );
+            if (stored) {
+              turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
+              turnSummaryId = stored.summaryId ?? turnSummaryId;
+            }
           } finally {
             pacer.processingFinished();
           }
@@ -617,6 +630,34 @@ export class ClaudeProvider {
           if (resultUsage && session.lastGeneratorSource !== 'init') {
             session.lastContextTokens = computeFullContextTokens(resultUsage);
           }
+          // No frame of this turn reported input, yet the turn read some: an
+          // SSE-synthesizing gateway (#3664). Count the input the frames left
+          // out, moving the baseline with it so the next response's discovery
+          // delta stays its own, and give the rows this turn inserted the
+          // turn's real cost (fresh input + cache writes + output, the basis
+          // the frames normally give).
+          if (resultUsage && !turnReportedInput) {
+            const missedInput = (resultUsage.input_tokens || 0) + (resultUsage.cache_creation_input_tokens || 0);
+            if (missedInput > 0) {
+              session.cumulativeInputTokens += missedInput;
+              discoveryTokenBaseline += missedInput;
+              if (resultUsage.cache_read_input_tokens) {
+                session.cumulativeCacheReadTokens =
+                  (session.cumulativeCacheReadTokens ?? 0) + resultUsage.cache_read_input_tokens;
+              }
+              if (turnInsertedObservationIds.length > 0 || turnSummaryId !== null) {
+                this.dbManager.getSessionStore().updateDiscoveryTokens(
+                  turnInsertedObservationIds,
+                  turnSummaryId,
+                  missedInput + (resultUsage.output_tokens || 0),
+                );
+              }
+            }
+          }
+          turnReportedInput = false;
+          turnInsertedObservationIds = [];
+          turnSummaryId = null;
+
           const totalCostUsd = (message as any).total_cost_usd as number | undefined;
           let turnCostUsd: number | undefined;
           if (typeof totalCostUsd === 'number') {
