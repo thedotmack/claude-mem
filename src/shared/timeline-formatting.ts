@@ -87,6 +87,20 @@ export function formatDate(dateInput: string | number): string {
   );
 }
 
+/**
+ * The system locale's date and time, exactly as a bare toLocaleString() prints
+ * it, for records that can be from any year (search results, session context).
+ * Guarded like the helpers above: on a host whose formatter cannot initialize,
+ * an ISO date and a UTC clock.
+ */
+export function formatSystemLocaleDateTime(dateInput: string | number): string {
+  const date = new Date(dateInput);
+  return safeFormat(
+    () => date.toLocaleString(),
+    () => guardInvalid(date, d => `${isoDay(d)} ${isoClock(d)} UTC`)
+  );
+}
+
 export function formatHeaderDateTime(now: Date = new Date()): string {
   return safeFormat(
     () => {

@@ -10,7 +10,7 @@ import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveDateBound } from '../../shared/date-bounds.js';
-import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
+import { formatDate, formatTime, formatDateTime, formatSystemLocaleDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
 import {
@@ -1128,7 +1128,7 @@ export class SearchManager {
             }
           }
 
-          const date = new Date(summary.created_at).toLocaleString();
+          const date = formatSystemLocaleDateTime(summary.created_at);
           lines.push(`**Date:** ${date}`);
         }
       } else if (session.status === 'active') {
@@ -1154,7 +1154,7 @@ export class SearchManager {
         lines.push('');
         lines.push('**Status:** Active - summary pending');
 
-        const date = new Date(session.started_at).toLocaleString();
+        const date = formatSystemLocaleDateTime(session.started_at);
         lines.push(`**Date:** ${date}`);
       } else {
         lines.push(`**${session.status.charAt(0).toUpperCase() + session.status.slice(1)}**`);
@@ -1167,7 +1167,7 @@ export class SearchManager {
         lines.push('');
         lines.push(`**Status:** ${session.status} - no summary available`);
 
-        const date = new Date(session.started_at).toLocaleString();
+        const date = formatSystemLocaleDateTime(session.started_at);
         lines.push(`**Date:** ${date}`);
       }
 
@@ -1237,7 +1237,7 @@ export class SearchManager {
     for (let i = 0; i < results.length; i++) {
       const obs = results[i];
       const title = obs.title || `Observation #${obs.id}`;
-      const date = new Date(obs.created_at_epoch).toLocaleString();
+      const date = formatSystemLocaleDateTime(obs.created_at_epoch);
       const type = obs.type ? `[${obs.type}]` : '';
 
       lines.push(`${i + 1}. **${type} ${title}**`);
