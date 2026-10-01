@@ -192,8 +192,30 @@ function elideDataImageUrl(value: string): string {
   return `data:${prefix[1]};base64,<elided ${value.length - prefix[0].length} bytes>`;
 }
 
+// A tool result can reach the observer serialized twice, or carry its content
+// blocks as JSON text inside a string field. The image is then a string, not
+// an object, and no shape above can match it. Only a long string that opens
+// like JSON is worth a parse; it is re-serialized only when something in it
+// was stripped, so every other string keeps the encoding it arrived with.
+const NESTED_JSON_MIN_CHARS = 256;
+
+function stripImagePayloadsFromString(value: string, depth: number): string {
+  const elided = elideDataImageUrl(value);
+  if (elided !== value) return elided;
+  if (depth > MAX_SANITIZE_DEPTH || value.length <= NESTED_JSON_MIN_CHARS) return value;
+  if (value[0] !== '{' && value[0] !== '[') return value;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return value;
+  }
+  const stripped = stripImagePayloads(parsed, depth + 1);
+  return stripped === parsed ? value : JSON.stringify(stripped);
+}
+
 function stripImagePayloads(value: unknown, depth = 0): unknown {
-  if (typeof value === 'string') return elideDataImageUrl(value);
+  if (typeof value === 'string') return stripImagePayloadsFromString(value, depth);
   if (depth > MAX_SANITIZE_DEPTH || value === null || typeof value !== 'object') return value;
 
   if (Array.isArray(value)) {

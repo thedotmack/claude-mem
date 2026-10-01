@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { buildObservationPrompt, buildSummaryPrompt } from '../../src/sdk/prompts.js';
+import { buildObservationPrompt, buildSummaryPrompt, stripImagePayloadsFromField } from '../../src/sdk/prompts.js';
 
 const summaryMode = {
   prompts: {
@@ -402,5 +402,61 @@ describe('buildObservationPrompt elides an inlined data:image URL wherever it si
     const prompt = build({ note: 'data:text/plain;base64,' + 'C'.repeat(2_000) });
 
     expect(/C{2000}/.test(prompt)).toBe(true);
+  });
+});
+
+describe('stripImagePayloadsFromField looks inside string values that are themselves JSON', () => {
+  // A tool result can reach the observer serialized twice, or carry its
+  // content blocks as JSON text inside a string field. The image is then not
+  // an object in the parsed field, and no shape matched it.
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+  const result = {
+    content: [
+      { type: 'text', text: 'Browser tab: 1, Title: "katalog"' },
+      { type: 'image', data: BASE64, mimeType: 'image/png' },
+    ],
+    isError: false,
+  };
+
+  it('strips inside a double-encoded field', () => {
+    const field = JSON.stringify(JSON.stringify(result));
+    const out = stripImagePayloadsFromField(field);
+
+    expect(typeof out).toBe('string');
+    expect(/A{200,}/.test(out as string)).toBe(false);
+    const inner = JSON.parse(out as string);
+    expect(inner.content[0].text).toContain('Browser tab: 1');
+    expect(inner.content[1]).toMatchObject({ type: 'image', bytes: BASE64.length, mimeType: 'image/png' });
+  });
+
+  it('strips inside a JSON string nested in an ordinary field, and re-serializes only that string', () => {
+    const field = JSON.stringify({ exitCode: 0, stdout: JSON.stringify(result) });
+    const out = stripImagePayloadsFromField(field) as { exitCode: number; stdout: string };
+
+    expect(out.exitCode).toBe(0);
+    expect(typeof out.stdout).toBe('string');
+    expect(/A{200,}/.test(out.stdout)).toBe(false);
+    expect(JSON.parse(out.stdout).content[0].text).toContain('Browser tab: 1');
+  });
+
+  it('returns the field it was given when a nested JSON string has no image in it', () => {
+    const nested = JSON.stringify({ rows: Array.from({ length: 40 }, (_, i) => ({ id: i, name: `row ${i}` })) });
+    const parsedField = { stdout: nested };
+    expect(stripImagePayloadsFromField(parsedField)).toBe(parsedField);
+
+    const textField = JSON.stringify(parsedField);
+    expect(stripImagePayloadsFromField(textField)).toBe(textField);
+  });
+
+  it('does not parse a short string', () => {
+    const short = JSON.stringify({ type: 'image', data: 'abc' });
+    const parsedField = { note: short };
+    expect(short.length).toBeLessThan(256);
+    expect(stripImagePayloadsFromField(parsedField)).toBe(parsedField);
+  });
+
+  it('leaves a long string that only looks like JSON alone', () => {
+    const parsedField = { stdout: '{ not json ' + 'x'.repeat(500) };
+    expect(stripImagePayloadsFromField(parsedField)).toBe(parsedField);
   });
 });

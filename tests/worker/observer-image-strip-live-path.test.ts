@@ -166,6 +166,31 @@ describe('observer image stripping on the real ingest path (#3606)', () => {
     expect(optimized.toolOutput).toBe(queued.tool_response);
   });
 
+  test('a browser-automation result sends no base64 to the compressor or the prompt', async () => {
+    // The shapes measured on a live install: an MCP image block with the bytes
+    // on the block itself, and a screenshot data URL in an ordinary object.
+    // The response arrives as JSON text, so the stored field is encoded twice.
+    const response = JSON.stringify({
+      content: [
+        { type: 'text', text: 'Browser tab: 1, Title: "katalog"' },
+        { type: 'image', data: BASE64, mimeType: 'image/png', _meta: { 'codex/imageDetail': 'original' } },
+      ],
+      isError: false,
+      _meta: { 'codex/toolSurface': { screenshot: {
+        pageUrl: 'http://127.0.0.1:8765/', tabId: '1', url: 'data:image/jpeg;base64,' + BASE64,
+      } } },
+    });
+    const queued = await ingest('mcp__cua_repl__js', { code: 'await tab.screenshot()' }, response);
+    const { prompt, compressed } = await observe(queued);
+
+    expect(compressed).toEqual([]);
+    expect(prompt).not.toContain('iVBORw0KGgo');
+    expect(/A{200,}/.test(prompt)).toBe(false);
+    expect(prompt).toContain('Browser tab: 1');
+    expect(prompt).toContain('http://127.0.0.1:8765/');
+    expect(prompt).not.toContain('reason="oversize"');
+  });
+
   test('an image block with no inlined bytes is left alone', async () => {
     const queued = await ingest('Read', { file_path: '/frames/0001.png' },
       { type: 'image', file: { path: '/frames/0001.png' } });
