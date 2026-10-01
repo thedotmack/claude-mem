@@ -9,6 +9,7 @@ import type { OpenAICompatProvider } from '../OpenAICompatProvider.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { recordCmemFallbackIfEligible, releaseCmemGatewayProbe, type SelectableProvider } from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
+import { normalizeAbortReason } from './abort-reason.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
@@ -44,32 +45,6 @@ export interface GeneratorRunnerDependencies {
    * triggered.
    */
   maybeSelfHealStaleClaudeSpawn: (error: unknown, source: string, sessionDbId: number) => boolean;
-}
-
-/**
- * Collapse session.abortReason onto a closed telemetry enum. The raw value can
- * carry free text after a colon (e.g. 'quota:<provider message>') — never emit
- * it verbatim. Unknown or absent reasons map to 'none'.
- */
-function normalizeAbortReason(
-  reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'rate_limit' | 'auth' | 'provider_switch' | 'output_retry' | typeof DEADLINE_EXCEEDED_CODE | 'none' {
-  // The one transport pause that is ours: a request abandoned at the LLM
-  // deadline, possibly already billed upstream. Every other transport pause
-  // stays 'none', as before.
-  if (reason === `transport:${DEADLINE_EXCEEDED_CODE}`) return DEADLINE_EXCEEDED_CODE;
-  switch ((reason ?? '').split(':')[0]) {
-    case 'idle': return 'idle';
-    case 'shutdown': return 'shutdown';
-    case 'overflow': return 'overflow';
-    case 'restart-guard': return 'restart_guard';
-    case 'quota': return 'quota';
-    case 'rate_limit': return 'rate_limit';
-    case 'auth': return 'auth';
-    case 'provider_switch': return 'provider_switch';
-    case 'output_retry': return 'output_retry';
-    default: return 'none';
-  }
 }
 
 /**
@@ -411,6 +386,11 @@ export async function startGeneratorWithProvider(
       // one retry per batch, so this cannot loop.
       if (normalizedReason === 'output_retry') {
         resumeGeneratorLater(session, 0, 'output-retry', ensureGeneratorRunning);
+      }
+      // A generation that kept drifting off the observation schema was ended
+      // after its batches were stored; buffered work continues in a fresh one.
+      if (normalizedReason === 'drift') {
+        resumeGeneratorLater(session, 0, 'schema-drift', ensureGeneratorRunning);
       }
 
       // A response stall preserved its claimed batch but, like a recycle, has

@@ -26,6 +26,7 @@ import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '..
 import {
   processAgentResponse,
   snapshotResponseContext,
+  takeObserverSchemaReminder,
   isAbortError,
   type WorkerRef
 } from './agents/index.js';
@@ -479,7 +480,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       tool_output: JSON.stringify(optimized.toolOutput),
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
-    }, fieldMaxChars);
+    }, fieldMaxChars, takeObserverSchemaReminder(session));
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
