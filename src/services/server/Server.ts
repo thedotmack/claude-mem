@@ -5,7 +5,16 @@ import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
-import { createCorsMiddleware, createMiddleware, requireLocalhost } from '../worker/http/middleware.js';
+import {
+  createCorsMiddleware,
+  createForeignPageDeleteGuard,
+  createMiddleware,
+  createRemoteReadOnlyGuard,
+  createWorkerHostGuard,
+  requireLocalhost,
+  type RemoteReadOnlyOptions,
+  type WorkerOriginPolicy,
+} from '../worker/http/middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -15,49 +24,68 @@ import { getUptimeSeconds } from '../../shared/uptime.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
+import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
+import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
 const INSTRUCTIONS_SKILL_PATH: string = path.join(INSTRUCTIONS_BASE_DIR, 'SKILL.md');
 
-const cachedSkillMd: string | null = (() => {
+// Read on first request, not at import. Hook processes import this module but
+// never serve /api/instructions, so caching at import made every hook spawn
+// read SKILL.md plus every operation file and log boot lines for nothing
+// (#3665).
+let skillMdCache: { text: string | null } | undefined;
+
+function getSkillMd(): string | null {
+  if (skillMdCache) {
+    return skillMdCache.text;
+  }
+  let text: string | null;
   try {
-    const text = fs.readFileSync(INSTRUCTIONS_SKILL_PATH, 'utf-8');
-    logger.info('SYSTEM', 'Cached SKILL.md at boot', {
+    text = fs.readFileSync(INSTRUCTIONS_SKILL_PATH, 'utf-8');
+    logger.debug('SYSTEM', 'Cached SKILL.md on first request', {
       path: INSTRUCTIONS_SKILL_PATH,
       bytes: Buffer.byteLength(text, 'utf-8'),
     });
-    return text;
   } catch (error: unknown) {
-    logger.debug('SYSTEM', 'SKILL.md not present at boot, /api/instructions will 404 for topic queries', {
+    logger.debug('SYSTEM', 'SKILL.md not present, /api/instructions will 404 for topic queries', {
       path: INSTRUCTIONS_SKILL_PATH,
       message: error instanceof Error ? error.message : String(error),
     });
-    return null;
+    text = null;
   }
-})();
+  skillMdCache = { text };
+  return text;
+}
 
-const cachedOperationContent: ReadonlyMap<string, string> = (() => {
+let operationContentCache: ReadonlyMap<string, string> | undefined;
+
+function getOperationContent(): ReadonlyMap<string, string> {
+  if (operationContentCache) {
+    return operationContentCache;
+  }
   const map = new Map<string, string>();
   for (const operation of ALLOWED_OPERATIONS) {
     const operationPath = path.join(INSTRUCTIONS_OPERATIONS_DIR, `${operation}.md`);
     try {
       map.set(operation, fs.readFileSync(operationPath, 'utf-8'));
     } catch (error: unknown) {
-      logger.debug('SYSTEM', 'Operation instruction file not present at boot', {
+      logger.debug('SYSTEM', 'Operation instruction file not present', {
         path: operationPath,
         message: error instanceof Error ? error.message : String(error),
       });
     }
   }
   if (map.size > 0) {
-    logger.info('SYSTEM', 'Cached operation instruction files at boot', {
+    logger.debug('SYSTEM', 'Cached operation instruction files on first request', {
       count: map.size,
       operations: Array.from(map.keys()),
     });
   }
+  operationContentCache = map;
   return map;
-})();
+}
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -89,12 +117,29 @@ export interface ServerOptions {
   runtime?: string;
   getAiStatus: () => AiStatus;
   getDependencyHealth?: () => DependencyHealthSnapshot;
+  getChromaCrashState?: () => ChromaCrashState | undefined;
   preBodyParserRoutes?: RouteHandler[];
   getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
   // #2572 — when true, install a minimal set of hardening response headers
   // (the same headers helmet's defaults emit) before any route runs. Opt-in so
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
   securityHeaders?: boolean;
+  /**
+   * Observation TV remote broadcast. When present, a guard runs BEFORE every
+   * other middleware and route: loopback requests are untouched, and non-loopback
+   * requests may reach only /tv, /tv.html, /stream and GET /api/observations, and
+   * only with the shared secret. Absent (the default, and the server runtime's
+   * choice — it has its own API-key auth) ⇒ nothing is mounted and behavior is
+   * unchanged.
+   */
+  remoteReadOnly?: RemoteReadOnlyOptions;
+  /**
+   * Worker only: trusted browser origins and Host names (plan-23 step 4). When
+   * present, a DNS-rebinding Host check runs before CORS, and CORS also admits
+   * same-host and explicitly allowlisted origins. The server runtime leaves it
+   * unset: it authenticates with API keys and serves public DNS names.
+   */
+  originPolicy?: WorkerOriginPolicy;
 }
 
 // #2572 — hand-rolled security headers.
@@ -126,6 +171,11 @@ export class Server {
     this.options = options;
     this.app = express();
     this.app.disable('x-powered-by');
+    // Position zero is load-bearing: /api/auth/*splat (setupPreBodyParserRoutes),
+    // the express.static mount (setupMiddleware), /api/admin/* (setupCoreRoutes)
+    // and every route registered later all mount after this point. Anything
+    // mounted afterwards leaves earlier routes uncovered.
+    this.setupRemoteReadOnlyGuard();
     this.setupSecurityHeaders();
     this.setupCors();
     this.setupPreBodyParserRoutes();
@@ -150,6 +200,9 @@ export class Server {
         // failed bind (e.g. EADDRINUSE) must never leave a non-listening
         // handle behind for graceful shutdown to trip on.
         this.server = server;
+        // #3300: stop Windows children from inheriting the listen socket so a
+        // crashed daemon's port frees instead of staying LISTENING under a dead PID.
+        clearWindowsListenSocketInherit(server);
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
       };
@@ -195,6 +248,13 @@ export class Server {
     middlewares.forEach(mw => this.app.use(mw));
   }
 
+  private setupRemoteReadOnlyGuard(): void {
+    if (!this.options.remoteReadOnly) {
+      return;
+    }
+    this.app.use(createRemoteReadOnlyGuard(this.options.remoteReadOnly));
+  }
+
   private setupSecurityHeaders(): void {
     if (!this.options.securityHeaders) {
       return;
@@ -206,7 +266,13 @@ export class Server {
   }
 
   private setupCors(): void {
-    this.app.use(createCorsMiddleware());
+    if (this.options.originPolicy) {
+      this.app.use(createWorkerHostGuard(this.options.originPolicy));
+      // Every DELETE (memories, sessions, corpora, and any route added later),
+      // not a list of the ones someone remembered.
+      this.app.use(createForeignPageDeleteGuard(this.options.originPolicy));
+    }
+    this.app.use(createCorsMiddleware(this.options.originPolicy));
   }
 
   private setupPreBodyParserRoutes(): void {
@@ -272,16 +338,17 @@ export class Server {
       }
 
       if (operation) {
-        const cached = cachedOperationContent.get(operation);
+        const cached = getOperationContent().get(operation);
         if (cached === undefined) {
-          logger.debug('HTTP', 'Instruction file not cached at boot', { operation });
+          logger.debug('HTTP', 'Instruction file not available', { operation });
           return res.status(404).json({ error: 'Instruction not found' });
         }
         return res.json({ content: [{ type: 'text', text: cached }] });
       }
 
+      const cachedSkillMd = getSkillMd();
       if (cachedSkillMd === null) {
-        logger.debug('HTTP', 'SKILL.md not cached at boot', { topic });
+        logger.debug('HTTP', 'SKILL.md not available', { topic });
         return res.status(404).json({ error: 'Instruction not found' });
       }
       const sectionText = this.extractInstructionSection(cachedSkillMd, topic);
@@ -346,6 +413,7 @@ export class Server {
       const hours = Math.floor(uptimeSeconds / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
       const formattedUptime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+      const chromaCrashState = this.options.getChromaCrashState?.();
 
       res.json({
         supervisor: {
@@ -360,6 +428,9 @@ export class Server {
           dependencies: this.options.getDependencyHealth
             ? this.options.getDependencyHealth()
             : snapshotDependencyHealth(),
+          ...(chromaCrashState
+            ? { chroma: chromaCrashState }
+            : {}),
         },
       });
     });

@@ -34,6 +34,10 @@ export interface ParsedSummary {
   skip_reason?: string | null;
 }
 
+const OBSERVATION_TITLE_MAX_GRAPHEMES = 120;
+const OBSERVATION_TITLE_TRUNCATE_AT = 117;
+const observationGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 export type ParseResult =
   | { valid: true; observations: ParsedObservation[]; summary: ParsedSummary | null }
   | { valid: false };
@@ -45,7 +49,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 
   raw = stripCodeFences(raw);
 
-  const skipMatch = /^\s*<skip_(?:summary|observation)(?:\s+reason="([^"]*)")?\s*\/>\s*$/.exec(raw);
+  const skipMatch = /<skip_summary(?:\s+reason="([^"]*)")?\s*\/>/i.exec(raw);
   if (skipMatch) {
     return {
       valid: true,
@@ -87,14 +91,14 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
 function parseObservationBlocks(text: string, correlationId?: string | number): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
-  const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  const observationRegex = /<observation>([\s\S]*?)<\/observation>/gi;
 
   let match;
   while ((match = observationRegex.exec(text)) !== null) {
     const obsContent = match[1];
 
     const type = extractField(obsContent, 'type');
-    const title = extractField(obsContent, 'title');
+    const title = unwrapLabelWrappedTitle(extractField(obsContent, 'title'));
     const subtitle = extractField(obsContent, 'subtitle');
     const narrative = extractField(obsContent, 'narrative');
     const facts = extractArrayElements(obsContent, 'facts', 'fact');
@@ -112,7 +116,7 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
         logger.error('PARSER', `Invalid observation type: ${type}, preserving emitted type`, { correlationId });
       }
     } else {
-      logger.error('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
+      logger.error('PARSER', `Observation missing type field, defaulting to the first declared type: "${fallbackType}"`, { correlationId });
     }
 
     // #3379: concepts are matched exactly by the injection SQL, so a prefixed
@@ -124,6 +128,8 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
         return (colonIndex === -1 ? c : c.slice(0, colonIndex)).trim();
       })
       .filter(c => c !== '' && c !== finalType);
+    let finalTitle = title;
+    let finalNarrative = narrative;
 
     if (cleanedConcepts.length !== concepts.length) {
       logger.debug('PARSER', 'Removed observation type from concepts array', {
@@ -135,19 +141,31 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     }
 
     if (!title && !narrative && facts.length === 0 && cleanedConcepts.length === 0) {
-      logger.warn('PARSER', 'Skipping empty observation (all content fields null)', {
+      const salvageNarrative = extractUnstructuredObservationText(obsContent);
+      if (!salvageNarrative) {
+        logger.warn('PARSER', 'Skipping empty observation (all content fields null)', {
+          correlationId,
+          type: finalType
+        });
+        continue;
+      }
+
+      const salvage = extractObservationFallback(salvageNarrative);
+      finalTitle = salvage.title;
+      finalNarrative = salvage.narrative;
+      logger.warn('PARSER', 'Salvaged unstructured observation prose as narrative', {
         correlationId,
-        type: finalType
+        type: finalType,
+        chars: salvageNarrative.length
       });
-      continue;
     }
 
     observations.push({
       type: finalType,
-      title,
+      title: finalTitle,
       subtitle,
       facts,
-      narrative,
+      narrative: finalNarrative,
       concepts: cleanedConcepts,
       files_read,
       files_modified
@@ -158,7 +176,7 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
 }
 
 function parseSummaryBlock(text: string, correlationId?: string | number): ParsedSummary | null {
-  const summaryRegex = /<summary>([\s\S]*?)<\/summary>/;
+  const summaryRegex = /<summary>([\s\S]*?)<\/summary>/i;
   const summaryMatch = summaryRegex.exec(text);
   if (!summaryMatch) return null;
 
@@ -186,8 +204,22 @@ function parseSummaryBlock(text: string, correlationId?: string | number): Parse
   };
 }
 
+// Some local observers echo the field label into the value, producing
+// `<title>[**title**: Example observation]</title>`. Only this complete,
+// unambiguous wrapper is unwrapped; partial forms and legitimately bracketed
+// titles are stored as-is (#3907).
+const LABEL_WRAPPED_TITLE = /^\[\*\*title\*\*:\s*([\s\S]+?)\s*\]$/;
+
+function unwrapLabelWrappedTitle(title: string | null): string | null {
+  if (title === null) return null;
+  const match = LABEL_WRAPPED_TITLE.exec(title);
+  if (!match) return title;
+  const inner = match[1].trim();
+  return inner === '' ? title : inner;
+}
+
 function extractField(content: string, fieldName: string): string | null {
-  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`);
+  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`, 'i');
   const match = regex.exec(content);
   if (!match) return null;
 
@@ -198,7 +230,7 @@ function extractField(content: string, fieldName: string): string | null {
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
   const elements: string[] = [];
 
-  const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`);
+  const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`, 'i');
   const arrayMatch = arrayRegex.exec(content);
 
   if (!arrayMatch) {
@@ -207,7 +239,7 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
 
   const arrayContent = arrayMatch[1];
 
-  const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'g');
+  const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'gi');
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
     const trimmed = elementMatch[1].trim();
@@ -217,4 +249,50 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   }
 
   return elements;
+}
+
+function extractUnstructuredObservationText(content: string): string | null {
+  if (/<\/?(summary|skip_summary)\b/i.test(content)) {
+    return null;
+  }
+
+  const stripped = content
+    .replace(
+      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
+      ' '
+    )
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line !== '')
+    .join('\n')
+    .trim();
+
+  return stripped === '' ? null : stripped;
+}
+
+function extractObservationFallback(text: string): { title: string; narrative: string | null } {
+  const lines = text
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line !== '');
+  const firstLine = lines[0] ?? text.trim();
+  const firstLineGraphemes = Array.from(observationGraphemeSegmenter.segment(firstLine), part => part.segment);
+  const hasOverflow = firstLineGraphemes.length > OBSERVATION_TITLE_MAX_GRAPHEMES;
+  const title = hasOverflow
+    ? `${firstLineGraphemes.slice(0, OBSERVATION_TITLE_TRUNCATE_AT).join('')}...`
+    : firstLine;
+  const narrativeLines = hasOverflow
+    ? [firstLineGraphemes.slice(OBSERVATION_TITLE_TRUNCATE_AT).join('').trim(), ...lines.slice(1)]
+    : lines.slice(1);
+  const narrative = narrativeLines
+    .filter(line => line !== '')
+    .join('\n')
+    .trim();
+
+  return {
+    title,
+    narrative: narrative === '' ? null : narrative,
+  };
 }

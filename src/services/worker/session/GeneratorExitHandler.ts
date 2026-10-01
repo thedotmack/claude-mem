@@ -7,7 +7,6 @@ import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervis
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
-  restartGenerator?: (sessionDbId: number, source: string) => void | Promise<void>;
 }
 
 /**
@@ -31,7 +30,7 @@ export async function handleGeneratorExit(
   reason: ActiveSession['abortReason'],
   deps: GeneratorExitDependencies
 ): Promise<void> {
-  const { sessionManager, completionHandler, restartGenerator } = deps;
+  const { sessionManager, completionHandler } = deps;
   const sessionDbId = session.sessionDbId;
 
   const tracked = getSdkProcessForSession(sessionDbId);
@@ -42,20 +41,43 @@ export async function handleGeneratorExit(
   session.generatorPromise = null;
   session.currentProvider = null;
 
+  // 'overflow' joins quota/auth as a pause-and-preserve exit: ResponseProcessor
+  // has already reset the claimed batch to pending and (on a recycle) cleared
+  // the conversation, so the session must survive for the next ingest to open a
+  // fresh generator and drain it. Finalizing here would drop that work (#3800).
+  // 'provider_switch' (#2756) is the same shape for a different reason:
+  // SessionRoutes aborted a generator that was PARKED in waitForSlot (never
+  // acquired a slot / never spawned) to switch providers, and is about to
+  // start a fresh generator for the newly-selected provider on this same
+  // session — finalizeSession + removeSessionImmediate would dispose the
+  // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
+  // wiping the very queue the switch is meant to preserve. The transcript is
+  // not carried over: every generator start opens a new generation seeded from
+  // the session's memory (#3800, #3479), so the queue is what must survive.
   const abortCategory = (reason ?? '').split(':')[0];
-  if (
-    abortCategory === 'quota' ||
-    abortCategory === 'auth' ||
-    abortCategory === 'output_retry' ||
-    abortCategory === 'output_paused' ||
-    abortCategory === 'storage_paused'
-  ) {
+  // Every category listed here has ALREADY called resetProcessingToPending
+  // (except provider_switch, which parks a live buffer for a provider change).
+  // Falling through to finalizeSession would remove the session and undo that
+  // preservation — the second half of #3752.
+  const PRESERVES_CLAIMED_WORK = ['quota', 'rate_limit', 'auth', 'overflow', 'provider_switch', 'transport'];
+  // Every transport pause resumes on the transport backoff — a deadline or an
+  // upstream fault that outlived the provider's retries, whatever code it
+  // carries, and a transport failure the Claude CLI returned as text — except a
+  // response stall, which the runner resumes on its own bounded schedule.
+  const resumesOnTransportBackoff = abortCategory === 'transport' && reason !== 'transport:response_stall';
+  // A later run may finish for a different reason before an earlier transport
+  // timer fires. Its old timer must not bypass the new pause decision.
+  if (!resumesOnTransportBackoff) {
+    sessionManager.clearTransportResume?.(sessionDbId);
+  }
+  if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
+    session.pausedReason = abortCategory;
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
-    if (abortCategory === 'output_retry') {
-      await restartGenerator?.(sessionDbId, 'output_retry');
+    if (resumesOnTransportBackoff) {
+      sessionManager.scheduleTransportResume?.(sessionDbId);
     }
     return;
   }
