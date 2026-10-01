@@ -48,9 +48,9 @@ describe('recordSessionPrompt (the transcript anchor)', () => {
     });
   }
 
-  it('throws on a reply with no session id', async () => {
+  it('does not throw on a reply it cannot read: a retry could never succeed', async () => {
     useWorkerReply({ unexpected: true }, false);
-    await expect(recordSessionPrompt(turn)).rejects.toBeInstanceOf(SessionPromptNotRecordedError);
+    await expect(recordSessionPrompt(turn)).resolves.toMatchObject({ continue: true });
   });
 
   it('returns normally once the prompt is recorded', async () => {
