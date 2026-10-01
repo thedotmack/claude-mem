@@ -107,3 +107,23 @@ describe('CorpusBuilder recency window', () => {
     expect(corpus.observations.map(o => o.id).sort()).toEqual([recent.id, old.id]);
   });
 });
+
+// With Chroma turned off (CLAUDE_MEM_CHROMA_ENABLED=false) the orchestrator has no Chroma
+// strategy. A corpus with a query filter must come from SQLite/FTS5, not build empty (#4284).
+describe('CorpusBuilder without Chroma', () => {
+  it('builds a query-filtered corpus from SQLite when Chroma is disabled', async () => {
+    const searchObservations = mock(() => [bugfixObservation]);
+    const searchOrchestrator = new SearchOrchestrator(
+      { searchObservations, searchSessions: mock(() => []), searchUserPrompts: mock(() => []) } as any,
+      {} as any,
+      null,
+    );
+    const getObservationsByIds = mock(() => [bugfixObservation]);
+    const builder = new CorpusBuilder({ getObservationsByIds } as any, searchOrchestrator, { write: mock(() => undefined) } as any);
+
+    const corpus = await builder.build('corpus-filters', '', { query: 'corpus filters' });
+
+    expect(searchObservations).toHaveBeenCalledWith('corpus filters', expect.anything());
+    expect(corpus.observations.map(o => o.id)).toEqual([bugfixObservation.id]);
+  });
+});

@@ -8,7 +8,7 @@ import {
 } from './shared/error-classification.js';
 import { buildServerGenerationPrompt } from './shared/prompt-builder.js';
 import { readGeminiAnswerText, type GeminiPart } from '../../../shared/gemini-answer-text.js';
-import { parseGeminiErrorDetails } from '../../../shared/gemini-error-details.js';
+import { geminiRegionRefusalMessage, isGeminiRegionRefusal, parseGeminiErrorDetails } from '../../../shared/gemini-error-details.js';
 import type {
   ServerGenerationContext,
   ServerGenerationProvider,
@@ -17,7 +17,7 @@ import type {
 
 // v1beta is required: current Gemini 3.x models and the `-latest` aliases are
 // only served under v1beta, and the retired v1-only 2.x models 404 for new keys.
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+export const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 // `gemini-flash-latest` is a Google-maintained alias for the current GA Flash
 // model, so it stays valid for new API keys instead of pinning a retired ID.
 const DEFAULT_MODEL = 'gemini-flash-latest';
@@ -112,6 +112,15 @@ function isQuotaBody(bodyText: string): boolean {
 export function classifyGeminiServerError(input: ClassifyGeminiServerErrorInput): ServerClassifiedProviderError {
   const status = input.status;
   const bodyText = input.bodyText ?? '';
+
+  // Outside the regions Google serves, the worker's refusal too
+  // (gemini-error-details.ts): not a malformed request, and no retry helps.
+  if (status !== undefined && isGeminiRegionRefusal(status, bodyText)) {
+    return new ServerClassifiedProviderError(geminiRegionRefusalMessage(status), {
+      kind: 'auth_invalid',
+      cause: new Error(`Gemini HTTP error (status ${status})`),
+    });
+  }
 
   if (status === 400 && !isQuotaBody(bodyText)) {
     const category = categorizeGeminiBadRequest(bodyText);

@@ -24,7 +24,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
-import { isKeyAllowedForEndpoint } from '../../shared/cmem-gateway.js';
+import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { describeNetworkFailure, networkFailureSuffix } from '../../shared/network-failure.js';
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
@@ -360,10 +360,10 @@ export function resolveOpenAICompatConfig(
     primaryKey,
     settings.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS || getCredential('OPENAI_COMPAT_API_KEYS') || '',
   );
-  const apiKeys = configuredKeys.filter(key => isKeyAllowedForEndpoint(apiUrl, key));
+  const apiKeys = keysForEndpoint(apiUrl, configuredKeys);
   if (apiKeys.length < configuredKeys.length && lastWithheldKeyUrl !== apiUrl) {
     lastWithheldKeyUrl = apiUrl;
-    logger.warn('SDK', 'Withholding an openai-compatible key: a cmem.ai memory key (cm_pro_) only goes to the cmem gateway, and the gateway only takes a cmem.ai memory key. Set CLAUDE_MEM_OPENAI_COMPAT_API_KEY to the key this endpoint issued.');
+    logger.warn('SDK', 'Withholding openai-compatible keys: the cmem gateway takes one cmem.ai memory key (cm_pro_) and never a pool, and a cm_pro_ key never goes to any other host. Set CLAUDE_MEM_OPENAI_COMPAT_API_KEY to the key this endpoint issued.');
   }
 
   // The preset's answer only stands while the preset's endpoint does. Once the
