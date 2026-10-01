@@ -555,8 +555,6 @@ sequenceDiagram
 
     SummaryHook->>Worker: POST /api/sessions/summarize<br/>{ claudeSessionId, last_user_message, last_assistant_message }<br/>(fire-and-forget, 2s timeout)
 
-    SummaryHook->>Worker: POST /api/processing<br/>{ isProcessing: false }<br/>(stop spinner)
-
     SummaryHook-->>IDE: { continue: true, suppressOutput: true }
     IDE-->>User: Session paused/stopped
 
@@ -602,11 +600,11 @@ Body: {
   last_assistant_message: string
 }
 Timeout: 2000ms
-
-// 4. Stop processing spinner
-POST http://127.0.0.1:<worker-port>/api/processing
-Body: { isProcessing: false }
 ```
+
+<Note>
+The summary hook does not call `POST /api/processing`, and that route is not a spinner toggle. It is a localhost-only operator retry. `{ "isProcessing": false }` restarts the observer for every active session that holds buffered work and has no generator running. That includes pauses the automatic resume sweep leaves alone, such as a refused credential or a transport failure. The response's `scheduledSessions` reports how many sessions were retried. `{ "isProcessing": true }` is accepted and does nothing.
+</Note>
 
 **Worker Processing**:
 1. Queues summarization for SDK agent
