@@ -34,9 +34,6 @@ const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
  */
 const NEW_TRANSCRIPT_REPLAY_MAX_BYTES = 256 * 1024;
 
-/** A JSONL transcript's first record is looked for in this many leading bytes. */
-const FIRST_RECORD_PROBE_BYTES = 64 * 1024;
-
 /**
  * One read pass handles at most this many bytes (JSONL text, or complete zstd
  * frames), so a large backlog is worked through in bounded steps that hand the
@@ -86,6 +83,20 @@ async function zstdResumeOffset(filePath: string, size: number): Promise<number>
 }
 
 /**
+ * How far into a transcript its first line may end for it to be read on its
+ * own (a resumed tail's context, a new file's start time). A Codex
+ * session_meta line carries the base instructions (about 20 KB).
+ */
+const FIRST_LINE_MAX_BYTES = 1024 * 1024;
+
+/** The first line of a JSONL transcript, read from at most `limit` bytes; null when it does not end there. */
+async function readFirstLine(filePath: string, limit: number): Promise<string | null> {
+  const head = (await readByteRange(filePath, 0, Math.min(limit, FIRST_LINE_MAX_BYTES))).toString('utf8');
+  const newline = head.indexOf('\n');
+  return newline < 0 ? null : head.slice(0, newline);
+}
+
+/**
  * When a transcript's first record says it was written: a top-level
  * `timestamp` (Codex, Claude Code), `time` or `createdAt` (DeepSeek Harness),
  * as an ISO string or epoch seconds/milliseconds. Null when the first record
@@ -93,18 +104,18 @@ async function zstdResumeOffset(filePath: string, size: number): Promise<number>
  */
 async function firstRecordTimeMs(filePath: string, isZstd: boolean, size: number): Promise<number | null> {
   try {
-    let text: string;
+    let line: string | null;
     if (isZstd) {
       const { frames } = scanZstdFramesInFile(filePath, 0, size, 1);
       if (frames.length === 0) return null;
-      const bytes = await readByteRange(filePath, 0, frames[0].end);
-      text = decompressZstdFrame(bytes, frames[0]);
+      const text = decompressZstdFrame(await readByteRange(filePath, 0, frames[0].end), frames[0]);
+      const newline = text.indexOf('\n');
+      line = newline < 0 ? null : text.slice(0, newline);
     } else {
-      text = (await readByteRange(filePath, 0, Math.min(size, FIRST_RECORD_PROBE_BYTES))).toString('utf8');
+      line = await readFirstLine(filePath, size);
     }
-    const newline = text.indexOf('\n');
-    if (newline === -1) return null;
-    const record = JSON.parse(text.slice(0, newline)) as Record<string, unknown> | null;
+    if (line === null) return null;
+    const record = JSON.parse(line) as Record<string, unknown> | null;
     for (const key of ['timestamp', 'time', 'createdAt']) {
       const value = record?.[key];
       const ms = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value)
@@ -600,10 +611,18 @@ export class TranscriptWatcher {
       }
     }
 
+    // A subagent-only watch learns the rollout's marker from its first line.
+    // A tail that resumes past it reads that line once, before the first new
+    // one, for its context only.
+    let primeFirstLine = offset > 0 && Boolean(watch.subagentSource) && !isZstd;
     const tailer = new FileTailer(
       filePath,
       offset,
       async (line: string) => {
+        if (primeFirstLine) {
+          primeFirstLine = false;
+          await this.primeFromFirstLine(filePath, offset, watch, schema, sessionIdOverride);
+        }
         await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
       },
       (newOffset: number, partial: string, frameLinesDone: number) => {
@@ -644,6 +663,25 @@ export class TranscriptWatcher {
     const firstRecordAt = await firstRecordTimeMs(filePath, isZstd, size);
     if (firstRecordAt !== null) return firstRecordAt >= this.startedAtMs - WRITTEN_SINCE_STARTUP_SLACK_MS;
     return size <= NEW_TRANSCRIPT_REPLAY_MAX_BYTES;
+  }
+
+  private async primeFromFirstLine(
+    filePath: string,
+    resumedAt: number,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride: string | null
+  ): Promise<void> {
+    try {
+      const firstLine = await readFirstLine(filePath, resumedAt);
+      if (firstLine === null) return;
+      await this.processor.primeSessionContext(JSON.parse(firstLine), watch, schema, sessionIdOverride);
+    } catch (error: unknown) {
+      logger.debug('TRANSCRIPT', 'Could not read the first line of a resumed transcript', {
+        watch: watch.name,
+        file: basename(filePath),
+      }, error instanceof Error ? error : undefined);
+    }
   }
 
   private async handleLine(

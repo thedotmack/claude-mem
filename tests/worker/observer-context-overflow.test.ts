@@ -20,6 +20,8 @@ const { ModeManager } = await import('../../src/services/domain/ModeManager.js')
 const { SettingsDefaultsManager } = await import('../../src/shared/SettingsDefaultsManager.js');
 const { OpenAICompatibleProvider } = await import('../../src/services/worker/OpenAICompatibleProvider.js');
 const { OpenRouterProvider, classifyOpenRouterError } = await import('../../src/services/worker/OpenRouterProvider.js');
+const { OpenAICompatProvider, classifyOpenAICompatError } = await import('../../src/services/worker/OpenAICompatProvider.js');
+const { resolveOpenAICompatPreset } = await import('../../src/shared/openai-compat-presets.js');
 const { classifyGeminiError } = await import('../../src/services/worker/GeminiProvider.js');
 const { handleGeneratorExit } = await import('../../src/services/worker/session/GeneratorExitHandler.js');
 const { __resetContextWindowCacheForTests } = await import('../../src/services/worker/context-window.js');
@@ -190,6 +192,41 @@ describe('context-length refusals classify as context_overflow', () => {
   });
 });
 
+// Wave 3 gate R4-2: the openai-compatible classifier (#3942) read every one of
+// these as a bad request, which finalized the session and dropped the batch.
+// Local models have 8-32k windows against a 131k default, so this is the
+// common refusal there.
+const VLLM_CONTEXT_BODY = JSON.stringify({
+  object: 'error',
+  message: "This model's maximum context length is 32768 tokens. However, you requested 40961 tokens (36865 in the messages, 4096 in the completion). Please reduce the length of the messages or completion.",
+  type: 'BadRequestError',
+  param: null,
+  code: 400,
+});
+
+describe('openai-compatible context-length refusals classify as context_overflow', () => {
+  const cause = new Error('upstream refused');
+
+  for (const [name, bodyText] of [
+    ['a vLLM', VLLM_CONTEXT_BODY],
+    ['an OpenAI-shaped', OPENAI_CONTEXT_BODY],
+    ['a llama.cpp', LLAMA_CPP_CONTEXT_BODY],
+  ] as const) {
+    it(`${name} maximum-context 400`, () => {
+      expect(classifyOpenAICompatError({ status: 400, bodyText, cause }).kind).toBe('context_overflow');
+    });
+  }
+
+  it('a 413 from a server or proxy that refused the request size', () => {
+    expect(classifyOpenAICompatError({ status: 413, bodyText: 'Request Entity Too Large', cause }).kind).toBe('context_overflow');
+  });
+
+  it('an ordinary bad request stays unrecoverable', () => {
+    const bodyText = JSON.stringify({ error: { message: 'temperature must be between 0 and 2' } });
+    expect(classifyOpenAICompatError({ status: 400, bodyText, cause }).kind).toBe('unrecoverable');
+  });
+});
+
 /** Answers the init prompt, then refuses the observation as too long. */
 class RefusingProvider extends OpenAICompatibleProvider<{ apiKey: string; model: string }> {
   protected readonly providerName = 'TestProvider';
@@ -276,6 +313,49 @@ describe('an HTTP context-length refusal recycles the generation', () => {
       await provider.startSession(session);
 
       // One init request, one refused observation request, no retries of it.
+      expect(chatRequests).toBe(2);
+      expect(session.abortReason).toBe('overflow:recycle');
+      expect(queue.pending).toHaveLength(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+describe('an openai-compatible context-length refusal recycles the generation', () => {
+  it('end to end through OpenAICompatProvider: a vLLM 400 recycles, it does not finalize', async () => {
+    class TestOpenAICompatProvider extends OpenAICompatProvider {
+      protected getConfig() {
+        return {
+          apiKey: '',
+          apiKeys: [],
+          model: 'local-model',
+          apiUrl: 'http://localhost:8000/v1/chat/completions',
+          preset: resolveOpenAICompatPreset('vllm'),
+          requiresApiKey: false,
+        };
+      }
+    }
+    let chatRequests = 0;
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => {
+      chatRequests += 1;
+      if (chatRequests === 1) {
+        return new Response(JSON.stringify({ model: 'local-model', choices: [{ message: { content: 'ready' }, finish_reason: 'stop' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(VLLM_CONTEXT_BODY, { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch);
+
+    try {
+      const session = makeSession();
+      session.currentProvider = 'openai-compatible';
+      const queue = makeQueue(session, [observation(0, 500)]);
+      const provider = new TestOpenAICompatProvider({} as never, queue as never);
+
+      await provider.startSession(session);
+
       expect(chatRequests).toBe(2);
       expect(session.abortReason).toBe('overflow:recycle');
       expect(queue.pending).toHaveLength(1);

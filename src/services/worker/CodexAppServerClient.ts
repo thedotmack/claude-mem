@@ -229,6 +229,18 @@ function codexSetupError(message: string): Error {
  */
 export const CODEX_NO_AGENT_MESSAGE_CODE = 'codex_no_agent_message';
 
+/**
+ * `code` on a turn refused because Codex could not attest the observer's
+ * isolation: it loaded instruction sources, or kept MCP servers, that the
+ * observer cannot switch off. The Codex configuration on this machine decides
+ * that, so every turn is refused the same way until it changes.
+ */
+export const CODEX_ISOLATION_UNATTESTED_CODE = 'codex_isolation_unattested';
+
+function codexIsolationError(message: string): Error {
+  return Object.assign(new Error(message), { code: CODEX_ISOLATION_UNATTESTED_CODE });
+}
+
 function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
   const root = mkdtempSync(join(tmpdir(), APP_SERVER_WORKDIR_PREFIX));
   try {
@@ -413,10 +425,10 @@ export class CodexAppServerClient {
     }
     const instructionSources = threadResponse.instructionSources;
     if (!Array.isArray(instructionSources)) {
-      throw new Error('Codex app-server omitted instructionSources attestation');
+      throw codexIsolationError('Codex app-server omitted instructionSources attestation');
     }
     if (instructionSources.length > 0) {
-      throw new Error(`Codex app-server loaded unexpected instruction sources: ${instructionSources.join(', ')}`);
+      throw codexIsolationError(`Codex app-server loaded unexpected instruction sources: ${instructionSources.join(', ')}`);
     }
 
     const threadId = asString(threadResponse.thread.id, 'thread id');
@@ -550,11 +562,11 @@ export class CodexAppServerClient {
   private async readInheritedMcpServerNames(cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<string[]> {
     const response = await this.request('config/read', { cwd, includeLayers: true }, timeoutMs, signal);
     if (!isObject(response) || !isObject(response.config)) {
-      throw new Error('Codex app-server config/read returned invalid effective config');
+      throw codexIsolationError('Codex app-server config/read returned invalid effective config');
     }
     const servers = response.config.mcp_servers;
     if (servers === undefined) return [];
-    if (!isObject(servers)) throw new Error('Codex app-server config/read returned invalid mcp_servers');
+    if (!isObject(servers)) throw codexIsolationError('Codex app-server config/read returned invalid mcp_servers');
     return Object.keys(servers).sort();
   }
 
@@ -571,22 +583,22 @@ export class CodexAppServerClient {
       signal,
     );
     if (!isObject(response) || !Array.isArray(response.data)) {
-      throw new Error('Codex app-server returned invalid MCP isolation attestation');
+      throw codexIsolationError('Codex app-server returned invalid MCP isolation attestation');
     }
 
     const expected = new Set(expectedNames);
     const observed = new Set<string>();
     for (const raw of response.data) {
       if (!isObject(raw) || typeof raw.name !== 'string' || !isObject(raw.tools)) {
-        throw new Error('Codex app-server returned malformed MCP status');
+        throw codexIsolationError('Codex app-server returned malformed MCP status');
       }
       if (!expected.has(raw.name) || raw.serverInfo !== null || Object.keys(raw.tools).length > 0) {
-        throw new Error(`Codex app-server MCP server ${raw.name} is not fully disabled`);
+        throw codexIsolationError(`Codex app-server MCP server ${raw.name} is not fully disabled`);
       }
       observed.add(raw.name);
     }
     if (observed.size !== expected.size || [...expected].some(name => !observed.has(name))) {
-      throw new Error('Codex app-server MCP isolation attestation is incomplete');
+      throw codexIsolationError('Codex app-server MCP isolation attestation is incomplete');
     }
   }
 
