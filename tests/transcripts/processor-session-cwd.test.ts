@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { zstdCompressSync } from 'node:zlib';
 import type { NormalizedHookInput } from '../../src/cli/types.js';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 import * as realSessionInit from '../../src/cli/handlers/session-init.js';
@@ -146,6 +147,28 @@ describe('transcript turns need a known working directory (R5-3)', () => {
     expect(summarizeBodies.map(body => body.cwd)).toEqual([undefined, PROJECT_DIR]);
     expect('cwd' in summarizeBodies[0]).toBe(false);
   });
+
+  for (const format of ['jsonl', 'jsonl.zstd'] as const) {
+    it(`learns an active session's directory from its first line when it starts at EOF (${format})`, async () => {
+      const filePath = join(tmpRoot, `session.${format}`);
+      const statePath = join(tmpRoot, 'state.json');
+      const encode = (entries: unknown[]): Buffer => {
+        const text = entries.map(entry => `${JSON.stringify(entry)}\n`).join('');
+        return format === 'jsonl' ? Buffer.from(text) : zstdCompressSync(Buffer.from(text));
+      };
+      writeFileSync(filePath, Buffer.concat([encode([sessionLine('s3')]), encode([userLine('s3', 'before startup')])]));
+
+      const watch: WatchTarget = { name: 'dsh', path: join(tmpRoot, `*.${format}`), schema, startAtEnd: true };
+      const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+      watchers.push(watcher);
+      await watcher.start();
+      appendFileSync(filePath, encode([userLine('s3', 'live turn')]));
+      (watcher as any).tailers.get(filePath)?.poke();
+      await new Promise(resolve => setTimeout(resolve, 120));
+
+      expect(inits).toEqual([{ prompt: 'live turn', cwd: PROJECT_DIR }]);
+    });
+  }
 
   it('keeps a file\'s session directory across a watcher restart', async () => {
     const filePath = join(tmpRoot, 'session.jsonl');
