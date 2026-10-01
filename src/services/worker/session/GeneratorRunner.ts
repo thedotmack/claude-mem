@@ -19,7 +19,7 @@ import {
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
 import { recordObserverFailure } from '../../../shared/observer-health.js';
-import { recordClaudeSetupRequired } from '../../../shared/dependency-health.js';
+import { recordClaudeSetupRequired, recordCodexCliSetupRequired } from '../../../shared/dependency-health.js';
 import { isMemoryOnCmemGateway } from '../../../shared/cmem-gateway.js';
 import {
   releaseQuotaProbe,
@@ -190,6 +190,20 @@ export async function startGeneratorWithProvider(
         recordClaudeSetupRequired(error);
         maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
         logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
+          sessionId: session.sessionDbId,
+          provider,
+          error: error.message,
+        });
+        return;
+      }
+      // The same shape for Codex: a missing CLI or ChatGPT login fails every
+      // retry the same way, so the buffered work waits behind the codex_cli
+      // gate instead of being finalized.
+      if (provider === 'codex' && isClassified(error) && error.kind === 'setup_required') {
+        skipGeneratorExitFinalization = true;
+        session.pausedReason = 'setup_required';
+        recordCodexCliSetupRequired(error.message);
+        logger.warn('SESSION', 'Codex generator requires setup; future Codex starts will be skipped until repaired', {
           sessionId: session.sessionDbId,
           provider,
           error: error.message,

@@ -28,10 +28,6 @@ export interface ActiveSession {
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
   currentProvider: 'claude' | 'gemini' | 'openrouter' | 'codex' | null;
-  /** Claim owned by the current generator; Codex shares it with request admission. */
-  quotaProbeClaimId?: number | null;
-  /** Codex setup recovery probe owned by this generator. */
-  codexSetupProbeClaimId?: number | null;
   /**
    * Claude account (config-dir profile key) the latest Claude generator was
    * spawned under. Its env, and so its billing account, is fixed at spawn, so

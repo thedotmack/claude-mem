@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  type Stats,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -201,6 +202,17 @@ function resolveNativeCodexHome(explicitHome?: string): string {
   return configured || join(process.env.HOME?.trim() || homedir(), '.codex');
 }
 
+/**
+ * `code` on a failure the user fixes on this machine (log in with ChatGPT,
+ * tighten the auth file), so it is classified as setup rather than guessed
+ * from its wording.
+ */
+export const CODEX_SETUP_REQUIRED_CODE = 'codex_setup_required';
+
+function codexSetupError(message: string): Error {
+  return Object.assign(new Error(message), { code: CODEX_SETUP_REQUIRED_CODE });
+}
+
 function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
   const root = mkdtempSync(join(tmpdir(), APP_SERVER_WORKDIR_PREFIX));
   try {
@@ -215,24 +227,29 @@ function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
     }
 
     const nativeAuth = join(nativeCodexHome, 'auth.json');
-    const authStat = statSync(nativeAuth);
-    if (!authStat.isFile()) throw new Error(`Codex ChatGPT auth is not a file: ${nativeAuth}`);
+    let authStat: Stats;
+    try {
+      authStat = statSync(nativeAuth);
+    } catch (error) {
+      throw codexSetupError(`No Codex ChatGPT login at ${nativeAuth} (run \`codex login\`): ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!authStat.isFile()) throw codexSetupError(`Codex ChatGPT auth is not a file: ${nativeAuth}`);
     if (process.platform !== 'win32') {
       if (typeof process.getuid === 'function' && authStat.uid !== process.getuid()) {
-        throw new Error(`Codex ChatGPT auth is not owned by the claude-mem worker user: ${nativeAuth}`);
+        throw codexSetupError(`Codex ChatGPT auth is not owned by the claude-mem worker user: ${nativeAuth}`);
       }
       if ((authStat.mode & 0o077) !== 0) {
-        throw new Error(`Codex ChatGPT auth permissions must deny group and other access: ${nativeAuth}`);
+        throw codexSetupError(`Codex ChatGPT auth permissions must deny group and other access: ${nativeAuth}`);
       }
     }
     let auth: unknown;
     try {
       auth = JSON.parse(readFileSync(nativeAuth, 'utf8'));
     } catch (error) {
-      throw new Error(`Cannot read Codex ChatGPT auth: ${error instanceof Error ? error.message : String(error)}`);
+      throw codexSetupError(`Cannot read Codex ChatGPT auth: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (!isObject(auth) || (auth.auth_mode !== 'chatgpt' && auth.auth_mode !== 'chatgptAuthTokens')) {
-      throw new Error('claude-mem requires Codex CLI to be logged in with ChatGPT, not an API key');
+      throw codexSetupError('claude-mem requires Codex CLI to be logged in with ChatGPT, not an API key');
     }
 
     const scopedAuth = join(codexHome, 'auth.json');

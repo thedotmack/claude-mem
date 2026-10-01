@@ -32,8 +32,12 @@ import { telemetryBuffer } from '../../../../src/services/telemetry/buffer.js';
 import { getProcessRegistry, waitForSlot, isSessionParkedForSlot } from '../../../../src/supervisor/process-registry.js';
 import { guardSharedProcessRegistrySingleton } from '../../../supervisor/process-registry-singleton-guard.js';
 import { guardSharedQuotaCooldownSingleton } from '../../../shared/quota-cooldown-singleton-guard.js';
-import { clearDependencyStatus } from '../../../../src/shared/dependency-health.js';
-import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted, CODEX_SETUP_RECHECK_COOLDOWN_MS } from '../../../../src/shared/quota-cooldown.js';
+import {
+  CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  clearDependencyStatus,
+  getDependencyStatus,
+  recordCodexCliSetupRequired,
+} from '../../../../src/shared/dependency-health.js';
 import type { ActiveSession, ConversationMessage } from '../../../../src/services/worker-types.js';
 
 /**
@@ -182,8 +186,7 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     clearDependencyStatus('claude_cli');
-    clearQuotaCooldown('codex');
-    clearQuotaCooldown('codex-setup');
+    clearDependencyStatus('codex_cli');
     while (registeredIds.length > 0) {
       const id = registeredIds.pop();
       if (id) registry.unregister(id);
@@ -328,7 +331,7 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
         expect(isSessionParkedForSlot(session.sessionDbId)).toBe(true);
       }
       const history = session.conversationHistory;
-      recordQuotaExhausted('codex-setup', 'login required');
+      const status = recordCodexCliSetupRequired('login required');
       providerSelectionBox.current = 'codex';
       await routes.ensureGeneratorRunning(session.sessionDbId, 'ingest');
       expect(codexAgent.startSession).not.toHaveBeenCalled();
@@ -339,16 +342,15 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
       expect(geminiAgent.startSession).not.toHaveBeenCalled();
       expect(openRouterAgent.startSession).not.toHaveBeenCalled();
 
-      recordQuotaExhausted('codex-setup', 'login required', undefined,
-        Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+      // Window elapsed: the next start is the recovery probe.
+      status.recordedAtMs = Date.now() - CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS - 1;
       await Promise.all([
         routes.ensureGeneratorRunning(session.sessionDbId, 'retry-a'),
         routes.ensureGeneratorRunning(session.sessionDbId, 'retry-b'),
       ]);
       expect(codexAgent.startSession).toHaveBeenCalledTimes(1);
       expect(session.currentProvider).toBe('codex');
-      expect(session.codexSetupProbeClaimId).toBe(getQuotaCooldown('codex-setup')?.probeClaimId);
-      expect(session.codexSetupProbeClaimId).not.toBeNull();
+      expect(getDependencyStatus('codex_cli')).toBeNull();
     });
   }
 

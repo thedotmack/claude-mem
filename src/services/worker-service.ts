@@ -1792,6 +1792,9 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
     if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
       return 'Claude CLI setup required';
     }
+    if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
+      return 'Codex CLI setup required';
+    }
     if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
       return 'uvx unavailable for vector search';
     }
