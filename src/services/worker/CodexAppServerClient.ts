@@ -5,7 +5,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -13,6 +12,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { executableFingerprint } from '../../shared/executable-fingerprint.js';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
@@ -192,16 +192,6 @@ function asString(value: unknown, label: string): string {
     throw new Error(`Codex app-server returned invalid ${label}`);
   }
   return value;
-}
-
-function executableFingerprint(codexPath: string): string {
-  try {
-    const resolved = realpathSync(codexPath);
-    const stat = statSync(resolved);
-    return `${resolved}:${stat.size}:${stat.mtimeMs}`;
-  } catch {
-    return codexPath;
-  }
 }
 
 /** Keeps the app-server TurnError text and structured code available for classification. */

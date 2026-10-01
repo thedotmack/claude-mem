@@ -1,3 +1,5 @@
+import { executableFingerprint } from './executable-fingerprint.js';
+
 export type DependencyStatusKind =
   | 'setup_required'
   | 'vector_search_unavailable';
@@ -11,12 +13,13 @@ export interface DependencyStatus {
   remediation?: string;
   recordedAtMs: number;
   /**
-   * The resolved executable path that failed, when the failure was a spawn
-   * error (a .cmd/.bat shim the SDK cannot launch, or a missing binary). The
-   * setup-recheck gate uses it to avoid re-running a query against the same
-   * unspawnable path that discovery still resolves.
+   * The resolved executable a spawn failed to launch (a .cmd/.bat shim the SDK
+   * cannot start without a shell, or a binary that vanished), with its
+   * fingerprint (executable-fingerprint.ts). The recheck gate skips while
+   * discovery still resolves that same, unchanged file.
    */
   executablePath?: string;
+  executableFingerprint?: string;
 }
 
 export const CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS = 30_000;
@@ -24,6 +27,17 @@ export const CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS = 30_000;
 export const CLAUDE_CLI_SETUP_REMEDIATION =
   'Install or update Claude Code CLI, then restart claude-mem. Try `claude update`, ' +
   '`npm install -g @anthropic-ai/claude-code@latest`, or set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json.';
+
+/** The Claude observer was pointed at the Codex CLI (CLAUDE_CODE_PATH or PATH). */
+export const CLAUDE_CLI_IS_CODEX_REMEDIATION =
+  'The Claude observer resolved the Codex CLI, which cannot run it. To run memory on your ChatGPT/Codex ' +
+  'subscription, set CLAUDE_MEM_PROVIDER to codex in ~/.claude-mem/settings.json; otherwise point ' +
+  'CLAUDE_CODE_PATH at the Claude Code CLI.';
+
+function isCodexExecutable(executablePath: string): boolean {
+  const name = executablePath.split(/[\\/]/).pop() ?? '';
+  return /^codex(\.(exe|cmd|bat|com|ps1))?$/i.test(name);
+}
 
 /**
  * A Codex start that fails on setup (no CLI on PATH, no ChatGPT login, an
@@ -67,7 +81,6 @@ export function recordDependencyStatus(
   kind: DependencyStatusKind,
   message: string,
   remediation?: string,
-  executablePath?: string,
 ): DependencyStatus {
   const status: DependencyStatus = {
     dependency,
@@ -75,14 +88,26 @@ export function recordDependencyStatus(
     message,
     ...(remediation ? { remediation } : {}),
     recordedAtMs: Date.now(),
-    ...(executablePath ? { executablePath } : {}),
   };
   statuses.set(dependency, status);
   return status;
 }
 
+/**
+ * `executablePath` is the resolved executable a spawn could not launch; its
+ * fingerprint is taken now, so the recheck gate can tell the same file from
+ * one repaired in place.
+ */
 export function recordClaudeCliSetupRequired(message: string, executablePath?: string): DependencyStatus {
-  return recordDependencyStatus('claude_cli', 'setup_required', message, CLAUDE_CLI_SETUP_REMEDIATION, executablePath);
+  const remediation = executablePath && isCodexExecutable(executablePath)
+    ? CLAUDE_CLI_IS_CODEX_REMEDIATION
+    : CLAUDE_CLI_SETUP_REMEDIATION;
+  const status = recordDependencyStatus('claude_cli', 'setup_required', message, remediation);
+  if (executablePath) {
+    status.executablePath = executablePath;
+    status.executableFingerprint = executableFingerprint(executablePath);
+  }
+  return status;
 }
 
 /**
@@ -93,11 +118,11 @@ export function recordClaudeCliSetupRequired(message: string, executablePath?: s
  * and every recheck spawned a generator (and read the keychain) only to fail
  * on the directory again (#4117).
  */
-export function recordClaudeSetupRequired(error: { message: string; code?: string }): DependencyStatus {
+export function recordClaudeSetupRequired(error: { message: string; code?: string; executablePath?: string }): DependencyStatus {
   if (error.code === OBSERVER_DIR_UNUSABLE_CODE) {
     return recordDependencyStatus('observer_dir', 'setup_required', error.message, OBSERVER_DIR_SETUP_REMEDIATION);
   }
-  return recordClaudeCliSetupRequired(error.message);
+  return recordClaudeCliSetupRequired(error.message, error.executablePath);
 }
 
 export function recordCodexCliSetupRequired(message: string): DependencyStatus {

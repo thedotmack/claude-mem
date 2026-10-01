@@ -463,8 +463,8 @@ describe('findClaudeExecutable on Windows', () => {
     installFakes({
       platform: 'win32',
       whereOutputs: {
-        'where claude': 'C:\\install\\claude.cmd\r\nC:\\install\\claude.exe\r\n',
-        'where claude.cmd': 'C:\\install\\claude.cmd\r\n',
+        claude: 'C:\\install\\claude.cmd\r\nC:\\install\\claude.exe\r\n',
+        'claude.cmd': 'C:\\install\\claude.cmd\r\n',
       },
     });
     fakeClis.set('C:\\install\\claude.cmd', { version: '2.1.176', supportsDontAsk: true });
