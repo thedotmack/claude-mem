@@ -87,11 +87,11 @@ Always visible reminder of the 3-layer workflow pattern. Helps Claude understand
 Search your memory and get a compact index with IDs.
 
 **Parameters:**
-- `query` - Full-text search query (supports AND, OR, NOT, phrase searches)
+- `query` - What to look for, in plain words: matched by meaning first, then by keywords (see [How the query is matched](#how-the-query-is-matched))
 - `limit` - Maximum results (default: 20)
 - `offset` - Skip first N results for pagination
-- `type` - Filter by observation type (bugfix, feature, decision, discovery, refactor, change)
-- `obs_type` - Filter by record type (observation, session, prompt)
+- `type` - Record category: `observations`, `sessions` or `prompts` (default: all). Any other value is treated as an observation type, like `obs_type`
+- `obs_type` - Filter observations by type (bugfix, feature, decision, discovery, refactor, change); comma-separated for several
 - `project` - Filter by project name
 - `dateStart` - Filter by start date (YYYY-MM-DD)
 - `dateEnd` - Filter by end date (YYYY-MM-DD)
@@ -232,36 +232,21 @@ Step 3: get_observations(ids=[<critical_observations>])
   → Refresh memory on key decisions
 ```
 
-## Search Query Syntax
+## How the query is matched
 
-The `query` parameter supports SQLite FTS5 full-text search syntax:
+When the vector index (Chroma) is running, `search` first matches your query **by meaning**, so describe what you are looking for in plain words: `query="why the worker failed to start after the upgrade"`. Keyword matching fills any record category the semantic pass left empty, and answers on its own when the vector index is off or unavailable.
 
-### Boolean Operators
+Keyword matching reads the query as plain words. It has no operators:
 
-```
-query="authentication AND JWT"           # Both terms must appear
-query="OAuth OR JWT"                      # Either term can appear
-query="security NOT deprecated"           # Exclude deprecated items
-```
-
-### Phrase Searches
+- **Every word must appear** somewhere in the record, in any order and in any field. `query="security deprecated"` finds records that mention both.
+- **`AND`, `OR`, `NOT`, quotes, parentheses and `field:` prefixes are ordinary words.** `query="security NOT deprecated"` requires "not" and "deprecated" too, and `query='"database migration"'` is not a phrase search: the two words can appear anywhere. To narrow results, use the `obs_type`, `project`, `dateStart` and `dateEnd` parameters.
+- **Case does not matter, and punctuation separates words**, so `query="worker-service.ts"` finds that file name.
+- **Words can match inside longer words when nothing matches whole words.** If no record contains every whole word, each word must still appear, but may be part of a longer one, so `query="migrat"` finds "migration". Text in scripts written without spaces between words (Chinese, Japanese, Korean, Thai and others) is always matched this way.
 
 ```
-query='"database migration"'             # Exact phrase match
-```
-
-### Column-Specific Searches
-
-```
-query="title:authentication"             # Search in title only
-query="content:database"                  # Search in content only
-query="concepts:security"                 # Search in concepts only
-```
-
-### Combining Operators
-
-```
-query='"user auth" AND (JWT OR session) NOT deprecated'
+query="database migration"       # records mentioning both words, anywhere
+query="worker-service.ts"         # a file name
+query="security NOT deprecated"  # all three words, "not" included: there are no operators
 ```
 
 ## Token Management
