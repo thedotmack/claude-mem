@@ -21,22 +21,35 @@ const isRecord = (value: unknown): value is SettingsDocument =>
 const SETTINGS_FILE_MODE = 0o600;
 
 /**
- * Where claude-mem's keys live. Root `CLAUDE_MEM_*` keys mean a flat document
- * (any `env` block beside them belongs to Claude Code); otherwise an `env`
- * block holding `CLAUDE_*` keys is a Claude-Code-style wrapped document. This
- * is the ONE rule every settings reader and writer uses, including
- * SettingsDefaultsManager.loadFromFile, so a write always lands where the next
- * read looks. A wrapped document keeps its wrapper and root peers.
+ * Where claude-mem's keys live — the ONE rule every settings reader and writer
+ * uses, including SettingsDefaultsManager.loadFromFile, so a write always lands
+ * where the next read looks:
+ *  - nested when the `env` block holds `CLAUDE_MEM_*` keys: a Claude-Code-style
+ *    wrapped document. `CLAUDE_MEM_*` keys at its root are stale copies — the
+ *    old viewer wrote the root of wrapped documents, secrets as `****` masks —
+ *    so they are never read, and the next write drops them;
+ *  - flat otherwise: claude-mem's keys at the root, and an `env` block beside
+ *    them (with no `CLAUDE_MEM_*` keys) is Claude Code's own.
+ * A wrapped document keeps its wrapper and root peers.
  */
 export function classifySettingsDocument(document: SettingsDocument): 'flat' | 'nested' {
-  if (Object.keys(document).some(key => key.startsWith('CLAUDE_MEM_'))) return 'flat';
   const env = document.env;
-  if (isRecord(env) && Object.keys(env).some(key => key.startsWith('CLAUDE_'))) return 'nested';
-  return 'flat';
+  return isRecord(env) && Object.keys(env).some(key => key.startsWith('CLAUDE_MEM_')) ? 'nested' : 'flat';
 }
 
 export function settingsTarget(document: SettingsDocument): SettingsDocument {
   return classifySettingsDocument(document) === 'nested' ? document.env as SettingsDocument : document;
+}
+
+/**
+ * The document as it is written back: in a nested document, the stale root
+ * `CLAUDE_MEM_*` copies are dropped, so a masked or blank copy can never be
+ * read, merged, or mistaken for the real value again. A flat document is
+ * returned as is.
+ */
+export function withoutStaleRootCopies(document: SettingsDocument): SettingsDocument {
+  if (classifySettingsDocument(document) !== 'nested') return document;
+  return Object.fromEntries(Object.entries(document).filter(([key]) => !key.startsWith('CLAUDE_MEM_')));
 }
 
 function cloneDocument(document: SettingsDocument): SettingsDocument {
@@ -93,8 +106,9 @@ export function updateSettingsDocument(
     }
     loaded = { exists: false };
   }
-  const document = cloneDocument((loaded.document ?? seed) as SettingsDocument);
-  if (!isRecord(document)) return { status: 'refused', error: new Error('settings seed must be an object') };
+  const cloned = cloneDocument((loaded.document ?? seed) as SettingsDocument);
+  if (!isRecord(cloned)) return { status: 'refused', error: new Error('settings seed must be an object') };
+  const document = withoutStaleRootCopies(cloned);
   const target = settingsTarget(document);
   Object.assign(target, updates);
   mutate?.(target);

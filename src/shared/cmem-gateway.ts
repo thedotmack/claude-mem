@@ -22,11 +22,11 @@
  * src/npx-cli/cmem-pro-costs.ts derive from the same origin resolution.
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { paths, USER_SETTINGS_PATH } from './paths.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { updateSettingsDocument } from './settings-document.js';
 import { emitDiagnostic } from './hook-io.js';
 import { proTrialUrl } from './pro-promo.js';
 import { relayedLine, relayedLink } from './relayed-text.js';
@@ -98,32 +98,6 @@ export function isCmemMemoryKey(apiKey: string | undefined | null): boolean {
   return (apiKey ?? '').trim().startsWith('cm_pro_');
 }
 
-/**
- * Read settings.json while retaining both the complete document and the
- * subtree where claude-mem settings live. The legacy `{ env: {...} }` shape
- * may also contain peer root keys such as hooks and permissions; flattening
- * that subtree and writing it back as the whole document destroys those keys.
- */
-function readRawSettingsDocument(settingsPath: string): {
-  document: Record<string, unknown>;
-  target: Record<string, unknown>;
-} {
-  if (!existsSync(settingsPath)) {
-    const document: Record<string, unknown> = {};
-    return { document, target: document };
-  }
-
-  const parsed = parseJsonWithBom<unknown>(readFileSync(settingsPath, 'utf-8'));
-  const document = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? parsed as Record<string, unknown>
-    : {};
-  const env = document.env;
-  const target = env && typeof env === 'object' && !Array.isArray(env)
-    ? env as Record<string, unknown>
-    : document;
-  return { document, target };
-}
-
 /** What the gateway said about the rejection that armed the fallback. */
 export interface ProFallbackNotice {
   message?: string;
@@ -169,20 +143,29 @@ function planLink(url: string | undefined): string {
  * together with the gateway's words, in one write. Passing `notice` replaces
  * the stored words (missing parts become ''); omitting it re-stamps the time
  * and keeps the words of the rejection that started the fallback.
+ *
+ * Written through settings-document.ts, the one rule every settings reader
+ * and writer uses: the marker lands where SettingsDefaultsManager, and so
+ * dispatch, reads it (the root of a flat document, even with Claude Code's
+ * `env` block beside claude-mem's keys), the document's other keys are kept,
+ * and the file stays owner-only. Throws when settings.json cannot be updated,
+ * e.g. it is unreadable: the caller then books an ordinary failure.
  */
 export function writeProFallbackAt(
   isoNow: string,
   settingsPath: string = USER_SETTINGS_PATH,
   notice?: ProFallbackNotice,
 ): void {
-  const { document, target } = readRawSettingsDocument(settingsPath);
-  target.CLAUDE_MEM_PRO_FALLBACK_AT = isoNow;
+  const updates: Record<string, string> = { CLAUDE_MEM_PRO_FALLBACK_AT: isoNow };
   if (notice) {
-    target.CLAUDE_MEM_PRO_FALLBACK_MESSAGE = notice.message ?? '';
-    target.CLAUDE_MEM_PRO_FALLBACK_ACTION = notice.action ?? '';
-    target.CLAUDE_MEM_PRO_FALLBACK_URL = notice.url ?? '';
+    updates.CLAUDE_MEM_PRO_FALLBACK_MESSAGE = notice.message ?? '';
+    updates.CLAUDE_MEM_PRO_FALLBACK_ACTION = notice.action ?? '';
+    updates.CLAUDE_MEM_PRO_FALLBACK_URL = notice.url ?? '';
   }
-  writeJsonFileAtomic(settingsPath, document);
+  const result = updateSettingsDocument(settingsPath, updates);
+  if (result.status === 'refused') {
+    throw result.error instanceof Error ? result.error : new Error(String(result.error));
+  }
 }
 
 /**
@@ -194,22 +177,24 @@ export function clearProFallback(
   settingsPath: string = USER_SETTINGS_PATH,
   dataDir: string = paths.dataDir(),
 ): void {
-  try {
-    const { document, target } = readRawSettingsDocument(settingsPath);
+  // No settings file means no fallback to clear, and no reason to create one.
+  if (existsSync(settingsPath)) {
     // Every key, not only the marker: a re-pair blanks the marker through the
     // installer's settings merge before calling this, and the gateway's words
-    // must not outlive the fallback they described. Write only when something
-    // is set — a successful gateway response calls this every time.
-    const keys = PRO_FALLBACK_KEYS.filter((key) => target[key]);
-    if (keys.length > 0) {
-      for (const key of keys) target[key] = '';
-      writeJsonFileAtomic(settingsPath, document);
+    // must not outlive the fallback they described. An unchanged document is
+    // not rewritten — a successful gateway response calls this every time.
+    const result = updateSettingsDocument(settingsPath, {}, {}, (target) => {
+      for (const key of PRO_FALLBACK_KEYS) {
+        if (target[key]) target[key] = '';
+      }
+    });
+    if (result.status === 'refused') {
+      // Cleanup follows a successful login/request and must never turn that
+      // success into an installer or provider failure. Leave a diagnostic so
+      // the stale timestamp is still actionable.
+      const reason = result.error instanceof Error ? result.error.message : String(result.error);
+      emitDiagnostic(`[cmem-gateway] Could not clear fallback setting at ${settingsPath}: ${reason}\n`);
     }
-  } catch (error: unknown) {
-    // Cleanup follows a successful login/request and must never turn that
-    // success into an installer or provider failure. Leave a diagnostic so
-    // the stale timestamp is still actionable.
-    emitDiagnostic(`[cmem-gateway] Could not clear fallback setting at ${settingsPath}: ${error instanceof Error ? error.message : String(error)}\n`);
   }
 
   try {
