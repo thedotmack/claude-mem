@@ -96,9 +96,11 @@ Reinstalling without `--model` keeps the saved Codex model. On a first install t
 | `CLAUDE_MEM_CODEX_MODEL` | empty | Codex chooses its default model when empty; otherwise use a model available to your subscription. |
 | `CLAUDE_MEM_CODEX_REASONING_EFFORT` | `low` | Reasoning effort. Advanced override in `settings.json` or the environment, subject to model support. |
 | `CLAUDE_MEM_CODEX_PATH` | `codex` | CLI executable or path. File or environment only; the viewer settings API cannot change it. |
-| `CLAUDE_MEM_CODEX_TIMEOUT_MS` | `120000` | Per-request timeout in milliseconds. |
+| `CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS` | `2` | App-server clients that serve requests in parallel (1–8). File only; restart the worker after changing it. |
+| `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE` | `8` | Queued observations Codex may combine into one request (1–32). |
+| `CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS` | `32000` | Character budget for one combined observation request (4000–128000). |
 
-The worker uses an isolated `codex app-server` session for observations and summaries. Codex CLI authentication must be a file-backed ChatGPT login; API-key login is not accepted.
+The worker uses an isolated `codex app-server` session for observations and summaries. Codex CLI authentication must be a file-backed ChatGPT login; API-key login is not accepted. Each request uses the shared `CLAUDE_MEM_LLM_TIMEOUT_MS` deadline. See `docs/codex-provider.md` in the repository for how failures pause and recover.
 
 ### OpenRouter Provider Settings
 
