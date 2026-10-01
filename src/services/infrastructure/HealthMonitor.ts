@@ -3,7 +3,7 @@ import net from 'net';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { isConnectionRefusedError } from '../../shared/connection-errors.js';
+import { isConnectionRefusedError, isUnbindablePortError } from '../../shared/connection-errors.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -94,21 +94,38 @@ export async function isPortInUse(port: number, timeoutMs: number = HEALTH_PROBE
 
   // An inconclusive bind counts as in use: waitForPortFree, the restart
   // handoff and the daemon duplicate gate must never treat an unknown port
-  // state as free and start another worker onto it.
-  return (await classifyPortOccupancy(port, Math.max(1, deadline - Date.now()))) !== 'free';
+  // state as free and start another worker onto it. An unbindable port is not
+  // in use: nothing holds it, and a worker that tries to listen there fails
+  // with that errno, which the daemon reports as a boot failure — never as a
+  // duplicate that exits 0.
+  const occupancy = await classifyPortOccupancy(port, Math.max(1, deadline - Date.now()));
+  return occupancy === 'occupied' || occupancy === 'indeterminate';
 }
 
-export type PortOccupancy = 'free' | 'occupied' | 'indeterminate';
+export type PortOccupancy = 'free' | 'occupied' | 'unbindable' | 'indeterminate';
+
+export interface PortBindProbe {
+  occupancy: PortOccupancy;
+  /** The bind errno, set when `occupancy` is 'unbindable'. */
+  bindErrorCode?: string;
+}
 
 /**
  * The one bind probe behind every port-occupancy decision, bounded by
  * `timeoutMs`. 'free' only when a listener actually bound and closed cleanly,
- * 'occupied' only on EADDRINUSE; anything else (another bind error, a close
- * failure, no answer before the deadline) is 'indeterminate'. The probe
- * listener is always closed, even when it binds after the deadline settled.
+ * 'occupied' only on EADDRINUSE, 'unbindable' on EACCES / EADDRNOTAVAIL
+ * (isUnbindablePortError, with the errno); anything else (another bind error,
+ * a close failure, no answer before the deadline) is 'indeterminate'. The
+ * probe listener is always closed, even when it binds after the deadline
+ * settled.
  */
-export function classifyPortOccupancy(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<PortOccupancy> {
-  if (timeoutMs <= 0) return Promise.resolve('indeterminate');
+export async function classifyPortOccupancy(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<PortOccupancy> {
+  return (await probePortBind(port, timeoutMs)).occupancy;
+}
+
+/** classifyPortOccupancy with the bind errno, for launchers that report it. */
+export function probePortBind(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<PortBindProbe> {
+  if (timeoutMs <= 0) return Promise.resolve({ occupancy: 'indeterminate' });
 
   return new Promise((resolve) => {
     let settled = false;
@@ -118,7 +135,7 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = HEALTH_P
     try {
       server = net.createServer();
     } catch {
-      resolve('indeterminate');
+      resolve({ occupancy: 'indeterminate' });
       return;
     }
     const closeServer = (callback?: (error?: Error) => void): void => {
@@ -140,10 +157,10 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = HEALTH_P
       } else {
         try { server.close(); } catch { /* the listening handler retries cleanup */ }
       }
-      settle('indeterminate');
+      settle({ occupancy: 'indeterminate' });
     }, timeoutMs);
 
-    const settle = (result: PortOccupancy): void => {
+    const settle = (result: PortBindProbe): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -156,7 +173,9 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = HEALTH_P
       } else {
         try { server.close(); } catch { /* the bind did not start */ }
       }
-      settle(err.code === 'EADDRINUSE' ? 'occupied' : 'indeterminate');
+      if (err.code === 'EADDRINUSE') settle({ occupancy: 'occupied' });
+      else if (isUnbindablePortError(err)) settle({ occupancy: 'unbindable', bindErrorCode: err.code });
+      else settle({ occupancy: 'indeterminate' });
     });
     server.once('listening', () => {
       listening = true;
@@ -165,9 +184,9 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = HEALTH_P
         return;
       }
       try {
-        closeServer((error?: Error) => settle(error ? 'indeterminate' : 'free'));
+        closeServer((error?: Error) => settle({ occupancy: error ? 'indeterminate' : 'free' }));
       } catch {
-        settle('indeterminate');
+        settle({ occupancy: 'indeterminate' });
       }
     });
 
@@ -175,7 +194,7 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = HEALTH_P
       server.listen(port, getWorkerHost());
     } catch {
       try { server.close(); } catch { /* the bind did not start */ }
-      settle('indeterminate');
+      settle({ occupancy: 'indeterminate' });
     }
   });
 }

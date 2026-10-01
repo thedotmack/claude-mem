@@ -11,6 +11,11 @@ import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
 const DEFAULT_DATA_DIR = paths.dataDir();
 
+/** Let pending I/O callbacks (HTTP requests) run before more synchronous work. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
 export interface AdoptionResult {
   repoPath: string;
   parentProject: string;
@@ -160,7 +165,7 @@ function listOrphanProjectKeys(
   liveWorktreeProjects: Set<string>,
   /** False narrows to keys still awaiting adoption, for reporting. */
   includeAlreadyAdopted: boolean,
-  writerEvidence: WriterEvidenceColumns
+  writerEvidence: WriterEvidence
 ): string[] {
   const prefix = `${parentProject}/`;
   // '0' is the byte after '/', so [prefix, upperBound) is exactly the children.
@@ -194,57 +199,101 @@ function listOrphanProjectKeys(
     .filter(project => wasWrittenUnderRepository(db, project, parentProject, writerEvidence));
 }
 
-/** Which writer-evidence columns this database has (older schemas lack them). */
-interface WriterEvidenceColumns {
+/** What this database can tell about who wrote a key (older schemas lack some of it). */
+interface WriterEvidence {
   /** sdk_sessions.cwd (v53, #2864). */
   sessionCwd: boolean;
+  /** sdk_sessions.project_key_source (v59). */
+  sessionKeySource: boolean;
   /** origin_device_id on observations and session_summaries (cloud sync). */
   originDevice: boolean;
+  /** When this database began recording checkouts (v53 applied), epoch ms; null if it never has. */
+  checkoutsRecordedSinceEpoch: number | null;
+}
+
+function readWriterEvidence(
+  db: import('bun:sqlite').Database,
+  obsColumns: Array<{ name: string }>,
+  sumColumns: Array<{ name: string }>
+): WriterEvidence {
+  const sessionColumns = db.prepare('PRAGMA table_info(sdk_sessions)').all() as Array<{ name: string }>;
+  const checkoutsRecorded = db.prepare(
+    'SELECT applied_at FROM schema_versions WHERE version = 53'
+  ).get() as { applied_at: string } | undefined;
+  const checkoutsRecordedSinceEpoch = checkoutsRecorded ? Date.parse(checkoutsRecorded.applied_at) : NaN;
+  return {
+    sessionCwd: sessionColumns.some(c => c.name === 'cwd'),
+    sessionKeySource: sessionColumns.some(c => c.name === 'project_key_source'),
+    originDevice: obsColumns.some(c => c.name === 'origin_device_id')
+      && sumColumns.some(c => c.name === 'origin_device_id'),
+    checkoutsRecordedSinceEpoch: Number.isFinite(checkoutsRecordedSinceEpoch) ? checkoutsRecordedSinceEpoch : null,
+  };
 }
 
 /**
  * Whether the rows under a candidate key can have been written by a checkout of
  * this repository. The key's shape cannot tell on its own: with
  * CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote a repository is named by its
- * `org/repo` slug (#2827), which looks exactly like `<parent>/<worktree>` when a
- * folder named after the org is a repository here, and adopting it would fold
- * another repository's memory into this one (and sync that everywhere).
+ * `org/repo` slug (#2827), and an environment (#2737) by any name the user
+ * picks; either can look exactly like `<parent>/<worktree>` under a repository
+ * whose folder has the right name, and adopting it would fold another
+ * repository's memory into this one (and sync that to every device).
  *
  * - Keys whose sessions recorded their checkout (sdk_sessions.cwd): every
  *   recorded checkout that still exists must still resolve into this
- *   repository (read its key). A deleted worktree's checkout is gone; a live
- *   repo-named worktree resolves to the repository itself (#3641).
- * - Keys with nothing recorded (rows from before #2864, or from another device):
- *   the key must hold rows this device wrote. A replica's rows are adopted by
- *   the device that wrote them, and that remap reaches this one through sync.
+ *   repository (read its key); a live repo-named worktree resolves to the
+ *   repository itself (#3641). A checkout that no longer exists proves a
+ *   deleted worktree or submodule only when the key was derived from that
+ *   folder (project_key_source 'path'): deleting the only clone of a
+ *   slug-named repository says nothing about which repository the slug belongs
+ *   to (gate P1-2). A checkout recorded before key sources were (NULL) comes
+ *   from the folder-only naming that predates slugs and environments.
+ * - Keys with nothing recorded: sessions record their checkout since v53, so
+ *   only rows older than that are attributable, and those predate slug and
+ *   environment naming. They must also be rows this device wrote: a replica's
+ *   rows are adopted by the device that wrote them, and that remap reaches this
+ *   one through sync. Newer rows without a recorded checkout (an import, say)
+ *   have an unknown writer and stay where they are.
  */
 function wasWrittenUnderRepository(
   db: import('bun:sqlite').Database,
   candidateKey: string,
   parentProject: string,
-  writerEvidence: WriterEvidenceColumns
+  evidence: WriterEvidence
 ): boolean {
-  if (writerEvidence.sessionCwd) {
+  if (evidence.sessionCwd) {
+    const keySource = evidence.sessionKeySource ? 'project_key_source' : 'NULL';
     const checkouts = db.prepare(
-      "SELECT DISTINCT cwd FROM sdk_sessions WHERE project = ? AND cwd IS NOT NULL AND cwd != ''"
-    ).all(candidateKey) as Array<{ cwd: string }>;
+      `SELECT DISTINCT cwd, ${keySource} AS key_source FROM sdk_sessions
+        WHERE project = ? AND cwd IS NOT NULL AND cwd != ''`
+    ).all(candidateKey) as Array<{ cwd: string; key_source: string | null }>;
     if (checkouts.length > 0) {
-      return checkouts.every(({ cwd }) => {
-        if (!existsSync(cwd)) return true;
+      return checkouts.every(({ cwd, key_source }) => {
+        if (!existsSync(cwd)) return key_source === null || key_source === 'path';
         // Checkouts of this repository (itself, its worktrees and submodules)
         // read its folder-based key in every naming mode.
         return getProjectContext(cwd).allProjects.includes(parentProject);
       });
     }
   }
-  if (!writerEvidence.originDevice) return true;
-  const nativeRow = db.prepare(
-    `SELECT 1 AS native FROM observations WHERE project = ? AND origin_device_id IS NULL
+
+  const conditions = ['project = ?'];
+  const params: Array<string | number> = [candidateKey];
+  if (evidence.originDevice) {
+    conditions.push('origin_device_id IS NULL');
+  }
+  if (evidence.checkoutsRecordedSinceEpoch !== null) {
+    conditions.push('created_at_epoch < ?');
+    params.push(evidence.checkoutsRecordedSinceEpoch);
+  }
+  const where = conditions.join(' AND ');
+  const attributableRow = db.prepare(
+    `SELECT 1 AS attributable FROM observations WHERE ${where}
      UNION ALL
-     SELECT 1 AS native FROM session_summaries WHERE project = ? AND origin_device_id IS NULL
+     SELECT 1 AS attributable FROM session_summaries WHERE ${where}
      LIMIT 1`
-  ).get(candidateKey, candidateKey);
-  return nativeRow != null;
+  ).get(...params, ...params);
+  return attributableRow != null;
 }
 
 /**
@@ -369,14 +418,6 @@ export async function adoptMergedWorktrees(opts: {
       .all() as ColumnInfo[];
     const obsHasColumn = obsColumns.some(c => c.name === 'merged_into_project');
     const sumHasColumn = sumColumns.some(c => c.name === 'merged_into_project');
-    const sessionColumns = db
-      .prepare('PRAGMA table_info(sdk_sessions)')
-      .all() as ColumnInfo[];
-    const writerEvidence: WriterEvidenceColumns = {
-      sessionCwd: sessionColumns.some(c => c.name === 'cwd'),
-      originDevice: obsColumns.some(c => c.name === 'origin_device_id')
-        && sumColumns.some(c => c.name === 'origin_device_id'),
-    };
     if (!obsHasColumn || !sumHasColumn) {
       logger.debug(
         'SYSTEM',
@@ -385,6 +426,7 @@ export async function adoptMergedWorktrees(opts: {
       );
       return result;
     }
+    const writerEvidence = readWriterEvidence(db, obsColumns, sumColumns);
 
     const selectObsForPatch = db.prepare(
       `SELECT id FROM observations
@@ -569,7 +611,12 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
     return results;
   }
 
-  const uniqueParents = new Set<string>();
+  // The worker starts this sweep fire-and-forget at boot, and everything below
+  // (git spawns, SQLite) is synchronous: yield before starting and between
+  // repositories so the worker keeps serving requests meanwhile (gate P2-3).
+  await yieldToEventLoop();
+
+  let recordedCwds: string[] = [];
   let db: import('bun:sqlite').Database | null = null;
   try {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
@@ -600,13 +647,18 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
     const cwdRows = db.prepare(
       `SELECT DISTINCT cwd FROM (${cwdSources.join(' UNION ')})`
     ).all() as Array<{ cwd: string }>;
-
-    for (const { cwd } of cwdRows) {
-      const mainRepo = resolveMainRepoPath(cwd);
-      if (mainRepo) uniqueParents.add(mainRepo);
-    }
+    recordedCwds = cwdRows.map(row => row.cwd);
   } finally {
     db?.close();
+  }
+
+  // A checkout that no longer exists cannot lead to a repository; asking git
+  // anyway cost a process spawn each (~5 s of blocked worker per 300).
+  const uniqueParents = new Set<string>();
+  for (const cwd of recordedCwds) {
+    if (!existsSync(cwd)) continue;
+    const mainRepo = resolveMainRepoPath(cwd);
+    if (mainRepo) uniqueParents.add(mainRepo);
   }
 
   if (uniqueParents.size === 0) {
@@ -615,6 +667,7 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
   }
 
   for (const repoPath of uniqueParents) {
+    await yieldToEventLoop();
     try {
       const result = await adoptMergedWorktrees({
         repoPath,

@@ -35,6 +35,7 @@ const processManager = {
 
 const healthMonitor = {
   isPortInUse: mock(async () => false),
+  probePortBind: mock(async (): Promise<{ occupancy: string; bindErrorCode?: string }> => ({ occupancy: 'free' })),
   waitForHealth: mock(async () => false),
   waitForReadiness: mock(async () => false),
 };
@@ -123,6 +124,8 @@ function resetMocks(): void {
   processManager.probeWorkerBootFailure.mockReturnValue(undefined);
   healthMonitor.isPortInUse.mockReset();
   healthMonitor.isPortInUse.mockResolvedValue(false);
+  healthMonitor.probePortBind.mockReset();
+  healthMonitor.probePortBind.mockResolvedValue({ occupancy: 'free' });
   healthMonitor.waitForHealth.mockReset();
   healthMonitor.waitForHealth.mockResolvedValue(false);
   healthMonitor.waitForReadiness.mockReset();
@@ -234,6 +237,27 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(cliTelemetry.captureCliEvent).toHaveBeenCalledWith(
       'worker_start_failed',
       expect.objectContaining({ outcome: 'dead', error_category: 'boot_crash' }),
+    );
+  });
+
+  it('reports a port the system will not bind as a boot failure with its errno, without spawning', async () => {
+    // #3219 read EACCES / EADDRNOTAVAIL as "in use": this path waited for
+    // health, tried a reclaim, and returned dead with no marker and no event.
+    resetMocks();
+    healthMonitor.probePortBind.mockResolvedValue({ occupancy: 'unbindable', bindErrorCode: 'EACCES' });
+
+    const result = await ensureWorkerStarted(39016, import.meta.filename);
+
+    expect(result).toBe('dead');
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+    expect(getLastWorkerBootFailure()).toContain('EACCES');
+    expect(getLastWorkerBootFailure()).toContain('CLAUDE_MEM_WORKER_PORT');
+    const marker = readFileSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'), 'utf-8');
+    expect(marker).toContain('cannot be bound');
+    expect(marker).toContain('EACCES');
+    expect(cliTelemetry.captureCliEvent).toHaveBeenCalledWith(
+      'worker_start_failed',
+      expect.objectContaining({ outcome: 'dead', error_category: 'port_unbindable' }),
     );
   });
 

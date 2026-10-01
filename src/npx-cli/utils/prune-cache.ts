@@ -1,7 +1,14 @@
 import { existsSync, readdirSync, rmSync, statSync } from 'fs';
-import { basename, join } from 'path';
+import { basename, isAbsolute, join, relative, sep } from 'path';
 import { installedPluginsPath, pluginCacheRootDirectory } from './paths.js';
-import { compareVersionsDescending, workerHttpRequest } from '../../shared/worker-utils.js';
+import {
+  cacheWorkerScriptCandidates,
+  compareVersionsDescending,
+  resolveWorkerScript,
+  selectWorkerScript,
+  workerHttpRequest,
+  type WorkerScriptCandidate,
+} from '../../shared/worker-utils.js';
 import { readOwnedWorkerPidInfo } from '../../supervisor/process-registry.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 
@@ -108,9 +115,40 @@ export interface PrunePluginCacheOptions {
   protectedVersions?: Iterable<string>;
 }
 
+/** The cache version directory `filePath` lives in, or null when it is outside `root`. */
+function cacheVersionContaining(root: string, filePath: string): string | null {
+  const pathFromRoot = relative(root, filePath);
+  if (!pathFromRoot || pathFromRoot.startsWith('..') || isAbsolute(pathFromRoot)) return null;
+  const versionDirectory = pathFromRoot.split(sep)[0];
+  return isVersionDirectoryName(versionDirectory) ? versionDirectory : null;
+}
+
+/**
+ * Cache versions a prune must keep so the install still has a worker to run.
+ * Retention counts versions, not working ones, and the installer prunes right
+ * after copying the new version, before its dependencies are installed, so
+ * "the newest N" can be N copies that cannot start. Keep:
+ * - the version resolveWorkerScript() picks when it resolves into this cache:
+ *   it is what every launcher spawns;
+ * - the newest cache version whose dependency closure is complete
+ *   (selectWorkerScript over this cache), so the cache never loses its only
+ *   working copy.
+ */
+export function workingCacheVersions(
+  root: string,
+  resolvedWorkerScript: WorkerScriptCandidate | null = resolveWorkerScript(),
+): string[] {
+  const versions = new Set<string>();
+  const newestWorking = selectWorkerScript(cacheWorkerScriptCandidates(root))?.version;
+  if (newestWorking) versions.add(newestWorking);
+  const resolvedVersion = resolvedWorkerScript ? cacheVersionContaining(root, resolvedWorkerScript.scriptPath) : null;
+  if (resolvedVersion) versions.add(resolvedVersion);
+  return [...versions];
+}
+
 /** Read the version names and their `.orphaned_at` state, then plan the prune.
  * Read-only — use for a dry-run preview that matches what `prunePluginCache`
- * would delete. */
+ * would delete. The working versions (workingCacheVersions) are always kept. */
 export function planPluginCachePrune(
   root: string,
   keepCount: number,
@@ -118,7 +156,10 @@ export function planPluginCachePrune(
 ): CachePrunePlan {
   const names = readCacheVersionDirectories(root);
   const orphanedVersions = names.filter(name => isVersionDirectoryName(name) && isOrphanedVersion(root, name));
-  return planCachePrune(names, keepCount, { protectedVersions, orphanedVersions });
+  return planCachePrune(names, keepCount, {
+    protectedVersions: [...protectedVersions, ...workingCacheVersions(root)],
+    orphanedVersions,
+  });
 }
 
 /**

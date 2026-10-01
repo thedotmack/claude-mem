@@ -26,7 +26,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
 | `CLAUDE_MEM_WORKER_AUTOSTART` | `true`                          | Set `false` when you run the worker yourself (a process manager, a container, `worker-service.cjs --daemon`). Hooks, the MCP server and `start` then use a worker that is already running but never launch, kill or recycle one: no lazy spawn, no version-mismatch recycle, no wedged-worker recycle or reclaim. While your worker is down, hooks skip their work quietly instead of counting it as a failure. |
-| `CLAUDE_MEM_ALLOWED_ORIGINS`  | _(empty)_                       | Comma-separated browser origins (e.g. `https://app.example.com`) allowed to call the worker API cross-origin, besides `http://localhost:*` and `http://127.0.0.1:*`. A page loaded from the worker's own address (the viewer at `http://<lan-ip>:<port>`) is always allowed. To block DNS rebinding, the worker also refuses a request whose `Host` is a DNS name it does not trust. IP addresses, `localhost`, `host.docker.internal`, `CLAUDE_MEM_WORKER_HOST`, the host of `CLAUDE_MEM_PUBLIC_URL`, and the hosts listed here are trusted. To open the viewer by a machine name, such as `http://mybox.local:37777`, list that origin here. Restart the worker after changing it. |
+| `CLAUDE_MEM_ALLOWED_ORIGINS`  | _(empty)_                       | Comma-separated browser origins (e.g. `https://app.example.com`) allowed to call the worker API cross-origin, besides `http://localhost:*` and `http://127.0.0.1:*`. A page loaded from the worker's own address (the viewer at `http://<lan-ip>:<port>`) is always allowed. Other `http://localhost:*` pages can read the API but not delete: deletes sync to every device, so a `DELETE` is accepted only from the viewer's own page, an origin listed here, or a client that sends no `Origin` header (hooks, the CLI, curl). To block DNS rebinding, the worker also refuses a request whose `Host` is a DNS name it does not trust. IP addresses, `localhost`, `host.docker.internal`, `CLAUDE_MEM_WORKER_HOST`, the host of `CLAUDE_MEM_PUBLIC_URL`, and the hosts listed here are trusted. To open the viewer by a machine name, such as `http://mybox.local:37777`, list that origin here. Restart the worker after changing it. |
 | `CLAUDE_MEM_PUBLIC_URL`       | _(empty)_                       | Browser-reachable base URL printed for the viewer (live view, welcome hint, restart link) when the worker runs in a remote sandbox behind a port-forward, e.g. `https://37700.host.example`. Empty = `http://localhost:<port>`. The env var wins over the setting. (The [hosted server runtime](hosted-server) reads the same variable as its own public base URL.) |
 | `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
@@ -129,7 +129,7 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data directory location               |
 | `CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
 | `CLAUDE_MEM_FETCH_VERBOSE`    | _(unset / off)_                 | Opt-in worker-IPC `fetch()` diagnostics (`1`/`true`/`on`/`yes`). Passes Node/undici `{ verbose: true }` and writes the error cause chain on socket-level hook failures. Default stays off. |
-| `CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS` | `10000`                   | Total time the UserPromptSubmit hook may spend reaching the worker for each prompt (startup check, session init, semantic context). When it runs out, the prompt goes through without memory for that turn. Accepts 500–14000; it has to stay under Claude Code's 15 s timeout for that hook. Codex keeps its own bounded worker-startup wait, and its requests stay within this budget. Also read from the environment. |
+| `CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS` | `10000` (`7000` on Windows) | Total time the UserPromptSubmit hook may spend reaching the worker for each prompt (startup check, session init, semantic context). When it runs out, the prompt goes through without memory for that turn. Accepts 500–14000; it has to stay under Claude Code's 15 s timeout for that hook. The clock starts after the hook process has loaded, which takes 4–5 s on Windows, so on Windows the default is 7000 and any higher value is cut to 7000. Codex keeps its own bounded worker-startup wait, and its requests stay within this budget. Also read from the environment. |
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
@@ -175,7 +175,9 @@ Two deterministic tiers:
 - **Tier 0 — exact-normalized-title** → safe silent auto-merge: a new observation whose
   title matches an existing one after lowercasing / whitespace-collapse / punctuation-strip
   is collapsed onto the existing row and its `occurrence_count` is bumped (cross-session,
-  within the same project and the same host platform, since context is platform-scoped).
+  within the same project, the same host platform and the same agent scope: main session
+  work never merges into a subagent row, which SessionStart leaves out). Rows stored before
+  an upgrade are re-keyed by `POST /api/dedup/scan`.
 - **Tier 1 — IDF-weighted similarity** → *review-only* near-duplicate **candidates** are
   recorded in `observation_dedup_candidates` (never auto-merged), so distinct work that
   differs only in one rare token (`rdlp-api` vs `rdlp-plugin`) is never silently destroyed.
@@ -253,7 +255,7 @@ claude-mem files every observation under a project name, and SessionStart inject
 - **Inside a git repository** the name is the repository root's folder name, so every subfolder shares it. A git worktree is stored as `<repo>/<worktree>` (a worktree whose folder has the repository's own name, like Codex's `~/.codex/worktrees/<id>/<repo>`, is stored as `<repo>`) and a git submodule as `<superproject>/<path>`; both also read their parent repository's memory. Memory a submodule stored under its own folder name before it was grouped this way stays readable from it. When a worktree or submodule checkout is deleted, the worker folds its memory into the parent repository at its next start (merged or not), so nothing is stranded.
 - **With `CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote`** a repository that has an `origin` remote is named by its `org/repo` slug instead (e.g. `thedotmack/claude-mem`), so renaming or re-cloning the folder keeps its memory, two repositories with the same folder name stay apart, and every worktree of the repository shares the slug (a submodule, being a repository of its own, is named by its own `origin`). Memory stored under the folder-based names stays readable, and a deleted worktree's memory from before the switch is still folded into the repository. Repositories without a usable `origin` (or with a local one) keep the folder-based name.
 - **Outside git** the name is the current folder's name. To give a non-git project one name across all of its subfolders, put an empty `.claude-mem-project` file (or a `.claude-mem.json`) in its root folder: every folder below it then uses the root folder's name. Memory stored under a subfolder's own name before you added the file stays readable from that subfolder. Marker files in your home directory, the system temp directory or Claude's config directory are ignored, so they can never fold unrelated folders together.
-- **Named environments** (`CLAUDE_MEM_PROJECT_ENVIRONMENTS`) group several folders, git or not, into one project and win over every rule above. For example, `[{"name": "acme", "patterns": ["~/work/acme/**"]}]` files everything under `~/work/acme` as `acme`, and SessionStart labels it as an environment. Memory those folders stored under their own names stays readable from them; to fold it into the environment for good, run `npx claude-mem project merge <old-name> acme`. The merge rewrites nothing (rows are marked as merged, the way a worktree folds into its repository), reaches your other devices through cloud sync, and updates semantic search.
+- **Named environments** (`CLAUDE_MEM_PROJECT_ENVIRONMENTS`) group several folders, git or not, into one project and win over every rule above. For example, `[{"name": "acme", "patterns": ["~/work/acme/**"]}]` files everything under `~/work/acme` as `acme`, and SessionStart labels it as an environment. Memory those folders stored under their own names stays readable from them; to fold it into the environment for good, run `npx claude-mem project merge <old-name> acme` (it runs inside claude-mem's worker whenever the worker is running). The merge rewrites nothing (rows are marked as merged, the way a worktree folds into its repository) and brings along memory already folded into the old name, such as a merged worktree's. It reaches your other devices through cloud sync and updates semantic search; if that last step fails, the command says so, and running it again retries it.
 
 ## Files and Directories
 
@@ -283,7 +285,7 @@ ${CLAUDE_PLUGIN_ROOT}/
 ├── hooks/
 │   └── hooks.json          # Hook configuration
 ├── scripts/                # Built executables
-│   ├── version-check.js    # Sub-100ms Setup-hook version marker check
+│   ├── version-check.js    # Setup hook: completes missing dependencies, records the install marker
 │   ├── context-hook.js     # Context injection hook
 │   ├── new-hook.js         # Session creation hook
 │   ├── save-hook.js        # Observation capture hook
@@ -300,7 +302,7 @@ ${CLAUDE_PLUGIN_ROOT}/
 
 Hooks are registered in `plugin/hooks/hooks.json`. The current shape uses a single dispatcher (`worker-service.cjs hook claude-code <event>`) launched through `bun-runner.js`, plus a fast Setup-phase `version-check.js`. The events wired up are:
 
-- `Setup` → `version-check.js` (sub-100ms `.install-version` check)
+- `Setup` → `version-check.js` (installs missing plugin dependencies, records `.install-version`)
 - `SessionStart` → start the worker, then `hook claude-code context` (context injection)
 - `UserPromptSubmit` → `hook claude-code session-init`
 - `PreToolUse` (matcher `Read`) → `hook claude-code file-context`
@@ -611,14 +613,14 @@ Changes take effect on the next tool execution (no worker restart needed).
 
 Hook timeouts are written into `plugin/hooks/hooks.json` by the installer. The current defaults match the shape of the workload at each lifecycle stage:
 
-- Setup (`version-check.js`): 300s ceiling but normally < 100ms — only reads `.install-version`
+- Setup (`version-check.js`): 300s ceiling; fast when the plugin's dependencies are complete, up to 120s when it has to run `bun install`
 - SessionStart (worker-start + context): 60s
 - UserPromptSubmit: 60s
 - PreToolUse (file-context, Read matcher): 60s
 - PostToolUse (observation): 120s
 - Stop (summary): 120s
 
-The Setup hook never installs anything — runtime install (Bun, uv, `bun install`) happens in `npx claude-mem install` / `npx claude-mem repair` outside the session lifecycle.
+`npx claude-mem install` / `npx claude-mem repair` install the runtime (Bun, uv, `bun install`) outside the session lifecycle. The Setup hook only runs `bun install` when the loaded plugin's dependencies are missing — typically a plugin-marketplace install or `claude plugin update` — and writes the `.install-version` marker once they are complete.
 
 ### Worker Memory Limit
 
