@@ -41,6 +41,16 @@ function toolOnlyAssistantLine(toolName: string, model = 'claude-opus-4-1'): str
   });
 }
 
+function blankAssistantLine(model?: string): string {
+  const message: Record<string, unknown> = { role: 'assistant', content: [{ type: 'text', text: '' }] };
+  if (model) message.model = model;
+  return JSON.stringify({ type: 'assistant', message });
+}
+
+function modellessAssistantLine(text: string): string {
+  return JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+}
+
 function userLine(text: string): string {
   return JSON.stringify({ type: 'user', message: { role: 'user', content: text } });
 }
@@ -172,6 +182,35 @@ describe('transcript-parser tail read', () => {
     expect(extractLastAssistantModel(path)).toBeUndefined();
     writeFileSync(path, '\n\n  \n');
     expect(extractLastMessage(path, 'assistant')).toBe('');
+  });
+
+  it('a newest BLANK assistant turn suppresses an older tool-only synthesis, exactly like a whole-file read', () => {
+    // Greptile r2 P1: whole-file semantics latch the NEWEST matching turn's
+    // empty text ('' here) and never synthesize from an older tool-only turn.
+    // With small chunks the blank turn and the tool-only turn land in
+    // different chunks; the walk must still return '' (hook skips the summary),
+    // not the stale "[Session ended mid-task…]" description.
+    const lines = [userLine('go'), toolOnlyAssistantLine('Bash'), toolResultLine(3000), blankAssistantLine()];
+    const whole = lines.join('\n') + '\n';
+    writeFileSync(path, whole);
+    const opts = { initialBytes: 256, maxChunkBytes: 1024 };
+    const expected = findLastMessageInJsonl(whole, 'assistant', false).text;
+    expect(expected).toBe('');
+    expect(extractLastMessage(path, 'assistant', false, opts)).toBe(expected);
+    expect(extractLastAssistantTurn(path, false, opts).text).toBe(expected);
+  });
+
+  it('keeps walking for the model when the newest assistant entries carry none, exactly like a whole-file read', () => {
+    // Greptile r2 P2: the text hit sits in the newest chunk on an entry with no
+    // `message.model`; the newest model-bearing entry is chunks further back.
+    const lines = [assistantLine('older with model', 'claude-sonnet-4-5'), toolResultLine(3000), modellessAssistantLine('final text, no model')];
+    writeFileSync(path, lines.join('\n') + '\n');
+    const opts = { initialBytes: 256, maxChunkBytes: 1024 };
+    expect(extractLastAssistantTurn(path, false, opts)).toEqual({ text: 'final text, no model', model: 'claude-sonnet-4-5' });
+    expect(extractLastAssistantModel(path, opts)).toBe('claude-sonnet-4-5');
+    // No model anywhere → walk reaches the start and reports text without a model key.
+    writeFileSync(path, [modellessAssistantLine('a'), toolResultLine(3000), modellessAssistantLine('b')].join('\n') + '\n');
+    expect(extractLastAssistantTurn(path, false, opts)).toEqual({ text: 'b' });
   });
 
   it('finds the last USER message through the same window walk', () => {

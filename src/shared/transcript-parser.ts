@@ -177,28 +177,41 @@ function extractLastTurnBackward(
   wantModel: boolean,
   tailOptions?: TranscriptTailOptions
 ): { text: string; model?: string } {
+  let text: string | undefined;
   let fallbackText: string | null = null;
   let model: string | undefined;
 
-  const found = scanTranscriptBackward(
+  const result = scanTranscriptBackward(
     transcriptPath,
     (chunkText, isFirstChunkOfFile) => {
+      // The model is the NEWEST assistant entry that carries one. Entries with
+      // no model (other adapters, some tool-only turns) must not end the search,
+      // so this keeps looking past the text hit until a model is found.
       if (wantModel && model === undefined) {
         model = extractLastAssistantModelFromJsonl(chunkText);
       }
-      const hit = findLastMessageInJsonl(chunkText, role, stripSystemReminders);
-      if (hit.kind === 'text') return hit.text;
-      // A synthesized tool description from this chunk is not an answer yet:
-      // an earlier chunk may still hold real text. Keep the newest one.
-      if (hit.kind === 'synthesized' && fallbackText === null) fallbackText = hit.text;
-      if (isFirstChunkOfFile) return fallbackText ?? '';
+      if (text === undefined) {
+        const hit = findLastMessageInJsonl(chunkText, role, stripSystemReminders);
+        if (hit.kind === 'text') {
+          text = hit.text;
+        } else if (hit.kind !== 'none' && fallbackText === null) {
+          // Whole-file semantics: the NEWEST matching turn with no text decides
+          // the fallback - a blank turn yields '' even if an older turn was
+          // tool-only. Latch it from the first chunk that holds a matching turn.
+          fallbackText = hit.text;
+        }
+      }
+      const done = text !== undefined && (!wantModel || model !== undefined);
+      if (done || isFirstChunkOfFile) {
+        return { text: text ?? fallbackText ?? '', model };
+      }
       return undefined;
     },
     tailOptions
   );
 
-  const text = found ?? '';
-  return wantModel ? { text, model } : { text };
+  if (!result) return { text: '' };
+  return wantModel ? result : { text: result.text };
 }
 
 /**
@@ -326,15 +339,18 @@ export function extractLastMessageFromJsonl(
 /**
  * How `findLastMessageInJsonl` arrived at its text:
  * - `text`:        a matching turn with real (non-blank) text content
- * - `synthesized`: every matching turn was tool-only; `text` names the tools
- * - `none`:        no matching turn, or only blank-text turns; `text` is ''/blank
+ * - `synthesized`: the newest matching turn was tool-only; `text` names the tools
+ * - `blank`:       the newest matching turn had blank text and no tool calls;
+ *                  `text` is that blank string (whole-file semantics return it)
+ * - `none`:        no matching turn at all; `text` is ''
  *
- * The tail scanner needs the distinction: a `synthesized`/`none` result from a
- * partial window must not be returned while a larger window could still hold
- * real text.
+ * The backward chunk walk needs the distinction: `synthesized`/`blank` from the
+ * NEWEST chunk that holds a matching turn is the fallback a whole-file read
+ * would return, so it is latched there and never replaced by an older chunk's
+ * tool description; `none` says nothing about the file and is skipped.
  */
 export interface LastMessageHit {
-  kind: 'text' | 'synthesized' | 'none';
+  kind: 'text' | 'synthesized' | 'blank' | 'none';
   text: string;
 }
 
@@ -345,7 +361,7 @@ export function findLastMessageInJsonl(
 ): LastMessageHit {
   let foundMatchingRole = false;
   let lastEmptyText: string | null = null;
-  let lastEmptyKind: 'synthesized' | 'none' = 'none';
+  let lastEmptyKind: 'synthesized' | 'blank' = 'blank';
 
   for (const line of parseJsonlLinesBackward(content)) {
     const kimiRole = kimiWireRole(line);
