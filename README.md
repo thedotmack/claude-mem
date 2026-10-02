@@ -219,11 +219,6 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
 - **[Cloud Sync](https://docs.claude-mem.ai/cloud-sync)** - Back up your memories to cmem.ai — no daemon, the worker syncs on write
 
-The worker shares concurrent cloud-sync status checks and limits each probe to
-20 seconds. During a Hub outage, background hints and socket catch-up wait for
-the HTTP retry deadline. A new session can request a bounded catch-up; queued
-memories stay on disk until the Hub acknowledges their projection.
-
 ### Best Practices
 
 - **[Context Engineering](https://docs.claude-mem.ai/context-engineering)** - AI agent context optimization principles
