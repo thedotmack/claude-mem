@@ -333,8 +333,6 @@ Settings are managed in `~/.claude-mem/settings.json` (auto-created with default
 
 To include observations from every harness in Claude Code and Codex SessionStart context, set `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"` in that file, or enable **Include all sources at session start** in the viewer settings. The default is `"false"`, which limits startup context to the current harness. The observation count limit still applies across the selected sources.
 
-Hook commands wait for stdout to finish writing before they exit. This keeps SessionStart context complete when Codex or another host reads it through a pipe, including large JSON payloads and plain-text context.
-
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
 ### Mode & Language Configuration
