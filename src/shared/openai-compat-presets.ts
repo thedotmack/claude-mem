@@ -79,6 +79,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'API Route key; select a chat-completions model from your account catalog. Model ids are passed verbatim.',
   },
   {
+    id: 'opper',
+    label: 'Opper (opper.ai)',
+    baseUrl: 'https://api.opper.ai/v3/compat',
+    // A pooled model id: Opper picks the route per request. A small model for
+    // the same reason as NVIDIA's default, extraction is high volume.
+    defaultModel: 'gpt-5.4-mini',
+    requiresApiKey: true,
+    hint: 'EU-hosted gateway. One Opper key for pooled model ids such as claude-haiku-4-5; a provider/model id pins one route.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
