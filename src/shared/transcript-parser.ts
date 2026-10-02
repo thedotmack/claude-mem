@@ -3,80 +3,111 @@ import { logger } from '../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
 /**
- * First tail window. The last 64 KB of a 2 GB Claude Code transcript already
+ * First backward chunk. The last 64 KB of a 2 GB Claude Code transcript already
  * holds ~5 assistant entries; 256 KB covers a long tool-only run-up to the
  * final text turn in one read.
  */
 export const TRANSCRIPT_TAIL_INITIAL_BYTES = 256 * 1024;
 
 /**
- * Hard ceiling for the backward scan. Kept far below JavaScriptCore's
- * 2^31-1 and V8's 0x1fffffe8 maximum string lengths: `readFileSync(path,
- * 'utf-8')` on a transcript past those caps throws ENOMEM (Bun) /
- * ERR_STRING_TOO_LONG (Node), which is how a 2.16 GB session lost every
- * Stop-hook summary.
+ * Largest single chunk the backward scan reads. Chunks grow 4x per step up to
+ * this size so a far-back answer costs few syscalls, while peak memory stays
+ * at one chunk plus one carried line - never the whole file. The old
+ * `readFileSync(path, 'utf-8')` needed the entire transcript in one string,
+ * which hits JavaScriptCore's 2^31-1 cap (Bun reports ENOMEM) and V8's
+ * 0x1fffffe8 cap (ERR_STRING_TOO_LONG); a 2.16 GB session lost every
+ * Stop-hook summary that way.
  */
-export const TRANSCRIPT_TAIL_MAX_BYTES = 256 * 1024 * 1024;
+export const TRANSCRIPT_TAIL_MAX_CHUNK_BYTES = 64 * 1024 * 1024;
 
 export interface TranscriptTailOptions {
-  /** Bytes read on the first attempt (default TRANSCRIPT_TAIL_INITIAL_BYTES). */
+  /** Bytes read by the first chunk (default TRANSCRIPT_TAIL_INITIAL_BYTES). */
   initialBytes?: number;
-  /** Largest window the scan will grow to (default TRANSCRIPT_TAIL_MAX_BYTES). */
-  maxBytes?: number;
-}
-
-interface TailWindow {
-  /** Window contents, starting at a line boundary (or at byte 0). */
-  text: string;
-  /** File offset where `text` begins; 0 means the window is the whole file. */
-  startOffset: number;
-  fileSize: number;
+  /** Largest chunk the scan grows to (default TRANSCRIPT_TAIL_MAX_CHUNK_BYTES). */
+  maxChunkBytes?: number;
 }
 
 /**
- * Read the last `maxBytes` of the file, aligned to the first complete line.
- * When the cut lands inside a line, that partial line is dropped — it is read
- * whole by the next, larger window (every window re-reads from the end of the
- * file). A window that starts at offset 0 is the whole file, unaligned.
+ * Fill `buffer` from `position`, looping on short reads. Returns the number of
+ * bytes actually read, which is less than `buffer.length` only at EOF (the
+ * file shrank between `fstat` and `read`).
  */
-function readTranscriptTail(transcriptPath: string, maxBytes: number): TailWindow {
+function readFully(fd: number, buffer: Buffer, position: number): number {
+  let filled = 0;
+  while (filled < buffer.length) {
+    const n = readSync(fd, buffer, filled, buffer.length - filled, position + filled);
+    if (n === 0) break;
+    filled += n;
+  }
+  return filled;
+}
+
+/**
+ * Yield the transcript's complete lines in backward chunks: the last chunk
+ * first, each chunk's text holding only whole lines (a line torn at the chunk
+ * boundary is carried into the next, earlier chunk, so entries are never
+ * parsed from a fragment). `isFirstChunkOfFile` is true on the chunk that
+ * reaches byte 0 - the caller's last chance to fall back.
+ */
+function* readTranscriptChunksBackward(
+  transcriptPath: string,
+  options: TranscriptTailOptions
+): Generator<{ text: string; isFirstChunkOfFile: boolean }> {
+  const maxChunk = Math.max(1, options.maxChunkBytes ?? TRANSCRIPT_TAIL_MAX_CHUNK_BYTES);
+  let chunkBytes = Math.min(maxChunk, Math.max(1, options.initialBytes ?? TRANSCRIPT_TAIL_INITIAL_BYTES));
+
   const fd = openSync(transcriptPath, 'r');
   try {
-    const size = fstatSync(fd).size;
-    const start = Math.max(0, size - maxBytes);
-    const buffer = Buffer.alloc(size - start);
-    readSync(fd, buffer, 0, buffer.length, start);
-    if (start === 0) {
-      return { text: buffer.toString('utf-8'), startOffset: 0, fileSize: size };
+    let end = fstatSync(fd).size;
+    let carry = Buffer.alloc(0); // the torn head of the line that begins before `end`
+
+    while (end > 0) {
+      const start = Math.max(0, end - chunkBytes);
+      const chunk = Buffer.alloc(end - start);
+      const got = readFully(fd, chunk, start);
+      const data = got === chunk.length ? chunk : chunk.subarray(0, got);
+      const joined = carry.length ? Buffer.concat([data, carry]) : data;
+
+      if (start === 0) {
+        yield { text: joined.toString('utf-8'), isFirstChunkOfFile: true };
+        return;
+      }
+
+      const firstNewline = joined.indexOf(0x0a);
+      if (firstNewline === -1) {
+        // The whole chunk is the middle of one line - keep carrying it.
+        carry = joined;
+      } else {
+        carry = joined.subarray(0, firstNewline);
+        yield { text: joined.subarray(firstNewline + 1).toString('utf-8'), isFirstChunkOfFile: false };
+      }
+
+      end = start;
+      chunkBytes = Math.min(chunkBytes * 4, maxChunk);
     }
-    const firstNewline = buffer.indexOf(0x0a);
-    if (firstNewline === -1) {
-      return { text: '', startOffset: size, fileSize: size };
+
+    if (carry.length) {
+      yield { text: carry.toString('utf-8'), isFirstChunkOfFile: true };
     }
-    return {
-      text: buffer.subarray(firstNewline + 1).toString('utf-8'),
-      startOffset: start + firstNewline + 1,
-      fileSize: size,
-    };
   } finally {
     closeSync(fd);
   }
 }
 
 /**
- * Walk backwards through the transcript in growing windows until `probe`
- * returns a value, the window covers the whole file, or the window reaches
- * the cap. `probe` receives `isFinalWindow = true` on the last attempt and
- * must then return whatever a whole-file read would have returned (fallbacks
- * included) — on earlier windows it should return `undefined` for any result
- * that a larger window might improve on.
+ * Walk the transcript backwards chunk by chunk until `probe` returns a value.
+ * `probe` sees each chunk's complete lines (newest chunk first) and
+ * `isFirstChunkOfFile` on the last one, where it must return whatever a
+ * whole-file read would have returned (fallbacks included). On earlier chunks
+ * it returns `undefined` for anything an earlier chunk might improve on, and
+ * is responsible for remembering its own fallback across calls.
  *
  * Returns `undefined` (after a warn) when the path is missing, the file does
  * not exist, the file is empty, or the probe never produced a value.
  */
-function scanTranscriptTail<T>(
+function scanTranscriptBackward<T>(
   transcriptPath: string,
-  probe: (windowText: string, isFinalWindow: boolean) => T | undefined,
+  probe: (chunkText: string, isFirstChunkOfFile: boolean) => T | undefined,
   options: TranscriptTailOptions = {}
 ): T | undefined {
   if (!transcriptPath || !existsSync(transcriptPath)) {
@@ -84,35 +115,17 @@ function scanTranscriptTail<T>(
     return undefined;
   }
 
-  const cap = Math.max(1, options.maxBytes ?? TRANSCRIPT_TAIL_MAX_BYTES);
-  let windowBytes = Math.min(cap, Math.max(1, options.initialBytes ?? TRANSCRIPT_TAIL_INITIAL_BYTES));
-
-  for (;;) {
-    const tail = readTranscriptTail(transcriptPath, windowBytes);
-    const isWholeFile = tail.startOffset === 0;
-    const isFinalWindow = isWholeFile || windowBytes >= cap;
-
-    if (isWholeFile && !tail.text.trim()) {
-      logger.warn('PARSER', `Transcript file exists but is empty: ${transcriptPath}`);
-      return undefined;
-    }
-
-    const hit = probe(tail.text, isFinalWindow);
+  let sawContent = false;
+  for (const chunk of readTranscriptChunksBackward(transcriptPath, options)) {
+    if (!sawContent && chunk.text.trim()) sawContent = true;
+    const hit = probe(chunk.text, chunk.isFirstChunkOfFile);
     if (hit !== undefined) return hit;
-
-    if (isFinalWindow) {
-      if (!isWholeFile) {
-        logger.warn('PARSER', 'Transcript tail scan reached its byte cap without a usable entry', {
-          transcriptPath,
-          fileSize: tail.fileSize,
-          maxBytes: cap,
-        });
-      }
-      return undefined;
-    }
-
-    windowBytes = Math.min(windowBytes * 4, cap);
   }
+
+  if (!sawContent) {
+    logger.warn('PARSER', `Transcript file exists but is empty: ${transcriptPath}`);
+  }
+  return undefined;
 }
 
 /**
@@ -146,18 +159,46 @@ export function extractLastMessage(
   stripSystemReminders: boolean = false,
   tailOptions?: TranscriptTailOptions
 ): string {
-  const text = scanTranscriptTail(
+  return extractLastTurnBackward(transcriptPath, role, stripSystemReminders, false, tailOptions).text;
+}
+
+/**
+ * Shared backward walk for the text readers. Real text in the newest chunk
+ * wins immediately; a tool-only synthesis is remembered as the fallback (the
+ * NEWEST one, matching whole-file semantics) and only returned once the walk
+ * has reached the start of the file without finding text. The model, when
+ * requested, is the newest assistant model seen - independent of where the
+ * text turn sits.
+ */
+function extractLastTurnBackward(
+  transcriptPath: string,
+  role: 'user' | 'assistant',
+  stripSystemReminders: boolean,
+  wantModel: boolean,
+  tailOptions?: TranscriptTailOptions
+): { text: string; model?: string } {
+  let fallbackText: string | null = null;
+  let model: string | undefined;
+
+  const found = scanTranscriptBackward(
     transcriptPath,
-    (windowText, isFinalWindow) => {
-      const hit = findLastMessageInJsonl(windowText, role, stripSystemReminders);
-      // A synthesized tool description (or nothing at all) from a partial
-      // window is not an answer yet: a larger window may still hold real text.
-      if (hit.kind === 'text' || isFinalWindow) return hit.text;
+    (chunkText, isFirstChunkOfFile) => {
+      if (wantModel && model === undefined) {
+        model = extractLastAssistantModelFromJsonl(chunkText);
+      }
+      const hit = findLastMessageInJsonl(chunkText, role, stripSystemReminders);
+      if (hit.kind === 'text') return hit.text;
+      // A synthesized tool description from this chunk is not an answer yet:
+      // an earlier chunk may still hold real text. Keep the newest one.
+      if (hit.kind === 'synthesized' && fallbackText === null) fallbackText = hit.text;
+      if (isFirstChunkOfFile) return fallbackText ?? '';
       return undefined;
     },
     tailOptions
   );
-  return text ?? '';
+
+  const text = found ?? '';
+  return wantModel ? { text, model } : { text };
 }
 
 /**
@@ -170,16 +211,8 @@ export function extractLastAssistantTurn(
   stripSystemReminders: boolean = false,
   tailOptions?: TranscriptTailOptions
 ): { text: string; model?: string } {
-  const turn = scanTranscriptTail(
-    transcriptPath,
-    (windowText, isFinalWindow) => {
-      const hit = findLastMessageInJsonl(windowText, 'assistant', stripSystemReminders);
-      if (hit.kind !== 'text' && !isFinalWindow) return undefined;
-      return { text: hit.text, model: extractLastAssistantModelFromJsonl(windowText) };
-    },
-    tailOptions
-  );
-  return turn ?? { text: '' };
+  const turn = extractLastTurnBackward(transcriptPath, 'assistant', stripSystemReminders, true, tailOptions);
+  return turn.model === undefined ? { text: turn.text } : turn;
 }
 
 /**
@@ -391,9 +424,9 @@ export function extractLastAssistantModel(
   // Silent on a missing path: the model is telemetry, and the Stop handler
   // already decided whether the transcript matters for the summary itself.
   if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
-  return scanTranscriptTail(
+  return scanTranscriptBackward(
     transcriptPath,
-    (windowText) => extractLastAssistantModelFromJsonl(windowText),
+    (chunkText) => extractLastAssistantModelFromJsonl(chunkText),
     tailOptions
   );
 }

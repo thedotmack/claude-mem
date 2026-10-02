@@ -8,7 +8,7 @@ import {
   extractLastAssistantModel,
   findLastMessageInJsonl,
   TRANSCRIPT_TAIL_INITIAL_BYTES,
-  TRANSCRIPT_TAIL_MAX_BYTES,
+  TRANSCRIPT_TAIL_MAX_CHUNK_BYTES,
 } from '../../src/shared/transcript-parser.js';
 
 /**
@@ -18,9 +18,9 @@ import {
  * ENOMEM; Node as ERR_STRING_TOO_LONG) and every Stop summary for the session
  * was dropped. The parser now scans backwards in growing windows. These tests
  * force the multi-window path with a tiny `initialBytes` instead of a giant
- * fixture, so a regression to a single whole-file read would still pass the
- * behavioural tests here — the window-walk tests below are the ones that
- * pin the mechanism.
+ * fixture. The walk is bounded in memory by one chunk plus one carried line,
+ * so there is NO cap on how far back the answer may sit - a regression to a
+ * capped window is what the far-back tests below would catch.
  */
 
 function assistantLine(text: string, model = 'claude-opus-4-1'): string {
@@ -69,10 +69,10 @@ describe('transcript-parser tail read', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('exports sane window constants (initial ≤ max, max far below the 2^31-1 string cap)', () => {
+  it('exports sane chunk constants (initial ≤ max chunk, max chunk far below the 2^31-1 string cap)', () => {
     expect(TRANSCRIPT_TAIL_INITIAL_BYTES).toBeGreaterThan(0);
-    expect(TRANSCRIPT_TAIL_INITIAL_BYTES).toBeLessThanOrEqual(TRANSCRIPT_TAIL_MAX_BYTES);
-    expect(TRANSCRIPT_TAIL_MAX_BYTES).toBeLessThan(0x1fffffe8); // V8 cap, the lower of the two
+    expect(TRANSCRIPT_TAIL_INITIAL_BYTES).toBeLessThanOrEqual(TRANSCRIPT_TAIL_MAX_CHUNK_BYTES);
+    expect(TRANSCRIPT_TAIL_MAX_CHUNK_BYTES).toBeLessThan(0x1fffffe8); // V8 cap, the lower of the two
   });
 
   it('finds the last assistant text from the final window when it is small', () => {
@@ -85,7 +85,7 @@ describe('transcript-parser tail read', () => {
   it('grows the window when the last assistant text sits past the first tail window', () => {
     // 3 KB of tool_result filler AFTER the last text turn; first window is 512 B.
     writeFileSync(path, [assistantLine('buried answer', 'claude-sonnet-4-5'), toolResultLine(3000), userLine('tail')].join('\n') + '\n');
-    const opts = { initialBytes: 512, maxBytes: 1024 * 1024 };
+    const opts = { initialBytes: 512, maxChunkBytes: 1024 * 1024 };
     expect(extractLastMessage(path, 'assistant', false, opts)).toBe('buried answer');
     expect(extractLastAssistantTurn(path, false, opts)).toEqual({ text: 'buried answer', model: 'claude-sonnet-4-5' });
     expect(extractLastAssistantModel(path, opts)).toBe('claude-sonnet-4-5');
@@ -97,7 +97,7 @@ describe('transcript-parser tail read', () => {
     // synthesize "[Session ended mid-task. Last tools used: Bash(ls)]" for it —
     // the tail scanner must keep growing instead and surface the real text.
     writeFileSync(path, [assistantLine('real text before the tool run'), toolResultLine(3000), toolOnlyAssistantLine('Bash')].join('\n') + '\n');
-    const opts = { initialBytes: 512, maxBytes: 1024 * 1024 };
+    const opts = { initialBytes: 512, maxChunkBytes: 1024 * 1024 };
 
     // Sanity: the pure parser on just the last line really does synthesize.
     const lastLineOnly = toolOnlyAssistantLine('Bash');
@@ -112,20 +112,37 @@ describe('transcript-parser tail read', () => {
 
   it('still synthesizes a tool description when the WHOLE transcript is tool-only (final window)', () => {
     writeFileSync(path, [userLine('go'), toolOnlyAssistantLine('Read'), toolResultLine(3000), toolOnlyAssistantLine('Bash')].join('\n') + '\n');
-    const opts = { initialBytes: 512, maxBytes: 1024 * 1024 };
+    const opts = { initialBytes: 512, maxChunkBytes: 1024 * 1024 };
     expect(extractLastMessage(path, 'assistant', false, opts)).toBe('[Session ended mid-task. Last tools used: Bash(ls)]');
   });
 
-  it('returns the whole-file answer at the cap even when the cap window is still partial', () => {
-    // Cap is 1 KB; the only assistant text is 5 KB back. The capped window can
-    // never reach it: the scan must give up at the cap (empty string), not loop.
-    writeFileSync(path, [assistantLine('unreachable'), toolResultLine(5000), toolOnlyAssistantLine('Grep')].join('\n') + '\n');
-    const opts = { initialBytes: 256, maxBytes: 1024 };
-    // Final capped window holds only the tool-only turn → synthesis is the
-    // best whole-window answer, same as the old parser would have given on
-    // that slice.
-    expect(extractLastMessage(path, 'assistant', false, opts)).toBe('[Session ended mid-task. Last tools used: Grep(ls)]');
+  it('reaches an answer arbitrarily far back: the chunk size is a memory bound, not a search cap', () => {
+    // Greptile P1 on the first revision: a capped window could not reach an
+    // answer buried under more trailing tool output than the cap, and the hook
+    // posted a tool-only description instead. Here the only text is behind
+    // ~3 MB of filler and the max chunk is 64 KB, so the walk must cross ~50
+    // chunk boundaries - and must NOT return the tool-only synthesis it sees
+    // in the very first chunk.
+    const filler = Array.from({ length: 30 }, () => toolResultLine(100_000));
+    writeFileSync(path, [assistantLine('far back answer', 'claude-haiku-4-5'), ...filler, toolOnlyAssistantLine('Grep')].join('\n') + '\n');
+    const opts = { initialBytes: 4096, maxChunkBytes: 64 * 1024 };
+    expect(extractLastMessage(path, 'assistant', false, opts)).toBe('far back answer');
+    // Model is the NEWEST assistant model (the tool-only turn's), as a whole-file read would report.
+    expect(extractLastAssistantTurn(path, false, opts)).toEqual({ text: 'far back answer', model: 'claude-opus-4-1' });
     expect(extractLastAssistantModel(path, opts)).toBe('claude-opus-4-1');
+    // And with NO later tool-use turn at all (Greptile's third artifact): still found, never empty.
+    writeFileSync(path, [assistantLine('far back answer'), ...filler].join('\n') + '\n');
+    expect(extractLastMessage(path, 'assistant', false, opts)).toBe('far back answer');
+  });
+
+  it('carries a single line that spans many chunks without tearing it', () => {
+    // One 1 MB tool_result line walked with 16 KB chunks: the line is torn
+    // across ~64 chunk boundaries and must be reassembled, and the assistant
+    // text before it must still parse.
+    writeFileSync(path, [assistantLine('before the giant line'), toolResultLine(1_000_000), userLine('tail')].join('\n') + '\n');
+    const opts = { initialBytes: 16 * 1024, maxChunkBytes: 16 * 1024 };
+    expect(extractLastMessage(path, 'assistant', false, opts)).toBe('before the giant line');
+    expect(extractLastMessage(path, 'user', false, opts)).toBe('tail');
   });
 
   it('drops the partial first line of a window instead of parsing a torn JSON line', () => {
@@ -137,13 +154,13 @@ describe('transcript-parser tail read', () => {
     const total = statSync(path).size;
     // Window that cuts the 700-byte filler line in half.
     const initialBytes = total - Buffer.byteLength(lines[0]) - 1 - 350;
-    expect(extractLastMessage(path, 'assistant', false, { initialBytes, maxBytes: 1024 * 1024 })).toBe('final');
+    expect(extractLastMessage(path, 'assistant', false, { initialBytes, maxChunkBytes: 1024 * 1024 })).toBe('final');
   });
 
   it('handles a transcript without a trailing newline and a single-line transcript', () => {
     writeFileSync(path, assistantLine('only line'));
-    expect(extractLastMessage(path, 'assistant', false, { initialBytes: 16, maxBytes: 4096 })).toBe('only line');
-    expect(extractLastAssistantModel(path, { initialBytes: 16, maxBytes: 4096 })).toBe('claude-opus-4-1');
+    expect(extractLastMessage(path, 'assistant', false, { initialBytes: 16, maxChunkBytes: 4096 })).toBe('only line');
+    expect(extractLastAssistantModel(path, { initialBytes: 16, maxChunkBytes: 4096 })).toBe('claude-opus-4-1');
   });
 
   it('returns empty results for a missing or empty transcript without throwing', () => {
@@ -159,9 +176,9 @@ describe('transcript-parser tail read', () => {
 
   it('finds the last USER message through the same window walk', () => {
     writeFileSync(path, [userLine('first ask'), assistantLine('a'), toolResultLine(3000), userLine('final ask')].join('\n') + '\n');
-    expect(extractLastMessage(path, 'user', false, { initialBytes: 64, maxBytes: 1024 * 1024 })).toBe('final ask');
+    expect(extractLastMessage(path, 'user', false, { initialBytes: 64, maxChunkBytes: 1024 * 1024 })).toBe('final ask');
     // And a user text that is only reachable by growing past the filler.
     writeFileSync(path, [userLine('buried ask'), assistantLine('a'), toolResultLine(3000)].join('\n') + '\n');
-    expect(extractLastMessage(path, 'user', false, { initialBytes: 64, maxBytes: 1024 * 1024 })).toBe('buried ask');
+    expect(extractLastMessage(path, 'user', false, { initialBytes: 64, maxChunkBytes: 1024 * 1024 })).toBe('buried ask');
   });
 });
