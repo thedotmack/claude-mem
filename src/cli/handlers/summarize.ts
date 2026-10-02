@@ -161,7 +161,13 @@ export const summarizeHandler: EventHandler = {
     // so fall back to the transcript instead of skipping the summary.
     if (input.lastAssistantMessage?.trim()) {
       lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
-      observedModel = transcriptPath ? extractLastAssistantModel(transcriptPath) : undefined;
+      // The model is telemetry only — a transcript that cannot be read must
+      // never cost the summary Claude Code already handed us.
+      try {
+        observedModel = transcriptPath ? extractLastAssistantModel(transcriptPath) : undefined;
+      } catch (err) {
+        logger.warn('HOOK', `Stop hook: could not read observed model from transcript for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
+      }
     } else {
       if (!transcriptPath) {
         logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);

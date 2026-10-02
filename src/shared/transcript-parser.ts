@@ -1,24 +1,118 @@
-import { readFileSync, existsSync } from 'fs';
+import { closeSync, existsSync, fstatSync, openSync, readSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
 /**
- * Read a transcript file once, trimmed. Returns '' (after a warn) when the
- * path is missing, the file does not exist, or the file is empty.
+ * First tail window. The last 64 KB of a 2 GB Claude Code transcript already
+ * holds ~5 assistant entries; 256 KB covers a long tool-only run-up to the
+ * final text turn in one read.
  */
-function readTranscriptOrWarn(transcriptPath: string): string {
+export const TRANSCRIPT_TAIL_INITIAL_BYTES = 256 * 1024;
+
+/**
+ * Hard ceiling for the backward scan. Kept far below JavaScriptCore's
+ * 2^31-1 and V8's 0x1fffffe8 maximum string lengths: `readFileSync(path,
+ * 'utf-8')` on a transcript past those caps throws ENOMEM (Bun) /
+ * ERR_STRING_TOO_LONG (Node), which is how a 2.16 GB session lost every
+ * Stop-hook summary.
+ */
+export const TRANSCRIPT_TAIL_MAX_BYTES = 256 * 1024 * 1024;
+
+export interface TranscriptTailOptions {
+  /** Bytes read on the first attempt (default TRANSCRIPT_TAIL_INITIAL_BYTES). */
+  initialBytes?: number;
+  /** Largest window the scan will grow to (default TRANSCRIPT_TAIL_MAX_BYTES). */
+  maxBytes?: number;
+}
+
+interface TailWindow {
+  /** Window contents, starting at a line boundary (or at byte 0). */
+  text: string;
+  /** File offset where `text` begins; 0 means the window is the whole file. */
+  startOffset: number;
+  fileSize: number;
+}
+
+/**
+ * Read the last `maxBytes` of the file, aligned to the first complete line.
+ * When the cut lands inside a line, that partial line is dropped — it is read
+ * whole by the next, larger window (every window re-reads from the end of the
+ * file). A window that starts at offset 0 is the whole file, unaligned.
+ */
+function readTranscriptTail(transcriptPath: string, maxBytes: number): TailWindow {
+  const fd = openSync(transcriptPath, 'r');
+  try {
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const buffer = Buffer.alloc(size - start);
+    readSync(fd, buffer, 0, buffer.length, start);
+    if (start === 0) {
+      return { text: buffer.toString('utf-8'), startOffset: 0, fileSize: size };
+    }
+    const firstNewline = buffer.indexOf(0x0a);
+    if (firstNewline === -1) {
+      return { text: '', startOffset: size, fileSize: size };
+    }
+    return {
+      text: buffer.subarray(firstNewline + 1).toString('utf-8'),
+      startOffset: start + firstNewline + 1,
+      fileSize: size,
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Walk backwards through the transcript in growing windows until `probe`
+ * returns a value, the window covers the whole file, or the window reaches
+ * the cap. `probe` receives `isFinalWindow = true` on the last attempt and
+ * must then return whatever a whole-file read would have returned (fallbacks
+ * included) — on earlier windows it should return `undefined` for any result
+ * that a larger window might improve on.
+ *
+ * Returns `undefined` (after a warn) when the path is missing, the file does
+ * not exist, the file is empty, or the probe never produced a value.
+ */
+function scanTranscriptTail<T>(
+  transcriptPath: string,
+  probe: (windowText: string, isFinalWindow: boolean) => T | undefined,
+  options: TranscriptTailOptions = {}
+): T | undefined {
   if (!transcriptPath || !existsSync(transcriptPath)) {
     logger.warn('PARSER', `Transcript path missing or file does not exist: ${transcriptPath}`);
-    return '';
+    return undefined;
   }
 
-  const content = readFileSync(transcriptPath, 'utf-8').trim();
-  if (!content) {
-    logger.warn('PARSER', `Transcript file exists but is empty: ${transcriptPath}`);
-    return '';
-  }
+  const cap = Math.max(1, options.maxBytes ?? TRANSCRIPT_TAIL_MAX_BYTES);
+  let windowBytes = Math.min(cap, Math.max(1, options.initialBytes ?? TRANSCRIPT_TAIL_INITIAL_BYTES));
 
-  return content;
+  for (;;) {
+    const tail = readTranscriptTail(transcriptPath, windowBytes);
+    const isWholeFile = tail.startOffset === 0;
+    const isFinalWindow = isWholeFile || windowBytes >= cap;
+
+    if (isWholeFile && !tail.text.trim()) {
+      logger.warn('PARSER', `Transcript file exists but is empty: ${transcriptPath}`);
+      return undefined;
+    }
+
+    const hit = probe(tail.text, isFinalWindow);
+    if (hit !== undefined) return hit;
+
+    if (isFinalWindow) {
+      if (!isWholeFile) {
+        logger.warn('PARSER', 'Transcript tail scan reached its byte cap without a usable entry', {
+          transcriptPath,
+          fileSize: tail.fileSize,
+          maxBytes: cap,
+        });
+      }
+      return undefined;
+    }
+
+    windowBytes = Math.min(windowBytes * 4, cap);
+  }
 }
 
 /**
@@ -49,28 +143,43 @@ function* parseJsonlLinesBackward(content: string): Generator<any> {
 export function extractLastMessage(
   transcriptPath: string,
   role: 'user' | 'assistant',
-  stripSystemReminders: boolean = false
+  stripSystemReminders: boolean = false,
+  tailOptions?: TranscriptTailOptions
 ): string {
-  const content = readTranscriptOrWarn(transcriptPath);
-  if (!content) return '';
-  return extractLastMessageFromJsonl(content, role, stripSystemReminders);
+  const text = scanTranscriptTail(
+    transcriptPath,
+    (windowText, isFinalWindow) => {
+      const hit = findLastMessageInJsonl(windowText, role, stripSystemReminders);
+      // A synthesized tool description (or nothing at all) from a partial
+      // window is not an answer yet: a larger window may still hold real text.
+      if (hit.kind === 'text' || isFinalWindow) return hit.text;
+      return undefined;
+    },
+    tailOptions
+  );
+  return text ?? '';
 }
 
 /**
- * Read the transcript ONCE and extract both the last assistant text and the
- * model that assistant turn was running. The Stop hook needs both, and a
+ * Read the transcript tail ONCE and extract both the last assistant text and
+ * the model that assistant turn was running. The Stop hook needs both, and a
  * long transcript should not be read from disk twice for it.
  */
 export function extractLastAssistantTurn(
   transcriptPath: string,
-  stripSystemReminders: boolean = false
+  stripSystemReminders: boolean = false,
+  tailOptions?: TranscriptTailOptions
 ): { text: string; model?: string } {
-  const content = readTranscriptOrWarn(transcriptPath);
-  if (!content) return { text: '' };
-  return {
-    text: extractLastMessageFromJsonl(content, 'assistant', stripSystemReminders),
-    model: extractLastAssistantModelFromJsonl(content),
-  };
+  const turn = scanTranscriptTail(
+    transcriptPath,
+    (windowText, isFinalWindow) => {
+      const hit = findLastMessageInJsonl(windowText, 'assistant', stripSystemReminders);
+      if (hit.kind !== 'text' && !isFinalWindow) return undefined;
+      return { text: hit.text, model: extractLastAssistantModelFromJsonl(windowText) };
+    },
+    tailOptions
+  );
+  return turn ?? { text: '' };
 }
 
 /**
@@ -178,8 +287,32 @@ export function extractLastMessageFromJsonl(
   role: 'user' | 'assistant',
   stripSystemReminders: boolean
 ): string {
+  return findLastMessageInJsonl(content, role, stripSystemReminders).text;
+}
+
+/**
+ * How `findLastMessageInJsonl` arrived at its text:
+ * - `text`:        a matching turn with real (non-blank) text content
+ * - `synthesized`: every matching turn was tool-only; `text` names the tools
+ * - `none`:        no matching turn, or only blank-text turns; `text` is ''/blank
+ *
+ * The tail scanner needs the distinction: a `synthesized`/`none` result from a
+ * partial window must not be returned while a larger window could still hold
+ * real text.
+ */
+export interface LastMessageHit {
+  kind: 'text' | 'synthesized' | 'none';
+  text: string;
+}
+
+export function findLastMessageInJsonl(
+  content: string,
+  role: 'user' | 'assistant',
+  stripSystemReminders: boolean
+): LastMessageHit {
   let foundMatchingRole = false;
   let lastEmptyText: string | null = null;
+  let lastEmptyKind: 'synthesized' | 'none' = 'none';
 
   for (const line of parseJsonlLinesBackward(content)) {
     const kimiRole = kimiWireRole(line);
@@ -216,7 +349,7 @@ export function extractLastMessageFromJsonl(
     }
 
     if (text && text.trim()) {
-      return text;
+      return { kind: 'text', text };
     }
     // Remember the first (most recent) empty-text turn as a fallback so the
     // caller can still distinguish "no matching role" from "matching role but
@@ -227,15 +360,18 @@ export function extractLastMessageFromJsonl(
       // so the summarizer has something rather than silently skipping the session.
       if (!lastEmptyText.trim() && Array.isArray(msgContent)) {
         const toolSummary = synthesizeToolDescription(msgContent);
-        if (toolSummary) lastEmptyText = toolSummary;
+        if (toolSummary) {
+          lastEmptyText = toolSummary;
+          lastEmptyKind = 'synthesized';
+        }
       }
     }
   }
 
   if (!foundMatchingRole) {
-    return '';
+    return { kind: 'none', text: '' };
   }
-  return lastEmptyText ?? '';
+  return { kind: lastEmptyKind, text: lastEmptyText ?? '' };
 }
 
 /**
@@ -248,11 +384,18 @@ export function extractLastMessageFromJsonl(
  * This is the observed-session model (what the user's IDE is running), NOT the
  * observer model claude-mem uses to write observations.
  */
-export function extractLastAssistantModel(transcriptPath: string): string | undefined {
+export function extractLastAssistantModel(
+  transcriptPath: string,
+  tailOptions?: TranscriptTailOptions
+): string | undefined {
+  // Silent on a missing path: the model is telemetry, and the Stop handler
+  // already decided whether the transcript matters for the summary itself.
   if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
-  const content = readFileSync(transcriptPath, 'utf-8').trim();
-  if (!content) return undefined;
-  return extractLastAssistantModelFromJsonl(content);
+  return scanTranscriptTail(
+    transcriptPath,
+    (windowText) => extractLastAssistantModelFromJsonl(windowText),
+    tailOptions
+  );
 }
 
 export function extractLastAssistantModelFromJsonl(content: string): string | undefined {
