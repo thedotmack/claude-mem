@@ -24,7 +24,8 @@ describe('viewer theme tokens', () => {
   });
 
   it('defines every source badge token in both themes', () => {
-    const badgeTokens = new Set([...viewerTemplate.matchAll(/var\((--color-source-[\w-]+)\)/g)].map(match => match[1]));
+    // Any var() read of the token counts: with or without spaces or a fallback value.
+    const badgeTokens = new Set([...viewerTemplate.matchAll(/var\(\s*(--color-source-[\w-]+)/g)].map(match => match[1]));
     expect(badgeTokens.size).toBeGreaterThan(0);
     const missing = [...badgeTokens].filter(token => !(token in lightTheme) || !(token in darkTheme));
     expect(missing).toEqual([]);
