@@ -495,6 +495,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
       fieldMaxChars,
       resolveFieldOptimizeTimeoutMs,
+      session.observerContextWindowTokens,
     );
 
     const obsPrompt = buildObservationPromptParts({
