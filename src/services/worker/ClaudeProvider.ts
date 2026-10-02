@@ -1013,6 +1013,7 @@ export class ClaudeProvider {
               { sessionDbId: session.sessionDbId, toolName: message.tool_name },
               fieldMaxChars,
               resolveFieldOptimizeTimeoutMs,
+              session.observerContextWindowTokens,
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 
