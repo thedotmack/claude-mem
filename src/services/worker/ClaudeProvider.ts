@@ -42,7 +42,7 @@ import {
   windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
 import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
-import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
 import { ObserverResponsePacer } from './session/response-pacer.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
@@ -957,20 +957,34 @@ export class ClaudeProvider {
     // This SDK process never resumes, so the proxy history starts over with it.
     openObserverGeneration(session, initPrompt);
 
-    session.lastPromptSentAt = Date.now();
-    session.lastGeneratorSource = 'init';
-    let answeredBeforeSend = pacer.mark();
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content: initPrompt
-      },
-      session_id: session.contentSessionId,
-      parent_tool_use_id: null,
-      isSynthetic: true
+    // By default the init prompt is not a turn of its own: it goes out in the
+    // same message as the first observation or summary prompt.
+    const observeBarePrompt = observesBarePrompts();
+    let pendingInitPrompt: string | null = observeBarePrompt ? null : initPrompt;
+    const withPendingInitPrompt = (prompt: string): string => {
+      if (pendingInitPrompt === null) return prompt;
+      const combined = `${pendingInitPrompt}\n\n${prompt}`;
+      pendingInitPrompt = null;
+      return combined;
     };
-    if (!(await this.awaitObserverAnswer(session, pacer, answeredBeforeSend))) return;
+
+    let answeredBeforeSend: number;
+    if (observeBarePrompt) {
+      session.lastPromptSentAt = Date.now();
+      session.lastGeneratorSource = 'init';
+      answeredBeforeSend = pacer.mark();
+      yield {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: initPrompt
+        },
+        session_id: session.contentSessionId,
+        parent_tool_use_id: null,
+        isSynthetic: true
+      };
+      if (!(await this.awaitObserverAnswer(session, pacer, answeredBeforeSend))) return;
+    }
 
     // Each pass waits for the previous prompt's answer at the bottom of the loop,
     // BEFORE the iterator is pulled again, so nothing is claimed while a prompt
@@ -1038,7 +1052,7 @@ export class ClaudeProvider {
           type: 'user',
           message: {
             role: 'user',
-            content: obsPrompt
+            content: withPendingInitPrompt(obsPrompt)
           },
           session_id: session.contentSessionId,
           parent_tool_use_id: null,
@@ -1064,7 +1078,7 @@ export class ClaudeProvider {
           type: 'user',
           message: {
             role: 'user',
-            content: summaryPrompt
+            content: withPendingInitPrompt(summaryPrompt)
           },
           session_id: session.contentSessionId,
           parent_tool_use_id: null,

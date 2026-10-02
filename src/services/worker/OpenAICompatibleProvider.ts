@@ -26,7 +26,7 @@ import {
   windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
 import { resolveContextWindowTokens, observationFieldMaxChars, resolveObserverMaxOutputTokens } from './context-window.js';
-import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
@@ -363,23 +363,28 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // previous attempt's turns into the new generation.
     openObserverGeneration(session, initPrompt);
 
-    try {
-      session.lastPromptSentAt = Date.now();
-      session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
-      this.handleInitResponse(initResponse, session, model);
-    } catch (error: unknown) {
-      if (await this.recycleOnContextOverflow(error, session, worker)) return;
-      // Classified errors are logged once, at SessionRoutes' `Observer failed`
-      // line; here they're debug-level so one failure isn't five error lines.
-      if (isClassified(error)) {
-        logger.debug('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model, kind: error.kind }, error);
-      } else if (error instanceof Error) {
-        logger.error('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model }, error);
-      } else {
-        logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
+    // By default the init prompt is not a request of its own: it stays the
+    // generation's opening user turn, and the first observation or summary
+    // request carries it (consecutive user turns merge on the wire).
+    if (observesBarePrompts()) {
+      try {
+        session.lastPromptSentAt = Date.now();
+        session.lastGeneratorSource = 'init';
+        const initResponse = await this.query(session.conversationHistory, config);
+        this.handleInitResponse(initResponse, session, model);
+      } catch (error: unknown) {
+        if (await this.recycleOnContextOverflow(error, session, worker)) return;
+        // Classified errors are logged once, at SessionRoutes' `Observer failed`
+        // line; here they're debug-level so one failure isn't five error lines.
+        if (isClassified(error)) {
+          logger.debug('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model, kind: error.kind }, error);
+        } else if (error instanceof Error) {
+          logger.error('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model }, error);
+        } else {
+          logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
+        }
+        return this.handleSessionError(error, session, worker);
       }
-      return this.handleSessionError(error, session, worker);
     }
 
     try {
