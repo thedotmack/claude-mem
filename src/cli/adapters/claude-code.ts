@@ -9,6 +9,16 @@ const pickStringField = (v: unknown): string | undefined =>
   typeof v === 'string' ? v : undefined;
 
 /**
+ * A failed tool call arrives on PostToolUseFailure, which carries `error` and
+ * `is_interrupt` where PostToolUse carries `tool_response`. Recording them as
+ * the response puts the failure, and whether the user stopped the call, in both
+ * the stored row and the observer's <outcome>. The error text alone does not say
+ * the call was interrupted.
+ */
+const failedToolResponse = (r: Record<string, unknown>): { error: unknown; is_interrupt: boolean } | undefined =>
+  r.error === undefined ? undefined : { error: r.error, is_interrupt: r.is_interrupt === true };
+
+/**
  * Read Qwen Code's `submitted_prompt` into the three states the handler needs.
  *
  * The distinction that matters is presence, not truthiness: an absent field
@@ -44,7 +54,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       submittedPrompt: normalizeSubmittedPrompt(r),
       toolName: r.tool_name,
       toolInput: r.tool_input,
-      toolResponse: r.tool_response,
+      toolResponse: r.tool_response ?? failedToolResponse(r),
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
       // stop_hook_active is deliberately not mapped. Claude Code sets it once a
