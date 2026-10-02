@@ -612,7 +612,8 @@ export class ClaudeProvider {
             }, truncatedResponse);
           }
 
-          if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
+          // Only the CLI's own status line as the whole reply; an observation may quote the phrase (#4253).
+          if (/^Invalid API key\b\s*(?:·[^\n]*)?$/.test(textContent.trim())) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
