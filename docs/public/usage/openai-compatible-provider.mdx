@@ -94,6 +94,7 @@ endpoint or model you pinned yourself.
 | `nvidia-nim` | `https://integrate.api.nvidia.com/v1` | yes |
 | `orcarouter` | `https://api.orcarouter.ai/v1` | yes |
 | `api-route` | `https://global.api-route.com/v1` | yes |
+| `opper` | `https://api.opper.ai/v3/compat` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -235,6 +236,25 @@ Alternatively, store the key as `OPENAI_COMPAT_API_KEY` in
 `~/.claude-mem/.env`. Restart the worker after changing the configuration.
 Without a model or key, this provider is unconfigured and dispatch falls
 through to Claude.
+
+## Opper
+
+[Opper](https://opper.ai) is an EU-hosted gateway with one OpenAI-compatible
+API and one key for 700+ models. Model ids are pooled names such as
+`gpt-5.4-mini` (the preset's default) or `claude-haiku-4-5`, and Opper picks
+the route per request. A `provider/model` id such as `aws/claude-haiku-4-5-eu`
+pins one provider and region. The catalogue is public at
+`https://api.opper.ai/v3/models`, and keys come from
+[platform.opper.ai](https://platform.opper.ai).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "opper",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Opper key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-haiku-4-5"
+}
+```
 
 ## Troubleshooting
 
