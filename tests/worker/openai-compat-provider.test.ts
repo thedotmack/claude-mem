@@ -671,6 +671,36 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     expect(second.max_completion_tokens).toBe(4096);
     expect(result.content).toBe('ok');
   });
+
+  const compressField = (signal = new AbortController().signal) =>
+    (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+      compressField(t: string, b: number, c: unknown, s: AbortSignal): Promise<{ text: string; truncated: boolean } | null>;
+    }).compressField('a large payload', 1000, CONFIG, signal);
+
+  it('reports a condense reply cut at max_tokens as truncated', async () => {
+    spies.push(spyOn(globalThis, 'fetch').mockResolvedValue(reply({
+      choices: [{ message: { content: 'the first half of a summ' }, finish_reason: 'length' }],
+    })));
+    spies.push(spyOn(logger, 'warn').mockImplementation(() => {}));
+
+    expect(await compressField()).toEqual({ text: 'the first half of a summ', truncated: true });
+  });
+
+  it('reports a condense reply that stopped on its own as complete', async () => {
+    spies.push(spyOn(globalThis, 'fetch').mockResolvedValue(reply({
+      choices: [{ message: { content: 'a whole summary' }, finish_reason: 'stop' }],
+    })));
+
+    expect(await compressField()).toEqual({ text: 'a whole summary', truncated: false });
+  });
+
+  it('bounds the condense budget by CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS', () => {
+    settingsOverrides.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS = '3200';
+    const provider = new OpenAICompatProvider({} as never, {} as never) as unknown as {
+      fieldCompressionMaxOutputTokens(): number | undefined;
+    };
+    expect(provider.fieldCompressionMaxOutputTokens()).toBe(3200);
+  });
 });
 
 /** #3263's lesson, applied here: a 200 envelope carries the status that matters. */

@@ -45,7 +45,7 @@ import { resolveContextWindowTokens, observationFieldMaxChars } from './context-
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
 import { ObserverResponsePacer } from './session/response-pacer.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
-import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
+import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
@@ -877,8 +877,9 @@ export class ClaudeProvider {
     modelId: string,
     claudePath: string,
     signal: AbortSignal,
-  ): Promise<string | null> {
-    return this.runStandaloneObserverPrompt(
+  ): Promise<CompressedField | null> {
+    // The CLI reports no finish reason, so a reply it returns counts as whole.
+    const condensed = await this.runStandaloneObserverPrompt(
       buildFieldCompressionPrompt(text, budgetChars),
       {
         sessionDbId: session.sessionDbId,
@@ -889,6 +890,7 @@ export class ClaudeProvider {
       modelId,
       claudePath,
     );
+    return condensed ? { text: condensed, truncated: false } : null;
   }
 
   /** Format a stored summary through the same hardened Claude SDK path as summaries. */
