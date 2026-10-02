@@ -1,3 +1,8 @@
+import { existsSync, readFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { gzipSync } from 'zlib';
+
 /**
  * hook-shell-template.ts — Rule A: host-managed defensive shell-template
  * generator (single source of truth).
@@ -42,6 +47,12 @@ export interface ShellTemplateOptions {
   extraEnv?: Record<string, string>;
   /** Optional trailing JSON echoed after the command (e.g. SessionStart continue marker). */
   trailingJson?: object;
+  /**
+   * Raw existence test substituted for the requireFile check. The Claude
+   * dispatch launcher uses this so `$1 = version-check` accepts
+   * version-check.js and every other event accepts the worker pair.
+   */
+  existsClause?: string;
   /** stderr message when no candidate root resolves. */
   notFoundMessage: string;
   /** Runtime hooks that observe memory should degrade to no-memory, not block the host prompt. */
@@ -86,6 +97,7 @@ function pathPrelude(host: ShellTemplateHost): string {
 }
 
 function fileExistsClause(options: ShellTemplateOptions): string {
+  if (options.existsClause) return options.existsClause;
   const primary = `[ -f "$_Q/scripts/${options.requireFile}" ]`;
   if (options.requireFileSecondary) {
     return `${primary} && [ -f "$_Q/scripts/${options.requireFileSecondary}" ]`;
@@ -360,4 +372,125 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push(command);
 
   return parts.join(' ');
+}
+
+/**
+ * POSIX body of plugin/scripts/cmem-build-hook.cmd.
+ *
+ * hooks.json does not launch this file. Both hosts run
+ * buildClaudeHookInvocation(), which evals cmem-build-hook.cjs. The .cmd
+ * stays so a direct launch still has this body: cmd.exe runs the Node half,
+ * and bash (including macOS ENOEXEC on a mode-100755 file) runs this half.
+ * The NVM/Homebrew PATH prelude here is the byte source for #3190.
+ *
+ * `$1 = version-check` stays fail-loud. Every other argument list is the
+ * worker invocation (`start`, or `hook claude-code <event>`) and fails open.
+ */
+const CLAUDE_DISPATCH_EXISTS =
+  '{ if [ "$1" = "version-check" ]; then [ -f "$_Q/scripts/version-check.js" ]; ' +
+  'else [ -f "$_Q/scripts/bun-runner.js" ] && [ -f "$_Q/scripts/worker-service.cjs" ]; fi; }';
+
+export function buildClaudeDispatchShell(): string {
+  const options: ShellTemplateOptions = {
+    host: 'claude-code',
+    requireFile: 'bun-runner.js',
+    requireFileSecondary: 'worker-service.cjs',
+    existsClause: CLAUDE_DISPATCH_EXISTS,
+    notFoundMessage: 'claude-mem: plugin scripts not found',
+  };
+  const parts = [
+    pathPrelude('claude-code'),
+    '_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";',
+    '_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";',
+    candidateBlock(options),
+    '[ -n "$_P" ] || { echo "claude-mem: plugin scripts not found" >&2; if [ "$1" = "version-check" ]; then exit 1; fi; exit 0; };',
+    CYGPATH_CLAUSE,
+    'if [ "$1" = "version-check" ]; then node "$_P/scripts/version-check.js"; exit $?; fi;',
+    '{ node "$_P/scripts/bun-runner.js" "$_P/scripts/worker-service.cjs" "$@"; } || { _S=$?; echo "claude-mem: hook command failed (exit $_S)" >&2; exit 0; }',
+  ];
+  return parts.join(' ');
+}
+
+// node -e script. Char codes spell zlib and base64url so the script has no
+// quotes and no `$`. process.argv[1] is the gzip payload; process.argv[2] is
+// the first hook arg, matching cmem-build-hook.cjs. The payload is embedded
+// twice (bash -c and the PowerShell fallback), so it stays gzip'd to remain
+// under the Windows command-line limit.
+const CLAUDE_HOOK_NODE_EVAL =
+  'eval(require(String.fromCharCode(122,108,105,98)).gunzipSync(Buffer.from(process.argv[1],String.fromCharCode(98,97,115,101,54,52,117,114,108))).toString())';
+
+function claudeHookLauncherSource(): Buffer {
+  const candidates: string[] = [
+    path.join(process.cwd(), 'plugin/scripts/cmem-build-hook.cjs'),
+  ];
+  // bun tests import this file by path. The esbuild bundle loaded from a
+  // data: URL has no file path; build-hooks.js runs from the repo root.
+  if (import.meta.url.startsWith('file:')) {
+    candidates.unshift(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../plugin/scripts/cmem-build-hook.cjs'),
+    );
+  }
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return readFileSync(candidate);
+  }
+  throw new Error(
+    'plugin/scripts/cmem-build-hook.cjs not found for buildClaudeHookInvocation (cwd ' + process.cwd() + ')',
+  );
+}
+
+/**
+ * Hook `command` for Claude Code (bash) and Grok Build (Windows PowerShell).
+ *
+ * One string, because Grok ignores `shell` and `commandWindows` and parses
+ * `command` itself. A leading `&` is a bash syntax error, and a quoted
+ * `${CLAUDE_PLUGIN_ROOT}/...` path is not invoked by PowerShell 5.1, so the
+ * command does not launch a file. It evals cmem-build-hook.cjs, which reads
+ * CLAUDE_PLUGIN_ROOT / PLUGIN_ROOT at runtime and then the version-sorted
+ * cache and the marketplace install (#1215, #1533).
+ *
+ * Bash defines `exec` as `builtin exec` and replaces itself, so the PATH
+ * prelude (#3190) runs once and the trailing `node` does not. PowerShell
+ * has no `builtin`; `command_not_found_handle` plus SilentlyContinue swallows
+ * that, and the same `node -e` runs. The prelude sits in single quotes with
+ * the sed expression in double quotes: PowerShell rejects the sort commas
+ * if it can see them, and the inner bash script cannot contain `'`.
+ */
+export function buildClaudeHookInvocation(args: string): string {
+  if (args.includes("'") || args.includes('"')) {
+    throw new Error('buildClaudeHookInvocation: args must not contain quotes');
+  }
+  const payload = gzipSync(claudeHookLauncherSource()).toString('base64url');
+  const prelude = CLAUDE_CODE_HOOK_PATH_PRELUDE
+    .replace("sed 's/^v//'", 'sed "s/^v//"')
+    .replace(/;\s*$/, '');
+  const bashScript = `${prelude}; exec node -e "${CLAUDE_HOOK_NODE_EVAL}" ${payload} ${args}`;
+  if (bashScript.includes("'")) {
+    throw new Error('buildClaudeHookInvocation: bash script contains a single quote');
+  }
+  return [
+    'function command_not_found_handle { :; }',
+    "$null=$ErrorActionPreference='SilentlyContinue'",
+    'function exec { builtin exec "$@"; }',
+    `exec bash -c '${bashScript}'`,
+    `node -e '${CLAUDE_HOOK_NODE_EVAL}' ${payload} ${args}`,
+  ].join('; ');
+}
+
+export function buildClaudePolyglotCmd(): string {
+  return [
+    `:; ${buildClaudeDispatchShell()}; exit $?`,
+    '@echo off',
+    'setlocal EnableExtensions',
+    'where bash >nul 2>&1',
+    'if errorlevel 1 goto node',
+    'bash "%~f0" %*',
+    'exit /b %ERRORLEVEL%',
+    ':node',
+    'node "%~dp0cmem-build-hook.cjs" %*',
+    'set "EC=%ERRORLEVEL%"',
+    'if "%~1"=="version-check" exit /b %EC%',
+    'if not "%EC%"=="0" exit /b 0',
+    'exit /b 0',
+    '',
+  ].join('\n');
 }

@@ -42,10 +42,13 @@ jobs:
       # scripts that replaced rsync and tail: mirror pattern matching, --delete
       # protection and -a metadata reconciliation against real NTFS paths, and
       # the bounded log tail under a constrained heap.
+      # plugin-distribution.test.ts skips its Windows profile fallback cases on
+      # Ubuntu (os.homedir() follows HOME there). This runner is where
+      # os.homedir() is USERPROFILE and ignores HOME.
       - shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts
+          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts tests/infrastructure/plugin-distribution.test.ts
 
       # The step that used to be impossible on Windows: sync-marketplace shelled
       # out to rsync. Runs the real script against a scratch USERPROFILE (Node's

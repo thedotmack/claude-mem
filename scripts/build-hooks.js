@@ -103,14 +103,11 @@ const TRANSCRIPT_WATCHER = {
 // CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS allows up to 14 s) plus hook startup (#3434).
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
 
-function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
+function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildClaudeHookInvocation) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
-  const claudeHook = (tail, extra = {}) => buildShellCommand({
-    host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', failOpen: true, ...extra,
-  });
+  const claudeHook = (tail) => buildClaudeHookInvocation(Array.isArray(tail) ? tail.join(' ') : tail);
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
@@ -125,11 +122,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     'plugin/hooks/hooks.json': {
       kind: 'hooks',
       commands: {
-        'Setup.0.0': buildShellCommand({
-          host: 'claude-code-setup', requireFile: 'version-check.js',
-          trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
-          notFoundMessage: 'claude-mem: version-check.js not found',
-        }),
+        'Setup.0.0': claudeHook('version-check'),
         // `start` already emits its own single, valid status JSON via
         // buildStatusOutput ({"continue":true,"status":"ready","suppressOutput":true}).
         // Appending a trailingJson echo would print a SECOND JSON object on
@@ -196,14 +189,28 @@ async function verifyShellTemplateCanonical() {
   });
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
-  const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
+  const { buildShellCommand, buildCodexWindowsCommand, buildClaudeHookInvocation, buildClaudePolyglotCmd } = await import(dataUrl);
 
-  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
+  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildClaudeHookInvocation);
 
   // The regeneration mode the mismatch errors point at: after an intentional
   // generator change, rewrite the committed launcher strings from the same
   // manifest the verifier checks, so the two can never drift.
   const writeMode = process.argv.includes('--write-shell-templates');
+
+  const cmdPath = 'plugin/scripts/cmem-build-hook.cmd';
+  const expectedCmd = buildClaudePolyglotCmd();
+  const actualCmd = fs.existsSync(cmdPath) ? fs.readFileSync(cmdPath, 'utf8') : '';
+  if (actualCmd !== expectedCmd) {
+    if (!writeMode) {
+      throw new Error(
+        'plugin/scripts/cmem-build-hook.cmd does not match buildClaudePolyglotCmd(). ' +
+        'Regenerate via `node scripts/build-hooks.js --write-shell-templates` after an intentional generator change.'
+      );
+    }
+    fs.writeFileSync(cmdPath, expectedCmd);
+    console.log('  ✏️  Regenerated plugin/scripts/cmem-build-hook.cmd');
+  }
 
   for (const [filePath, spec] of Object.entries(manifest)) {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
