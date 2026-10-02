@@ -4,7 +4,8 @@ import { ingestObservation, setIngestContext } from '../../src/services/worker/h
 import { createServer } from 'node:http';
 
 const input = { file_path: '/fixture/huge.ts', old_string: 'old()', new_string: 'new()', replace_all: false };
-const prefix = 'x'.repeat(100_000);
+// Over the field cap, under the fallback window's condense ceiling.
+const prefix = 'x '.repeat(50_000);
 const output = { filePath: input.file_path, oldString: input.old_string, newString: input.new_string,
   originalFile: null, userModified: false,
   structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1,
