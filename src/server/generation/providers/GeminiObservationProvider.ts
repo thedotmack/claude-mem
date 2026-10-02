@@ -7,6 +7,8 @@ import {
   parseRetryAfterMs,
 } from './shared/error-classification.js';
 import { buildServerGenerationPrompt } from './shared/prompt-builder.js';
+import { readGeminiAnswerText, type GeminiPart } from '../../../shared/gemini-answer-text.js';
+import { geminiRegionRefusalMessage, isGeminiRegionRefusal, parseGeminiErrorDetails } from '../../../shared/gemini-error-details.js';
 import type {
   ServerGenerationContext,
   ServerGenerationProvider,
@@ -15,7 +17,7 @@ import type {
 
 // v1beta is required: current Gemini 3.x models and the `-latest` aliases are
 // only served under v1beta, and the retired v1-only 2.x models 404 for new keys.
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+export const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 // `gemini-flash-latest` is a Google-maintained alias for the current GA Flash
 // model, so it stays valid for new API keys instead of pinning a retired ID.
 const DEFAULT_MODEL = 'gemini-flash-latest';
@@ -29,7 +31,7 @@ export interface GeminiObservationProviderOptions {
 
 interface GeminiResponse {
   candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
+    content?: { parts?: GeminiPart[] };
   }>;
   usageMetadata?: { totalTokenCount?: number };
   error?: { code?: number; status?: string; message?: string };
@@ -111,12 +113,43 @@ export function classifyGeminiServerError(input: ClassifyGeminiServerErrorInput)
   const status = input.status;
   const bodyText = input.bodyText ?? '';
 
+  // Outside the regions Google serves, the worker's refusal too
+  // (gemini-error-details.ts): not a malformed request, and no retry helps.
+  if (status !== undefined && isGeminiRegionRefusal(status, bodyText)) {
+    return new ServerClassifiedProviderError(geminiRegionRefusalMessage(status), {
+      kind: 'auth_invalid',
+      cause: new Error(`Gemini HTTP error (status ${status})`),
+    });
+  }
+
   if (status === 400 && !isQuotaBody(bodyText)) {
     const category = categorizeGeminiBadRequest(bodyText);
     return new ServerClassifiedProviderError(`Gemini bad request: ${category}`, {
       kind: 'unrecoverable',
       cause: new Error('Gemini HTTP error (status 400)'),
     });
+  }
+
+  // A 429 is decided BEFORE the shared body markers, because every Gemini 429
+  // carries `RESOURCE_EXHAUSTED` whatever it is actually refusing. Letting the
+  // marker decide made a per-minute throttle indistinguishable from a spent
+  // allowance here, and dropped the retry hint on the floor with it.
+  // The window and the retry hint come from the body's structured details,
+  // read by the same parser as the worker (src/shared/gemini-error-details.ts).
+  if (status === 429) {
+    const details = parseGeminiErrorDetails(bodyText);
+    const retryAfterMs =
+      (input.headers ? parseRetryAfterMs(input.headers.get('retry-after')) : undefined)
+      ?? details.retryDelayMs;
+    const exhausted = details.periodQuotaExhausted;
+    return new ServerClassifiedProviderError(
+      exhausted ? 'Gemini quota exhausted (status 429)' : 'Gemini rate limit (429)',
+      {
+        kind: exhausted ? 'quota_exhausted' : 'rate_limit',
+        cause: new Error('Gemini HTTP error (status 429)'),
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      },
+    );
   }
 
   return classifyHttpProviderError({
@@ -149,7 +182,17 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
     context: ServerGenerationContext,
     signal?: AbortSignal,
   ): Promise<ServerGenerationResult> {
-    const { prompt, skippedAll } = buildServerGenerationPrompt(context);
+    const { prompt, skippedAll, noEvents } = buildServerGenerationPrompt(context);
+    // Nothing was loaded, so there is nothing to summarise and no question to
+    // ask a model. Answering it anyway bought `<skip_summary />` and recorded
+    // the result as an ordinary completion; the reason below names it instead.
+    if (noEvents) {
+      return {
+        rawText: '<skip_summary reason="no_events_loaded" />',
+        providerLabel: this.providerLabel,
+        modelId: this.model,
+      };
+    }
     if (skippedAll) {
       return {
         rawText: '<skip_summary reason="all_events_private" />',
@@ -200,7 +243,7 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+    const rawText = readGeminiAnswerText(data.candidates?.[0]?.content?.parts).trim();
     if (!rawText) {
       logger.warn('SDK', 'Gemini returned empty content', { provider: 'gemini', model: this.model });
     }

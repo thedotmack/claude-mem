@@ -2,17 +2,21 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { existsSync, renameSync } from 'fs';
 import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
+import { MIN_CONTEXT_WINDOW_TOKENS, OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS } from '../../context-window.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
+import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
+import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
+import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -26,7 +30,14 @@ const updateSettingsSchema = z.object({}).passthrough();
 // prefs) and corrupts them on every GET (#3680 / #3861).
 const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_GEMINI_API_KEY',
+  // The rotation pools hold credentials exactly like the singular keys above.
+  // Leaving them out would mask the primary key and hand back every rotation
+  // key in cleartext from an unauthenticated GET.
+  'CLAUDE_MEM_GEMINI_API_KEYS',
   'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_API_KEYS',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
+  'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS',
   'CLAUDE_MEM_CHROMA_API_KEY',
   'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
   'CLAUDE_MEM_TELEGRAM_BOT_TOKEN',
@@ -36,20 +47,45 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_TV_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
+  // Brainbeat webhook: the shared secret, and the URL (it can carry userinfo
+  // or query tokens). Both are file/env only — never on the POST whitelist.
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
+  'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
 ]);
 
-function maskSecretValue(value: unknown): unknown {
-  if (typeof value !== 'string' || value.length === 0) return value;
+function maskSecretString(value: string): string {
   if (value.length <= 4) return '*'.repeat(value.length);
   return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`;
+}
+
+/**
+ * A secret as GET may show it, in every shape settings.json can hold: a string
+ * (a single key, or a comma/newline list, masked as a whole), an array (a key
+ * pool written as JSON: each entry masked), or anything else (hidden whole).
+ * Empty values stay as they are, so the viewer can tell "unset" apart.
+ */
+function maskSecretValue(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') return value;
+  if (typeof value === 'string') return maskSecretString(value);
+  if (Array.isArray(value)) return value.map(entry => (typeof entry === 'string' ? maskSecretString(entry) : '****'));
+  return '****';
 }
 
 // Viewer save posts the GET body back unchanged. Treat a secret as untouched
 // only when the submitted value equals the mask of the currently stored
 // secret — not "any string starting with *", which would silently drop a
-// legitimate replacement key that happens to begin with '*'.
+// legitimate replacement key that happens to begin with '*'. Arrays compare
+// entry by entry, so a pool written as JSON survives a save too.
 function isUnchangedMaskedSecret(incoming: unknown, stored: unknown): boolean {
-  return typeof incoming === 'string' && incoming === maskSecretValue(stored);
+  if (incoming === undefined || incoming === null || incoming === '') return false;
+  return JSON.stringify(incoming) === JSON.stringify(maskSecretValue(stored));
+}
+
+/** The posted settings whose value differs from the one settings.json holds. */
+function settingsChangedBy(posted: Record<string, unknown>, onDisk: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(posted).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(onDisk[key])),
+  );
 }
 
 function redactSecretSettings<T extends object>(settings: T): T {
@@ -62,10 +98,26 @@ function redactSecretSettings<T extends object>(settings: T): T {
   return redacted as T;
 }
 
+/**
+ * The posted settings minus those that only echo an environment override: the
+ * variable is set, and the viewer sent back what GET showed for it (masked,
+ * for a secret). The environment is that value's only source, so a save
+ * neither checks nor writes it. Written, it would outlive the variable, and a
+ * masked secret would replace the stored key.
+ */
+function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath: string): Record<string, unknown> {
+  const shown = redactSecretSettings(SettingsDefaultsManager.loadFromFile(settingsPath)) as unknown as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(posted).filter(([key, value]) =>
+      process.env[key] === undefined || JSON.stringify(value) !== JSON.stringify(shown[key])),
+  );
+}
+
 // Spawn-binary paths: file/env only. Even if a key is accidentally re-added to
 // the HTTP write list below, this set keeps it from being persisted via POST.
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
+  'CLAUDE_MEM_CODEX_PATH',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -130,7 +182,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
+    ensureSettingsDocument(settingsPath, SettingsDefaultsManager.getAllDefaults());
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(redactSecretSettings(settings));
   });
@@ -151,32 +203,24 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
-    const validation = this.validateSettings(req.body);
+    const settingsPath = paths.settings();
+
+    // The viewer posts every setting back, edited or not, as GET showed it:
+    // with environment overrides applied. Those echoes are dropped first. The
+    // rest is judged against settings.json itself, so only what this save
+    // changes is checked: a value hand-edited into the file that the worker
+    // already ignores (it falls back to the default) would otherwise fail
+    // every later save of an unrelated field.
+    const posted = withoutEnvironmentEchoes(req.body, settingsPath);
+    const validation = this.validateSettings(
+      settingsChangedBy(posted, SettingsDefaultsManager.loadFromFile(settingsPath, false) as unknown as Record<string, unknown>),
+    );
     if (!validation.valid) {
       res.status(400).json({
         success: false,
         error: validation.error
       });
       return;
-    }
-
-    const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
-    let settings: any = {};
-
-    if (existsSync(settingsPath)) {
-      const settingsData = readFileSync(settingsPath, 'utf-8');
-      try {
-        settings = parseJsonWithBom(settingsData);
-      } catch (parseError) {
-        const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
-        logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
-        res.status(500).json({
-          success: false,
-          error: `Settings file is corrupted. Delete ${settingsPath} to reset.`
-        });
-        return;
-      }
     }
 
     // Write whitelist. POST /api/settings has no authentication — the worker
@@ -186,8 +230,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
     // Telegram / CloudSync / Redis tokens remain file/env only.
     //
-    // Executable spawn paths (CLAUDE_CODE_PATH) are also file/env only: that
-    // value is the binary passed to posix_spawn, so it must not be HTTP-writable.
+    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH) are also
+    // file/env only: each value is a binary the worker spawns, so it must not be
+    // HTTP-writable.
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
@@ -195,15 +240,29 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_CODEX_MODEL',
+      'CLAUDE_MEM_CODEX_REASONING_EFFORT',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
       'CLAUDE_MEM_GEMINI_API_KEY',
+      'CLAUDE_MEM_GEMINI_API_KEYS',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
+      'CLAUDE_MEM_OPENROUTER_API_KEYS',
       'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
+      // The openai-compatible endpoint, as the viewer edits it. Its key stays
+      // file/env only (CLAUDE_MEM_OPENAI_COMPAT_API_KEY / OPENAI_COMPAT_API_KEY).
+      'CLAUDE_MEM_OPENAI_COMPAT_PRESET',
+      'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL',
+      'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'CLAUDE_MEM_OPENROUTER_REASONING_EFFORT',
+      'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW',
+      'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
+      'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
+      'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -223,24 +282,30 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
     ];
 
-    for (const key of settingKeys) {
-      if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
-      if (req.body[key] !== undefined) {
-        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], settings[key])) {
-          continue;
-        }
-        settings[key] = req.body[key];
+    // Every rule runs inside the settings-document boundary's mutate callback,
+    // which sees the CURRENT on-disk settings (flat, or the env block of a
+    // wrapped document) and refuses — without writing — a corrupt file.
+    const result = updateSettingsDocument(settingsPath, {}, SettingsDefaultsManager.getAllDefaults(), target => {
+      for (const key of settingKeys) {
+        if (FILE_ONLY_SETTING_KEYS.has(key)) continue;
+        if (posted[key] === undefined) continue;
+        // The viewer posts GET's masked secret back unchanged: keep the stored value.
+        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(posted[key], target[key])) continue;
+        target[key] = posted[key];
       }
-    }
 
-    // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
-    // HTTP cannot set this key; the expand is only so a tilde written by the
-    // user in settings.json is resolved before posix_spawn sees it.
-    if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
-      settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
+      // Expand `~` on a CLAUDE_CODE_PATH that was already on disk (file/env).
+      // HTTP cannot set this key; the expand is only so a tilde written by the
+      // user in settings.json is resolved before posix_spawn sees it.
+      if (typeof target.CLAUDE_CODE_PATH === 'string' && target.CLAUDE_CODE_PATH) {
+        target.CLAUDE_CODE_PATH = expandTilde(target.CLAUDE_CODE_PATH);
+      }
+    });
+    if (result.status === 'refused') {
+      logger.error('HTTP', 'Failed to persist settings file', { settingsPath }, result.error instanceof Error ? result.error : new Error(String(result.error)));
+      res.status(500).json({ success: false, error: `Settings file could not be updated. Repair or restore ${settingsPath}.` });
+      return;
     }
-
-    writeJsonFileAtomic(settingsPath, settings);
 
     clearPortCache();
 
@@ -261,10 +326,36 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
+    for (const key of ['CLAUDE_MEM_CODEX_MODEL', 'CLAUDE_MEM_CODEX_REASONING_EFFORT'] as const) {
+      if (settings[key] !== undefined && typeof settings[key] !== 'string') {
+        return { valid: false, error: `${key} must be a string` };
+      }
+    }
+
+    // An effort Codex does not know fails every Codex request, and the
+    // app-server takes any string. Like every rule here, it sees only the
+    // values this save changes (settingsChangedBy).
+    const codexEffort = settings.CLAUDE_MEM_CODEX_REASONING_EFFORT;
+    if (typeof codexEffort === 'string' && codexEffort.trim() && !isCodexReasoningEffort(codexEffort.trim())) {
+      return {
+        valid: false,
+        error: `CLAUDE_MEM_CODEX_REASONING_EFFORT must be empty (Codex's default) or one of: ${CODEX_REASONING_EFFORTS.join(', ')}`,
+      };
+    }
+
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
+    const validProviders = ['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", "codex", or "openai-compatible"' };
+      }
+    }
+
+    // Empty is valid: it turns the fallback off.
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER) {
+      // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts.
+      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible'];
+      if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (off), "claude", "gemini", "openrouter", or "openai-compatible"' };
       }
     }
 
@@ -286,6 +377,25 @@ export class SettingsRoutes extends BaseRouteHandler {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      }
+    }
+
+    // Empty = resolve the window automatically. Otherwise whole tokens, at
+    // least the floor the resolver would clamp a smaller value up to.
+    if (settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW).trim();
+      if (!/^\d+$/.test(raw) || Number(raw) < MIN_CONTEXT_WINDOW_TOKENS) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW must be empty (automatic) or a whole number of tokens, at least ${MIN_CONTEXT_WINDOW_TOKENS}` };
+      }
+    }
+
+    // A whole number of tokens inside the bounds the resolver accepts; anything
+    // else would silently fall back to the default at request time.
+    if (settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS !== undefined) {
+      const raw = String(settings.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS).trim();
+      const { min, max } = OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS;
+      if (!/^\d+$/.test(raw) || Number(raw) < min || Number(raw) > max) {
+        return { valid: false, error: `CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS must be a whole number of tokens between ${min} and ${max}` };
       }
     }
 
@@ -377,6 +487,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    if (settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT
+      && !parseOpenRouterReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT)) {
+      return { valid: false, error: `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT must be empty or one of: ${OPENROUTER_REASONING_EFFORTS.join(', ')}` };
+    }
+
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
       try {
         new URL(settings.CLAUDE_MEM_OPENROUTER_SITE_URL);
@@ -384,6 +499,20 @@ export class SettingsRoutes extends BaseRouteHandler {
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_BASE_URL) {
+      if (!isHttpUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
+        logger.debug('SETTINGS', 'Invalid OpenRouter base URL protocol', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL });
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be an HTTP(S) URL' };
+      }
+    }
+
+    // No preset-id check: the viewer posts the whole settings object, so a
+    // hand-edited unknown preset would 400 every later save, and the worker
+    // already reads an unknown preset as `custom`.
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL && !isHttpUrl(settings.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL)) {
+      return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_BASE_URL must be an HTTP(S) URL' };
     }
 
     if (settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE) {
@@ -425,17 +554,4 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
   }
 
-  private ensureSettingsFile(settingsPath: string): void {
-    if (!existsSync(settingsPath)) {
-      const defaults = SettingsDefaultsManager.getAllDefaults();
-
-      const dir = path.dirname(settingsPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-
-      writeJsonFileAtomic(settingsPath, defaults);
-      logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
-    }
-  }
 }

@@ -6,7 +6,29 @@ export type ProviderErrorClass =
   | 'quota_exhausted'
   | 'auth_invalid'
   | 'setup_required'
+  // The request did not fit the model's context window. Retiring the
+  // conversation fixes it, so the observer recycles instead of finalizing.
+  | 'context_overflow'
   | (string & {}); // open union: providers may emit custom kinds
+
+/**
+ * Code on the `transient` error withRetry throws when a request outlives its
+ * per-attempt deadline (CLAUDE_MEM_LLM_TIMEOUT_MS). The request was abandoned by
+ * us, not failed by the backend — which may still have completed and billed it —
+ * so it is kept countable apart from network faults: as the
+ * `transport:deadline_exceeded` abort reason, the `deadline_exceeded` telemetry
+ * abort_reason, and the observer-health ledger's lastErrorCode (observer-health
+ * compares the same string as a literal, to stay free of worker imports).
+ */
+export const DEADLINE_EXCEEDED_CODE = 'deadline_exceeded';
+
+/**
+ * `code` on a Codex request that was never sent because the Codex breaker or
+ * the codex_cli setup gate is armed. It repeats a failure another request
+ * already booked, so nothing books it again: not the breaker (re-arming would
+ * end the probe that clears it), not the setup gate, not observer-health.
+ */
+export const CODEX_COOLDOWN_REFUSAL_CODE = 'codex_cooldown_active';
 
 /**
  * Optional structured detail carried alongside a classified error. Populated
@@ -19,6 +41,12 @@ export interface ProviderErrorDetail {
   action?: string;
   url?: string;
   requestId?: string;
+  /**
+   * The resolved executable path a spawn failure could not launch. Carried so
+   * the setup-recheck gate can tell "the same unspawnable binary" apart from
+   * "configuration repaired" without re-running a doomed query.
+   */
+  executablePath?: string;
 }
 
 export class ClassifiedProviderError extends Error {
@@ -29,6 +57,7 @@ export class ClassifiedProviderError extends Error {
   readonly action?: string;
   readonly url?: string;
   readonly requestId?: string;
+  readonly executablePath?: string;
 
   constructor(message: string, opts: {
     kind: ProviderErrorClass;
@@ -54,7 +83,26 @@ export class ClassifiedProviderError extends Error {
     if (opts.requestId !== undefined) {
       this.requestId = opts.requestId;
     }
+    if (opts.executablePath !== undefined) {
+      this.executablePath = opts.executablePath;
+    }
   }
+}
+
+/**
+ * What a key pool reports when its last key is spent or refused while another
+ * key frees within a rate-limit window (api-key-pool's withKeyPool): a rate
+ * limit lasting until that key is back. As the spent key's own error it would
+ * hold the whole provider for that key's window (the quota breaker arms for 30
+ * minutes) although the pool can serve again in seconds. Keeps the spent
+ * key's words.
+ */
+export function rateLimitUntilNextKey(retryAfterMs: number, lastError: unknown): ClassifiedProviderError {
+  const words = lastError instanceof Error ? lastError.message : String(lastError);
+  return new ClassifiedProviderError(
+    `${words}; another key in the pool frees in ${Math.ceil(retryAfterMs / 1000)}s`,
+    { kind: 'rate_limit', retryAfterMs, cause: lastError },
+  );
 }
 
 export function isClassified(err: unknown): err is ClassifiedProviderError {

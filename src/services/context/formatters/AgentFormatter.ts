@@ -9,6 +9,7 @@ import type {
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
 import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
+import { formatContextReferenceId } from './id-display.js';
 
 function formatActiveMode(): string {
   const manager = ModeManager.getInstance();
@@ -24,14 +25,20 @@ export function renderAgentHeader(project: string): string[] {
   ];
 }
 
-export function renderAgentLegend(): string[] {
+export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] {
   const mode = ModeManager.getInstance().getActiveMode();
   const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
+
+  // Server runtime: ids are UUIDs shown as 8-char display refs, and there is no
+  // by-id fetch, so point at the server's search tool instead.
+  const fetchLine = fetchByIdSupported
+    ? `Fetch details: get_observations([IDs]) | Search: mem-search skill`
+    : `Fetch details: observation_search by title (short refs are display-only)`;
 
   return [
     `Legend: 🎯session ${typeLegendItems}`,
     `Format: ID TIME TYPE TITLE`,
-    `Fetch details: get_observations([IDs]) | Search: mem-search skill`,
+    fetchLine,
     ''
   ];
 }
@@ -74,13 +81,14 @@ function compactTime(time: string): string {
 export function renderAgentTableRow(
   obs: Observation,
   timeDisplay: string,
-  _config: ContextConfig
+  config: ContextConfig
 ): string {
   const title = obs.title || 'Untitled';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
+  const refId = formatContextReferenceId(obs.id, config);
 
-  return `${obs.id} ${time} ${icon} ${title}`;
+  return `${refId} ${time} ${icon} ${title}`;
 }
 
 export function renderAgentFullObservation(
@@ -94,8 +102,9 @@ export function renderAgentFullObservation(
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
+  const refId = formatContextReferenceId(obs.id, config);
 
-  output.push(`**${obs.id}** ${time} ${icon} **${title}**`);
+  output.push(`**${refId}** ${time} ${icon} **${title}**`);
   if (detailField) {
     output.push(detailField);
   }
@@ -116,11 +125,12 @@ export function renderAgentFullObservation(
 }
 
 export function renderAgentSummaryItem(
-  summary: { id: number; request: string | null },
-  formattedTime: string
+  summary: { id: number | string; request: string | null },
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   return [
-    `S${summary.id} ${summary.request || 'Session started'} (${formattedTime})`,
+    `S${formatContextReferenceId(summary.id, config)} ${summary.request || 'Session started'} (${formattedTime})`,
   ];
 }
 
@@ -143,11 +153,18 @@ export function renderAgentPreviouslySection(priorMessages: PriorMessages): stri
   ];
 }
 
-export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens: number): string[] {
+export function renderAgentFooter(
+  totalDiscoveryTokens: number,
+  totalReadTokens: number,
+  fetchByIdSupported: boolean = true
+): string[] {
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
+  const accessPath = fetchByIdSupported
+    ? 'get_observations([IDs]) or mem-search skill'
+    : 'observation_search';
   return [
     '',
-    `Access ${workTokensK}k tokens of past work via get_observations([IDs]) or mem-search skill.`
+    `Access ${workTokensK}k tokens of past work via ${accessPath}.`
   ];
 }
 

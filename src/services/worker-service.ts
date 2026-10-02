@@ -34,6 +34,7 @@ import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
+import { resolveRuntimeContext } from './hooks/runtime-selector.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
@@ -68,15 +69,19 @@ import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.
 import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
+  probePortBind,
   waitForHealth,
   waitForReadiness,
   waitForPortFree,
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
+import { UNBINDABLE_PORT_REMEDIATION } from '../shared/connection-errors.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdoptionErrors } from './infrastructure/WorktreeAdoption.js';
+import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
+import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
 import {
   createServerApiKey,
@@ -91,6 +96,9 @@ import {
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 import {
+  handleKimiCommand
+} from './integrations/KimiHooksInstaller.js';
+import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
@@ -102,7 +110,9 @@ import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js'
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError } from './worker/OpenRouterProvider.js';
+import { OpenAICompatProvider } from './worker/OpenAICompatProvider.js';
 import { getSelectedProvider } from './worker/provider-dispatch.js';
+import { CodexProvider } from './worker/CodexProvider.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -112,18 +122,22 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
-import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, filterNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
+import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
+import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
 import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
+import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { MemoryIngestRoutes } from './worker/http/routes/MemoryIngestRoutes.js';
+import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
@@ -239,6 +253,8 @@ export class WorkerService implements WorkerRef {
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
+  private openAICompatAgent: OpenAICompatProvider;
+  private codexAgent: CodexProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -271,6 +287,8 @@ export class WorkerService implements WorkerRef {
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
+    this.openAICompatAgent = new OpenAICompatProvider(this.dbManager, this.sessionManager);
+    this.codexAgent = new CodexProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -311,6 +329,9 @@ export class WorkerService implements WorkerRef {
       getInitializationComplete: () => this.initializationCompleteFlag,
       getMcpReady: () => this.mcpReady,
       getDependencyHealth: () => snapshotDependencyHealth(),
+      getChromaCrashState: () => this.chromaMcpManager
+        ? { ...this.chromaMcpManager.getCrashState(), collectionDrop: ChromaSync.getLastCollectionDrop() }
+        : undefined,
       onShutdown: (reason) => this.shutdown(reason ?? 'stop'),
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
@@ -318,7 +339,7 @@ export class WorkerService implements WorkerRef {
         const provider = getSelectedProvider();
         return {
           provider,
-          authMethod: getAuthMethodDescription(),
+          authMethod: provider === 'codex' ? 'Codex CLI subscription' : getAuthMethodDescription(),
           lastInteraction: this.lastAiInteraction
             ? {
                 timestamp: this.lastAiInteraction.timestamp,
@@ -332,6 +353,9 @@ export class WorkerService implements WorkerRef {
         new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
       ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
+      // Browser access: same-host and CLAUDE_MEM_ALLOWED_ORIGINS for CORS, plus
+      // the DNS-rebinding Host check. Read once at boot; restart to change it.
+      originPolicy: buildWorkerOriginPolicy(workerSettings),
     });
 
     this.registerRoutes();
@@ -439,16 +463,19 @@ export class WorkerService implements WorkerRef {
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler);
+    const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
     this.startPendingSessionResume(sessionRoutes);
     attachIngestGeneratorStarter((sessionDbId, source) =>
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
+    this.server.registerRoutes(new AdvisorRoutes(this.dbManager));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new MemoryIngestRoutes(this.dbManager));
+    this.server.registerRoutes(new DedupRoutes(this.dbManager));
     this.server.registerRoutes(new ServerV1Routes({
       getDatabase: () => this.dbManager.getConnection(),
     }));
@@ -882,17 +909,23 @@ export class WorkerService implements WorkerRef {
       return;
     }
 
-    const allowCodexTranscriptIngestion = settings.CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION === 'true';
-    const { config: transcriptConfig, removed } = filterNativeHookBackedCodexWatches(
+    const { config: transcriptConfig, scoped, removed } = scopeNativeHookBackedCodexWatches(
       loadTranscriptWatchConfig(configPath),
-      allowCodexTranscriptIngestion
+      settings,
     );
     const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
 
+    if (scoped > 0) {
+      logger.info('TRANSCRIPT', 'Scoped Codex transcript watch to subagent sessions; native hooks own top-level sessions', {
+        scoped,
+        enabledBy: 'CLAUDE_MEM_CODEX_SUBAGENT_INGESTION=true',
+        skipSetting: 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS=true',
+      });
+    }
     if (removed > 0) {
-      logger.warn('TRANSCRIPT', 'Skipped Codex transcript watch because native Codex hooks are authoritative', {
+      logger.info('TRANSCRIPT', 'Skipped Codex transcript watch: native hooks own top-level sessions; Codex subagent capture is opt-in', {
         removed,
-        optInSetting: 'CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION=true',
+        subagentOptInSetting: 'CLAUDE_MEM_CODEX_SUBAGENT_INGESTION=true',
       });
     }
 
@@ -952,6 +985,7 @@ export class WorkerService implements WorkerRef {
           this.deferredSessionEndReplayTimer = null;
         }
 
+        await this.codexAgent.close();
         if (this.transcriptWatcher) {
           this.transcriptWatcher.stop();
           this.transcriptWatcher = null;
@@ -1265,6 +1299,16 @@ async function main() {
 
   switch (command) {
     case 'start': {
+      // hooks.json runs `start` at every SessionStart, whatever the runtime. In
+      // server runtime the hooks talk to the shared server and nothing uses a
+      // local worker, so there is nothing to start (plan-24 step 4). Probing the
+      // worker port there waits on health checks that never answer when another
+      // process holds the port, stalling session start until the hook timeout.
+      // Incomplete server settings resolve to the worker runtime, as every other
+      // hook does, and start it as usual.
+      if (resolveRuntimeContext().runtime === 'server') {
+        exitWithStatus('ready');
+      }
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
         // Carry the boot probe's own words into the hook's status line — this
@@ -1496,6 +1540,22 @@ async function main() {
       break;
     }
 
+    case 'memory': {
+      // Auto-memory ingest (sibling to transcript). Dry-run runs client-side;
+      // the real store reaches the worker over HTTP from inside runMemoryCommand.
+      const subcommand = process.argv[3];
+      const memoryResult = await runMemoryCommand(subcommand, process.argv.slice(4));
+      process.exit(memoryResult);
+      break;
+    }
+
+    case 'kimi': {
+      const kimiSubcommand = process.argv[3];
+      const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
+      process.exit(kimiResult);
+      break;
+    }
+
     case 'antigravity-cli': {
       const antigravitySubcommand = process.argv[3];
       const antigravityResult = await handleAntigravityCliCommand(antigravitySubcommand, process.argv.slice(4));
@@ -1589,6 +1649,28 @@ async function main() {
       process.exit(0);
     }
 
+    case 'project': {
+      // `project merge <from> <into> [--dry-run]` (plan-20 step 2): fold one
+      // project's memory into another, sync-safe and non-destructive. Runs
+      // inside the worker when one is up, so the Chroma patch can land.
+      const [projectSubcommand, from, into] = process.argv.slice(3).filter(arg => !arg.startsWith('--'));
+      if (projectSubcommand !== 'merge' || !from || !into) {
+        console.error('Usage: project merge <from> <into> [--dry-run]');
+        process.exit(1);
+      }
+      const merge = await runProjectMergeCommand({ from, into, dryRun: process.argv.includes('--dry-run') });
+      console.log(`\nProject merge ${merge.dryRun ? '(dry-run, no changes made)' : '(applied)'}${merge.ranIn === 'worker' ? ' by the running worker' : ''}`);
+      console.log(`  From:                 ${merge.from}`);
+      console.log(`  Into:                 ${merge.into}`);
+      console.log(`  Observations merged:  ${merge.mergedObservations}`);
+      console.log(`  Summaries merged:     ${merge.mergedSummaries}`);
+      console.log(`  Chroma docs updated:  ${merge.chromaUpdates}`);
+      if (merge.chromaFailed > 0) {
+        console.log(`  Chroma sync failures: ${merge.chromaFailed} (run the command again to retry)`);
+      }
+      process.exit(0);
+    }
+
     case 'cleanup': {
       const dryRun = process.argv.includes('--dry-run');
       const counts = runOneTimeV12_4_3Cleanup(undefined, { dryRun });
@@ -1613,6 +1695,24 @@ async function main() {
       // whatever cwd this daemon was launched with (#3706; EPERM on
       // cross-spawn's chdir-back from an ACL-locked cwd).
       pinDaemonWorkingDirectory();
+
+      // A host and port the system refuses to bind (EACCES / EADDRNOTAVAIL)
+      // is a boot failure, never a duplicate: no other worker holds the port
+      // and no retry will bind it. Decided by the bind probe, before the
+      // duplicate gate (#3219 exited 0 there) and before start(): under Bun,
+      // listen() reports it only as "Is port N in use?", without the errno.
+      const bind = await probePortBind(port);
+      if (bind.occupancy === 'unbindable') {
+        logger.failure('SYSTEM', 'Worker port cannot be bound — not a duplicate; fix the port or host setting', {
+          port,
+          host: getWorkerHost(),
+          code: bind.bindErrorCode,
+          fix: UNBINDABLE_PORT_REMEDIATION,
+        });
+        captureEvent('worker_start_failed', { outcome: 'dead', error_category: 'port_unbindable' });
+        await shutdownTelemetry();
+        process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
+      }
 
       // Duplicate gate, ground truth FIRST (Phase 5): a live worker owns the
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:
@@ -1722,6 +1822,9 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
   const labels = dependencies.statuses.map(status => {
     if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
       return 'Claude CLI setup required';
+    }
+    if (status.dependency === 'codex_cli' && status.kind === 'setup_required') {
+      return 'Codex CLI setup required';
     }
     if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
       return 'uvx unavailable for vector search';

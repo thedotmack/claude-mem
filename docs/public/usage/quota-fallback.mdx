@@ -1,0 +1,48 @@
+---
+title: "Quota Fallback"
+description: "Keep capturing memories on a second provider while the first one's quota is spent"
+---
+
+# Quota Fallback
+
+When the observer's provider reports that its allowance is spent, claude-mem arms a 30-minute quota cooldown and stops sending it work, so a capped account does not keep buying the same refusal. By default the work waits: observations stay queued until the cooldown clears.
+
+A quota fallback sends that work to a second provider instead, for as long as the first one is in its cooldown. When the cooldown ends, one generator probes the original provider; if it answers, everything moves back on its own.
+
+## Settings
+
+Add these to `~/.claude-mem/settings.json`, or set them in the viewer under **Settings → Advanced**:
+
+| Setting | Values | Meaning |
+|---|---|---|
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `""` (off, the default), `claude`, `gemini`, `openrouter`, `openai-compatible` | Where observation work goes while the selected provider's quota cooldown is active. |
+| `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | `""` or a Claude model id or alias | The model for a **Claude** fallback run. Empty keeps `CLAUDE_MEM_MODEL` and tier routing. Ignored for every other fallback. |
+
+For example, Gemini as the primary with Claude Haiku as the fallback:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER": "claude",
+  "CLAUDE_MEM_QUOTA_FALLBACK_MODEL": "claude-haiku-4-5-20251001"
+}
+```
+
+The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatible API key, or a working Claude Code login. A fallback with no API key, or any fallback that is itself held (a quota cooldown, or a refused key), is skipped, and work waits as it does without a fallback. A Claude fallback is not checked ahead of time: if Claude Code is missing or logged out, the fallback run fails the way a Claude primary would. When the cmem.ai gateway turns your account away (a lapsed plan, a spent allowance), it is skipped as a fallback for 15 minutes and then re-tried by a single request; the next session start tells you once, in the gateway's own words. Unattended retries on the gateway are capped the same way whether it is your provider or your fallback.
+
+## What switches, and what does not
+
+- **Switches:** a spent allowance (a 30-minute cooldown), and rate limits that are still refused after the provider's own retries (a 90-second cooldown). Work moves back as soon as the cooldown ends and the original provider answers its probe.
+- **Does not switch:** authentication errors — an invalid, expired or revoked key (401/403). Those pause capture exactly as before, because a different provider would not fix the key.
+- **A fallback with a bad key is skipped once it is refused.** Only a *missing* key is detected ahead of time; an invalid or revoked fallback key fails its first run, and its auth cooldown then takes it out of rotation. Fix or clear the fallback key.
+- **Paused work resumes on its own.** A generator that stops on a quota error keeps its queued observations. The worker's periodic resume (once a minute) restarts them on whichever provider can take the work — the fallback, or the original provider again if it has recovered by then — and the session's next tool call does the same sooner. If neither can, it waits as before.
+- **Both exhausted:** if the fallback is also in a quota cooldown, nothing changes: work waits until one of them clears.
+
+## Things to know
+
+- **It spends the fallback's allowance.** With Claude as the fallback, observation runs count against your Claude plan. Setting `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` to a Haiku model keeps that cheap.
+- **Claude runs are capped by `CLAUDE_MEM_MAX_CONCURRENT_AGENTS`** (default 2). With three or more busy sessions on a Claude fallback, the extra sessions wait for a slot.
+- **Telegram wrap-ups** are not governed by `CLAUDE_MEM_QUOTA_FALLBACK_MODEL`: they use the model the session last ran on, or the summary tier model.
+- **Session-start notice.** While another provider is serving, the notice says capture continues there instead of saying memory is paused. It is refreshed whenever a cooldown starts or ends, so right after a settings change it can be one step behind.
+
+In the worker log, the switch shows as `Primary in quota cooldown; dispatching to fallback`, followed later by `Primary quota cooldown elapsed; probing primary` and `Primary recovered from quota cooldown`. If nothing can take the work, the log says so once: `Primary and fallback both in quota cooldown; …` or `Primary in quota cooldown and the quota fallback cannot serve; …`.

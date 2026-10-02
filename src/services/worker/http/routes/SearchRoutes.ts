@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { SearchManager } from '../../SearchManager.js';
 import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { AppError } from '../../../server/ErrorHandler.js';
+import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
@@ -14,6 +16,8 @@ import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { getProjectContext } from '../../../../utils/project-name.js';
+import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
@@ -73,6 +77,8 @@ This message disappears once the first observation lands.
 const semanticContextSchema = z.object({
   q: z.string().optional(),
   project: z.string().optional(),
+  // Every key the checkout reads (gate P2-5); a list, or comma-separated.
+  projects: z.union([z.array(z.string()), z.string()]).optional(),
   limit: z.union([z.string(), z.number()]).optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
@@ -176,24 +182,24 @@ export class SearchRoutes extends BaseRouteHandler {
     // envelope survives even if response serialization fails afterwards.
     const searchTelemetry: SearchTelemetryEnvelope = {};
     res.locals.searchTelemetry = searchTelemetry;
-    const result = await this.searchManager.search(this.queryWithPlatformSource(req), searchTelemetry);
+    const result = await this.searchManager.search(this.searchArgsFromRequest(req), searchTelemetry);
     res.json(result);
   });
 
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.timeline(this.queryWithPlatformSource(req));
+    const result = await this.searchManager.timeline(this.searchArgsFromRequest(req));
     res.json(result);
   });
 
   private handleSearchObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.searchObservations(this.queryWithPlatformSource(req));
+    const result = await this.searchManager.searchObservations(this.searchArgsFromRequest(req));
     res.json(result);
   });
 
   private handleSearchByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const orchestrator = this.searchManager.getOrchestrator();
     const formatter = this.searchManager.getFormatter();
-    const query = this.queryWithPlatformSource(req);
+    const query = this.searchArgsFromRequest(req);
     const rawFilePath = query.filePath ?? query.files;
     const filePath = Array.isArray(rawFilePath)
       ? rawFilePath[0]
@@ -264,7 +270,7 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleGetRecentContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getRecentContext(this.queryWithPlatformSource(req));
+    const result = await this.searchManager.getRecentContext(this.searchArgsFromRequest(req));
     res.json(result);
   });
 
@@ -296,7 +302,20 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const projectsParam = (req.query.projects as string) || (req.query.project as string);
+    let projectsParam = (req.query.projects as string) || (req.query.project as string);
+    const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    // A host that cannot run the project resolver itself (the OMP hook) sends
+    // its cwd instead: read the keys the CLI context hook sends for that checkout.
+    if (!projectsParam && hostCwd.trim()) {
+      const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
+        ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
+      if (isProjectExcluded(hostCwd, excludedProjects)) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.send('');
+        return;
+      }
+      projectsParam = getProjectContext(hostCwd).allProjects.join(',');
+    }
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
@@ -397,6 +416,7 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
+    const projects = SearchRoutes.parseProjectsParam(req.body?.projects ?? req.query.projects);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
@@ -411,6 +431,7 @@ export class SearchRoutes extends BaseRouteHandler {
         query,
         type: 'observations',
         project,
+        ...(projects.length > 0 ? { projects } : {}),
         limit: String(limit),
         format: 'json',
         ...(platformSource ? { platformSource } : {}),
@@ -439,15 +460,44 @@ export class SearchRoutes extends BaseRouteHandler {
     res.json({ context: lines.join('\n'), count: observations.length });
   });
 
-  private queryWithPlatformSource(req: Request): Record<string, any> {
+  /**
+   * A search route's arguments: the query string, with the platform source
+   * (from the query or a header) and `projects` parsed into a list.
+   */
+  private searchArgsFromRequest(req: Request): Record<string, any> {
+    const searchArgs: Record<string, any> = { ...(req.query as Record<string, any>) };
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
-    if (!platformSource) {
-      return req.query as Record<string, any>;
+    if (platformSource) {
+      searchArgs.platformSource = platformSource;
     }
-    return {
-      ...(req.query as Record<string, any>),
-      platformSource,
-    };
+    const projects = SearchRoutes.parseProjectsParam(searchArgs.projects);
+    if (projects.length > 0) {
+      searchArgs.projects = projects;
+    } else {
+      delete searchArgs.projects;
+    }
+    return searchArgs;
+  }
+
+  /**
+   * The project keys a search's `projects` parameter names (gate P2-5): a
+   * list, or comma-separated, as a query string sends it (`projects=a,b`, or
+   * the key repeated). Parsed once, here, so every search strategy receives a
+   * list. Any other shape is rejected instead of searching every project.
+   */
+  private static parseProjectsParam(value: unknown): string[] {
+    if (value === undefined) {
+      return [];
+    }
+    const entries: unknown[] = Array.isArray(value) ? value : [value];
+    if (!entries.every((entry): entry is string => typeof entry === 'string')) {
+      throw new AppError(
+        'projects must be a project key, a comma-separated list of keys, or a list of keys',
+        400,
+        'INVALID_PROJECTS'
+      );
+    }
+    return scopedProjects({ projects: entries.flatMap(entry => entry.split(',')) });
   }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
@@ -461,7 +511,7 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleGetTimelineByQuery = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getTimelineByQuery(this.queryWithPlatformSource(req));
+    const result = await this.searchManager.getTimelineByQuery(this.searchArgsFromRequest(req));
     res.json(result);
   });
 }

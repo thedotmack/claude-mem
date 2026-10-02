@@ -36,10 +36,24 @@ export interface ContextConfig {
   showLastSummary: boolean;
   showLastMessage: boolean;
   mainAgentOnly: boolean;
+  /**
+   * ACT-R reinforcement weight for observation selection
+   * (CLAUDE_MEM_REINFORCE_ALPHA). Absent or 0 = off: the N most recent.
+   */
+  reinforcementAlpha?: number;
+
+  /**
+   * Whether observation refs in the inject panel can be fetched by id.
+   * When false (server runtime, where ids are Postgres UUIDs), refs are
+   * abbreviated to an 8-char prefix (display-only) and the legend points to
+   * observation_search. Defaults to true (full id shown) when omitted.
+   */
+  fetchByIdSupported?: boolean;
 }
 
 export interface Observation {
-  id: number;
+  // A numeric SQLite id, or the server's string id in server runtime.
+  id: number | string;
   memory_session_id: string;
   platform_source?: string;
   type: string;
@@ -54,10 +68,13 @@ export interface Observation {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  /** Selected only while reinforcement ranking is on. */
+  reinforcement_dates?: string | null;
 }
 
 export interface SessionSummary {
-  id: number;
+  // A numeric SQLite id, or the server's string id in server runtime.
+  id: number | string;
   memory_session_id: string;
   platform_source?: string;
   request: string | null;
@@ -69,6 +86,10 @@ export interface SessionSummary {
   created_at_epoch: number;
   project?: string;
 }
+
+/** Rows read from the local SQLite database always carry numeric ids. */
+export type LocalObservation = Observation & { id: number };
+export type LocalSessionSummary = SessionSummary & { id: number };
 
 export interface SummaryTimelineItem extends SessionSummary {
   displayEpoch: number;

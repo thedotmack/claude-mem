@@ -35,6 +35,7 @@ const statics = ChromaSync as unknown as {
   collectionGeneration: number;
   corruptSegmentBatches: Map<string, Set<string>>;
   droppedCollections: Set<string>;
+  failedDropAttempts: Map<string, number>;
   lastCollectionDrop: unknown;
   backfillAllProjects(store: unknown): Promise<boolean>;
 };
@@ -75,6 +76,7 @@ beforeEach(() => {
   statics.backfillInProgress = false;
   statics.corruptSegmentBatches.clear();
   statics.droppedCollections.clear();
+  statics.failedDropAttempts.clear();
   statics.lastCollectionDrop = null;
   statics.backfillAllProjects = async () => {
     backfillSweeps += 1;
@@ -233,6 +235,83 @@ describe('ChromaSync corrupt-collection handling (#3202)', () => {
     expect(calls('chroma_delete_collection')).toBe(1);
   });
 
+  it('rebuilds even when chroma-mcp commits the delete but the call rejects', async () => {
+    // A large collection can outlive the delete's request deadline: chroma-mcp
+    // drops it, the reply is lost, and the call rejects.
+    let failAdds = true;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents' && failAdds) throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new ChromaUnavailableError('chroma-mcp "chroma_delete_collection" timed out; the subprocess was left running');
+      }
+      return {};
+    });
+    statics.backfillStore = {};
+    ChromaSyncState.replace('alpha', { observations: 40, summaries: 3, prompts: 7 });
+    ChromaSyncState.replace('beta', { observations: 9, summaries: 0, prompts: 0 });
+    const writer = new ChromaSync('claude-mem');
+    const sibling = new ChromaSync('claude-mem');
+    await sibling.ensureCollectionExists();
+
+    await writer.addDocuments([makeDoc('d1')]);
+    await expect(writer.addDocuments([makeDoc('d2')])).rejects.toThrow('timed out');
+
+    // The watermarks no longer claim rows the dropped collection took with it.
+    expect(ChromaSyncState.isRebuildPending('alpha')).toBe(true);
+    expect(ChromaSyncState.isRebuildPending('beta')).toBe(true);
+    // The rebuild starts now, not at the next worker start.
+    expect(backfillSweeps).toBe(1);
+    // No instance keeps writing into the collection it cached before the drop.
+    const createsBefore = calls('chroma_create_collection');
+    failAdds = false;
+    expect(await sibling.addDocuments([makeDoc('d3')])).toBe(1);
+    expect(calls('chroma_create_collection')).toBe(createsBefore + 1);
+  });
+
+  it('retries a drop whose delete never reached chroma-mcp', async () => {
+    let deleteAttempts = 0;
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new ChromaUnavailableError('chroma-mcp connection in backoff (8s remaining)');
+      }
+      return {};
+    });
+    const sync = new ChromaSync('claude-mem');
+
+    await sync.addDocuments([makeDoc('d1')]);
+    await expect(sync.addDocuments([makeDoc('d2')])).rejects.toThrow('backoff');
+    // The connection is back: the next batch the segment fails drops the collection.
+    await expect(sync.addDocuments([makeDoc('d3')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
+
+    expect(calls('chroma_delete_collection')).toBe(2);
+    expect(ChromaSync.getLastCollectionDrop()).toMatchObject({ collection: 'cm__claude-mem' });
+  });
+
+  it('gives up on a delete that keeps failing after a few attempts, so it never loops', async () => {
+    installCallTool(async (tool) => {
+      if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
+      if (tool === 'chroma_delete_collection') {
+        throw new Error('chroma-mcp transport error during "chroma_delete_collection" (retry failed): Connection closed');
+      }
+      return {};
+    });
+    statics.backfillStore = {};
+    const sync = new ChromaSync('claude-mem');
+
+    await sync.addDocuments([makeDoc('d1')]);
+    for (const id of ['d2', 'd3', 'd4']) {
+      await expect(sync.addDocuments([makeDoc(id)])).rejects.toThrow('transport error');
+    }
+    // Out of attempts: later batches are ordinary failed writes, and no more sweeps restart.
+    expect(await sync.addDocuments([makeDoc('d5')])).toBe(0);
+    expect(await sync.addDocuments([makeDoc('d6')])).toBe(0);
+
+    expect(calls('chroma_delete_collection')).toBe(3);
+    expect(backfillSweeps).toBe(3);
+  });
+
   it('starts a rebuild sweep when none is running, and leaves a running sweep to restart itself', async () => {
     installCallTool(async (tool) => {
       if (tool === 'chroma_add_documents') throw CORRUPT_SEGMENT_ERROR;
@@ -325,6 +404,38 @@ describe('ChromaSync rebuild after a dropped collection (#3202)', () => {
     expect(outcome).toBe('write_failures');
     expect(ChromaSyncState.isRebuildPending('proj')).toBe(true);
     expect(ChromaSyncState.get('proj').observations).toBe(0);
+  });
+
+  it('finishes a rebuild that attempted every row; an isolated failed row stays pending and is retried alone', async () => {
+    let failRowTwo = true;
+    const written: string[] = [];
+    installCallTool(async (tool, args) => {
+      if (tool !== 'chroma_add_documents') return {};
+      const ids = args.ids as string[];
+      if (failRowTwo && ids.includes('obs_2_narrative')) {
+        throw new Error('embedding failed for one document');
+      }
+      written.push(...ids);
+      return {};
+    });
+    ChromaSyncState.replace('proj', { observations: 3, summaries: 0, prompts: 0, rebuildPending: true });
+    const sync = new ChromaSync('claude-mem');
+    const store = makeStore('proj', [1, 2, 3, 4, 5]);
+
+    const outcome = await sync.ensureBackfilled('proj', store);
+
+    // Restarting the rebuild from zero would re-embed the whole project on
+    // every start just to retry row 2; the pending mark already covers it.
+    expect(ChromaSyncState.isRebuildPending('proj')).toBe(false);
+    expect(ChromaSyncState.getPending('proj', 'observations')).toEqual([2]);
+    expect(ChromaSyncState.get('proj').observations).toBe(5);
+    expect(outcome).toBe('rows_pending');
+
+    failRowTwo = false;
+    written.length = 0;
+    expect(await sync.ensureBackfilled('proj', store)).toBe('completed');
+    expect(written).toEqual(['obs_2_narrative']);
+    expect(ChromaSyncState.getPending('proj', 'observations')).toEqual([]);
   });
 
   it('stops a run whose collection is dropped mid-run without bumping anything', async () => {

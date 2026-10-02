@@ -1,12 +1,12 @@
 import path from 'path';
-import { sessionInitHandler } from '../../cli/handlers/session-init.js';
+import { recordSessionPrompt } from '../../cli/handlers/session-init.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
-import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
+import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -23,6 +23,20 @@ export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
   return match?.[1];
 }
 
+/**
+ * The worker did not record a transcript turn's user prompt. The watcher
+ * checkpoints at the start of that turn's line (or zstd frame) and retries it
+ * from there, so the turn is replayed rather than its observations being filed
+ * under no prompt, and nothing before it is sent twice.
+ */
+export class TranscriptAnchorError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`session init failed for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptAnchorError';
+    this.cause = cause;
+  }
+}
+
 interface SessionState {
   sessionId: string;
   platformSource: string;
@@ -31,20 +45,42 @@ interface SessionState {
   lastUserMessage?: string;
   lastAssistantMessage?: string;
   pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
+  isSubagent?: boolean;
 }
+
+/**
+ * What the watcher keeps per transcript file across restarts: the working
+ * directory its session last reported. Some hosts write it once, on the
+ * session's first line (DeepSeek Harness), so a watcher that resumes mid-file
+ * would otherwise never learn it. The processor reads it as a fallback and
+ * updates it whenever the session reports one.
+ */
+export interface TranscriptFileContext {
+  cwd?: string;
+}
+
+/** How many subagent rollouts the processor remembers past their last turn. */
+const MAX_REMEMBERED_SUBAGENT_SESSIONS = 4096;
 
 export class TranscriptEventProcessor {
   private sessions = new Map<string, SessionState>();
+  /**
+   * Session keys of confirmed subagent rollouts. Codex ends a session per
+   * turn but marks the rollout only on its first line, so the marker has to
+   * outlive the turn state session_end drops. Oldest forgotten first.
+   */
+  private subagentSessionKeys = new Set<string>();
 
   async processEntry(
     entry: unknown,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    sessionIdOverride?: string | null
+    sessionIdOverride?: string | null,
+    file?: TranscriptFileContext
   ): Promise<void> {
     for (const event of schema.events) {
       if (!matchesRule(entry, event.match, schema)) continue;
-      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined);
+      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined, file);
     }
   }
 
@@ -59,10 +95,39 @@ export class TranscriptEventProcessor {
       session = {
         sessionId,
         platformSource: normalizePlatformSource(watch.name),
+        ...(this.subagentSessionKeys.has(key) ? { isSubagent: true } : {}),
       };
       this.sessions.set(key, session);
     }
     return session;
+  }
+
+  private rememberSubagentSession(key: string): void {
+    this.subagentSessionKeys.delete(key);
+    this.subagentSessionKeys.add(key);
+    if (this.subagentSessionKeys.size > MAX_REMEMBERED_SUBAGENT_SESSIONS) {
+      const oldest = this.subagentSessionKeys.values().next().value;
+      if (oldest !== undefined) this.subagentSessionKeys.delete(oldest);
+    }
+  }
+
+  /**
+   * Learn a rollout's session context (cwd, subagent marker) from its first
+   * line without ingesting anything. A tail that resumes past that line (a
+   * worker restart, or startAtEnd on a rollout already running) never reads
+   * it otherwise, and a subagent-only watch would drop the whole rollout.
+   */
+  async primeSessionContext(
+    entry: unknown,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride?: string | null,
+    file?: TranscriptFileContext
+  ): Promise<void> {
+    for (const event of schema.events) {
+      if (event.action !== 'session_context' || !matchesRule(entry, event.match, schema)) continue;
+      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined, file);
+    }
   }
 
   private resolveSessionId(
@@ -117,7 +182,8 @@ export class TranscriptEventProcessor {
     watch: WatchTarget,
     schema: TranscriptSchema,
     event: SchemaEvent,
-    sessionIdOverride?: string
+    sessionIdOverride?: string,
+    file?: TranscriptFileContext
   ): Promise<void> {
     const sessionId = this.resolveSessionId(entry, watch, schema, event, sessionIdOverride);
     if (!sessionId) {
@@ -126,16 +192,46 @@ export class TranscriptEventProcessor {
     }
 
     const session = this.getOrCreateSession(watch, sessionId);
+    // After a restart the watcher resumes mid-file, past the line that carried
+    // the session's working directory: start from the one saved for the file.
+    if (!session.cwd && file?.cwd) session.cwd = file.cwd;
     const cwd = this.resolveCwd(entry, watch, schema, event, session);
     if (cwd) session.cwd = cwd;
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
 
+    // Codex writes the subagent marker on the first (session_meta) line, as an
+    // object; learn it from whichever line carries it so later ingest events
+    // can be gated. Its presence is the test, not its contents.
+    if (watch.subagentSource && !session.isSubagent) {
+      const marker = getValueByPath(entry, watch.subagentSource.path);
+      if (marker !== undefined && marker !== null) {
+        session.isSubagent = true;
+        this.rememberSubagentSession(this.getSessionKey(watch, sessionId));
+      }
+    }
+
+    // When native hooks own top-level sessions, ingest only confirmed subagent
+    // rollouts. session_context still runs so a later marker line can flip the
+    // session on; session_end still runs so the suppressed session is dropped
+    // from the map instead of lingering.
+    if (
+      watch.subagentOnly &&
+      !session.isSubagent &&
+      event.action !== 'session_context' &&
+      event.action !== 'session_end'
+    ) {
+      return;
+    }
+
     const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
+
+    if (event.action === 'session_context') this.applySessionContext(session, fields);
+    // Whatever directory the session now has is the file's, for the next restart.
+    if (file && session.cwd) file.cwd = session.cwd;
 
     switch (event.action) {
       case 'session_context':
-        this.applySessionContext(session, fields);
         break;
       case 'session_init':
         await this.handleSessionInit(session, fields);
@@ -143,12 +239,16 @@ export class TranscriptEventProcessor {
           await this.updateContext(session, watch);
         }
         break;
-      case 'user_message':
-        if (typeof fields.message === 'string') session.lastUserMessage = fields.message;
-        if (typeof fields.prompt === 'string') session.lastUserMessage = fields.prompt;
+      case 'user_message': {
+        // A user turn is anchored like a hook-captured prompt. Kept only in
+        // memory, it left the session at prompt 0, so the observer got a
+        // continuation with no user request and the batch was dropped (#3653).
+        const prompt = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt);
+        if (prompt) await this.anchorUserPrompt(session, prompt);
         break;
+      }
       case 'assistant_message':
-        if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
+        session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
         break;
       case 'tool_use':
         await this.handleToolUse(session, watch, fields);
@@ -177,18 +277,67 @@ export class TranscriptEventProcessor {
     if (project) session.project = project;
   }
 
+  /**
+   * Normalize a message field to text. Transcripts that store messages as
+   * content-block arrays (e.g. DeepSeek Harness assistant messages with
+   * reasoning/text blocks) are joined by newline; strings pass through.
+   */
+  private resolveMessageText(value: unknown): string | undefined {
+    if (typeof value === 'string') return value;
+    if (!Array.isArray(value)) return undefined;
+    const parts: string[] = [];
+    for (const block of value) {
+      if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
+        parts.push((block as { text: string }).text);
+      }
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  }
+
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
-    const cwd = session.cwd ?? process.cwd();
+    await this.anchorUserPrompt(session, prompt);
+  }
+
+  /**
+   * Record the turn's user prompt through the init path the hooks use, so the
+   * worker has a user_prompts row for it. A prompt the worker did not record
+   * (unreachable, a 429/5xx reply, no budget) throws TranscriptAnchorError:
+   * the watcher then checkpoints at this turn's line and retries it, instead
+   * of its observations being filed under no prompt.
+   */
+  private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
     if (prompt) {
       session.lastUserMessage = prompt;
     }
+    const cwd = session.cwd;
+    if (!cwd) {
+      this.skipWithoutCwd(session, 'user prompt');
+      return;
+    }
 
-    await sessionInitHandler.execute({
+    try {
+      await recordSessionPrompt({
+        sessionId: session.sessionId,
+        cwd,
+        prompt,
+        platform: session.platformSource
+      });
+    } catch (error: unknown) {
+      throw new TranscriptAnchorError(session.sessionId, error);
+    }
+  }
+
+  /**
+   * A turn of a session whose working directory is not known yet is skipped.
+   * The worker's own directory is not a stand-in: it would key the prompt or
+   * observation to the worker's own data dir (`.claude-mem`) and check project
+   * exclusions against it. Once the session or its file reports a directory,
+   * its turns go through.
+   */
+  private skipWithoutCwd(session: SessionState, what: string): void {
+    logger.debug('TRANSCRIPT', `Skipping a ${what}: the session has no known working directory yet`, {
       sessionId: session.sessionId,
-      cwd,
-      prompt,
-      platform: session.platformSource
     });
   }
 
@@ -254,10 +403,14 @@ export class TranscriptEventProcessor {
   private async sendObservation(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
+    if (!session.cwd) {
+      this.skipWithoutCwd(session, 'observation');
+      return;
+    }
 
     const result = await ingestObservation({
       contentSessionId: session.sessionId,
-      cwd: session.cwd ?? process.cwd(),
+      cwd: session.cwd,
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
       toolResponse: this.maybeParseJson(fields.toolResponse),
@@ -274,10 +427,14 @@ export class TranscriptEventProcessor {
   private async sendFileEdit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const filePath = typeof fields.filePath === 'string' ? fields.filePath : undefined;
     if (!filePath) return;
+    if (!session.cwd) {
+      this.skipWithoutCwd(session, 'file edit');
+      return;
+    }
 
     await fileEditHandler.execute({
       sessionId: session.sessionId,
-      cwd: session.cwd ?? process.cwd(),
+      cwd: session.cwd,
       filePath,
       edits: Array.isArray(fields.edits) ? fields.edits : undefined,
       platform: session.platformSource
@@ -321,8 +478,12 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
-    await this.queueSummary(session);
-    await this.updateContext(session, watch);
+    // A suppressed top-level session reaches here only to be cleaned up; its
+    // summary and context belong to the native hooks, not the transcript watch.
+    if (!watch.subagentOnly || session.isSubagent) {
+      await this.queueSummary(session);
+      await this.updateContext(session, watch);
+    }
     session.pendingTools?.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);
@@ -336,7 +497,9 @@ export class TranscriptEventProcessor {
     const requestBody = JSON.stringify({
       contentSessionId: session.sessionId,
       last_assistant_message: lastAssistantMessage,
-      platformSource: session.platformSource
+      platformSource: session.platformSource,
+      // Lets the worker skip a session in an excluded project; sent only when known.
+      ...(session.cwd ? { cwd: session.cwd } : {}),
     });
 
     try {

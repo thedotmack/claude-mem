@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../../src/shared/oauth-token.js';
@@ -20,16 +20,25 @@ const calls: unknown[][] = [];
 let includeAllSources = false;
 let showTerminalOutput = false;
 let workerUnreachable = false;
+let provider = 'claude';
+let quotaFallbackProvider = '';
+let proFallbackAt = '';
+let openRouterBaseUrl = '';
+let staleReason: string | null = null;
 const outageNoticeRequests: Array<string | undefined> = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: String(showTerminalOutput),
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: String(includeAllSources),
+    CLAUDE_MEM_PROVIDER: provider,
+    CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: quotaFallbackProvider,
+    CLAUDE_MEM_PRO_FALLBACK_AT: proFallbackAt,
+    CLAUDE_MEM_OPENROUTER_BASE_URL: openRouterBaseUrl,
   }),
 }));
 
-mock.module('../../../src/shared/oauth-token.js', () => ({ readStaleMarker: () => null }));
+mock.module('../../../src/shared/oauth-token.js', () => ({ readStaleMarker: () => staleReason }));
 
 mock.module('../../../src/utils/project-name.js', () => ({
   getProjectContext: () => ({
@@ -60,7 +69,71 @@ afterAll(() => {
   mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
+beforeEach(() => {
+  provider = 'claude';
+  quotaFallbackProvider = '';
+  proFallbackAt = '';
+  openRouterBaseUrl = '';
+  staleReason = null;
+});
+
 describe('contextHandler SessionStart path', () => {
+  for (const memoryProvider of ['codex', 'openai-compatible', 'openrouter', 'gemini']) {
+    it(`does not request Claude login when memory uses ${memoryProvider} without Claude fallback`, async () => {
+      provider = memoryProvider;
+      staleReason = 'expired keychain entry';
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: `session-stale-${memoryProvider}`,
+        cwd: '/tmp/repo',
+        platform: 'codex',
+      });
+      expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    });
+  }
+
+  for (const memoryProvider of ['claude', '']) {
+    it(`keeps the Claude login hint for ${memoryProvider || 'default'} memory`, async () => {
+      provider = memoryProvider;
+      staleReason = 'expired keychain entry';
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-stale-claude',
+        cwd: '/tmp/repo',
+        platform: 'codex',
+      });
+      expect(result.hookSpecificOutput?.additionalContext).toContain('Claude Code OAuth token is stale');
+      expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
+    });
+  }
+
+  it('keeps the Claude login hint for a configured Claude quota fallback', async () => {
+    provider = 'codex';
+    quotaFallbackProvider = ' claude ';
+    staleReason = 'expired keychain entry';
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'session-stale-claude-fallback',
+      cwd: '/tmp/repo',
+      platform: 'codex',
+    });
+    expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
+  });
+
+  it('keeps the Claude login hint while the primary cmem gateway falls back to Claude', async () => {
+    provider = 'openrouter';
+    openRouterBaseUrl = 'https://cmem.ai/api/gateway';
+    proFallbackAt = new Date().toISOString();
+    staleReason = 'expired keychain entry';
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'session-stale-cmem-fallback',
+      cwd: '/tmp/repo',
+      platform: 'codex',
+    });
+    expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
+  });
+
   it('injects Codex context with one bounded worker startup and request', async () => {
     calls.length = 0;
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');

@@ -2,13 +2,13 @@
  * Hook IO Discipline (issue #2292)
  *
  * This module is the ONLY place in the hook execution path that calls
- * console.log / process.stderr.write / process.exit. Every emit point declares
+ * process.stdout.write / process.stderr.write / process.exit. Every emit point declares
  * an intent and routes through here so stdout (MODEL_CONTEXT), stderr
  * (DIAGNOSTIC) and the exit code (EXIT_SIGNAL) never get conflated.
  *
  * Intent vocabulary:
  *  - DIAGNOSTIC        operator-visible logs, never reaches the model. stderr.
- *  - MODEL_CONTEXT     content the assistant consumes. stdout JSON only.
+ *  - MODEL_CONTEXT     content the assistant consumes. stdout payload (JSON envelope, or raw text when the adapter returns a string — e.g. kimi context injection).
  *  - USER_HINT         short advisory shown to the human, via HookResult.systemMessage.
  *  - EXIT_SIGNAL       pure status, no payload (exit 0).
  *
@@ -108,24 +108,60 @@ export function emitDiagnostic(line: string): void {
   bypassWrite(line);
 }
 
+/** A failed stdout delivery cannot be repaired by emitting another envelope. */
+export class HookStdoutError extends Error {
+  constructor(cause: unknown) {
+    super(`Hook stdout write failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = 'HookStdoutError';
+  }
+}
+
 /**
- * Emit the model-bound JSON payload to stdout. Calls adapter.formatOutput and
- * JSON.stringify exactly once. Throws if called twice in the same emitter
- * lifetime (guards against double-emit corrupting the stdout JSON stream).
+ * Emit the model-bound payload to stdout. Calls adapter.formatOutput once, then
+ * writes either the raw string it returned or a JSON-stringified object. Throws
+ * if called twice in the same emitter lifetime (guards against double-emit
+ * corrupting the stdout stream).
  *
- * Uses console.log (not process.stdout.write) on purpose: the trailing newline
- * is what Claude Code's / Codex's hook parser expects.
+ * Preserve the trailing newline expected by Claude Code, Codex, and Kimi.
+ * Track the write callback so exitGraceful can wait for piped stdout to flush;
+ * console.log followed by process.exit can otherwise truncate the payload.
  */
 export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
   if (moduleHasEmitted) {
     throw new Error('emitModelContext called twice');
   }
-  moduleHasEmitted = true;
   const output = adapter.formatOutput(result);
-  console.log(JSON.stringify(output));
+  if (output === '') {
+    return;
+  }
+  moduleHasEmitted = true;
+  const line = typeof output === 'string' ? output : JSON.stringify(output);
+  pendingModelContext = new Promise<void>((resolve, reject) => {
+    const fail = (error: unknown) => reject(new HookStdoutError(error));
+    const onError = (error: Error) => fail(error);
+    const removeErrorListener = () => process.stdout.removeListener('error', onError);
+    process.stdout.once('error', onError);
+    try {
+      process.stdout.write(`${line}\n`, (error) => {
+        if (error) {
+          fail(error);
+          // Node can emit the stream error after calling the write callback.
+          // Keep the listener through that event, then remove it if no event came.
+          setImmediate(removeErrorListener);
+        } else {
+          removeErrorListener();
+          resolve();
+        }
+      });
+    } catch (error) {
+      removeErrorListener();
+      fail(error);
+    }
+  });
 }
 
 let moduleHasEmitted = false;
+let pendingModelContext: Promise<void> = Promise.resolve();
 
 export interface ExitOptions {
   skipExit?: boolean;
@@ -133,13 +169,14 @@ export interface ExitOptions {
 
 /**
  * EXIT_SIGNAL: drop any buffered stderr (preserving the quiet-on-success /
- * Windows Terminal tab-management behavior) and exit 0. Caller is expected to
- * have already emitted any required stdout JSON envelope.
+ * Windows Terminal tab-management behavior), wait for any emitted stdout
+ * payload to flush, and exit 0.
  */
-export function exitGraceful(options: ExitOptions = {}): void {
+export async function exitGraceful(options: ExitOptions = {}): Promise<void> {
   if (bufferedChunks) {
     bufferedChunks = [];
   }
+  await pendingModelContext;
   if (!options.skipExit) {
     process.exit(0);
   }
@@ -152,4 +189,5 @@ export function exitGraceful(options: ExitOptions = {}): void {
  */
 export function resetHookIoState(): void {
   moduleHasEmitted = false;
+  pendingModelContext = Promise.resolve();
 }

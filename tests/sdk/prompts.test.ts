@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 
-import { buildObservationPrompt, buildSummaryPrompt } from '../../src/sdk/prompts.js';
+import { buildObservationPrompt, buildSummaryPrompt, stripImagePayloadsFromField } from '../../src/sdk/prompts.js';
 
 const summaryMode = {
   prompts: {
@@ -31,7 +31,9 @@ describe('buildObservationPrompt', () => {
 
     expect(prompt).toContain('Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" />');
     expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
-    expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
+    expect(prompt).toContain('Never reply with an empty response, or with prose such as "Skipping", "No substantive tool executions"');
+    // The sentinel is the only no-op answer; anything else is re-asked once, then dropped.
+    expect(prompt).toContain('Only <observation> blocks or the <skip_summary /> sentinel complete this tool use');
   });
 
   it('explains redaction markers only when the observed tool use carries one', () => {
@@ -63,6 +65,18 @@ describe('buildObservationPrompt', () => {
     expect(prompt).toContain("Used <redacted type='openai_key'/> during setup.");
     expect(prompt).toContain(`If you see a "<redacted type='...'/>" marker`);
     expect(prompt).toContain('do not infer the literal value or copy the marker itself into generated memory content.');
+  });
+
+  it('offers the skip sentinel, not silence, when there is nothing to summarize', () => {
+    const prompt = buildSummaryPrompt({
+      id: 1,
+      memory_session_id: 'memory-session-1',
+      project: '/repo',
+      user_prompt: 'summarize',
+      last_assistant_message: 'Nothing happened.',
+    }, summaryMode);
+
+    expect(prompt).toContain('reply with exactly <skip_summary reason="nothing durable" /> instead of an empty response or prose');
   });
 });
 
@@ -291,5 +305,227 @@ describe('buildObservationPrompt keeps url-backed image sources (#3730 review)',
 
     expect(/A{200,}/.test(prompt)).toBe(false);
     expect(prompt).toContain('image data withheld from the observer');
+  });
+});
+
+describe('buildObservationPrompt strips the MCP image block shape', () => {
+  // An MCP tool result carries the bytes on the block itself:
+  // { type: 'image', data: '<base64>', mimeType } — no `source`, no `file`.
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+
+  function mcpScreenshotOutcome() {
+    return JSON.stringify({
+      content: [
+        { type: 'text', text: 'Browser tab: 1, Title: "katalog"' },
+        { type: 'image', data: BASE64, mimeType: 'image/png', _meta: { 'codex/imageDetail': 'original' } },
+      ],
+      isError: false,
+    });
+  }
+
+  it('keeps no base64 run from an MCP image block, and says what it withheld', () => {
+    const prompt = buildObservationPrompt({
+      id: 12,
+      tool_name: 'mcp__cua_repl__js',
+      tool_input: JSON.stringify({ code: 'await tab.screenshot()' }),
+      tool_output: mcpScreenshotOutcome(),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+
+    expect(/A{200,}/.test(prompt)).toBe(false);
+    expect(prompt).toContain('Browser tab: 1');
+    expect(prompt).toContain('image data withheld from the observer');
+    expect(prompt).toContain(String(BASE64.length));
+    expect(prompt).toContain('image/png');
+  });
+
+  it('leaves an image block whose data is not a string alone', () => {
+    const prompt = buildObservationPrompt({
+      id: 13,
+      tool_name: 'mcp__cua_repl__js',
+      tool_input: JSON.stringify({}),
+      tool_output: JSON.stringify({ content: [{ type: 'image', data: { ref: 'frame-1' } }] }),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+
+    expect(prompt).toContain('frame-1');
+    expect(prompt).not.toContain('image data withheld from the observer');
+  });
+});
+
+describe('buildObservationPrompt elides an inlined data:image URL wherever it sits', () => {
+  // A browser tool can return a screenshot as a plain string field of an
+  // ordinary object — no content block around it.
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+
+  function build(toolOutput: unknown) {
+    return buildObservationPrompt({
+      id: 14,
+      tool_name: 'mcp__cua_repl__js',
+      tool_input: JSON.stringify({}),
+      tool_output: JSON.stringify(toolOutput),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+  }
+
+  it('replaces the payload with a marker that keeps the mime type and byte count', () => {
+    const prompt = build({
+      _meta: { 'codex/toolSurface': { screenshot: {
+        pageUrl: 'http://127.0.0.1:8765/', tabId: '1', url: 'data:image/jpeg;base64,' + BASE64,
+      } } },
+    });
+
+    expect(/A{200,}/.test(prompt)).toBe(false);
+    expect(prompt).toContain(`data:image/jpeg;base64,<elided ${BASE64.length} bytes>`);
+    expect(prompt).toContain('http://127.0.0.1:8765/');
+    expect(prompt).toContain('"tabId": "1"');
+  });
+
+  it('elides an uppercase DATA: URL in a string the same way', () => {
+    const prompt = build({ shots: ['DATA:image/png;base64,' + BASE64] });
+
+    expect(/A{200,}/.test(prompt)).toBe(false);
+    expect(prompt).toContain(`<elided ${BASE64.length} bytes>`);
+  });
+
+  it('leaves a small data URL alone — an icon is cheap and may carry signal', () => {
+    const icon = 'data:image/png;base64,' + 'B'.repeat(100);
+    const prompt = build({ favicon: icon });
+
+    expect(prompt).toContain(icon);
+  });
+
+  it('leaves a data URL that is not an image alone', () => {
+    const prompt = build({ note: 'data:text/plain;base64,' + 'C'.repeat(2_000) });
+
+    expect(/C{2000}/.test(prompt)).toBe(true);
+  });
+});
+
+describe('stripImagePayloadsFromField looks inside string values that are themselves JSON', () => {
+  // A tool result can reach the observer serialized twice, or carry its
+  // content blocks as JSON text inside a string field. The image is then not
+  // an object in the parsed field, and no shape matched it.
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+  const result = {
+    content: [
+      { type: 'text', text: 'Browser tab: 1, Title: "katalog"' },
+      { type: 'image', data: BASE64, mimeType: 'image/png' },
+    ],
+    isError: false,
+  };
+
+  it('strips inside a double-encoded field', () => {
+    const field = JSON.stringify(JSON.stringify(result));
+    const out = stripImagePayloadsFromField(field);
+
+    expect(typeof out).toBe('string');
+    expect(/A{200,}/.test(out as string)).toBe(false);
+    const inner = JSON.parse(out as string);
+    expect(inner.content[0].text).toContain('Browser tab: 1');
+    expect(inner.content[1]).toMatchObject({ type: 'image', bytes: BASE64.length, mimeType: 'image/png' });
+  });
+
+  it('strips inside a JSON string nested in an ordinary field, and re-serializes only that string', () => {
+    const field = JSON.stringify({ exitCode: 0, stdout: JSON.stringify(result) });
+    const out = stripImagePayloadsFromField(field) as { exitCode: number; stdout: string };
+
+    expect(out.exitCode).toBe(0);
+    expect(typeof out.stdout).toBe('string');
+    expect(/A{200,}/.test(out.stdout)).toBe(false);
+    expect(JSON.parse(out.stdout).content[0].text).toContain('Browser tab: 1');
+  });
+
+  it('returns the field it was given when a nested JSON string has no image in it', () => {
+    const nested = JSON.stringify({ rows: Array.from({ length: 40 }, (_, i) => ({ id: i, name: `row ${i}` })) });
+    const parsedField = { stdout: nested };
+    expect(stripImagePayloadsFromField(parsedField)).toBe(parsedField);
+
+    const textField = JSON.stringify(parsedField);
+    expect(stripImagePayloadsFromField(textField)).toBe(textField);
+  });
+
+  it('does not parse a short string', () => {
+    const short = JSON.stringify({ type: 'image', data: 'abc' });
+    const parsedField = { note: short };
+    expect(short.length).toBeLessThan(256);
+    expect(stripImagePayloadsFromField(parsedField)).toBe(parsedField);
+  });
+
+  it('leaves a long string that only looks like JSON alone', () => {
+    const parsedField = { stdout: '{ not json ' + 'x'.repeat(500) };
+    expect(stripImagePayloadsFromField(parsedField)).toBe(parsedField);
+  });
+});
+
+describe('stripImagePayloadsFromField is idempotent and bounded on the new shapes', () => {
+  // A field is stripped twice: before the condense pass and again at prompt
+  // build. The second pass must return what the first produced, unchanged.
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+  const cases: Record<string, unknown> = {
+    'MCP image block': { content: [{ type: 'image', data: BASE64, mimeType: 'image/png' }] },
+    'data:image URL string': { screenshot: { tabId: '1', url: 'data:image/jpeg;base64,' + BASE64 } },
+    'double-encoded field': JSON.stringify({ content: [{ type: 'image', data: BASE64 }] }),
+  };
+
+  for (const [name, payload] of Object.entries(cases)) {
+    it(`a second pass leaves the ${name} as the first pass left it`, () => {
+      const once = stripImagePayloadsFromField(JSON.stringify(payload));
+      expect(once).not.toBe(JSON.stringify(payload));
+      expect(stripImagePayloadsFromField(once)).toBe(once);
+      expect(stripImagePayloadsFromField(JSON.stringify(once))).toBe(JSON.stringify(once));
+    });
+  }
+
+  it('elides a data:image URL inside a nested JSON string', () => {
+    const field = { stdout: JSON.stringify({ tabId: '1', url: 'data:image/png;base64,' + BASE64 }) };
+    const out = stripImagePayloadsFromField(field) as { stdout: string };
+
+    expect(JSON.parse(out.stdout)).toEqual({ tabId: '1', url: `data:image/png;base64,<elided ${BASE64.length} bytes>` });
+  });
+
+  it('parses a nested JSON string only within the depth guard', () => {
+    const image = JSON.stringify({ type: 'image', data: BASE64 });
+    const nest = (levels: number): unknown => {
+      let node: unknown = image;
+      for (let i = 0; i < levels; i++) node = { a: node };
+      return node;
+    };
+
+    const shallow = nest(3);
+    expect(stripImagePayloadsFromField(shallow)).not.toBe(shallow);
+    const deep = nest(20);
+    expect(stripImagePayloadsFromField(deep)).toBe(deep);
+  });
+});
+
+describe('stripImagePayloadsFromField parses a nested JSON string only when it may hold an image', () => {
+  const BASE64 = '/9j/4AAQSkZJRgABAQAAAQ' + 'A'.repeat(200_000);
+
+  it('returns an image-free 300 KB JSON string untouched without parsing it', () => {
+    // An accessibility tree mentions images in prose; that is not a payload.
+    const rows = Array.from({ length: 3_000 }, (_, i) => ({ id: i, text: `image Igor ${i}`, path: `/assets/${i}.png` }));
+    const nested = JSON.stringify({ rows });
+    expect(nested.length).toBeGreaterThan(150_000);
+    const field = { stdout: nested + ' '.repeat(Math.max(0, 300_000 - nested.length)) };
+    const parse = spyOn(JSON, 'parse');
+    try {
+      expect(stripImagePayloadsFromField(field)).toBe(field);
+      expect(parse).toHaveBeenCalledTimes(0);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('still strips an image block nested two string levels deep, where its quotes are escaped', () => {
+    const inner = JSON.stringify({ content: [{ type: 'image', data: BASE64 }], pad: 'p'.repeat(300) });
+    const field = { stdout: JSON.stringify({ result: inner }) };
+    const out = stripImagePayloadsFromField(field) as { stdout: string };
+
+    expect(/A{200,}/.test(out.stdout)).toBe(false);
+    expect(JSON.parse(JSON.parse(out.stdout).result).content[0]).toMatchObject({ type: 'image', bytes: BASE64.length });
   });
 });

@@ -30,6 +30,24 @@ const withGrokReadPath = (toolInput: unknown): unknown => {
   return { ...record, file_path: target };
 };
 
+/**
+ * Read Qwen Code's `submitted_prompt` into the three states the handler needs.
+ *
+ * The distinction that matters is presence, not truthiness: an absent field
+ * means the host cannot tell a continuation send from a user turn, and an empty
+ * one means the host can and is saying this was not a user turn. Collapsing
+ * those two is what wrote a fake `[media prompt]` row for every tool round
+ * (#4215).
+ */
+export const normalizeSubmittedPrompt = (raw: unknown): string | null | undefined => {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const record = raw as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(record, 'submitted_prompt')) return undefined;
+  const value = record.submitted_prompt;
+  if (typeof value !== 'string') return null;
+  return value.trim() ? value : null;
+};
+
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
@@ -45,18 +63,21 @@ export const claudeCodeAdapter: PlatformAdapter = {
       sessionId: r.session_id ?? r.id ?? r.sessionId,
       cwd,
       prompt: firstFilledString(r.prompt, r.userPrompt),
+      submittedPrompt: normalizeSubmittedPrompt(r),
       toolName: firstFilledString(r.tool_name, r.toolName),
       toolInput: withGrokReadPath(firstDefined(r.tool_input, r.toolInput)),
       toolResponse: firstDefined(r.tool_response, r.toolResponse, r.toolResult),
       toolUseId: firstFilledString(r.tool_use_id, r.toolUseId),
       transcriptPath: firstFilledString(r.transcript_path, r.transcriptPath),
-      // #3161: feeds summarize.ts's re-entry loop breaker (codex.ts already
-      // maps this; without it the breaker never fires on Claude Code).
-      // Grok Build sends camelCase stopHookActive and lastAssistantMessage
-      // and does not write a Claude transcript for the Stop hook.
-      stopHookActive: typeof r.stop_hook_active === 'boolean'
-        ? r.stop_hook_active
-        : typeof r.stopHookActive === 'boolean' ? r.stopHookActive : undefined,
+      // stop_hook_active is deliberately not mapped. Claude Code sets it once a
+      // Stop hook has blocked the stop and Claude kept working. claude-mem's
+      // Stop hook never blocks (it always exits 0 with continue: true), so the
+      // flag can only come from another plugin and never marks a loop
+      // claude-mem must break. Honoring it (#3168) dropped the summary and the
+      // advisor capture for every turn after such a hook fired. Grok Build's
+      // camelCase stopHookActive is ignored for the same reason.
+      // Grok Build sends lastAssistantMessage and does not write a Claude
+      // transcript for the Stop hook.
       lastAssistantMessage: firstFilledString(r.last_assistant_message, r.lastAssistantMessage),
       reason: pickStringField(r.reason),
       agentId: pickAgentField(r.agent_id) ?? pickAgentField(r.agentId),

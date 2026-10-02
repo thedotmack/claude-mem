@@ -3,6 +3,7 @@ import net from 'net';
 import {
   isPortInUse,
   classifyPortOccupancy,
+  probePortBind,
   waitForHealth,
   waitForPortFree,
   getRunningWorkerVersion,
@@ -97,10 +98,11 @@ describe('HealthMonitor', () => {
     // restart handoff and the daemon duplicate gate must not start a worker
     // onto a port whose state is unknown.
     it('should treat other socket errors as in use (indeterminate is never free)', async () => {
+      // EACCES / EADDRNOTAVAIL are 'unbindable', not unknown; see classifyPortOccupancy.
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {
           if (event === 'error') {
-            setTimeout(() => cb({ code: 'EACCES' }), 0);
+            setTimeout(() => cb({ code: 'EMFILE' }), 0);
           }
         }),
         listen: mock(() => {}),
@@ -262,11 +264,16 @@ describe('HealthMonitor', () => {
       return { server, close };
     };
 
-    it('distinguishes occupied, free, and every non-occupancy outcome', async () => {
+    it('distinguishes occupied, free, unbindable, and every other outcome', async () => {
       const cases = [
         { event: 'error' as const, value: { code: 'EADDRINUSE' }, expected: 'occupied' },
         { event: 'listening' as const, expected: 'free' },
-        { event: 'error' as const, value: { code: 'EACCES' }, expected: 'indeterminate' },
+        // The system refuses the bind itself: no other process causes it and
+        // no wait clears it, so it is neither busy nor unknown (#3219 called
+        // it in use, and the daemon exited 0 as a duplicate).
+        { event: 'error' as const, value: { code: 'EACCES' }, expected: 'unbindable' },
+        { event: 'error' as const, value: { code: 'EADDRNOTAVAIL' }, expected: 'unbindable' },
+        { event: 'error' as const, value: { code: 'EMFILE' }, expected: 'indeterminate' },
       ];
       for (const testCase of cases) {
         const { server, close } = mockServer(testCase.event, testCase.value);
@@ -275,6 +282,25 @@ describe('HealthMonitor', () => {
         if (testCase.expected === 'free') expect(close).toHaveBeenCalledTimes(1);
         spy.mockRestore();
       }
+    });
+
+    it('reports the errno of an unbindable port, and never calls that port in use', async () => {
+      const { server } = mockServer('error', { code: 'EADDRNOTAVAIL' });
+      const spy = spyOn(net, 'createServer').mockImplementation(() => server as any);
+      try {
+        expect(await probePortBind(37777, 100)).toEqual({ occupancy: 'unbindable', bindErrorCode: 'EADDRNOTAVAIL' });
+        // Nothing holds the port: a worker that tries to listen fails with
+        // that errno, which the daemon reports as a boot failure.
+        expect(await isPortInUse(37777, 100)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('binds a real address that is not this machine\'s as unbindable', async () => {
+      // TEST-NET-1 (RFC 5737) is never a local address: bind() fails with EADDRNOTAVAIL.
+      process.env.CLAUDE_MEM_WORKER_HOST = '192.0.2.1';
+      expect(await probePortBind(37988, 1000)).toEqual({ occupancy: 'unbindable', bindErrorCode: 'EADDRNOTAVAIL' });
     });
 
     it('treats close failure and synchronous listen failure as indeterminate', async () => {

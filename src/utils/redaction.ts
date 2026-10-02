@@ -1,6 +1,8 @@
+import { existsSync, readFileSync } from 'fs';
 import { logger } from './logger.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../shared/paths.js';
+import { stripUtf8Bom } from '../shared/atomic-json.js';
 
 export interface RedactionPattern {
   name: string;
@@ -154,8 +156,61 @@ export function loadRedactionConfig(settings: Partial<RedactionSettings>): Redac
 let cachedConfig: RedactionConfig | null = null;
 let cacheStamp = 0;
 const CACHE_TTL_MS = 5000;
+// The last configuration read from a settings.json that parsed, kept so a
+// file that later becomes unreadable cannot quietly turn redaction off.
+let lastLoadedConfig: RedactionConfig | null = null;
+let warnedUnreadableSettings = false;
 
-export function getRedactionConfig(): RedactionConfig {
+const BUILTINS_ONLY: RedactionConfig = { enabled: true, disabledBuiltinPatterns: [], customPatterns: [], logMatches: false };
+// How a settings.json that no longer parses can still show it asked for redaction.
+const REDACTION_REQUESTED_IN_RAW = /"CLAUDE_MEM_REDACT_ENABLED"\s*:\s*"true"/;
+
+function readSettingsText(settingsPath: string): string | null {
+  if (!existsSync(settingsPath)) return null;
+  try {
+    return readFileSync(settingsPath, 'utf-8');
+  } catch {
+    // [ANTI-PATTERN IGNORED]: an unreadable file is exactly the case the caller
+    // handles (it falls back toward redacting); there is nothing else to report.
+    return '';
+  }
+}
+
+/** True when settings.json exists but is not a JSON object, so every reader fell back to defaults. */
+function isUnreadableSettings(text: string | null): text is string {
+  if (text === null) return false;
+  try {
+    const parsed: unknown = JSON.parse(stripUtf8Bom(text));
+    return parsed === null || typeof parsed !== 'object' || Array.isArray(parsed);
+  } catch {
+    // [ANTI-PATTERN IGNORED]: a parse failure is the signal being tested for.
+    return true;
+  }
+}
+
+/**
+ * A settings.json that does not parse makes every reader fall back to the
+ * defaults, and the default is redaction off. When the user had asked for
+ * redaction (the last configuration that loaded, or the broken file's own
+ * text), keep redacting instead: with that last configuration, or the
+ * built-in patterns. An explicit CLAUDE_MEM_REDACT_ENABLED=false in the
+ * environment still wins.
+ */
+function configForUnreadableSettings(settingsPath: string, text: string, loaded: RedactionConfig): RedactionConfig {
+  if (process.env.CLAUDE_MEM_REDACT_ENABLED === 'false') return loaded;
+  const requested = lastLoadedConfig?.enabled === true || REDACTION_REQUESTED_IN_RAW.test(text);
+  if (!requested) return loaded;
+  if (!warnedUnreadableSettings) {
+    warnedUnreadableSettings = true;
+    logger.warn('REDACT', 'settings.json could not be read; secret redaction stays on until it is repaired', {
+      settingsPath,
+      using: lastLoadedConfig?.enabled ? 'the last configuration that loaded' : 'the built-in patterns',
+    });
+  }
+  return lastLoadedConfig?.enabled ? lastLoadedConfig : BUILTINS_ONLY;
+}
+
+export function getRedactionConfig(settingsPath: string = USER_SETTINGS_PATH): RedactionConfig {
   const now = Date.now();
   if (cachedConfig && now - cacheStamp < CACHE_TTL_MS) {
     return cachedConfig;
@@ -164,14 +219,47 @@ export function getRedactionConfig(): RedactionConfig {
   // paths.ts, env overrides applied by SettingsDefaultsManager).
   // TODO(server-beta config scope): source tenant-scoped settings once
   // multi-tenant deployments have them.
-  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-  cachedConfig = loadRedactionConfig(settings as unknown as Partial<RedactionSettings>);
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const loaded = loadRedactionConfig(settings as unknown as Partial<RedactionSettings>);
+  const text = loaded.enabled ? null : readSettingsText(settingsPath);
+  if (isUnreadableSettings(text)) {
+    cachedConfig = configForUnreadableSettings(settingsPath, text, loaded);
+  } else {
+    cachedConfig = loaded;
+    lastLoadedConfig = loaded;
+  }
   cacheStamp = now;
   return cachedConfig;
+}
+
+/** A log line with every recognized secret replaced, while redaction is on. */
+export function redactForLog(text: string): string {
+  return redactSensitive(text, getRedactionConfig()).redacted;
+}
+
+/**
+ * The value with every string in it (object values and array items, at any
+ * depth) redacted, while redaction is on; the caller's value is not mutated.
+ * For raw structured payloads that are stored as-is, such as server runtime
+ * agent events.
+ */
+export function redactJsonStrings<T>(value: T, config: RedactionConfig = getRedactionConfig()): T {
+  if (!config.enabled) return value;
+  const walk = (node: unknown): unknown => {
+    if (typeof node === 'string') return redactSensitive(node, config).redacted;
+    if (Array.isArray(node)) return node.map(walk);
+    if (node !== null && typeof node === 'object') {
+      return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, walk(child)]));
+    }
+    return node;
+  };
+  return walk(value) as T;
 }
 
 // Test helper — resets the cache so unit tests can re-stub settings.
 export function _resetRedactionConfigCache(): void {
   cachedConfig = null;
   cacheStamp = 0;
+  lastLoadedConfig = null;
+  warnedUnreadableSettings = false;
 }

@@ -35,6 +35,7 @@
   "files": [
     "dist",
     ".agents/plugins/marketplace.json",
+    ".claude-plugin",
     ".codex-plugin",
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
@@ -50,7 +51,8 @@
     "plugin/sqlite",
     "plugin/skills",
     "plugin/ui",
-    "openclaw"
+    "openclaw",
+    "omp"
   ],
   "engines": {
     "node": ">=20.12.0",
@@ -196,5 +198,35 @@
     "tree-sitter-ruby",
     "tree-sitter-rust",
     "tree-sitter-typescript"
-  ]
+  ],
+  "allowScripts": {
+    "tree-sitter-cli": true,
+    "tree-sitter": true,
+    "tree-sitter-c": true,
+    "tree-sitter-cpp": true,
+    "tree-sitter-go": true,
+    "tree-sitter-java": true,
+    "tree-sitter-javascript": true,
+    "tree-sitter-python": true,
+    "tree-sitter-ruby": true,
+    "tree-sitter-rust": true,
+    "tree-sitter-typescript": true,
+    "tree-sitter-kotlin": true,
+    "tree-sitter-swift": true,
+    "tree-sitter-php": true,
+    "tree-sitter-scala": true,
+    "tree-sitter-bash": true,
+    "tree-sitter-haskell": true,
+    "tree-sitter-css": true,
+    "tree-sitter-scss": true,
+    "@tree-sitter-grammars/tree-sitter-lua": true,
+    "@tree-sitter-grammars/tree-sitter-zig": true,
+    "@tree-sitter-grammars/tree-sitter-toml": true,
+    "@tree-sitter-grammars/tree-sitter-yaml": true,
+    "@tree-sitter-grammars/tree-sitter-markdown": true,
+    "@derekstride/tree-sitter-sql": true,
+    "esbuild": true,
+    "@biomejs/biome": true,
+    "better-sqlite3": true
+  }
 }

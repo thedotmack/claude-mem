@@ -75,7 +75,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds,
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -138,7 +138,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
         searchSessions: mock(() => []),
         searchUserPrompts: mock(() => []),
       } as any,
-      {} as any,
+      { getProjectReadKeys: (projects: string[]) => projects } as any,
       null,
       {
         formatSearchTableHeader: mock(() => '| h |'),
@@ -336,7 +336,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds,
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       {
         queryChroma: mock(() => Promise.resolve({
@@ -417,7 +417,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds,
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -444,6 +444,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       orderBy: 'date_desc',
       limit: 10,
       project: 'search-project',
+      projects: ['search-project'],
       platformSource: 'cursor',
     });
     expect(result.sessions).toEqual([session]);
@@ -482,7 +483,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,
+        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -502,6 +503,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       orderBy: 'date_desc',
       limit: 10,
       project: 'search-project',
+      projects: ['search-project'],
       platformSource: 'cursor',
     });
     expect(result.prompts).toEqual([prompt]);
@@ -542,7 +544,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
         getTimelineAroundObservation,
       } as any,
       null,
@@ -636,7 +638,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -715,7 +717,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -787,7 +789,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
       {} as any,
@@ -808,6 +810,108 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       observations: [observation],
       totalResults: 1,
     }));
+  });
+
+  // #3531 — SQLite reads compare project keys case-insensitively, but Chroma
+  // metadata filters are exact, so every stored spelling is passed to Chroma.
+  it('hands Chroma every stored spelling of the project', async () => {
+    const queryChroma = mock(() => Promise.resolve({ ids: [], distances: [], metadatas: [] }));
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: () => ['pasteypal', 'PasteyPal'],
+      } as any,
+      { queryChroma } as any,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.search({ query: 'overlap', type: 'observations', project: 'pasteypal', format: 'json', limit: 10 });
+
+    const spellings = { $in: ['pasteypal', 'PasteyPal'] };
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
+      $and: [
+        { doc_type: 'observation' },
+        { $or: [{ project: spellings }, { merged_into_project: spellings }] },
+      ],
+    });
+  });
+
+  // Gate P2-5: a checkout's search covers every key it reads (its current key
+  // and the ones it wrote under before a re-key), in Chroma and in the SQLite
+  // hydration alike.
+  it('searches every project of a checkout and hydrates with the same keys', async () => {
+    const observation = { id: 7, title: 'from the folder key', created_at_epoch: Date.now() };
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [observation.id],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: observation.id, doc_type: 'observation', project: 'api', created_at_epoch: Date.now() }],
+    }));
+    const getProjectReadKeys = mock((projects: string[]) => [...projects, 'old-folder']);
+    const getObservationsByIds = mock(() => [observation]);
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds,
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys,
+      } as any,
+      { queryChroma } as any,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.search({ query: 'overlap', type: 'observations', project: 'acme/api', projects: 'api,acme/api', format: 'json', limit: 10 });
+
+    expect(getProjectReadKeys).toHaveBeenCalledWith(['acme/api', 'api']);
+    const keys = { $in: ['acme/api', 'api', 'old-folder'] };
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
+      $and: [
+        { doc_type: 'observation' },
+        { $or: [{ project: keys }, { merged_into_project: keys }] },
+      ],
+    });
+    expect(getObservationsByIds).toHaveBeenCalledWith([observation.id], expect.objectContaining({
+      projects: ['acme/api', 'api', 'old-folder'],
+    }));
+  });
+
+  // Gate P2-14: the keyword fallback after a Chroma error was the one search
+  // path without a catch, so a query that broke both surfaced as a failed
+  // request instead of an empty answer (the Chroma-less path already caught).
+  it('answers instead of throwing when Chroma fails and the keyword fallback fails too', async () => {
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => { throw new Error('Expression tree is too large (maximum depth 1000)'); }),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
+      } as any,
+      { queryChroma: mock(() => Promise.reject(new Error('chroma-mcp tool "chroma_query_documents" returned error'))) } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await manager.search({ query: 'a pasted wall of text', format: 'json', limit: 10 });
+
+    expect(result).toEqual(expect.objectContaining({ observations: [], totalResults: 0 }));
   });
 });
 
@@ -939,7 +1043,7 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,
+        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
       {} as any,
@@ -972,7 +1076,7 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
-        getUserPromptsByIds,
+        getUserPromptsByIds,         getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma: chromaReturningOnlyPrompt(userPrompt.id) } as any,
       {} as any,
@@ -1058,5 +1162,63 @@ describe('SearchManager per-category SQLite supplement (unified /api/search path
       expect(result.observations).toHaveLength(3);
       expect(result.prompts.map((p: { id: number }) => p.id)).toEqual([promptId]);
     });
+  });
+});
+
+describe('SearchManager dates survive a host whose date formatter cannot initialize (#4126)', () => {
+  // Bun/JavaScriptCore on Windows with an unresolvable system time zone: every
+  // toLocale* call throws. #4126 guarded the shared helpers; these four dates
+  // in SearchManager still called toLocaleString() directly.
+  const ts = '2025-01-04T21:34:56.000Z';
+  const originalToLocaleString = Date.prototype.toLocaleString;
+
+  beforeEach(() => {
+    Date.prototype.toLocaleString = (() => {
+      throw new TypeError('failed to initialize DateTimeFormat');
+    }) as typeof Date.prototype.toLocaleString;
+  });
+
+  afterEach(() => {
+    Date.prototype.toLocaleString = originalToLocaleString;
+  });
+
+  it('renders recent session context instead of failing', async () => {
+    const manager = new SearchManager(
+      {} as any,
+      {
+        getRecentSessionsWithStatus: () => [
+          { memory_session_id: 'summarized', has_summary: true, status: 'completed', started_at: ts, user_prompt: 'one' },
+          { memory_session_id: 'running', has_summary: false, status: 'active', started_at: ts, user_prompt: 'two' },
+          { memory_session_id: 'stopped', has_summary: false, status: 'failed', started_at: ts, user_prompt: 'three' },
+        ],
+        getSummaryForSession: () => ({ request: 'Fix the worker', created_at: ts, prompt_number: 1 }),
+        getObservationsForSession: () => [],
+      } as any,
+      null,
+      {} as any,
+      {} as any,
+    );
+
+    const rendered = await manager.getRecentContext({ project: 'dates-project', limit: 3 });
+    const text = rendered.content[0].text as string;
+
+    expect(text.match(/\*\*Date:\*\* 2025-01-04 9:34 PM UTC/g)).toHaveLength(3);
+  });
+
+  it('renders timeline anchor matches instead of failing', async () => {
+    const manager = new SearchManager(
+      {
+        searchObservations: () => [{ id: 7, title: 'Anchor', subtitle: null, type: 'bugfix', created_at_epoch: Date.parse(ts) }],
+      } as any,
+      {} as any,
+      null,
+      {} as any,
+      {} as any,
+    );
+
+    const rendered = await manager.getTimelineByQuery({ query: 'anchor', mode: 'interactive' });
+    const text = rendered.content[0].text as string;
+
+    expect(text).toContain('   - Date: 2025-01-04 9:34 PM UTC');
   });
 });

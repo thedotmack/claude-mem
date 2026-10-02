@@ -19,13 +19,48 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { proTrialLine, proTrialUrl, PLAN_USAGE_GAIN_PERCENT } from '../../shared/pro-promo.js';
+import { proTrialLine } from '../../shared/pro-promo.js';
 import {
+  cmemGatewayRole,
   hasShownProFallbackNotice,
-  isCmemGatewayUrl,
   markProFallbackNoticeShown,
+  proFallbackNotice,
   trialDaysRemaining,
 } from '../../shared/cmem-gateway.js';
+import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import type { ContextInput } from '../../services/context/types.js';
+import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
+
+// Plan-24 step 4 (#2991): in server runtime every write goes to the shared
+// server, so SessionStart reads from it too, straight from this hook process.
+// The rows go through the same renderer and 10,000-character budget as the
+// worker's /api/context/inject (#4112). No local worker is started or asked,
+// and a server that cannot answer yields an empty block (logged as
+// [server-fallback]), never stale local rows. One read serves both the model
+// block and the colored terminal copy, and it is bounded by what the host's
+// SessionStart limit leaves (Codex kills the hook at 20 s, the client's own
+// default is 30 s).
+async function renderSessionStartFromServer(
+  runtime: ServerRuntimeContext,
+  contextInput: ContextInput,
+  withColoredTerminalRender: boolean,
+  modeId: string,
+  host: string | undefined,
+): Promise<{ model: string; terminal: string }> {
+  const [{ generateServerSessionStartContext }, { ModeManager }] = await Promise.all([
+    import('../../services/context/ContextBuilder.js'),
+    import('../../services/domain/ModeManager.js'),
+  ]);
+  // The worker loads the active mode at boot. This hook process has no worker,
+  // so it loads the same mode itself: the renderer reads its observation types,
+  // emojis and legend.
+  ModeManager.getInstance().loadMode(modeId);
+  const { model, terminal } = await generateServerSessionStartContext(runtime, contextInput, {
+    withTerminalRender: withColoredTerminalRender,
+    timeoutMs: serverSessionStartBudgetMs(host),
+  });
+  return { model, terminal: terminal ?? model };
+}
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -70,12 +105,34 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
+    // Server runtime reads the shared server (plan-24 step 4). When the server
+    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
+    // exactly as the write hooks do, so reads and writes stay on one corpus.
+    const runtime = resolveRuntimeContext();
+    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
+    const serverRender = serverRuntime
+      ? await renderSessionStartFromServer(
+          serverRuntime,
+          {
+            session_id: input.sessionId,
+            cwd,
+            projects: context.allProjects,
+            ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
+          },
+          showTerminalOutput && input.platform === 'claude-code',
+          settings.CLAUDE_MEM_MODE,
+          input.platform,
+        )
+      : null;
+
     // ponytail: Codex's MCP normally starts the worker; this one bounded
     // fallback covers cold sessions without the old startup process chain.
     const workerOptions = input.platform === 'codex'
       ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
       : undefined;
-    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    const contextResult = serverRender
+      ? serverRender.model
+      : await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     if (isWorkerFallback(contextResult)) {
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
@@ -96,9 +153,19 @@ export const contextHandler: EventHandler = {
     // Issue #2215: surface stale OAuth token marker as a session-start hint.
     // Marker is written by EnvManager.buildIsolatedEnvWithFreshOAuth() when
     // a previous worker spawn detected an expired keychain entry.
-    const staleReason = readStaleMarker();
+    // Other observer providers do not use Claude credentials. Keep the hint
+    // for a configured Claude route, including the gateway's active fallback.
+    const gatewayRole = cmemGatewayRole(settings);
+    const usesClaudeCredentials = (settings.CLAUDE_MEM_PROVIDER || 'claude') === 'claude'
+      || String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim() === 'claude'
+      || (gatewayRole === 'primary' && Boolean(settings.CLAUDE_MEM_PRO_FALLBACK_AT));
+    const staleReason = usesClaudeCredentials ? readStaleMarker() : null;
     if (staleReason) {
-      const hint = `[claude-mem] Claude Desktop OAuth token is stale: ${staleReason}\nPlease re-login via Claude Desktop to refresh the token.`;
+      // The observer authenticates with the Claude Code CLI credentials
+      // (keychain service "Claude Code-credentials", see oauth-token.ts), not
+      // Claude Desktop. Point the remedy at the CLI so the user runs the right
+      // login (#4150).
+      const hint = `[claude-mem] Claude Code OAuth token is stale: ${staleReason}\nRun /login in Claude Code (or \`claude auth login\` in a terminal) to refresh it.`;
       additionalContext = additionalContext
         ? `${hint}\n\n${additionalContext}`
         : hint;
@@ -109,12 +176,21 @@ export const contextHandler: EventHandler = {
     // delivered key, and dispatch now runs memory on the Anthropic plan. Tell
     // the user exactly once (DATA_DIR marker file, oauth-stale pattern); the
     // marker resets whenever the fallback is cleared.
-    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== ''
-      && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
-      && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+    //
+    // The gateway's own words, stored with the marker, say what happened and
+    // what to do. They enter model context, so proFallbackNotice relays them
+    // as plain bounded lines and keeps only an https cmem.ai link.
+    //
+    // The gateway as the opt-in quota fallback gets the same notice with its
+    // own consequence: dispatch skips it while it turns the account away, and
+    // without this the user would never learn why the fallback stopped.
+    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== '' && gatewayRole !== null;
     if (fallbackActive && !hasShownProFallbackNotice()) {
-      const fallbackNotice = 'Your claude-mem free trial ended — memory now runs on your Anthropic plan.\n'
-        + `Keep it off-plan (up to ${PLAN_USAGE_GAIN_PERCENT}% more usage): ${proTrialUrl('fallback')}`;
+      const fallbackNotice = proFallbackNotice({
+        message: settings.CLAUDE_MEM_PRO_FALLBACK_MESSAGE,
+        action: settings.CLAUDE_MEM_PRO_FALLBACK_ACTION,
+        url: settings.CLAUDE_MEM_PRO_FALLBACK_URL,
+      }, gatewayRole);
       additionalContext = additionalContext
         ? `${fallbackNotice}\n\n${additionalContext}`
         : fallbackNotice;
@@ -123,7 +199,9 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+      const colorResult = serverRender
+        ? serverRender.terminal
+        : await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
       if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
         coloredTimeline = colorResult.trim();
       }
@@ -147,8 +225,11 @@ export const contextHandler: EventHandler = {
       ? `claude-mem free trial: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
       : null;
 
+    // In server runtime the viewer is served by the server (#2552), not by a
+    // local worker, so the link points there.
+    const viewerUrl = serverRuntime ? serverRuntime.serverBaseUrl : getViewerBaseUrl(port);
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ ${getViewerBaseUrl(port)}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
+      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
 
     return {

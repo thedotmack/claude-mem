@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { expandTilde, paths } from '../../shared/paths.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
+import type { SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 
 export const DEFAULT_CONFIG_PATH = paths.transcriptsConfig();
 export const DEFAULT_STATE_PATH = paths.transcriptsState();
@@ -35,21 +36,63 @@ export function shouldSuppressNativeCodexAgentsContext(watch: {
   return watch.context?.mode === 'agents' && isCanonicalCodexWatch && isNativeHookBackedCodexWatch(watch);
 }
 
-export function filterNativeHookBackedCodexWatches(
+/**
+ * Where Codex marks a subagent rollout: its first (session_meta) line carries
+ * payload.source = {"subagent":{"thread_spawn":{"parent_thread_id":…}}}
+ * (Codex 0.147+, #3651). Top-level sessions carry a plain string source
+ * ("cli", "vscode") and are captured by the native hooks.
+ */
+export const CODEX_SUBAGENT_SOURCE = { path: 'payload.source.subagent.thread_spawn' } as const;
+
+export type CodexWatchSettings = Pick<
+  SettingsDefaults,
+  'CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION' | 'CLAUDE_MEM_CODEX_SUBAGENT_INGESTION' | 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS'
+>;
+
+/**
+ * Native Codex hooks capture top-level sessions, so the native-hook-backed
+ * codex transcript watch is removed by default: nothing is captured twice.
+ *
+ * The hooks never fire for the subagent threads Codex spawns. Capturing those
+ * from their rollouts is opt-in (CLAUDE_MEM_CODEX_SUBAGENT_INGESTION): every
+ * tool call of every subagent turn is an observer request, spend that did not
+ * exist before #3655 and that lands on the gateway allowance or the user's own
+ * plan. Opted in, the watch stays on, scoped to subagent rollouts only, unless
+ * subagent observations are switched off altogether
+ * (CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS, #2736). With the explicit
+ * full-ingestion opt-in the watch is left untouched and ingests every session.
+ */
+export function scopeNativeHookBackedCodexWatches(
   config: TranscriptWatchConfig,
-  allowCodexTranscriptIngestion: boolean
-): { config: TranscriptWatchConfig; removed: number } {
-  if (allowCodexTranscriptIngestion) {
-    return { config, removed: 0 };
+  settings: CodexWatchSettings,
+): { config: TranscriptWatchConfig; scoped: number; removed: number } {
+  if (settings.CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION === 'true') {
+    return { config, scoped: 0, removed: 0 };
+  }
+  const captureSubagents = settings.CLAUDE_MEM_CODEX_SUBAGENT_INGESTION === 'true'
+    && settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS !== 'true';
+
+  let scoped = 0;
+  let removed = 0;
+  const watches: TranscriptWatchConfig['watches'] = [];
+  for (const watch of config.watches) {
+    if (!isNativeHookBackedCodexWatch(watch)) {
+      watches.push(watch);
+    } else if (captureSubagents) {
+      scoped += 1;
+      watches.push({ ...watch, subagentOnly: true, subagentSource: { ...CODEX_SUBAGENT_SOURCE } });
+    } else {
+      removed += 1;
+    }
   }
 
-  const watches = config.watches.filter(watch => !isNativeHookBackedCodexWatch(watch));
   return {
     config: {
       ...config,
       watches,
     },
-    removed: config.watches.length - watches.length,
+    scoped,
+    removed,
   };
 }
 

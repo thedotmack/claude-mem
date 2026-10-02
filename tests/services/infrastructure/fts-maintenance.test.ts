@@ -91,20 +91,24 @@ describe('FTS bloat reclaim', () => {
     expect(await reclaimFtsBloatInBoundedSteps(db)).toEqual([]);
   });
 
-  it('writes its marker before any work, never holds the process open, and schedules only once', () => {
+  it('never holds the process open, and a worker restarted before the timer fires schedules the reclaim again', () => {
     db = new Database(join(tempDir, 'fts.db'));
     seedBloatedObservationsFts(db);
 
     const timer = scheduleOneTimeFtsBloatReclaim(db, { dataDir: tempDir, startDelayMs: 60_000 });
 
     expect(timer).not.toBeNull();
-    expect(existsSync(join(tempDir, RECLAIM_MARKER_FILENAME))).toBe(true);
     expect(timer!.hasRef()).toBe(false);
-    clearTimeout(timer!);
-    expect(scheduleOneTimeFtsBloatReclaim(db, { dataDir: tempDir })).toBeNull();
+    // Nothing ran yet, so nothing may claim it did (gate P2-15).
+    expect(existsSync(join(tempDir, RECLAIM_MARKER_FILENAME))).toBe(false);
+    clearTimeout(timer!); // the worker stopped inside the delay
+
+    const nextStart = scheduleOneTimeFtsBloatReclaim(db, { dataDir: tempDir, startDelayMs: 60_000 });
+    expect(nextStart).not.toBeNull();
+    clearTimeout(nextStart!);
   });
 
-  it('runs the reclaim when the scheduled timer fires', async () => {
+  it('writes its marker as the reclaim starts, so a started reclaim never runs again', async () => {
     db = new Database(join(tempDir, 'fts.db'));
     seedBloatedObservationsFts(db);
     const bytesBefore = ftsBlockBytes(db);
@@ -112,5 +116,7 @@ describe('FTS bloat reclaim', () => {
     scheduleOneTimeFtsBloatReclaim(db, { dataDir: tempDir, startDelayMs: 0, pagesPerMergeStep: 8, pauseBetweenMergeStepsMs: 0 });
 
     await waitFor(() => ftsBlockBytes(db!) < bytesBefore);
+    expect(existsSync(join(tempDir, RECLAIM_MARKER_FILENAME))).toBe(true);
+    expect(scheduleOneTimeFtsBloatReclaim(db, { dataDir: tempDir })).toBeNull();
   });
 });

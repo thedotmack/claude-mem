@@ -18,6 +18,7 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessName, captureProcessStartToken, isSameProcess, isSameProcessName, isPidAlive, normalizeProcessName } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import type { ChromaCollectionDrop } from './ChromaSync.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -129,6 +130,27 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
 const CHROMADB_PINNED_VERSION: string | null =
   CHROMA_MCP_DEP_OVERRIDES.find(spec => spec.startsWith('chromadb=='))?.slice('chromadb=='.length) ?? null;
 
+/** Chroma child health for /api/admin/doctor and `npx claude-mem doctor`. */
+export interface ChromaCrashState {
+  /** Unexpected exits of the chroma-mcp child (uvx) in this worker's lifetime. */
+  count: number;
+  /** The last one. uvx is the direct child, so a crash inside chroma-mcp usually shows as its exit code. */
+  lastExit: {
+    timestamp: string;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  } | null;
+  chromaMcpVersion: string;
+  dependencyOverrides: string[];
+  /** The uvx prewarm circuit breaker (#4108): paused after 5 consecutive failures, stopped after 20. */
+  prewarm: {
+    consecutiveFailures: number;
+    state: 'ok' | 'paused' | 'stopped';
+  };
+  /** The last collection dropped as corrupt and rebuilt from SQLite (#3202), if any. */
+  collectionDrop?: ChromaCollectionDrop | null;
+}
+
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
 // every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
 // `cmd.exe` shell-wrapper path, and the cmd.exe metacharacter-quoting helper that
@@ -225,13 +247,29 @@ export class ChromaMcpManager {
   private intentionallyClosingTransports = new WeakSet<object>();
   private readonly chromaWriterOwnerId = CHROMA_WRITER_OWNER_ID;
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
+  /**
+   * Teardown of a subprocess that is gone or being taken down: an unexpected
+   * close, or the restart of one hung on a read. Callers wait for it before
+   * they reconnect, so nothing reuses the old client or disposes it twice.
+   */
   private unexpectedCloseCleanup: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
   private pendingMutationCalls = 0;
+  /** Mutation requests sent to chroma-mcp and not yet answered, in either Chroma mode. */
+  private mutationCallsInFlight = 0;
+  /**
+   * The transport on which a write outlived its deadline. chroma-mcp runs one
+   * request at a time (its tools call the blocking Chroma client), so that
+   * write may still be committing until chroma-mcp answers anything else on
+   * the same transport; until then a read timeout never restarts it.
+   */
+  private timedOutWriteTransport: unknown = null;
   private readonly maxPendingMutationCalls: number;
   private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
+  private chromaCrashCount = 0;
+  private chromaLastExit: ChromaCrashState['lastExit'] = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {
@@ -455,9 +493,25 @@ export class ChromaMcpManager {
         logger.debug('CHROMA_MCP', 'Ignoring onclose from intentionally closed transport');
         return;
       }
-      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
+      // The transport clears its own handle before onclose fires, so read the
+      // exit from the child captured at connect. That child is uvx, not
+      // python: a crash in chroma-mcp (e.g. SIGSEGV) usually surfaces as uvx's
+      // exit code rather than a signal on uvx itself, so both are recorded.
+      this.chromaCrashCount += 1;
+      this.chromaLastExit = {
+        timestamp: new Date().toISOString(),
+        code: transportChild?.exitCode ?? null,
+        signal: transportChild?.signalCode ?? null,
+      };
+      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff', {
+        count: this.chromaCrashCount,
+        exitCode: this.chromaLastExit.code,
+        signalCode: this.chromaLastExit.signal,
+        chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+        dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      });
       this.connected = false;
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      if (currentTrackedPid) getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, currentTrackedPid);
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
@@ -468,6 +522,24 @@ export class ChromaMcpManager {
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
       this.scheduleUnexpectedCloseCleanup(currentTracked);
+    };
+  }
+
+  getCrashState(): ChromaCrashState {
+    const consecutiveFailures = this.consecutivePrewarmFailures;
+    return {
+      count: this.chromaCrashCount,
+      lastExit: this.chromaLastExit ? { ...this.chromaLastExit } : null,
+      chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      prewarm: {
+        consecutiveFailures,
+        state: consecutiveFailures >= CHROMA_PREWARM_GIVE_UP_FAILURES
+          ? 'stopped'
+          : consecutiveFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES
+            ? 'paused'
+            : 'ok',
+      },
     };
   }
 
@@ -1259,6 +1331,8 @@ export class ChromaMcpManager {
   private async callToolUnqueued(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
     const callGeneration = this.connectionGeneration;
     await this.ensureConnected();
+    const callTransport = this.transport;
+    const isMutation = ChromaMcpManager.isMutationTool(toolName);
 
     // Chroma embedding/index mutations routinely exceed the MCP SDK's
     // 60-second default once a persistent collection grows. The SDK treats
@@ -1267,7 +1341,7 @@ export class ChromaMcpManager {
     // malformed (a timeout is therefore never handled as a transport error,
     // see below). Give mutations a bounded, configurable deadline while
     // keeping read/query latency at the SDK default.
-    const requestOptions = ChromaMcpManager.isMutationTool(toolName)
+    const requestOptions = isMutation
       ? { timeout: this.mutationTimeoutMs }
       : undefined;
 
@@ -1277,24 +1351,39 @@ export class ChromaMcpManager {
     });
 
     let result;
+    if (isMutation) {
+      this.mutationCallsInFlight += 1;
+    }
     try {
       result = await this.client!.callTool({
         name: toolName,
         arguments: toolArguments
       }, undefined, requestOptions);
+      if (this.timedOutWriteTransport === callTransport) {
+        // chroma-mcp answered again, so the write that timed out has finished.
+        this.timedOutWriteTransport = null;
+      }
     } catch (transportError) {
       if (ChromaMcpManager.isRequestTimeout(transportError)) {
-        // A request that outlived its deadline means chroma-mcp is slow, not
-        // gone: the SDK has already sent notifications/cancelled, and a write
-        // may still be committing. Tree-killing it here is what leaves a
-        // persistent index malformed, and a retry would repeat the same slow
-        // work, so neither happens. The caller keeps the row pending.
+        const cause = transportError instanceof Error ? transportError : undefined;
+        if (isMutation) {
+          this.timedOutWriteTransport = callTransport;
+        } else if (this.mutationCallsInFlight === 0 && this.timedOutWriteTransport !== callTransport) {
+          await this.restartHungSubprocess(toolName, callTransport);
+          throw new ChromaUnavailableError(`chroma-mcp did not answer "${toolName}" in time and was restarted`, cause);
+        }
+        // A request that outlived its deadline while a write is, or may still
+        // be, in flight means chroma-mcp is slow, not gone: the SDK has already
+        // sent notifications/cancelled, and the write may still be committing.
+        // Tree-killing it here is what leaves a persistent index malformed,
+        // and a retry would repeat the same slow work, so neither happens.
+        // The caller keeps the row pending.
         const message = `chroma-mcp "${toolName}" timed out; the subprocess was left running`;
         logger.warn('CHROMA_MCP', message, {
           timeoutMs: requestOptions?.timeout,
           error: transportError instanceof Error ? transportError.message : String(transportError)
         });
-        throw new ChromaUnavailableError(message, transportError instanceof Error ? transportError : undefined);
+        throw new ChromaUnavailableError(message, cause);
       }
 
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
@@ -1307,8 +1396,15 @@ export class ChromaMcpManager {
 
       // Tree-kill the dying subprocess before reconnect. Previously this path
       // just nulled the handle, which on Linux leaks the uv/python/chroma-mcp
-      // descendants every time a transport error happens (#2313).
-      await this.disposeCurrentSubprocess();
+      // descendants every time a transport error happens (#2313). When its
+      // teardown is already under way (an unexpected close, or a restart for
+      // a hung read that cut this call off) or the subprocess was replaced,
+      // wait instead: disposing again could take down its replacement.
+      if (this.unexpectedCloseCleanup || this.transport !== callTransport) {
+        await this.waitForUnexpectedCloseCleanup();
+      } else {
+        await this.disposeCurrentSubprocess();
+      }
 
       try {
         if (callGeneration !== this.connectionGeneration) {
@@ -1322,6 +1418,10 @@ export class ChromaMcpManager {
       } catch (retryError) {
         this.connected = false;
         throw new Error(`chroma-mcp transport error during "${toolName}" (retry failed): ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+      }
+    } finally {
+      if (isMutation) {
+        this.mutationCallsInFlight -= 1;
       }
     }
 
@@ -1391,6 +1491,42 @@ export class ChromaMcpManager {
 
   private static isRequestTimeout(error: unknown): boolean {
     return error instanceof McpError && error.code === ErrorCode.RequestTimeout;
+  }
+
+  /**
+   * A read outlived the SDK's deadline while no write was in flight or still
+   * possibly committing after its own deadline. Reads are short, so chroma-mcp
+   * is hung rather than busy, and left running it makes every later read wait
+   * out the same deadline. Take it down so the
+   * next call reconnects to a fresh subprocess. The teardown is published as
+   * the close cleanup: ensureConnected() and stop() wait for it, and a call
+   * it cuts off joins it instead of disposing a second time.
+   */
+  private async restartHungSubprocess(toolName: string, callTransport: unknown): Promise<void> {
+    if (this.unexpectedCloseCleanup) {
+      await this.waitForUnexpectedCloseCleanup();
+      return;
+    }
+    if (!callTransport || this.transport !== callTransport) {
+      return;
+    }
+    logger.warn('CHROMA_MCP', `chroma-mcp did not answer "${toolName}" in time and no write is in flight; restarting it`);
+    // Waiters on the close cleanup expect it never to reject, like the
+    // unexpected-close cleanup it shares the slot with.
+    let restart: Promise<void>;
+    restart = this.disposeCurrentSubprocess()
+      .catch((error: unknown) => {
+        logger.warn('CHROMA_MCP', 'Restarting a hung chroma-mcp did not finish cleanly', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      })
+      .finally(() => {
+        if (this.unexpectedCloseCleanup === restart) {
+          this.unexpectedCloseCleanup = null;
+        }
+      });
+    this.unexpectedCloseCleanup = restart;
+    await restart;
   }
 
   async isHealthy(): Promise<boolean> {
@@ -1567,7 +1703,7 @@ export class ChromaMcpManager {
     ChromaMcpManager.reapOrphanedDescendants([...descendantsBeforeClose, ...descendantsAfterClose]);
 
     if (trackedPid) {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, trackedPid);
     }
     this.releaseChromaWriterLock();
 
@@ -2033,7 +2169,8 @@ export class ChromaMcpManager {
 
   private registerManagedProcess(): void {
     const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })._process;
-    if (!chromaProcess?.pid) {
+    const chromaPid = chromaProcess?.pid;
+    if (!chromaProcess || !chromaPid) {
       return;
     }
 
@@ -2049,17 +2186,17 @@ export class ChromaMcpManager {
     // On POSIX the pgid recorded here is used by killProcessTree() in
     // stop() for explicit tree teardown rather than negative-PID signaling.
     getSupervisor().registerProcess(CHROMA_SUPERVISOR_ID, {
-      pid: chromaProcess.pid,
+      pid: chromaPid,
       type: 'chroma',
       startedAt: new Date().toISOString(),
       // Store pid as pgid — shutdown.ts will attempt kill(-pgid) on POSIX.
       // If the child isn't actually its own group leader, the ESRCH is caught
       // and shutdown falls back to single-PID kill (see signalProcess()).
-      pgid: chromaProcess.pid
+      pgid: chromaPid
     }, chromaProcess);
 
     chromaProcess.once('exit', () => {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, chromaPid);
     });
   }
 }

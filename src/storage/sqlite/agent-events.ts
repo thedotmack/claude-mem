@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { Database } from 'bun:sqlite';
 import { AgentEventSchema, CreateAgentEventSchema, type AgentEvent, type AgentEventSourceType, type CreateAgentEvent } from '../../core/schemas/agent-event.js';
 import { ensureServerStorageSchema } from './schema.js';
+import { redactJsonStrings } from '../../utils/redaction.js';
 
 interface AgentEventRow {
   id: string;
@@ -55,7 +56,9 @@ export class AgentEventsRepository {
       event.serverSessionId ?? null,
       event.sourceType,
       event.eventType,
-      JSON.stringify(event.payload ?? {}),
+      // Raw event bodies are stored as-is, so opt-in secret redaction (#2616)
+      // applies here, at the one write every ingest path goes through.
+      JSON.stringify(redactJsonStrings(event.payload ?? {})),
       event.contentSessionId ?? null,
       event.memorySessionId ?? null,
       event.occurredAtEpoch,

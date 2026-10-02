@@ -245,6 +245,8 @@ export class SyncClient {
   private lastPullFinishedAt = 0;
   /** 0 = healthy; doubles per consecutive failed cycle. */
   private backoffMs = 0;
+  /** Hints and socket recovery must wait for the failed HTTP pull's retry. */
+  private transientRetryAt = 0;
   private failStreak = 0;
   private failCursor: string | null = null;
 
@@ -384,7 +386,7 @@ export class SyncClient {
       const head = assertCanonicalDecimal(headSeq);
       if (compareCanonicalDecimals(head, this.apply.getCursor()) <= 0) return;
       this.resumeIfSuspended(); // socket back up alongside the loop
-      this.schedule(0); // also resumes a suspended loop
+      this.schedule(Math.max(0, this.transientRetryAt - this.now()));
     } catch (error) {
       try {
         logger.debug('SYNC_CLIENT', 'onHeadSeq failed (non-blocking)', {},
@@ -399,11 +401,9 @@ export class SyncClient {
    * timeoutMs. Never throws; failure = the caller proceeds with local data.
    * Counts as session activity and resumes a suspended loop.
    *
-   * `force` (socket paths only — self-heal, reconnect catch-up, advance
-   * frames) bypasses the min-gap skip: those pulls are the correctness net
-   * for a lane that just failed or reconnected, and with the socket live the
-   * poll tier is stretched, so "wait for the next poll" could mean minutes.
-   * Single-flight still holds either way.
+   * `force` bypasses the min-gap skip. Socket callers first honor any
+   * transient HTTP retry deadline; explicit session-start callers can still
+   * request a bounded catch-up during that wait. Single-flight holds.
    */
   async pullOnce(options: { timeoutMs?: number; force?: boolean } = {}): Promise<void> {
     try {
@@ -452,16 +452,16 @@ export class SyncClient {
     if (this.authPausedUntil === 0) return;
     this.authPausedUntil = 0;
     this.backoffMs = 0;
+    this.transientRetryAt = 0;
     logger.info('SYNC_CLIENT', 'Sync credentials accepted again; resuming pulls and the advisory socket');
     if (this.started && !this.stopped) this.connectSocket();
   }
 
   private async tick(): Promise<void> {
     if (this.stopped) return;
-    const pausedFor = this.authPausedUntil - this.now();
+    const pausedFor = Math.max(this.authPausedUntil, this.transientRetryAt) - this.now();
     if (pausedFor > 0) {
-      // Woken early during an auth pause: wait out only what is left, never
-      // a fresh full pause.
+      // Early hints wait out the existing deadline without extending it.
       this.schedule(pausedFor);
       return;
     }
@@ -608,6 +608,7 @@ export class SyncClient {
         this.failStreak = 0;
         this.failCursor = null;
         this.backoffMs = 0;
+        this.transientRetryAt = 0;
         this.clearAuthPause();
 
         if (page.more !== true || decodedOps.length === 0) return;
@@ -685,7 +686,7 @@ export class SyncClient {
     this.pingTimer = pingTimer;
     // Catch up over HTTP once: frames sent while we were disconnected are
     // gone (advisory lane), so close the gap the moment the fast path is up.
-    void this.pullOnce({ force: true });
+    this.pullForSocket();
   }
 
   private handleSocketClose(ws: SyncSocketLike): void {
@@ -735,7 +736,7 @@ export class SyncClient {
         if (compareCanonicalDecimals(head, this.apply.getCursor()) <= 0) {
           return; // already caught up (an HTTP pull raced the frame)
         }
-        void this.pullOnce({ force: true });
+        this.pullForSocket();
         return;
       }
       throw new Error(`unknown socket frame type: ${String(frame.type)}`);
@@ -830,10 +831,21 @@ export class SyncClient {
       this.teardownSocket();
       this.setSocketLive(false);
       if (!this.stopped) {
-        void this.pullOnce({ force: true }); // the lane-2 self-heal — HTTP is the truth
+        this.pullForSocket(); // the lane-2 self-heal — HTTP is the truth
         this.scheduleReconnect();
       }
     } catch { /* advisory: never propagate */ }
+  }
+
+  /** Socket recovery skips the min-gap, but honors a transient HTTP failure. */
+  private pullForSocket(): void {
+    if (this.stopped) return;
+    const remaining = this.transientRetryAt - this.now();
+    if (remaining > 0) {
+      this.schedule(remaining);
+      return;
+    }
+    void this.pullOnce({ force: true });
   }
 
   /** Full-jitter backoff: delay = random(0, min(cap, base·2^attempt)). */
@@ -942,6 +954,7 @@ export class SyncClient {
     this.backoffMs = this.backoffMs === 0
       ? this.backoffInitialMs
       : Math.min(this.backoffMs * 2, this.backoffMaxMs);
+    this.transientRetryAt = this.now() + this.backoffMs;
     if (this.failStreak >= 3) {
       logger.warn('SYNC_CLIENT', 'Pull wedged: the same page keeps failing; backing off and retrying', {
         cursor,

@@ -77,6 +77,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
+      id: 'kimi',
+      label: 'Kimi Code',
+      detected: existsSync(join(home, '.kimi-code')) || isCommandInPath('kimi'),
+      hint: 'hooks + MCP integration',
+    },
+    {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
@@ -99,6 +105,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'Antigravity',
       detected: existsSync(join(home, '.gemini', 'antigravity')) || isCommandInPath('agy'),
       hint: 'hooks + MCP integration',
+    },
+    {
+      id: 'omp',
+      label: 'OMP',
+      detected: isCommandInPath('omp') || existsSync(join(home, '.omp')),
+      hint: 'native hooks integration',
     },
     {
       id: 'goose',

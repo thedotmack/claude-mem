@@ -10,13 +10,22 @@ import { getEventHandler } from '../src/cli/handlers/index.js';
 import { HOOK_EXIT_CODES } from '../src/shared/hook-constants.js';
 import { getActiveHookType, setActiveHookType } from '../src/shared/worker-utils.js';
 import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
+import { HookStdoutError } from '../src/shared/hook-io.js';
 import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
 
-const realConsoleLog = console.log;
+const realStdoutWrite = process.stdout.write;
+
+function captureStdout(chunks: string[] = []): void {
+  process.stdout.write = ((chunk: string, callback: () => void): boolean => {
+    chunks.push(String(chunk).replace(/\n$/, ''));
+    callback();
+    return true;
+  }) as typeof process.stdout.write;
+}
 
 afterEach(() => {
   restoreStdin();
-  console.log = realConsoleLog;
+  process.stdout.write = realStdoutWrite;
   setActiveHookType('');
 });
 
@@ -96,7 +105,7 @@ describe('isNonBlockingHookInputError', () => {
   it('fails open through hookCommand for truncated stdin and emits one no-op envelope', async () => {
     installFakeStdin('{"session_id":');
     const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    captureStdout(output);
 
     const exitCode = await hookCommand('claude-code', 'context', { skipExit: true });
 
@@ -111,7 +120,7 @@ describe('isNonBlockingHookInputError', () => {
   it('fails open through hookCommand for the UserPromptSubmit session-init hook and emits one empty envelope', async () => {
     installFakeStdin('{"session_id":');
     const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    captureStdout(output);
 
     const exitCode = await hookCommand('claude-code', 'session-init', { skipExit: true });
 
@@ -122,7 +131,7 @@ describe('isNonBlockingHookInputError', () => {
   it('fails open through hookCommand when stdin reaches the incomplete timeout path', async () => {
     installOpenFakeStdin('{"session_id":');
     const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    captureStdout(output);
 
     const exitCode = await hookCommand('claude-code', 'session-init', {
       skipExit: true,
@@ -160,7 +169,7 @@ describe('hookCommand catch-all never blocks (#3161, plan-17 step 2)', () => {
         throw new TypeError('unexpected handler bug');
       });
       const stdout: string[] = [];
-      console.log = (...args: unknown[]) => stdout.push(args.join(' '));
+      captureStdout(stdout);
       const stderr: string[] = [];
       const realStderrWrite = process.stderr.write;
       process.stderr.write = ((chunk: string | Uint8Array): boolean => {
@@ -182,6 +191,47 @@ describe('hookCommand catch-all never blocks (#3161, plan-17 step 2)', () => {
       }
     });
   }
+});
+
+describe('hookCommand stdout delivery failures', () => {
+  it('rejects a failed write without emitting a second envelope', async () => {
+    const executeSpy = spyOn(getEventHandler('session-init'), 'execute').mockResolvedValue({ continue: true });
+    const output: string[] = [];
+    process.stdout.write = ((chunk: string, callback: (error?: Error | null) => void): boolean => {
+      output.push(String(chunk));
+      queueMicrotask(() => callback(new Error('stdout unavailable')));
+      return false;
+    }) as typeof process.stdout.write;
+    installFakeStdin(JSON.stringify({ session_id: 'stdout-failure', cwd: process.cwd() }));
+    try {
+      await expect(hookCommand('claude-code', 'session-init', { skipExit: true })).rejects.toBeInstanceOf(HookStdoutError);
+      expect(output).toEqual(['{}\n']);
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      executeSpy.mockRestore();
+    }
+  });
+});
+
+describe("hook claude <event> is Claude Code (#2835)", () => {
+  it('hands handlers the canonical platform id, so claude-code branches apply', async () => {
+    const platforms: unknown[] = [];
+    const executeSpy = spyOn(getEventHandler('session-init'), 'execute').mockImplementation(async (input) => {
+      platforms.push(input.platform);
+      return { continue: true, suppressOutput: true };
+    });
+    captureStdout();
+    installFakeStdin(JSON.stringify({ session_id: 'alias-session', cwd: process.cwd(), prompt: 'hello' }));
+
+    try {
+      const exitCode = await hookCommand('claude', 'session-init', { skipExit: true });
+
+      expect(exitCode).toBe(HOOK_EXIT_CODES.SUCCESS);
+      expect(platforms).toEqual(['claude-code']);
+    } finally {
+      executeSpy.mockRestore();
+    }
+  });
 });
 
 describe('isWorkerUnavailableError', () => {

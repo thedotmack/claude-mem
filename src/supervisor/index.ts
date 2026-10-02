@@ -12,6 +12,10 @@ import { startHealthChecker, stopHealthChecker } from './health-checker.js';
 import { sweepOrphanedChromaTrees } from './orphan-chroma-sweep.js';
 import { paths } from '../shared/paths.js';
 
+// Moved beside verifyPidFileOwnership so npx-cli callers can read the PID file
+// without importing the supervisor; re-exported so existing imports keep working.
+export { readOwnedWorkerPidInfo } from './process-registry.js';
+
 const PID_FILE = paths.workerPid();
 
 interface ValidateWorkerPidOptions {
@@ -151,8 +155,8 @@ class Supervisor {
     this.registry.register(id, processInfo, processRef);
   }
 
-  unregisterProcess(id: string): void {
-    this.registry.unregister(id);
+  unregisterProcess(id: string, expectedPid?: number): void {
+    this.registry.unregister(id, expectedPid);
   }
 
   getRegistry(): ProcessRegistry {
@@ -172,23 +176,6 @@ export function getSupervisor(): Supervisor {
 
 export function configureSupervisorSignalHandlers(shutdownHandler: () => Promise<void>): void {
   supervisorSingleton.configureSignalHandlers(shutdownHandler);
-}
-
-/**
- * The verified-owner PID info from the worker PID file, or null when the file
- * is missing, unparseable, or names a process that is not a live claude-mem
- * worker. Read-only sibling of validateWorkerPidFile for callers that need
- * the pid itself (the hook's stale-worker kill in shared/worker-utils.ts).
- */
-export function readOwnedWorkerPidInfo(): PidInfo | null {
-  if (!existsSync(PID_FILE)) return null;
-  let pidInfo: PidInfo | null;
-  try {
-    pidInfo = JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo | null;
-  } catch {
-    return null;
-  }
-  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
 }
 
 export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): ValidateWorkerPidStatus {

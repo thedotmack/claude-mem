@@ -9,17 +9,29 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
+import { buildWorktreeProjectKey } from '../../utils/project-name.js';
 import { paths } from '../../shared/paths.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 
 /** Bound Windows PowerShell Start-Process so a stalled shell cannot hold the spawn lock forever (#3529 Greptile P1). */
 export const WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.POWERSHELL_COMMAND);
 
+/**
+ * The Windows launch timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, cut to
+ * `launchCapMs` (what is left of a caller's hook deadline) when there is one,
+ * so a slow PowerShell cannot push a hook past its host timeout.
+ */
+export function windowsDaemonLaunchTimeoutMs(launchCapMs?: number): number {
+  return launchCapMs === undefined
+    ? WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS
+    : Math.max(1, Math.min(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, launchCapMs));
+}
+
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
 
 const BUN_NOT_FOUND_MESSAGE =
-  'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.';
+  'Bun runtime not found — install from https://bun.sh and ensure it is on PATH, under ~/.bun/bin, or set BUN / BUN_PATH / BUN_INSTALL. The worker daemon requires Bun because it uses bun:sqlite.';
 
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
@@ -99,6 +111,19 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
   return result;
 }
 
+/**
+ * Bun's official installer honors BUN_INSTALL (default ~/.bun) and puts the
+ * binary in $BUN_INSTALL/bin. Hook shells on Windows often lack that
+ * directory on PATH (#3224).
+ */
+function bunInstallBinCandidates(bunInstall: string | undefined, platform: NodeJS.Platform): string[] {
+  const root = bunInstall?.trim();
+  if (!root) return [];
+  return platform === 'win32'
+    ? [path.join(root, 'bin', 'bun.exe'), path.join(root, 'bin', 'bun'), path.join(root, 'bun.exe')]
+    : [path.join(root, 'bin', 'bun'), path.join(root, 'bun')];
+}
+
 function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): string | null {
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
@@ -117,6 +142,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     ? [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
@@ -127,6 +153,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     : [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
@@ -261,7 +288,7 @@ function classifyCwdForRemap(cwd: string): CwdClassification {
     ? path.dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
   const parent = path.basename(parentRepoDir);
-  return { kind: 'worktree', project: `${parent}/${leaf}` };
+  return { kind: 'worktree', project: buildWorktreeProjectKey(parent, leaf) };
 }
 
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
@@ -596,8 +623,10 @@ export function buildWindowsHiddenDaemonPowerShellArgs(
  * cwd pinned to claude-mem's data dir (daemonWorkingDirectory, #3706).
  *
  * Windows: Start-Process -WindowStyle Hidden via powershell argv (sync,
- * bounded). Returns 0 as a success sentinel (Start-Process does not yield the
- * child pid), so callers must treat only `> 0` as a real pid.
+ * bounded by WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS, or by `launchCapMs` when
+ * the caller is spending a hook deadline). Returns 0 as a success sentinel
+ * (Start-Process does not yield the child pid), so callers must treat only
+ * `> 0` as a real pid.
  *
  * POSIX: setsid/detached spawnHidden; returns the child pid.
  *
@@ -608,11 +637,13 @@ export function spawnDetachedWorkerDaemon(
   runtimePath: string,
   scriptPath: string,
   env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  launchCapMs?: number
 ): number | undefined {
   if (platform === 'win32') {
     const powershell = resolveWindowsPowerShellPath(env);
     const args = buildWindowsHiddenDaemonPowerShellArgs(runtimePath, scriptPath);
+    const launchTimeoutMs = windowsDaemonLaunchTimeoutMs(launchCapMs);
     try {
       // argv spawnSync — never `execSync('powershell ...')` shell string.
       // A shell-string launch can allocate a console before windowsHide
@@ -621,7 +652,7 @@ export function spawnDetachedWorkerDaemon(
         stdio: 'ignore',
         windowsHide: true,
         env,
-        timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS,
+        timeout: launchTimeoutMs,
         killSignal: 'SIGTERM',
       });
       if (result.error) {
@@ -630,7 +661,7 @@ export function spawnDetachedWorkerDaemon(
       if (result.signal) {
         throw new Error(
           `powershell Start-Process killed by signal=${result.signal}` +
-            ` after ${WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS}ms`
+            ` after ${launchTimeoutMs}ms`
         );
       }
       if (result.status !== 0) {

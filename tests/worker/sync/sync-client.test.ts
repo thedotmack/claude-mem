@@ -195,6 +195,45 @@ describe('SyncClient', () => {
     expect(apply.getCursor()).toBe('1');
   });
 
+  it('waits out a 502 backoff despite repeated head hints, then catches up', async () => {
+    const hub = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
+    let requests = 0;
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests++;
+      return requests === 1 ? new Response('upstream unavailable', { status: 502 }) : hub.impl(input, init);
+    }) as typeof fetch;
+    const client = makeClient(impl, {
+      activePollMs: 60_000, idlePollMs: 60_000, backoffInitialMs: 200, backoffMaxMs: 200,
+    });
+    client.start();
+    await sleep(25);
+    expect(requests).toBe(1);
+    for (let i = 0; i < 3; i++) {
+      client.onHeadSeq('1');
+      await sleep(20);
+    }
+    expect(requests).toBe(1);
+    expect(apply.getCursor()).toBe('0');
+    await sleep(200);
+    expect(requests).toBe(2);
+    expect(apply.getCursor()).toBe('1');
+  });
+
+  it('allows an explicit forced session-start pull during transient backoff', async () => {
+    const hub = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
+    let requests = 0;
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests++;
+      return requests === 1 ? new Response('upstream unavailable', { status: 502 }) : hub.impl(input, init);
+    }) as typeof fetch;
+    const client = makeClient(impl, { backoffInitialMs: 60_000, backoffMaxMs: 60_000 });
+    await client.pullOnce({ timeoutMs: 1_000 });
+    expect(apply.getCursor()).toBe('0');
+    await client.pullOnce({ timeoutMs: 1_000, force: true });
+    expect(requests).toBe(2);
+    expect(apply.getCursor()).toBe('1');
+  });
+
   it('onHeadSeq is a no-op when head_seq is not beyond the cursor', async () => {
     const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const client = makeClient(impl, { activePollMs: 60_000, idlePollMs: 60_000 });

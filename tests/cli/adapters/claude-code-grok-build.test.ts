@@ -26,7 +26,7 @@ describe('claudeCodeAdapter.normalizeInput — Grok Build camelCase', () => {
     expect(normalized.toolUseId).toBe('tu1');
     expect(normalized.transcriptPath).toBe('C:/t.jsonl');
     expect(normalized.lastAssistantMessage).toBe('done');
-    expect(normalized.stopHookActive).toBe(true);
+    expect(normalized.stopHookActive).toBeUndefined();
     expect(normalized.agentId).toBe('agent-1');
     expect(normalized.agentType).toBe('general');
   });
@@ -66,7 +66,7 @@ describe('claudeCodeAdapter.normalizeInput — Grok Build camelCase', () => {
     expect(normalized.toolUseId).toBe('snake-id');
     expect(normalized.transcriptPath).toBe('snake.jsonl');
     expect(normalized.lastAssistantMessage).toBe('snake-last');
-    expect(normalized.stopHookActive).toBe(false);
+    expect(normalized.stopHookActive).toBeUndefined();
     expect(normalized.agentId).toBe('snake-agent');
     expect(normalized.agentType).toBe('snake-type');
   });
@@ -88,9 +88,10 @@ describe('claudeCodeAdapter.normalizeInput — Grok Build camelCase', () => {
     expect(fromPath.toolInput).toEqual({ path: 'from-path.ts', file_path: 'from-path.ts' });
   });
 
-  it('does not treat a non-boolean stopHookActive as the re-entry breaker', () => {
+  it('ignores stopHookActive so a blocked stop cannot drop later summaries', () => {
+    expect(claudeCodeAdapter.normalizeInput({ ...base, stopHookActive: true }).stopHookActive).toBeUndefined();
+    expect(claudeCodeAdapter.normalizeInput({ ...base, stopHookActive: false }).stopHookActive).toBeUndefined();
     expect(claudeCodeAdapter.normalizeInput({ ...base, stopHookActive: 'yes' }).stopHookActive).toBeUndefined();
-    expect(claudeCodeAdapter.normalizeInput({ ...base, stopHookActive: false }).stopHookActive).toBe(false);
   });
 
   it('uses subagentType when agent_type and agentType are absent', () => {

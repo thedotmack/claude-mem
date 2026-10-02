@@ -1,4 +1,3 @@
-
 import { SessionSearch } from '../../sqlite/SessionSearch.js';
 import { SessionStore } from '../../sqlite/SessionStore.js';
 import { ChromaSync } from '../../sync/ChromaSync.js';
@@ -16,6 +15,7 @@ import type {
 } from './types.js';
 import { SEARCH_CATEGORIES, isCategoryRequested } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
+import { projectReadKeysFor } from './project-where-filter.js';
 import { AppError } from '../../server/ErrorHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
@@ -114,12 +114,12 @@ export class SearchOrchestrator {
       return await this.supplementEmptyCategories(options, chromaResult);
     }
 
-    logger.debug('SEARCH', 'Orchestrator: Chroma not configured', {});
-    return {
-      results: { observations: [], sessions: [], prompts: [] },
-      usedChroma: false,
-      strategy: 'sqlite'
-    };
+    // No Chroma strategy: Chroma is turned off (CLAUDE_MEM_CHROMA_ENABLED=false).
+    // Answer from SQLite/FTS5, as SearchManager.search() does without Chroma,
+    // instead of an empty result that reads as "no matches" (#4284). Knowledge
+    // corpus builds with a query filter reach this path.
+    logger.debug('SEARCH', 'Orchestrator: Chroma not configured, falling back to SQLite', {});
+    return await this.sqliteStrategy.search(options);
   }
 
   /**
@@ -180,7 +180,13 @@ export class SearchOrchestrator {
       return await this.hybridStrategy.findByFile(filePath, options);
     }
 
-    const results = this.sqliteStrategy.findByFile(filePath, options);
+    // The keys the hybrid strategy scopes its file lookup by, so turning
+    // Chroma off never changes which projects a file search reads.
+    const readKeys = projectReadKeysFor(this.sessionStore, options.project, options.projects);
+    const results = this.sqliteStrategy.findByFile(filePath, {
+      ...options,
+      projects: readKeys.length > 0 ? readKeys : undefined,
+    });
     return { ...results, usedChroma: false };
   }
 
