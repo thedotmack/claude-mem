@@ -231,6 +231,18 @@ describe('transcript-parser tail read', () => {
     expect(extractLastAssistantTurn(path, false, { ...chunk, modelSearchBudgetBytes: 0 })).toEqual({ text: 'deep text', model: 'claude-opus-4-1' });
   });
 
+  it('advances the model-search budget while assembling a single huge line, so a giant tool result cannot bypass it', () => {
+    // Greptile r4: the budget used to count only complete-line bytes, so one
+    // 12 MiB tool_result line was read in full before the budget moved. Bytes
+    // are now counted as READ, and carry-only steps still report, so the walk
+    // stops mid-line once the budget is spent.
+    const lines = [assistantLine('model carrier', 'claude-sonnet-4-5'), toolResultLine(2_000_000), modellessAssistantLine('final text')];
+    writeFileSync(path, lines.join('\n') + '\n');
+    const chunk = { initialBytes: 16 * 1024, maxChunkBytes: 64 * 1024 };
+    expect(extractLastAssistantTurn(path, false, { ...chunk, modelSearchBudgetBytes: 256 * 1024 })).toEqual({ text: 'final text' });
+    expect(extractLastAssistantTurn(path, false, { ...chunk, modelSearchBudgetBytes: 4 * 1024 * 1024 })).toEqual({ text: 'final text', model: 'claude-sonnet-4-5' });
+  });
+
   it('finds the last USER message through the same window walk', () => {
     writeFileSync(path, [userLine('first ask'), assistantLine('a'), toolResultLine(3000), userLine('final ask')].join('\n') + '\n');
     expect(extractLastMessage(path, 'user', false, { initialBytes: 64, maxChunkBytes: 1024 * 1024 })).toBe('final ask');

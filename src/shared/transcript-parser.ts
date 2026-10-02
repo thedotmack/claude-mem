@@ -62,7 +62,11 @@ function readFully(fd: number, buffer: Buffer, position: number): number {
  * first, each chunk's text holding only whole lines (a line torn at the chunk
  * boundary is carried into the next, earlier chunk, so entries are never
  * parsed from a fragment). `isFirstChunkOfFile` is true on the chunk that
- * reaches byte 0 - the caller's last chance to fall back.
+ * reaches byte 0 - the caller's last chance to fall back. `byteLength` is the
+ * number of bytes READ from disk in this step (not the bytes yielded as text),
+ * and a step that only extends the carried line still yields - with empty
+ * `text` - so a caller's byte budget advances while a huge line is being
+ * assembled and can stop the walk mid-line.
  */
 function* readTranscriptChunksBackward(
   transcriptPath: string,
@@ -84,18 +88,19 @@ function* readTranscriptChunksBackward(
       const joined = carry.length ? Buffer.concat([data, carry]) : data;
 
       if (start === 0) {
-        yield { text: joined.toString('utf-8'), byteLength: joined.length, isFirstChunkOfFile: true };
+        yield { text: joined.toString('utf-8'), byteLength: data.length, isFirstChunkOfFile: true };
         return;
       }
 
       const firstNewline = joined.indexOf(0x0a);
       if (firstNewline === -1) {
-        // The whole chunk is the middle of one line - keep carrying it.
+        // The whole chunk is the middle of one line - keep carrying it, but
+        // still report the bytes read so budgets advance.
         carry = joined;
+        yield { text: '', byteLength: data.length, isFirstChunkOfFile: false };
       } else {
         carry = joined.subarray(0, firstNewline);
-        const lines = joined.subarray(firstNewline + 1);
-        yield { text: lines.toString('utf-8'), byteLength: lines.length, isFirstChunkOfFile: false };
+        yield { text: joined.subarray(firstNewline + 1).toString('utf-8'), byteLength: data.length, isFirstChunkOfFile: false };
       }
 
       end = start;
@@ -103,7 +108,7 @@ function* readTranscriptChunksBackward(
     }
 
     if (carry.length) {
-      yield { text: carry.toString('utf-8'), byteLength: carry.length, isFirstChunkOfFile: true };
+      yield { text: carry.toString('utf-8'), byteLength: 0, isFirstChunkOfFile: true };
     }
   } finally {
     closeSync(fd);
