@@ -407,6 +407,18 @@ describe('ClaudeProvider invalid API key detection (#4253)', () => {
     expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
   });
 
+  it('does not throw on a reply that puts ordinary narrative after an "Invalid API key ·" prefix', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: 'Invalid API key · the login test covers the revoked-key path.' }]),
+      resultFrame(),
+    ];
+
+    await expect(harness.provider.startSession(session)).resolves.toBeUndefined();
+  });
+
   it('still throws when the CLI answers with its invalid API key status line', async () => {
     const session = createSession();
     const harness = createHarness(session);

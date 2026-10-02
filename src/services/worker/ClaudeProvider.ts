@@ -612,8 +612,11 @@ export class ClaudeProvider {
             }, truncatedResponse);
           }
 
-          // Only the CLI's own status line as the whole reply; an observation may quote the phrase (#4253).
-          if (/^Invalid API key\b\s*(?:·[^\n]*)?$/.test(textContent.trim())) {
+          // Only the CLI's own auth-failure status line; an observation may quote the phrase (#4253).
+          if (
+            message.error === 'authentication_failed' &&
+            /^Invalid API key(?: · (?:Fix external API key|Please run \/login))?$/.test(textContent.trim())
+          ) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
