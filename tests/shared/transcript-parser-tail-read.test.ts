@@ -208,9 +208,27 @@ describe('transcript-parser tail read', () => {
     const opts = { initialBytes: 256, maxChunkBytes: 1024 };
     expect(extractLastAssistantTurn(path, false, opts)).toEqual({ text: 'final text, no model', model: 'claude-sonnet-4-5' });
     expect(extractLastAssistantModel(path, opts)).toBe('claude-sonnet-4-5');
-    // No model anywhere → walk reaches the start and reports text without a model key.
+    // No model anywhere → text is reported without a model key.
     writeFileSync(path, [modellessAssistantLine('a'), toolResultLine(3000), modellessAssistantLine('b')].join('\n') + '\n');
     expect(extractLastAssistantTurn(path, false, opts)).toEqual({ text: 'b' });
+  });
+
+  it('bounds the post-text model search so a model-less format (Kimi) does not read the whole file', () => {
+    // Greptile r3: Kimi wire never stamps `message.model` on assistant entries,
+    // so an unbounded model search after the text hit grows with file size.
+    // The search past the text hit stops once `modelSearchBudgetBytes` is
+    // spent; the text search itself is never bounded.
+    const lines = [assistantLine('deep model carrier', 'claude-sonnet-4-5'), ...Array.from({ length: 30 }, () => toolResultLine(100_000)), modellessAssistantLine('final text')];
+    writeFileSync(path, lines.join('\n') + '\n');
+    const chunk = { initialBytes: 4096, maxChunkBytes: 64 * 1024 };
+    // Budget smaller than the 3 MB of filler: text still found, model given up.
+    expect(extractLastAssistantTurn(path, false, { ...chunk, modelSearchBudgetBytes: 256 * 1024 })).toEqual({ text: 'final text' });
+    // Budget large enough: the deep model is found, as before.
+    expect(extractLastAssistantTurn(path, false, { ...chunk, modelSearchBudgetBytes: 8 * 1024 * 1024 })).toEqual({ text: 'final text', model: 'claude-sonnet-4-5' });
+    // The budget never shortens the TEXT search.
+    const deepText = [assistantLine('deep text', 'claude-haiku-4-5'), ...Array.from({ length: 30 }, () => toolResultLine(100_000)), toolOnlyAssistantLine('Bash')];
+    writeFileSync(path, deepText.join('\n') + '\n');
+    expect(extractLastAssistantTurn(path, false, { ...chunk, modelSearchBudgetBytes: 0 })).toEqual({ text: 'deep text', model: 'claude-opus-4-1' });
   });
 
   it('finds the last USER message through the same window walk', () => {

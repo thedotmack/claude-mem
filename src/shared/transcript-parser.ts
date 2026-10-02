@@ -20,11 +20,26 @@ export const TRANSCRIPT_TAIL_INITIAL_BYTES = 256 * 1024;
  */
 export const TRANSCRIPT_TAIL_MAX_CHUNK_BYTES = 64 * 1024 * 1024;
 
+/**
+ * How far past the text hit the combined turn reader keeps looking for a
+ * model-bearing assistant entry. Claude Code stamps `message.model` on every
+ * assistant entry, so the model is normally in the same chunk as the text;
+ * formats that never carry it (Kimi wire keeps the model in
+ * `profile.bind.modelAlias`) must not turn every Stop into a whole-file read.
+ */
+export const TRANSCRIPT_MODEL_SEARCH_BUDGET_BYTES = TRANSCRIPT_TAIL_MAX_CHUNK_BYTES;
+
 export interface TranscriptTailOptions {
   /** Bytes read by the first chunk (default TRANSCRIPT_TAIL_INITIAL_BYTES). */
   initialBytes?: number;
   /** Largest chunk the scan grows to (default TRANSCRIPT_TAIL_MAX_CHUNK_BYTES). */
   maxChunkBytes?: number;
+  /**
+   * Bytes the combined turn reader may scan beyond the text hit for a model
+   * (default TRANSCRIPT_MODEL_SEARCH_BUDGET_BYTES). Only the model search is
+   * bounded; the text search always reaches the start of the file.
+   */
+  modelSearchBudgetBytes?: number;
 }
 
 /**
@@ -52,7 +67,7 @@ function readFully(fd: number, buffer: Buffer, position: number): number {
 function* readTranscriptChunksBackward(
   transcriptPath: string,
   options: TranscriptTailOptions
-): Generator<{ text: string; isFirstChunkOfFile: boolean }> {
+): Generator<{ text: string; byteLength: number; isFirstChunkOfFile: boolean }> {
   const maxChunk = Math.max(1, options.maxChunkBytes ?? TRANSCRIPT_TAIL_MAX_CHUNK_BYTES);
   let chunkBytes = Math.min(maxChunk, Math.max(1, options.initialBytes ?? TRANSCRIPT_TAIL_INITIAL_BYTES));
 
@@ -69,7 +84,7 @@ function* readTranscriptChunksBackward(
       const joined = carry.length ? Buffer.concat([data, carry]) : data;
 
       if (start === 0) {
-        yield { text: joined.toString('utf-8'), isFirstChunkOfFile: true };
+        yield { text: joined.toString('utf-8'), byteLength: joined.length, isFirstChunkOfFile: true };
         return;
       }
 
@@ -79,7 +94,8 @@ function* readTranscriptChunksBackward(
         carry = joined;
       } else {
         carry = joined.subarray(0, firstNewline);
-        yield { text: joined.subarray(firstNewline + 1).toString('utf-8'), isFirstChunkOfFile: false };
+        const lines = joined.subarray(firstNewline + 1);
+        yield { text: lines.toString('utf-8'), byteLength: lines.length, isFirstChunkOfFile: false };
       }
 
       end = start;
@@ -87,7 +103,7 @@ function* readTranscriptChunksBackward(
     }
 
     if (carry.length) {
-      yield { text: carry.toString('utf-8'), isFirstChunkOfFile: true };
+      yield { text: carry.toString('utf-8'), byteLength: carry.length, isFirstChunkOfFile: true };
     }
   } finally {
     closeSync(fd);
@@ -107,7 +123,7 @@ function* readTranscriptChunksBackward(
  */
 function scanTranscriptBackward<T>(
   transcriptPath: string,
-  probe: (chunkText: string, isFirstChunkOfFile: boolean) => T | undefined,
+  probe: (chunkText: string, isFirstChunkOfFile: boolean, chunkBytes: number) => T | undefined,
   options: TranscriptTailOptions = {}
 ): T | undefined {
   if (!transcriptPath || !existsSync(transcriptPath)) {
@@ -118,7 +134,7 @@ function scanTranscriptBackward<T>(
   let sawContent = false;
   for (const chunk of readTranscriptChunksBackward(transcriptPath, options)) {
     if (!sawContent && chunk.text.trim()) sawContent = true;
-    const hit = probe(chunk.text, chunk.isFirstChunkOfFile);
+    const hit = probe(chunk.text, chunk.isFirstChunkOfFile, chunk.byteLength);
     if (hit !== undefined) return hit;
   }
 
@@ -180,13 +196,17 @@ function extractLastTurnBackward(
   let text: string | undefined;
   let fallbackText: string | null = null;
   let model: string | undefined;
+  let bytesPastText = 0;
+  const modelBudget = Math.max(0, tailOptions?.modelSearchBudgetBytes ?? TRANSCRIPT_MODEL_SEARCH_BUDGET_BYTES);
 
   const result = scanTranscriptBackward(
     transcriptPath,
-    (chunkText, isFirstChunkOfFile) => {
-      // The model is the NEWEST assistant entry that carries one. Entries with
-      // no model (other adapters, some tool-only turns) must not end the search,
-      // so this keeps looking past the text hit until a model is found.
+    (chunkText, isFirstChunkOfFile, chunkBytes) => {
+      // The model is the NEWEST assistant entry that carries one. A text hit on
+      // a model-less entry does not end the search, but the search past the hit
+      // is bounded: a format that never stamps `message.model` would otherwise
+      // turn every Stop into a whole-file read.
+      if (text !== undefined) bytesPastText += chunkBytes;
       if (wantModel && model === undefined) {
         model = extractLastAssistantModelFromJsonl(chunkText);
       }
@@ -201,7 +221,8 @@ function extractLastTurnBackward(
           fallbackText = hit.text;
         }
       }
-      const done = text !== undefined && (!wantModel || model !== undefined);
+      const modelSettled = !wantModel || model !== undefined || bytesPastText >= modelBudget;
+      const done = text !== undefined && modelSettled;
       if (done || isFirstChunkOfFile) {
         return { text: text ?? fallbackText ?? '', model };
       }
