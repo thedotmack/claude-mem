@@ -16,7 +16,7 @@ const pickStringField = (v: unknown): string | undefined =>
  * the call was interrupted.
  */
 const failedToolResponse = (r: Record<string, unknown>): { error: unknown; is_interrupt: boolean } | undefined =>
-  r.error === undefined ? undefined : { error: r.error, is_interrupt: r.is_interrupt === true };
+  r.hook_event_name === 'PostToolUseFailure' ? { error: r.error, is_interrupt: r.is_interrupt === true } : undefined;
 
 /**
  * Read Qwen Code's `submitted_prompt` into the three states the handler needs.

@@ -37,6 +37,14 @@ describe('claudeCodeAdapter.normalizeInput — PostToolUseFailure', () => {
     expect(input.toolResponse).toEqual({ error: 'Command failed', is_interrupt: true });
   });
 
+  it('keeps the interrupt of a failure that carries no error text', () => {
+    const { error: _omittedError, ...withoutError } = postToolUseFailurePayload;
+    const toolResponse = claudeCodeAdapter.normalizeInput({ ...withoutError, is_interrupt: true }).toolResponse as Record<string, unknown>;
+
+    expect(toolResponse.is_interrupt).toBe(true);
+    expect(toolResponse.error).toBeUndefined();
+  });
+
   it('leaves a successful call\'s tool_response as it is', () => {
     const toolResponse = { stdout: 'README.md\n', stderr: '', interrupted: false };
     const input = claudeCodeAdapter.normalizeInput({
@@ -53,5 +61,11 @@ describe('claudeCodeAdapter.normalizeInput — PostToolUseFailure', () => {
 
   it('has no tool response for an event that carries neither field', () => {
     expect(claudeCodeAdapter.normalizeInput({ session_id: 's1', cwd: '/tmp' }).toolResponse).toBeUndefined();
+  });
+
+  it('reads `error` as a failed call only on PostToolUseFailure', () => {
+    const input = claudeCodeAdapter.normalizeInput({ session_id: 's1', cwd: '/tmp', hook_event_name: 'Stop', error: 'unrelated' });
+
+    expect(input.toolResponse).toBeUndefined();
   });
 });
