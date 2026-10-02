@@ -53,6 +53,7 @@ mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
 }));
 
 import { logger } from '../../../src/utils/logger.js';
+import { codexAdapter } from '../../../src/cli/adapters/codex.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
@@ -95,6 +96,44 @@ const baseInput = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('observationHandler — subagent observation filtering (#2736)', () => {
+  const codexInput = () => ({
+    ...codexAdapter.normalizeInput({
+      session_id: 'codex-session',
+      cwd: '/tmp',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'pwd' },
+      tool_response: { stdout: '/tmp' },
+      tool_use_id: 'call-codex-1',
+      agent_id: 'codex-agent-1',
+      agent_type: 'explorer',
+    }),
+    platform: 'codex',
+  });
+
+  it('forwards native Codex tool IDs and agent attribution to worker ingestion', async () => {
+    const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
+    await observationHandler.execute(codexInput());
+
+    expect(workerCallLog).toHaveLength(1);
+    expect(workerCallLog[0].body).toMatchObject({
+      contentSessionId: 'codex-session',
+      platformSource: 'codex',
+      tool_use_id: 'call-codex-1',
+      agentId: 'codex-agent-1',
+      agentType: 'explorer',
+    });
+  });
+
+  it('honors subagent filtering for native Codex hook payloads', async () => {
+    mockSettings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS = 'true';
+    const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
+    await observationHandler.execute(codexInput());
+
+    expect(workerCallLog).toHaveLength(0);
+    expect(recordEventLog).toHaveLength(0);
+  });
+
   it('dispatches to the worker for a main-session observation (defaults)', async () => {
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
     const result = await observationHandler.execute(baseInput());
