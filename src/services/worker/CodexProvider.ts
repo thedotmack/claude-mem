@@ -225,6 +225,11 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
 
   protected override readonly rejectAbortedObservation = true;
 
+  /** A Codex turn carries no output-token cap, so the condense budget stays the field cap's. */
+  protected override fieldCompressionMaxOutputTokens(): number | undefined {
+    return undefined;
+  }
+
   /**
    * A Codex backlog would pay one round trip, and one full history replay on
    * a fresh ephemeral thread, per observation. Claim the queued observations
