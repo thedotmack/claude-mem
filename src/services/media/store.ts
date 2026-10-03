@@ -170,6 +170,7 @@ export class MediaStore {
       this.db.prepare(`UPDATE media_events SET state='deleted' WHERE event_key=?`).run(eventKey);
       queueCleanupForDeletedEvent(this.db, eventKey);
       this.db.prepare('DELETE FROM media_event_refs WHERE event_key=?').run(eventKey);
+      this.db.prepare('DELETE FROM media_event_results WHERE event_key=?').run(eventKey);
     })();
   }
   /**

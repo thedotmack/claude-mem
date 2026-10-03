@@ -13,6 +13,7 @@ import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
+import { committedMediaEventResult } from '../../media/linkage.js';
 import { captureObservationMedia } from '../../media/capture.js';
 import type { MediaEventIdentity } from '../../../shared/media-contract.js';
 
@@ -269,6 +270,21 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
         toolName: payload.toolName,
         toolUseId: payload.toolUseId,
       }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  // Replay recovery: a source event whose text outcome, observation rows and
+  // image links already committed (media_events.result_state) is never sent
+  // to the observer again; the links landed with that commit.
+  if (media.eventKey) {
+    const committed = committedMediaEventResult(store.db, media.eventKey);
+    if (committed) {
+      logger.debug('INGEST', 'Replayed media event already has a committed result; not re-queued', {
+        sessionId: sessionDbId,
+        resultState: committed.resultState,
+        observations: committed.observationIds.length,
+      });
+      return { ok: true, status: 'skipped', reason: 'already_processed' };
     }
   }
 

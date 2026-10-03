@@ -28,9 +28,12 @@ export async function fetchWithOpenRouterTokenCompatibility(
   init: RequestInit,
   body: Record<string, unknown>,
   maxOutputTokens: number,
+  /** False for image requests: max_completion_tokens is never sent with images. */
+  allowMaxCompletionTokensRetry: boolean = true,
 ): Promise<Response> {
   const initialBody = { ...body, max_tokens: maxOutputTokens };
   const response = await fetchImpl(input, { ...init, body: JSON.stringify(initialBody) });
+  if (!allowMaxCompletionTokensRetry) return response;
   if (response.status !== 400 && (response.status < 200 || response.status >= 300 || response.status === 204 || response.status === 205)) {
     return response;
   }

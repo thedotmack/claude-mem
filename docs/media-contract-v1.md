@@ -153,3 +153,265 @@ estimate does not guarantee the final in-flight charge fits: record actual
 overrun and stop immediately. Dry-run/mock success is never model qualification.
 Every execution receives a random UUID run ID by default; an explicitly supplied
 run ID is a bounded opaque unique execution nonce, never a path or user text.
+
+## Phase 4 — inference and linkage
+
+This section freezes the inference request, observation linkage, capability
+and gateway validation contracts. Golden fixtures live in
+`tests/fixtures/media-v1/inference/` and must stay byte-identical in both
+repositories. `scripts/media/contract-checks.ts` checks them against
+`MEDIA_LIMITS`. The checks do not implement any behavior described here.
+
+### Request image parts
+
+Images are sent only on the current observation turn. They are never sent on
+summary, wrap-up, compression or condensation requests, and never added to
+history. History and every earlier message keep their existing string
+`content`. After history assembly, anchoring and same-role coalescing, only the
+final user message changes from a string to this ordered array:
+
+1. `{type:'text',text:<the existing turn string, unchanged>}`
+2. `{type:'text',text:'Images attached to this turn: <L1>, <L2>. Each image follows a line [image LABEL]. In each <observation> informed by an image, list the label inside <attachments><attachment>LABEL</attachment></attachments>. Use only these labels.'}`
+   Labels are joined with `, ` in request order.
+3. For each image in request order, `{type:'text',text:'[image <label>]'}`
+   followed immediately by `{type:'image_url',image_url:{url:'data:image/webp;base64,<derivative>'}}`.
+
+Text comes first, as [OpenRouter recommends](https://openrouter.ai/docs/guides/overview/multimodal/image-understanding).
+Only the retained LLM derivative (WebP, at most 1536 px on the longest edge
+and 256 KiB) is sent. The source and canonical bytes are never sent. Send no
+`detail` field and no top-level `input_references`. A request with no images
+is byte-identical to today's request. The observation skeleton,
+`OBSERVATION_SCHEMA_REMINDER` and text-only prompts do not change. Only
+instruction 2 introduces `<attachments>`.
+
+A request label is `event<E>_image<N>`. `E` is the 1-based position of the
+source event within this request (a batch has several events). `N` is the
+ordinal from that event's stored label `event1_image<N>`. The worker freezes
+the map from request label to `(event_key, attachment_id, event_label)` in the
+per-turn response context when it sends the request. It never re-derives the
+map from mutable session state. Manifests and junction rows store the event
+label, not the request label, so an image keeps one label however it was
+batched.
+
+| Per-request bound | Frozen value |
+| --- | --- |
+| Images, all messages | 4 |
+| Decoded bytes per image | 262,144 |
+| Aggregate decoded image bytes | 1,048,576 (4 x 262,144) |
+| Data URL characters per image | 349,551 (23-character prefix + 349,528 base64) |
+| Aggregate image data URL characters | 1,398,204 (4 x 349,551) |
+| Gateway request body | 4,194,304 bytes |
+
+The two aggregate bounds equal four times the per-image bounds. A validator
+that enforces the count and per-image bounds therefore enforces the aggregates
+too, and there is no separate aggregate rejection reason. When a turn has more
+than four eligible images, the first four in event order and then ordinal
+order are sent. The others stay uninspected on their source event. Callers
+mirror the gateway validator before sending, so a gateway rejection means a
+client bug. Fixture: `request-two-images.json`.
+
+### Observation XML attachment refs
+
+Inside `<observation>`, the optional element is
+`<attachments><attachment>LABEL</attachment>...</attachments>`. Tags are
+lowercase and matched case-sensitively in both parsers. The local parser
+matches its existing tags case-insensitively, but must not do so for this
+element. Only the first `<attachments>` block in an observation is read. Each
+element's text is trimmed and must match `^event[1-9][0-9]{0,2}_image[1-4]$`.
+The `<observation>` root takes no attributes, because both existing parsers
+match only a bare `<observation>`.
+
+Linkage rules, applied per accepted response. Fixture: `parser-outcomes.json`.
+
+- Only the first four `<attachment>` elements of an observation are evaluated,
+  in document order. Later elements are rejected as `too_many_refs`.
+- A label that fails the grammar is rejected as `invalid_label`. A label that
+  is not among the labels supplied in this request is rejected as
+  `unknown_label`. Comparison is exact and case-sensitive. A repeated label is
+  deduplicated, and its first position is kept.
+- When an observation's remaining refs span more than one source event, all
+  of them are rejected as `cross_event`. Nothing is assigned by picking a
+  winner.
+- An observation without `<attachment>` elements omits labels. An empty
+  `<attachments>` element, or an unrecognized `<Attachments>`, also counts as
+  omitted. If the response has exactly one observation, that observation
+  omits labels, and every supplied image came from one source event, then the
+  observation is linked to all supplied images. In every other case,
+  observations that omit labels get no refs.
+- An observation that emitted only rejected refs never falls back to implicit
+  association.
+- One image may link to several observations. An image that no observation
+  links stays an event-level unassigned image and remains `uninspected`.
+- `<skip_summary/>`, an invalid response, a text-only fallback or a request
+  that was not accepted links nothing. All of its images stay uninspected.
+
+Rejections are recorded only as reason codes, never as label text from model
+output. Older parsers ignore the element because field extraction skips
+unknown children. In the local salvage path (no title, narrative, facts or
+concepts), the new parser strips `<attachments>` like the other schema tags
+and does not count it as schema drift. Older clients never get images because
+of capability gating, so they never get the instruction.
+
+### Capability qualification
+
+A model qualifies for image inspection only if all of these hold for the
+resolved catalog entry from the [Models API](https://openrouter.ai/docs/api/api-reference/models/get-models):
+
+- `architecture.input_modalities` contains `image`.
+- `architecture.output_modalities` contains `text`.
+- `supported_parameters` contains every OpenRouter parameter the observer
+  actually sends on an image turn.
+
+Missing fields fail closed. Required parameters:
+
+- Local worker: `max_tokens` and `temperature`, plus `reasoning` when the typed
+  reasoning effort is sent.
+- Pro hook caller: `max_tokens`.
+- Gateway: `max_tokens` and `temperature`, the parameters the local worker
+  sends.
+
+Alias resolution copies Pro `resolveCatalogModel`. Look up by `id`, then by
+`canonical_slug`, and follow `alias_target.slug`. A missing target, a cycle,
+or a chain that ends on a `~` id resolves to `model_unresolved`.
+
+A local `CLAUDE_MEM_OPENROUTER_MODEL` with fallbacks qualifies only when the
+primary and every fallback qualify, because OpenRouter may route to any of
+them. Local direct OpenRouter clients qualify their own configured model.
+Local clients pointed at the cmem gateway use only the gateway capability
+response, because the server overrides the client model. Any other base URL is
+unsupported in v1 and never receives images.
+
+Catalog cache: `GET https://openrouter.ai/api/v1/models` is fetched with one
+in-flight request at a time. Successes are cached for 3600 seconds and
+failures for 60 seconds, matching the local context-window catalog. The cache
+keeps id, canonical_slug, alias_target, architecture modalities and
+supported_parameters.
+
+When the capability is unavailable or not qualified, visual inspection is
+deferred:
+
+- The turn is sent as today's text-only request.
+- The event's images stay retained and `uninspected`.
+- `media_events.result_state` follows the text outcome (`stored` or `skipped`).
+
+v1 never re-calls a model automatically to inspect deferred images.
+Fixture: `capability.json` `qualification_cases`.
+
+### Pro gateway capability endpoint
+
+`GET /api/inference/v1/capabilities` uses the same authentication as chat
+completions:
+
+- A `cm_pro_` bearer checked with `bearerFrom`.
+- A `pro_users` lookup.
+- `isProActive`.
+- The same rate-limit bucket.
+
+Failures return the existing gateway error envelope (`key_invalid` 401,
+`subscription_inactive` 402, `rate_limited` 429). Success is HTTP 200 with
+`PRIVATE_HEADERS` and exactly these keys:
+
+```json
+{"version":1,"requested_model":"<observerModel()>","resolved_model":"<concrete id or null>",
+ "supports_image_input":true,"reason":null,
+ "bounds":{"max_images_per_request":4,"max_image_decoded_bytes":262144,
+  "max_aggregate_image_decoded_bytes":1048576,"max_aggregate_image_data_url_bytes":1398204,
+  "max_image_dimension":1536,"max_body_bytes":4194304,"image_mime_types":["image/webp"]},
+ "qualified_at":"<ISO-8601 catalog qualification time or null>","ttl_seconds":3600}
+```
+
+`supports_image_input` is true only when all of these hold:
+
+- `CMEM_MEDIA_INFERENCE_ENABLED` is on.
+- The server-selected `observerModel()` qualifies.
+- The caller is entitled.
+
+When it is false, `bounds` is null and `reason` is one of
+`inference_disabled`, `model_not_image_capable`, `model_unresolved`,
+`missing_parameters` or `catalog_unavailable`. `ttl_seconds` is 60 for
+`catalog_unavailable` and 3600 otherwise. The response never contains a key,
+token, provider routing or price.
+
+Clients cache the response for `ttl_seconds`, keyed by base URL. They treat a
+network error, timeout, non-2xx status, malformed body or unknown `version` as
+unavailable for 60 seconds. They do not override `bounds` with local values.
+Keys use snake_case to match the OpenAI/OpenRouter wire format and the
+gateway's `request_id` envelope. Fixture: `capability.json` `responses`.
+
+### Gateway request validator
+
+These checks run in `POST /api/inference/v1/chat/completions` after
+authentication and before `req.json()`:
+
+1. A `Content-Length` above 4,194,304, or a streamed body that exceeds that
+   byte count, is rejected as `body_too_large`. The body is read with the
+   existing `readRequestBodyWithinLimit`, and only then parsed.
+2. JSON that does not parse is `invalid_json`. A `messages` value that is
+   missing, empty or not an array is `invalid_messages`.
+3. String `content`, a null assistant `content` with `tool_calls`, and `tool`
+   messages pass unchanged. Array content may hold only parts that are
+   `{type:'text',text:string}` or `{type:'image_url',image_url:{url:string}}`.
+   Anything else, including a top-level `input_references` key, is
+   `invalid_content_part`.
+4. An image part outside a `user` message is `image_outside_user_message`.
+   An `image_url.url` that is not a `data:` URL is `external_image_url`,
+   whether it uses http, https or any other scheme. Nothing is fetched.
+5. A data URL must be `data:image/(webp|png|jpeg);base64,`. Otherwise it is
+   `unsupported_image_type` (gif, svg and non-base64 URLs are rejected here).
+   Base64 outside the standard alphabet with padding, or decoded magic bytes
+   that do not match the declared MIME type, is `invalid_image_data`.
+6. More than 4 image parts across all messages is `too_many_images`. A data URL
+   over 349,551 characters, or a decoded image over 262,144 bytes, is
+   `image_too_large`. Data URL length is checked before decoding.
+
+Every rejection is the existing `bad_request` (HTTP 400) envelope with
+`detail` set to `media_request_invalid:<reason>`, and happens before any
+upstream call or ledger write. PNG and JPEG are accepted for compatibility
+with generic OpenAI-compatible clients, but claude-mem clients send WebP only.
+Server model selection, the forced `stream:false`, usage accounting,
+price-first provider routing and the stripping of `models`/`fallbacks` stay
+exactly as they are.
+
+A 400 is unrecoverable to older workers. A worker that receives
+`media_request_invalid:` for an image turn may resend the same turn once,
+text-only, with every image `uninspected`. That retry is not a vision call.
+Fixture: `validator-cases.json`. Its `synthetic` entries describe oversized
+inputs that a test generates.
+
+### Inspection state and manifest updates
+
+A link is `inspected` only when all of these hold:
+
+- The request carried that image's pixels.
+- The provider returned an accepted 2xx response.
+- The response parsed as valid output.
+- The ref survived the linkage rules above.
+
+Everything else is `uninspected`: capture, deferral, text-only fallback,
+parse failure, skip, unassigned images and rejected refs.
+
+Writing to `metadata.cmem_media_v1` follows these rules. Fixture:
+`manifest-merge.json`.
+
+- Validate the existing namespace first. An invalid namespace fails closed
+  with `invalid_manifest` and is never overwritten.
+- Union by attachment `id`. Existing refs keep their order, and new refs are
+  appended in the order the observation lists them.
+- Inspection for an `id` already present is the OR of both sides. It can be
+  upgraded and never downgraded.
+- Labels may repeat across events.
+- Stop at 32 refs. Refs that do not fit stay on their source event (local
+  `media_event_refs`, or the equivalent cloud event refs), get no junction
+  row, and set `overflow:true`. Once true, overflow stays true.
+- Junction rows (local `observation_media_links`, cloud
+  `(user_id, canonical_document_id, attachment_id)` links) exist exactly for
+  the refs in the manifest.
+- Preserve every other metadata key.
+- When a native local row's manifest changes, increment its canonical decimal
+  `sync_rev`, clear `synced_at` and notify sync, in the same SQLite
+  transaction. That transaction also holds the observation rows, the junctions
+  and the durable event result, and it commits before the RAM batch is
+  confirmed. A re-link that changes nothing changes no revision.
+- Merged or reused row IDs that the store returns get the same union.
+- On replay, landed refs and committed event results are recovered without
+  another model call.

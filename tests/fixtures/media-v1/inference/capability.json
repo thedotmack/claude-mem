@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "endpoint": { "method": "GET", "path": "/api/inference/v1/capabilities" },
+  "responses": [
+    {
+      "name": "qualified",
+      "status": 200,
+      "body": {
+        "version": 1,
+        "requested_model": "~deepseek/deepseek-flash-latest",
+        "resolved_model": "deepseek/deepseek-v4.1-flash",
+        "supports_image_input": true,
+        "reason": null,
+        "bounds": {
+          "max_images_per_request": 4,
+          "max_image_decoded_bytes": 262144,
+          "max_aggregate_image_decoded_bytes": 1048576,
+          "max_aggregate_image_data_url_bytes": 1398204,
+          "max_image_dimension": 1536,
+          "max_body_bytes": 4194304,
+          "image_mime_types": ["image/webp"]
+        },
+        "qualified_at": "2026-10-03T00:06:12.630Z",
+        "ttl_seconds": 3600
+      }
+    },
+    {
+      "name": "inference_disabled",
+      "status": 200,
+      "body": {
+        "version": 1,
+        "requested_model": "~deepseek/deepseek-flash-latest",
+        "resolved_model": "deepseek/deepseek-v4.1-flash",
+        "supports_image_input": false,
+        "reason": "inference_disabled",
+        "bounds": null,
+        "qualified_at": "2026-10-03T00:06:12.630Z",
+        "ttl_seconds": 3600
+      }
+    },
+    {
+      "name": "text_only_model",
+      "status": 200,
+      "body": {
+        "version": 1,
+        "requested_model": "deepseek/deepseek-v4-flash",
+        "resolved_model": "deepseek/deepseek-v4-flash",
+        "supports_image_input": false,
+        "reason": "model_not_image_capable",
+        "bounds": null,
+        "qualified_at": "2026-10-03T00:06:12.630Z",
+        "ttl_seconds": 3600
+      }
+    },
+    {
+      "name": "catalog_unavailable",
+      "status": 200,
+      "body": {
+        "version": 1,
+        "requested_model": "~deepseek/deepseek-flash-latest",
+        "resolved_model": null,
+        "supports_image_input": false,
+        "reason": "catalog_unavailable",
+        "bounds": null,
+        "qualified_at": null,
+        "ttl_seconds": 60
+      }
+    },
+    {
+      "name": "unauthenticated",
+      "status": 401,
+      "body": { "error": { "code": "key_invalid" } },
+      "body_note": "Existing gateway error envelope; only the code is fixed here, message/action/url/request_id come from buildGatewayError."
+    }
+  ],
+  "reasons": ["inference_disabled", "model_not_image_capable", "model_unresolved", "missing_parameters", "catalog_unavailable"],
+  "forbidden_response_keys": ["api_key", "upstream_key", "openrouter_key", "authorization", "setup_token", "provider", "price", "pricing"],
+  "qualification_cases": [
+    {
+      "name": "alias_to_image_capable",
+      "requested": "~deepseek/deepseek-flash-latest",
+      "required_parameters": ["max_tokens", "temperature"],
+      "catalog": [
+        { "id": "~deepseek/deepseek-flash-latest", "alias_target": { "slug": "deepseek/deepseek-v4.1-flash" } },
+        { "id": "deepseek/deepseek-v4.1-flash", "canonical_slug": "deepseek/deepseek-v4.1-flash-20260910", "alias_target": null, "architecture": { "input_modalities": ["text", "image"], "output_modalities": ["text"] }, "supported_parameters": ["max_tokens", "temperature", "reasoning"] }
+      ],
+      "expected": { "resolved_model": "deepseek/deepseek-v4.1-flash", "supports_image_input": true, "reason": null }
+    },
+    {
+      "name": "alias_to_text_only",
+      "requested": "~deepseek/deepseek-flash-latest",
+      "required_parameters": ["max_tokens", "temperature"],
+      "catalog": [
+        { "id": "~deepseek/deepseek-flash-latest", "alias_target": { "slug": "deepseek/deepseek-v4-flash" } },
+        { "id": "deepseek/deepseek-v4-flash", "alias_target": null, "architecture": { "input_modalities": ["text"], "output_modalities": ["text"] }, "supported_parameters": ["max_tokens", "temperature"] }
+      ],
+      "expected": { "resolved_model": "deepseek/deepseek-v4-flash", "supports_image_input": false, "reason": "model_not_image_capable" }
+    },
+    {
+      "name": "image_input_but_no_text_output",
+      "requested": "example/image-generator",
+      "required_parameters": ["max_tokens"],
+      "catalog": [
+        { "id": "example/image-generator", "alias_target": null, "architecture": { "input_modalities": ["text", "image"], "output_modalities": ["image"] }, "supported_parameters": ["max_tokens"] }
+      ],
+      "expected": { "resolved_model": "example/image-generator", "supports_image_input": false, "reason": "model_not_image_capable" }
+    },
+    {
+      "name": "missing_architecture_fails_closed",
+      "requested": "example/no-architecture",
+      "required_parameters": ["max_tokens"],
+      "catalog": [
+        { "id": "example/no-architecture", "alias_target": null, "supported_parameters": ["max_tokens"] }
+      ],
+      "expected": { "resolved_model": "example/no-architecture", "supports_image_input": false, "reason": "model_not_image_capable" }
+    },
+    {
+      "name": "missing_sent_parameter",
+      "requested": "example/vision-no-temperature",
+      "required_parameters": ["max_tokens", "temperature"],
+      "catalog": [
+        { "id": "example/vision-no-temperature", "alias_target": null, "architecture": { "input_modalities": ["text", "image"], "output_modalities": ["text"] }, "supported_parameters": ["max_tokens"] }
+      ],
+      "expected": { "resolved_model": "example/vision-no-temperature", "supports_image_input": false, "reason": "missing_parameters" }
+    },
+    {
+      "name": "alias_missing_target",
+      "requested": "~example/latest",
+      "required_parameters": ["max_tokens"],
+      "catalog": [
+        { "id": "~example/latest", "alias_target": { "slug": "example/removed" } }
+      ],
+      "expected": { "resolved_model": null, "supports_image_input": false, "reason": "model_unresolved" }
+    },
+    {
+      "name": "alias_cycle",
+      "requested": "~example/a",
+      "required_parameters": ["max_tokens"],
+      "catalog": [
+        { "id": "~example/a", "alias_target": { "slug": "~example/b" } },
+        { "id": "~example/b", "alias_target": { "slug": "~example/a" } }
+      ],
+      "expected": { "resolved_model": null, "supports_image_input": false, "reason": "model_unresolved" }
+    },
+    {
+      "name": "unknown_model",
+      "requested": "example/not-in-catalog",
+      "required_parameters": ["max_tokens"],
+      "catalog": [],
+      "expected": { "resolved_model": null, "supports_image_input": false, "reason": "model_unresolved" }
+    },
+    {
+      "name": "canonical_slug_lookup",
+      "requested": "deepseek/deepseek-v4.1-flash-20260910",
+      "required_parameters": ["max_tokens"],
+      "catalog": [
+        { "id": "deepseek/deepseek-v4.1-flash", "canonical_slug": "deepseek/deepseek-v4.1-flash-20260910", "alias_target": null, "architecture": { "input_modalities": ["text", "image"], "output_modalities": ["text"] }, "supported_parameters": ["max_tokens", "temperature"] }
+      ],
+      "expected": { "resolved_model": "deepseek/deepseek-v4.1-flash", "supports_image_input": true, "reason": null }
+    },
+    {
+      "name": "local_fallback_list_requires_every_model",
+      "requested": ["example/vision", "example/text-only"],
+      "required_parameters": ["max_tokens", "temperature"],
+      "catalog": [
+        { "id": "example/vision", "alias_target": null, "architecture": { "input_modalities": ["text", "image"], "output_modalities": ["text"] }, "supported_parameters": ["max_tokens", "temperature"] },
+        { "id": "example/text-only", "alias_target": null, "architecture": { "input_modalities": ["text"], "output_modalities": ["text"] }, "supported_parameters": ["max_tokens", "temperature"] }
+      ],
+      "expected": { "resolved_model": "example/vision", "supports_image_input": false, "reason": "model_not_image_capable" }
+    }
+  ]
+}
