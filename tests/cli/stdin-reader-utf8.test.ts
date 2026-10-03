@@ -9,6 +9,7 @@ async function readSplitPrompt(prompt: string, split: number): Promise<unknown> 
   const modulePath = join(import.meta.dir, '../../src/cli/stdin-reader.ts');
   const source = `import { readJsonFromStdin } from ${JSON.stringify(modulePath)};
     const input = readJsonFromStdin({ safetyTimeoutMs: 1000 });
+    process.stdin.once('data', () => console.log('FRAGMENT'));
     console.log('READY');
     console.log(JSON.stringify(await input));`;
   const payload = Buffer.from(JSON.stringify({ prompt }));
@@ -23,23 +24,26 @@ async function readSplitPrompt(prompt: string, split: number): Promise<unknown> 
       let output = '';
       let stderr = '';
       let sent = false;
-      let remainder: ReturnType<typeof setTimeout> | undefined;
+      let ended = false;
       const deadline = setTimeout(() => { child.kill(); reject(new Error('Child reader timed out')); }, 3000);
       child.stdout.on('data', chunk => {
         output += chunk;
         if (!sent && output.includes('READY\n')) {
           sent = true;
           child.stdin.write(payload.subarray(0, offset));
-          // Make the real OS pipe deliver the first incomplete code point
-          // separately, rather than coalescing both writes into one read.
-          remainder = setTimeout(() => child.stdin.end(payload.subarray(offset)), 30);
+        }
+        // Wait until the actual reader has received the first fragment. A
+        // time delay alone allows both writes to coalesce in a busy child.
+        if (!ended && output.includes('FRAGMENT\n')) {
+          ended = true;
+          child.stdin.end(payload.subarray(offset));
         }
       });
       child.stderr.on('data', chunk => { stderr += chunk; });
-      child.on('error', error => { clearTimeout(deadline); if (remainder) clearTimeout(remainder); reject(error); });
+      child.on('error', error => { clearTimeout(deadline); reject(error); });
       child.on('close', code => {
         clearTimeout(deadline);
-        if (remainder) clearTimeout(remainder);
+
         try {
           expect({ code, stderr }).toMatchObject({ code: 0 });
           resolve(JSON.parse(output.trim().split('\n').at(-1)!));
