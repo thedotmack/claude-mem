@@ -123,8 +123,35 @@ export interface LiveTimerTracker {
 }
 
 /**
+ * Source paths whose timers the liveness tests own: the idle-timeout fetch, the
+ * SSE reader, the corpus SSE client, the worker providers, and this mock.
+ */
+const OWNED_TIMER_SOURCE_PATHS = [
+  '/src/shared/worker-utils.ts',
+  '/src/shared/sse-reader.ts',
+  '/src/servers/corpus-worker-stream.ts',
+  '/src/services/worker/',
+  '/tests/helpers/stream-fetch-mock.ts',
+];
+
+/**
+ * True when the synchronous part of the scheduling stack (below the patched
+ * setTimeout wrapper, above the first microtask boundary) runs through owned
+ * code. In a full `bun test tests` run, background work leaked by other test
+ * files (Chroma subprocess cleanup, opencode retry loops) schedules timers while
+ * these tests run; counting those made every "zero live timers" check fail.
+ */
+function scheduledByOwnedSource(): boolean {
+  const frames = (new Error().stack ?? '').split('\n').slice(3);
+  const microtaskBoundary = frames.findIndex((frame) => frame.includes('processTicksAndRejections'));
+  const synchronousFrames = microtaskBoundary === -1 ? frames : frames.slice(0, microtaskBoundary);
+  return synchronousFrames.some((frame) => OWNED_TIMER_SOURCE_PATHS.some((path) => frame.includes(path)));
+}
+
+/**
  * Patches global setTimeout/clearTimeout/setInterval/clearInterval to count live
- * handles. Install before the code under test runs; call restore() in afterEach.
+ * handles scheduled by owned code (see OWNED_TIMER_SOURCE_PATHS). Install before
+ * the code under test runs; call restore() in afterEach.
  */
 export function trackLiveTimers(): LiveTimerTracker {
   const original = {
@@ -137,7 +164,7 @@ export function trackLiveTimers(): LiveTimerTracker {
 
   globalThis.setTimeout = ((handler: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
     const handle = original.setTimeout((...inner: unknown[]) => { live.delete(handle); handler(...inner); }, ms, ...args);
-    live.add(handle);
+    if (scheduledByOwnedSource()) live.add(handle);
     return handle;
   }) as typeof setTimeout;
   globalThis.clearTimeout = ((handle?: Parameters<typeof clearTimeout>[0]) => {
@@ -146,7 +173,7 @@ export function trackLiveTimers(): LiveTimerTracker {
   }) as typeof clearTimeout;
   globalThis.setInterval = ((handler: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
     const handle = original.setInterval(handler, ms, ...args);
-    live.add(handle);
+    if (scheduledByOwnedSource()) live.add(handle);
     return handle;
   }) as typeof setInterval;
   globalThis.clearInterval = ((handle?: Parameters<typeof clearInterval>[0]) => {

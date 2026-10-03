@@ -1,6 +1,6 @@
 ---
 title: "Cloud Sync (cmem.ai Pro)"
-description: "Two-lane multi-device sync of your memory database — durable HTTP push/pull through a per-user sync hub, with an optional WebSocket speed layer."
+description: "Two-lane multi-device sync of your memory database — durable HTTP push/pull through a per-user sync hub, with optional Realtime live updates as a speed layer."
 ---
 
 # Cloud Sync (cmem.ai Pro)
@@ -14,8 +14,8 @@ other devices' writes back down.
 <Note>
 **Two lanes, one source of truth.** Everything durable travels over plain
 HTTP: pushes append to the hub's ordered log, pulls page through it with a
-cursor. An optional WebSocket rides alongside as a pure *speed layer* — it
-only makes the next pull happen sooner. The socket can be dropped, disabled,
+cursor. An optional Realtime channel rides alongside as a pure *speed layer* —
+it only makes the next pull happen sooner. The channel can be dropped, disabled,
 or wrong with **zero data loss**; the HTTP cursor is always the truth.
 </Note>
 

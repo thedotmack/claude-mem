@@ -125,7 +125,15 @@ describe('ContextCacheService invalidation', () => {
 
   const keys = contextCacheKeys([project], 'claude', false);
   const otherKeys = contextCacheKeys(['unrelated-proj'], 'claude', false);
-  const waitPastDebounce = () => new Promise(resolve => setTimeout(resolve, DEBOUNCE_MS * 4));
+  /**
+   * Let the debounce timer fire, then wait for the renders it queued. A fixed
+   * sleep alone raced the sequential per-variant renders under a loaded full-suite
+   * run (CI saw only the first of two variants rendered).
+   */
+  const waitPastDebounce = async () => {
+    await new Promise(resolve => setTimeout(resolve, DEBOUNCE_MS * 4));
+    await service.flushPendingRenders();
+  };
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-context-cache-'));
