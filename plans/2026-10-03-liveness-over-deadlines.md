@@ -417,11 +417,11 @@ only from `cmem_content`, which is empty until devices re-push — merging it fi
 4. **Backfill reads** — Pro script `scripts/backfill-cmem-content-from-tpuf.ts`: copy every user's tpuf v2 docs into
    `cmem_content` (hub_epoch/seq "0", keep entity_rev; conditional write so later pushes win). Verify per-user counts
    match tpuf `stats`.
-5. **Move old clients without a release** — `services/sync-api` gains `FORWARD_ORIGIN` proxy mode (same idea as
+5. **Move old clients without a release** (forward mode answers Pro's /internal routes with 410, so steps 5 and 6 run back to back with the Pro build verified and Vercel env set beforehand) — `services/sync-api` gains `FORWARD_ORIGIN` proxy mode (same idea as
    `workers/sync-hub` FORWARD_ORIGIN): every `/v1/sync/*` request is forwarded verbatim to the `cmem-sync` function.
    `fly deploy` with `FORWARD_ORIGIN` set. Clients see the new epoch and re-push their native content (idempotent with
    the backfill via conditional writes). Rollback = unset `FORWARD_ORIGIN` and redeploy.
-6. **Pro merge** — merge `feat/supabase-cloud-sync` (Vercel deploys): reads from `cmem_content`, connect-info hands
+6. **Pro merge (immediately after step 5, prepared in advance)** — merge `feat/supabase-cloud-sync` (Vercel deploys): reads from `cmem_content`, connect-info hands
    new installs the function URL, summary-landed route live; set `CMEM_SUMMARY_LANDED_SECRET`, `CMEM_EMBED_SECRET`
    in Vercel first.
 7. **Client default** — claude-mem release maps `https://sync.cmem.ai` → the function URL in
