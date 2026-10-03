@@ -350,6 +350,10 @@ export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApi
 	const server = Bun.serve<SocketData>({
 		hostname: env.HOST,
 		port: env.PORT,
+		// Bun's 10s default resets in-flight requests that wait longer on the
+		// per-user lock or Postgres (Bun 1.4 enforces it on bodiless GETs).
+		// Clients wait up to 180s, so use Bun's 255s maximum.
+		idleTimeout: 255,
 		async fetch(request, server) {
 			const url = new URL(request.url);
 			const { pathname } = url;
