@@ -12,7 +12,7 @@ claude-mem is a Typescript project using npm/Node.js.
 - **Primary Language:** Typescript
 - **Build System:** npm/Node.js
 - **Test Framework:** Jest
-- **Total Files:** 1912
+- **Total Files:** 1915
 - **Test Files:** 763
 - **AI Readiness Score:** 84/100 (AI-Native-Plus)
 
