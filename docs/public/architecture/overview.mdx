@@ -9,7 +9,7 @@ description: "System components and data flow in Claude-Mem"
 
 Claude-Mem operates as a Claude Code plugin with the following core components:
 
-1. **Plugin Hooks** - Lifecycle events (Setup version-check + 5 lifecycle hooks: SessionStart, UserPromptSubmit, PreToolUse for `Read`, PostToolUse, Stop)
+1. **Plugin Hooks** - Lifecycle events (lifecycle hooks for SessionStart, UserPromptSubmit, PreToolUse for `Read`, PostToolUse, Stop and SessionEnd, plus a Setup version-check), each run as a shell-free `claude-mem hook claude-code <event>` command
 2. **Worker Service** - Express HTTP API on a per-user port; processes observations via the Claude Agent SDK (or Gemini / OpenRouter)
 3. **Database Layer** - SQLite + FTS5 (and optional Chroma for semantic search)
 4. **Search Tools** - HTTP API + the `mem-search` skill / MCP server for progressive disclosure search
@@ -62,9 +62,9 @@ Uses 3-layer progressive disclosure: search → timeline → get_observations
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ 0. Setup Hook Fires (version-check.js)                          │
-│    Installs missing plugin dependencies (bun install), records  │
-│    .install-version once complete. Always exits 0.              │
+│ 0. Install puts the claude-mem launcher on PATH                 │
+│    npx claude-mem install/update, or the startup SessionStart   │
+│    self-heal (ensure-launcher.cjs) for marketplace-only installs│
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -119,10 +119,12 @@ claude-mem/
 │
 ├── plugin/                     # Plugin distribution (synced to marketplace)
 │   ├── .claude-plugin/plugin.json
-│   ├── hooks/hooks.json        # Hook registration (Setup + 5 lifecycle hooks)
+│   ├── hooks/hooks.json        # Hook registration (exec-form `claude-mem` hooks + Setup)
 │   ├── scripts/                # Built executables
-│   │   ├── version-check.js    # Setup phase: dependency check + install marker
-│   │   ├── bun-runner.js       # Resolves Bun and runs worker-service.cjs
+│   │   ├── claude-mem-launcher.cjs # Source of the on-PATH `claude-mem` hook launcher (compiled at install)
+│   │   ├── ensure-launcher.cjs # Startup SessionStart self-heal: places/refreshes the launcher
+│   │   ├── version-check.js    # Setup hook (--init / --maintenance): dependency check + install marker
+│   │   ├── bun-runner.js       # Resolves Bun and runs worker-service.cjs (Codex hooks)
 │   │   ├── worker-service.cjs  # Worker daemon + lifecycle hook dispatcher
 │   │   ├── worker-cli.js       # CLI shim
 │   │   ├── worker-wrapper.cjs  # Process wrapper
@@ -141,16 +143,17 @@ claude-mem/
 
 ### 1. Plugin Hooks
 
-The plugin registers a Setup-phase `version-check.js` plus five lifecycle hooks. Each lifecycle event invokes `bun-runner.js` to spawn `worker-service.cjs` with a `hook claude-code <event>` argument; the worker process is the single dispatcher for all hook logic. Events:
+The plugin registers lifecycle hooks plus a Setup-phase `version-check.js`. Each lifecycle hook is one exec-form command, `claude-mem hook claude-code <event>`, with no shell. `claude-mem` is a small compiled launcher on PATH: it finds the plugin root and runs `worker-service.cjs hook claude-code <event>` under Bun; the worker process is the single dispatcher for all hook logic. Events:
 
-- **Setup** → `version-check.js` (installs missing plugin dependencies, then records the install marker)
-- **SessionStart** → start worker, then `hook claude-code context` (context injection)
+- **Setup** → `version-check.js` (installs missing plugin dependencies, then records the install marker). Still a bash entry, and Claude Code fires it only for `claude --init` / `--maintenance`.
+- **SessionStart** → `claude-mem start` (worker, async), then `hook claude-code context` (context injection); at startup also `node ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs` (launcher self-heal)
 - **UserPromptSubmit** → `hook claude-code session-init`
 - **PreToolUse** (matcher `Read`) → `hook claude-code file-context`
 - **PostToolUse** (matcher `*`) → `hook claude-code observation`
 - **Stop** → `hook claude-code summarize` (summary generation)
+- **SessionEnd** → `hook claude-code session-end`
 
-The runtime install (Bun, uv, `bun install`) is performed by `npx claude-mem install` / `npx claude-mem repair` with a visible installer spinner. For plugin-marketplace installs, the Setup hook runs `bun install` itself when the plugin's dependencies are missing, and writes the `.install-version` marker once they are complete.
+The runtime install (Bun, uv, `bun install`, and compiling the launcher into `~/.local/bin` or `%LOCALAPPDATA%\claude-mem\bin`) is performed by `npx claude-mem install` / `npx claude-mem update` with a visible installer spinner. For plugin-marketplace installs, the startup self-heal places the launcher, and the Setup hook (on `claude --init` / `--maintenance`) runs `bun install` when the plugin's dependencies are missing.
 
 See [Plugin Hooks](/architecture/hooks) for detailed hook documentation.
 

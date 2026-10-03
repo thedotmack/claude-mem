@@ -189,7 +189,7 @@ work tracked in [issue #4068](https://github.com/thedotmack/claude-mem/issues/40
 
 Add that to `~/.claude/settings.json` (or export the variable in your shell). To turn off just one of the two hooks, use `CLAUDE_MEM_DISABLE_OBSERVATION=1` or `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1`. See [Configuration](configuration).
 
-**Windows console windows**: this switch is an opt-out, not a fix for the console window that can flash on each tool call. Claude Code still starts the hook through bash, and the window appears before claude-mem runs. The switch only makes each tool hook exit right away. The fix for the window itself is tracked in [#3605](https://github.com/thedotmack/claude-mem/issues/3605).
+**Windows console windows**: this switch is not needed for the console window that older versions flashed on each tool call. Claude Code now runs each hook as the `claude-mem` launcher directly, with no bash in between ([#3605](https://github.com/thedotmack/claude-mem/issues/3605)). The switch still only makes each tool hook exit right away; Claude Code still starts the `claude-mem` process.
 
 ### Smart Install Caching Issues (v5.0.3+)
 
@@ -527,6 +527,59 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 ## Hook Issues
 
+### claude-mem: command not found in hooks
+
+**Symptoms**: Every hook reports a non-blocking error, and no context or observations appear. In the transcript or in `claude --debug` output:
+
+```
+Error occurred while executing hook command: Executable not found in $PATH: "claude-mem"
+```
+
+or, for the startup self-heal entry:
+
+```
+Error occurred while executing hook command: Executable not found in $PATH: "node"
+```
+
+Session start may also show:
+
+```
+claude-mem: memory hooks are not active: <reason>. Fix: run `npx claude-mem install`, then restart Claude Code.
+```
+
+**Cause**: Claude Code runs each hook as `claude-mem hook claude-code <event>` with no shell, so it needs the `claude-mem` launcher on the PATH it inherited when it started. The launcher lives at `~/.local/bin/claude-mem` (macOS/Linux) or `%LOCALAPPDATA%\claude-mem\bin\claude-mem.exe` (Windows). The `node` error means Node.js is not on that PATH either, so the self-heal entry (`node ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs`) cannot run to place the launcher.
+
+**Solutions**:
+
+1. Install or refresh the launcher:
+   ```bash
+   npx claude-mem install
+   ```
+   It compiles the launcher, places it, and adds its directory to PATH (your shell rc file on macOS/Linux, your user Path on Windows). For the `node` error, install Node.js 20+ first.
+
+2. Restart your terminal or IDE, then Claude Code. A running Claude Code, or an IDE that launched it, keeps the PATH it started with and does not see the change.
+
+3. Check the **Hook launcher** row:
+   ```bash
+   npx claude-mem doctor
+   ```
+   - `ok` — `<path> (protocol N, --version N ms)`: the launcher resolves; restart Claude Code from a fresh terminal.
+   - `installed at <path> but its directory is not on PATH` — open a new terminal, or re-run `npx claude-mem install`.
+   - `claude-mem not on PATH` — run `npx claude-mem install`.
+   - `<path> is not the claude-mem hook launcher` — another `claude-mem` comes first on PATH (see the next step).
+   - `speaks protocol N, expected M` (warn) — the launcher is from another release; run `npx claude-mem install`.
+
+4. Look for a shadowing npm-global `claude-mem`. `npm install -g claude-mem` installs the npm CLI as `claude-mem`; if its directory comes before the launcher's on PATH, hooks run the wrong program:
+   ```bash
+   which -a claude-mem      # macOS/Linux
+   where.exe claude-mem     # Windows
+   ```
+   Remove it with `npm uninstall -g claude-mem`, or put `~/.local/bin` (or `%LOCALAPPDATA%\claude-mem\bin`) ahead of it on PATH. The installer never overwrites a `claude-mem` it did not place.
+
+5. Check your Claude Code version with `claude --version`. The exec-form hooks need **Claude Code 2.1.139 or later**; an older Claude Code ignores the hook `args` and runs bare `claude-mem`, which prints usage and captures nothing, with no error shown. `npx claude-mem doctor` warns on the **Claude Code version** row. Update with `claude update`.
+
+6. Expect one gap after an update. On a marketplace-only install, the startup self-heal compiles the launcher during session start when it is missing or out of date. The first session after that update may miss memory context while it compiles; the next session has it. Running `npx claude-mem update` instead avoids the gap.
+
 ### Hooks Not Firing
 
 **Symptoms**: No context appears, observations not saved.
@@ -541,13 +594,14 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 2. Test hooks manually:
    ```bash
    # Test context hook
-   echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | node plugin/scripts/context-hook.js
+   echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | claude-mem hook claude-code context
    ```
 
-3. Check hook permissions:
+3. Check the launcher is on PATH:
    ```bash
-   ls -la plugin/scripts/*.js
+   command -v claude-mem && claude-mem --version   # prints the launcher protocol number
    ```
+   If it is missing, see [claude-mem: command not found in hooks](#claude-mem-command-not-found-in-hooks).
 
 4. Verify hooks.json is valid JSON:
    ```bash
@@ -619,11 +673,11 @@ Failed with non-blocking status code: ""bun"" is not recognized as an internal o
 
 (or the localized equivalent), even though `bun --version` works fine in any terminal and `where bun` resolves correctly.
 
-**Cause**: cmd.exe silently drops environment variables longer than ~8,191 characters. The hooks prepend the login-shell PATH to the inherited PATH, which can double it past that limit — inside cmd.exe the PATH is then empty, so a bare `bun` command cannot be resolved even though `where.exe` (which uses Win32 APIs and has no such limit) finds it. This only reproduces when the combined PATH exceeds the limit, which is why the same setup works on machines with a shorter PATH.
+**Cause**: cmd.exe silently drops environment variables longer than ~8,191 characters. Older bash-based hooks prepended the login-shell PATH to the inherited PATH, which could double it past that limit — inside cmd.exe the PATH was then empty, so a bare `bun` command could not be resolved even though `where.exe` (which uses Win32 APIs and has no such limit) finds it. This only reproduces when the combined PATH exceeds the limit, which is why the same setup works on machines with a shorter PATH.
 
 **Solutions**:
 
-1. Update claude-mem — the launcher now resolves the absolute `bun.exe` path and spawns it directly without cmd.exe.
+1. Update claude-mem with `npx claude-mem install`. Hooks now run the `claude-mem` launcher directly with no bash or cmd.exe, and it resolves the absolute `bun.exe` path and spawns it directly. Git Bash is no longer needed for runtime hooks.
 
 2. Check your PATH length; if it is near or above ~4,000 characters it will exceed the cmd.exe limit once doubled:
    ```powershell

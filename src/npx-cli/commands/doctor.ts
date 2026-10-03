@@ -24,6 +24,11 @@ import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 import {
+  claudeCodeVersionTooOldWarning,
+  detectClaudeCodeVersion,
+  MINIMUM_CLAUDE_CODE_VERSION_FOR_EXEC_FORM_HOOKS,
+} from '../install/claude-code-version.js';
+import {
   currentLauncherHostEnvironment,
   findExecutableOnPath,
   readLauncherProtocol,
@@ -313,6 +318,26 @@ export function hookLauncherCheck(host: LauncherHostEnvironment = currentLaunche
   };
 }
 
+/**
+ * The "Claude Code version" row. Warns below the exec-form minimum, because an
+ * older Claude Code ignores the hooks' `args` and runs bare `claude-mem`,
+ * which captures nothing. Not required: a missing or unparseable version
+ * passes silently. Exported for tests.
+ */
+export function claudeCodeVersionCheck(detectedClaudeCodeVersion: string | undefined): CheckResult {
+  const name = 'Claude Code version';
+  const tooOldWarning = claudeCodeVersionTooOldWarning(detectedClaudeCodeVersion);
+  if (tooOldWarning) return { name, status: 'warn', detail: tooOldWarning, required: false };
+  return {
+    name,
+    status: 'ok',
+    detail: detectedClaudeCodeVersion
+      ? `${detectedClaudeCodeVersion} (hooks need ${MINIMUM_CLAUDE_CODE_VERSION_FOR_EXEC_FORM_HOOKS}+)`
+      : 'not detected (claude not on PATH)',
+    required: false,
+  };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -410,16 +435,20 @@ export async function runDoctorCommand(): Promise<void> {
   });
   checks.push(...chromaChecks);
 
-  // 6. Windows Git Bash reachability. All claude-mem hooks run via
-  // `"shell": "bash"`; on Windows, Claude Code resolves that through Git for
-  // Windows with no WSL fallback. No-op on macOS/Linux.
+  // 5b. Claude Code version: the exec-form hooks need `args` support.
+  checks.push(claudeCodeVersionCheck(detectClaudeCodeVersion()));
+
+  // 6. Windows Git Bash reachability. Runtime hooks run the launcher with no
+  // shell; only the Setup hook (`claude --init` / `--maintenance`) still uses
+  // `"shell": "bash"`, which Claude Code resolves through Git for Windows. So a
+  // missing Git Bash only warns. No-op on macOS/Linux.
   if (IS_WINDOWS) {
     const gitBash = checkWindowsGitBash();
     checks.push({
       name: 'Git Bash (Windows)',
-      status: gitBash.ok ? 'ok' : 'fail',
+      status: gitBash.ok ? 'ok' : 'warn',
       detail: gitBash.detail,
-      required: true,
+      required: false,
     });
   }
 

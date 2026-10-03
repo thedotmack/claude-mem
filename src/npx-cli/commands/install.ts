@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
-import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
+import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
@@ -74,36 +74,6 @@ function detectInstallMethod(): string {
   if (name === 'npm' || name === 'bun' || name === 'pnpm' || name === 'yarn') return name;
   if (process.versions.bun) return 'bun';
   return 'unknown';
-}
-
-/**
- * Claude Code CLI version, best effort. Hook/plugin behavior differs across
- * Claude Code releases, so this is key for diagnosing installs whose worker
- * never starts. Missing binary or timeout → undefined (dropped by scrubber).
- */
-function readClaudeCodeVersionOutput(): string | undefined {
-  const command = process.platform === 'win32'
-    ? (lookupWindowsCommand('claude') ?? 'claude.cmd')
-    : 'claude';
-  const invocation = buildSpawnSyncInvocation(command, ['--version'], {
-    timeout: 5000,
-    encoding: 'utf-8',
-  });
-  const result = spawnSync(invocation.command, invocation.args, invocation.options);
-  const output = (result.stdout ?? '').trim();
-  if (!output) return undefined;
-  // "2.0.14 (Claude Code)" → "2.0.14"
-  return output.split(/\s+/)[0].slice(0, 40) || undefined;
-}
-
-function detectClaudeCodeVersion(): string | undefined {
-  try {
-    return readClaudeCodeVersionOutput();
-  } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    console.warn('[install] Could not detect Claude Code version:', err);
-    return undefined;
-  }
 }
 
 interface TaskDescriptor {
@@ -193,6 +163,7 @@ import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
+import { claudeCodeVersionTooOldWarning, detectClaudeCodeVersion } from '../install/claude-code-version.js';
 import { ensureLauncherOnPath, ensureLocalBinOnShellPath } from '../../launcher/install-launcher.js';
 
 function registerMarketplace(): void {
@@ -2520,17 +2491,23 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const usageLines = formatUsageSummaryLines(usageSummary);
   if (usageLines.length > 0) log.info(usageLines.join('\n'));
 
-  // All claude-mem hooks run via `"shell": "bash"`; on Windows, Claude Code
-  // resolves that through Git for Windows with no WSL fallback. Surfacing it
-  // here — rather than letting the first hook throw an unbranded error — is
-  // a warning, not a hard stop: the operator may install Git for Windows
-  // after this run and hooks will start working without a reinstall.
+  // Runtime hooks run the on-PATH claude-mem launcher in exec form, with no
+  // shell. Only the Setup hook (version-check.js) still declares
+  // `"shell": "bash"`, and Claude Code fires it only for `claude --init` /
+  // `--maintenance`; on Windows it resolves bash through Git for Windows with
+  // no WSL fallback. A warning, not a hard stop: memory capture works without
+  // Git Bash, and Git for Windows can be installed later without a reinstall.
   if (IS_WINDOWS) {
     const gitBash = checkWindowsGitBash();
     if (!gitBash.ok) {
       log.warn(gitBash.detail);
     }
   }
+
+  // An older Claude Code ignores the hooks' `args` and runs bare `claude-mem`,
+  // which captures nothing and tells no one, so say it here.
+  const claudeCodeTooOldWarning = claudeCodeVersionTooOldWarning(detectClaudeCodeVersion());
+  if (claudeCodeTooOldWarning) log.warn(claudeCodeTooOldWarning);
 
   if (alreadyInstalled) {
     if (process.stdin.isTTY) {
