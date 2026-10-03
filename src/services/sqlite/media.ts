@@ -31,6 +31,16 @@ function queueCleanupForUnreferencedAttachmentsSql(scope: UnreferencedAttachment
     `INSERT OR IGNORE INTO media_cleanup_jobs (attachment_id, directory, queued_at)
       SELECT a.id, a.id, CAST(strftime('%s','now') AS INTEGER)*1000 FROM media_attachments a
       WHERE ${unreferencedCandidate}`,
+    // v63: an attachment that already reached the owner's cloud media plane
+    // gets a durable cloud deletion. Any attempted native upload counts too,
+    // whatever its current state (pending, failed): its response may have been
+    // lost after the cloud committed it. Queued before
+    // upload_state is overwritten below; replica rows are never attempted or
+    // 'uploaded', so a replica deletion never deletes the owner's cloud copy.
+    `INSERT OR IGNORE INTO media_cloud_deletions (attachment_id, queued_at)
+      SELECT a.id, CAST(strftime('%s','now') AS INTEGER)*1000 FROM media_attachments a
+      WHERE ${unreferencedCandidate}
+        AND a.origin='native' AND (a.upload_state='uploaded' OR a.upload_attempts>0)`,
     `UPDATE media_attachments SET state='deleted', upload_state='cancelled'
       WHERE id IN (SELECT a.id FROM media_attachments a WHERE ${unreferencedCandidate})`,
   ];
@@ -106,6 +116,24 @@ export function ensureMediaSchema(db: Database): void {
         PRIMARY KEY(event_key, observation_id)
       );
       CREATE INDEX IF NOT EXISTS idx_media_event_results_observation ON media_event_results(observation_id);
+      -- v63: durable cloud media deletions (offline-safe). Drained by
+      -- MediaCloudSync; a row survives restarts and reconnects.
+      CREATE TABLE IF NOT EXISTS media_cloud_deletions (
+        attachment_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0, last_error TEXT
+      );
+    `);
+    // v63 columns, added in place (ADD COLUMN keeps the v61 CHECKs intact):
+    // origin separates native captures from lazily resolved replicas (which
+    // are never uploaded), and the upload retry state is independent of the
+    // native text sync outbox.
+    addMediaAttachmentColumn(db, 'origin', `TEXT NOT NULL DEFAULT 'native'`);
+    addMediaAttachmentColumn(db, 'upload_attempts', 'INTEGER NOT NULL DEFAULT 0');
+    addMediaAttachmentColumn(db, 'upload_retry_at', 'INTEGER NOT NULL DEFAULT 0');
+    addMediaAttachmentColumn(db, 'upload_error', 'TEXT');
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_media_attachments_upload ON media_attachments(upload_state, upload_retry_at)`);
+    // Triggers come after the v63 columns they reference.
+    db.exec(`
       -- Recreated every startup so an older trigger definition never lingers.
       DROP TRIGGER IF EXISTS media_observation_delete;
       CREATE TRIGGER media_observation_delete AFTER DELETE ON observations BEGIN
@@ -124,7 +152,14 @@ export function ensureMediaSchema(db: Database): void {
     const appliedAt = new Date().toISOString();
     db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, appliedAt);
     db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, appliedAt);
+    db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(63, appliedAt);
   })();
+}
+
+function addMediaAttachmentColumn(db: Database, columnName: string, columnDefinition: string): void {
+  const columns = db.prepare('PRAGMA table_info(media_attachments)').all() as Array<{ name: string }>;
+  if (columns.some(column => column.name === columnName)) return;
+  db.exec(`ALTER TABLE media_attachments ADD COLUMN ${columnName} ${columnDefinition}`);
 }
 
 /** Run inside the caller's transaction, before the event's refs are deleted. */

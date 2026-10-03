@@ -15,6 +15,9 @@ Each link's inspection is `inspected` or `uninspected`. Storage readiness is
 resolved through the media service, never through this metadata. Unknown keys,
 duplicate IDs, malformed labels, and unsupported versions fail closed. Other
 metadata namespaces remain unchanged when this namespace is integrated later.
+A present `metadata.cmem_media_v1` whose value is `null` is invalid and
+rejected; omit the key when there are no refs. `attachments:[]` is valid and
+is an explicit empty ref set.
 
 A row retains at most 32 refs and at most 8192 encoded manifest bytes. On merge
 overflow, retain old refs, leave additional refs on the durable source event,
@@ -65,6 +68,10 @@ successful insert for that key. Database uniqueness, not a RAM buffer, resolves
 concurrent attempts. Never use RAM IDs, mutable prompt numbers, current time,
 or filename alone as identity. Identical images in different events retain
 distinct event provenance; any asset dedupe is owner-local and reference-aware.
+Lanes key images differently, so identity is lane-scoped. The Cowork hook
+lane keys images by `(platform, tool_use_id)`. The local worker lane keys them
+by its session-scoped event key. The same tool use captured by both lanes is
+stored twice; this duplicate storage is known and accepted in v1.
 
 | Native source shape | Fixture evidence | Capture support in Phase 1 |
 | --- | --- | --- |
@@ -74,6 +81,8 @@ distinct event provenance; any asset dedupe is owner-local and reference-aware.
 | OpenAI `image_url.url` data URL | Existing local OpenAI fixture | Candidate, capture implementation still disabled |
 | Explicit Read/tool local file contract | Read input fixture only | Requires path, symlink, size and identity proof before capture |
 | Codex/Cowork prompt attachment, provider-private asset | No fixture-backed capture implementation | Unsupported |
+| Cowork hook client PostToolUse tool result (Phase 5) | Shapes of the local native fixtures with generated pixels; no native Cowork fixture | Anthropic, Claude Read, MCP `image.data` (not JSON strings) and OpenAI data URL shapes per the Phase 5 capture matrix; disabled by default; requires a real native Cowork fixture before enablement |
+| Prompt or transcript message media (any platform) | No fixture-backed prompt/transcript image shape | Unsupported in v1 |
 | Bare path-like strings or placeholders | No typed bytes/locator contract | Unsupported |
 | Remote image URL; SVG/PDF/video/animated image | Outside v1 contract | Unsupported |
 
@@ -132,6 +141,14 @@ serve public/persistent signed URLs. [Vercel limits](https://vercel.com/docs/fun
 both request and response to 4.5 MB; the smaller measured body bound above is
 deliberate. Account erasure/quota/upload finalization must later be serialized
 against the durable erasure marker.
+
+Pro observation-media upload (Phase 5) accepts a canonical source image of
+type `image/png`, `image/jpeg` or `image/webp`. The type is verified by magic
+bytes, the source is at most 3 MiB, and the same decoder limits apply. Such an
+upload declares manifest encoder `source` and is converted server-side. Stored
+objects are only the WebP viewer and LLM variants; the source is never stored.
+The local worker uploads Sharp-converted WebP and declares encoder
+`sharp-x/vips-y` with its actual Sharp and libvips versions.
 
 API error names are the closed `MEDIA_ERROR_CODES` enum. Format/magic mismatch,
 animation, invalid pixels, dimensions/pixels/byte bounds and timeouts reject

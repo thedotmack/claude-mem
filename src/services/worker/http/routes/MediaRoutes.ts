@@ -79,7 +79,11 @@ function sendJsonWithoutCacheValidators(res: Response, status: number, body: unk
 }
 
 export class MediaRoutes extends BaseRouteHandler {
-  constructor(private readonly getStore: () => Pick<MediaStore, 'getMetadata' | 'readVariant'>) { super(); }
+  constructor(
+    private readonly getStore: () => Pick<MediaStore, 'getMetadata' | 'readVariant'>,
+    /** Lazily downloads and verifies a second-device replica before any read. */
+    private readonly resolveReplica: (id: string) => Promise<void> = async () => {},
+  ) { super(); }
 
   setupRoutes(app: express.Application): void {
     app.get('/api/media/:id', this.guard, this.getMetadata);
@@ -101,6 +105,7 @@ export class MediaRoutes extends BaseRouteHandler {
   // use the bounded error response below, never BaseRouteHandler's raw error.
   private getMetadata = this.wrapHandler(async (req, res): Promise<void> => {
     const id = assertMediaId(req.params.id);
+    await this.resolveReplica(id);
     const metadata = this.getStore().getMetadata(id);
     if (metadata.id !== id || metadata.state === 'deleted') throw new MediaError('media_not_found');
     sendJsonWithoutCacheValidators(res, 200, safeMetadata(metadata));
@@ -110,6 +115,7 @@ export class MediaRoutes extends BaseRouteHandler {
     const id = assertMediaId(req.params.id);
     const variant = req.params.variant;
     if (variant !== 'viewer' && variant !== 'llm') throw new MediaError('invalid_manifest');
+    await this.resolveReplica(id);
     const store = this.getStore();
     const metadata = store.getMetadata(id);
     if (metadata.id !== id || metadata.state === 'deleted') throw new MediaError('media_not_found');
