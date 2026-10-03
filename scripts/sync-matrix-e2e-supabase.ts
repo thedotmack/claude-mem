@@ -9,15 +9,24 @@
  * Edge Function itself checks the token against pro_users and writes the log
  * and the read model in one transaction, so there is no projector sidecar.
  *
- * Every client fetch is guarded as loopback-only. Exactly two real client
- * stacks (SessionStore + CloudSync + SyncApply + SyncClient) talk protocol v2
- * over HTTP; the function answers `X-Sync-Mode: poll`, so both clients must
- * drop their advisory WebSocket and converge by cursor pulls alone.
+ * Every client fetch and socket is guarded as loopback-only. Exactly two real
+ * client stacks (SessionStore + CloudSync + SyncApply + SyncClient) talk
+ * protocol v2 over HTTP. Live updates (Phase 11): each client trades its
+ * cm_pro token at POST /v1/sync/realtime-token for an ES256 JWT and joins the
+ * private Supabase Realtime channel `user:<id>`; a push from A must reach B as
+ * an `advance` broadcast and B's cursor must reach the head with NO explicit
+ * pull and with the HTTP poll tiers set to 10 minutes, so delivery can only
+ * have come from Realtime. B runs on a clock skewed toward its token expiry
+ * so it re-mints its 900 s token within seconds and hands it to the open
+ * channel (`access_token` event); a later advance must still arrive.
+ * The `X-Sync-Mode: poll` header the function stamps for OLD clients must not
+ * turn Realtime off.
  *
  * Env:
  *   CMEM_SYNC_E2E_HUB_URL  (default http://127.0.0.1:54321/functions/v1/cmem-sync)
  *   CMEM_SYNC_E2E_USER_ID  pro_users.user_id of the seeded account (required)
  *   CMEM_SYNC_E2E_TOKEN    its setup_token (required)
+ *   CMEM_SYNC_E2E_REALTIME_BUDGET_MS  max push->B-cursor latency over Realtime (default 5000)
  */
 
 import { mkdtempSync, rmSync } from 'fs';
@@ -40,6 +49,11 @@ import { emitRemapProject } from '../src/services/sync/remap-outbox.js';
 const DEFAULT_HUB_URL = 'http://127.0.0.1:54321/functions/v1/cmem-sync';
 const DEVICE_IDS = { a: 'matrix-device-a', b: 'matrix-device-b' } as const;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+/** Poll tiers far beyond any wait below: convergence without a pull proves Realtime delivered. */
+const POLL_MS = 600_000;
+const REALTIME_BUDGET_MS = Number(process.env.CMEM_SYNC_E2E_REALTIME_BUDGET_MS ?? 5_000);
+/** realtime-token TTL is server-fixed at 900 s; B's clock runs this close to expiry so it refreshes in ~4 s. */
+const B_CLOCK_SKEW_MS = 895_000;
 
 function requiredEnv(name: string): string {
   const value = (process.env[name] ?? '').trim();
@@ -71,10 +85,10 @@ async function waitFor(condition: () => boolean, label: string, timeoutMs = 10_0
   throw new Error(`timed out waiting for ${label}`);
 }
 
-function loopbackUrl(input: RequestInfo | URL, label: string): URL {
+function loopbackUrl(input: RequestInfo | URL, label: string, protocols: string[] = ['http:']): URL {
   const raw = input instanceof Request ? input.url : String(input);
   const url = new URL(raw);
-  if (url.protocol !== 'http:' || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost')) {
+  if (!protocols.includes(url.protocol) || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost')) {
     throw new Error(`${label} refused non-loopback URL: ${url.origin}`);
   }
   return url;
@@ -152,6 +166,36 @@ interface NetworkGate {
   pushesOnline: boolean;
   pushAttempts: number;
   pullRequests: number;
+  realtimeTokenStatuses: number[];
+  /** Every Phoenix frame this device received / sent, with arrival time. */
+  received: Array<{ at: number; frame: Record<string, any> }>;
+  sent: Array<{ at: number; frame: Record<string, any> }>;
+}
+
+/** Bun's WebSocket, loopback-guarded, recording frames for the assertions below. */
+function recordingWebSocket(gate: NetworkGate) {
+  return class RecordingWebSocket extends WebSocket {
+    constructor(url: string) {
+      loopbackUrl(url, 'Realtime socket', ['ws:']);
+      super(url);
+      this.addEventListener('message', event => {
+        try {
+          gate.received.push({ at: Date.now(), frame: JSON.parse(String(event.data)) });
+        } catch {
+          gate.received.push({ at: Date.now(), frame: { unparsable: String(event.data).slice(0, 200) } });
+        }
+      });
+    }
+    override send(data: string): void {
+      gate.sent.push({ at: Date.now(), frame: JSON.parse(data) });
+      super.send(data);
+    }
+  };
+}
+
+function advanceFrames(gate: NetworkGate, since = 0): Array<{ at: number; frame: Record<string, any> }> {
+  return gate.received.filter(entry => entry.at >= since
+    && entry.frame.event === 'broadcast' && entry.frame.payload?.event === 'advance');
 }
 
 interface Device {
@@ -173,7 +217,9 @@ function guardedFetch(gate: NetworkGate): typeof fetch {
       if (!gate.pushesOnline) throw new Error('simulated offline push transport');
     }
     if (url.pathname.endsWith('/v1/sync/changes')) gate.pullRequests++;
-    return fetch(input, init);
+    const response = await fetch(input, init);
+    if (url.pathname.endsWith('/v1/sync/realtime-token')) gate.realtimeTokenStatuses.push(response.status);
+    return response;
   }) as typeof fetch;
 }
 
@@ -185,17 +231,19 @@ function createClient(device: Device): SyncClient {
     deviceId: DEVICE_IDS[device.name],
     deviceName: `Matrix ${device.name.toUpperCase()}`,
     fetchImpl: guardedFetch(device.gate),
-    activePollMs: 60_000,
-    idlePollMs: 60_000,
-    suspendAfterMs: 600_000,
+    webSocketImpl: recordingWebSocket(device.gate),
+    // B only: run near token expiry so the 900 s token is re-minted live.
+    ...(device.name === 'b' ? { now: () => Date.now() + B_CLOCK_SKEW_MS } : {}),
+    activePollMs: POLL_MS,
+    idlePollMs: POLL_MS,
+    suspendAfterMs: 3_600_000,
     pageLimit: 2,
     maxPagesPerCycle: 100,
     requestTimeoutMs: 10_000,
     backoffInitialMs: 100,
     backoffMaxMs: 1_000,
     minPullGapMs: 0,
-    // Left on as in production: X-Sync-Mode: poll must NOT turn it off; live
-    // updates are governed by realtime-token availability (404 ⇒ polling).
+    // Left on as in production: X-Sync-Mode: poll must NOT turn it off.
     wsEnabled: true,
     wsPingIntervalMs: 5_000,
     wsBackoffBaseMs: 50,
@@ -212,7 +260,9 @@ function openDevice(
   const dir = existingDir ?? mkdtempSync(join(tmpdir(), `claude-mem-matrix-supabase-${name}-`));
   const dbPath = join(dir, 'claude-mem.db');
   const store = new SessionStore(dbPath);
-  const gate: NetworkGate = { pushesOnline: true, pushAttempts: 0, pullRequests: 0 };
+  const gate: NetworkGate = {
+    pushesOnline: true, pushAttempts: 0, pullRequests: 0, realtimeTokenStatuses: [], received: [], sent: [],
+  };
   const cloudSync = new CloudSync(store.db, {
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: TOKEN,
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: USER_ID,
@@ -289,6 +339,34 @@ async function pullToHead(device: Device): Promise<void> {
   });
 }
 
+/**
+ * A flushes one new observation; B must hear the `advance` broadcast and
+ * reach the head with no explicit pull (poll tiers are 10 min). Returns
+ * flush-start -> advance-frame and flush-start -> cursor-at-head latencies.
+ */
+async function realtimeDelivery(a: Device, b: Device, title: string): Promise<{ advanceMs: number; convergeMs: number }> {
+  a.store.storeObservation('memory-baseline-a', 'project-baseline', observation(title, 'delivered over Realtime'), 5, 0);
+  const startedAt = Date.now();
+  const bPullsBefore = b.gate.pullRequests;
+  await a.cloudSync.flush();
+  invariant(pending(a) === 0, 'A pushed the realtime probe', a.cloudSync.status().lastError);
+  const head = (await getHubStatus()).head_seq;
+  const matching = () => advanceFrames(b.gate, startedAt).filter(entry => entry.frame.payload?.payload?.head_seq === head);
+  await waitFor(() => matching().length > 0, `B hears advance to ${head}`, REALTIME_BUDGET_MS).catch(error => {
+    const recent = b.gate.received.filter(entry => entry.at >= startedAt - 5_000)
+      .map(entry => ({ dt: entry.at - startedAt, event: entry.frame.event, payload: entry.frame.payload }));
+    throw new Error(`${(error as Error).message}; B live=${b.client.isSocketLive()} recent frames=${JSON.stringify(recent)}`);
+  });
+  await waitFor(() => b.apply.getCursor() === head, `B cursor reaches ${head} without a pull call`, REALTIME_BUDGET_MS);
+  const convergeMs = Date.now() - startedAt;
+  const advanceMs = matching()[0].at - startedAt;
+  check(count(b, 'SELECT COUNT(*) AS n FROM observations WHERE title = ?', title) === 1 && b.gate.pullRequests > bPullsBefore,
+    `${title} reached B over Realtime (flush->advance ${advanceMs} ms, flush->B cursor ${convergeMs} ms)`);
+  await Bun.sleep(300);
+  check(matching().length === 1, 'exactly one advance broadcast for the one push', matching().length);
+  return { advanceMs, convergeMs };
+}
+
 function reviveObservation(device: Device, id: string, memorySessionId: string): void {
   device.store.db.prepare(`
     INSERT INTO observations
@@ -314,11 +392,13 @@ async function runMatrix(): Promise<void> {
   const tempDirs = new Set([a.dir, b.dir]);
   try {
     await waitFor(() => a.apply.getEpoch() === fresh.epoch && b.apply.getEpoch() === fresh.epoch, 'initial epoch adoption');
-    // Until the function serves /v1/sync/realtime-token (Phase 11 server
-    // side) it answers 404 there, which keeps both clients on HTTP polling.
-    await waitFor(() => a.client.isPollModeOnly() && b.client.isPollModeOnly(), 'both clients fall back to polling (no realtime-token)');
-    check(!a.client.isSocketLive() && !b.client.isSocketLive(),
-      'both real clients stay on HTTP when the server offers no Realtime');
+    await waitFor(() => a.client.isSocketLive() && b.client.isSocketLive(), 'both clients join the Realtime channel');
+    check(a.gate.realtimeTokenStatuses[0] === 200 && b.gate.realtimeTokenStatuses[0] === 200,
+      'realtime-token answers 200 for both devices', [a.gate.realtimeTokenStatuses, b.gate.realtimeTokenStatuses]);
+    check(!a.client.isPollModeOnly() && !b.client.isPollModeOnly() && a.client.isSocketLive() && b.client.isSocketLive(),
+      'both real clients joined the private user channel (X-Sync-Mode: poll ignored)');
+    const joinReply = b.gate.received.find(entry => entry.frame.event === 'phx_reply' && entry.frame.topic === `realtime:user:${USER_ID}`);
+    check(joinReply?.frame.payload?.status === 'ok', 'Realtime acknowledged the private join', joinReply?.frame.payload);
 
     console.log('\nScenario: canonical content plus set_title and set_prompt_session');
     const sessionA = a.store.createSDKSession(
@@ -362,6 +442,32 @@ async function runMatrix(): Promise<void> {
     check(count(b, "SELECT COUNT(*) AS n FROM session_summaries WHERE origin_device_id = ?", DEVICE_IDS.a) === 1,
       'summary content replicates through canonical protocol v2');
 
+    console.log('\nScenario: live delivery over Supabase Realtime (no pull call, 10 min poll tiers)');
+    const firstDelivery = await realtimeDelivery(a, b, 'realtime-delivery-1');
+    const advance = advanceFrames(b.gate).at(-1)!.frame.payload.payload as Record<string, unknown>;
+    check(advance.type === 'advance' && advance.epoch === fresh.epoch && DECIMAL.test(String(advance.head_seq)),
+      'advance payload carries type/epoch/head_seq (extra fields ignored)', advance);
+    check(a.client.isSocketLive() && b.client.isSocketLive(), 'both sockets stay live after the broadcast');
+
+    console.log('\nScenario: live token refresh on the open channel');
+    await waitFor(() => b.gate.sent.some(entry => entry.frame.event === 'access_token'), 'B re-mints and sends access_token', 15_000);
+    const refresh = b.gate.sent.find(entry => entry.frame.event === 'access_token')!;
+    check(typeof refresh.frame.payload?.access_token === 'string' && refresh.frame.topic === `realtime:user:${USER_ID}`,
+      'B handed a fresh token to the open channel (access_token frame)');
+    check(b.gate.realtimeTokenStatuses.filter(status => status === 200).length >= 2,
+      'refresh minted a second token via realtime-token', b.gate.realtimeTokenStatuses);
+    await Bun.sleep(500);
+    const refreshReply = b.gate.received.find(entry => entry.at >= refresh.at && entry.frame.ref === refresh.frame.ref);
+    check(refreshReply === undefined || refreshReply.frame.payload?.status !== 'error',
+      'Realtime did not refuse the refreshed token', refreshReply?.frame.payload);
+    check(b.client.isSocketLive() && !b.gate.received.some(entry => entry.at >= refresh.at
+      && (entry.frame.event === 'phx_error' || entry.frame.event === 'phx_close'
+        || (entry.frame.event === 'system' && entry.frame.payload?.status === 'error'))),
+      'channel survives the token refresh without a reconnect');
+    const secondDelivery = await realtimeDelivery(a, b, 'realtime-delivery-after-refresh');
+    console.log(`  INFO  realtime latency: flush->advance ${firstDelivery.advanceMs} / ${secondDelivery.advanceMs} ms, `
+      + `flush->B cursor ${firstDelivery.convergeMs} / ${secondDelivery.convergeMs} ms (poll tier ${POLL_MS} ms)`);
+
     console.log('\nScenario: authoritative HTTP path (no advisory lane)');
     b.gate.pullRequests = 0;
     a.store.storeObservation(
@@ -388,8 +494,9 @@ async function runMatrix(): Promise<void> {
     });
     b.client.start();
     await pullToHead(b);
-    await waitFor(() => b.client.isPollModeOnly(), 'B falls back to polling after restart');
-    check(!b.client.isSocketLive(), 'restarted client stays in poll mode');
+    await waitFor(() => b.client.isSocketLive(), 'B rejoins Realtime after restart');
+    check(b.client.isSocketLive(), 'restarted client is live again');
+    await realtimeDelivery(a, b, 'realtime-delivery-after-restart');
 
     console.log('\nScenario: concurrent two-client writes');
     const sessionConcurrentA = a.store.createSDKSession('content-concurrent-a', 'project-concurrent', 'A concurrent');
