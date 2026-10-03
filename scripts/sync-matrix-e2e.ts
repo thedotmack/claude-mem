@@ -469,10 +469,17 @@ function observation(title: string, narrative: string): Parameters<SessionStore[
 }
 
 async function pullToHead(device: Device): Promise<void> {
+  // pullOnce is single-flight: while the client's own background cycle (for
+  // example the pull after its push) is fetching, it returns at once without
+  // waiting for that cycle. Retry, bounded, until the cursor reaches the head
+  // instead of assuming a second call lands after that cycle.
+  const deadline = Date.now() + 10_000;
   await device.client.pullOnce({ timeoutMs: 20_000, force: true });
-  const status = await getHubStatus();
-  if (device.apply.getCursor() !== status.head_seq) {
+  let status = await getHubStatus();
+  while (device.apply.getCursor() !== status.head_seq && Date.now() < deadline) {
+    await Bun.sleep(10);
     await device.client.pullOnce({ timeoutMs: 20_000, force: true });
+    status = await getHubStatus();
   }
   check(device.apply.getCursor() === status.head_seq, `${device.name.toUpperCase()} cursor reaches Hub head`, {
     cursor: device.apply.getCursor(),
