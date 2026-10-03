@@ -19,6 +19,7 @@ import { workStateTool } from '../../../shared/work-state-telemetry.js';
 import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 import { AGENT_LIFECYCLE_LIST, agentStopFields } from '../../work-view/agent-lifecycle.mjs';
 import type { TranscriptCheckpointGate } from '../../transcripts/types.js';
+import { committedMediaEventResult } from '../../media/linkage.js';
 import { captureObservationMedia } from '../../media/capture.js';
 import type { MediaEventIdentity } from '../../../shared/media-contract.js';
 
@@ -357,6 +358,21 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     // The explicit note is already stored. Its raw receipt above is useful,
     // but observing the echo would duplicate it and buy another provider call.
     return { ok: true, status: 'skipped', reason: 'explicit_memory_write' };
+  }
+
+  // Replay recovery: a source event whose text outcome, observation rows and
+  // image links already committed (media_events.result_state) is never sent
+  // to the observer again; the links landed with that commit.
+  if (media.eventKey) {
+    const committed = committedMediaEventResult(store.db, media.eventKey);
+    if (committed) {
+      logger.debug('INGEST', 'Replayed media event already has a committed result; not re-queued', {
+        sessionId: sessionDbId,
+        resultState: committed.resultState,
+        observations: committed.observationIds.length,
+      });
+      return { ok: true, status: 'skipped', reason: 'already_processed' };
+    }
   }
 
   sessionManager.queueObservation(sessionDbId, {

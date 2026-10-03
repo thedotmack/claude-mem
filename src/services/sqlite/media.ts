@@ -98,20 +98,32 @@ export function ensureMediaSchema(db: Database): void {
         retry_at INTEGER NOT NULL DEFAULT 0, last_error TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_media_event_refs_attachment ON media_event_refs(attachment_id);
+      -- v62: durable source-event -> observation result mapping, written in the
+      -- storeObservations transaction so a replayed event recovers its committed
+      -- result without another model call.
+      CREATE TABLE IF NOT EXISTS media_event_results (
+        event_key TEXT NOT NULL, observation_id INTEGER NOT NULL,
+        PRIMARY KEY(event_key, observation_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_media_event_results_observation ON media_event_results(observation_id);
       -- Recreated every startup so an older trigger definition never lingers.
       DROP TRIGGER IF EXISTS media_observation_delete;
       CREATE TRIGGER media_observation_delete AFTER DELETE ON observations BEGIN
         ${QUEUE_CLEANUP_FOR_DELETED_OBSERVATION.join(';\n        ')};
         DELETE FROM observation_media_links WHERE observation_id=OLD.id;
+        DELETE FROM media_event_results WHERE observation_id=OLD.id;
       END;
       DROP TRIGGER IF EXISTS media_session_delete;
       CREATE TRIGGER media_session_delete BEFORE DELETE ON sdk_sessions BEGIN
         ${QUEUE_CLEANUP_FOR_DELETED_SESSION.join(';\n        ')};
         DELETE FROM media_event_refs WHERE event_key IN (${SESSION_EVENT_KEYS_SQL});
+        DELETE FROM media_event_results WHERE event_key IN (${SESSION_EVENT_KEYS_SQL});
         UPDATE media_events SET state='deleted' WHERE session_db_id=OLD.id;
       END;
     `);
-    db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
+    const appliedAt = new Date().toISOString();
+    db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, appliedAt);
+    db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, appliedAt);
   })();
 }
 
