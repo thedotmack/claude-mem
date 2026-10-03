@@ -52,6 +52,7 @@ import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-st
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, claimSchemaWriter, LATEST_SCHEMA_VERSION } from './connection.js';
 import { streamRows } from './stream-rows.js';
+import { ensureMediaSchema } from './media.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
   assertCanonicalDecimal,
@@ -315,6 +316,7 @@ export class SessionStore {
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
     this.ensureObservationFileIndex();
+    ensureMediaSchema(this.db);
   }
 
   /**

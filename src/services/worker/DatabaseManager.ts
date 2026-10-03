@@ -7,7 +7,9 @@ import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
 import { BackupManager } from '../backup/BackupManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, DB_PATH, DATA_DIR } from '../../shared/paths.js';
+import { MediaStore } from '../media/store.js';
+import { MediaError } from '../../shared/media-contract.js';
 import { logger } from '../../utils/logger.js';
 import { clearSyncHealth, defaultSyncHealthFilePath } from '../../shared/sync-health.js';
 import { purgeUndrainableSyncOutbox } from '../sync/outbox-purge.js';
@@ -21,6 +23,8 @@ export class DatabaseManager {
   private chromaSync: ChromaSync | null = null;
   private cloudSync: CloudSync | null = null;
   private backupManager: BackupManager | null = null;
+  private mediaStore: MediaStore | null = null;
+  private mediaCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   async initialize(): Promise<void> {
     // Guard before pragmas: journal_mode = WAL persistently rewrites the file,
@@ -45,6 +49,20 @@ export class DatabaseManager {
     // the canonical v2 outbox.
     this.sessionStore = new SessionStore(this.db, { syncOpsEnabled: cloudSyncConfigured });
     this.sessionSearch = new SessionSearch(this.db);
+    this.mediaStore = new MediaStore(this.db, DATA_DIR);
+    const reconcileMedia = () => {
+      // Cleanup rows stay durable on failure and are retried next interval.
+      // Only the bounded code is logged: storage errors can contain paths.
+      try { this.mediaStore?.reconcile(); }
+      catch (error) {
+        logger.warn('DB', 'Media cleanup remains pending', {
+          code: error instanceof MediaError ? error.code : 'storage_unavailable',
+        });
+      }
+    };
+    reconcileMedia();
+    this.mediaCleanupTimer = setInterval(reconcileMedia, 30_000);
+    this.mediaCleanupTimer.unref?.();
 
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
     if (chromaEnabled) {
@@ -79,6 +97,9 @@ export class DatabaseManager {
   }
 
   async close(): Promise<void> {
+    if (this.mediaCleanupTimer) clearInterval(this.mediaCleanupTimer);
+    this.mediaCleanupTimer = null;
+    this.mediaStore = null;
     this.chromaSync = null;
 
     this.cloudSync?.stop();
@@ -102,6 +123,11 @@ export class DatabaseManager {
       throw new Error('Database not initialized');
     }
     return this.sessionStore;
+  }
+
+  getMediaStore(): MediaStore {
+    if (!this.mediaStore) throw new Error('Database not initialized');
+    return this.mediaStore;
   }
 
   getSessionSearch(): SessionSearch {

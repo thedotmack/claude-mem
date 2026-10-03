@@ -2,6 +2,7 @@
 import type { Response } from 'express';
 import type { PaidSendBudget } from './worker/paid-send-budget.js';
 import type { ClaudeCredential } from '../shared/quota-cooldown.js';
+import type { MediaAttachmentRef, MediaFailureDescriptor } from '../shared/media-contract.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -234,6 +235,9 @@ export interface ActiveSession {
 }
 
 export interface PendingMessage {
+  mediaRefs?: MediaAttachmentRef[];
+  mediaEventKey?: string;
+  mediaFailures?: MediaFailureDescriptor[];
   type: 'observation' | 'summarize';
   tool_name?: string;
   tool_input?: any;
@@ -252,6 +256,9 @@ export interface PendingMessageWithId extends PendingMessage {
 }
 
 export interface ObservationData {
+  mediaRefs?: MediaAttachmentRef[];
+  mediaEventKey?: string;
+  mediaFailures?: MediaFailureDescriptor[];
   tool_name: string;
   tool_input: any;
   tool_response: any;
