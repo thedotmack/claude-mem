@@ -85,6 +85,14 @@ export async function runEvaluationChecks(): Promise<{ checks: number; images: n
   const failed = await runMediaEvaluation(single, { ...options, maxRetries: 1 }, { caller: async request => ({ ...successful(request), parsed: false, observations: [] }), readDerivative: derivativeReader });
   assert.equal(failed.outcome, 'retry_limit'); assert.equal(failed.request_count, 2); assert.equal(failed.known_spend_usd, 0.002); checks++;
 
+  // Injected structural acceptance: a quality miss is not retried into best-of-N.
+  const paraphrased = await runMediaEvaluation(single, { ...options, maxRetries: 1 }, {
+    caller: async request => ({ ...successful(request), observations: [{ image_labels: ['event1_image1'], facts: ['paraphrase only'] }] }),
+    readDerivative: derivativeReader,
+    score: (_fixture, result) => ({ labelsValid: result.parsed && result.observations.length > 0, criticalFactsPresent: true }),
+  });
+  assert.equal(paraphrased.outcome, 'complete'); assert.equal(paraphrased.request_count, 1); assert.equal(paraphrased.attempts[0].critical_facts_present, true); checks++;
+
   const overrun = await runMediaEvaluation(corpus, { ...options, maxSpendUsd: 0.01 }, { caller: async request => successful(request, 0.02), readDerivative: derivativeReader });
   assert.equal(overrun.outcome, 'spend_limit'); assert.equal(overrun.request_count, 1); assert.equal(overrun.known_spend_usd, 0.02); checks++;
 

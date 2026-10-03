@@ -71,6 +71,12 @@ export interface EvaluationDependencies {
   scheduleTimeout?: (callback: () => void, milliseconds: number) => () => void;
   /** Required for live execution; record every attempt before another call. */
   recordAttempt?: (attempt: EvaluationAttempt) => Promise<void>;
+  /**
+   * Retry acceptance. Defaults to exact fact matching (scoreEvaluationResult).
+   * Phase 7 qualification injects structural validity only, so a quality miss
+   * is scored afterwards instead of being retried into a best-of-N result.
+   */
+  score?: (fixture: EvaluationFixture, result: EvaluationResult) => { labelsValid: boolean; criticalFactsPresent: boolean };
 }
 
 export interface EvaluationAttempt {
@@ -214,6 +220,7 @@ export async function runMediaEvaluation(
     const timeout = setTimeout(callback, milliseconds);
     return () => clearTimeout(timeout);
   });
+  const score = dependencies.score ?? scoreEvaluationResult;
   const runId = options.runId ?? randomUUID();
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(runId)) throw new Error('invalid evaluation run ID');
   report.max_spend_usd = budget;
@@ -271,7 +278,7 @@ export async function runMediaEvaluation(
           cancelTimeout();
           if (settled) pendingCaller = null;
         }
-        const score = scoreEvaluationResult(fixture, result);
+        const scored = score(fixture, result);
         const knownCharge = (result.cost_source === 'provider' || result.cost_source === 'computed') &&
           typeof result.actual_cost_usd === 'number' && Number.isFinite(result.actual_cost_usd) && result.actual_cost_usd >= 0;
         const attempt: EvaluationAttempt = {
@@ -281,8 +288,8 @@ export async function runMediaEvaluation(
           image_count: images.length, elapsed_ms: Math.max(0, now() - started), timed_out: timedOut,
           actual_cost_usd: knownCharge ? result.actual_cost_usd : null,
           cost_source: knownCharge ? result.cost_source : 'missing',
-          parsed: result.parsed, labels_valid: score.labelsValid,
-          critical_facts_present: score.criticalFactsPresent, observations: result.observations,
+          parsed: result.parsed, labels_valid: scored.labelsValid,
+          critical_facts_present: scored.criticalFactsPresent, observations: result.observations,
         };
         report.attempts.push(attempt);
         if (knownCharge) report.known_spend_usd += result.actual_cost_usd as number;
@@ -300,7 +307,7 @@ export async function runMediaEvaluation(
           report.outcome = 'spend_limit';
           return report;
         }
-        if (score.labelsValid && score.criticalFactsPresent) break;
+        if (scored.labelsValid && scored.criticalFactsPresent) break;
         if (retry === retries) {
           report.outcome = 'retry_limit';
           return report;
