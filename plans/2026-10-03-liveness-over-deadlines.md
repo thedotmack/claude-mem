@@ -397,20 +397,40 @@ from `vercel.json`, tpuf usage/backup/explorer code, and the tpuf erase steps in
 **Verify.** e2e: device B pulls within 2 s of device A's push with polling disabled. Embeddings column filled for new rows within 60 s
 locally. Hybrid search test returns a semantic-only match.
 
-## Phase 12 — Cutover + retire
+## Phase 12 — Cutover + retire (revised 2026-10-03 after Phase 10/11)
 
-**What.** In order:
-1. Pro: `node scripts/db-migrate.ts` against production; `supabase functions deploy cmem-sync embed`; set secrets; import signing key.
-2. Smoke test production with a test Pro account (push, pull, realtime, search).
-3. Ship claude-mem client: `migratedCloudSyncHubUrl` (`SettingsDefaultsManager.ts:125-138`) maps `https://sync.cmem.ai` → the function URL.
-   New epoch on Supabase ⇒ each device re-pushes its native content automatically (`SyncApply.handleEpoch`).
-4. Optional one-time backfill `scripts/backfill-cmem-content-from-tpuf.ts` (Pro) for users whose devices never come back: copy tpuf v2
-   docs into `cmem_content` where no row exists.
-5. After 7 days with `sync_users` active-device counts matching: scale Fly `cmem-sync-api` to 0, delete Neon branch, delete Turbopuffer
-   namespaces, delete `services/sync-api/` and `workers/sync-hub/` from claude-mem.
+**Why revised.** Two couplings make the original order unsafe: (1) Pro on `feat/supabase-cloud-sync` reads content
+only from `cmem_content`, which is empty until devices re-push — merging it first would blank every dashboard;
+(2) every shipped client (≤13.29) pushes to `https://sync.cmem.ai` (Fly `sync-api`), which projects through
+`/api/internal/sync/project` — a route that branch deletes. So the old path must keep working until traffic has moved.
 
-**Verify.** Production smoke script output; Pro dashboard shows the test account's content; `/api/sync/status` on a real worker shows
-`projected_seq == head_seq` and no `projection_busy` errors for 24 h.
+**Order (each step verifiable and reversible until step 7):**
+1. **Additive DB** — apply `0064`–`0068` to production with Pro's `scripts/db-migrate.ts` (new tables/functions/triggers
+   only; nothing existing changes). Verify with `supabase test db --linked` equivalents (read-only checks) and
+   `select count(*) from cmem_content` = 0.
+2. **Functions + secrets** — `supabase functions deploy cmem-sync embed --project-ref ziczmqtpmaxbornfghye`; set
+   `CMEM_REALTIME_SIGNING_JWK`, `CMEM_EMBED_SECRET`, `CMEM_PUBLIC_SUPABASE_URL`; import the ES256 public key as a
+   **standby** signing key (Management API / dashboard); Vault secrets `project_url`, `cmem_embed_secret`,
+   `cmem_pro_url`, `cmem_summary_landed_secret`. Nobody calls the function yet.
+3. **Smoke** — production smoke with a dedicated test Pro account: push/pull/status, realtime-token + join + advance,
+   embedding fills, hybrid search. Then delete the test account's sync rows.
+4. **Backfill reads** — Pro script `scripts/backfill-cmem-content-from-tpuf.ts`: copy every user's tpuf v2 docs into
+   `cmem_content` (hub_epoch/seq "0", keep entity_rev; conditional write so later pushes win). Verify per-user counts
+   match tpuf `stats`.
+5. **Move old clients without a release** — `services/sync-api` gains `FORWARD_ORIGIN` proxy mode (same idea as
+   `workers/sync-hub` FORWARD_ORIGIN): every `/v1/sync/*` request is forwarded verbatim to the `cmem-sync` function.
+   `fly deploy` with `FORWARD_ORIGIN` set. Clients see the new epoch and re-push their native content (idempotent with
+   the backfill via conditional writes). Rollback = unset `FORWARD_ORIGIN` and redeploy.
+6. **Pro merge** — merge `feat/supabase-cloud-sync` (Vercel deploys): reads from `cmem_content`, connect-info hands
+   new installs the function URL, summary-landed route live; set `CMEM_SUMMARY_LANDED_SECRET`, `CMEM_EMBED_SECRET`
+   in Vercel first.
+7. **Client default** — claude-mem release maps `https://sync.cmem.ai` → the function URL in
+   `migratedCloudSyncHubUrl` (removes the proxy hop). Ships with the next version bump after step 6 is verified.
+8. **Retire (after 7 days clean)** — scale Fly `cmem-sync-api` to 0, delete Neon, delete Turbopuffer namespaces +
+   remove the legacy erase steps, delete `services/sync-api/` and `workers/sync-hub/`.
+
+**Verify.** Each step's check above; `/api/sync/status` on a real worker shows `projected_seq == head_seq` and no
+`projection_busy` for 24 h; Pro dashboard counts for 3 real accounts match pre-cutover tpuf counts.
 
 ## Phase 13 — Final verification
 
