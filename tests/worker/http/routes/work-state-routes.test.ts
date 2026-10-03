@@ -1,5 +1,5 @@
 // POST /api/work-state/entries appends one entry under the checkout's primary
-// project key and answers with the list as it now reads; GET /api/work-state
+// project key and answers with what is still open in the list; GET /api/work-state
 // reads every key the checkout reads. These are what the work_state_write and
 // work_state_read MCP tools call with the session's cwd.
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
@@ -12,6 +12,7 @@ import {
   MAX_WORK_STATE_FIELDS_JSON_CHARS,
   WorkStateRoutes,
 } from '../../../../src/services/worker/http/routes/WorkStateRoutes.js';
+import { WORK_STATE_SECTION_CHARACTER_LIMIT } from '../../../../src/services/context/sections/WorkStateRenderer.js';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { getProjectContext } from '../../../../src/utils/project-name.js';
 import { logger } from '../../../../src/utils/logger.js';
@@ -78,20 +79,41 @@ function read(query: Record<string, string>): Promise<Response> {
 }
 
 describe('WorkStateRoutes', () => {
-  it("saves an entry under the checkout's project and answers with the list as it now reads", async () => {
+  it("saves an entry under the checkout's project and answers with what is still open in the list", async () => {
     await write({ cwd: checkout, list: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' } });
+    await write({ cwd: checkout, list: 'release', fields: { task: 'tag', status: 'done' } });
     const response = await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'todo' } });
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe([
-      `Saved to "release" in ${project}. The list now reads:`,
+      `Saved to "release" in ${project}. Still open in it:`,
       '- release: version=13.25.2, blocked_on=npm token, updated 1 minute ago',
       '  - [todo] publish, updated 1 minute ago',
     ].join('\n'));
     expect(store.getWorkStateEntries([project]).map(entry => entry.fields)).toEqual([
       { version: '13.25.2', blocked_on: 'npm token' },
+      { task: 'tag', status: 'done' },
       { task: 'publish', status: 'todo' },
     ]);
+  });
+
+  it('says when a write leaves nothing open in the list', async () => {
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'doing' } });
+    const response = await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'done' } });
+
+    expect(await response.text()).toBe(`Saved to "release" in ${project}. Nothing in it is open now.`);
+  });
+
+  it('keeps the answer to a write within the SessionStart section limit', async () => {
+    for (let tableNumber = 0; tableNumber < 80; tableNumber++) {
+      store.appendWorkStateEntry({ project, listName: 'migration', fields: { task: `table-${tableNumber}`, status: 'todo', note: 'x'.repeat(60) } });
+    }
+
+    const answer = await (await write({ cwd: checkout, list: 'migration', fields: { owner: 'agent' } })).text();
+
+    expect(answer.length).toBeLessThanOrEqual(WORK_STATE_SECTION_CHARACTER_LIMIT);
+    expect(answer).toStartWith(`Saved to "migration" in ${project}. Still open in it:\n- migration: owner=agent`);
+    expect(answer).toMatch(/\n- \.\.\.\d+ more lines; read them with work_state_read$/);
   });
 
   it('refuses an entry it cannot store or show, and saves nothing', async () => {

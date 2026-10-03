@@ -8,7 +8,11 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { logger } from '../../../../utils/logger.js';
-import { renderWorkStateLines } from '../../../context/sections/WorkStateRenderer.js';
+import {
+  fitWorkStateLines,
+  renderWorkStateLines,
+  WORK_STATE_SECTION_CHARACTER_LIMIT,
+} from '../../../context/sections/WorkStateRenderer.js';
 
 /** One write is a few short fields; anything bigger would crowd the SessionStart section. */
 export const MAX_WORK_STATE_FIELDS_JSON_CHARS = 2_000;
@@ -56,8 +60,13 @@ export class WorkStateRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
     store.appendWorkStateEntry({ project: checkout.primary, listName: list, fields });
     logger.debug('WORKER', 'Work state entry saved', { project: checkout.primary, list });
-    const listLines = renderWorkStateLines(store.getWorkStateEntries(checkout.allProjects, list), Date.now(), true);
-    res.send(`Saved to "${list}" in ${checkout.primary}. The list now reads:\n${listLines.join('\n')}`);
+    // Only what is still open, cut like the SessionStart section, so a long-kept
+    // list does not repeat its closed items on every write.
+    const openLines = renderWorkStateLines(store.getWorkStateEntries(checkout.allProjects, list), Date.now());
+    const saved = `Saved to "${list}" in ${checkout.primary}.`;
+    res.send(openLines.length > 0
+      ? fitWorkStateLines(`${saved} Still open in it:`, openLines, WORK_STATE_SECTION_CHARACTER_LIMIT)
+      : `${saved} Nothing in it is open now.`);
   });
 
   private handleRead = this.wrapHandler((req: Request, res: Response): void => {

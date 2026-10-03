@@ -12,7 +12,7 @@ const WORK_STATE_RULE = [
   '- One list per to-do list or tracked thing: work_state_write with list="<name>" and the fields to set',
   '- To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...any details}',
   '- State: fields {"<key>": <value>} (the latest value of each key wins; null clears a key; "status": "done" closes the list)',
-  '- Read every list, closed items included: work_state_read',
+  '- Read every list, closed items included: work_state_read with includeClosed=true',
 ].join('\n');
 
 export interface FoldedWorkStateList {
@@ -111,17 +111,21 @@ export function buildWorkStateContextSection(
   if (openLines.length === 0) {
     return `${WORK_STATE_RULE}\n\nNothing open yet.`;
   }
+  return fitWorkStateLines(`${WORK_STATE_RULE}\n\nStill open:`, openLines, characterLimit);
+}
 
-  let section = `${WORK_STATE_RULE}\n\nStill open:`;
-  for (let index = 0; index < openLines.length; index++) {
-    const remaining = openLines.length - index;
+/** `heading`, then as many of `lines` as fit in `characterLimit`, then how many were left out. */
+export function fitWorkStateLines(heading: string, lines: string[], characterLimit: number): string {
+  let text = heading;
+  for (let index = 0; index < lines.length; index++) {
+    const remaining = lines.length - index;
     const overflowLine = `\n- ...${remaining} more line${remaining === 1 ? '' : 's'}; read them with work_state_read`;
-    const candidate = `${section}\n${openLines[index]}`;
-    const needsOverflowRoom = index < openLines.length - 1;
+    const candidate = `${text}\n${lines[index]}`;
+    const needsOverflowRoom = index < lines.length - 1;
     if (candidate.length + (needsOverflowRoom ? overflowLine.length : 0) > characterLimit) {
-      return section + overflowLine;
+      return text + overflowLine;
     }
-    section = candidate;
+    text = candidate;
   }
-  return section;
+  return text;
 }

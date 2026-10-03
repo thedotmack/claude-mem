@@ -107,7 +107,8 @@ describe('buildWorkStateContextSection', () => {
 
     expect(section).toStartWith("# Work state: your to-do lists and working state\nUse claude-mem's work_state_write tool to track all to-do lists and multi-step work.");
     expect(section).toContain('It is your canonical to-do list: use it instead of any built-in to-do tool.');
-    expect(section).toContain('work_state_read');
+    // A bare work_state_read shows only what is open, so the hint for closed items names the flag.
+    expect(section).toContain('\n- Read every list, closed items included: work_state_read with includeClosed=true\n');
     expect(section).toContain('\n\nStill open:\n- release: version=13.25.3');
     expect(section).toEndWith('  - [todo] timeout-decision, updated about 3 days ago');
   });
