@@ -16,12 +16,21 @@ export function assertMediaId(value: unknown): string {
   if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) throw new MediaError('invalid_manifest');
   return value;
 }
-interface VariantMetadata { sha256: string; width: number; height: number; byteLength: number; mimeType: 'image/webp' }
+export interface VariantMetadata { sha256: string; width: number; height: number; byteLength: number; mimeType: 'image/webp' }
 export interface MediaMetadata {
-  id: string; state: 'converting' | 'ready' | 'failed' | 'deleted'; recipe: MediaProvenance['recipe'];
+  /** 'unresolved_replica': a second-device placeholder whose bytes were not fetched yet (never a failure). */
+  id: string; state: 'converting' | 'ready' | 'failed' | 'deleted' | 'unresolved_replica'; recipe: MediaProvenance['recipe'];
   encoderVersion: string | null; viewer: VariantMetadata | null; llm: VariantMetadata | null; failureCode: MediaErrorCode | null;
 }
-interface AttachmentRow { id: string; state: MediaMetadata['state']; provenance: string; recipe: MediaMetadata['recipe']; encoder_version: string | null; variants: string | null; failure_code: MediaErrorCode | null; lease_until: number }
+interface AttachmentRow { id: string; state: Exclude<MediaMetadata['state'], 'unresolved_replica'>; provenance: string; recipe: MediaMetadata['recipe']; encoder_version: string | null; variants: string | null; failure_code: MediaErrorCode | null; lease_until: number; origin: 'native' | 'replica' }
+
+/** Verified cloud bytes for one replica attachment (see publishReplica). */
+export interface ReplicaVariants {
+  recipe: MediaProvenance['recipe'];
+  encoderVersion: string;
+  viewer: VariantMetadata & { bytes: Buffer };
+  llm: VariantMetadata & { bytes: Buffer };
+}
 
 export function mediaReplayKey(provenance: MediaProvenance): string {
   return createHash('sha256').update(JSON.stringify([1,provenance.platform,provenance.event_identity,provenance.source_pointer,provenance.source_sha256,provenance.recipe])).digest('hex');
@@ -55,7 +64,8 @@ export class MediaStore {
   getMetadata(id: string): MediaMetadata {
     const row = this.row(id);
     const variants = row.variants ? JSON.parse(row.variants) as Record<MediaVariantName,VariantMetadata> : null;
-    return { id, state: row.state, recipe: row.recipe, encoderVersion: row.encoder_version,
+    const unresolvedReplica = row.origin === 'replica' && row.state === 'failed';
+    return { id, state: unresolvedReplica ? 'unresolved_replica' : row.state, recipe: row.recipe, encoderVersion: row.encoder_version,
       viewer: variants?.viewer ?? null, llm: variants?.llm ?? null, failureCode: row.failure_code };
   }
   async readVariant(id: string, variant: MediaVariantName): Promise<Buffer> {
@@ -152,6 +162,53 @@ export class MediaStore {
         if (published) this.db.prepare('INSERT OR IGNORE INTO media_cleanup_jobs(attachment_id,directory,queued_at) VALUES(?,?,?)').run(claimed.id,claimed.id,Date.now());
       })();
       throw new MediaError(code);
+    }
+  }
+
+  /** True for a second-device placeholder whose bytes were not resolved yet. */
+  isUnresolvedReplica(id: string): boolean {
+    assertMediaId(id);
+    const row = this.db.prepare(`SELECT state, origin FROM media_attachments WHERE id=?`).get(id) as Pick<AttachmentRow,'state'|'origin'> | null;
+    return row !== null && row.origin === 'replica' && row.state === 'failed';
+  }
+
+  /**
+   * Publish verified cloud bytes for a replica placeholder with the same staged
+   * atomic directory rename as a native conversion. The row stays
+   * origin='replica' and upload_state='cancelled', so it is never uploaded. A
+   * placeholder deleted while the download ran is not resurrected: its staged
+   * files are removed and media_not_found is thrown.
+   */
+  publishReplica(id: string, replica: ReplicaVariants): void {
+    assertMediaId(id);
+    this.prepareRoot();
+    const target = join(this.root, id);
+    if (existsSync(target)) {
+      if (!this.isUnresolvedReplica(id)) throw new MediaError('media_not_found');
+      // A crash after an earlier rename but before its row update.
+      assertNoSymlinks(this.root, target);
+      rmSync(target, { recursive: true, force: true });
+    }
+    let stage: string | undefined = join(this.root, '.tmp', id + '-' + randomUUID());
+    try {
+      mkdirSync(stage, { mode: 0o700 });
+      assertNoSymlinks(this.root, stage);
+      for (const variant of ['viewer', 'llm'] as const) {
+        const fd = openSync(join(stage, variant + '.webp'), 'wx', 0o600);
+        try { writeFileSync(fd, replica[variant].bytes); fsyncSync(fd); } finally { closeSync(fd); }
+      }
+      renameSync(stage, target);
+      stage = undefined;
+      const describe = (variant: VariantMetadata): VariantMetadata => ({ sha256: variant.sha256, width: variant.width, height: variant.height, byteLength: variant.byteLength, mimeType: variant.mimeType });
+      const published = this.db.prepare(`UPDATE media_attachments SET state='ready', failure_code=NULL, recipe=?, encoder_version=?, variants=?
+        WHERE id=? AND origin='replica' AND state='failed'`)
+        .run(replica.recipe, replica.encoderVersion, JSON.stringify({ viewer: describe(replica.viewer), llm: describe(replica.llm) }), id);
+      if (published.changes === 0) {
+        this.db.prepare('INSERT OR IGNORE INTO media_cleanup_jobs(attachment_id,directory,queued_at) VALUES(?,?,?)').run(id, id, Date.now());
+        throw new MediaError('media_not_found');
+      }
+    } finally {
+      if (stage) rmSync(stage, { recursive: true, force: true });
     }
   }
 

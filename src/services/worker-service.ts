@@ -473,7 +473,10 @@ export class WorkerService implements WorkerRef {
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
-    this.server.registerRoutes(new MediaRoutes(() => this.dbManager.getMediaStore()));
+    this.server.registerRoutes(new MediaRoutes(
+      () => this.dbManager.getMediaStore(),
+      id => this.dbManager.getMediaReplicaResolver().resolve(id),
+    ));
     this.server.registerRoutes(new AdvisorRoutes(this.dbManager));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());

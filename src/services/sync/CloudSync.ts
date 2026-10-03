@@ -529,6 +529,16 @@ export interface CloudSyncStatus {
   };
 }
 
+/**
+ * Cloud sync is active iff token, user id and Hub URL are all non-empty. The
+ * one shared predicate (CloudSync, DatabaseManager and the media cloud plane).
+ */
+export function isCloudSyncConfigured(settings: Pick<SettingsDefaults, 'CLAUDE_MEM_CLOUD_SYNC_TOKEN' | 'CLAUDE_MEM_CLOUD_SYNC_USER_ID' | 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL'>): boolean {
+  return (settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN ?? '') !== ''
+    && (settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID ?? '') !== ''
+    && (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim() !== '';
+}
+
 export class CloudSync {
   private readonly db: Database;
   private readonly token: string;

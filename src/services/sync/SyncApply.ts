@@ -160,6 +160,7 @@
 //     the association. Stubs are created with status 'completed' and stay
 //     'completed' even if a live local session later adopts them.
 
+import { syncReplicaMediaLinks } from '../media/replica.js';
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
@@ -736,6 +737,7 @@ export class SyncApply {
         createdAt, createdAtEpoch, op.rev, this.now(),
         existing.id
       );
+      syncReplicaMediaLinks(this.db, existing.id, fieldString(op, body, 'metadata'), this.now());
       return 'applied';
     }
 
@@ -769,6 +771,7 @@ export class SyncApply {
       });
       return 'stale';
     }
+    syncReplicaMediaLinks(this.db, inserted.id, fieldString(op, body, 'metadata'), this.now());
 
     if (this.chromaSync) {
       const chroma = this.chromaSync;
