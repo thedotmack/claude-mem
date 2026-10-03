@@ -54,6 +54,14 @@ describe('CLAUDE.md generation from native git filenames', () => {
     expect(generateForTrackedFile('plain', 'first\nsecond.ts')).toContain('Tracked fixture observation');
   });
 
+  it.skipIf(process.platform === 'win32')('generates context for tracked folders containing a newline', () => {
+    expect(generateForTrackedFile('first\nsecond', 'file.ts')).toContain('Tracked fixture observation');
+  });
+
+  it.skipIf(process.platform === 'win32')('generates context for tracked folders containing a double quote', () => {
+    expect(generateForTrackedFile('quoted"folder', 'file.ts')).toContain('Tracked fixture observation');
+  });
+
   it('preserves ordinary tracked folders with spaces', () => {
     expect(generateForTrackedFile('plain folder', 'file.ts')).toContain('Tracked fixture observation');
   });

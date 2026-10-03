@@ -147,7 +147,7 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   `;
 
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
-  const likePattern = `%"${normalizedFolderPath}/%`;
+  const likePattern = `%"${JSON.stringify(normalizedFolderPath + '/').slice(1, -1)}%`;
   const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
 
   return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
