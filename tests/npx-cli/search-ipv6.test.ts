@@ -5,6 +5,25 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+async function supportsIpv6Loopback(): Promise<boolean> {
+  const probe = http.createServer();
+  return new Promise((resolve, reject) => {
+    probe.once('error', (error: NodeJS.ErrnoException) => {
+      probe.close(() => undefined);
+      if (['EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EPROTONOSUPPORT'].includes(error.code ?? '')) {
+        resolve(false);
+      } else {
+        reject(error);
+      }
+    });
+    probe.listen(0, '::1', () => {
+      probe.close(error => error ? reject(error) : resolve(true));
+    });
+  });
+}
+
+const ipv6LoopbackSupported = await supportsIpv6Loopback();
+
 async function searchAgainst(host: string, listenHost: string, settingsOnly = false): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'claude-mem-search-ipv6-'));
   const urls: string[] = [];
@@ -60,10 +79,10 @@ async function searchAgainst(host: string, listenHost: string, settingsOnly = fa
 }
 
 describe('npx search native worker host URLs', () => {
-  it('searches an unbracketed IPv6 loopback host', async () => {
+  it.skipIf(!ipv6LoopbackSupported)('searches an unbracketed IPv6 loopback host', async () => {
     await searchAgainst('::1', '::1');
   });
-  it('preserves an already bracketed IPv6 host', async () => {
+  it.skipIf(!ipv6LoopbackSupported)('preserves an already bracketed IPv6 host', async () => {
     await searchAgainst('[::1]', '::1');
   });
   it('loads the saved custom worker host and port when environment overrides are absent', async () => {
