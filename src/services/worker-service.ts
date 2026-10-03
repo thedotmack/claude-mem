@@ -59,7 +59,7 @@ import {
   getPlatformTimeout,
   runOneTimeCwdRemap,
   cleanStalePidFile,
-  verifyPidFileOwnership,
+  verifyWorkerPidFileOwnership,
   spawnDaemon,
   touchPidFile,
   pinDaemonWorkingDirectory
@@ -1752,7 +1752,7 @@ async function main() {
       // The worker itself remains the sole writer of this file
       // (writePidFile/touchPidFile stay as diagnostics).
       const existingPidInfo = readPidFile();
-      if (verifyPidFileOwnership(existingPidInfo)) {
+      if (verifyWorkerPidFileOwnership(existingPidInfo)) {
         logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
           existingPid: existingPidInfo.pid,
           existingPort: existingPidInfo.port,
