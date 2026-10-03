@@ -12,7 +12,9 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
-import { ClassifiedProviderError, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
+import { randomUUID } from 'crypto';
+import { ClassifiedProviderError, rateLimitUntilNextKey, readCappedErrorBody, type ProviderErrorClass } from './provider-errors.js';
+import type { PaidSendBudget } from './paid-send-budget.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { OpenAICompatibleProvider, assistantText, type OpenAIChatMessage as OpenAIMessage, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
@@ -289,17 +291,14 @@ export function classifyOpenRouterError(input: {
   // litellm (behind OpenRouter) can fail to parse the downstream model's
   // response and surface it as a body-level error inside a 200 envelope, e.g.
   // `{ error: { code: 200, message: "Unable to get json response - Expecting
-  // value: line 45 column 1" } }`. Because the body-error path forwards the
-  // success status verbatim, none of the HTTP-status branches above match and
-  // it would otherwise fall through to `unrecoverable` and never retry. These
-  // are transient upstream hiccups that usually succeed on a retry, so detect
-  // the tell-tale litellm markers and route them to the retry loop.
-  // Kept marker-scoped on purpose: OpenRouter also delivers genuine auth/quota
-  // errors inside 200 envelopes, which must stay non-transient.
+  // value: line 45 column 1" } }`. The model ran and the request was billed;
+  // only its output was lost. Resending pays for the same work again, so it is
+  // an output failure and never retried ("never pay twice"). Kept
+  // marker-scoped so it carries its own words in the log.
   if (lower.includes('unable to get json') || lower.includes('expecting value')) {
     return new ClassifiedProviderError(
-      describe('transient upstream parse failure'),
-      { kind: 'transient', cause: input.cause, ...detail },
+      describe('upstream output failure'),
+      { kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause: input.cause, ...detail },
     );
   }
 
@@ -714,6 +713,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     config: OpenRouterConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
   ): Promise<ProviderQueryResult> {
     // Rotation wraps withRetry rather than living inside it: the inner retry
     // still owns transient failures against one key, and this outer sweep moves
@@ -724,7 +724,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter', rateLimitUntilNextKey },
       ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
         history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
-        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort,
+        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort, paidSendBudget,
       ),
     );
   }
@@ -738,7 +738,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     messages: OpenAIMessage[],
     siteUrl: string | undefined,
     appName: string | undefined,
-    priorRequestId: string | null,
+    clientAttemptId: string,
     attemptSignal: AbortSignal,
     maxOutputTokens: number,
     plainText?: boolean,
@@ -753,7 +753,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         'Authorization': `Bearer ${apiKey}`,
         ...openRouterAttributionHeaders(siteUrl, appName),
         'Content-Type': 'application/json',
-        ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+        // Tracing only: names every send of one batch in our logs and the
+        // provider's. Never treated as server-side idempotency.
+        'x-client-request-id': clientAttemptId,
       },
       signal: attemptSignal,
     }, body, maxOutputTokens);
@@ -774,6 +776,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     perAttemptTimeoutMs?: number,
     extraBody?: Record<string, unknown>,
     reasoningEffort?: OpenRouterReasoningEffort,
+    paidSendBudget?: PaidSendBudget,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -787,16 +790,14 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       maxOutputTokens,
     });
 
-    let priorRequestId: string | null = null;
-    // The id of the response actually returned. priorRequestId keeps an earlier
-    // failed attempt's id for the retry-dedup header, so it would name the wrong
-    // request when the final response carries no id header.
+    const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
+    // The id of the response actually returned, for the cut-off warning.
     let finalRequestId: string | undefined;
 
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, clientAttemptId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err, requestUrl: apiUrl });
@@ -804,14 +805,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
       const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
       finalRequestId = requestId ?? undefined;
-      if (requestId) {
-        priorRequestId = requestId;
-      } else {
-        logger.debug('SDK', 'OpenRouter response missing request-id header; retry dedup is best-effort');
-      }
 
       if (!response.ok) {
-        const errorText = await response.text();
+        const errorText = await readCappedErrorBody(response);
         throw classifyOpenRouterError({
           status: response.status,
           bodyText: errorText,
@@ -821,7 +817,17 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         });
       }
 
-      const responseData = await response.json() as OpenRouterResponse;
+      let responseData: OpenRouterResponse;
+      try {
+        responseData = await response.json() as OpenRouterResponse;
+      } catch (bodyError: unknown) {
+        // The response arrived, so the work ran and was billed; only reading
+        // its body failed. Never resent.
+        throw new ClassifiedProviderError(
+          `OpenRouter response body could not be read: ${bodyError instanceof Error ? bodyError.message : String(bodyError)}`,
+          { kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause: bodyError, ...(requestId ? { requestId } : {}) },
+        );
+      }
 
       if (responseData.error) {
         // Per OpenRouter spec, errors can come in 200 responses too.
@@ -835,7 +841,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}`, abortSignal: signal, perAttemptTimeoutMs, ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize) });
+    }, {
+      label: `OpenRouter ${model}`, abortSignal: signal, perAttemptTimeoutMs, paidSendBudget, clientAttemptId,
+      ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize),
+    });
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
@@ -856,6 +865,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       logger.warn('SDK', 'OpenRouter reply was cut off at the output-token limit', {
         model: data.model ?? model,
         requestId: finalRequestId,
+        clientAttemptId,
         maxTokens: maxOutputTokens,
         outputTokens: data.usage?.completion_tokens,
         contentChars: content.length,
@@ -866,7 +876,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       const error = new Error('OpenRouter returned no assistant text for the Telegram wrap-up');
       logger.error('TELEGRAM', error.message, {
         model: data.model ?? model,
-        requestId: priorRequestId,
+        requestId: finalRequestId,
+        clientAttemptId,
         finishReason: choice?.finish_reason,
         contentType: Array.isArray(message?.content) ? 'array' : typeof message?.content,
         hasReasoningContent: Boolean(message?.reasoning_content || message?.reasoning),
@@ -908,7 +919,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         outputTokens: realOutputTokens || 0,
         totalTokens: tokensUsed,
         ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
-        messagesInContext: history.length
+        messagesInContext: history.length,
+        requestId: finalRequestId,
+        clientAttemptId,
       });
     }
 

@@ -715,9 +715,13 @@ describe('200 error envelopes are classified by what they report', () => {
     expect(classify({ code: 401, message: 'bad key' }).kind).toBe('auth_invalid');
   });
 
-  it('retries a litellm parse failure instead of dropping the batch', () => {
+  // Never pay twice (Phase 1): the model ran and was billed; only its output
+  // was lost, so a resend would pay for the same work again. It used to be
+  // classified transient and retried.
+  it('treats a litellm parse failure as an output failure, never retried', () => {
     const err = classify({ code: 200, message: 'Unable to get json response - Expecting value: line 45 column 1' });
-    expect(err.kind).toBe('transient');
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
     expect(err.message).toContain('Unable to get json response');
   });
 

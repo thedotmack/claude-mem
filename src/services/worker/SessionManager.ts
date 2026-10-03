@@ -73,10 +73,38 @@ export class SessionManager {
     this.generatorStarter = starter;
   }
 
+  /**
+   * Park the last-sent batch when its PaidSendBudget is spent: it is never
+   * resent, by any path, and stays visible in the buffer (getParkedMessages)
+   * until the session ends, while newer work keeps flowing. Returns the ids
+   * parked; none when the budget has a send left or the batch was stored.
+   */
+  parkBatchOnSpentPaidSendBudget(session: ActiveSession): number[] {
+    const budget = session.paidSendBudget;
+    if (!budget || budget.hasRemainingPaidSend()) return [];
+    session.paidSendBudget = undefined;
+    const parkedMessageIds = this.buffer.park(session.sessionDbId, [...budget.batchMessageIds], budget.clientAttemptId);
+    if (parkedMessageIds.length > 0) {
+      logger.error('SESSION', 'Batch parked: its paid-send budget is spent, so it is not resent', {
+        sessionId: session.sessionDbId,
+        parkedMessageIds,
+        paidSendsSpent: budget.spentPaidSends,
+        maxPaidSends: budget.maxPaidSends,
+        clientAttemptId: budget.clientAttemptId,
+        pendingCount: this.buffer.getPendingCount(session.sessionDbId),
+      });
+    }
+    return parkedMessageIds;
+  }
+
   /** Resume preserved transport work without requiring another hook from the IDE. */
   scheduleTransportResume(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
-    if (!session || this.deletingSessions.has(sessionDbId) || this.buffer.getPendingCount(sessionDbId) === 0) return;
+    if (!session || this.deletingSessions.has(sessionDbId)) return;
+    // A resume resends the batch; one whose budget is spent is parked instead,
+    // and only work behind it, if any, is resumed.
+    this.parkBatchOnSpentPaidSendBudget(session);
+    if (this.buffer.getPendingCount(sessionDbId) === 0) return;
     if (!this.generatorStarter) {
       logger.error('SESSION', 'Cannot schedule transport resume: generator starter is not attached', { sessionId: sessionDbId });
       return;
@@ -605,6 +633,7 @@ export class SessionManager {
         this.deliverSessionWrapupInBackground(sessionDbId);
       }
       this.clearTransportResume(sessionDbId);
+      this.logParkedMessagesEndingWithSession(sessionDbId);
       this.buffer.dispose(sessionDbId);
       this.summarizeRescues.delete(sessionDbId);
       this.sessions.delete(sessionDbId);
@@ -660,12 +689,24 @@ export class SessionManager {
     }
 
     this.clearTransportResume(sessionDbId);
+    this.logParkedMessagesEndingWithSession(sessionDbId);
     this.buffer.dispose(sessionDbId);
     this.summarizeRescues.delete(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
       project: session.project
+    });
+  }
+
+  /** Parked batches end with their session like the rest of the RAM buffer; say so rather than drop them silently. */
+  private logParkedMessagesEndingWithSession(sessionDbId: number): void {
+    const parkedMessages = this.buffer.getParkedMessages(sessionDbId);
+    if (parkedMessages.length === 0) return;
+    logger.warn('SESSION', 'Session ended with parked batches; they were never resent', {
+      sessionId: sessionDbId,
+      parkedMessageIds: parkedMessages.map(parked => parked.messageId),
+      clientAttemptIds: [...new Set(parkedMessages.map(parked => parked.clientAttemptId))],
     });
   }
 

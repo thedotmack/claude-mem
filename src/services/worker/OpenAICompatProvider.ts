@@ -32,7 +32,9 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
-import { ClassifiedProviderError, rateLimitUntilNextKey } from './provider-errors.js';
+import { randomUUID } from 'crypto';
+import { ClassifiedProviderError, rateLimitUntilNextKey, readCappedErrorBody } from './provider-errors.js';
+import type { PaidSendBudget } from './paid-send-budget.js';
 import { isContextOverflowBody } from './OpenRouterProvider.js';
 import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
@@ -135,9 +137,10 @@ const RATE_LIMIT_ERROR_CODES = new Set([
 /**
  * litellm (behind many compatible gateways) reports a failure to parse the
  * downstream model's reply as an error envelope, often inside a 200 (#3263).
- * The same request usually succeeds on a retry.
+ * The model ran and was billed; only its output was lost, so resending pays
+ * for the same work again. An output failure, never retried.
  */
-const TRANSIENT_PARSE_FAILURE_MARKERS = ['unable to get json', 'expecting value'];
+const UPSTREAM_OUTPUT_FAILURE_MARKERS = ['unable to get json', 'expecting value'];
 
 interface ErrorEnvelope {
   code?: unknown;
@@ -314,9 +317,10 @@ export function classifyOpenAICompatError(input: {
     });
   }
 
-  if (TRANSIENT_PARSE_FAILURE_MARKERS.some(marker => lower.includes(marker))) {
-    return new ClassifiedProviderError(describe('transient upstream parse failure'), {
-      kind: 'transient',
+  if (UPSTREAM_OUTPUT_FAILURE_MARKERS.some(marker => lower.includes(marker))) {
+    return new ClassifiedProviderError(describe('upstream output failure'), {
+      kind: 'unrecoverable',
+      paidSendOutcome: 'output_failure',
       cause: input.cause,
     });
   }
@@ -466,13 +470,14 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     config: OpenAICompatConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
   ): Promise<ProviderQueryResult> {
     if (!config.apiUrl || !config.model) {
       throw this.missingApiKeyError();
     }
     return withKeyPool(
       { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
-      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs),
+      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget),
     );
   }
 
@@ -486,12 +491,15 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     apiKey: string,
     messages: OpenAIChatMessage[],
     maxOutputTokens: number,
+    clientAttemptId: string,
     attemptSignal: AbortSignal,
   ): Promise<Response> {
     return fetchWithOpenRouterTokenCompatibility(fetch, config.apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        // Tracing only; never treated as server-side idempotency.
+        'x-client-request-id': clientAttemptId,
         // Local servers accept any token or none; sending an empty bearer to
         // them is worse than sending no header at all.
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
@@ -512,9 +520,11 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     config: OpenAICompatConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const label = config.preset.label;
+    const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
     const maxOutputTokens = resolveObserverMaxOutputTokens();
 
     logger.debug('SDK', `Querying ${label} multi-turn (${config.model})`, {
@@ -526,14 +536,14 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     const data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(config, apiKey, messages, maxOutputTokens, attemptSignal);
+        response = await this.fetchChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenAICompatError({ cause: err, endpointLabel: label, requestUrl: config.apiUrl });
       }
 
       if (!response.ok) {
-        const errorText = await response.text();
+        const errorText = await readCappedErrorBody(response);
         throw classifyOpenAICompatError({
           status: response.status,
           bodyText: errorText,
@@ -543,7 +553,17 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         });
       }
 
-      const responseData = await response.json() as ChatCompletionResponse;
+      let responseData: ChatCompletionResponse;
+      try {
+        responseData = await response.json() as ChatCompletionResponse;
+      } catch (bodyError: unknown) {
+        // The response arrived, so the work ran and was billed; only reading
+        // its body failed. Never resent.
+        throw new ClassifiedProviderError(
+          `${label} response body could not be read: ${bodyError instanceof Error ? bodyError.message : String(bodyError)}`,
+          { kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause: bodyError },
+        );
+      }
 
       // Some gateways report failure in a 200 body (the case #3263 hit through
       // OpenRouter). Treat it exactly like the equivalent HTTP status.
@@ -562,6 +582,8 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       label: `${label} ${config.model}`,
       abortSignal: signal,
       perAttemptTimeoutMs,
+      paidSendBudget,
+      clientAttemptId,
       ...(signal ? { maxRetries: 0 } : {}),
       ...retryPolicyForPool(poolSize),
     });
@@ -577,6 +599,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         maxTokens: maxOutputTokens,
         outputTokens: data.usage?.completion_tokens,
         contentChars: content.length,
+        clientAttemptId,
       });
     }
     if (!content) {
@@ -595,6 +618,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         outputTokens: outputTokens ?? 0,
         totalTokens: tokensUsed,
         messagesInContext: history.length,
+        clientAttemptId,
       });
     }
 
