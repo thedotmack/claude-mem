@@ -483,6 +483,9 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
+        // Native decoder must remain external and be installed for each host.
+        // https://sharp.pixelplumbing.com/install/#bundlers
+        'sharp': packageJson.dependencies.sharp,
         'zod': '^4.4.3',
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
@@ -604,6 +607,7 @@ async function buildHooks() {
       ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
+        'sharp',
         'bun:sqlite',
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
