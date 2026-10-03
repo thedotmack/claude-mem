@@ -651,7 +651,29 @@ export class SessionSearch {
     // filePath is the file filter; a caller's own `files` filter is not added on top.
     delete filters.files;
 
-    const queryLimit = isFolder ? limit * 3 : limit;
+    // Folder matching removes nested descendants. Page the matching rows, not
+    // a guessed multiple of the broader SQL candidates.
+    const pageDirectChildren = <T>(rows: Iterable<T>, matches: (row: T) => boolean): T[] => {
+      const page: T[] = [];
+      const pageLimit = Number(limit);
+      if (!Number.isInteger(pageLimit) || pageLimit < 0) {
+        throw new Error('Folder search limit must be a non-negative integer');
+      }
+      const pageOffset = Number(offset);
+      if (!Number.isInteger(pageOffset)) {
+        throw new Error('Folder search offset must be an integer');
+      }
+      if (pageLimit === 0) return page;
+      let skipped = 0;
+      for (const row of rows) {
+        if (!matches(row)) continue;
+        if (skipped < Math.max(0, pageOffset)) { skipped++; continue; }
+        page.push(row);
+        if (page.length === pageLimit) break;
+      }
+      return page;
+    };
+    const paginationSql = isFolder ? '' : 'LIMIT ? OFFSET ?';
     const pathPatterns = SessionSearch.filePathPatterns(filePath, isFolder);
 
     const filterClause = this.buildFilterClause(filters, params, 'o');
@@ -667,16 +689,18 @@ export class SessionSearch {
       FROM observations o
       WHERE ${whereClause}
       ${orderClause}
-      LIMIT ? OFFSET ?
+      ${paginationSql}
     `;
 
-    params.push(queryLimit, offset);
+    if (!isFolder) params.push(limit, offset);
 
-    let observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
-
-    if (isFolder) {
-      observations = observations.filter(obs => this.hasDirectChildFile(obs, filePath)).slice(0, limit);
-    }
+    const observationStatement = this.db.prepare(observationsSql);
+    const observations = isFolder
+      ? pageDirectChildren(
+          observationStatement.iterate(...params) as Iterable<ObservationSearchResult>,
+          obs => this.hasDirectChildFile(obs, filePath),
+        )
+      : observationStatement.all(...params) as ObservationSearchResult[];
 
     const sessionParams: any[] = [];
     const sessionFilters = { ...filters };
@@ -719,16 +743,18 @@ export class SessionSearch {
       FROM session_summaries s
       WHERE ${baseConditions.join(' AND ')}
       ORDER BY s.created_at_epoch DESC
-      LIMIT ? OFFSET ?
+      ${paginationSql}
     `;
 
-    sessionParams.push(queryLimit, offset);
+    if (!isFolder) sessionParams.push(limit, offset);
 
-    let sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
-
-    if (isFolder) {
-      sessions = sessions.filter(s => this.hasDirectChildFileSession(s, filePath)).slice(0, limit);
-    }
+    const sessionStatement = this.db.prepare(sessionsSql);
+    const sessions = isFolder
+      ? pageDirectChildren(
+          sessionStatement.iterate(...sessionParams) as Iterable<SessionSummarySearchResult>,
+          row => this.hasDirectChildFileSession(row, filePath),
+        )
+      : sessionStatement.all(...sessionParams) as SessionSummarySearchResult[];
 
     return { observations, sessions };
   }

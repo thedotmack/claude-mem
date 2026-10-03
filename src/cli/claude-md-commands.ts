@@ -135,22 +135,25 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
 }
 
 function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
-  const queryLimit = limit * 3;
-
+  if (!Number.isInteger(limit) || limit < 0) throw new Error('Folder context limit must be a non-negative integer');
+  if (limit === 0) return [];
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
     WHERE o.project COLLATE NOCASE = ?
       AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
     ORDER BY o.created_at_epoch DESC
-    LIMIT ?
   `;
 
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
   const likePattern = `%"${normalizedFolderPath}/%`;
-  const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
-
-  return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
+  const matches: ObservationRow[] = [];
+  for (const obs of db.prepare(sql).iterate(project, likePattern, likePattern) as Iterable<ObservationRow>) {
+    if (!hasDirectChildFile(obs, relativeFolderPath)) continue;
+    matches.push(obs);
+    if (matches.length === limit) break;
+  }
+  return matches;
 }
 
 function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
