@@ -774,6 +774,13 @@ export class SyncClient {
     }
     if (ops.length === 0) return; // vacuous frame — nothing to do
     const decodedOps = decodeChanges(ops);
+    // The socket is advisory: a change it delivered that we cannot decode is
+    // an anomaly, not a set-aside. Self-heal over HTTP from the unchanged
+    // cursor; that lane sets the change aside only if the hub's own copy is
+    // undecodable too.
+    if (decodedOps.some(op => 'undecodable' in op)) {
+      throw new Error('op frame carries a change that cannot be decoded');
+    }
     const seqs = decodedOps.map(op => op.seq);
     for (let i = 1; i < seqs.length; i++) {
       if (seqs[i] !== incrementCanonicalDecimal(seqs[i - 1]!)) {

@@ -377,6 +377,56 @@ describe('SyncApply', () => {
     ]);
   });
 
+  it('retries a constraint-blocked update once the blocking row is gone (no permanently stale row)', () => {
+    const apply = makeApply();
+    const canonical = (seq: number, originId: string, rev: string, body: Record<string, unknown> | string, extra: Partial<SyncOp> = {}): SyncOp => ({
+      ...op(seq, 'observation', originId, body, { rev }),
+      entity_id: `observation:${originId}`, entity_rev: rev, operation_sha256: `sha-${originId}-${rev}`, ...extra,
+    });
+
+    // A rev 2 carries the content hash B already holds in the same session.
+    const first = apply.applyOps([
+      canonical(1, 'A', '1', obsBody({ title: 'A one', content_hash: 'h-a1' })),
+      canonical(2, 'B', '1', obsBody({ title: 'B one', content_hash: 'h-shared' })),
+      canonical(3, 'A', '2', obsBody({ title: 'A two', content_hash: 'h-shared' })),
+    ]);
+    expect(first.quarantined).toBe(1);
+    expect(apply.getCursor()).toBe('3');
+    expect(db.prepare("SELECT seq, retryable FROM sync_pull_quarantine").all()).toEqual([{ seq: '3', retryable: 1 }]);
+    expect(db.prepare("SELECT title, sync_rev FROM observations WHERE origin_local_id = 'A'").get())
+      .toEqual({ title: 'A one', sync_rev: '1' });
+
+    // An unrelated batch: B still holds the hash, so A rev 2 stays set aside.
+    apply.applyOps([canonical(4, 'C', '1', obsBody({ title: 'C one', content_hash: 'h-c1' }))]);
+    expect(count('sync_pull_quarantine')).toBe(1);
+
+    // B is deleted: the end-of-batch retry applies A rev 2 and clears the record.
+    apply.applyOps([canonical(5, 'B', '2', '{}', { deleted: true })]);
+    expect(db.prepare("SELECT title, sync_rev FROM observations WHERE origin_local_id = 'A'").get())
+      .toEqual({ title: 'A two', sync_rev: '2' });
+    expect(db.prepare("SELECT entity_rev FROM sync_entity_heads WHERE entity_id = 'observation:A'").get())
+      .toEqual({ entity_rev: '2' });
+    expect(count('sync_pull_quarantine')).toBe(0);
+  });
+
+  it('resolves a set-aside retry as stale once a newer revision of the entity applied', () => {
+    const apply = makeApply();
+    const canonical = (seq: number, originId: string, rev: string, body: Record<string, unknown>): SyncOp => ({
+      ...op(seq, 'observation', originId, body, { rev }),
+      entity_id: `observation:${originId}`, entity_rev: rev, operation_sha256: `sha-${originId}-${rev}`,
+    });
+    apply.applyOps([
+      canonical(1, 'A', '1', obsBody({ title: 'A one', content_hash: 'h-a1' })),
+      canonical(2, 'B', '1', obsBody({ title: 'B one', content_hash: 'h-shared' })),
+      canonical(3, 'A', '2', obsBody({ title: 'A two', content_hash: 'h-shared' })), // set aside
+      canonical(4, 'A', '3', obsBody({ title: 'A three', content_hash: 'h-a3' })),
+    ]);
+    // Rev 3 applied after rev 2 was set aside; the retry must not roll A back.
+    expect(db.prepare("SELECT title, sync_rev FROM observations WHERE origin_local_id = 'A'").get())
+      .toEqual({ title: 'A three', sync_rev: '3' });
+    expect(count('sync_pull_quarantine')).toBe(0);
+  });
+
   it('sets aside an undecodable change by seq and keeps applying the page', () => {
     const apply = makeApply();
     const result = apply.applyOps([

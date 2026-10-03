@@ -305,16 +305,20 @@ function invalidOp(op: SyncOp, message: string): SyncApplyInvalidOpError {
   return new SyncApplyInvalidOpError(`SyncApply: invalid op seq=${op.seq} kind=${op.kind} origin=${op.origin_device}/${op.origin_id}: ${message}`);
 }
 
+/** A violated constraint depends on local rows, so a later retry can succeed. */
+function isConstraintViolation(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT');
+}
+
 /**
- * True when retrying the same op against the same database can only fail the
+ * True when re-running the op against the same database can only fail the
  * same way: a malformed or conflicting op, or a constraint it violates. Any
  * other error (busy, I/O, disk full) is transient and must fail the batch so
  * the page is retried — never set aside.
  */
 function isUnapplicableOp(error: unknown): boolean {
-  if (error instanceof SyncApplyInvalidOpError) return true;
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT');
+  return error instanceof SyncApplyInvalidOpError || isConstraintViolation(error);
 }
 
 /**
@@ -491,6 +495,7 @@ export class SyncApply {
 
     const chromaJobs: ChromaJob[] = [];
     const setAside: Array<Record<string, unknown>> = [];
+    const recovered: Array<Record<string, unknown>> = [];
 
     const tx = this.db.transaction(() => {
       const cursor = this.getCursor();
@@ -526,38 +531,33 @@ export class SyncApply {
           continue;
         }
 
-        const chromaJobCount = chromaJobs.length;
-        this.db.run('SAVEPOINT sync_apply_op');
-        let outcome: 'applied' | 'stale';
-        try {
+        const attempt = this.applyInSavepoint(chromaJobs, () => {
           try {
             assertCanonicalDecimal(op.rev, { positive: true });
           } catch (error) {
             throw invalidOp(op, error instanceof Error ? error.message : String(error));
           }
-          outcome = op.kind === 'mutation'
+          return op.kind === 'mutation'
             ? this.applyMutation(op)
             : this.applyCanonicalRowOp(op, chromaJobs);
-          this.db.run('RELEASE sync_apply_op');
-        } catch (error) {
-          try {
-            this.db.run('ROLLBACK TO sync_apply_op');
-            this.db.run('RELEASE sync_apply_op');
-          } catch {
-            // SQLite already rolled the whole transaction back (I/O, full
-            // disk): fail the batch on the original cause.
-            throw error;
-          }
-          chromaJobs.length = chromaJobCount;
-          if (!isUnapplicableOp(error)) throw error;
+        });
+        if ('unapplicable' in attempt) {
+          const error = attempt.unapplicable;
+          // A violated constraint depends on other local rows, so retry it
+          // later. Only head-ledger row ops: the ledger orders a late retry
+          // (stale once a newer revision applied); mutations depend on log
+          // order and are never replayed out of it.
+          const retryable = op.kind !== 'mutation' && Boolean(op.entity_id) && isConstraintViolation(error);
           const reason = error instanceof Error ? error.message : String(error);
-          setAside.push(this.quarantine(epoch, seq, op, reason, op.body));
+          setAside.push(this.quarantine(epoch, seq, op, reason, op.body, retryable));
           result.quarantined++;
           continue;
         }
-        if (outcome === 'applied') result.applied++;
+        if (attempt.outcome === 'applied') result.applied++;
         else result.skippedStale++;
       }
+
+      this.retrySetAside(chromaJobs, recovered);
 
       // Cursor advance IN THE SAME TRANSACTION as the rows (crash-safe
       // exactly-once): a crash before COMMIT leaves both unmoved.
@@ -572,6 +572,9 @@ export class SyncApply {
     // does not report ops it never set aside.
     for (const entry of setAside) {
       logger.warn('SYNC_APPLY', 'Set aside a pulled op that cannot apply on this device; sync continues past it (sync_pull_quarantine)', entry);
+    }
+    for (const entry of recovered) {
+      logger.info('SYNC_APPLY', 'Applied a previously set-aside op on retry', entry);
     }
 
     // Chroma AFTER commit, fire-and-forget (ResponseProcessor.ts pattern):
@@ -589,6 +592,79 @@ export class SyncApply {
   }
 
   /**
+   * Run one op in a savepoint. An op that can never apply here is rolled
+   * back alone (its writes and queued Chroma jobs) and returned as
+   * `unapplicable`; any other error fails the batch.
+   */
+  private applyInSavepoint(
+    chromaJobs: ChromaJob[],
+    applyOp: () => 'applied' | 'stale',
+  ): { outcome: 'applied' | 'stale' } | { unapplicable: unknown } {
+    const chromaJobCount = chromaJobs.length;
+    this.db.run('SAVEPOINT sync_apply_op');
+    try {
+      const outcome = applyOp();
+      this.db.run('RELEASE sync_apply_op');
+      return { outcome };
+    } catch (error) {
+      try {
+        this.db.run('ROLLBACK TO sync_apply_op');
+        this.db.run('RELEASE sync_apply_op');
+      } catch {
+        // SQLite already rolled the whole transaction back (I/O, full
+        // disk): fail the batch on the original cause.
+        throw error;
+      }
+      chromaJobs.length = chromaJobCount;
+      if (!isUnapplicableOp(error)) throw error;
+      return { unapplicable: error };
+    }
+  }
+
+  /**
+   * Retry set-aside row ops whose failure depended on other local rows (a
+   * violated constraint — e.g. a rev-2 update whose content hash another row
+   * held until it was deleted). Runs at the end of every batch; the head
+   * ledger makes a late retry safe (stale once a newer revision applied). A
+   * retry that still fails stays set aside and never fails the batch.
+   */
+  private retrySetAside(chromaJobs: ChromaJob[], recovered: Array<Record<string, unknown>>): void {
+    const rows = this.db.prepare(`
+      SELECT id, seq, kind, entity_id, origin_device_id, origin_local_id,
+             entity_rev, operation_sha256, raw_body
+      FROM sync_pull_quarantine WHERE retryable = 1 ORDER BY id
+    `).all() as Array<{
+      id: number; seq: string; kind: SyncOp['kind']; entity_id: string; origin_device_id: string;
+      origin_local_id: string; entity_rev: string; operation_sha256: string; raw_body: string;
+    }>;
+    for (const row of rows) {
+      const op: SyncOp = {
+        seq: row.seq,
+        kind: row.kind,
+        origin_device: row.origin_device_id,
+        origin_id: row.origin_local_id,
+        rev: row.entity_rev,
+        body: row.raw_body,
+        server_ts: 0, // read only by mutations, which are never retried
+        entity_id: row.entity_id,
+        entity_rev: row.entity_rev,
+        operation_sha256: row.operation_sha256,
+        deleted: false, // a tombstone cannot violate a constraint
+      };
+      let attempt: ReturnType<SyncApply['applyInSavepoint']>;
+      try {
+        attempt = this.applyInSavepoint(chromaJobs, () => this.applyCanonicalRowOp(op, chromaJobs));
+      } catch (error) {
+        if (!this.db.inTransaction) throw error; // the batch itself is gone
+        continue; // transient: the next batch retries it again
+      }
+      if ('unapplicable' in attempt) continue;
+      this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
+      recovered.push({ seq: row.seq, entityId: row.entity_id, outcome: attempt.outcome });
+    }
+  }
+
+  /**
    * Record an op that can never apply here, inside the batch transaction so
    * the record commits with the cursor advance past it. Returns the log
    * entry; applyOps logs it after commit.
@@ -599,16 +675,17 @@ export class SyncApply {
     op: SyncOp | null,
     reason: string,
     rawBody: string,
+    retryable = false,
   ): Record<string, unknown> {
     this.db.prepare(`
       INSERT OR IGNORE INTO sync_pull_quarantine
         (epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
-         entity_rev, operation_sha256, reason, raw_body, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         entity_rev, operation_sha256, reason, raw_body, retryable, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       epoch, seq, op?.kind ?? null, op?.entity_id ?? null, op?.origin_device ?? null,
       op?.origin_id ?? null, op?.entity_rev ?? op?.rev ?? null, op?.operation_sha256 ?? null,
-      reason, rawBody, this.now(),
+      reason, rawBody, retryable ? 1 : 0, this.now(),
     );
     return {
       seq,
@@ -616,6 +693,7 @@ export class SyncApply {
       entityId: op?.entity_id ?? null,
       origin: op ? `${op.origin_device}/${op.origin_id}` : null,
       reason,
+      retryable,
     };
   }
 

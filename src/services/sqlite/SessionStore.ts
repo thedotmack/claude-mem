@@ -918,7 +918,8 @@ export class SessionStore {
     `);
     // Pull-side counterpart: hub ops this device can never apply (malformed,
     // equal-revision hash conflict, violated constraint), set aside by
-    // SyncApply so the cursor moves past them instead of wedging.
+    // SyncApply so the cursor moves past them instead of wedging. retryable
+    // = 1 marks constraint violations SyncApply re-tries after each batch.
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sync_pull_quarantine (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -932,6 +933,7 @@ export class SessionStore {
         operation_sha256 TEXT,
         reason TEXT NOT NULL,
         raw_body TEXT NOT NULL,
+        retryable INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0, 1)),
         created_at_epoch INTEGER NOT NULL,
         UNIQUE(epoch, seq)
       )
