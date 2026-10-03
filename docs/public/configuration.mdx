@@ -242,6 +242,62 @@ After enabling on an existing database, run a one-time scan to backfill the IDF 
 surface accumulated near-duplicates: `POST /api/dedup/scan` (worker, localhost-only).
 Review candidates via `GET /api/dedup/candidates?project=<name>`.
 
+### Screenshots and Images (opt-in)
+
+claude-mem can keep the screenshots and images that tools return (browser
+screenshots, a `Read` of an image file inside the project) and, separately,
+let the observer model look at them. Both switches are **off by default** and
+independent: turning on capture does not send any image to a model.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` | `false` | Convert and retain images from tool results |
+| `CLAUDE_MEM_MEDIA_INFERENCE_ENABLED` | `false` | Send retained images to the observer model when the endpoint qualifies |
+
+**What is stored.** Only PNG, JPEG and WebP images, at most four per tool
+event and 3&nbsp;MiB each, are accepted. Each one is converted to two WebP
+copies: a full-size viewer copy and a smaller copy (longest edge 1536&nbsp;px,
+at most 256&nbsp;KiB) for the model. Conversion strips EXIF/GPS metadata. The
+original bytes are **not** kept: the image body is replaced by a short
+descriptor before the tool result is written to the database, so the raw
+base64 never reaches `tool_uses`, the observer prompt, logs or sync. If the
+image came from a file, its path is recorded so the viewer can tell you
+whether that file still exists; the path is shown only when you ask for
+source details in the image viewer and never appears in feeds, logs or sync.
+
+**Where it lives.** Converted copies are written under
+`<data dir>/media-v1/<attachment-id>/` (by default `~/.claude-mem/media-v1/`),
+readable only by your user. The worker serves them only to the viewer page on
+the same loopback port; other origins, LAN clients and proxies are refused.
+
+**How long it is kept.** An image lives as long as an observation or its
+source tool event still references it. Deleting an observation, a session or
+a project removes the references at once; the files are removed by a
+background cleanup within about 30 seconds (retried with backoff if the disk
+refuses). Images are never kept for analytics.
+
+**Cloud upload.** When capture is on *and* [Cloud Sync](cloud-sync) is
+configured, each converted image is uploaded privately to your cmem.ai account
+so your other devices can show it; they download it on first view. Deleting
+it locally also deletes the cloud copy. Observation text syncs without the
+image bytes.
+
+**Third-party image inference.** When inference is on and the observer
+endpoint qualifies (OpenRouter directly, or the cmem.ai gateway), the
+model-sized copy of each image in the current tool event is sent with that
+one observer request to the model provider behind that endpoint (OpenRouter
+and the provider it routes to). It is not re-sent in later turns, summaries
+or context injection. Other providers stay text-only. If the endpoint rejects
+images, the turn is resent once without them and the images are marked
+"not inspected".
+
+**Logs and metrics** about images contain only attachment IDs, byte sizes,
+dimensions, the conversion recipe, error codes and timings. They never contain
+pixels, paths, URLs, captions or your text. The cmem.ai gateway additionally
+receives an `X-Cmem-Correlation` header holding a random request ID, the retry
+attempt number and up to four hashed event IDs, so metered usage can be tied to
+a request.
+
 ## Model Configuration
 
 Configure which Claude model compresses your observations (only applies when `CLAUDE_MEM_PROVIDER=claude`).
@@ -316,6 +372,7 @@ The data directory location depends on the environment:
 ├── claude-mem.db           # SQLite database
 ├── .install-version        # Version marker written by `npx claude-mem install`/`repair`
 ├── settings.json           # Worker port + provider/model settings
+├── media-v1/               # Converted screenshots/images (only when media capture is on)
 └── logs/
     ├── worker-out.log      # Worker stdout logs
     └── worker-error.log    # Worker stderr logs

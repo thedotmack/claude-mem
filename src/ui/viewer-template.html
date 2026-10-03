@@ -894,6 +894,264 @@
       opacity: 0.85;
     }
 
+    /* Observation images: bounded thumbnail strip and gallery */
+    .media-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .media-thumb {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .media-thumb-button {
+      position: relative;
+      width: 96px;
+      height: 72px;
+      padding: 0;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      background: var(--color-bg-tertiary);
+      color: var(--color-text-tertiary);
+      cursor: pointer;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .media-thumb-button:hover {
+      border-color: var(--color-border-hover);
+    }
+
+    .media-thumb-button:focus-visible,
+    .media-lightbox-nav:focus-visible,
+    .media-lightbox-close:focus-visible,
+    .media-thumb-retry:focus-visible {
+      outline: 2px solid var(--color-border-focus);
+      outline-offset: 2px;
+    }
+
+    .media-thumb-button img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .media-thumb-status {
+      padding: 4px 4px 16px;
+      font-size: 10px;
+      line-height: 1.3;
+      text-align: center;
+    }
+
+    .media-thumb--rejected .media-thumb-status,
+    .media-thumb--failed .media-thumb-status,
+    .media-thumb--error .media-thumb-status {
+      color: var(--color-accent-error);
+    }
+
+    .media-thumb-badge {
+      position: absolute;
+      left: 4px;
+      bottom: 4px;
+      padding: 0 4px;
+      border-radius: 3px;
+      font-size: 9px;
+      line-height: 1.5;
+      background: var(--color-bg-card);
+      color: var(--color-text-muted);
+      opacity: 0.9;
+      white-space: nowrap;
+      max-width: calc(100% - 8px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .media-thumb-more {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 600;
+      color: #ffffff;
+      background: rgba(0, 0, 0, 0.55);
+    }
+
+    .media-thumb-retry {
+      font-size: 10px;
+      padding: 1px 8px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      background: var(--color-bg-button);
+      color: var(--color-text-button);
+      cursor: pointer;
+    }
+
+    .media-strip-count {
+      font-size: 11px;
+      color: var(--color-text-tertiary);
+    }
+
+    .media-lightbox {
+      background: var(--color-bg-primary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 12px;
+      width: 100%;
+      max-width: 1100px;
+      max-height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      outline: none;
+    }
+
+    .media-lightbox-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--color-border-primary);
+      background: var(--color-bg-header);
+    }
+
+    .media-lightbox-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--color-text-header);
+    }
+
+    .media-lightbox-label {
+      margin-left: 8px;
+      font-weight: 400;
+      font-size: 12px;
+      color: var(--color-text-tertiary);
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    .media-lightbox-stage {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      min-height: 200px;
+    }
+
+    .media-lightbox-frame {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .media-lightbox-frame img {
+      max-width: 100%;
+      max-height: 65vh;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      border-radius: 4px;
+    }
+
+    .media-lightbox-status {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      color: var(--color-text-secondary);
+      font-size: 13px;
+    }
+
+    .media-lightbox-nav {
+      flex-shrink: 0;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 1px solid var(--color-border-primary);
+      background: var(--color-bg-card);
+      color: var(--color-text-primary);
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .media-lightbox-nav:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .media-lightbox-provenance {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 4px 12px;
+      margin: 0;
+      padding: 0 16px 12px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+    }
+
+    .media-lightbox-provenance dt {
+      color: var(--color-text-tertiary);
+    }
+
+    .media-lightbox-provenance dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .media-lightbox-owner {
+      padding: 0 16px 16px;
+      font-size: 12px;
+      color: var(--color-text-tertiary);
+    }
+
+    .media-lightbox-owner .media-lightbox-provenance {
+      padding: 8px 0 0;
+    }
+
+    .media-lightbox-path {
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    @media (max-width: 600px) {
+      .media-thumb-button {
+        width: 72px;
+        height: 60px;
+      }
+
+      .media-lightbox-backdrop {
+        padding: 0;
+      }
+
+      .media-lightbox {
+        border-radius: 0;
+        height: 100%;
+      }
+
+      .media-lightbox-stage {
+        padding: 8px 4px;
+      }
+
+      .media-lightbox-nav {
+        width: 32px;
+        height: 32px;
+      }
+    }
+
     .summary-card {
       border-color: var(--color-border-summary);
       background: var(--color-bg-summary);

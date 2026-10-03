@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
 import { DeleteButton } from './DeleteButton';
+import { ObservationMediaSection } from './ObservationMedia';
 import type { DeletableItemType } from '../utils/feed-deletion';
 
 interface ObservationCardProps {
@@ -116,6 +117,11 @@ export function ObservationCard({ observation, onDeleted }: ObservationCardProps
           </div>
         )}
       </div>
+
+      {/* Attached images: only rows with validated media refs render this */}
+      {observation.media && observation.media.attachments.length > 0 && (
+        <ObservationMediaSection observationId={observation.id} media={observation.media} />
+      )}
 
       {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
       <div className="card-meta">

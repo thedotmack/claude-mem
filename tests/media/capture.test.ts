@@ -499,4 +499,20 @@ describe('cleanup retries and hot-path reconciliation', () => {
       expect(logged).not.toContain(pngB64.slice(0, 64));
     } finally { warn.mockRestore(); }
   });
+
+  it('the capture metric carries only IDs, sizes, recipe, shape, dimensions and timing (phase 6)', async () => {
+    const info = spyOn(logger, 'info');
+    try {
+      const observation = await ingest(anthropic());
+      const ref = observation.mediaRefs[0];
+      const metric = info.mock.calls.find(call => call[1] === 'Media converted');
+      expect(metric).toBeDefined();
+      const fields = metric![2] as Record<string, unknown>;
+      expect(Object.keys(fields).sort()).toEqual(['attachmentId', 'conversionMs', 'height', 'llmBytes', 'recipe', 'sourceBytes', 'sourceShape', 'viewerBytes', 'width']);
+      expect(fields).toMatchObject({ attachmentId: ref.id, recipe: 'screenshot-v1', sourceShape: 'anthropic_base64', sourceBytes: png.byteLength, width: 320, height: 180 });
+      for (const value of Object.values(fields)) expect(['string', 'number']).toContain(typeof value);
+      const logged = JSON.stringify(metric);
+      for (const forbidden of [dir, pngB64.slice(0, 64), ref.label, 'Took a screenshot', 'source_pointer', '.webp']) expect(logged).not.toContain(forbidden);
+    } finally { info.mockRestore(); }
+  });
 });

@@ -21,8 +21,21 @@ export interface MediaMetadata {
   /** 'unresolved_replica': a second-device placeholder whose bytes were not fetched yet (never a failure). */
   id: string; state: 'converting' | 'ready' | 'failed' | 'deleted' | 'unresolved_replica'; recipe: MediaProvenance['recipe'];
   encoderVersion: string | null; viewer: VariantMetadata | null; llm: VariantMetadata | null; failureCode: MediaErrorCode | null;
+  /** Epoch milliseconds when this device first recorded the attachment. */
+  capturedAt: number;
 }
-interface AttachmentRow { id: string; state: Exclude<MediaMetadata['state'], 'unresolved_replica'>; provenance: string; recipe: MediaMetadata['recipe']; encoder_version: string | null; variants: string | null; failure_code: MediaErrorCode | null; lease_until: number; origin: 'native' | 'replica' }
+/**
+ * Whether the original still exists, without saying where. Inline (base64)
+ * sources and replicas were never retained: only the converted copy is kept.
+ */
+export type MediaSourceAvailability = 'converted_only' | 'file_present' | 'file_missing';
+/** Owner-only provenance: the only read path for a raw local locator. */
+export interface MediaOwnerSourceDetails {
+  /** Null for a second-device replica: its provenance stays on the owner's device. */
+  id: string; platform: MediaProvenance['platform'] | null; sourceShape: MediaProvenance['source_shape'] | null;
+  sourceLocatorPath: string | null; sourceAvailability: MediaSourceAvailability;
+}
+interface AttachmentRow { id: string; state: Exclude<MediaMetadata['state'], 'unresolved_replica'>; provenance: string; recipe: MediaMetadata['recipe']; encoder_version: string | null; variants: string | null; failure_code: MediaErrorCode | null; lease_until: number; origin: 'native' | 'replica'; created_at: number }
 
 /** Verified cloud bytes for one replica attachment (see publishReplica). */
 export interface ReplicaVariants {
@@ -66,8 +79,18 @@ export class MediaStore {
     const variants = row.variants ? JSON.parse(row.variants) as Record<MediaVariantName,VariantMetadata> : null;
     const unresolvedReplica = row.origin === 'replica' && row.state === 'failed';
     return { id, state: unresolvedReplica ? 'unresolved_replica' : row.state, recipe: row.recipe, encoderVersion: row.encoder_version,
-      viewer: variants?.viewer ?? null, llm: variants?.llm ?? null, failureCode: row.failure_code };
+      viewer: variants?.viewer ?? null, llm: variants?.llm ?? null, failureCode: row.failure_code, capturedAt: row.created_at };
   }
+  /** Raw provenance for the local owner only; never part of generic metadata or feeds. */
+  ownerSourceDetails(id: string): MediaOwnerSourceDetails {
+    const row = this.row(id);
+    if (row.origin === 'replica') return { id, platform: null, sourceShape: null, sourceLocatorPath: null, sourceAvailability: 'converted_only' };
+    const provenance = validateMediaProvenance(JSON.parse(row.provenance));
+    const sourceLocatorPath = provenance.source_locator?.path ?? null;
+    return { id, platform: provenance.platform, sourceShape: provenance.source_shape, sourceLocatorPath,
+      sourceAvailability: sourceLocatorPath === null ? 'converted_only' : existsSync(sourceLocatorPath) ? 'file_present' : 'file_missing' };
+  }
+
   async readVariant(id: string, variant: MediaVariantName): Promise<Buffer> {
     if (variant !== 'viewer' && variant !== 'llm') throw new MediaError('invalid_manifest');
     const row = this.row(id);
@@ -127,6 +150,7 @@ export class MediaStore {
     if (claimed.ready) return ref;
     let stage: string | undefined;
     let published = false;
+    const conversionStartedAt = Date.now();
     try {
       const converted = await this.converter(input.bytes,input.mimeType,input.provenance.recipe);
       // A session/event may have been deleted while native encoding ran.
@@ -151,12 +175,22 @@ export class MediaStore {
         this.db.prepare(`UPDATE media_attachments SET state='ready',encoder_version=?,variants=?,lease_until=0 WHERE id=?`)
           .run(converted.encoderVersion,JSON.stringify({viewer:metadata(converted.viewer),llm:metadata(converted.llm)}),claimed.id);
       })();
+      // Capture metric: IDs, sizes, recipe, dimensions and timing only. Never
+      // pixels, paths, URLs, labels, captions or user text.
+      logger.info('DB', 'Media converted', {
+        attachmentId: claimed.id, recipe: input.provenance.recipe, sourceShape: input.provenance.source_shape,
+        sourceBytes: input.bytes.byteLength, viewerBytes: converted.viewer.byteLength, llmBytes: converted.llm.byteLength,
+        width: converted.viewer.width, height: converted.viewer.height, conversionMs: Date.now() - conversionStartedAt,
+      });
       return ref;
     } catch (error) {
       if (stage) rmSync(stage,{recursive:true,force:true});
       const code = error instanceof MediaError ? error.code : 'storage_unavailable';
       // Only the bounded code: converter and storage errors can carry paths.
-      logger.warn('DB', 'Media conversion failed', { code });
+      logger.warn('DB', 'Media conversion failed', {
+        code, attachmentId: claimed.id, recipe: input.provenance.recipe, sourceBytes: input.bytes.byteLength,
+        conversionMs: Date.now() - conversionStartedAt,
+      });
       this.db.transaction(() => {
         this.db.prepare(`UPDATE media_attachments SET state='failed',failure_code=?,lease_until=0 WHERE id=? AND state='converting'`).run(code,claimed.id);
         if (published) this.db.prepare('INSERT OR IGNORE INTO media_cleanup_jobs(attachment_id,directory,queued_at) VALUES(?,?,?)').run(claimed.id,claimed.id,Date.now());

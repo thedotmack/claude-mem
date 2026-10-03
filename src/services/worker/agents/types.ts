@@ -1,3 +1,4 @@
+import type { MediaManifest } from '../../../shared/media-contract.js';
 
 export interface WorkerRef {
   sseBroadcaster?: {
@@ -25,6 +26,8 @@ export interface ObservationSSEPayload {
   project: string;
   prompt_number: number;
   created_at_epoch: number;
+  /** Validated media refs, identical to the paged/by-id feeds; absent for image-free rows. */
+  media?: MediaManifest;
 }
 
 export interface SummarySSEPayload {

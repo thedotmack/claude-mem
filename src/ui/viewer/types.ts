@@ -17,6 +17,51 @@ export interface Observation {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  /** Validated `metadata.cmem_media_v1` refs; absent for image-free rows. Readiness is not in here. */
+  media?: ObservationMedia;
+}
+
+/** Copy of MediaAttachmentRef (src/shared/media-contract.ts): IDs and labels only. */
+export interface ObservationMediaRef {
+  id: string;
+  label: string;
+  inspection: 'inspected' | 'uninspected';
+}
+
+export interface ObservationMedia {
+  version: 1;
+  attachments: ObservationMediaRef[];
+  /** More refs remain on the source event because the row reached its bound. */
+  overflow?: boolean;
+}
+
+export interface MediaVariantDescriptor {
+  sha256: string;
+  width: number;
+  height: number;
+  byteLength: number;
+  mimeType: 'image/webp';
+}
+
+/** GET /api/media/:id: safe metadata only (MediaRoutes.safeMetadata). */
+export interface MediaMetadataResponse {
+  id: string;
+  state: 'converting' | 'ready' | 'failed' | 'unresolved_replica';
+  recipe: 'screenshot-v1' | 'photo-v1';
+  encoderVersion: string | null;
+  viewer: MediaVariantDescriptor | null;
+  llm: MediaVariantDescriptor | null;
+  failureCode: string | null;
+  capturedAt: number;
+}
+
+/** GET /api/media/:id/details: owner-only, fetched only on explicit request. */
+export interface MediaOwnerDetailsResponse {
+  id: string;
+  platform: string | null;
+  sourceShape: string | null;
+  sourceLocatorPath: string | null;
+  sourceAvailability: 'converted_only' | 'file_present' | 'file_missing';
 }
 
 export interface Summary {

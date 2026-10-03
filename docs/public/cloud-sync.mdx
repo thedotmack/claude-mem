@@ -26,6 +26,7 @@ Three kinds of rows are replicated between your devices:
 - **Observations** — the compressed memories claude-mem generates from your sessions.
 - **Session summaries** — the per-session overview records.
 - **User prompts** — the prompts you typed. A prompt over 200&nbsp;KB uploads as its first 200&nbsp;KB plus a truncation note; the full prompt stays on the device that captured it.
+- **Images (opt-in)** — when `CLAUDE_MEM_MEDIA_CAPTURE_ENABLED` is on, the converted WebP copies of captured screenshots are uploaded privately to your cmem.ai account, separately from the text log. Other devices download an image the first time it is viewed and show it as *downloading* until then. Original image files and their paths are never uploaded. See [Screenshots and Images](configuration#screenshots-and-images-opt-in).
 
 Alongside the rows, three kinds of **mutations** travel through the same log
 so later edits converge everywhere: session **title** changes, **prompt→session
@@ -35,8 +36,9 @@ retarget the affected rows on every device).
 
 <Warning>
 **Privacy:** cloud sync uploads your observation narratives and your full
-prompt text to the sync hub under your cmem.ai account. Don't enable it if
-that content must stay on your machine.
+prompt text to the sync hub under your cmem.ai account, and, if media capture
+is on, your converted screenshots. Don't enable it if that content must stay
+on your machine.
 </Warning>
 
 ## How the push lane works

@@ -4,6 +4,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
+import { withObservationMedia } from '../media/feed.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -73,7 +74,8 @@ export class PaginationHelper {
         o.files_modified,
         o.prompt_number,
         o.created_at,
-        o.created_at_epoch
+        o.created_at_epoch,
+        o.metadata
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     `;
@@ -102,7 +104,9 @@ export class PaginationHelper {
     query += ' ORDER BY o.created_at_epoch DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
-    const results = db.prepare(query).all(...params) as Observation[];
+    // metadata is read only to project media refs; the raw column stays out of the feed.
+    const results = (db.prepare(query).all(...params) as Array<Observation & { metadata?: unknown }>)
+      .map(row => withObservationMedia(row, false) as Observation);
     const result: PaginatedResult<Observation> = {
       items: results.slice(0, limit),
       hasMore: results.length > limit,

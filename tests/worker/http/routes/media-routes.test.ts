@@ -15,6 +15,12 @@ import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRout
 const ID = '11111111-1111-4111-8111-111111111111';
 const MISSING_ID = '22222222-2222-4222-8222-222222222222';
 const SCRATCH = join(import.meta.dir, '../../../../.scratch');
+/** A valid trusted-file provenance whose locator must never leave through generic metadata. */
+const fixtureProvenance = (attachmentId: string, path: string) => ({
+  version: 1, attachment_id: attachmentId, platform: 'claude-code', event_identity: { kind: 'platform_event', id: 'toolu_fixture' },
+  source_shape: 'trusted_tool_file', source_pointer: '/content/1/source/data', source_index: 0, source_sha256: 'a'.repeat(64),
+  recipe: 'screenshot-v1', source_locator: { kind: 'local_file', path },
+});
 let converted: ConvertedMedia;
 let dir: string;
 let db: Database;
@@ -108,7 +114,8 @@ describe('private UUID media routes', () => {
     expectPrivate(response);
     expect(response.headers.get('etag')).toBeNull();
     const metadata = await response.json();
-    expect(Object.keys(metadata).sort()).toEqual(['encoderVersion', 'failureCode', 'id', 'llm', 'recipe', 'state', 'viewer']);
+    expect(Object.keys(metadata).sort()).toEqual(['capturedAt', 'encoderVersion', 'failureCode', 'id', 'llm', 'recipe', 'state', 'viewer']);
+    expect(metadata.capturedAt).toBe(1);
     expect(JSON.stringify(metadata)).not.toContain('fixture-private');
     expect(JSON.stringify(metadata)).not.toContain('source_pointer');
     for (const name of ['viewer', 'llm'] as const) {
@@ -250,5 +257,54 @@ describe('private UUID media routes', () => {
     expect((await fetch(`${base}/api/sessions/claude/route-content`, { method: 'DELETE' })).status).toBe(200);
     expect((await get()).status).toBe(404);
     expect((await get('/viewer')).status).toBe(404);
+  });
+});
+
+describe('phase 6 viewer provenance', () => {
+  it('generic metadata never reads provenance: an invalid provenance row still reports readiness', async () => {
+    // The beforeEach fixture provenance is deliberately not a valid MediaProvenance.
+    const metadata = await get();
+    expect(metadata.status).toBe(200);
+    expect((await metadata.json()).state).toBe('ready');
+    const details = await get('/details');
+    expect(details.status).toBe(503);
+    expect(JSON.stringify(await details.json())).not.toContain('fixture-private');
+  });
+
+  it('only the owner details route reports source availability and carries the locator', async () => {
+    const present = join(dir, 'present-source.png');
+    writeFileSync(present, 'x');
+    db.prepare('UPDATE media_attachments SET provenance=? WHERE id=?').run(JSON.stringify(fixtureProvenance(ID, present)), ID);
+    const metadata = await (await get()).json();
+    expect('sourceAvailability' in metadata).toBe(false);
+    expect(JSON.stringify(metadata)).not.toContain(present);
+
+    const details = await get('/details');
+    expect(details.status).toBe(200);
+    expectPrivate(details);
+    expect(details.headers.get('etag')).toBeNull();
+    expect(await details.json()).toEqual({
+      id: ID, platform: 'claude-code', sourceShape: 'trusted_tool_file', sourceLocatorPath: present, sourceAvailability: 'file_present',
+    });
+
+    rmSync(present);
+    expect((await (await get('/details')).json()).sourceAvailability).toBe('file_missing');
+  });
+
+  it('owner details use the same guard as pixels and never expose replica provenance', async () => {
+    for (const headers of [{ Origin: 'https://evil.example' }, { 'X-Forwarded-For': '127.0.0.1' }, { 'Sec-Fetch-Site': 'cross-site' }]) {
+      const response = await get('/details', headers);
+      expect(response.status).toBe(403);
+      expect(JSON.stringify(await response.json())).not.toContain('fixture-private');
+    }
+    const replicaId = '33333333-3333-4333-8333-333333333333';
+    db.prepare(`INSERT INTO media_attachments(id,replay_key,provenance,recipe,state,upload_state,origin,created_at)
+      VALUES(?,?,'{"origin":"replica"}','screenshot-v1','failed','cancelled','replica',5)`).run(replicaId, 'replica:' + replicaId);
+    const replicaMetadata = await (await fetch(`${base}/api/media/${replicaId}`)).json();
+    expect(replicaMetadata).toMatchObject({ state: 'unresolved_replica', capturedAt: 5 });
+    expect(await (await fetch(`${base}/api/media/${replicaId}/details`)).json()).toEqual({
+      id: replicaId, platform: null, sourceShape: null, sourceLocatorPath: null, sourceAvailability: 'converted_only',
+    });
+    expect((await fetch(`${base}/api/media/${MISSING_ID}/details`)).status).toBe(404);
   });
 });
