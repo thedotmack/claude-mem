@@ -5,8 +5,7 @@ import { join } from 'path';
 import { styleText } from 'node:util';
 import { getBunPath } from '../install/setup-runtime.js';
 import { npmPackageRootDirectory } from '../utils/paths.js';
-import { resolvePluginRoot } from '../../shared/worker-utils.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { resolvePluginRoot, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
 /**
@@ -228,9 +227,7 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
-  const searchUrl = `http://${workerHost}:${workerPort}/api/search?query=${encodeURIComponent(query)}`;
+  const searchUrl = buildWorkerUrl(`/api/search?query=${encodeURIComponent(query)}`);
 
   let response: Response;
   try {
