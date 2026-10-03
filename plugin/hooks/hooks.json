@@ -48,8 +48,7 @@
             "args": [
               "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs"
             ],
-            "timeout": 180,
-            "async": true
+            "timeout": 180
           }
         ]
       }

@@ -304,8 +304,9 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
         type: 'command',
         command: 'node',
         args: ['${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs'],
+        // Synchronous: an async hook's systemMessage never reaches the user,
+        // and that message is how a failed self-heal is reported.
         timeout: 180,
-        async: true,
       }],
     }]);
     expect(existsSync(path.join(projectRoot, 'plugin/scripts/ensure-launcher.cjs'))).toBe(true);
@@ -380,7 +381,9 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
   });
 
   it('the Claude Setup hook command should have config-dir based non-empty fallbacks', () => {
-    for (const command of commandHooksFrom('plugin/hooks/hooks.json').filter((command) => command.includes('version-check.js'))) {
+    const setupCommands = commandHooksFrom('plugin/hooks/hooks.json').filter((command) => command.includes('version-check.js'));
+    expect(setupCommands.length).toBeGreaterThanOrEqual(1);
+    for (const command of setupCommands) {
       expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
       expect(command).toContain('while IFS= read -r _R');
       expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
@@ -557,7 +560,9 @@ const CLAUDE_EXEC_EXPECTATIONS: Record<string, Record<string, unknown>> = {
   // the raw JSON at the top of every session.
   'SessionStart.0.0': claudeExecHook(['start'], { timeout: 60, async: true }),
   'SessionStart.0.1': claudeExecHook(['hook', 'claude-code', 'context'], { timeout: 60 }),
-  'SessionStart.1.0': { type: 'command', ...buildEnsureLauncherExecHook(), timeout: 180, async: true },
+  // Synchronous on purpose: only a sync hook's systemMessage is shown to the
+  // user, and ensure-launcher.cjs reports a failed self-heal that way.
+  'SessionStart.1.0': { type: 'command', ...buildEnsureLauncherExecHook(), timeout: 180 },
   'UserPromptSubmit.0.0': claudeExecHook(['hook', 'claude-code', 'session-init'], { timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS }),
   'PostToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'observation'], { timeout: 120, async: true }),
   'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: 60, async: true }),

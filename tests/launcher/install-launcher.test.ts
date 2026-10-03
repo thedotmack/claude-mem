@@ -538,22 +538,43 @@ describe.skipIf(!isPosixHost)('plugin/scripts/ensure-launcher.cjs under plain no
     expect(existsSync(ensureLauncherScriptPath)).toBe(true);
   });
 
-  it('exits 0 with empty stdout when CLAUDE_PLUGIN_ROOT is missing', () => {
+  /** The exact stdout contract for a failure: one JSON object, one line, nothing else. */
+  function expectOneSystemMessage(stdout: string, failureReason: string): void {
+    const systemMessage = `claude-mem: memory hooks are not active: ${failureReason}. Fix: run \`npx claude-mem install\`, then restart Claude Code.`;
+    expect(stdout).toBe(`${JSON.stringify({ systemMessage })}\n`);
+  }
+
+  /** A `bun` on PATH that answers --version and fakes `build --compile`, so no real compile runs. */
+  function writeFakeBun(scratchHome: string, compileOutcome: 'writes-current-launcher' | 'fails'): string {
+    const fakeBunDirectory = path.join(scratchHome, 'fake-bun-bin');
+    mkdirSync(fakeBunDirectory, { recursive: true });
+    const compileBody = compileOutcome === 'fails'
+      ? 'echo "error: fake compile failure" >&2\nexit 1\n'
+      : `while [ "$#" -gt 0 ]; do if [ "$1" = "--outfile" ]; then printf '#!/bin/sh\\necho ${LAUNCHER_PROTOCOL}\\n' > "$2"; chmod 755 "$2"; fi; shift; done\nexit 0\n`;
+    writeFileSync(
+      path.join(fakeBunDirectory, 'bun'),
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.3.9; exit 0; fi\n${compileBody}`,
+    );
+    chmodSync(path.join(fakeBunDirectory, 'bun'), 0o755);
+    return fakeBunDirectory;
+  }
+
+  it('prints one systemMessage when CLAUDE_PLUGIN_ROOT is missing', () => {
     const scriptRun = runEnsureLauncherScript(makeScratchHome(), {});
     expect(scriptRun.status).toBe(0);
-    expect(scriptRun.stdout).toBe('');
-    expect(scriptRun.stderr).toBe('claude-mem ensure-launcher: CLAUDE_PLUGIN_ROOT is not set, skipping\n');
+    expectOneSystemMessage(scriptRun.stdout, 'CLAUDE_PLUGIN_ROOT is not set');
+    expect(scriptRun.stderr).toBe('claude-mem ensure-launcher: CLAUDE_PLUGIN_ROOT is not set\n');
   });
 
-  it('exits 0 with empty stdout when the plugin root has no launcher bundle', () => {
-    const scriptRun = runEnsureLauncherScript(makeScratchHome(), { CLAUDE_PLUGIN_ROOT: path.join(scratchParentDirectory, 'no-such-plugin') });
+  it('prints one systemMessage when the plugin root has no launcher bundle', () => {
+    const missingPluginRoot = path.join(scratchParentDirectory, 'no-such-plugin');
+    const scriptRun = runEnsureLauncherScript(makeScratchHome(), { CLAUDE_PLUGIN_ROOT: missingPluginRoot });
     expect(scriptRun.status).toBe(0);
-    expect(scriptRun.stdout).toBe('');
-    expect(scriptRun.stderr).toContain('launcher bundle missing');
+    expectOneSystemMessage(scriptRun.stdout, `launcher bundle missing at ${path.join(missingPluginRoot, 'scripts', 'claude-mem-launcher.cjs')}`);
     expect(scriptRun.stderr.trim().split('\n')).toHaveLength(1);
   });
 
-  it('exits 0 silently when the launcher is current', () => {
+  it('exits 0 silently when the launcher is current and on PATH', () => {
     const scratchHome = makeScratchHome();
     writeFakeLauncher(path.join(scratchHome, '.local', 'bin', 'claude-mem'), String(LAUNCHER_PROTOCOL));
     const scriptRun = runEnsureLauncherScript(scratchHome, {
@@ -565,26 +586,111 @@ describe.skipIf(!isPosixHost)('plugin/scripts/ensure-launcher.cjs under plain no
     expect(scriptRun.stderr).toBe('');
   });
 
-  it.skipIf(systemBunPresent)('exits 0 with one stderr line when Bun is missing', () => {
+  it('exits 0 silently when PATH reaches the launcher through a symlinked directory', () => {
+    const scratchHome = makeScratchHome();
+    const binDirectory = path.join(scratchHome, '.local', 'bin');
+    writeFakeLauncher(path.join(binDirectory, 'claude-mem'), String(LAUNCHER_PROTOCOL));
+    const symlinkedBinDirectory = path.join(scratchHome, 'linked-bin');
+    symlinkSync(binDirectory, symlinkedBinDirectory);
+    const scriptRun = runEnsureLauncherScript(scratchHome, {
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      PATH: `${symlinkedBinDirectory}:${binDirectory}:/usr/bin:/bin`,
+    });
+    expect(scriptRun.status).toBe(0);
+    expect(scriptRun.stdout).toBe('');
+  });
+
+  it('prints one systemMessage naming the shadowing claude-mem when another one comes first on PATH', () => {
+    const scratchHome = makeScratchHome();
+    const binDirectory = path.join(scratchHome, '.local', 'bin');
+    const placedLauncherPath = path.join(binDirectory, 'claude-mem');
+    writeFakeLauncher(placedLauncherPath, String(LAUNCHER_PROTOCOL));
+    const shadowingDirectory = path.join(scratchHome, 'npm-global', 'bin');
+    writeFakeLauncher(path.join(shadowingDirectory, 'claude-mem'), '13.28.0');
+    const scriptRun = runEnsureLauncherScript(scratchHome, {
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      PATH: `${shadowingDirectory}:${binDirectory}:/usr/bin:/bin`,
+    });
+    expect(scriptRun.status).toBe(0);
+    expectOneSystemMessage(
+      scriptRun.stdout,
+      `another claude-mem at ${path.join(shadowingDirectory, 'claude-mem')} shadows the hook launcher at ${placedLauncherPath}`,
+    );
+  });
+
+  it('prints one systemMessage when a foreign claude-mem sits at the launcher path', () => {
+    const scratchHome = makeScratchHome();
+    const placedLauncherPath = path.join(scratchHome, '.local', 'bin', 'claude-mem');
+    writeFakeLauncher(placedLauncherPath, '13.28.0');
+    const scriptRun = runEnsureLauncherScript(scratchHome, {
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      PATH: `${path.dirname(placedLauncherPath)}:/usr/bin:/bin`,
+    });
+    expect(scriptRun.status).toBe(0);
+    expectOneSystemMessage(scriptRun.stdout, `${placedLauncherPath} is not the claude-mem hook launcher and was left in place`);
+  });
+
+  it.skipIf(systemBunPresent)('prints one systemMessage when Bun is missing', () => {
     const scratchHome = makeScratchHome();
     const scriptRun = runEnsureLauncherScript(scratchHome, { CLAUDE_PLUGIN_ROOT: pluginRoot });
     expect(scriptRun.status).toBe(0);
-    expect(scriptRun.stdout).toBe('');
-    expect(scriptRun.stderr).toBe('claude-mem ensure-launcher: Bun not found, cannot compile the claude-mem launcher; run `npx claude-mem install`\n');
+    expectOneSystemMessage(scriptRun.stdout, 'Bun was not found, so the claude-mem launcher could not be compiled');
     expect(existsSync(path.join(scratchHome, '.local', 'bin', 'claude-mem'))).toBe(false);
+  });
+
+  it('prints one systemMessage when the compile fails', () => {
+    const scratchHome = makeScratchHome();
+    const fakeBunDirectory = writeFakeBun(scratchHome, 'fails');
+    const scriptRun = runEnsureLauncherScript(scratchHome, {
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      PATH: `${fakeBunDirectory}:/usr/bin:/bin`,
+    });
+    expect(scriptRun.status).toBe(0);
+    expectOneSystemMessage(scriptRun.stdout, 'bun build --compile failed (exit 1): error: fake compile failure');
+    expect(existsSync(path.join(scratchHome, '.local', 'bin', 'claude-mem'))).toBe(false);
+  });
+
+  it('places the launcher and prints one systemMessage when the hook PATH does not include its directory', () => {
+    const scratchHome = makeScratchHome();
+    const fakeBunDirectory = writeFakeBun(scratchHome, 'writes-current-launcher');
+    const binDirectory = path.join(scratchHome, '.local', 'bin');
+    const scriptRun = runEnsureLauncherScript(scratchHome, {
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      PATH: `${fakeBunDirectory}:/usr/bin:/bin`,
+    });
+    expect(scriptRun.status).toBe(0);
+    expectOneSystemMessage(
+      scriptRun.stdout,
+      `the launcher was installed at ${path.join(binDirectory, 'claude-mem')} but Claude Code's PATH does not include ${binDirectory}`,
+    );
+    // The rc file is still fixed for the next Claude Code launch.
+    expect(readFileSync(path.join(scratchHome, '.zshrc'), 'utf-8')).toContain(shellPathSetupMarkerComment('claude-mem'));
+  });
+
+  it('places the launcher silently when the hook PATH already includes its directory', () => {
+    const scratchHome = makeScratchHome();
+    const fakeBunDirectory = writeFakeBun(scratchHome, 'writes-current-launcher');
+    const binDirectory = path.join(scratchHome, '.local', 'bin');
+    const scriptRun = runEnsureLauncherScript(scratchHome, {
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      PATH: `${binDirectory}:${fakeBunDirectory}:/usr/bin:/bin`,
+    });
+    expect(scriptRun.status).toBe(0);
+    expect(scriptRun.stdout).toBe('');
+    expect(scriptRun.stderr).toContain(`claude-mem launcher installed at ${path.join(binDirectory, 'claude-mem')}`);
   });
 
   it.skipIf(!bunExecutablePath)('compiles a real launcher that prints the protocol, with empty stdout', () => {
     const scratchHome = makeScratchHome();
+    const binDirectory = path.join(scratchHome, '.local', 'bin');
     const scriptRun = runEnsureLauncherScript(scratchHome, {
       CLAUDE_PLUGIN_ROOT: pluginRoot,
-      PATH: `${path.dirname(bunExecutablePath!)}:/usr/bin:/bin`,
+      PATH: `${binDirectory}:${path.dirname(bunExecutablePath!)}:/usr/bin:/bin`,
     });
     expect(scriptRun.status).toBe(0);
     expect(scriptRun.stdout).toBe('');
-    const placedBinaryPath = path.join(scratchHome, '.local', 'bin', 'claude-mem');
+    const placedBinaryPath = path.join(binDirectory, 'claude-mem');
     expect(scriptRun.stderr).toContain(`claude-mem launcher installed at ${placedBinaryPath}`);
     expect(spawnSync(placedBinaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim()).toBe(String(LAUNCHER_PROTOCOL));
-    expect(readFileSync(path.join(scratchHome, '.zshrc'), 'utf-8')).toContain(shellPathSetupMarkerComment('claude-mem'));
   });
 });
