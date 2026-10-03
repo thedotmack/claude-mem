@@ -95,8 +95,11 @@ Only if the user later explicitly asks for the PDF, use the output path above:
 
 ```bash
 notebooklm artifact list -n <NOTEBOOK_ID>
+notebooklm artifact wait <artifact_id> -n <NOTEBOOK_ID> --timeout 1800
 notebooklm download slide-deck "<OUTPUT_PATH>" -a <artifact_id> -n <NOTEBOOK_ID>
 ```
+
+The deck may still be generating, so always wait on the artifact before downloading.
 
 ## The prompt
 
