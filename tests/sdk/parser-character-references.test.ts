@@ -1,14 +1,20 @@
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { parseAgentXml } from '../../src/sdk/parser.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { getObservationsByFilePath } from '../../src/services/sqlite/observations/get.js';
 
-beforeEach(() => ModeManager.getInstance().loadMode('code'));
 function observation(raw: string) {
-  const result = parseAgentXml(raw);
-  if (!result.valid || result.observations.length !== 1) throw new Error('Expected one observation');
-  return result.observations[0];
+  const manager = ModeManager.getInstance();
+  const state = manager as unknown as { activeMode: unknown; activeModeId: unknown };
+  const previousMode = state.activeMode;
+  const previousModeId = state.activeModeId;
+  try {
+    manager.loadMode('code');
+    const result = parseAgentXml(raw);
+    if (!result.valid || result.observations.length !== 1) throw new Error('Expected one observation');
+    return result.observations[0];
+  } finally { state.activeMode = previousMode; state.activeModeId = previousModeId; }
 }
 
 describe('XML character references at the observer boundary', () => {
@@ -35,6 +41,19 @@ describe('XML character references at the observer boundary', () => {
       expect(getObservationsByFilePath(store.db, 'src/A&B.ts', { projects: ['project'] }).map(row => row.id)).toEqual([saved]);
     } finally { store.close(); }
   });
+  it('preserves encoded edge whitespace in real file names', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      for (const [encoded, path] of [['src/edge.ts&#32;', 'src/edge.ts '], ['&#32;src/edge.ts', ' src/edge.ts'], ['src/inside&#32;space.ts', 'src/inside space.ts']]) {
+        const sdkId = store.createSDKSession(encoded, 'project', 'prompt');
+        store.ensureMemorySessionIdRegistered(sdkId, encoded);
+        const parsed = observation(`<observation><type>discovery</type><title>File</title><files_read><file>  ${encoded}  </file></files_read></observation>`);
+        expect(parsed.files_read).toEqual([path]);
+        const saved = store.storeObservation(encoded, 'project', parsed, 1).id;
+        expect(getObservationsByFilePath(store.db, path, { projects: ['project'] }).map(row => row.id)).toEqual([saved]);
+      }
+    } finally { store.close(); }
+  });
   it('decodes summary fields and quoted skip reasons without double-decoding', () => {
     const summary = parseAgentXml('<summary><request>Ship &amp; verify &#x1F642;</request><learned>&lt;tag&gt; is text</learned></summary>');
     expect(summary.valid && summary.summary?.request).toBe('Ship & verify 🙂');
@@ -43,9 +62,17 @@ describe('XML character references at the observer boundary', () => {
     expect(skip.valid && skip.summary?.skip_reason).toBe('Already "done" &lt;literal&gt;');
   });
   it('retains ordinary unescaped values and undeclared names as before', () => {
+    const state = ModeManager.getInstance() as unknown as { activeMode: unknown; activeModeId: unknown };
+    const previousMode = state.activeMode;
+    const previousModeId = state.activeModeId;
     const parsed = observation('<observation><type>discovery</type><title>A & B &unknown;</title><facts><fact>Plain fact</fact></facts></observation>');
     expect(parsed.title).toBe('A & B &unknown;'); expect(parsed.facts).toEqual(['Plain fact']);
     expect(observation('<observation><type>discovery</type><title>&#0; &#x110000; &#xD800;</title></observation>').title).toBe('&#0; &#x110000; &#xD800;');
     expect(observation('<observation><type>discovery</type><title><![CDATA[&amp;]]></title></observation>').title).toBe('<![CDATA[&amp;]]>');
+    expect(state.activeMode).toBe(previousMode);
+    expect(state.activeModeId).toBe(previousModeId);
+    expect(() => observation('invalid XML')).toThrow('Expected one observation');
+    expect(state.activeMode).toBe(previousMode);
+    expect(state.activeModeId).toBe(previousModeId);
   });
 });

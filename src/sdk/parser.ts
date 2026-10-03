@@ -275,7 +275,7 @@ function extractField(content: string, fieldName: string): string | null {
   const match = regex.exec(content);
   if (!match) return null;
 
-  const trimmed = decodeXmlReferences(match[1]).trim();
+  const trimmed = decodeXmlReferences(match[1].trim());
   return trimmed === '' ? null : trimmed;
 }
 
@@ -294,7 +294,7 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'gi');
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
-    const trimmed = decodeXmlReferences(elementMatch[1]).trim();
+    const trimmed = decodeXmlReferences(elementMatch[1].trim());
     if (trimmed) {
       elements.push(trimmed);
     }
