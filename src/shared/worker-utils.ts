@@ -174,6 +174,159 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
   }
 }
 
+export interface IdleTimeoutOptions {
+  /** Max silence: armed before the request, reset on headers and on every body chunk. */
+  idleTimeoutMs: number;
+  /** Optional hard ceiling for the whole exchange (only where a host imposes one). */
+  absoluteCapMs?: number;
+  /** Called for every body chunk as it arrives (liveness / progress). */
+  onChunk?: (chunk: Uint8Array) => void;
+}
+
+export interface IdleFetchResponseMeta {
+  status: number;
+  statusText: string;
+  ok: boolean;
+  headers: Headers;
+}
+
+export interface IdleFetchTextResult extends IdleFetchResponseMeta {
+  text: string;
+}
+
+export interface IdleFetchStreamResult extends IdleFetchResponseMeta {
+  /** Single-use; start reading promptly (the idle timer runs from headers to the first read). Each chunk resets it; time the consumer spends between reads does not count. */
+  chunks: AsyncIterable<Uint8Array>;
+  /** Abandon the body without reading it (releases the request and all timers). */
+  cancel(): Promise<void>;
+}
+
+/**
+ * Idle + optional absolute-cap watchdog for one request. Aborts through its own
+ * controller (merged with the caller's signal) and remembers why, so the fetch
+ * rejection can be rewritten to the "Request timed out ..." wording callers match.
+ */
+function createIdleWatchdog(options: IdleTimeoutOptions, callerSignal: AbortSignal | null | undefined) {
+  const controller = new AbortController();
+  let timeoutError: Error | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let capTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  const clearIdle = () => {
+    if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+  };
+  const dispose = () => {
+    disposed = true;
+    clearIdle();
+    if (capTimer !== null) { clearTimeout(capTimer); capTimer = null; }
+  };
+  const trip = (error: Error) => {
+    if (disposed) return;
+    timeoutError = error;
+    dispose();
+    controller.abort(error);
+  };
+  const touch = () => {
+    if (disposed) return;
+    clearIdle();
+    idleTimer = setTimeout(
+      () => trip(new Error(`Request timed out after ${options.idleTimeoutMs}ms idle`)),
+      options.idleTimeoutMs
+    );
+  };
+
+  if (options.absoluteCapMs !== undefined && options.absoluteCapMs > 0) {
+    const absoluteCapMs = options.absoluteCapMs;
+    capTimer = setTimeout(() => trip(new Error(`Request timed out after ${absoluteCapMs}ms`)), absoluteCapMs);
+  }
+  touch();
+
+  return {
+    signal: callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal,
+    touch,
+    pause: clearIdle,
+    dispose,
+    /** Our timeout error if the watchdog fired, otherwise the original error. */
+    translate: (err: unknown): unknown => timeoutError ?? err,
+  };
+}
+
+/**
+ * fetch whose deadline is silence, not wall time. Owns the body read, so the idle
+ * timer covers the body too — never hands back a bare Response.
+ */
+export async function fetchStreamWithIdleTimeout(
+  url: string,
+  init: RequestInit,
+  options: IdleTimeoutOptions
+): Promise<IdleFetchStreamResult> {
+  const watchdog = createIdleWatchdog(options, init.signal);
+  let response: Response;
+  try {
+    response = await workerFetch(url, { ...init, signal: watchdog.signal });
+  } catch (err: unknown) {
+    watchdog.dispose();
+    throw watchdog.translate(err);
+  }
+  watchdog.touch();
+
+  const body = response.body;
+  const reader = body ? body.getReader() : null;
+  let bodyFinished = false;
+
+  async function* readChunks(): AsyncGenerator<Uint8Array> {
+    if (!reader) { bodyFinished = true; watchdog.dispose(); return; }
+    try {
+      while (true) {
+        watchdog.touch();
+        let result: Awaited<ReturnType<typeof reader.read>>;
+        try {
+          result = await reader.read();
+        } catch (err: unknown) {
+          bodyFinished = true;
+          throw watchdog.translate(err);
+        }
+        if (result.done) { bodyFinished = true; return; }
+        watchdog.pause();
+        options.onChunk?.(result.value);
+        yield result.value;
+      }
+    } finally {
+      watchdog.dispose();
+      if (!bodyFinished) await reader.cancel();
+    }
+  }
+
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    ok: response.ok,
+    headers: response.headers,
+    chunks: readChunks(),
+    cancel: async () => {
+      watchdog.dispose();
+      if (reader && !bodyFinished) { bodyFinished = true; await reader.cancel(); }
+    },
+  };
+}
+
+/** Buffered form of fetchStreamWithIdleTimeout: resolves once the whole body is read. */
+export async function fetchWithIdleTimeout(
+  url: string,
+  init: RequestInit,
+  options: IdleTimeoutOptions
+): Promise<IdleFetchTextResult> {
+  const streamed = await fetchStreamWithIdleTimeout(url, init, options);
+  const decoder = new TextDecoder();
+  let text = '';
+  for await (const chunk of streamed.chunks) {
+    text += decoder.decode(chunk, { stream: true });
+  }
+  text += decoder.decode();
+  return { status: streamed.status, statusText: streamed.statusText, ok: streamed.ok, headers: streamed.headers, text };
+}
+
 let cachedPort: number | null = null;
 let cachedHost: string | null = null;
 let cachedSettings: SettingsDefaults | null = null;
@@ -345,10 +498,15 @@ export function workerHttpRequest(
     headers?: Record<string, string>;
     body?: string;
     timeoutMs?: number;
+    /**
+     * Switch to a silence-based deadline (fetchWithIdleTimeout). The body is read
+     * in full under the idle timer and re-wrapped in a Response. An explicit
+     * `timeoutMs` then acts as the absolute cap; without it there is no cap.
+     */
+    idleTimeoutMs?: number;
   } = {}
 ): Promise<Response> {
   const method = options.method ?? 'GET';
-  const timeoutMs = options.timeoutMs ?? getWorkerApiRequestTimeoutMs();
 
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
@@ -359,6 +517,18 @@ export function workerHttpRequest(
     init.body = options.body;
   }
 
+  if (options.idleTimeoutMs !== undefined && options.idleTimeoutMs > 0) {
+    return fetchWithIdleTimeout(url, init, {
+      idleTimeoutMs: options.idleTimeoutMs,
+      absoluteCapMs: options.timeoutMs,
+    }).then((result) => new Response(result.text.length > 0 ? result.text : null, {
+      status: result.status,
+      statusText: result.statusText,
+      headers: result.headers,
+    }));
+  }
+
+  const timeoutMs = options.timeoutMs ?? getWorkerApiRequestTimeoutMs();
   if (timeoutMs > 0) {
     return fetchWithTimeout(url, init, timeoutMs);
   }
