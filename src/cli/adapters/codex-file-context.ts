@@ -111,12 +111,17 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
     if (!READ_COMMANDS.has(argv0)) continue;
 
     let skipNext = false;
+    let optionsEnded = false;
     for (const token of segment.slice(argv0Index + 1)) {
       if (skipNext) {
         skipNext = false;
         continue;
       }
-      if (isFlagLike(token)) {
+      if (!optionsEnded && token === '--') {
+        optionsEnded = true;
+        continue;
+      }
+      if (!optionsEnded && isFlagLike(token)) {
         skipNext = dropFlagValue(token, argv0) && !token.includes('=');
         continue;
       }
