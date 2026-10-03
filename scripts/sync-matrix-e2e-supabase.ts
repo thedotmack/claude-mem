@@ -9,7 +9,8 @@
  * Edge Function itself checks the token against pro_users and writes the log
  * and the read model in one transaction, so there is no projector sidecar.
  *
- * Every client fetch and socket is guarded as loopback-only. Exactly two real
+ * Every client fetch and socket is guarded as loopback-only (unless one exact
+ * remote host is opted in, see CMEM_SYNC_E2E_ALLOW_REMOTE_HUB). Exactly two real
  * client stacks (SessionStore + CloudSync + SyncApply + SyncClient) talk
  * protocol v2 over HTTP. Live updates (Phase 11): each client trades its
  * cm_pro token at POST /v1/sync/realtime-token for an ES256 JWT and joins the
@@ -27,6 +28,8 @@
  *   CMEM_SYNC_E2E_USER_ID  pro_users.user_id of the seeded account (required)
  *   CMEM_SYNC_E2E_TOKEN    its setup_token (required)
  *   CMEM_SYNC_E2E_REALTIME_BUDGET_MS  max push->B-cursor latency over Realtime (default 5000)
+ *   CMEM_SYNC_E2E_ALLOW_REMOTE_HUB    one exact hostname also allowed (TLS only) for a production
+ *                                     smoke run against a dedicated test account; unset = loopback only
  */
 
 import { mkdtempSync, rmSync } from 'fs';
@@ -85,17 +88,35 @@ async function waitFor(condition: () => boolean, label: string, timeoutMs = 10_0
   throw new Error(`timed out waiting for ${label}`);
 }
 
-function loopbackUrl(input: RequestInfo | URL, label: string, protocols: string[] = ['http:']): URL {
+/**
+ * Loopback only by default. A deliberate production smoke run opts in with
+ * CMEM_SYNC_E2E_ALLOW_REMOTE_HUB=<exact hostname>: then that one host is also
+ * allowed, over TLS only (https:/wss:), and the Hub URL must be on it. No
+ * wildcard or suffix match — any other host is still refused.
+ */
+const ALLOWED_REMOTE_HUB_HOST = (process.env.CMEM_SYNC_E2E_ALLOW_REMOTE_HUB ?? '').trim().toLowerCase();
+if (ALLOWED_REMOTE_HUB_HOST && !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(ALLOWED_REMOTE_HUB_HOST)) {
+  throw new Error('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB must be one exact hostname (no scheme, port, path or wildcard)');
+}
+const TLS_OF: Record<string, string> = { 'http:': 'https:', 'ws:': 'wss:' };
+
+function guardedUrl(input: RequestInfo | URL, label: string, protocols: string[] = ['http:']): URL {
   const raw = input instanceof Request ? input.url : String(input);
   const url = new URL(raw);
-  if (!protocols.includes(url.protocol) || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost')) {
+  const loopback = protocols.includes(url.protocol) && (url.hostname === '127.0.0.1' || url.hostname === 'localhost');
+  const allowedRemote = ALLOWED_REMOTE_HUB_HOST !== '' && url.hostname === ALLOWED_REMOTE_HUB_HOST
+    && url.port === '' && protocols.some(protocol => TLS_OF[protocol] === url.protocol);
+  if (!loopback && !allowedRemote) {
     throw new Error(`${label} refused non-loopback URL: ${url.origin}`);
   }
   return url;
 }
 
 const hubUrl = (process.env.CMEM_SYNC_E2E_HUB_URL ?? DEFAULT_HUB_URL).trim().replace(/\/+$/, '');
-loopbackUrl(hubUrl, 'Hub');
+guardedUrl(hubUrl, 'Hub');
+if (ALLOWED_REMOTE_HUB_HOST && new URL(hubUrl).hostname !== ALLOWED_REMOTE_HUB_HOST) {
+  throw new Error('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB is set but the Hub URL is not on that host');
+}
 const USER_ID = requiredEnv('CMEM_SYNC_E2E_USER_ID');
 const TOKEN = requiredEnv('CMEM_SYNC_E2E_TOKEN');
 
@@ -117,7 +138,7 @@ interface HubStatus {
 }
 
 async function getHubStatus(): Promise<HubStatus> {
-  loopbackUrl(hubUrl, 'Hub status');
+  guardedUrl(hubUrl, 'Hub status');
   const response = await fetch(`${hubUrl}/v1/sync/status`, { headers: authHeaders() });
   if (!response.ok) throw new Error(`Hub status ${response.status}: ${(await response.text()).slice(0, 200)}`);
   invariant(response.headers.get('X-Sync-Mode') === 'poll', 'Hub status carries X-Sync-Mode: poll');
@@ -166,6 +187,8 @@ interface NetworkGate {
   pushesOnline: boolean;
   pushAttempts: number;
   pullRequests: number;
+  /** /v1/sync/changes requests whose response has not arrived yet. */
+  pullsInFlight: number;
   realtimeTokenStatuses: number[];
   /** Every Phoenix frame this device received / sent, with arrival time. */
   received: Array<{ at: number; frame: Record<string, any> }>;
@@ -176,7 +199,7 @@ interface NetworkGate {
 function recordingWebSocket(gate: NetworkGate) {
   return class RecordingWebSocket extends WebSocket {
     constructor(url: string) {
-      loopbackUrl(url, 'Realtime socket', ['ws:']);
+      guardedUrl(url, 'Realtime socket', ['ws:']);
       super(url);
       this.addEventListener('message', event => {
         try {
@@ -211,13 +234,22 @@ interface Device {
 
 function guardedFetch(gate: NetworkGate): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = loopbackUrl(input, 'sync client');
+    const url = guardedUrl(input, 'sync client');
     if (url.pathname.endsWith('/v1/sync/ops')) {
       gate.pushAttempts++;
       if (!gate.pushesOnline) throw new Error('simulated offline push transport');
     }
-    if (url.pathname.endsWith('/v1/sync/changes')) gate.pullRequests++;
-    const response = await fetch(input, init);
+    const isPull = url.pathname.endsWith('/v1/sync/changes');
+    if (isPull) {
+      gate.pullRequests++;
+      gate.pullsInFlight++;
+    }
+    let response: Response;
+    try {
+      response = await fetch(input, init);
+    } finally {
+      if (isPull) gate.pullsInFlight--;
+    }
     if (url.pathname.endsWith('/v1/sync/realtime-token')) gate.realtimeTokenStatuses.push(response.status);
     return response;
   }) as typeof fetch;
@@ -261,7 +293,7 @@ function openDevice(
   const dbPath = join(dir, 'claude-mem.db');
   const store = new SessionStore(dbPath);
   const gate: NetworkGate = {
-    pushesOnline: true, pushAttempts: 0, pullRequests: 0, realtimeTokenStatuses: [], received: [], sent: [],
+    pushesOnline: true, pushAttempts: 0, pullRequests: 0, pullsInFlight: 0, realtimeTokenStatuses: [], received: [], sent: [],
   };
   const cloudSync = new CloudSync(store.db, {
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: TOKEN,
@@ -339,12 +371,35 @@ async function pullToHead(device: Device): Promise<void> {
   });
 }
 
+/** Until the device has had no pull in flight and started none for 300 ms (bounded). */
+async function waitForQuietPulls(device: Device): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let lastCount = device.gate.pullRequests;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    if (device.gate.pullsInFlight > 0 || device.gate.pullRequests !== lastCount) {
+      lastCount = device.gate.pullRequests;
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince >= 300) {
+      return;
+    }
+    await Bun.sleep(20);
+  }
+  throw new Error(`timed out waiting for ${device.name} pulls to go quiet`);
+}
+
 /**
  * A flushes one new observation; B must hear the `advance` broadcast and
  * reach the head with no explicit pull (poll tiers are 10 min). Returns
  * flush-start -> advance-frame and flush-start -> cursor-at-head latencies.
  */
 async function realtimeDelivery(a: Device, b: Device, title: string): Promise<{ advanceMs: number; convergeMs: number }> {
+  // A pull B already has in flight (e.g. the catch-up pull after a (re)join)
+  // can be answered after A's push lands and carry the probe, so the advance
+  // would then need no pull; over real network latency that race is common.
+  // Start only once B's pulls are quiet, so the probe can only reach B
+  // through a pull the advance triggered.
+  await waitForQuietPulls(b);
   a.store.storeObservation('memory-baseline-a', 'project-baseline', observation(title, 'delivered over Realtime'), 5, 0);
   const startedAt = Date.now();
   const bPullsBefore = b.gate.pullRequests;
