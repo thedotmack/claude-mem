@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { incrementCanonicalDecimal } from "../src/canonical-content";
+import { ProjectionPageByteCounter, projectionRequestBytes, type ProjectionWireOp } from "../src/projection-protocol";
 import { MAX_DEVICES_PER_USER } from "../src/store";
-import { authHeaders, DEFAULT_DATABASE_URL, observationOp, trackedApp, uniqueUser } from "./helpers";
+import { authHeaders, DEFAULT_DATABASE_URL, observationOp, pushRequest, trackedApp, uniqueUser } from "./helpers";
 
 describe("protocol v2 hub", () => {
 	it("starts a new user on a fresh epoch with an empty log", async () => {
@@ -77,9 +78,56 @@ describe("protocol v2 hub", () => {
 		await lockHolder`SELECT pg_advisory_lock(hashtextextended(${userId}, 0))`;
 		// Ending the session releases the lock, like a slow request finishing.
 		setTimeout(() => { void lockHolder.end(); }, 12_000);
-		const status = await fetch(`${app.url}/v1/sync/status`, { headers: authHeaders(userId) });
-		expect(status.status).toBe(200);
+		// A device's first pull registers it under the lock (status and repeat
+		// pulls no longer take the lock at all).
+		const changes = await fetch(`${app.url}/v1/sync/changes?since=0`, { headers: authHeaders(userId, "dev-new") });
+		expect(changes.status).toBe(200);
 	}, 30_000);
+
+	it("applies a batch exactly like one op at a time: in-batch revisions, duplicates, dense seqs", async () => {
+		const { app } = await trackedApp();
+		const userId = uniqueUser();
+		const first = await observationOp("1", "1", "dev-a");
+		const revised = await observationOp("1", "2", "dev-a", { text: "second revision" });
+		const other = await observationOp("2", "1", "dev-a");
+		const push = await pushRequest(app, userId, "dev-a", [first, revised, other, revised]);
+		expect(push.status).toBe(200);
+		const body = await push.json() as { acked: Array<{ seq: string; entity_rev: string }>; head_seq: string };
+		expect(body.acked.map((ack) => [ack.seq, ack.entity_rev])).toEqual([["1", "1"], ["2", "2"], ["3", "1"], ["2", "2"]]);
+		expect(body.head_seq).toBe("3");
+
+		// The entity head is the batch's last revision.
+		const again = await pushRequest(app, userId, "dev-a", [revised]);
+		expect((await again.json() as { acked: Array<{ seq: string }> }).acked[0].seq).toBe("2");
+		const stale = await pushRequest(app, userId, "dev-a", [first]);
+		expect(stale.status).toBe(400);
+		expect((await stale.json() as { error: string }).error).toContain("stale_revision");
+
+		const changes = await fetch(`${app.url}/v1/sync/changes?since=0`, { headers: authHeaders(userId, "dev-b") });
+		const page = await changes.json() as { ops: Array<{ seq: string; body: string }> };
+		expect(page.ops.map((op) => op.seq)).toEqual(["1", "2", "3"]);
+		expect(page.ops.map((op) => op.body)).toEqual([first.body, revised.body, other.body]);
+	});
+
+	it("commits nothing from a batch containing a refused op", async () => {
+		const { app } = await trackedApp();
+		const userId = uniqueUser();
+		const revised = await observationOp("1", "2", "dev-a");
+		expect((await pushRequest(app, userId, "dev-a", [revised])).status).toBe(200);
+
+		const fresh = await observationOp("9", "1", "dev-a");
+		const stale = await observationOp("1", "1", "dev-a");
+		const refused = await pushRequest(app, userId, "dev-a", [fresh, stale]);
+		expect(refused.status).toBe(400);
+		expect((await refused.json() as { error: string }).error).toContain("stale_revision");
+
+		const changes = await fetch(`${app.url}/v1/sync/changes?since=0`, { headers: authHeaders(userId, "dev-a") });
+		const page = await changes.json() as { ops: unknown[]; head_seq: string };
+		expect(page.head_seq).toBe("1");
+		expect(page.ops).toHaveLength(1);
+		const retry = await pushRequest(app, userId, "dev-a", [fresh]);
+		expect((await retry.json() as { acked: Array<{ seq: string }> }).acked[0].seq).toBe("2");
+	});
 
 	it("refuses a stale revision and a same-rev hash conflict", async () => {
 		const { app } = await trackedApp();
@@ -124,6 +172,24 @@ describe("protocol v2 hub", () => {
 		expect(body.acked).toEqual([]);
 		expect(body.head_seq).toBe("0");
 		expect(body.projected_seq).toBe("0");
+	});
+
+	it("counts a growing projection page's bytes exactly like serializing the whole request", () => {
+		const envelope = { userId: "user-ü\"\\", epoch: "18446744073709551615", fromSeqExclusive: "99" };
+		const ops: ProjectionWireOp[] = [
+			{ seq: "100", body: "{\"text\":\"plain\"}", operation_sha256: "a".repeat(43) },
+			{ seq: "101", body: "{\"text\":\"quote \\\" and backslash \\\\\"}", operation_sha256: "b".repeat(43) },
+			{ seq: "102", body: "{\"text\":\"ünïcödé 🚀 \\u0000\"}", operation_sha256: "c".repeat(43) },
+			{ seq: "1000", body: "x".repeat(10_000), operation_sha256: "d".repeat(43) },
+		];
+		const counter = new ProjectionPageByteCounter(envelope);
+		ops.forEach((op, index) => {
+			expect(counter.add(op)).toBe(projectionRequestBytes({
+				...envelope,
+				throughSeq: op.seq,
+				ops: ops.slice(0, index + 1),
+			}));
+		});
 	});
 
 	it("increments the full uint64 decimal range without JS-number coercion", () => {

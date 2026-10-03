@@ -15,18 +15,52 @@ import {
 import { applyMigrations } from "./schema";
 import { SocketRegistry, type RegisteredSocket } from "./sockets";
 import {
+	DEFAULT_USER_TURN_MAX_WAIT_MS,
 	DEVICE_LIMIT_ERROR,
 	HubStore,
 	INVALID_OPS_PREFIX,
 	PROJECTION_ERROR_PREFIX,
 	type PushOp,
 } from "./store";
+import { CLIENT_CLOSED_REQUEST_ERROR, SYNC_HUB_BUSY_ERROR } from "./user-queue";
 
 const MAX_OPS_PER_PUSH = 500;
 const MAX_PUSH_BODY_BYTES = 8_000_000;
 const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const STORE_RETRY_AFTER_SECONDS = "5";
 const encoder = new TextEncoder();
+
+/**
+ * Backstops on every pooled Postgres session, so no request can hold a
+ * user's advisory lock or a shared connection indefinitely. Healthy
+ * statements take milliseconds; these only cut off pathological ones.
+ */
+export interface SyncApiTimeouts {
+	statementTimeoutMs: number;
+	lockTimeoutMs: number;
+	idleInTransactionSessionTimeoutMs: number;
+	/** In-process wait for earlier same-user work before a retryable 503. */
+	userTurnMaxWaitMs: number;
+}
+
+export const DEFAULT_SYNC_API_TIMEOUTS: SyncApiTimeouts = {
+	statementTimeoutMs: 20_000,
+	lockTimeoutMs: 15_000,
+	idleInTransactionSessionTimeoutMs: 15_000,
+	userTurnMaxWaitMs: DEFAULT_USER_TURN_MAX_WAIT_MS,
+};
+
+/** Postgres / postgres.js failures that mean "busy or briefly unreachable", not "broken". */
+const TRANSIENT_STORE_ERROR_CODES = new Set([
+	"55P03", // lock_not_available: lock_timeout
+	"57014", // query_canceled: statement_timeout
+	"57P01", // admin_shutdown
+	"53300", // too_many_connections
+	"CONNECTION_CLOSED", // includes idle_in_transaction_session_timeout terminations
+	"CONNECTION_ENDED",
+	"CONNECTION_DESTROYED",
+	"CONNECT_TIMEOUT",
+]);
 
 export { fetchProjectionWithTimeout, drainProjection };
 
@@ -37,7 +71,25 @@ function retryableStoreUnavailable(label: string, error: unknown): Response {
 	return response;
 }
 
+function isTransientStoreError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (error.message === SYNC_HUB_BUSY_ERROR) return true;
+	const code = (error as { code?: unknown }).code;
+	return typeof code === "string" && TRANSIENT_STORE_ERROR_CODES.has(code);
+}
+
+/** The client already disconnected; nobody reads this, it only ends the handler. */
+function clientClosedRequest(): Response {
+	return new Response(null, { status: 499 });
+}
+
 function mapHubError(e: unknown): Response {
+	if (e instanceof Error && e.message === CLIENT_CLOSED_REQUEST_ERROR) {
+		return clientClosedRequest();
+	}
+	if (isTransientStoreError(e)) {
+		return retryableStoreUnavailable("request", e);
+	}
 	if (e instanceof Error && e.message.includes(DEVICE_LIMIT_ERROR)) {
 		return errorResponse(409, DEVICE_LIMIT_ERROR);
 	}
@@ -130,7 +182,7 @@ async function handlePushOps(
 	}
 
 	try {
-		const result = await app.store.pushOps(userId, deviceId, ops as PushOp[], deviceName);
+		const result = await app.store.pushOps(userId, deviceId, ops as PushOp[], deviceName, request.signal);
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
@@ -161,6 +213,7 @@ async function handlePushOps(
 
 async function handleGetChanges(
 	url: URL,
+	signal: AbortSignal,
 	app: { store: HubStore },
 	userId: string,
 	deviceId: string,
@@ -180,7 +233,7 @@ async function handleGetChanges(
 		limit = parsedLimit;
 	}
 	try {
-		const result = await app.store.getChanges(userId, deviceId, sinceRaw, limit, deviceName);
+		const result = await app.store.getChanges(userId, deviceId, sinceRaw, limit, deviceName, signal);
 		if ("refused" in result) return errorResponse(409, result.error);
 		return json(200, result);
 	} catch (e) {
@@ -189,15 +242,14 @@ async function handleGetChanges(
 }
 
 async function handleGetStatus(
+	signal: AbortSignal,
 	app: { store: HubStore },
 	userId: string,
 	deviceId: string | null,
 	deviceName: string | null,
 ): Promise<Response> {
 	try {
-		const result = await app.store.getStatus(userId, deviceId, deviceName);
-		if ("refused" in result) return errorResponse(409, result.error);
-		return json(200, result);
+		return json(200, await app.store.getStatus(userId, deviceId, deviceName, signal));
 	} catch (e) {
 		return mapHubError(e);
 	}
@@ -325,25 +377,24 @@ async function handleRepairDrain(request: Request, app: { env: SyncApiEnv; store
 	});
 }
 
-async function handleHealth(sql: postgres.Sql): Promise<Response> {
-	try {
-		await sql`SELECT 1 AS ok`;
-		return json(200, { ok: true });
-	} catch (error) {
-		console.error("sync-api health db ping failed:", error);
-		return json(503, { ok: false, error: "database unavailable" });
-	}
-}
-
-export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApiApp> {
+export async function startSyncApi(
+	env: SyncApiEnv = loadEnv(),
+	timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS,
+): Promise<SyncApiApp> {
 	const sql = postgres(env.DATABASE_URL, {
 		max: 10,
 		idle_timeout: 20,
 		connect_timeout: 10,
+		connection: {
+			application_name: "cmem-sync-api",
+			statement_timeout: timeouts.statementTimeoutMs,
+			lock_timeout: timeouts.lockTimeoutMs,
+			idle_in_transaction_session_timeout: timeouts.idleInTransactionSessionTimeoutMs,
+		},
 	});
 	await applyMigrations(sql);
 	const sockets = new SocketRegistry();
-	const store = new HubStore(sql, sockets);
+	const store = new HubStore(sql, sockets, timeouts.userTurnMaxWaitMs);
 
 	const ctx = { env, store, sockets, sql };
 
@@ -358,9 +409,13 @@ export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApi
 			const url = new URL(request.url);
 			const { pathname } = url;
 
+			// Liveness only, never Postgres. Fly pulls a failing machine from the
+			// proxy and this app runs one machine, so a DB-coupled check turned
+			// pool saturation into "no healthy instances" for every user. DB
+			// trouble is reported per request (503 + Retry-After) instead.
 			if (pathname === "/health") {
 				if (request.method !== "GET") return errorResponse(405, "use GET");
-				return handleHealth(sql);
+				return json(200, { ok: true });
 			}
 
 			if (pathname === "/internal/v1/projection/drain") {
@@ -400,11 +455,12 @@ export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApi
 					return errorResponse(426, "expected Upgrade: websocket");
 				}
 				try {
-					const accepted = await store.acceptWebSocket(auth.userId, auth.deviceId, auth.deviceName);
+					const accepted = await store.acceptWebSocket(auth.userId, auth.deviceId, auth.deviceName, request.signal);
 					if ("refused" in accepted) {
 						return json(409, { error: accepted.error });
 					}
 				} catch (error) {
+					if (error instanceof Error && error.message === CLIENT_CLOSED_REQUEST_ERROR) return clientClosedRequest();
 					return retryableStoreUnavailable("websocket upgrade", error);
 				}
 				const upgraded = server.upgrade(request, {
@@ -422,10 +478,10 @@ export async function startSyncApi(env: SyncApiEnv = loadEnv()): Promise<SyncApi
 			if (pathname === "/v1/sync/changes") {
 				if (request.method !== "GET") return errorResponse(405, "use GET");
 				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
-				return handleGetChanges(url, ctx, auth.userId, auth.deviceId, auth.deviceName);
+				return handleGetChanges(url, request.signal, ctx, auth.userId, auth.deviceId, auth.deviceName);
 			}
 			if (request.method !== "GET") return errorResponse(405, "use GET");
-			return handleGetStatus(ctx, auth.userId, auth.deviceId, auth.deviceName);
+			return handleGetStatus(request.signal, ctx, auth.userId, auth.deviceId, auth.deviceName);
 		},
 		websocket: {
 			open(ws) {
