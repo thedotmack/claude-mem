@@ -22,7 +22,7 @@ ${styleText('bold', 'claude-mem')} v${version} — persistent memory for AI codi
 
 ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
-  ${styleText('cyan', 'npx claude-mem install')}              Interactive install
+  ${styleText('cyan', 'npx claude-mem install')}              Interactive install (also puts the claude-mem hook launcher on PATH)
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
   ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
@@ -32,8 +32,8 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
-  ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
-  ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
+  ${styleText('cyan', 'npx claude-mem update')}               Update to latest version (refreshes the hook launcher)
+  ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin, configs and the hook launcher
   ${styleText('cyan', 'npx claude-mem version')}              Print version
 
 ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed plugin):
@@ -41,7 +41,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem stop')}                 Stop worker service
   ${styleText('cyan', 'npx claude-mem restart')}              Restart worker service
   ${styleText('cyan', 'npx claude-mem status')}               Show worker status
-  ${styleText('cyan', 'npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
+  ${styleText('cyan', 'npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, hook launcher, worker)
   ${styleText('cyan', 'npx claude-mem telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
   ${styleText('cyan', 'npx claude-mem server start')}         Start server service
   ${styleText('cyan', 'npx claude-mem server stop')}          Stop server service
@@ -58,6 +58,13 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+
+${styleText('bold', 'Claude Code Hooks')}:
+  Each hook runs ${styleText('cyan', 'claude-mem hook claude-code <event>')} directly, with no shell.
+  That ${styleText('cyan', 'claude-mem')} is a small launcher the installer places on PATH:
+  ~/.local/bin (macOS/Linux) or %LOCALAPPDATA%\\claude-mem\\bin (Windows).
+  Hook error 'Executable not found in $PATH: "claude-mem"'? Run ${styleText('cyan', 'npx claude-mem install')},
+  restart your terminal or IDE, then check ${styleText('cyan', 'npx claude-mem doctor')}.
 
 ${styleText('bold', 'IDE Identifiers')}:
   claude-code, cursor, grok-bot, opencode, openclaw, omp,

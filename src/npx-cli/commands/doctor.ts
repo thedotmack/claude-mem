@@ -23,6 +23,19 @@ import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
+import {
+  claudeCodeVersionTooOldWarning,
+  detectClaudeCodeVersion,
+  MINIMUM_CLAUDE_CODE_VERSION_FOR_EXEC_FORM_HOOKS,
+} from '../install/claude-code-version.js';
+import {
+  currentLauncherHostEnvironment,
+  findExecutableOnPath,
+  readLauncherProtocol,
+  resolveLauncherBinaryPath,
+  type LauncherHostEnvironment,
+} from '../../launcher/install-launcher.js';
+import { LAUNCHER_PROTOCOL } from '../../launcher/launcher-protocol.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
 
@@ -254,6 +267,77 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
       };
 }
 
+/**
+ * The "Hook launcher" row: where `claude-mem` resolves on PATH, the protocol it
+ * prints, and one timed `--version` round trip. Hooks call `claude-mem` in exec
+ * form, so a missing launcher surfaces in Claude Code as
+ * `Executable not found in $PATH: "claude-mem"` on every hook. Required: a
+ * missing launcher, or a `claude-mem` on PATH that is not the launcher, fails
+ * doctor. An older protocol only warns, because the SessionStart self-heal
+ * (ensure-launcher.cjs) replaces it on the next startup. Exported for tests.
+ */
+export function hookLauncherCheck(host: LauncherHostEnvironment = currentLauncherHostEnvironment()): CheckResult {
+  const name = 'Hook launcher';
+  const reinstallHint = 'run `npx claude-mem install`';
+  const launcherOnPath = findExecutableOnPath('claude-mem', host.environmentVariables.PATH ?? '', host.platform);
+  if (!launcherOnPath) {
+    const placedBinaryPath = resolveLauncherBinaryPath(host);
+    return {
+      name,
+      status: 'fail',
+      detail: existsSync(placedBinaryPath)
+        ? `installed at ${placedBinaryPath} but its directory is not on PATH — open a new terminal, or ${reinstallHint}`
+        : `claude-mem not on PATH — hooks fail with 'Executable not found in $PATH: "claude-mem"'; ${reinstallHint}`,
+      required: true,
+    };
+  }
+  const probeStartedAt = performance.now();
+  const printedProtocol = readLauncherProtocol(launcherOnPath);
+  const roundTripMilliseconds = Math.round(performance.now() - probeStartedAt);
+  if (printedProtocol === null) {
+    return {
+      name,
+      status: 'fail',
+      detail: `${launcherOnPath} is not the claude-mem hook launcher (--version printed no protocol number); ${reinstallHint}`,
+      required: true,
+    };
+  }
+  if (printedProtocol !== LAUNCHER_PROTOCOL) {
+    return {
+      name,
+      status: 'warn',
+      detail: `${launcherOnPath} speaks protocol ${printedProtocol}, expected ${LAUNCHER_PROTOCOL}; ${reinstallHint}`,
+      required: true,
+    };
+  }
+  return {
+    name,
+    status: 'ok',
+    detail: `${launcherOnPath} (protocol ${printedProtocol}, --version ${roundTripMilliseconds} ms)`,
+    required: true,
+  };
+}
+
+/**
+ * The "Claude Code version" row. Warns below the exec-form minimum, because an
+ * older Claude Code ignores the hooks' `args` and runs bare `claude-mem`,
+ * which captures nothing. Not required: a missing or unparseable version
+ * passes silently. Exported for tests.
+ */
+export function claudeCodeVersionCheck(detectedClaudeCodeVersion: string | undefined): CheckResult {
+  const name = 'Claude Code version';
+  const tooOldWarning = claudeCodeVersionTooOldWarning(detectedClaudeCodeVersion);
+  if (tooOldWarning) return { name, status: 'warn', detail: tooOldWarning, required: false };
+  return {
+    name,
+    status: 'ok',
+    detail: detectedClaudeCodeVersion
+      ? `${detectedClaudeCodeVersion} (hooks need ${MINIMUM_CLAUDE_CODE_VERSION_FOR_EXEC_FORM_HOOKS}+)`
+      : 'not detected (claude not on PATH)',
+    required: false,
+  };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -286,6 +370,9 @@ export async function runDoctorCommand(): Promise<void> {
   // 3b. tree-sitter CLI at that root: smart_search and smart_outline shell out
   // to it, and installs suppress the script that downloads it (#2910).
   if (pluginRoot) checks.push(await treeSitterCliCheck(pluginRoot.root));
+
+  // 3c. The on-PATH `claude-mem` hook launcher (plan-17 #3605).
+  checks.push(hookLauncherCheck());
 
   // 4. Marketplace runtime root materialized. The .install-version marker is
   // written only by the npx installer; installs via Claude Code's own plugin
@@ -348,16 +435,20 @@ export async function runDoctorCommand(): Promise<void> {
   });
   checks.push(...chromaChecks);
 
-  // 6. Windows Git Bash reachability. All claude-mem hooks run via
-  // `"shell": "bash"`; on Windows, Claude Code resolves that through Git for
-  // Windows with no WSL fallback. No-op on macOS/Linux.
+  // 5b. Claude Code version: the exec-form hooks need `args` support.
+  checks.push(claudeCodeVersionCheck(detectClaudeCodeVersion()));
+
+  // 6. Windows Git Bash reachability. Runtime hooks run the launcher with no
+  // shell; only the Setup hook (`claude --init` / `--maintenance`) still uses
+  // `"shell": "bash"`, which Claude Code resolves through Git for Windows. So a
+  // missing Git Bash only warns. No-op on macOS/Linux.
   if (IS_WINDOWS) {
     const gitBash = checkWindowsGitBash();
     checks.push({
       name: 'Git Bash (Windows)',
-      status: gitBash.ok ? 'ok' : 'fail',
+      status: gitBash.ok ? 'ok' : 'warn',
       detail: gitBash.detail,
-      required: true,
+      required: false,
     });
   }
 

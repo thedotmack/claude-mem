@@ -1,27 +1,30 @@
 /**
- * Windows-only preflight for claude-mem's hooks.
+ * Windows-only preflight for claude-mem's Setup hook.
  *
- * Every hook in plugin/hooks/hooks.json declares `"shell": "bash"`. On
- * Windows, Claude Code resolves that through a closed chain — verified
- * against the Claude Code CLI binary, no WSL fallback exists:
+ * Runtime hooks in plugin/hooks/hooks.json run the on-PATH `claude-mem`
+ * launcher in exec form, with no shell, so they do not need bash (#3605). Only
+ * the Setup hook (version-check.js) still declares `"shell": "bash"`, and
+ * Claude Code fires it only for `claude --init` / `--init-only` /
+ * `-p --maintenance`. On Windows, Claude Code resolves that bash through a
+ * closed chain — verified against the Claude Code CLI binary, no WSL fallback
+ * exists:
  *
  *   1. CLAUDE_CODE_GIT_BASH_PATH env var
  *   2. C:\Program Files\Git\bin\bash.exe
  *   3. C:\Program Files (x86)\Git\bin\bash.exe
  *   4. `git` resolved on PATH, then ../../bin/bash.exe relative to it
- *   5. null — Claude Code throws, and every claude-mem hook throws with it
+ *   5. null — Claude Code throws, and the Setup hook throws with it
  *
  * Step 4 here deliberately checks EVERY `git` hit on PATH, not just the first:
  * Git for Windows puts both mingw64\bin\git.exe and cmd\git.exe on PATH, and
  * when mingw64\bin sorts first the ../../bin derivation lands on
  * <Git>\mingw64\bin\bash.exe, which does not exist — while the cmd\git.exe hit
- * derives the real <Git>\bin\bash.exe. Hooks resolve fine on such machines, so
+ * derives the real <Git>\bin\bash.exe. Bash resolves fine on such machines, so
  * a first-hit-only replica reports a false negative (#3661 tester report).
  *
- * A Windows user who satisfied Claude Code's own requirements via PowerShell
- * (no Git for Windows at all) hits step 5 with a raw, unbranded error. This
- * module replicates the same chain so claude-mem can detect that case ahead
- * of time and say so plainly. It does not change hook behavior — see #3605.
+ * This module replicates the same chain so the installer and doctor can say
+ * plainly, as a warning, that the Setup hook will not run. Memory capture does
+ * not depend on it. It does not change hook behavior.
  */
 
 import { existsSync } from 'fs';
@@ -34,9 +37,11 @@ export const STANDARD_GIT_BASH_PATHS = [
 ];
 
 export const GIT_BASH_REMEDIATION =
-  'Git Bash not found. claude-mem hooks require bash, and Claude Code resolves it via Git for ' +
-  'Windows on Windows. Install Git for Windows (https://git-scm.com/download/win), or if bash is ' +
-  'installed somewhere non-standard, set CLAUDE_CODE_GIT_BASH_PATH to the full path of bash.exe.';
+  'Git Bash not found. claude-mem\'s runtime hooks do not need it (they run the claude-mem launcher ' +
+  'directly), but its Setup hook, which runs only for `claude --init` / `--maintenance`, uses bash, ' +
+  'and Claude Code resolves bash via Git for Windows on Windows. To use that Setup hook, install Git ' +
+  'for Windows (https://git-scm.com/download/win), or if bash is installed somewhere non-standard, ' +
+  'set CLAUDE_CODE_GIT_BASH_PATH to the full path of bash.exe.';
 
 /** Filesystem access this check needs, injectable so tests never touch the real FS. */
 export interface GitBashProbe {

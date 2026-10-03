@@ -225,3 +225,36 @@ describe('Install: disable Claude Code auto-memory', () => {
     });
   });
 });
+
+// Hook launcher placement (plan-17 #3605, Phase 3). Behavior is covered in
+// tests/launcher/install-launcher.test.ts; these pin the installer wiring.
+describe('Install: claude-mem hook launcher placement', () => {
+  it('places the launcher in the runtime-setup task, after ensureBun and from the cached plugin', () => {
+    const runtimeTaskStart = installSource.indexOf("title: 'Setting up runtime (first install can take ~30s)'");
+    const ensureBunCall = installSource.indexOf('await ensureBun(summary)', runtimeTaskStart);
+    const launcherCall = installSource.indexOf('placeHookLauncherOnPath(cacheDir, summary)', runtimeTaskStart);
+    expect(runtimeTaskStart).toBeGreaterThan(-1);
+    expect(ensureBunCall).toBeGreaterThan(runtimeTaskStart);
+    expect(launcherCall).toBeGreaterThan(ensureBunCall);
+  });
+
+  it('warns and continues on a launcher failure instead of aborting the install', () => {
+    const helperBody = installSource.match(/function placeHookLauncherOnPath\([\s\S]*?\n\}/)?.[0];
+    expect(helperBody).toBeDefined();
+    expect(helperBody).toContain('ensureLauncherOnPath(');
+    expect(helperBody).toContain('ErrorSeverity.WARN_CONTINUE');
+    expect(helperBody).not.toContain('ErrorSeverity.ABORT');
+  });
+
+  it('keeps the Claude Code PATH setup on the shared ~/.local/bin appender, gated on the claude binary', () => {
+    const helperBody = installSource.match(/function applyClaudeCodePathSetupIfNeeded\(\)[\s\S]*?\n\}/)?.[0];
+    expect(helperBody).toBeDefined();
+    expect(helperBody).toContain("join(homedir(), '.local', 'bin', 'claude')");
+    expect(helperBody).toContain("ensureLocalBinOnShellPath({ purposeLabel: 'Claude Code', logger: log })");
+  });
+
+  it('runs for `update` too, which dispatches to runInstallCommand', () => {
+    const cliSource = readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8');
+    expect(cliSource).toMatch(/case 'update':[\s\S]*?runInstallCommand/);
+  });
+});

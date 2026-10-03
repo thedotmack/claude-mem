@@ -29,7 +29,7 @@ npx claude-mem install
 
 The interactive installer runs in three stages — runtime first, sign in second, then pick your memory provider:
 
-1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
+1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, installs dependencies, and puts the `claude-mem` hook launcher on your PATH (see [How hooks reach claude-mem](#how-hooks-reach-claude-mem)).
 2. **Sign in.** Skipped for `--provider claude` (memory runs on your own Anthropic plan). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
 3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, Anthropic plan, or `--provider host` (local loopback observer).
 
@@ -58,16 +58,42 @@ Install Claude-Mem directly from the plugin marketplace inside Claude Code:
 
 Both methods will automatically configure hooks and start the worker service. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
 
+A marketplace-only install has no installer step, so the plugin places the `claude-mem` launcher itself on the first session start (see below). That first session can run without memory context while the launcher compiles; the next one has it. Running `npx claude-mem install` once avoids the gap.
+
 > **Important:** Claude-Mem is published on npm, but running `npm install -g claude-mem` installs the
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.
-> Always install via `npx claude-mem install` or the `/plugin` commands above.
+> Always install via `npx claude-mem install` or the `/plugin` commands above. A global npm `claude-mem` that sits
+> earlier on PATH than the hook launcher shadows it; see [Troubleshooting](/troubleshooting#claude-mem-command-not-found-in-hooks).
+
+### How hooks reach claude-mem
+
+Every Claude Code hook is one short command with no shell: `claude-mem hook claude-code <event>` (the worker-start entry is `claude-mem start`). Claude Code looks `claude-mem` up on PATH and runs it directly, so runtime hooks need no bash on any platform, and Windows needs no Git Bash for them. The one exception is the Setup hook, which still runs through bash but only fires for `claude --init` / `--maintenance`.
+
+This exec form (`"command": "claude-mem", "args": [...]`) needs **Claude Code 2.1.139 or later**. An older Claude Code ignores `args` and runs bare `claude-mem`, which only prints usage, so no memory is captured. `npx claude-mem install` and `npx claude-mem doctor` warn when the detected Claude Code is older; update it with `claude update`.
+
+`claude-mem` here is a small compiled launcher, not the npm CLI. It finds the installed plugin, runs the hook under Bun, and exits 0 on any failure so it never blocks a session.
+
+| | Where the launcher goes | PATH |
+|---|---|---|
+| macOS / Linux | `~/.local/bin/claude-mem` | Appended to your shell rc file if `~/.local/bin` is not already on PATH |
+| Windows | `%LOCALAPPDATA%\claude-mem\bin\claude-mem.exe` | Appended to your user Path |
+
+- `npx claude-mem install` and `npx claude-mem update` compile and place it. They skip the compile when the placed launcher is already current.
+- Marketplace-only installs are covered by an extra SessionStart entry, `node ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs`, which runs at startup and places or refreshes the launcher when it is missing or out of date.
+- If the launcher cannot be made active, session start shows:
+  ```
+  claude-mem: memory hooks are not active: <reason>. Fix: run `npx claude-mem install`, then restart Claude Code.
+  ```
+- After a PATH change, restart your terminal or IDE so Claude Code inherits the new PATH.
+- `npx claude-mem doctor` shows a **Hook launcher** row with where `claude-mem` resolves on PATH and whether it is the launcher. See [claude-mem: command not found in hooks](/troubleshooting#claude-mem-command-not-found-in-hooks).
+- `npx claude-mem uninstall` removes the launcher binary. It leaves your shell rc file and user Path alone and prints the line to remove.
 
 ## System Requirements
 
 - **Node.js**: 20.0.0 or higher
 - **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
 - **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
-- **Claude Code** or another supported host (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
+- **Claude Code** 2.1.139 or later (the first release with exec-form hook `args`), or another supported host (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
 - **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation
@@ -99,13 +125,17 @@ npm run worker:status
 
 #### 1. Automatic Dependency Installation
 
-Dependencies are installed automatically by `npx claude-mem install` and `npx claude-mem repair`. Heavy lifting (Bun + uv install, `bun install` inside the plugin cache) happens behind a visible installer spinner. Installs made through the plugin marketplace are completed by the Setup hook (`version-check.js`): if the plugin's declared dependencies are missing it runs `bun install` in the plugin root, and once they are complete it records the `.install-version` marker itself. It prints `run: npx claude-mem@latest install` only when dependencies are still missing after that attempt, and it always exits 0, so it never blocks a session. Works cross-platform on Windows, macOS, and Linux.
+Dependencies are installed automatically by `npx claude-mem install` and `npx claude-mem repair`. Heavy lifting (Bun + uv install, `bun install` inside the plugin cache, compiling the hook launcher) happens behind a visible installer spinner. Works cross-platform on Windows, macOS, and Linux.
+
+The plugin also ships a Setup hook (`version-check.js`) that runs `bun install` in the plugin root when its declared dependencies are missing and records the `.install-version` marker once they are complete. Claude Code fires Setup only for `claude --init`, `claude --init-only` and `claude -p --maintenance`, never on plugin install, update or a normal session start, so for a marketplace install whose dependencies are missing, run `npx claude-mem install` (or `claude --init-only`). The Setup hook always exits 0.
 
 #### 2. Verify Plugin Installation
 
-Check that hooks are configured in Claude Code:
+Check that hooks are configured in Claude Code and that the launcher is on PATH:
 ```bash
 cat plugin/hooks/hooks.json
+command -v claude-mem && claude-mem --version   # prints the launcher protocol number, e.g. 1
+npx claude-mem doctor                            # "Hook launcher" row
 ```
 
 #### 3. Data Directory Location
@@ -145,7 +175,7 @@ See [CMEM Pro (manual / headless)](/cmem-pro-headless).
 
 ## Upgrading
 
-Upgrades are automatic when updating via the plugin marketplace. After an external upgrade (for example `claude plugin update`), the Setup hook installs any runtime dependencies the new version is missing and refreshes the version marker itself. Only if dependencies are still missing after that does it ask you to run `npx claude-mem@latest install`.
+Upgrades are automatic when updating via the plugin marketplace. The on-PATH launcher is version-stable: it carries no claude-mem logic, so a marketplace update does not need a new one. When an update does need a newer launcher, the startup SessionStart self-heal compiles it, and that first session may miss memory context while it does. `npx claude-mem update` refreshes the plugin, its dependencies and the launcher in one step. If an update leaves dependencies missing, run `npx claude-mem@latest install`.
 
 See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete version history.
 
