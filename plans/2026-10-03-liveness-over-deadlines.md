@@ -253,4 +253,171 @@ work nobody waits on). Narrow `KnowledgeAgent.isSessionResumeError` to the SDK's
 
 ## Track B — Supabase cloud sync (Phases 8–12)
 
-_Written after Supabase discovery completes — see below._
+### Target architecture (plain words)
+
+Each device pushes a batch of changes to **one Supabase Edge Function** (`cmem-sync`). The function checks
+the `cm_pro_` token and calls **one Postgres function** that, in a single transaction, appends the
+changes to the user's ordered log *and* writes the searchable rows. Nothing is copied anywhere later
+(`projected_seq == head_seq`, always). When the log moves forward a trigger sends a tiny
+**Realtime broadcast** (`advance`, new `head_seq`) on the private channel `user:<id>`; other devices hear
+it and pull. Pro's dashboard/MCP/search read the same table. Embeddings are filled in the background
+inside Supabase (`gte-small`, no external key). Retired: Fly `sync-api`, Neon, Turbopuffer, the cmem.ai
+projector route, the repair cron, the Cloudflare `sync-hub` worker.
+
+**Code homes.** Backend (migrations + Edge Function) lives in **claude-mem-pro**
+(`~/Scripts/claude-mem-pro`, Supabase project ref `ziczmqtpmaxbornfghye`, already linked via `supabase/.temp`;
+migrations are hand-numbered `drizzle/NNNN_*.sql` applied by `scripts/db-migrate.ts`, latest 0063).
+Client changes live in claude-mem.
+
+### Phase 0-B — facts (discovery, cite before use)
+
+**Wire contract the Edge Function must honour exactly** (client: `src/services/sync/CloudSync.ts`, `SyncClient.ts`,
+`CanonicalContent.ts`, `SyncApply.ts`; reference server: `services/sync-api/src/store.ts`, `index.ts`, `auth.ts`):
+- Headers: `Authorization: Bearer <cm_pro>`, `X-User-Id`, `X-Device-Id` (≤128), optional `X-Device-Name` (≤80, first non-empty kept).
+- `POST /v1/sync/ops` `{protocol_version:2, ops:[{body, operation_sha256}]}` ≤500 ops, ≤8 MB →
+  `200 {acked:[{id,kind,origin_local_id|null,entity_rev,operation_sha256,seq}], head_seq, projected_seq}`; must pass
+  `validatePushResponse` (`CloudSync.ts:1640-1701`). Empty `ops` ⇒ 200 `acked:[]`.
+- `GET /v1/sync/changes?since=&limit=` → `{protocol_version:2, epoch, ops:[{seq,body,operation_sha256,server_ts}], head_seq, more}`;
+  **seqs dense from since+1** (`SyncApply.ts:511`, `SyncClient.ts:616-618`). Raises `sync_devices.last_ack_seq` monotonically.
+- `GET /v1/sync/status` → `{protocol_version:2, epoch, head_seq, projected_seq, op_count, device_count}`, never registers a device.
+- Errors: 400 `{error:"invalid_ops: ops[N] …"}` / `revision_hash_conflict:<id>:<rev>` / `stale_revision:<id>:<rev>` (regex-parsed,
+  `CloudSync.ts:263-283`); origin-device mismatch text (`:250-254`); 401 `{code:"invalid_token"}`; 403 `{code:"subscription_inactive"}`;
+  409 `device_limit_exceeded` (64 devices); 413 size; 503 `{error:"sync_hub_unavailable",retryable:true}` + `Retry-After: 5`.
+- Send `X-Sync-Mode: poll` on every response ⇒ existing clients stop opening the old WebSocket (`SyncClient.ts:597-600,823-836`).
+- Push semantics (`store.ts:357-472`): validate all ops first (origin_device == X-Device-Id); one transaction with
+  `pg_advisory_xact_lock(hashtextextended(user_id,0))`; register device (cap 64); idempotency key `(user_id, entity_id, entity_rev)`:
+  same rev+hash ⇒ re-ack original seq; same rev, different hash ⇒ `revision_hash_conflict`; rev < head ⇒ `stale_revision`;
+  later ops in a batch see heads written by earlier ones; any error rolls back all. **Seq = per-user counter** (no SEQUENCE — gaps forbidden).
+- Epoch: random non-zero uint64 decimal on first contact (`canonical-content.ts:430-436`). A new epoch makes clients reset cursor to 0
+  and re-push their own native content (`SyncApply.handleEpoch`, `SyncApply.ts:406-451`) — **this is the migration path**.
+- Canonical content validator: `services/sync-api/src/canonical-content.ts` uses only `crypto.subtle`, `btoa`, `TextEncoder` ⇒ copy into Deno.
+- Content apply semantics to port: `content-projector.ts` on the uncommitted `fix/sync-api-off-vercel` worktree
+  (`~/Scripts/claude-mem/.claude/worktrees/sync-api-off-vercel/services/sync-api/src/content-projector.ts`) and Pro's
+  `src/lib/cmem/content-v2-projector.ts` (`projectContentV2Page`): higher-revision wins; equal-revision mutation wins;
+  `set_title` no-op; `set_prompt_session` rewrites prompt session fields; `remap_project` pages and rewrites project; identity mismatch
+  ⇒ `revision_conflict`.
+
+**Pro read side** (Pro `origin/main` @ 87a94a7): all content reads go through `TpufContentV2Store` (`src/lib/cmem/content-v2-dal.ts:431`,
+singleton `productionContentV2Store()` `:798`): `get/getMany/list/enumerate/search/projectCounts/stats/write/writeMany/mutationPage`.
+Document shape `ContentV2Document` (`:116-141`), text fields from `projectedText()` (`:811`). Search today is BM25 only
+(`queries.ts:161-211`, `vectorLegRan:false`). Hub coupling: `sync-hub-control.ts` (`readSyncHubMetadata :80`, `renameSyncHubDevice :93`,
+`eraseSyncHubUser :162`), `content-v2-repair.ts`, `/api/internal/sync/project`, `/api/pro/sync/verify`, connect-info + trial poll return
+`SYNC_HUB_INTERNAL_URL` as `hub_url`. Token check today: `validateSyncRequest()` (`src/lib/pro/auth.ts:65`) — `pro_users.setup_token`
+plaintext equality + `user_id` match + `isProActive`. Old Supabase-era SQL to copy: `drizzle/0011_instant_sync.sql` (content columns,
+generated tsvector, `realtime.broadcast_changes` trigger lines 102-169). `vector` extension still installed (0020 note).
+
+**Supabase docs (fetched 2026-10-03):**
+- Edge Functions: wall clock 400 s paid, request idle 150 s, CPU 2 s/request (async I/O excluded), 256 MB
+  (https://supabase.com/docs/guides/functions/limits). `verify_jwt = false` per function in `supabase/config.toml`
+  (https://supabase.com/docs/guides/functions/function-configuration). Deploy `supabase functions deploy cmem-sync`. Secrets
+  `supabase secrets set NAME=value`; `SUPABASE_DB_URL` injected.
+- **One push = one RPC** (`supabase.rpc`) — multi-statement work belongs in a database function
+  (https://supabase.com/docs/reference/javascript/rpc); postgres.js through the transaction pooler can hang pipelined queries
+  (https://supabase.com/docs/guides/database/postgres-js). Use `security definer set search_path = ''`, fully qualified names,
+  `revoke execute … from public`, per-function `set statement_timeout = '60s'`.
+- Realtime: `realtime.send(payload, event, topic, private)` from a trigger (https://supabase.com/docs/guides/realtime/broadcast); RLS on
+  `realtime.messages` with `realtime.topic()` (https://supabase.com/docs/guides/realtime/authorization). Non-browser auth: import our own
+  ES256 key (`supabase gen signing-key --algorithm ES256`), mint `{sub, role:"authenticated", exp}` with matching `kid`
+  (https://supabase.com/docs/guides/auth/signing-keys). Pro plan default: 500 concurrent Realtime connections.
+- Embeddings: automatic-embeddings pattern (`pgmq` + `pg_cron` + `pg_net` + Edge Function, `util.queue_embeddings`,
+  `util.process_embeddings`) https://supabase.com/docs/guides/ai/automatic-embeddings ; model `new Supabase.ai.Session('gte-small')`,
+  384-dim, `mean_pool+normalize` https://supabase.com/docs/guides/functions/ai-models ; hybrid RRF function
+  https://supabase.com/docs/guides/ai/hybrid-search .
+- Local dev: `supabase start` (Docker), `supabase functions serve cmem-sync --no-verify-jwt`, tests `supabase test db` (pgTAP).
+
+**Anti-patterns (Track B).** No identity/SEQUENCE for seq. No multi-statement transactions from the Edge Function — one RPC. No
+`verify_jwt=true` (cm_pro is not a JWT). No public Realtime channels. Do not hash-change the canonical content code — copy it byte-for-byte.
+Do not delete Turbopuffer/Fly before Phase 12 verification. Do not touch the uncommitted `sync-api-off-vercel` worktree (read only).
+
+## Phase 8 — Supabase schema + push/pull SQL (Pro repo)
+
+**What.** `drizzle/0064_cmem_sync.sql` (+ matching `supabase/migrations/` copy only if Pro's tooling needs it — follow `scripts/db-migrate.ts`):
+- `sync_users(user_id uuid pk → pro_users, epoch numeric(20) not null, head_seq bigint not null default 0, created_at)`.
+- `sync_ops(user_id, seq bigint, entity_id text, kind text, origin_device_id text, origin_local_id text null, entity_rev numeric(20),
+  operation_sha256 text, body text, deleted bool, server_ts bigint, pk (user_id, seq), unique (user_id, entity_id, entity_rev))`.
+- `sync_entity_heads(user_id, entity_id, entity_rev, operation_sha256, pk (user_id, entity_id))`.
+- `sync_devices(user_id, device_id, name, last_ack_seq bigint, last_seen timestamptz, pk (user_id, device_id))`.
+- `cmem_content` — one row per entity, columns = `ContentV2Document` fields (copy names from `content-v2-dal.ts:116-141`) plus
+  `user_id`, `payload jsonb`, `fts tsvector generated always as (to_tsvector('english', coalesce(search_text,''))) stored`,
+  `embedding extensions.vector(384) null`; indexes: `(user_id, chronological_key desc) where not deleted`, `(user_id, project)`,
+  `gin(fts)`, `hnsw (embedding vector_ip_ops)`.
+- `cmem_sync_push(p_user_id uuid, p_device_id text, p_device_name text, p_ops jsonb) returns jsonb` — plpgsql port of `store.pushOps`
+  semantics (Phase 0-B) **plus** applying each accepted content/mutation op to `cmem_content` with the projector rules, in the same
+  transaction. `p_ops` items carry the already-validated decoded envelope fields + raw `body`. Raises `invalid_ops`/`revision_hash_conflict`/
+  `stale_revision`/`device_limit_exceeded` with the exact message formats the client regex-parses.
+- `cmem_sync_changes(p_user_id, p_device_id, p_since bigint, p_limit int) returns jsonb` and `cmem_sync_status(p_user_id, p_device_id)`.
+- RLS enabled on all tables, no policies for anon/authenticated (only service role via functions); `revoke execute … from public`.
+
+**Verify.** pgTAP `supabase/tests/cmem_sync.test.sql` porting `services/sync-api/test/protocol.test.ts` cases (dense seq + re-ack, batch ==
+one-at-a-time, refused op commits nothing, stale/conflict, empty push, uint64, 64-device cap) + projector cases (higher-rev wins,
+tombstone, set_prompt_session, remap_project). Run `supabase start && supabase db reset && supabase test db`.
+
+## Phase 9 — `cmem-sync` Edge Function (Pro repo)
+
+**What.** `supabase/functions/cmem-sync/index.ts` (Deno), `verify_jwt = false` in `supabase/config.toml`. Routes on the path suffix after
+`/cmem-sync`: `POST /v1/sync/ops`, `GET /v1/sync/changes`, `GET /v1/sync/status`, `POST /v1/sync/realtime-token` (Phase 11).
+- Auth: port `validateSyncRequest` (`src/lib/pro/auth.ts:65`) using service-role supabase-js against `pro_users` (setup_token equality,
+  user_id match, `isProActive` copied); 60 s in-isolate cache; 401/403 bodies exactly as Phase 0-B.
+- Validate ops with the copied `canonical-content.ts` (byte-identical to `services/sync-api/src/canonical-content.ts`), then one
+  `supabase.rpc('cmem_sync_push', …)`; map raised errors to the 400/409 bodies; transient DB errors ⇒ 503 + `Retry-After: 5`.
+- Every response carries `X-Sync-Mode: poll`.
+
+**Verify.** Port `scripts/sync-matrix-e2e.ts` to a Supabase-local variant (`scripts/sync-matrix-e2e-supabase.ts` in claude-mem, target
+`http://127.0.0.1:54321/functions/v1/cmem-sync`) — two real claude-mem clients, all kinds + mutations, delete + revive, cursors == head,
+`projected_seq === head_seq`. Update `tests/infrastructure/sync-matrix-e2e-safety.test.ts` to allow the new loopback target.
+
+## Phase 10 — Pro reads from Supabase (Pro repo)
+
+**What.** `SupabaseContentStore` implementing the exact `TpufContentV2Store` public interface over `cmem_content` (raw `pg` pool from
+`src/lib/cloud/db.ts`); `search` = `websearch_to_tsquery` + `ts_rank_cd` (and hybrid RRF once embeddings exist — Phase 11);
+`productionContentV2Store()` returns it. Hub-bypassing writers (`src/lib/hooks/documents.ts:147`, `src/lib/eat/import.ts:143`,
+`src/lib/alerts/session-summary.ts:543`) keep calling `write/writeMany` — now Postgres. Replace `sync-hub-control.ts` calls with direct
+SQL over `sync_users`/`sync_devices` (metadata, device rename, erase = delete rows + new epoch). connect-info + trial poll return
+`hub_url = <SUPABASE_URL>/functions/v1/cmem-sync`. Delete `/api/internal/sync/project`, `content-v2-repair.ts` + its cron, tpuf crons
+from `vercel.json`, tpuf usage/backup/explorer code, and the tpuf erase steps in `account-erase.ts` (replace with row deletes).
+
+**Verify.** Pro `scripts/test-*` suites touching content (`test-content-serving-budget`, `test-hooks-routes`, `test-mcp-auth`,
+`test-connect-state-route`) green against local Supabase; new `scripts/test-supabase-content-store.ts` exercising every store method with
+`fixtures/tpuf-content-v2.json`. `git grep -n turbopuffer src` ⇒ only migration notes. `npm run build` passes.
+
+## Phase 11 — Realtime + embeddings
+
+**What.**
+- Realtime: trigger `after update of head_seq on sync_users` → `realtime.send(jsonb_build_object('type','advance','epoch',epoch,'head_seq',head_seq),
+  'advance', 'user:'||user_id, true)`. RLS on `realtime.messages`: select allowed when `realtime.topic() = 'user:' || auth.uid()` and
+  `extension = 'broadcast'`. Import an ES256 signing key (secret `CMEM_REALTIME_SIGNING_JWK` in the function); `POST /v1/sync/realtime-token`
+  returns `{access_token, expires_at}` (15 min, `sub = user_id`, `role = authenticated`).
+- claude-mem client: replace the custom WebSocket in `SyncClient.ts` (`:659-866`) with `@supabase/supabase-js` Realtime: private channel
+  `user:<id>`, `accessToken` refreshed from `/v1/sync/realtime-token`; on `advance` ⇒ existing pull path. Keep the 30 s poll fallback.
+  Delete the old WS frame handling and its tests; add `tests/worker/sync/sync-client-realtime.test.ts`.
+- Embeddings: automatic-embeddings SQL copied from the docs page (`pgmq` queue `embedding_jobs`, `util.queue_embeddings` trigger on
+  `cmem_content` insert/update of `search_text`, cron every 10 s) and an `embed` Edge Function using `Supabase.ai.Session('gte-small')`.
+  `hybrid_search` RPC copied from the hybrid-search doc, adapted to `cmem_content` + user/project filters; Pro `search()` uses it.
+
+**Verify.** e2e: device B pulls within 2 s of device A's push with polling disabled. Embeddings column filled for new rows within 60 s
+locally. Hybrid search test returns a semantic-only match.
+
+## Phase 12 — Cutover + retire
+
+**What.** In order:
+1. Pro: `node scripts/db-migrate.ts` against production; `supabase functions deploy cmem-sync embed`; set secrets; import signing key.
+2. Smoke test production with a test Pro account (push, pull, realtime, search).
+3. Ship claude-mem client: `migratedCloudSyncHubUrl` (`SettingsDefaultsManager.ts:125-138`) maps `https://sync.cmem.ai` → the function URL.
+   New epoch on Supabase ⇒ each device re-pushes its native content automatically (`SyncApply.handleEpoch`).
+4. Optional one-time backfill `scripts/backfill-cmem-content-from-tpuf.ts` (Pro) for users whose devices never come back: copy tpuf v2
+   docs into `cmem_content` where no row exists.
+5. After 7 days with `sync_users` active-device counts matching: scale Fly `cmem-sync-api` to 0, delete Neon branch, delete Turbopuffer
+   namespaces, delete `services/sync-api/` and `workers/sync-hub/` from claude-mem.
+
+**Verify.** Production smoke script output; Pro dashboard shows the test account's content; `/api/sync/status` on a real worker shows
+`projected_seq == head_seq` and no `projection_busy` errors for 24 h.
+
+## Phase 13 — Final verification
+
+1. `npm run typecheck`, `bun test tests` (full suite) on the merged branch; Pro `npm run build` + touched `scripts/test-*`.
+2. Anti-pattern greps: `grep -rn "prior-request-id" src` = 0; `grep -rn "stream: false" src/services/worker/*Provider*.ts` = 0 for
+   OpenRouter/OpenAICompat; `grep -rn "WEDGED_WORKER_UPTIME_S" src/shared/worker-utils.ts` = 0; no `SessionMessageBuffer` replay;
+   no try/catch without rethrow/log in new files.
+3. `npm run build-and-sync`; live checks: `curl -N localhost:37777/api/ready` streams phases and ends; observation hook with worker
+   stopped exits < 200 ms and its spool file drains when the worker starts; SessionStart context served from cache file.
+4. Open PR(s), `/babysit` until green and review comments resolved, merge, `/version-bump`.
