@@ -13,6 +13,8 @@ import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
+import { captureObservationMedia } from '../../media/capture.js';
+import type { MediaEventIdentity } from '../../../shared/media-contract.js';
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -105,6 +107,7 @@ export interface ObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  mediaEventIdentity?: MediaEventIdentity;
   /**
    * Receipt join keys (frozen 2026-09-06). Both nullable and both pass-through:
    * Claude-Mem never derives them, it only echoes what a stamper supplied, so
@@ -208,11 +211,29 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: true, status: 'skipped', reason: 'private' };
   }
 
-  const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolInput))
+  // Media capture runs only after every tracking/privacy/subagent gate above
+  // and before serialization, so neither the tool_uses backup nor the RAM
+  // observer text ever holds a recognized image body. Capture is off by
+  // default; disabled capture still replaces bodies with bounded descriptors.
+  // Media inference is a separate flag and is not consulted here.
+  const mediaCaptureEnabled = settings.CLAUDE_MEM_MEDIA_CAPTURE_ENABLED === 'true';
+  const media = await captureObservationMedia({
+    enabled: mediaCaptureEnabled,
+    sessionDbId,
+    contentSessionId: payload.contentSessionId,
+    platformSource,
+    toolUseId: payload.toolUseId,
+    eventIdentity: payload.mediaEventIdentity,
+    toolName: payload.toolName,
+    toolInput: payload.toolInput,
+    toolResponse: payload.toolResponse,
+    cwd,
+  }, mediaCaptureEnabled ? dbManager.getMediaStore() : undefined);
+  const cleanedToolInput = media.toolInput !== undefined
+    ? stripMemoryTags(JSON.stringify(media.toolInput))
     : '{}';
-  const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
+  const cleanedToolResponse = media.toolResponse !== undefined
+    ? stripMemoryTags(JSON.stringify(media.toolResponse))
     : '{}';
 
   // Dual-write: the durable `tool_uses` side index (v51) alongside — never
@@ -266,6 +287,8 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
+    ...(media.refs.length ? { mediaRefs: media.refs, mediaEventKey: media.eventKey } : {}),
+    ...(media.failures.length ? { mediaFailures: media.failures } : {}),
   });
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');

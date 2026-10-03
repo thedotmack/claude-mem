@@ -133,6 +133,7 @@ import { SyncClient } from './sync/SyncClient.js';
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
+import { MediaRoutes } from './worker/http/routes/MediaRoutes.js';
 import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
@@ -472,6 +473,7 @@ export class WorkerService implements WorkerRef {
       sessionRoutes.ensureGeneratorRunning(sessionDbId, source),
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
+    this.server.registerRoutes(new MediaRoutes(() => this.dbManager.getMediaStore()));
     this.server.registerRoutes(new AdvisorRoutes(this.dbManager));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());

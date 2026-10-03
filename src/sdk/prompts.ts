@@ -2,6 +2,13 @@
 import { logger } from '../utils/logger.js';
 import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../utils/redaction.js';
 import type { ModeConfig } from '../services/domain/types.js';
+import {
+  anthropicImageSourceOf,
+  claudeReadImageFileOf,
+  declaredReadImageMimeType,
+  isMcpInlineImageBlock,
+  openAiImageUrlOf,
+} from '../shared/native-image-shapes.js';
 
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
 
@@ -168,10 +175,14 @@ function isElided(container: Record<string, unknown>): boolean {
   return typeof container.elided === 'string';
 }
 
-function elideImageSource(source: Record<string, unknown>, dataKey: string = 'data'): Record<string, unknown> {
+function elideImageSource(
+  source: Record<string, unknown>,
+  dataKey: string = 'data',
+  declaredMimeType: string | undefined = typeof source.media_type === 'string' ? source.media_type : undefined,
+): Record<string, unknown> {
   const data = source[dataKey];
   const elided: Record<string, unknown> = { elided: 'image data withheld from the observer' };
-  if (typeof source.media_type === 'string') elided.media_type = source.media_type;
+  if (declaredMimeType) elided.media_type = declaredMimeType;
   if (typeof data === 'string') elided.bytes = data.length;
   return elided;
 }
@@ -240,9 +251,8 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
   // Anthropic content block: { type: 'image', source: { data: '<base64>' } }.
   // A url-backed source is the same case as OpenAI's plain http URL — short,
   // and it carries signal — so only an inlined payload is removed.
-  const source = record.source;
-  if (record.type === 'image' && source !== null && typeof source === 'object') {
-    const record_source = source as Record<string, unknown>;
+  const record_source = anthropicImageSourceOf(record);
+  if (record_source) {
     if (isElided(record_source)) return value;
     const url = record_source.url;
     if (typeof url === 'string' && !isDataUrl(url)) {
@@ -252,32 +262,31 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
   }
 
   // Claude Code's Read returns an image file as
-  // { type: 'image', file: { base64: '<base64>' } } — no `source`, so the
-  // block above never matched it and a video frame or screenshot read off
-  // disk went to the model whole (#3606).
-  const file = record.file;
-  if (record.type === 'image' && file !== null && typeof file === 'object') {
-    const record_file = file as Record<string, unknown>;
+  // { type: 'image', file: { base64: '<base64>', type: 'image/png', ... } } —
+  // no `source`, so the block above never matched it and a video frame or
+  // screenshot read off disk went to the model whole (#3606).
+  const record_file = claudeReadImageFileOf(record);
+  if (record_file) {
     if (isElided(record_file)) return value;
     if (typeof record_file.base64 === 'string') {
-      return { type: 'image', file: elideImageSource(record_file, 'base64') };
+      return { type: 'image', file: elideImageSource(record_file, 'base64', declaredReadImageMimeType(record_file)) };
     }
   }
 
   // MCP tool result: { type: 'image', data: '<base64>', mimeType } — the bytes
   // sit on the block itself, so neither branch above matched it and a
   // browser-automation screenshot went to the condense pass whole.
-  if (record.type === 'image' && typeof record.data === 'string') {
+  if (isMcpInlineImageBlock(record)) {
     const elided: Record<string, unknown> = { type: 'image', ...elideImageSource(record) };
     if (typeof record.mimeType === 'string') elided.mimeType = record.mimeType;
     return elided;
   }
 
   // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
-  const imageUrl = record.image_url;
-  if (record.type === 'image_url' && imageUrl !== null && typeof imageUrl === 'object') {
-    if (isElided(imageUrl as Record<string, unknown>)) return value;
-    const url = (imageUrl as Record<string, unknown>).url;
+  const imageUrl = openAiImageUrlOf(record);
+  if (imageUrl) {
+    if (isElided(imageUrl)) return value;
+    const url = imageUrl.url;
     // A plain http(s) URL is short and can carry signal; only a data: URL is
     // the inlined payload this exists to remove.
     if (typeof url === 'string' && isDataUrl(url)) {

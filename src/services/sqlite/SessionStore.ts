@@ -40,6 +40,7 @@ import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
+import { ensureMediaSchema } from './media.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
   assertCanonicalDecimal,
@@ -266,6 +267,7 @@ export class SessionStore {
     this.ensureAdvisorCallsTable();
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
+    ensureMediaSchema(this.db);
   }
 
   private getIndexColumns(indexName: string): string[] {

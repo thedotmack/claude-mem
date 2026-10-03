@@ -654,7 +654,9 @@ async function buildHooks() {
       // any zod usage in the processor.ts import chain should resolve at runtime
       // against plugin/node_modules instead of being inlined (avoids duplicate-
       // instance hazards and keeps the bundle slim).
-      external: ['bun:sqlite', 'zod'],
+      // processor.ts reaches ingestObservation's lazy media converter; keep
+      // the native decoder external exactly as the worker bundle does.
+      external: ['sharp', 'bun:sqlite', 'zod'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
         ...DIRNAME_DEFINE
