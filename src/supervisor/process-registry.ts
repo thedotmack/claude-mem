@@ -107,6 +107,22 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   return match;
 }
 
+export function verifyWorkerPidFileOwnership(info: PidInfo | null): info is PidInfo {
+  if (!verifyPidFileOwnership(info)) return false;
+  if (info.startToken || process.platform !== 'linux') return true;
+
+  try {
+    const commandLine = readFileSync(`/proc/${info.pid}/cmdline`, 'utf-8');
+    return commandLine.split('\0').some(argument => path.basename(argument) === 'worker-service.cjs');
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Unable to verify legacy worker PID command line', {
+      pid: info.pid,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return false;
+  }
+}
+
 /**
  * The verified-owner PID info from the worker PID file, or null when the file
  * is missing, unparseable, or names a process that is not a live claude-mem
@@ -123,7 +139,7 @@ export function readOwnedWorkerPidInfo(pidFilePath: string = paths.workerPid()):
   } catch {
     return null;
   }
-  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
+  return pidInfo !== null && verifyWorkerPidFileOwnership(pidInfo) ? pidInfo : null;
 }
 
 export class ProcessRegistry {
