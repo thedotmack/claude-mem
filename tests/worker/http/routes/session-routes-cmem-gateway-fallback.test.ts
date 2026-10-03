@@ -163,6 +163,7 @@ const ENV_KEYS = [
   'CMEM_PRO_ORIGIN',
   'OPENROUTER_BASE_URL',
   'CLAUDE_MEM_LLM_TIMEOUT_MS',
+  'CLAUDE_MEM_OBSERVE_BARE_PROMPTS',
 ] as const;
 
 const mockMode = {
@@ -350,6 +351,8 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
+    // Every run here settles on the generator's separate init request.
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'true';
     savedSettings = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null;
     savedHealth = existsSync(healthPath) ? readFileSync(healthPath, 'utf-8') : null;
     rmSync(healthPath, { force: true });

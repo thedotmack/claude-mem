@@ -83,13 +83,17 @@ class TestProvider extends OpenAICompatibleProvider<{ apiKey: string; model: str
   }
 }
 
+// The init prompt is a request of its own only with CLAUDE_MEM_OBSERVE_BARE_PROMPTS=true.
 describe('OpenAICompatibleProvider init response', () => {
   let modeManagerSpy: ReturnType<typeof spyOn>;
   let storeObservations: ReturnType<typeof mock>;
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
+  let previousObserveBarePrompts: string | undefined;
 
   beforeEach(() => {
+    previousObserveBarePrompts = process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'true';
     modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
       loadMode: () => {},
@@ -122,6 +126,8 @@ describe('OpenAICompatibleProvider init response', () => {
   });
 
   afterEach(() => {
+    if (previousObserveBarePrompts === undefined) delete process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+    else process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = previousObserveBarePrompts;
     modeManagerSpy.mockRestore();
     mock.restore();
   });
