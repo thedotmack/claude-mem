@@ -5,7 +5,7 @@ import type { Database } from 'bun:sqlite';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
-import { CreateMemoryItemSchema } from '../../../core/schemas/memory-item.js';
+import { CreateMemoryItemSchema, UpdateMemoryItemSchema } from '../../../core/schemas/memory-item.js';
 import { CreateProjectSchema } from '../../../core/schemas/project.js';
 import { CreateServerSessionSchema } from '../../../core/schemas/session.js';
 import {
@@ -211,7 +211,7 @@ export class ServerV1Routes implements RouteHandler {
       res.json({ memory });
     });
 
-    app.patch('/v1/memories/:id', writeAuth, this.handleCreate(CreateMemoryItemSchema.partial(), (req, res, body) => {
+    app.patch('/v1/memories/:id', writeAuth, this.handleCreate(UpdateMemoryItemSchema, (req, res, body) => {
       const id = this.routeParam(req.params.id);
       const repo = new MemoryItemsRepository(this.options.getDatabase());
       const existing = repo.getById(id);
