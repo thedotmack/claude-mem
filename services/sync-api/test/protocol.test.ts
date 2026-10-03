@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import postgres from "postgres";
 import { incrementCanonicalDecimal } from "../src/canonical-content";
 import { MAX_DEVICES_PER_USER } from "../src/store";
-import { authHeaders, observationOp, trackedApp, uniqueUser } from "./helpers";
+import { authHeaders, DEFAULT_DATABASE_URL, observationOp, trackedApp, uniqueUser } from "./helpers";
 
 describe("protocol v2 hub", () => {
 	it("starts a new user on a fresh epoch with an empty log", async () => {
@@ -68,6 +69,17 @@ describe("protocol v2 hub", () => {
 		expect(page.head_seq).toBe("1");
 		expect(page.more).toBe(false);
 	});
+
+	it("answers a GET held past Bun's 10s default idle timeout by the per-user lock", async () => {
+		const { app } = await trackedApp();
+		const userId = uniqueUser();
+		const lockHolder = postgres(DEFAULT_DATABASE_URL, { max: 1 });
+		await lockHolder`SELECT pg_advisory_lock(hashtextextended(${userId}, 0))`;
+		// Ending the session releases the lock, like a slow request finishing.
+		setTimeout(() => { void lockHolder.end(); }, 12_000);
+		const status = await fetch(`${app.url}/v1/sync/status`, { headers: authHeaders(userId) });
+		expect(status.status).toBe(200);
+	}, 30_000);
 
 	it("refuses a stale revision and a same-rev hash conflict", async () => {
 		const { app } = await trackedApp();
