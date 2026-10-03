@@ -61,6 +61,22 @@ describe('XML character references at the observer boundary', () => {
     const skip = parseAgentXml('<skip_summary reason="Already &quot;done&quot; &amp;lt;literal&amp;gt;"/>');
     expect(skip.valid && skip.summary?.skip_reason).toBe('Already "done" &lt;literal&gt;');
   });
+  it('rejects summaries whose decoded content is only whitespace', () => {
+    for (const field of ['request', 'investigated', 'learned', 'completed', 'next_steps']) {
+      for (const whitespace of ['&#32;', '&#x20;', '&#9;&#10;&#13;', ' &#32;\n&#x20; ']) {
+        const result = parseAgentXml(`<summary><${field}>${whitespace}</${field}></summary>`);
+        expect(result.valid).toBe(false);
+      }
+    }
+  });
+  it('preserves encoded whitespace around meaningful summary content', () => {
+    const result = parseAgentXml('<summary><request>&#32;Fix the bug&#32;</request><learned>&#9;&#10;</learned></summary>');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.summary?.request).toBe(' Fix the bug ');
+      expect(result.summary?.learned).toBeNull();
+    }
+  });
   it('retains ordinary unescaped values and undeclared names as before', () => {
     const state = ModeManager.getInstance() as unknown as { activeMode: unknown; activeModeId: unknown };
     const previousMode = state.activeMode;

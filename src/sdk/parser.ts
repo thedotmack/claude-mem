@@ -276,7 +276,7 @@ function extractField(content: string, fieldName: string): string | null {
   if (!match) return null;
 
   const trimmed = decodeXmlReferences(match[1].trim());
-  return trimmed === '' ? null : trimmed;
+  return trimmed.trim() === '' ? null : trimmed;
 }
 
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
