@@ -16,6 +16,11 @@ export interface ContextInput {
    * itself must opt out (#4221).
    */
   includeHealthWarning?: boolean;
+  /**
+   * Characters delivered beside this block (the work-state section), taken off
+   * the 10K delivery limit so the combined output still fits it.
+   */
+  reserveChars?: number;
   [key: string]: any;
 }
 

@@ -13,6 +13,7 @@ import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
+import { buildWorkStateContextSection } from '../../../context/sections/WorkStateRenderer.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -332,6 +333,16 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
+    // The agent's open to-do lists and working state lead every answer this
+    // route gives a session, the welcome hint included; memory is fitted to
+    // what that leaves of the 10K delivery limit. The terminal preview is for
+    // the human and goes without it.
+    const workStateSection = forHuman
+      ? ''
+      : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), Date.now());
+    const withWorkState = (text: string): string =>
+      workStateSection && text ? `${workStateSection}\n\n${text}` : workStateSection || text;
+
     const settings = this.getCachedSettings();
     // Env always wins over cached settings (mirrors SettingsDefaultsManager
     // applyEnvOverrides semantics). Reading process.env is free, so honoring it
@@ -353,7 +364,7 @@ export class SearchRoutes extends BaseRouteHandler {
         // A project with zero observations is exactly where a failing observer
         // hides: without this the health warning (applied inside
         // generateContextWithStats) never reached the user this early-return serves.
-        res.send(withObserverHealthWarning(hintBody, forHuman));
+        res.send(withWorkState(withObserverHealthWarning(hintBody, forHuman)));
         return;
       }
     }
@@ -377,7 +388,8 @@ export class SearchRoutes extends BaseRouteHandler {
       cwd: cwd,
       projects: projects,
       ...(platformSource ? { platformSource } : {}),
-      full
+      full,
+      reserveChars: workStateSection ? workStateSection.length + 2 : 0,
     };
     let contextResult: Awaited<ReturnType<typeof generateContextWithStats>>;
     try {
@@ -410,7 +422,7 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(contextResult.text);
+    res.send(withWorkState(contextResult.text));
   });
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

@@ -466,7 +466,7 @@ export function renderContextFromRows(
     healthWarningForContext(input),
     (items, cfg) =>
       buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, false).text,
-    input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT,
+    input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT - (input?.reserveChars ?? 0),
     Boolean(input?.full),
     forHuman ? (items, cfg) =>
       buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, true) : undefined
