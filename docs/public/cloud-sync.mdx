@@ -81,21 +81,18 @@ starts from zero) catches up the same way an active one stays current:
   the same paths native writes use, and are stamped so they can never be
   echoed back up.
 
-## The speed layer (optional WebSocket)
+## Live updates (optional)
 
-When enabled (the default), the worker also holds one WebSocket to the hub and
-receives new ops the moment another device pushes them — multi-device
-convergence in well under a second instead of a poll interval. The socket is
-strictly **advisory**: any anomaly (a gap, a parse error, a dropped
-connection) simply closes it and runs one HTTP pull, which is always correct.
-Set `CLAUDE_MEM_CLOUD_SYNC_WS` to `false` to turn it off — sync stays fully
-correct at poll latency.
-
-The hub can also ask every client to fall back to polling by stamping
-responses with an `X-Sync-Mode: poll` header (an operational brake on the
-server side). Clients close their sockets and keep syncing over HTTP —
-degraded means *slower*, never *stopped* — and resume the socket automatically
-when the header disappears.
+When enabled (the default), the worker also subscribes to a private Realtime
+channel for your account. When another device pushes, the server broadcasts a
+tiny "the log moved forward" signal and this device pulls right away —
+multi-device convergence in about a second instead of a poll interval. The
+channel is strictly **advisory**: it never carries your data, and any anomaly
+(a dropped connection, a missed heartbeat, a malformed signal) simply closes it
+and falls back to an HTTP pull, which is always correct. Set
+`CLAUDE_MEM_CLOUD_SYNC_WS` to `false` to turn live updates off — sync stays
+fully correct at poll latency. If the sync server does not offer live updates,
+the worker stays on polling and checks again hourly.
 
 ## Requirements and setup
 
@@ -124,7 +121,7 @@ session transcript. For CI or a remote box, see
 | `CLAUDE_MEM_CLOUD_SYNC_TOKEN` | `''` | Your cmem.ai sync token (from **cmem.ai → Connect**). Sent as `Authorization: Bearer`. |
 | `CLAUDE_MEM_CLOUD_SYNC_USER_ID` | `''` | Your cmem.ai user id (from **cmem.ai → Connect**). All your devices share it — it names your hub log. |
 | `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` | `''` | Sync hub base URL. **Empty = sync off.** |
-| `CLAUDE_MEM_CLOUD_SYNC_WS` | `'true'` | Advisory WebSocket speed layer. `'false'` = HTTP polling only; sync stays fully correct at poll latency. |
+| `CLAUDE_MEM_CLOUD_SYNC_WS` | `'true'` | Live updates over Realtime. `'false'` disables live updates (HTTP polling only); sync stays fully correct at poll latency. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` | `''` | Stable identity of this machine. A fresh UUID is minted and persisted on first start. Don't edit it: every row is attributed to its origin device. |
 | `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | machine hostname | Human-readable label for this device. |
 | `CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE` | `'40'` | Ops per content flush page. 200-op pages timed out at 30s under hub `projection_busy`. Max 500. |

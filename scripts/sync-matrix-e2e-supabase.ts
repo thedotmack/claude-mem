@@ -194,7 +194,8 @@ function createClient(device: Device): SyncClient {
     backoffInitialMs: 100,
     backoffMaxMs: 1_000,
     minPullGapMs: 0,
-    // Left on as in production: the function's X-Sync-Mode: poll must turn it off.
+    // Left on as in production: X-Sync-Mode: poll must NOT turn it off; live
+    // updates are governed by realtime-token availability (404 ⇒ polling).
     wsEnabled: true,
     wsPingIntervalMs: 5_000,
     wsBackoffBaseMs: 50,
@@ -313,9 +314,11 @@ async function runMatrix(): Promise<void> {
   const tempDirs = new Set([a.dir, b.dir]);
   try {
     await waitFor(() => a.apply.getEpoch() === fresh.epoch && b.apply.getEpoch() === fresh.epoch, 'initial epoch adoption');
-    await waitFor(() => a.client.isPollModeOnly() && b.client.isPollModeOnly(), 'both clients honor X-Sync-Mode: poll');
+    // Until the function serves /v1/sync/realtime-token (Phase 11 server
+    // side) it answers 404 there, which keeps both clients on HTTP polling.
+    await waitFor(() => a.client.isPollModeOnly() && b.client.isPollModeOnly(), 'both clients fall back to polling (no realtime-token)');
     check(!a.client.isSocketLive() && !b.client.isSocketLive(),
-      'both real clients drop the advisory WebSocket and stay on HTTP (protocol v2 poll mode)');
+      'both real clients stay on HTTP when the server offers no Realtime');
 
     console.log('\nScenario: canonical content plus set_title and set_prompt_session');
     const sessionA = a.store.createSDKSession(
@@ -385,7 +388,7 @@ async function runMatrix(): Promise<void> {
     });
     b.client.start();
     await pullToHead(b);
-    await waitFor(() => b.client.isPollModeOnly(), 'B honors poll mode after restart');
+    await waitFor(() => b.client.isPollModeOnly(), 'B falls back to polling after restart');
     check(!b.client.isSocketLive(), 'restarted client stays in poll mode');
 
     console.log('\nScenario: concurrent two-client writes');

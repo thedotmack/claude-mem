@@ -6,8 +6,10 @@
  * projection, while services/sync-api starts the protocol-v2 hub on an
  * ephemeral loopback port against local Postgres. Every client fetch is
  * guarded as loopback-only. Exactly two real client stacks (SessionStore +
- * CloudSync + SyncApply + SyncClient) exercise both the advisory WebSocket
- * and authoritative HTTP lanes.
+ * CloudSync + SyncApply + SyncClient) exercise the authoritative HTTP lane.
+ * services/sync-api has no Supabase Realtime (POST /v1/sync/realtime-token
+ * answers 404), so the clients — live updates left enabled as in production —
+ * must fall back to HTTP polling and stay correct there.
  */
 
 import { mkdtempSync, rmSync } from 'fs';
@@ -511,9 +513,10 @@ async function runMatrix(sidecar: SidecarState): Promise<void> {
   let b = openDevice('b');
   const tempDirs = new Set([a.dir, b.dir]);
   try {
-    await waitFor(() => a.client.isSocketLive() && b.client.isSocketLive(), 'both advisory sockets');
     await waitFor(() => a.apply.getEpoch() === fresh.epoch && b.apply.getEpoch() === fresh.epoch, 'initial epoch adoption');
-    check(true, 'both real clients connect their advisory WebSockets');
+    await waitFor(() => a.client.isPollModeOnly() && b.client.isPollModeOnly(), 'both clients fall back to polling (no realtime-token)');
+    check(!a.client.isSocketLive() && !b.client.isSocketLive(),
+      'both real clients stay on HTTP when the server offers no Realtime');
 
     console.log('\nScenario: canonical content plus set_title and set_prompt_session');
     const sessionA = a.store.createSDKSession(
@@ -557,23 +560,7 @@ async function runMatrix(sidecar: SidecarState): Promise<void> {
     check(count(b, "SELECT COUNT(*) AS n FROM session_summaries WHERE origin_device_id = ?", DEVICE_IDS.a) === 1,
       'summary content replicates through canonical protocol v2');
 
-    console.log('\nScenario: WebSocket hint path and authoritative HTTP path');
-    await Bun.sleep(100);
-    b.gate.pullRequests = 0;
-    a.store.storeObservation(
-      'memory-baseline-a',
-      'project-baseline',
-      observation('websocket-only-observation', 'delivered by advisory frame'),
-      2,
-      0,
-    );
-    await a.cloudSync.flush();
-    await waitFor(
-      () => count(b, "SELECT COUNT(*) AS n FROM observations WHERE title = 'websocket-only-observation'") === 1,
-      'WebSocket delivery to B',
-    );
-    check(b.gate.pullRequests === 0, 'advisory WebSocket applies a contiguous frame without an HTTP pull', b.gate);
-
+    console.log('\nScenario: authoritative HTTP path (no advisory lane)');
     replaceClient(b, false, false);
     b.gate.pullRequests = 0;
     a.store.storeObservation(
@@ -602,8 +589,9 @@ async function runMatrix(sidecar: SidecarState): Promise<void> {
       after: b.apply.getCursor(),
     });
     b.client.start();
-    await waitFor(() => b.client.isSocketLive(), 'B WebSocket after restart');
-    check(true, 'restarted client reconnects the advisory lane');
+    await pullToHead(b);
+    await waitFor(() => b.client.isPollModeOnly(), 'B falls back to polling after restart');
+    check(!b.client.isSocketLive(), 'restarted client stays in poll mode');
 
     console.log('\nScenario: concurrent two-client writes');
     const sessionConcurrentA = a.store.createSDKSession('content-concurrent-a', 'project-concurrent', 'A concurrent');
