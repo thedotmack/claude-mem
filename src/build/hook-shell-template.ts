@@ -10,6 +10,10 @@
  * Some host versions / cache rotations do NOT inject `CLAUDE_PLUGIN_ROOT`, so
  * the fallback chain is load-bearing (issues #1215, #1533).
  *
+ * Claude Code runtime hooks in `plugin/hooks/hooks.json` no longer use this
+ * prelude: they are exec form (`buildExecHook`, no shell). Only the Setup
+ * entry there still uses `buildShellCommand`.
+ *
  * This module emits those command strings from ONE place so the shape can't
  * drift between the three files. `tests/infrastructure/plugin-distribution.test.ts`
  * asserts the hand-maintained files match the generator output byte-for-byte.
@@ -21,7 +25,7 @@
  *   4. $_C/plugins/marketplaces/thedotmack/plugin (marketplace install)
  */
 
-export type ShellTemplateHost = 'claude-code' | 'claude-code-setup' | 'codex-cli' | 'mcp';
+export type ShellTemplateHost = 'claude-code-setup' | 'codex-cli' | 'mcp';
 
 export interface ShellTemplateOptions {
   /** Host whose spawn contract / PATH prelude applies. */
@@ -44,8 +48,6 @@ export interface ShellTemplateOptions {
   trailingJson?: object;
   /** stderr message when no candidate root resolves. */
   notFoundMessage: string;
-  /** Runtime hooks that observe memory should degrade to no-memory, not block the host prompt. */
-  failOpen?: boolean;
   /**
    * MCP-only: extra candidate roots enumerated before the cache directories
    * (e.g. '$PWD/plugin', '$PWD'). Ignored for non-mcp hosts.
@@ -73,7 +75,6 @@ const CODEX_CLI_PATH_PRELUDE =
 
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
-    case 'claude-code':
     case 'claude-code-setup':
       return CLAUDE_CODE_HOOK_PATH_PRELUDE;
     case 'codex-cli':
@@ -177,11 +178,8 @@ function candidateBlock(options: ShellTemplateOptions): string {
 
 const CYGPATH_CLAUSE =
   `command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w "$_P" 2>/dev/null); [ -n "$_W" ] && _P="$_W"; };`;
-const FAIL_OPEN_EXIT_STATUS_VAR = '_S';
-const FAIL_OPEN_COMMAND_MESSAGE = 'claude-mem: hook command failed';
-/** Fail-open hooks degrade to no-memory; fail-loud hooks surface the failure to the host. */
-const FAIL_OPEN_EXIT_CODE = '0';
-const FAIL_LOUD_EXIT_CODE = '1';
+/** Shell hosts that cannot resolve a root surface the failure to the host. */
+const NOT_FOUND_EXIT_CODE = '1';
 
 /**
  * Translate a shell-token candidate (`$PWD`, `$PWD/x`, `$HOME/x`, `$_C/x`) into
@@ -332,10 +330,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push('_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";');
   parts.push('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";');
   parts.push(candidateBlock(options));
-  const notFoundExitCode = options.failOpen ? FAIL_OPEN_EXIT_CODE : FAIL_LOUD_EXIT_CODE;
-  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit ${notFoundExitCode}; };`);
+  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit ${NOT_FOUND_EXIT_CODE}; };`);
 
-  // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
+  // cygpath conversion: claude-code-setup + codex-cli. MCP returned early above (it
   // uses the Node launcher), so every host reaching here needs the clause.
   parts.push(CYGPATH_CLAUSE);
 
@@ -354,10 +351,37 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   if (options.trailingJson) {
     command += `; echo '${JSON.stringify(options.trailingJson)}'`;
   }
-  if (options.failOpen) {
-    command = `{ ${command}; } || { ${FAIL_OPEN_EXIT_STATUS_VAR}=$?; echo "${FAIL_OPEN_COMMAND_MESSAGE} (exit $${FAIL_OPEN_EXIT_STATUS_VAR})" >&2; exit ${FAIL_OPEN_EXIT_CODE}; }`;
-  }
   parts.push(command);
 
   return parts.join(' ');
+}
+
+/**
+ * Shell-free Claude Code hook entry (plan-17 #3605). With `args` present,
+ * Claude Code resolves `command` on PATH and spawns it directly, so there is
+ * no bash, no PATH prelude and no console window on Windows
+ * (https://code.claude.com/docs/en/hooks#core-fields). The on-PATH
+ * `claude-mem` launcher (src/launcher/claude-mem-launcher.ts) resolves the
+ * plugin root itself and passes `args` through to `worker-service.cjs`.
+ */
+export interface ExecHookCommand {
+  command: string;
+  args: string[];
+}
+
+export const CLAUDE_MEM_LAUNCHER_COMMAND = 'claude-mem';
+
+/** `claude-mem <workerServiceArguments…>` → `worker-service.cjs <workerServiceArguments…>`. */
+export function buildExecHook(workerServiceArguments: string[]): ExecHookCommand {
+  return { command: CLAUDE_MEM_LAUNCHER_COMMAND, args: [...workerServiceArguments] };
+}
+
+/**
+ * The single non-`claude-mem` runtime entry: the SessionStart self-heal that
+ * compiles the launcher onto PATH when it is missing or stale (SPIKE
+ * Decision 1). `node` is spawned directly; `${CLAUDE_PLUGIN_ROOT}` is
+ * substituted by Claude Code in `args`.
+ */
+export function buildEnsureLauncherExecHook(): ExecHookCommand {
+  return { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs'] };
 }

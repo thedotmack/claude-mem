@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import vm from 'node:vm';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
 import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
@@ -108,7 +109,9 @@ const ENSURE_LAUNCHER = {
 
 /**
  * Rule A canonical-template manifest: maps each host-managed config file's
- * command string to the buildShellCommand() options that generate it. The
+ * command string to the buildShellCommand() options that generate it, and each
+ * Claude Code runtime hook in plugin/hooks/hooks.json to its full exec-form
+ * entry (buildExecHook; `execEntries`). The
  * build asserts the hand-maintained files still match the generator output so
  * the defensive shell prelude can't drift between the three files (issues
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
@@ -119,13 +122,26 @@ const ENSURE_LAUNCHER = {
 // CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS allows up to 14 s) plus hook startup (#3434).
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
 
-function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
+// SessionStart self-heal timeout (seconds). ensure-launcher.cjs may run the
+// launcher --version probe (10 s), `bun build --compile` (120 s) and the
+// Windows PowerShell user-PATH write (30 s) back to back
+// (src/launcher/install-launcher.ts), so the host timeout covers all three.
+const ENSURE_LAUNCHER_HOOK_TIMEOUT_SECONDS = 180;
+
+// The only shell-form entry allowed in plugin/hooks/hooks.json. Setup fires
+// only on `claude --init` / `--maintenance` (SPIKE item 8), never at runtime.
+const SHELL_FORM_HOOK_EVENTS = new Set(['Setup']);
+
+function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
-  const claudeHook = (tail, extra = {}) => buildShellCommand({
-    host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', failOpen: true, ...extra,
+  // Claude Code runtime hooks are exec form (plan-17 #3605): the full entry
+  // is canonical, so `--write-shell-templates` can (re)generate it and the
+  // verifier rejects any hand edit, including a re-added `shell` key.
+  const claudeExecHook = (workerServiceArguments, entryOptions, groupMatcher) => ({
+    groupMatcher,
+    entry: { type: 'command', ...buildExecHook(workerServiceArguments), ...entryOptions },
   });
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
@@ -146,22 +162,26 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
+      },
+      execEntries: {
         // `start` already emits its own single, valid status JSON via
         // buildStatusOutput ({"continue":true,"status":"ready","suppressOutput":true}).
-        // Appending a trailingJson echo would print a SECOND JSON object on
-        // stdout — two concatenated documents are invalid JSON, so Claude Code
-        // fails to parse them, ignores suppressOutput, and dumps the raw text at
-        // the top of every session. Let `start` speak for itself.
-        'SessionStart.0.0': claudeHook(['start']),
-        'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
-        'UserPromptSubmit.0.0': {
-          command: claudeHook(['hook', 'claude-code', 'session-init']),
-          timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
+        // Never append a second stdout document to it: two concatenated JSON
+        // objects are invalid, so Claude Code would dump the raw text at the top
+        // of every session.
+        'SessionStart.0.0': claudeExecHook(['start'], { timeout: 60, async: true }, 'startup|resume|clear|compact'),
+        'SessionStart.0.1': claudeExecHook(['hook', 'claude-code', 'context'], { timeout: 60 }, 'startup|resume|clear|compact'),
+        // Self-heal for marketplace-only installs (SPIKE Decision 1): compile the
+        // launcher onto PATH when it is missing or stale. `startup` only.
+        'SessionStart.1.0': {
+          groupMatcher: 'startup',
+          entry: { type: 'command', ...buildEnsureLauncherExecHook(), timeout: ENSURE_LAUNCHER_HOOK_TIMEOUT_SECONDS, async: true },
         },
-        'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
-        'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
-        'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
-        'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
+        'UserPromptSubmit.0.0': claudeExecHook(['hook', 'claude-code', 'session-init'], { timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS }),
+        'PostToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'observation'], { timeout: 120, async: true }, '*'),
+        'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: 60, async: true }, 'Read'),
+        'Stop.0.0': claudeExecHook(['hook', 'claude-code', 'summarize'], { timeout: 120, async: true }),
+        'SessionEnd.0.0': claudeExecHook(['hook', 'claude-code', 'session-end'], { async: true }),
       },
     },
     'plugin/hooks/codex-hooks.json': {
@@ -196,6 +216,82 @@ function hookEntryByPath(parsed, dottedPath) {
   return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)] ?? null;
 }
 
+/**
+ * Compare one exec-form hook entry (and its group matcher) against the
+ * manifest. In write mode a mismatching entry is replaced with the canonical
+ * one, and a missing group/entry is created at exactly the next index.
+ * Returns true when the parsed file was modified.
+ */
+function applyCanonicalExecEntry(parsed, dottedPath, expected, filePath, writeMode) {
+  const [event, groupIndexText, hookIndexText] = dottedPath.split('.');
+  const groupIndex = Number(groupIndexText);
+  const hookIndex = Number(hookIndexText);
+  const groups = parsed.hooks?.[event] ?? null;
+  const group = groups?.[groupIndex] ?? null;
+  const entry = group?.hooks?.[hookIndex] ?? null;
+  const matcherMatches = group !== null && group.matcher === expected.groupMatcher;
+  if (entry !== null && matcherMatches && isDeepStrictEqual(entry, expected.entry)) return false;
+
+  if (!writeMode) {
+    throw new Error(
+      `Hand-edited hook entry detected in ${filePath} (${dottedPath}). It no longer matches the exec-form manifest in scripts/build-hooks.js. ` +
+      `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+    );
+  }
+  parsed.hooks ??= {};
+  parsed.hooks[event] ??= [];
+  const eventGroups = parsed.hooks[event];
+  if (!eventGroups[groupIndex]) {
+    if (groupIndex !== eventGroups.length) {
+      throw new Error(`Cannot create ${filePath} (${dottedPath}): group ${groupIndex} is not the next group of ${event}.`);
+    }
+    eventGroups.push(expected.groupMatcher === undefined ? { hooks: [] } : { matcher: expected.groupMatcher, hooks: [] });
+  }
+  const targetGroup = eventGroups[groupIndex];
+  if (targetGroup.matcher !== expected.groupMatcher) {
+    if (expected.groupMatcher === undefined) delete targetGroup.matcher;
+    else targetGroup.matcher = expected.groupMatcher;
+  }
+  targetGroup.hooks ??= [];
+  if (!targetGroup.hooks[hookIndex] && hookIndex !== targetGroup.hooks.length) {
+    throw new Error(`Cannot create ${filePath} (${dottedPath}): hook ${hookIndex} is not the next hook of ${event}[${groupIndex}].`);
+  }
+  targetGroup.hooks[hookIndex] = structuredClone(expected.entry);
+  return true;
+}
+
+/**
+ * Rule A for Claude Code runtime hooks (plan-17 #3605): every entry outside
+ * Setup must be shell-free exec form. A `shell` key, a missing `args` array, or
+ * any command other than the on-PATH `claude-mem` launcher (or the single
+ * `node …/ensure-launcher.cjs` self-heal) brings back the bash preamble and the
+ * Windows console flash (#3559, #3521, #3396).
+ */
+function verifyClaudeCodeRuntimeHooksAreExecForm(parsed, execEntries, filePath) {
+  const ensureLauncherEntries = Object.values(execEntries)
+    .map(({ entry }) => entry)
+    .filter((entry) => entry.command === 'node');
+  for (const [event, groups] of Object.entries(parsed.hooks ?? {})) {
+    if (SHELL_FORM_HOOK_EVENTS.has(event)) continue;
+    groups.forEach((group, groupIndex) => {
+      (group.hooks ?? []).forEach((entry, hookIndex) => {
+        const location = `${event}.${groupIndex}.${hookIndex}`;
+        const hasShell = Object.prototype.hasOwnProperty.call(entry, 'shell');
+        const hasArgs = Array.isArray(entry.args);
+        const isLauncher = entry.command === 'claude-mem';
+        const isEnsureLauncher = entry.command === 'node' && ensureLauncherEntries
+          .some((ensureEntry) => isDeepStrictEqual(entry.args, ensureEntry.args));
+        if (hasShell || !hasArgs || !(isLauncher || isEnsureLauncher)) {
+          throw new Error(
+            `Claude Code runtime hook must be exec form (command+args, no shell): ${filePath} (${location}) has ` +
+            `${hasShell ? `shell=${JSON.stringify(entry.shell)}` : hasArgs ? `command=${JSON.stringify(entry.command)}` : 'no args array'}.`
+          );
+        }
+      });
+    });
+  }
+}
+
 async function verifyShellTemplateCanonical() {
   console.log('\n📋 Verifying Rule A shell templates match the canonical generator...');
 
@@ -212,9 +308,9 @@ async function verifyShellTemplateCanonical() {
   });
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
-  const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
+  const { buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook } = await import(dataUrl);
 
-  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
+  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook);
 
   // The regeneration mode the mismatch errors point at: after an intentional
   // generator change, rewrite the committed launcher strings from the same
@@ -276,6 +372,12 @@ async function verifyShellTemplateCanonical() {
           dirty = true;
         }
       }
+    }
+    if (spec.execEntries) {
+      for (const [dottedPath, expected] of Object.entries(spec.execEntries)) {
+        if (applyCanonicalExecEntry(parsed, dottedPath, expected, filePath, writeMode)) dirty = true;
+      }
+      verifyClaudeCodeRuntimeHooksAreExecForm(parsed, spec.execEntries, filePath);
     }
     if (dirty) {
       fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2) + '\n');

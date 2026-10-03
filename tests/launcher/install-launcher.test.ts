@@ -480,9 +480,9 @@ describe.skipIf(!isPosixHost)('removeInstalledLauncher (uninstall)', () => {
 });
 
 describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
-  it('warns with the hook error string and the install fix when claude-mem is not on PATH', () => {
+  it('fails (required) with the hook error string and the install fix when claude-mem is not on PATH', () => {
     const row = hookLauncherCheck(posixHost(makeScratchHome()));
-    expect(row).toMatchObject({ name: 'Hook launcher', status: 'warn', required: false });
+    expect(row).toMatchObject({ name: 'Hook launcher', status: 'fail', required: true });
     expect(row.detail).toContain('Executable not found in $PATH: "claude-mem"');
     expect(row.detail).toContain('npx claude-mem install');
   });
@@ -492,7 +492,7 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     const binDirectory = path.join(scratchHome, '.local', 'bin');
     writeFakeLauncher(path.join(binDirectory, 'claude-mem'), String(LAUNCHER_PROTOCOL));
     const row = hookLauncherCheck(posixHost(scratchHome, { PATH: `${binDirectory}:/usr/bin` }));
-    expect(row.status).toBe('ok');
+    expect(row).toMatchObject({ status: 'ok', required: true });
     expect(row.detail).toMatch(new RegExp(`^${path.join(binDirectory, 'claude-mem')} \\(protocol ${LAUNCHER_PROTOCOL}, --version \\d+ ms\\)$`));
   });
 
@@ -501,7 +501,7 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     const binDirectory = path.join(scratchHome, 'npm-global', 'bin');
     writeFakeLauncher(path.join(binDirectory, 'claude-mem'), '13.28.0');
     const row = hookLauncherCheck(posixHost(scratchHome, { PATH: binDirectory }));
-    expect(row.status).toBe('warn');
+    expect(row).toMatchObject({ status: 'fail', required: true });
     expect(row.detail).toContain('is not the claude-mem hook launcher');
   });
 

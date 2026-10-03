@@ -266,7 +266,10 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
  * The "Hook launcher" row: where `claude-mem` resolves on PATH, the protocol it
  * prints, and one timed `--version` round trip. Hooks call `claude-mem` in exec
  * form, so a missing launcher surfaces in Claude Code as
- * `Executable not found in $PATH: "claude-mem"` on every hook. Exported for tests.
+ * `Executable not found in $PATH: "claude-mem"` on every hook. Required: a
+ * missing launcher, or a `claude-mem` on PATH that is not the launcher, fails
+ * doctor. An older protocol only warns, because the SessionStart self-heal
+ * (ensure-launcher.cjs) replaces it on the next startup. Exported for tests.
  */
 export function hookLauncherCheck(host: LauncherHostEnvironment = currentLauncherHostEnvironment()): CheckResult {
   const name = 'Hook launcher';
@@ -276,11 +279,11 @@ export function hookLauncherCheck(host: LauncherHostEnvironment = currentLaunche
     const placedBinaryPath = resolveLauncherBinaryPath(host);
     return {
       name,
-      status: 'warn',
+      status: 'fail',
       detail: existsSync(placedBinaryPath)
         ? `installed at ${placedBinaryPath} but its directory is not on PATH — open a new terminal, or ${reinstallHint}`
         : `claude-mem not on PATH — hooks fail with 'Executable not found in $PATH: "claude-mem"'; ${reinstallHint}`,
-      required: false,
+      required: true,
     };
   }
   const probeStartedAt = performance.now();
@@ -289,9 +292,9 @@ export function hookLauncherCheck(host: LauncherHostEnvironment = currentLaunche
   if (printedProtocol === null) {
     return {
       name,
-      status: 'warn',
+      status: 'fail',
       detail: `${launcherOnPath} is not the claude-mem hook launcher (--version printed no protocol number); ${reinstallHint}`,
-      required: false,
+      required: true,
     };
   }
   if (printedProtocol !== LAUNCHER_PROTOCOL) {
@@ -299,14 +302,14 @@ export function hookLauncherCheck(host: LauncherHostEnvironment = currentLaunche
       name,
       status: 'warn',
       detail: `${launcherOnPath} speaks protocol ${printedProtocol}, expected ${LAUNCHER_PROTOCOL}; ${reinstallHint}`,
-      required: false,
+      required: true,
     };
   }
   return {
     name,
     status: 'ok',
     detail: `${launcherOnPath} (protocol ${printedProtocol}, --version ${roundTripMilliseconds} ms)`,
-    required: false,
+    required: true,
   };
 }
 
