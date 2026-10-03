@@ -193,6 +193,7 @@ import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
+import { ensureLauncherOnPath, ensureLocalBinOnShellPath } from '../../launcher/install-launcher.js';
 
 function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
@@ -584,73 +585,12 @@ async function setupIDEs(selectedIDEs: string[], summary: InstallSummary): Promi
   return summary.failedIDEs;
 }
 
-function detectShellConfigFile(): { path: string; shell: 'zsh' | 'bash' | 'fish' } {
-  const home = homedir();
-  const shellEnv = process.env.SHELL ?? '';
-
-  if (shellEnv.includes('fish')) {
-    return { path: join(home, '.config', 'fish', 'config.fish'), shell: 'fish' };
-  }
-  if (shellEnv.includes('zsh')) {
-    return { path: join(home, '.zshrc'), shell: 'zsh' };
-  }
-  if (process.platform === 'darwin') {
-    const bashProfile = join(home, '.bash_profile');
-    if (existsSync(bashProfile)) return { path: bashProfile, shell: 'bash' };
-  }
-  return { path: join(home, '.bashrc'), shell: 'bash' };
-}
-
 function applyClaudeCodePathSetupIfNeeded(): void {
-  const home = homedir();
-  const claudeBinDir = join(home, '.local', 'bin');
-  const claudeBinary = join(claudeBinDir, 'claude');
-
-  if (!existsSync(claudeBinary)) return;
-
-  const currentPath = process.env.PATH ?? '';
-  const pathEntries = currentPath.split(':');
-  if (pathEntries.includes(claudeBinDir)) return;
-
-  const { path: configFile, shell } = detectShellConfigFile();
-  const binPathLiteral = '$HOME/.local/bin';
-  const exportLine = shell === 'fish'
-    ? `set -gx PATH ${claudeBinDir} $PATH`
-    : `export PATH="${binPathLiteral}:$PATH"`;
-
-  let existing = '';
-  if (existsSync(configFile)) {
-    try {
-      existing = readFileSync(configFile, 'utf-8');
-    } catch (error: unknown) {
-      // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise); a raw console call here would double-print.
-      log.warn(`Could not read ${configFile}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  } else {
-    try {
-      mkdirSync(dirname(configFile), { recursive: true });
-    } catch {
-      // Best-effort directory creation.
-    }
-  }
-
-  if (existing.includes(claudeBinDir) || existing.includes(binPathLiteral)) {
-    log.info(`Claude Code PATH already configured in ${configFile}`);
-  } else {
-    try {
-      const trailing = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
-      const block = `${trailing}\n# Added by claude-mem installer for Claude Code\n${exportLine}\n`;
-      writeFileSync(configFile, existing + block, 'utf-8');
-      log.success(`Added Claude Code to PATH in ${configFile}`);
-    } catch (error: unknown) {
-      // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise), together with the manual remediation command.
-      log.warn(`Could not update ${configFile}: ${error instanceof Error ? error.message : String(error)}`);
-      log.info(`Run manually: echo '${exportLine}' >> ${configFile}`);
-      return;
-    }
-  }
-
-  process.env.PATH = `${claudeBinDir}:${currentPath}`;
+  // Claude Code's native installer drops `claude` in ~/.local/bin; only then
+  // does this caller need ~/.local/bin on PATH. The appender itself is shared
+  // with the claude-mem launcher setup (src/launcher/install-launcher.ts).
+  if (!existsSync(join(homedir(), '.local', 'bin', 'claude'))) return;
+  ensureLocalBinOnShellPath({ purposeLabel: 'Claude Code', logger: log });
 }
 
 async function installClaudeCode(): Promise<boolean> {
@@ -2452,6 +2392,53 @@ export function validateNonInteractiveProvider(
   }
 }
 
+/**
+ * Compiles the version-stable hook launcher from the freshly cached plugin and
+ * puts `claude-mem` on PATH (plan-17 #3605, Phase 3). Skips the compile when the
+ * placed binary already prints the current LAUNCHER_PROTOCOL, but still checks
+ * PATH. A failure warns
+ * and continues: `doctor` reports the gap and the plugin's SessionStart
+ * self-heal (scripts/ensure-launcher.cjs) retries on the next session.
+ * Runs inside a spinner task, so lines are returned or queued on the summary,
+ * never printed live. Returns the one-line status for the task result.
+ */
+function placeHookLauncherOnPath(pluginRoot: string, summary: InstallSummary): string {
+  const warnHookLauncher = (cause: Error, remediation?: string) => installerError(ErrorSeverity.WARN_CONTINUE, {
+    component: 'hook-launcher',
+    phase: 'setup-runtime',
+    cause,
+    remediation: remediation ?? 'Re-run `npx claude-mem install`; `npx claude-mem doctor` shows the hook launcher row.',
+  }, summary);
+  const launcherStatusLines: string[] = [];
+  try {
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot,
+      // ensureBun ran just before this step and aborts the install without Bun.
+      resolveBunPath: getBunPath,
+      invocationContext: 'npx-installer',
+      logger: {
+        info: (line) => launcherStatusLines.push(line),
+        success: (line) => launcherStatusLines.push(line),
+        warn: (line) => warnHookLauncher(new Error(line)),
+      },
+    });
+    if (ensureResult.status === 'already-current') {
+      launcherStatusLines.unshift(`claude-mem launcher already current at ${ensureResult.binaryPath}`);
+    } else if (ensureResult.status === 'newer-protocol-kept') {
+      launcherStatusLines.unshift(`claude-mem launcher at ${ensureResult.binaryPath} is newer than this installer; kept`);
+    } else if (ensureResult.status === 'foreign-binary-kept') {
+      return `claude-mem launcher not placed (${ensureResult.binaryPath} is another program; see warnings below)`;
+    } else if (ensureResult.status === 'bun-not-found') {
+      warnHookLauncher(new Error('Bun not found, the claude-mem launcher was not compiled'));
+      return 'claude-mem launcher not placed (Bun not found)';
+    }
+    return launcherStatusLines.join('\n  ');
+  } catch (error: unknown) {
+    warnHookLauncher(error instanceof Error ? error : new Error(String(error)));
+    return 'claude-mem launcher not placed (see warnings below)';
+  }
+}
+
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
   const summary = createInstallSummary();
   try {
@@ -2648,7 +2635,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             stopTreeSitterHeartbeat();
           }
           writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
-          return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
+          message('Placing the claude-mem hook launcher on PATH…');
+          const launcherStatus = placeHookLauncherOnPath(cacheDir, summary);
+          return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}\n  ${launcherStatus}`;
         },
       },
     ];

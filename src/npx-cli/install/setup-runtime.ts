@@ -1,12 +1,11 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { execFile, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
+import { execFile, execSync } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
-import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
+import { bunCommonPaths, findBunExecutablePath, getToolPath, spawnVersionProbe } from './tool-path.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { settingsTarget } from '../../shared/settings-document.js';
@@ -53,31 +52,7 @@ function userHasOptedOutOfVectorSearch(): boolean {
   return value === true || value === 'true' || value === '1';
 }
 
-/**
- * Absolute paths bun's installer can write to, recomputed per call so an
- * installer that set `$BUN_INSTALL` earlier in this process is still found.
- * Honours `$BUN_INSTALL`, both `homedir()` and `%USERPROFILE%` (which differ on
- * redirected Windows profiles), `%LOCALAPPDATA%\bun`, and the platform defaults.
- * The previous `homedir()`-only list missed env-directed installs and aborted
- * with "executable not found" even when the binary was present.
- */
-export function bunCommonPaths(env: NodeJS.ProcessEnv = process.env): string[] {
-  const binName = IS_WINDOWS ? 'bun.exe' : 'bun';
-  const homeRoots = [homedir(), env.USERPROFILE].filter((v): v is string => Boolean(v));
-  const localAppData = IS_WINDOWS && env.LOCALAPPDATA
-    ? [join(env.LOCALAPPDATA, 'bun', binName), join(env.LOCALAPPDATA, 'bun', 'bin', binName)]
-    : [];
-  const systemPaths = IS_WINDOWS
-    ? []
-    : ['/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun', '/usr/bin/bun', '/snap/bin/bun'];
-  const candidates = [
-    ...(env.BUN_INSTALL ? [join(env.BUN_INSTALL, 'bin', binName)] : []),
-    ...homeRoots.map(root => join(root, '.bun', 'bin', binName)),
-    ...localAppData,
-    ...systemPaths,
-  ];
-  return [...new Set(candidates)];
-}
+export { bunCommonPaths };
 
 /** Absolute paths uv's installer can write to (getUvxBinDirs already dedupes). */
 export function uvCommonPaths(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -99,31 +74,8 @@ function markerPath(targetDir: string): string {
   return join(targetDir, '.install-version');
 }
 
-function spawnVersionProbe(command: string, args: string[]) {
-  const options: SpawnSyncOptionsWithStringEncoding = {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-  };
-  const invocation = buildSpawnSyncInvocation(command, args, options);
-  return spawnSync(invocation.command, invocation.args, invocation.options);
-}
-
-function getToolPath(command: string, commonPaths: string[]): string | null {
-  const pathCommand = IS_WINDOWS ? lookupWindowsCommand(command) : command;
-  try {
-    if (pathCommand) {
-      const result = spawnVersionProbe(pathCommand, ['--version']);
-      if (result.status === 0) return pathCommand;
-    }
-  } catch {
-    // Not in PATH
-  }
-
-  return commonPaths.find(existsSync) || null;
-}
-
 export function getBunPath(): string | null {
-  return getToolPath('bun', bunCommonPaths());
+  return findBunExecutablePath();
 }
 
 function isBunInstalled(): boolean {

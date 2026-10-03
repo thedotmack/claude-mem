@@ -23,6 +23,14 @@ import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
+import {
+  currentLauncherHostEnvironment,
+  findExecutableOnPath,
+  readLauncherProtocol,
+  resolveLauncherBinaryPath,
+  type LauncherHostEnvironment,
+} from '../../launcher/install-launcher.js';
+import { LAUNCHER_PROTOCOL } from '../../launcher/launcher-protocol.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
 
@@ -254,6 +262,54 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
       };
 }
 
+/**
+ * The "Hook launcher" row: where `claude-mem` resolves on PATH, the protocol it
+ * prints, and one timed `--version` round trip. Hooks call `claude-mem` in exec
+ * form, so a missing launcher surfaces in Claude Code as
+ * `Executable not found in $PATH: "claude-mem"` on every hook. Exported for tests.
+ */
+export function hookLauncherCheck(host: LauncherHostEnvironment = currentLauncherHostEnvironment()): CheckResult {
+  const name = 'Hook launcher';
+  const reinstallHint = 'run `npx claude-mem install`';
+  const launcherOnPath = findExecutableOnPath('claude-mem', host.environmentVariables.PATH ?? '', host.platform);
+  if (!launcherOnPath) {
+    const placedBinaryPath = resolveLauncherBinaryPath(host);
+    return {
+      name,
+      status: 'warn',
+      detail: existsSync(placedBinaryPath)
+        ? `installed at ${placedBinaryPath} but its directory is not on PATH — open a new terminal, or ${reinstallHint}`
+        : `claude-mem not on PATH — hooks fail with 'Executable not found in $PATH: "claude-mem"'; ${reinstallHint}`,
+      required: false,
+    };
+  }
+  const probeStartedAt = performance.now();
+  const printedProtocol = readLauncherProtocol(launcherOnPath);
+  const roundTripMilliseconds = Math.round(performance.now() - probeStartedAt);
+  if (printedProtocol === null) {
+    return {
+      name,
+      status: 'warn',
+      detail: `${launcherOnPath} is not the claude-mem hook launcher (--version printed no protocol number); ${reinstallHint}`,
+      required: false,
+    };
+  }
+  if (printedProtocol !== LAUNCHER_PROTOCOL) {
+    return {
+      name,
+      status: 'warn',
+      detail: `${launcherOnPath} speaks protocol ${printedProtocol}, expected ${LAUNCHER_PROTOCOL}; ${reinstallHint}`,
+      required: false,
+    };
+  }
+  return {
+    name,
+    status: 'ok',
+    detail: `${launcherOnPath} (protocol ${printedProtocol}, --version ${roundTripMilliseconds} ms)`,
+    required: false,
+  };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -286,6 +342,9 @@ export async function runDoctorCommand(): Promise<void> {
   // 3b. tree-sitter CLI at that root: smart_search and smart_outline shell out
   // to it, and installs suppress the script that downloads it (#2910).
   if (pluginRoot) checks.push(await treeSitterCliCheck(pluginRoot.root));
+
+  // 3c. The on-PATH `claude-mem` hook launcher (plan-17 #3605).
+  checks.push(hookLauncherCheck());
 
   // 4. Marketplace runtime root materialized. The .install-version marker is
   // written only by the npx installer; installs via Claude Code's own plugin

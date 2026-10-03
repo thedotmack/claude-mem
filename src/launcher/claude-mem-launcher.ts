@@ -15,8 +15,8 @@
  * resolver or of plugin/scripts/bun-runner.js — no handlers, no HTTP, and no
  * imports from the worker, hook handlers or shared worker helpers (Phase 6
  * sweep greps this directory for those paths).
- * Bump LAUNCHER_PROTOCOL only when the launcher's contract with hooks.json or
- * the installer changes.
+ * Bump LAUNCHER_PROTOCOL (src/launcher/launcher-protocol.ts) only when the
+ * launcher's contract with hooks.json or the installer changes.
  *
  * Runs as `bun`/`node plugin/scripts/claude-mem-launcher.cjs` and as a
  * `bun build --compile` binary (process.argv[0..1] is runtime + entry in both).
@@ -25,8 +25,7 @@ import { spawn, spawnSync, type SpawnOptions } from 'child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
-
-const LAUNCHER_PROTOCOL = 1;
+import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const STDIN_COLLECTION_TIMEOUT_MS = 5000;
@@ -309,7 +308,7 @@ function reportEmptyStdinAndExit(stdinData: Buffer | null, workerScriptPath: str
     `  CLAUDE_PLUGIN_ROOT: ${pluginRoot}`,
   ].join('\n');
 
-  console.error(diagnostic);
+  process.stderr.write(diagnostic + '\n');
 
   try {
     const logsDir = join(dataDir, 'logs');
@@ -318,7 +317,7 @@ function reportEmptyStdinAndExit(stdinData: Buffer | null, workerScriptPath: str
     mkdirSync(dataDir, { recursive: true });
     writeFileSync(join(dataDir, 'CAPTURE_BROKEN'), diagnostic + '\n');
   } catch (writeError) {
-    console.error(`[claude-mem-launcher] failed to persist diagnostic: ${writeError instanceof Error ? writeError.message : writeError}`);
+    process.stderr.write(`[claude-mem-launcher] failed to persist diagnostic: ${writeError instanceof Error ? writeError.message : writeError}\n`);
   }
 
   process.exit(0);

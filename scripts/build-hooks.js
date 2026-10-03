@@ -98,6 +98,14 @@ const HOOK_LAUNCHER = {
   source: 'src/launcher/claude-mem-launcher.ts'
 };
 
+// SessionStart self-heal that compiles HOOK_LAUNCHER onto PATH when it is
+// missing or stale (plan-17 #3605, Phase 3). Runs under plain `node`, so it
+// must stay free of bun:sqlite and worker imports.
+const ENSURE_LAUNCHER = {
+  name: 'ensure-launcher',
+  source: 'src/launcher/ensure-launcher.ts'
+};
+
 /**
  * Rule A canonical-template manifest: maps each host-managed config file's
  * command string to the buildShellCommand() options that generate it. The
@@ -706,6 +714,28 @@ async function buildHooks() {
     fs.chmodSync(`${hooksDir}/${HOOK_LAUNCHER.name}.cjs`, 0o755);
     const hookLauncherStats = fs.statSync(`${hooksDir}/${HOOK_LAUNCHER.name}.cjs`);
     console.log(`✓ claude-mem-launcher built (${(hookLauncherStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log(`\n🔧 Building ensure-launcher self-heal...`);
+    await build({
+      entryPoints: [ENSURE_LAUNCHER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      banner: {
+        js: '#!/usr/bin/env node'
+      }
+    });
+
+    assertBundleIntegrity(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`);
+
+    fs.chmodSync(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`, 0o755);
+    const ensureLauncherStats = fs.statSync(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`);
+    console.log(`✓ ensure-launcher built (${(ensureLauncherStats.size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
