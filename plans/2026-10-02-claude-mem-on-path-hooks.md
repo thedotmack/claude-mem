@@ -102,7 +102,7 @@ Verify:
 - **Fail-open:** match `hook-command.ts` L138–161. Root not found, Bun not found or spawn error each print one line, `claude-mem: <reason>, continuing without memory`, and exit 0. **Never exit 2.**
 - **Subcommands:** `hook <platform> <event>` and `--version`. The version prints `LAUNCHER_PROTOCOL` (an integer constant, starting at 1). Anything else prints usage and exits 0.
 
-**Build:** add an esbuild target in `scripts/build-hooks.js` beside the others (L380–430 pattern), outputting `plugin/scripts/claude-mem-launcher.js`, committed like the other bundles. Do not compile in the build; compiling happens on the user's machine (Phase 3).
+**Build:** add an esbuild target in `scripts/build-hooks.js` beside the others (L380–430 pattern), outputting `plugin/scripts/claude-mem-launcher.cjs`, committed like the other bundles. Do not compile in the build; compiling happens on the user's machine (Phase 3).
 
 **Tests:** `tests/launcher/claude-mem-launcher.test.ts` runs the bundle with Bun against a temp HOME. Cases:
 - env root
@@ -127,7 +127,7 @@ Copy the case shapes from `plugin-distribution.test.ts` L635–832.
 
 **Goal:** `npx claude-mem install` and `update` compile the launcher and place `claude-mem` on PATH. Marketplace-only users get it automatically, and a missing launcher is loud, never silent.
 
-1. **Compile at install:** after `ensureBun` in the runtime-setup step (`install.ts` L2619–2652), run `bun build --compile <cache>/plugin/scripts/claude-mem-launcher.js --outfile <binDir>/claude-mem[.exe]`.
+1. **Compile at install:** after `ensureBun` in the runtime-setup step (`install.ts` L2619–2652), run `bun build --compile <cache>/plugin/scripts/claude-mem-launcher.cjs --outfile <binDir>/claude-mem[.exe]`.
 2. **Bin dir:**
    - POSIX: `~/.local/bin`. Reuse the rc-file appender at `install.ts` L587–654, generalized so it runs whenever `~/.local/bin` is not already on PATH, not only after installing Claude Code.
    - Windows: `%LOCALAPPDATA%\claude-mem\bin`, added to the **user** PATH. Use `[Environment]::SetEnvironmentVariable('Path', …, 'User')` through PowerShell, appending only if absent and never truncating; `setx` is forbidden because it truncates at 1024 characters.

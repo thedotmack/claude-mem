@@ -90,6 +90,14 @@ const TRANSCRIPT_WATCHER = {
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
 };
 
+// The on-PATH `claude-mem` hook launcher (plan-17 #3605). The installer compiles
+// this bundle with `bun build --compile`; it must stay version-stable, so it
+// imports nothing from src/services, src/cli/handlers or src/shared/worker-utils.
+const HOOK_LAUNCHER = {
+  name: 'claude-mem-launcher',
+  source: 'src/launcher/claude-mem-launcher.ts'
+};
+
 /**
  * Rule A canonical-template manifest: maps each host-managed config file's
  * command string to the buildShellCommand() options that generate it. The
@@ -676,6 +684,28 @@ async function buildHooks() {
         `⚠️  transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB (advisory budget ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, check src/services/transcripts/processor.ts and watcher.ts for heavy imports.`
       );
     }
+
+    console.log(`\n🔧 Building claude-mem hook launcher...`);
+    await build({
+      entryPoints: [HOOK_LAUNCHER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${HOOK_LAUNCHER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
+
+    assertBundleIntegrity(`${hooksDir}/${HOOK_LAUNCHER.name}.cjs`);
+
+    fs.chmodSync(`${hooksDir}/${HOOK_LAUNCHER.name}.cjs`, 0o755);
+    const hookLauncherStats = fs.statSync(`${hooksDir}/${HOOK_LAUNCHER.name}.cjs`);
+    console.log(`✓ claude-mem-launcher built (${(hookLauncherStats.size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
