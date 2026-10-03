@@ -25,7 +25,7 @@ const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
 /**
  * Write-path contract guard (#2684): a memory_items row is only useful if at
  * least one of its searchable columns is non-empty, because the FTS trigger
- * indexes exactly those columns. Returns true if the create body would produce
+ * indexes exactly those columns. Returns true if the supplied values produce
  * a searchable row.
  */
 function hasSearchableContent(body: {
@@ -222,6 +222,15 @@ export class ServerV1Routes implements RouteHandler {
       if (!this.ensureProjectAllowed(req, res, existing.projectId)) return;
       if (body.projectId && body.projectId !== existing.projectId) {
         res.status(400).json({ error: 'ValidationError', message: 'projectId cannot be changed' });
+        return;
+      }
+      // PATCH omission preserves stored values, while explicit null/[] clears
+      // them. Check the resulting content before writing, just as creation does.
+      if (!hasSearchableContent({ ...existing, ...body })) {
+        res.status(400).json({
+          error: 'ValidationError',
+          message: 'memory_items requires at least one searchable text field; refusing to clear the last searchable field',
+        });
         return;
       }
       const memory = repo.update(id, body);

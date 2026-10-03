@@ -54,6 +54,26 @@ describe('nullable memory item updates', () => {
     patchHandler({ params: { id: item.id }, body: { narrative: null } }, res);
     expect(response.memory).toMatchObject({ title: 'new', narrative: null, facts: ['fact'], metadata: { source: 'manual' } });
   });
+  it('rejects clearing the last searchable field and keeps the record searchable', () => {
+    db = new Database(':memory:');
+    const project = new ProjectsRepository(db).create({ name: 'project' });
+    const handlers = new Map<string, any>();
+    const app = { get() {}, post(path: string, ...callbacks: any[]) { handlers.set(path, callbacks.at(-1)); }, patch(path: string, ...callbacks: any[]) { handlers.set(path, callbacks.at(-1)); } };
+    new ServerV1Routes({ getDatabase: () => db }).setupRoutes(app as any);
+    let status: number; let response: any;
+    const res = { json(value: unknown) { response = value; }, status(value: number) { status = value; return this; } };
+    for (const field of ['title', 'subtitle', 'text', 'narrative', 'facts', 'concepts']) {
+      handlers.get('/v1/memories')({ body: { projectId: project.id, kind: 'manual', type: 'note', [field]: field === 'facts' || field === 'concepts' ? ['searchabletoken'] : 'searchabletoken' } }, res);
+      expect(status!).toBe(201);
+      const id = response.memory.id;
+      status = 200;
+      handlers.get('/v1/memories/:id')({ params: { id }, body: { [field]: field === 'facts' || field === 'concepts' ? [] : null } }, res);
+      expect(status).toBe(400);
+      expect(response.error).toBe('ValidationError');
+      handlers.get('/v1/search')({ body: { projectId: project.id, query: 'searchabletoken' } }, res);
+      expect(response.memories.some((memory: { id: string }) => memory.id === id)).toBe(true);
+    }
+  });
   it('retains creation defaults and PATCH validation', () => {
     expect(CreateMemoryItemSchema.parse({ projectId: 'project', kind: 'manual', type: 'note' })).toMatchObject({ title: null, facts: [], metadata: {} });
     expect(() => UpdateMemoryItemSchema.parse({ title: '' })).toThrow();
