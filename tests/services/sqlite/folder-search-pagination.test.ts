@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, spyOn } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
+import { SearchOrchestrator } from '../../../src/services/worker/search/SearchOrchestrator.js';
 
 describe('folder pages count direct children', () => {
   let store: SessionStore;
@@ -12,6 +13,17 @@ describe('folder pages count direct children', () => {
     const observation = store.storeObservation(sid, 'project', { type: 'discovery', title: sid, subtitle: null, narrative: sid, facts: [], concepts: [], files_read: [path], files_modified: [] }, 1, 0, epoch).id;
     const summary = store.importSessionSummary({ memory_session_id: sid, project: 'project', request: sid, investigated: null, learned: null, completed: null, next_steps: null, notes: null, files_read: JSON.stringify([path]), files_edited: null, prompt_number: 1, discovery_tokens: 0, created_at: new Date(epoch).toISOString(), created_at_epoch: epoch }).id;
     return { observation, summary };
+  }
+  for (const withChroma of [false, true]) {
+    it(`forwards URL pagination through actual ${withChroma ? 'hybrid' : 'SQLite'} orchestration`, async () => {
+      store = new SessionStore(':memory:'); const search = new SessionSearch(store.db);
+      const second = seed('src/second.ts', 100); seed('src/nested/file.ts', 101); seed('src/first.ts', 102);
+      const chroma = withChroma ? { queryChroma: async () => ({ ids: [], distances: [], metadatas: [] }) } : null;
+      const orchestrator = new SearchOrchestrator(search, store, chroma as any);
+      const page = await orchestrator.findByFile('src', { project: 'project', isFolder: true, limit: '1', offset: '1' });
+      expect(page.observations.map(row => row.id)).toEqual([second.observation]);
+      expect(page.sessions.map(row => row.id)).toEqual([second.summary]);
+    });
   }
   it('stops the native SQLite iterator as soon as a numeric-string page is filled', () => {
     store = new SessionStore(':memory:'); const search = new SessionSearch(store.db);
