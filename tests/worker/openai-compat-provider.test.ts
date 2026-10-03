@@ -642,7 +642,7 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     expect(result.content).toBe('');
   });
 
-  it('sends CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS as the output cap in a plain body', async () => {
+  it('sends CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS as the output cap in a plain, streamed body', async () => {
     settingsOverrides.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS = '9000';
     const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(reply({ choices: [{ message: { content: 'ok' } }] }));
     spies.push(fetchSpy);
@@ -650,7 +650,9 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     await query([{ role: 'user', content: 'hi' }]);
 
     const [body] = sentBodies(fetchSpy);
-    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'temperature']);
+    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'stream_options', 'temperature']);
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
     expect(body.max_tokens).toBe(9000);
   });
 

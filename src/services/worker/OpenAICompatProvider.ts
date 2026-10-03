@@ -12,10 +12,12 @@
  * follow a user to NVIDIA.
  *
  * What this sends is deliberately plain — model, messages, temperature, the
- * output-token cap, and nothing else. Strict endpoints (vLLM in particular)
- * reject unknown body fields, so there is no vendor-specific extra and no
- * usage-accounting flag. Token counts are used when the endpoint reports them
- * and are never estimated into the usage event, matching the rule OpenRouter's
+ * output-token cap, and the standard OpenAI streaming fields (`stream`,
+ * `stream_options.include_usage`), nothing else. Strict endpoints (vLLM in
+ * particular) reject unknown body fields, so there is no vendor-specific
+ * extra; one that refuses the streaming fields is sent the plain body instead
+ * (streamed-chat-completion.ts). Token counts are used when the endpoint
+ * reports them and are never estimated into the usage event, matching the rule OpenRouter's
  * `buildLastUsage` already enforces: real numbers on both sides or none.
  */
 
@@ -23,7 +25,6 @@ import { getCredential } from '../../shared/EnvManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
-import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { describeNetworkFailure, networkFailureSuffix } from '../../shared/network-failure.js';
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
@@ -33,12 +34,21 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
-import { ClassifiedProviderError, rateLimitUntilNextKey, readCappedErrorBody } from './provider-errors.js';
+import { ClassifiedProviderError, rateLimitUntilNextKey } from './provider-errors.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { isContextOverflowBody } from './OpenRouterProvider.js';
 import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { resolveObserverMaxOutputTokens } from './context-window.js';
+import {
+  DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS,
+  STREAMED_REQUEST_FIELDS,
+  resolveStreamLiveness,
+  sendChatCompletion,
+  streamsChatCompletion,
+  type ChatCompletionExchange,
+  type StreamLiveness,
+} from './streamed-chat-completion.js';
 import {
   OpenAICompatibleProvider,
   assistantText,
@@ -482,20 +492,27 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
   }
 
   /**
-   * POST the request. Extracted so the retry try block stays narrow. Goes
-   * through the max_tokens compatibility wrapper, so a model that only takes
-   * max_completion_tokens gets the #4003 retry here too.
+   * Silence after which a streamed request is given up. An instance field so a
+   * test can shorten it; there is no setting for it.
    */
-  private fetchChatCompletion(
+  protected streamIdleTimeoutMs: number = DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS;
+
+  /**
+   * POST the request and read its (streamed) reply. A model that only takes
+   * max_completion_tokens gets the #4003 resend inside sendChatCompletion.
+   */
+  private requestChatCompletion(
     config: OpenAICompatConfig,
     apiKey: string,
     messages: OpenAIChatMessage[],
     maxOutputTokens: number,
     clientAttemptId: string,
     attemptSignal: AbortSignal,
-  ): Promise<Response> {
-    return fetchWithOpenRouterTokenCompatibility(fetch, config.apiUrl, {
-      method: 'POST',
+    liveness: StreamLiveness | null,
+  ): Promise<ChatCompletionExchange> {
+    const label = config.preset.label;
+    return sendChatCompletion({
+      url: config.apiUrl,
       headers: {
         'Content-Type': 'application/json',
         // Tracing only; never treated as server-side idempotency.
@@ -504,12 +521,18 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         // them is worse than sending no header at all.
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
+      body: {
+        model: config.model,
+        messages,
+        temperature: 0.3,
+        ...(liveness ? STREAMED_REQUEST_FIELDS : {}),
+      },
+      maxOutputTokens,
       signal: attemptSignal,
-    }, {
-      model: config.model,
-      messages,
-      temperature: 0.3,
-    }, maxOutputTokens);
+      liveness,
+      label,
+      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl }),
+    });
   }
 
   private async queryChatCompletions(
@@ -533,45 +556,20 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       maxOutputTokens,
     });
 
+    // Decided once, so every attempt is bounded the way withRetry was told.
+    const streamed = streamsChatCompletion(config.apiUrl);
+    const liveness = streamed ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs) : null;
     const data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
-      let response: Response;
-      try {
-        response = await this.fetchChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal);
-      } catch (networkError: unknown) {
-        const err = networkError instanceof Error ? networkError : new Error(String(networkError));
-        throw classifyOpenAICompatError({ cause: err, endpointLabel: label, requestUrl: config.apiUrl });
-      }
-
-      if (!response.ok) {
-        const errorText = await readCappedErrorBody(response);
-        throw classifyOpenAICompatError({
-          status: response.status,
-          bodyText: errorText,
-          headers: response.headers,
-          cause: new Error(`${label} API error: ${response.status} - ${errorText}`),
-          endpointLabel: label,
-        });
-      }
-
-      let responseData: ChatCompletionResponse;
-      try {
-        responseData = await response.json() as ChatCompletionResponse;
-      } catch (bodyError: unknown) {
-        // The response arrived, so the work ran and was billed; only reading
-        // its body failed. Never resent.
-        throw new ClassifiedProviderError(
-          `${label} response body could not be read: ${bodyError instanceof Error ? bodyError.message : String(bodyError)}`,
-          { kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause: bodyError },
-        );
-      }
+      const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness);
+      const responseData = exchange.body as ChatCompletionResponse;
 
       // Some gateways report failure in a 200 body (the case #3263 hit through
       // OpenRouter). Treat it exactly like the equivalent HTTP status.
       if (responseData.error) {
         throw classifyOpenAICompatError({
-          status: response.status,
+          status: exchange.status,
           bodyText: JSON.stringify(responseData),
-          headers: response.headers,
+          headers: exchange.headers,
           cause: new Error(`${label} API error: ${responseData.error.code} - ${responseData.error.message}`),
           endpointLabel: label,
         });
@@ -584,6 +582,9 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       perAttemptTimeoutMs,
       paidSendBudget,
       clientAttemptId,
+      // A streamed request is bounded by its idle timeout and absolute cap, and
+      // may be resent once if it fails before any output.
+      ...(streamed ? { attemptDeadlineOwnedByCaller: true, retryBeforeOutput: true } : {}),
       ...(signal ? { maxRetries: 0 } : {}),
       ...retryPolicyForPool(poolSize),
     });

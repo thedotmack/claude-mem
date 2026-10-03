@@ -81,6 +81,13 @@ export interface ProviderErrorDetail {
   clientAttemptId?: string;
   /** Overrides the outcome derived from `kind`; see PaidSendOutcome. */
   paidSendOutcome?: PaidSendOutcome;
+  /**
+   * A streamed request failed in transport (network error, idle timeout, a
+   * stream that ended early) before the model produced any output. withRetry's
+   * `retryBeforeOutput` may resend such a failure once, against the batch's
+   * PaidSendBudget (xAI SDK retryBeforeOutput).
+   */
+  failedBeforeOutput?: boolean;
 }
 
 export class ClassifiedProviderError extends Error {
@@ -95,6 +102,8 @@ export class ClassifiedProviderError extends Error {
   /** Set by the provider, or by withRetry for the batch it sent; see ProviderErrorDetail. */
   clientAttemptId?: string;
   readonly paidSendOutcome?: PaidSendOutcome;
+  /** Set by the streaming request path; see ProviderErrorDetail.failedBeforeOutput. */
+  failedBeforeOutput?: boolean;
 
   constructor(message: string, opts: {
     kind: ProviderErrorClass;
@@ -128,6 +137,9 @@ export class ClassifiedProviderError extends Error {
     }
     if (opts.paidSendOutcome !== undefined) {
       this.paidSendOutcome = opts.paidSendOutcome;
+    }
+    if (opts.failedBeforeOutput !== undefined) {
+      this.failedBeforeOutput = opts.failedBeforeOutput;
     }
   }
 }

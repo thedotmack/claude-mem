@@ -52,8 +52,10 @@ function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean
 
 /**
  * Per-attempt deadline for one observer LLM request, in ms (retry.ts), shared
- * by every provider that has one (Gemini, OpenRouter and any OpenAI-compatible
- * endpoint, including the cmem.ai gateway).
+ * by every non-streamed request (Gemini, Codex, the cmem.ai gateway, and an
+ * OpenAI-compatible endpoint that refuses streaming). Streamed OpenRouter and
+ * OpenAI-compatible requests are bounded by liveness instead: a 90s idle
+ * timeout and a 300s cap (streamed-chat-completion.ts).
  *
  * A deadline exists to catch a hung request, not to cut off a slow one. The
  * gateway's normal latency runs p90 40–72s and p99 ~100–140s by day, so the old
@@ -478,7 +480,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
-    CLAUDE_MEM_LLM_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Per-attempt observer LLM deadline (retry.ts); see DEFAULT_LLM_TIMEOUT_MS
+    CLAUDE_MEM_LLM_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Per-attempt deadline for non-streamed observer requests (retry.ts); streamed OpenRouter/OpenAI-compatible requests use a 90s idle timeout + 300s cap (streamed-chat-completion.ts)
     CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Oversized-field condensation deadline (field-optimizer.ts); a request to the same backend, so the same deadline
     // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
     // mounted and the worker behaves exactly as before. Set (with a non-loopback

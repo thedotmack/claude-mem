@@ -99,10 +99,12 @@ describe('outcome table: what is retried in place', () => {
     }
   });
 
-  it('network error before any response: ambiguous, one send, not retried', async () => {
+  // Phase 3 carve-out: a streamed request that fails before any output may be
+  // resent once (retryBeforeOutput), and no more; see streamed-provider.test.ts.
+  it('network error before any response: ambiguous, resent once before output, then not retried', async () => {
     const fetch = scriptFetch([() => { throw new TypeError('fetch failed'); }]);
     const error = await provider().runQuery().catch((caught: unknown) => caught);
-    expect(fetch.sends()).toBe(1);
+    expect(fetch.sends()).toBe(2);
     expect(isClassified(error) && error.kind).toBe('transient');
     expect(paidSendOutcomeOf(error)).toBe('ambiguous');
   });

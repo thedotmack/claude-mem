@@ -2,7 +2,6 @@
 import { getCredential } from '../../shared/EnvManager.js';
 import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
-import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { describeNetworkFailure, networkFailureSuffix } from '../../shared/network-failure.js';
 import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -13,9 +12,18 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
-import { ClassifiedProviderError, rateLimitUntilNextKey, readCappedErrorBody, type ProviderErrorClass } from './provider-errors.js';
+import { ClassifiedProviderError, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
+import {
+  DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS,
+  STREAMED_REQUEST_FIELDS,
+  resolveStreamLiveness,
+  sendChatCompletion,
+  streamsChatCompletion,
+  type ChatCompletionExchange,
+  type StreamLiveness,
+} from './streamed-chat-completion.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { OpenAICompatibleProvider, assistantText, type OpenAIChatMessage as OpenAIMessage, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import {
@@ -310,6 +318,10 @@ export function classifyOpenRouterError(input: {
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
+function openRouterRequestId(headers: Headers | undefined): string | undefined {
+  return headers?.get('x-request-id') ?? headers?.get('x-openrouter-request-id') ?? undefined;
+}
+
 interface OpenRouterResponse {
   /** The model that actually served the request — not the configured string. */
   model?: string;
@@ -471,11 +483,12 @@ export function buildOpenRouterRequestBody(input: {
     messages: input.messages,
     temperature: 0.3,  // Lower temperature for structured extraction
     max_tokens: input.maxOutputTokens ?? DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS,
-    // Ask for one JSON body. A gateway that streams by default answers with
-    // text/event-stream, which response.json() cannot read, so every
-    // observation fails (#3664). false is the OpenAI default. The cmem gateway
-    // never streams unasked, and its requests stay exactly as they are.
-    ...(isCmemGatewayUrl(input.apiUrl) ? {} : { stream: false }),
+    // Streamed, so liveness (tokens, `:` pings) rather than a guessed deadline
+    // decides when a request is dead; the reply is assembled back into one
+    // chat.completion (streamed-chat-completion.ts), usage from the final
+    // chunk. The cmem gateway answers with one JSON body whatever is asked,
+    // and its requests stay exactly as they are.
+    ...(streamsChatCompletion(input.apiUrl) ? STREAMED_REQUEST_FIELDS : {}),
     // Keep the same model, but ask for an answer instead of spending this
     // short rewrite's budget on reasoning. Only known OpenRouter endpoints
     // accept the vendor-specific reasoning control (cmem forwards it).
@@ -729,8 +742,14 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     );
   }
 
-  /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
-  private fetchChatCompletion(
+  /**
+   * Silence after which a streamed request is given up. An instance field so a
+   * test can shorten it; there is no setting for it.
+   */
+  protected streamIdleTimeoutMs: number = DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS;
+
+  /** POST the chat-completions request and read its (streamed) reply. */
+  private requestChatCompletion(
     apiUrl: string,
     apiKey: string,
     model: string,
@@ -741,14 +760,13 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     clientAttemptId: string,
     attemptSignal: AbortSignal,
     maxOutputTokens: number,
+    liveness: StreamLiveness | null,
     plainText?: boolean,
     extraBody?: Record<string, unknown>,
     reasoningEffort?: OpenRouterReasoningEffort,
-  ): Promise<Response> {
-    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort });
-    // Bound, so a runtime whose fetch needs its receiver still gets it.
-    return fetchWithOpenRouterTokenCompatibility(fetch.bind(globalThis), apiUrl, {
-      method: 'POST',
+  ): Promise<ChatCompletionExchange> {
+    return sendChatCompletion({
+      url: apiUrl,
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         ...openRouterAttributionHeaders(siteUrl, appName),
@@ -757,8 +775,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         // provider's. Never treated as server-side idempotency.
         'x-client-request-id': clientAttemptId,
       },
+      body: buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort }),
+      maxOutputTokens,
       signal: attemptSignal,
-    }, body, maxOutputTokens);
+      liveness,
+      label: 'OpenRouter',
+      classify: (input) => {
+        const requestId = openRouterRequestId(input.headers);
+        return classifyOpenRouterError({ ...input, requestUrl: apiUrl, ...(requestId ? { requestId } : {}) });
+      },
+    });
   }
 
   private async queryOpenRouterMultiTurn(
@@ -794,47 +820,24 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     // The id of the response actually returned, for the cut-off warning.
     let finalRequestId: string | undefined;
 
+    // Decided once, so every attempt is bounded the way withRetry was told.
+    const streamed = streamsChatCompletion(apiUrl);
+    const liveness = streamed ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs) : null;
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
-      let response: Response;
-      try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, clientAttemptId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort);
-      } catch (networkError: unknown) {
-        const err = networkError instanceof Error ? networkError : new Error(String(networkError));
-        throw classifyOpenRouterError({ cause: err, requestUrl: apiUrl });
-      }
-
-      const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
-      finalRequestId = requestId ?? undefined;
-
-      if (!response.ok) {
-        const errorText = await readCappedErrorBody(response);
-        throw classifyOpenRouterError({
-          status: response.status,
-          bodyText: errorText,
-          headers: response.headers,
-          cause: new Error(`OpenRouter API error: ${response.status} - ${errorText}`),
-          ...(requestId ? { requestId } : {}),
-        });
-      }
-
-      let responseData: OpenRouterResponse;
-      try {
-        responseData = await response.json() as OpenRouterResponse;
-      } catch (bodyError: unknown) {
-        // The response arrived, so the work ran and was billed; only reading
-        // its body failed. Never resent.
-        throw new ClassifiedProviderError(
-          `OpenRouter response body could not be read: ${bodyError instanceof Error ? bodyError.message : String(bodyError)}`,
-          { kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause: bodyError, ...(requestId ? { requestId } : {}) },
-        );
-      }
+      const exchange = await this.requestChatCompletion(
+        apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, clientAttemptId, attemptSignal,
+        maxOutputTokens, liveness, plainText, extraBody, reasoningEffort,
+      );
+      const requestId = openRouterRequestId(exchange.headers);
+      finalRequestId = requestId;
+      const responseData = exchange.body as OpenRouterResponse;
 
       if (responseData.error) {
         // Per OpenRouter spec, errors can come in 200 responses too.
         throw classifyOpenRouterError({
-          status: response.status,
+          status: exchange.status,
           bodyText: JSON.stringify(responseData),
-          headers: response.headers,
+          headers: exchange.headers,
           cause: new Error(`OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`),
           ...(requestId ? { requestId } : {}),
         });
@@ -843,6 +846,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       return responseData;
     }, {
       label: `OpenRouter ${model}`, abortSignal: signal, perAttemptTimeoutMs, paidSendBudget, clientAttemptId,
+      // A streamed request is bounded by its idle timeout and absolute cap, and
+      // may be resent once if it fails before any output.
+      ...(streamed ? { attemptDeadlineOwnedByCaller: true, retryBeforeOutput: true } : {}),
       ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize),
     });
 

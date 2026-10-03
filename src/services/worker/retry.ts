@@ -10,6 +10,10 @@
  * | output_failure: body read/parse failed, 200 with an error    | never |
  * | rejected (auth, quota, bad request) and unclassified errors  | no |
  *
+ * One carve-out for streamed requests (`retryBeforeOutput`, xAI SDK): a
+ * transport failure before the model produced any output may be resent once,
+ * and only while the batch's PaidSendBudget has a send left.
+ *
  * Every send that may have been billed is counted against the claimed batch's
  * PaidSendBudget when one is passed; a spent budget refuses to send at all.
  */
@@ -79,6 +83,18 @@ export interface RetryOptions {
   paidSendBudget?: PaidSendBudget;
   /** The `x-client-request-id` the caller sends; stamped on classified errors for logs. */
   clientAttemptId?: string;
+  /**
+   * The caller bounds each attempt itself (an idle timeout on a streamed reply
+   * plus an absolute cap), so withRetry arms no per-attempt deadline. A live
+   * stream is never abandoned for taking long.
+   */
+  attemptDeadlineOwnedByCaller?: boolean;
+  /**
+   * Resend once a streamed request whose transport failed before any output
+   * (ClassifiedProviderError.failedBeforeOutput), if the PaidSendBudget has a
+   * send left. Still bounded by maxRetries.
+   */
+  retryBeforeOutput?: boolean;
 }
 
 /** A Retry-After longer than this is not waited out in place. */
@@ -192,6 +208,20 @@ export function isRetryableKind(err: unknown, nonRetryableKinds?: readonly strin
   return paidSendOutcomeOf(err) === 'refused_before_work';
 }
 
+/**
+ * A streamed send that failed before any output may be resent once (see the
+ * carve-out at the top of this file): only when the caller opted in, not yet
+ * used, the caller has not aborted, and the batch budget has a send left. With
+ * no budget (an init turn, a wrap-up) the single resend is still the limit.
+ */
+function isRetryableBeforeOutput(err: unknown, options: RetryOptions, alreadyRetriedBeforeOutput: boolean): boolean {
+  if (!options.retryBeforeOutput || alreadyRetriedBeforeOutput) return false;
+  if (options.abortSignal?.aborted) return false;
+  if (!isClassified(err) || err.failedBeforeOutput !== true) return false;
+  if (paidSendOutcomeOf(err) !== 'ambiguous') return false;
+  return options.paidSendBudget ? options.paidSendBudget.hasRemainingPaidSend() : true;
+}
+
 /** Exponential backoff: baseDelayMs * 2^attempt, capped at maxDelayMs, times a jitter in [0.5, 1). */
 export function computeBackoffMs(attempt: number, opts: { baseDelayMs: number; maxDelayMs: number }): number {
   const exponential = Math.min(opts.baseDelayMs * Math.pow(2, attempt), opts.maxDelayMs);
@@ -216,6 +246,7 @@ export async function withRetry<T>(
 
   const budget = options.paidSendBudget;
   const clientAttemptId = options.clientAttemptId ?? budget?.clientAttemptId;
+  let retriedBeforeOutput = false;
 
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
     if (options.abortSignal?.aborted) {
@@ -237,7 +268,7 @@ export async function withRetry<T>(
     // Per-attempt timeout via AbortController. Forward external aborts too.
     const attemptController = new AbortController();
     let deadlineExpired = false;
-    const timeoutHandle = setTimeout(() => {
+    const timeoutHandle = options.attemptDeadlineOwnedByCaller ? undefined : setTimeout(() => {
       deadlineExpired = true;
       attemptController.abort();
     }, opts.perAttemptTimeoutMs);
@@ -288,13 +319,16 @@ export async function withRetry<T>(
         throw new Error('Aborted', { cause: err });
       }
 
-      if (!isRetryableKind(err, options.nonRetryableKinds)) {
+      const retryableInPlace = isRetryableKind(err, options.nonRetryableKinds);
+      const resendBeforeOutput = !retryableInPlace && isRetryableBeforeOutput(err, options, retriedBeforeOutput);
+      if (!retryableInPlace && !resendBeforeOutput) {
         throw err;
       }
 
       if (attempt === opts.maxRetries) {
         throw err;
       }
+      if (resendBeforeOutput) retriedBeforeOutput = true;
 
       // Honor the backend's Retry-After, capped; otherwise exponential backoff.
       const delayMs = isClassified(err) && err.retryAfterMs !== undefined
