@@ -14,7 +14,7 @@ import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
 
-interface IngestContext {
+export interface IngestContext {
   sessionManager: SessionManager;
   dbManager: DatabaseManager;
   eventBroadcaster: SessionEventBroadcaster;
@@ -78,12 +78,12 @@ export function setIngestContext(next: IngestContext): void {
 export function attachIngestGeneratorStarter(
   ensureGeneratorRunning: (sessionDbId: number, source: string) => void | Promise<void>,
 ): void {
-  const context = requireContext();
+  const context = requireIngestContext();
   context.ensureGeneratorRunning = ensureGeneratorRunning;
   context.sessionManager.setGeneratorStarter?.(ensureGeneratorRunning);
 }
 
-function requireContext(): IngestContext {
+export function requireIngestContext(): IngestContext {
   if (!ctx) {
     throw new Error('ingest helpers used before setIngestContext() — wiring bug');
   }
@@ -113,10 +113,16 @@ export interface ObservationPayload {
    */
   orGenerationId?: string;
   orSessionId?: string;
+  /**
+   * When the hook saw the event (hook spool entries only). A spooled event can
+   * be ingested long after it happened; its prompt number is the prompt that
+   * was current then, not at drain time. HTTP callers omit it (= now).
+   */
+  enqueuedAtEpochMs?: number;
 }
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
-  const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireContext();
+  const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireIngestContext();
 
   const platformSource = normalizePlatformSource(payload.platformSource);
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
@@ -186,7 +192,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   try {
     sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
     if (cwd) store.setSessionCwd(sessionDbId, cwd, projectContext?.keySource);
-    promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
+    promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error('INGEST', 'Observation session resolution failed', {
@@ -272,4 +278,192 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
 
   return { ok: true, sessionDbId };
+}
+
+
+/**
+ * Outcome of the session-scoped ingests (summarize, session end). `unknown_session`
+ * is distinct from `skipped`: the session's init may simply not have landed yet,
+ * so a durable caller (the hook spool drain) keeps the request and retries.
+ */
+export type SessionIngestOutcome =
+  | { status: 'accepted' }
+  | { status: 'skipped'; reason: string }
+  | { status: 'unknown_session' };
+
+export interface SummarizePayload {
+  contentSessionId: string;
+  /** Already normalized (normalizePlatformSource). */
+  platformSource: string;
+  lastAssistantMessage?: string;
+  agentId?: string;
+  observedModel?: string;
+  observedBilling?: string;
+  /** The checkout, from hosts that cannot check exclusions themselves. */
+  cwd?: string;
+  /** When the hook saw the Stop (hook spool entries only); see ObservationPayload. */
+  enqueuedAtEpochMs?: number;
+}
+
+export async function ingestSummarize(
+  payload: SummarizePayload,
+  deps: IngestContext = requireIngestContext(),
+): Promise<SessionIngestOutcome> {
+  const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = deps;
+  const { contentSessionId, platformSource, observedModel, observedBilling } = payload;
+
+  if (payload.agentId) {
+    return { status: 'skipped', reason: 'subagent_context' };
+  }
+
+  const store = dbManager.getSessionStore();
+
+  // Summarize only a session the worker knows. Creating a row here gave every
+  // idle turn of a session nothing else recorded (an excluded checkout, a
+  // skipped init) an empty-project row and a paid observer call (R5-1).
+  const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+  if (sessionDbId === null) {
+    return { status: 'unknown_session' };
+  }
+
+  // An excluded checkout is never summarized, even one excluded after its
+  // session began (R5-1). A host that cannot check the user's exclusions
+  // itself sends its checkout; without one, the checkout the session was
+  // recorded in is checked.
+  const requestCwd = typeof payload.cwd === 'string' ? payload.cwd.trim() : '';
+  const checkoutCwd = requestCwd || store.getSessionCwd(sessionDbId);
+  if (checkoutCwd) {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+      return { status: 'skipped', reason: 'project_excluded' };
+    }
+  }
+
+  if (observedModel || observedBilling) {
+    store.setSessionObservedMetadata(sessionDbId, observedModel, observedBilling);
+    const active = sessionManager.getSession(sessionDbId);
+    if (active) {
+      if (observedModel) active.observedModel = observedModel;
+      if (observedBilling) active.observedBilling = observedBilling;
+    }
+  }
+
+  const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId, payload.enqueuedAtEpochMs);
+
+  const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
+    store,
+    contentSessionId,
+    promptNumber,
+    'summarize',
+    sessionDbId
+  );
+  if (!privacy.allow) {
+    return { status: 'skipped', reason: 'private' };
+  }
+
+  const cleanedLastAssistantMessage = payload.lastAssistantMessage
+    ? stripMemoryTags(String(payload.lastAssistantMessage))
+    : payload.lastAssistantMessage;
+  await sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
+
+  await ensureGeneratorRunning?.(sessionDbId, 'summarize');
+
+  eventBroadcaster.broadcastSummarizeQueued();
+
+  return { status: 'accepted' };
+}
+
+export interface SessionEndPayload {
+  contentSessionId: string;
+  /** Already normalized (normalizePlatformSource). */
+  platformSource: string;
+}
+
+export async function ingestSessionEnd(
+  payload: SessionEndPayload,
+  deps: Pick<IngestContext, 'sessionManager' | 'dbManager'> = requireIngestContext(),
+): Promise<SessionIngestOutcome> {
+  const store = deps.dbManager.getSessionStore();
+  const sessionDbId = store.findSessionDbIdByContentSessionId(payload.contentSessionId, payload.platformSource);
+  if (sessionDbId === null) {
+    return { status: 'unknown_session' };
+  }
+
+  await deps.sessionManager.requestSessionWrapup(sessionDbId);
+  return { status: 'accepted' };
+}
+
+export interface AdvisorCallsPayload {
+  contentSessionId: string;
+  /** Already normalized (normalizePlatformSource). */
+  platformSource: string;
+  cwd?: string;
+  transcriptPath?: string;
+  calls: Array<{
+    toolUseId: string;
+    advice: string;
+    advisorModel?: string | null;
+    occurredAtEpoch: number;
+    lastUserMessage?: string | null;
+    transcriptByteOffset?: number | null;
+  }>;
+}
+
+export type AdvisorCallsIngestResult =
+  | { status: 'skipped'; reason: string }
+  | { status: 'stored'; stored: number; duplicates: number; privateOnly: number };
+
+export function ingestAdvisorCalls(
+  payload: AdvisorCallsPayload,
+  dbManager: DatabaseManager = requireIngestContext().dbManager,
+): AdvisorCallsIngestResult {
+  const { contentSessionId, platformSource, cwd, transcriptPath, calls } = payload;
+
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    return { status: 'skipped', reason: 'project_excluded' };
+  }
+
+  const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
+
+  const store = dbManager.getSessionStore();
+  const sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
+
+  let stored = 0;
+  let duplicates = 0;
+  let privateOnly = 0;
+  for (const call of calls) {
+    // <private> content never reaches the database, the same rule as
+    // prompts and tool payloads. Advice that was entirely private is dropped.
+    const advice = stripMemoryTags(call.advice).trim();
+    if (!advice) {
+      privateOnly++;
+      continue;
+    }
+    const lastUserMessage = call.lastUserMessage ? stripMemoryTags(call.lastUserMessage).trim() || null : null;
+
+    const result = store.recordAdvisorCall({
+      sessionDbId,
+      contentSessionId,
+      project,
+      platformSource,
+      toolUseId: call.toolUseId,
+      advisorModel: call.advisorModel ?? null,
+      cwd: cwd ?? null,
+      lastUserMessage,
+      transcriptPath: transcriptPath ?? null,
+      transcriptByteOffset: call.transcriptByteOffset ?? null,
+      advice,
+      occurredAtEpoch: call.occurredAtEpoch,
+    });
+
+    if (result.inserted) {
+      stored++;
+    } else {
+      duplicates++;
+    }
+  }
+
+  logger.debug('WORKER', 'Advisor calls ingested', { contentSessionId, stored, duplicates, privateOnly });
+  return { status: 'stored', stored, duplicates, privateOnly };
 }

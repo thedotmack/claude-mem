@@ -3291,18 +3291,30 @@ export class SessionStore {
     return stmt.all(...memorySessionIds) as any[];
   }
 
-  getPromptNumberFromUserPrompts(contentSessionId: string, sessionDbId?: number): number {
+  /**
+   * The session's current prompt number (count of its user_prompts rows).
+   * `createdAtOrBeforeEpochMs` answers "which prompt was current at that
+   * moment" instead — for an event that happened earlier than it is being
+   * ingested (a hook spool entry drained after an outage).
+   */
+  getPromptNumberFromUserPrompts(
+    contentSessionId: string,
+    sessionDbId?: number,
+    createdAtOrBeforeEpochMs?: number,
+  ): number {
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
-    if (resolvedSessionDbId !== null) {
+    const sessionClause = resolvedSessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?';
+    const sessionParam = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
+    if (createdAtOrBeforeEpochMs !== undefined) {
       const result = this.db.prepare(`
-        SELECT COUNT(*) as count FROM user_prompts WHERE session_db_id = ?
-      `).get(resolvedSessionDbId) as { count: number };
+        SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause} AND created_at_epoch <= ?
+      `).get(sessionParam, createdAtOrBeforeEpochMs) as { count: number };
       return result.count;
     }
 
     const result = this.db.prepare(`
-      SELECT COUNT(*) as count FROM user_prompts WHERE content_session_id = ?
-    `).get(contentSessionId) as { count: number };
+      SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause}
+    `).get(sessionParam) as { count: number };
     return result.count;
   }
 
