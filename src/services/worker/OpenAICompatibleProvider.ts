@@ -30,6 +30,7 @@ import { recycleObserverConversation, loadSessionStartContext, openObserverGener
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
+import { freezeResponseMedia, type PreparedTurnMedia, type TurnImageRequest } from '../media/inference.js';
 
 import {
   processAgentResponse,
@@ -60,6 +61,12 @@ export interface ProviderQueryResult {
    * the reply off (#3868).
    */
   finishReason?: string;
+  /**
+   * The request labels of the images the accepted request actually carried.
+   * Empty when the turn had images but was sent (or resent) text-only; absent
+   * when the turn had none.
+   */
+  deliveredImageLabels?: string[];
 }
 
 /** The first user turn of an observer request when the framing prompt carries no request block. */
@@ -149,7 +156,25 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     config: TConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    /**
+     * This observation turn's image side refs. Passed only by the observation
+     * path, never by summary, wrap-up or condensation requests, and never
+     * stored in history. Providers without image support ignore it.
+     */
+    turnImages?: TurnImageRequest,
   ): Promise<ProviderQueryResult>;
+
+  /**
+   * The current observation turn's images, when this provider and its
+   * configured endpoint qualify for image input. The default sends none.
+   */
+  protected async prepareObservationMedia(
+    _session: ActiveSession,
+    _messages: PendingMessageWithId[],
+    _config: TConfig,
+  ): Promise<PreparedTurnMedia | null> {
+    return null;
+  }
 
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
@@ -518,7 +543,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     }, fieldMaxChars, takeObserverSchemaReminder(session));
-    const responseContext = snapshotResponseContext(session);
+    // Bounded per-turn side refs: loaded here, sent with this request only,
+    // and released when the turn returns. History keeps the string turn.
+    let turnMedia = message.mediaRefs?.length ? await this.prepareObservationMedia(session, [message], config) : null;
+    let responseContext = snapshotResponseContext(session, turnMedia ? freezeResponseMedia(turnMedia, turnMedia.images.length > 0) : undefined);
 
     const turnPrompt = this.observationTurnPrompt(session, message, obsPrompt);
     if (this.rejectAbortedObservation) session.abortController.signal.throwIfAborted();
@@ -531,7 +559,23 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    let obsResponse: ProviderQueryResult;
+    try {
+      obsResponse = await this.query(
+        session.conversationHistory, config, undefined, undefined,
+        turnMedia?.images.length ? { images: turnMedia.images, maxBodyBytes: turnMedia.maxBodyBytes } : undefined,
+      );
+    } finally {
+      // Clear the derivative bytes as soon as the request settles.
+      if (turnMedia) turnMedia.images.forEach(image => { image.dataUrl = ''; });
+    }
+    if (turnMedia && responseContext.media?.imagesDelivered) {
+      // Only images the accepted request carried can be inspected; a
+      // text-only send or resend marks none.
+      const delivered = obsResponse.deliveredImageLabels ?? [];
+      responseContext = { ...responseContext, media: freezeResponseMedia(turnMedia, delivered.length > 0, delivered) };
+    }
+    turnMedia = null;
 
     // Billed usage counts even when the reply came back empty.
     accumulateObserverUsage(session, obsResponse);

@@ -2,14 +2,14 @@
 import { getCredential } from '../../shared/EnvManager.js';
 import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
-import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
+import { fetchWithOpenRouterTokenCompatibility, isMaxCompletionTokensCompatibilityError } from '../../shared/openrouter-token-compatibility.js';
 import { describeNetworkFailure, networkFailureSuffix } from '../../shared/network-failure.js';
 import { parseOpenRouterExtraBody, withOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl, isKeyAllowedForEndpoint, keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { logger } from '../../utils/logger.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
@@ -23,6 +23,59 @@ import {
 } from './context-window.js';
 import { isContextOverflowObserverOutput } from '../../sdk/output-classifier.js';
 import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
+import { imageTurnContent, prepareTurnImages, type ChatContentPart, type PreparedTurnMedia, type TurnImage, type TurnImageRequest } from '../media/inference.js';
+import { resolveObserverImageCapability } from './media-capability.js';
+
+/**
+ * One chat message in the request body. Every message is string content
+ * except, on an image turn, the final user message (imageTurnContent).
+ */
+export type OpenRouterRequestMessage =
+  | OpenAIMessage
+  | { role: 'user'; content: ChatContentPart[] };
+
+/** The gateway's bad_request detail for a rejected image request (docs/media-contract-v1.md). */
+const MEDIA_REQUEST_INVALID_MARKER = 'media_request_invalid:';
+
+/**
+ * The request messages for this turn: unchanged string messages, except that
+ * with images the final message, when it is the user turn, becomes the
+ * contract's text-first content array. Returns null when the images cannot
+ * be attached (no final user message), so the turn goes text-only.
+ */
+/**
+ * The images that fit the contract's request body bound, in request order:
+ * each image is kept only if the serialized body with it stays within
+ * `maxBodyBytes`. Images that do not fit stay uninspected on their events.
+ * Null when none fit (or there is no final user turn): the turn goes text-only.
+ */
+export function fitTurnImagesToBody(
+  messages: OpenAIMessage[],
+  request: TurnImageRequest,
+  buildBody: (messages: OpenRouterRequestMessage[]) => Record<string, unknown>,
+): { messages: OpenRouterRequestMessage[]; images: TurnImage[] } | null {
+  let kept: TurnImage[] = [];
+  let keptMessages: OpenRouterRequestMessage[] | null = null;
+  for (const image of request.images) {
+    const candidate = [...kept, image];
+    const candidateMessages = withTurnImages(messages, candidate);
+    if (!candidateMessages) return null;
+    if (Buffer.byteLength(JSON.stringify(buildBody(candidateMessages))) <= request.maxBodyBytes) {
+      kept = candidate;
+      keptMessages = candidateMessages;
+    } else {
+      logger.debug('SDK', 'Image left out of the request: the body would exceed its bound', { code: 'image_too_large' });
+    }
+  }
+  return keptMessages && kept.length > 0 ? { messages: keptMessages, images: kept } : null;
+}
+
+export function withTurnImages(messages: OpenAIMessage[], turnImages: readonly TurnImage[] | undefined): OpenRouterRequestMessage[] | null {
+  if (!turnImages?.length) return messages;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'user') return null;
+  return [...messages.slice(0, -1), { role: 'user', content: imageTurnContent(last.content, turnImages) }];
+}
 
 /**
  * OpenAI-compatible client configuration.
@@ -452,7 +505,7 @@ export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fa
 export function buildOpenRouterRequestBody(input: {
   model: string;
   fallbackModels: string[];
-  messages: OpenAIMessage[];
+  messages: OpenRouterRequestMessage[];
   apiUrl: string;
   plainText?: boolean;
   /** CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS; the #4003 retry resends it as max_completion_tokens. */
@@ -685,6 +738,25 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     session.endpointClass = isOpenRouterApiUrl(config.apiUrl) ? 'openrouter' : 'custom';
   }
 
+  /**
+   * Image side refs for the current observation turn, when image inference
+   * is enabled and this endpoint qualifies (media-capability.ts). The
+   * derivatives come from the Phase 2 MediaStore; nothing else is read.
+   */
+  protected async prepareObservationMedia(
+    _session: ActiveSession,
+    messages: PendingMessageWithId[],
+    config: OpenRouterConfig,
+  ): Promise<PreparedTurnMedia | null> {
+    const capability = await resolveObserverImageCapability(config);
+    if (!capability.supported) {
+      logger.debug('SDK', 'Observation images deferred; the turn is sent text-only', { reason: capability.reason });
+      return null;
+    }
+    const store = this.dbManager.getMediaStore();
+    return prepareTurnImages(messages, attachmentId => store.readVariant(attachmentId, 'llm'), capability.bounds);
+  }
+
   protected resolveContextWindow(config: OpenRouterConfig): Promise<number> {
     return resolveContextWindowTokens('openrouter', config.model, config.apiUrl);
   }
@@ -714,6 +786,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     config: OpenRouterConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    turnImages?: TurnImageRequest,
   ): Promise<ProviderQueryResult> {
     // Rotation wraps withRetry rather than living inside it: the inner retry
     // still owns transient failures against one key, and this outer sweep moves
@@ -724,7 +797,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter', rateLimitUntilNextKey },
       ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
         history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
-        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort,
+        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort, turnImages,
       ),
     );
   }
@@ -735,7 +808,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiKey: string,
     model: string,
     fallbackModels: string[],
-    messages: OpenAIMessage[],
+    messages: OpenRouterRequestMessage[],
     siteUrl: string | undefined,
     appName: string | undefined,
     priorRequestId: string | null,
@@ -744,6 +817,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     plainText?: boolean,
     extraBody?: Record<string, unknown>,
     reasoningEffort?: OpenRouterReasoningEffort,
+    carriesImages = false,
   ): Promise<Response> {
     const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort });
     // Bound, so a runtime whose fetch needs its receiver still gets it.
@@ -756,7 +830,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
       signal: attemptSignal,
-    }, body, maxOutputTokens);
+    }, body, maxOutputTokens, !carriesImages);
   }
 
   private async queryOpenRouterMultiTurn(
@@ -774,9 +848,59 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     perAttemptTimeoutMs?: number,
     extraBody?: Record<string, unknown>,
     reasoningEffort?: OpenRouterReasoningEffort,
+    turnImages?: TurnImageRequest,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
+    if (turnImages?.images.length) {
+      const maxOutputTokens = resolveObserverMaxOutputTokens();
+      const fitted = fitTurnImagesToBody(messages, turnImages, body => buildOpenRouterRequestBody({
+        model, fallbackModels, messages: body, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort,
+      }));
+      if (fitted) {
+        try {
+          const result = await this.sendChatCompletion(
+            history, messages, fitted.messages, apiKey, poolSize, model, fallbackModels, apiUrl, siteUrl, appName,
+            signal, plainText, perAttemptTimeoutMs, extraBody, reasoningEffort, fitted.images.length,
+          );
+          return { ...result, deliveredImageLabels: fitted.images.map(image => image.requestLabel) };
+        } catch (error) {
+          if (!(error instanceof MediaRequestRejectedError)) throw error;
+          // Rejected before any upstream inference (gateway validator), or the
+          // endpoint needs max_completion_tokens, which is never sent with
+          // images. Resend this turn once, text-only; its images stay
+          // uninspected and the resend is not a vision call.
+          logger.warn('SDK', 'Image request rejected; resending the turn text-only', { code: error.reason });
+        }
+      }
+    }
+    const result = await this.sendChatCompletion(
+      history, messages, messages, apiKey, poolSize, model, fallbackModels, apiUrl, siteUrl, appName,
+      signal, plainText, perAttemptTimeoutMs, extraBody, reasoningEffort, 0,
+    );
+    return turnImages?.images.length ? { ...result, deliveredImageLabels: [] } : result;
+  }
+
+  private async sendChatCompletion(
+    history: ConversationMessage[],
+    messages: OpenAIMessage[],
+    requestMessages: OpenRouterRequestMessage[],
+    apiKey: string,
+    poolSize: number,
+    model: string,
+    fallbackModels: string[],
+    apiUrl: string,
+    siteUrl?: string,
+    appName?: string,
+    signal?: AbortSignal,
+    plainText?: boolean,
+    perAttemptTimeoutMs?: number,
+    extraBody?: Record<string, unknown>,
+    reasoningEffort?: OpenRouterReasoningEffort,
+    imageCount = 0,
+  ): Promise<ProviderQueryResult> {
+    const carriesImages = imageCount > 0;
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    // Text only: image token cost is provider-specific, so it is reported as a count.
     const estimatedTokens = this.estimateTokens(messages.map(m => m.content).join(''));
     const maxOutputTokens = resolveObserverMaxOutputTokens();
 
@@ -785,6 +909,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       totalChars,
       estimatedTokens,
       maxOutputTokens,
+      ...(carriesImages ? { images: imageCount } : {}),
     });
 
     let priorRequestId: string | null = null;
@@ -796,7 +921,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, requestMessages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort, carriesImages);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err, requestUrl: apiUrl });
@@ -812,6 +937,12 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
       if (!response.ok) {
         const errorText = await response.text();
+        if (carriesImages && response.status === 400 && errorText.includes(MEDIA_REQUEST_INVALID_MARKER)) {
+          throw new MediaRequestRejectedError(errorText);
+        }
+        if (carriesImages && isMaxCompletionTokensCompatibilityError(response.status, errorText)) {
+          throw new MediaRequestRejectedError('media_request_invalid:max_completion_tokens_required');
+        }
         throw classifyOpenRouterError({
           status: response.status,
           bodyText: errorText,
@@ -823,6 +954,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
       const responseData = await response.json() as OpenRouterResponse;
 
+      if (carriesImages && responseData.error && isMaxCompletionTokensCompatibilityError(response.status, JSON.stringify(responseData))) {
+        throw new MediaRequestRejectedError('media_request_invalid:max_completion_tokens_required');
+      }
       if (responseData.error) {
         // Per OpenRouter spec, errors can come in 200 responses too.
         throw classifyOpenRouterError({
@@ -918,6 +1052,21 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     };
   }
 
+}
+
+/**
+ * The cmem gateway refused an image request (`bad_request`,
+ * `media_request_invalid:<reason>`). Unrecoverable for this request shape, so
+ * never retried as is; the caller resends the turn once text-only.
+ */
+class MediaRequestRejectedError extends ClassifiedProviderError {
+  readonly reason: string;
+  constructor(bodyText: string) {
+    const match = /media_request_invalid:([a-z_]{1,40})/.exec(bodyText);
+    super('Gateway rejected the image request', { kind: 'unrecoverable', cause: null, code: 'media_request_invalid' });
+    this.name = 'MediaRequestRejectedError';
+    this.reason = match ? match[1] : 'unknown';
+  }
 }
 
 export function isOpenRouterAvailable(settingsPath: string = USER_SETTINGS_PATH): boolean {

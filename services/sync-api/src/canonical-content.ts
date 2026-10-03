@@ -296,6 +296,7 @@ function validatePayload(kind: ContentKind, value: unknown): void {
 		}
 		if (key === "metadata") {
 			if (typeof item !== "object" || Array.isArray(item)) invalid(`${kind}.metadata must be an object or null`);
+			validateMediaMetadataNamespace(kind, item as Record<string, unknown>);
 			continue;
 		}
 			if (typeof item !== "string") invalid(`${kind}.${key} must be a string or null`);
@@ -308,6 +309,49 @@ function validatePayload(kind: ContentKind, value: unknown): void {
 				}
 			}
 	}
+}
+
+/**
+ * Bounded `metadata.cmem_media_v1` validator. This service deploys only its own
+ * src/ directory, so it copies the frozen rules of docs/media-contract-v1.md
+ * (and claude-mem src/shared/media-contract.ts validateMediaManifest) instead
+ * of importing them. Only this namespace is checked: every other metadata
+ * namespace passes through unchanged, and unknown top-level payload fields stay
+ * rejected above. IDs, labels and inspection state only; never paths, object
+ * keys, data URLs or bytes. Exact bodies and hashes are still forwarded as-is.
+ */
+export const MEDIA_METADATA_NAMESPACE = "cmem_media_v1";
+const MEDIA_MANIFEST_MAX_REFS = 32;
+const MEDIA_MANIFEST_MAX_BYTES = 8192;
+const MEDIA_ATTACHMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MEDIA_LABEL = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+function validateMediaMetadataNamespace(kind: ContentKind, metadata: Record<string, unknown>): void {
+	if (!Object.prototype.hasOwnProperty.call(metadata, MEDIA_METADATA_NAMESPACE)) return;
+	const fail = (reason: string): never => invalid(`${kind}.metadata.${MEDIA_METADATA_NAMESPACE} is invalid (${reason})`);
+	const manifest = metadata[MEDIA_METADATA_NAMESPACE];
+	if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) fail("invalid_manifest");
+	const manifestRecord = manifest as Record<string, unknown>;
+	if (Object.keys(manifestRecord).some((key) => !["version", "attachments", "overflow"].includes(key))) fail("invalid_manifest");
+	if (manifestRecord.version !== 1 || !Array.isArray(manifestRecord.attachments)) fail("invalid_manifest");
+	const attachments = manifestRecord.attachments as unknown[];
+	if (attachments.length > MEDIA_MANIFEST_MAX_REFS) fail("manifest_too_large");
+	if (manifestRecord.overflow !== undefined && typeof manifestRecord.overflow !== "boolean") fail("invalid_manifest");
+	const seenAttachmentIds = new Set<string>();
+	const normalizedAttachments = attachments.map((attachment) => {
+		if (attachment === null || typeof attachment !== "object" || Array.isArray(attachment)) fail("invalid_manifest");
+		const ref = attachment as Record<string, unknown>;
+		if (Object.keys(ref).some((key) => !["id", "label", "inspection"].includes(key))) fail("invalid_manifest");
+		if (typeof ref.id !== "string" || ref.id.length > 36 || !MEDIA_ATTACHMENT_ID.test(ref.id)) fail("invalid_manifest");
+		if (typeof ref.label !== "string" || ref.label.length > 64 || !MEDIA_LABEL.test(ref.label)) fail("invalid_manifest");
+		if (ref.inspection !== "inspected" && ref.inspection !== "uninspected") fail("invalid_manifest");
+		if (seenAttachmentIds.has(ref.id as string)) fail("invalid_manifest");
+		seenAttachmentIds.add(ref.id as string);
+		return { id: ref.id, label: ref.label, inspection: ref.inspection };
+	});
+	const normalizedManifest: Record<string, unknown> = { version: 1, attachments: normalizedAttachments };
+	if (manifestRecord.overflow !== undefined) normalizedManifest.overflow = manifestRecord.overflow;
+	if (encoder.encode(JSON.stringify(normalizedManifest)).length > MEDIA_MANIFEST_MAX_BYTES) fail("manifest_too_large");
 }
 
 function validateMutation(value: unknown): void {

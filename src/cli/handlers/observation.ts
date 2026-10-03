@@ -13,6 +13,7 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
+import { boundObservationDispatch, scanMediaFields } from '../../shared/media-ingress.js';
 
 async function dispatchToWorker(
   input: NormalizedHookInput,
@@ -21,7 +22,7 @@ async function dispatchToWorker(
   const result = await executeWithWorkerFallback<{ status?: string }>(
     '/api/sessions/observations',
     'POST',
-    {
+    boundObservationDispatch({
       contentSessionId: input.sessionId,
       platformSource,
       tool_name: input.toolName,
@@ -31,7 +32,7 @@ async function dispatchToWorker(
       agentId: input.agentId,
       agentType: input.agentType,
       tool_use_id: input.toolUseId,
-    },
+    }),
   );
 
   if (isWorkerFallback(result)) {
@@ -52,7 +53,7 @@ export const observationHandler: EventHandler = {
     }
 
     // A Bash command line or URL can carry a secret; logs get the redacted form.
-    const toolStr = redactForLog(logger.formatTool(toolName, toolInput));
+    const toolStr = redactForLog(logger.formatTool(toolName, scanMediaFields(toolInput, undefined, 'disabled').toolInput));
 
     logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {});
 
@@ -91,7 +92,7 @@ export const observationHandler: EventHandler = {
         sourceType: 'hook',
         eventType: 'tool_use',
         occurredAtEpoch: Date.now(),
-        payload: {
+        payload: boundObservationDispatch({
           tool_name: toolName,
           tool_input: toolInput,
           tool_response: toolResponse,
@@ -100,7 +101,7 @@ export const observationHandler: EventHandler = {
           agentType: input.agentType,
           platformSource,
           tool_use_id: input.toolUseId,
-        },
+        }),
       };
       try {
         await runtime.client.recordEvent(event);

@@ -6,6 +6,10 @@ import { runTranscriptCommand } from '../../src/services/transcripts/cli.js';
 import { parseWorkerServiceCommand } from '../../src/services/worker-service.js';
 
 describe('npx claude-mem transcript watch fallback (2450)', () => {
+  it('preserves the explicit version command when the worker is imported as a library', () => {
+    expect(parseWorkerServiceCommand(['--version'])).toEqual({ command: '--version', args: [] });
+  });
+
   it('parseWorkerServiceCommand routes "transcript <sub>" argv to command=transcript + args=[sub, ...]', () => {
     const parsedWatch = parseWorkerServiceCommand(['transcript', 'watch']);
     expect(parsedWatch.command).toBe('transcript');

@@ -22,6 +22,7 @@ import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mk
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createHash, randomUUID } from 'node:crypto';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
@@ -61,6 +62,11 @@ function loadConfig() {
     capture: {
       // tool names whose payloads are never sent (secrets-ish or pure noise)
       skipTools: Array.isArray(file.capture?.skipTools) ? file.capture.skipTools : [],
+      // image capture (docs/media-contract-v1.md) — OFF by default, and ONLY
+      // this lane's own switches: env or this plugin's config.json. A local
+      // claude-mem install's CLAUDE_MEM_MEDIA_CAPTURE_ENABLED deliberately does
+      // NOT enable the Cowork lane.
+      media: process.env.CMEM_MEDIA_CAPTURE_ENABLED === 'true' || file.capture?.media === true,
       // memory MCP + cmem's own calls are always skipped to avoid feedback loops
     }
   };
@@ -422,16 +428,294 @@ async function onSessionInit(input) {
 
 const ALWAYS_SKIP = /^(mcp__memory__|mcp__cmem)/;
 
+// ---------- image capture (media contract v1; gated by CFG.capture.media) ----------
+// Recognized native image blocks are pulled out of the RAW tool response before
+// clean() serializes/truncates it, uploaded to the owner's private media plane
+// keyed by (platform 'cowork', tool_use_id), and replaced by byte-free
+// descriptors. Only then is the envelope staged. No image bytes ever reach
+// truncate(), redactSecrets(), the envelope, the spool or a log line.
+const MEDIA_MAX_IMAGES_PER_EVENT = 4;
+const MEDIA_MAX_SOURCE_BYTES = 3 * 1024 * 1024;
+const MEDIA_UPLOAD_BUDGET_MS = 15000;     // hook timeout 30 s − 8 s ingest − margin
+const MEDIA_WALK_MAX_NODES = 4096;
+const MEDIA_WALK_MAX_DEPTH = 12;          // the contract's JSON-pointer depth bound
+const EVENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
+const POINTER_SEGMENT_RE = /^(?:[A-Za-z0-9_.-]|~[01]){1,64}$/;
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+const DATA_URL_RE = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
+
+function recognizeImageBlock(node) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+  if (node.type === 'image' && node.source && node.source.type === 'base64' && typeof node.source.data === 'string') {
+    return { shape: 'anthropic_base64', declaredMime: node.source.media_type, data: node.source.data };
+  }
+  if (node.type === 'image' && node.file && typeof node.file.base64 === 'string') {
+    return { shape: 'claude_read_base64', declaredMime: node.file.media_type ?? node.file.type, data: node.file.base64 };
+  }
+  if (node.type === 'image' && typeof node.data === 'string' && typeof node.mimeType === 'string') {
+    return { shape: 'mcp_base64', declaredMime: node.mimeType, data: node.data };
+  }
+  if (node.type === 'image_url' && node.image_url && typeof node.image_url.url === 'string' && node.image_url.url.startsWith('data:')) {
+    const match = DATA_URL_RE.exec(node.image_url.url);
+    return { shape: 'openai_data_url', declaredMime: match?.[1], data: match ? match[2] : null };
+  }
+  return null;
+}
+
+function sniffImageMime(bytes) {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 12 && bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function decodeImageBlock(block) {
+  if (typeof block.data !== 'string' || block.data.length > Math.ceil(MEDIA_MAX_SOURCE_BYTES / 3) * 4 || !BASE64_RE.test(block.data)) return null;
+  const bytes = Buffer.from(block.data, 'base64');
+  if (!bytes.length || bytes.length > MEDIA_MAX_SOURCE_BYTES) return null;
+  const mime = sniffImageMime(bytes);
+  if (!mime) return null;                                   // SVG/GIF/PDF/garbage: unsupported
+  if (typeof block.declaredMime === 'string' && block.declaredMime !== mime) return null;
+  const dimensions = imageHeaderDimensions(bytes, mime);
+  if (!withinDimensionBounds(dimensions)) return null;     // over the decoder bounds: never uploaded
+  return { bytes, mime, ...dimensions };
+}
+
+function descriptorFor(block, label) {
+  return { type: block.shape === 'openai_data_url' ? 'image_url' : 'image', cmem_media: label };
+}
+
+/**
+ * Bounded walk over a structured clone of the raw tool response. Returns the
+ * clone with every recognized image block replaced (bytes removed whatever the
+ * outcome) plus the first four decodable images in document order.
+ */
+// Fallback scrub when the response cannot even be cloned: the serialized
+// response keeps its text, and every image data URL or long base64 run is
+// replaced by a byte-free failure marker. Linear regexes over the full string.
+const DATA_URL_ANYWHERE_RE = /data:image\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]*/g;
+const LONG_BASE64_RE = /[A-Za-z0-9+/]{256,}={0,2}/g;
+const MEDIA_STRIPPED = '[cmem_media:unsupported]';
+
+function scrubImageBytes(raw) {
+  let serialized;
+  try { serialized = typeof raw === 'string' ? raw : JSON.stringify(raw); } catch { return MEDIA_STRIPPED; }
+  if (typeof serialized !== 'string') return raw;
+  return serialized.replace(DATA_URL_ANYWHERE_RE, MEDIA_STRIPPED).replace(LONG_BASE64_RE, MEDIA_STRIPPED);
+}
+
+function stripRemainingImageBlocks(root) {
+  const stack = [root];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    for (const key of Object.keys(node)) {
+      const value = node[key];
+      if (typeof value === 'string') {
+        if (value.includes('data:image')) node[key] = value.replace(DATA_URL_ANYWHERE_RE, MEDIA_STRIPPED);
+        continue;
+      }
+      const block = recognizeImageBlock(value);
+      if (block) node[key] = descriptorFor(block, 'unsupported');
+      else if (value && typeof value === 'object') stack.push(value);
+    }
+  }
+}
+
+function extractImages(raw) {
+  const images = [];
+  if (!raw || typeof raw !== 'object') return { response: raw, images };
+  let response;
+  try { response = structuredClone(raw); } catch { return { response: scrubImageBytes(raw), images }; }
+  let visitedNodes = 0;
+  let walkLimitReached = false;
+  const visit = (node, pathSegments) => {
+    if (!node || typeof node !== 'object') return node;
+    if (++visitedNodes > MEDIA_WALK_MAX_NODES || pathSegments.length > MEDIA_WALK_MAX_DEPTH) { walkLimitReached = true; return node; }
+    const block = recognizeImageBlock(node);
+    if (block) {
+      const pointer = '/' + pathSegments.join('/');
+      const decoded = pathSegments.every(segment => POINTER_SEGMENT_RE.test(segment)) ? decodeImageBlock(block) : null;
+      if (!decoded || images.length >= MEDIA_MAX_IMAGES_PER_EVENT) return descriptorFor(block, 'unsupported');
+      const label = `event1_image${images.length + 1}`;
+      // One random id per image per invocation; there is no cross-invocation retry.
+      images.push({ label, attachmentId: randomUUID(), shape: block.shape, pointer, index: images.length, ...decoded, descriptor: descriptorFor(block, label) });
+      return images[images.length - 1].descriptor;
+    }
+    const entries = Array.isArray(node) ? node.map((value, index) => [String(index), value]) : Object.entries(node);
+    for (const [key, value] of entries) {
+      if (value && typeof value === 'object') {
+        const escaped = key.replace(/~/g, '~0').replace(/\//g, '~1');
+        node[key] = visit(value, [...pathSegments, escaped]);
+      }
+    }
+    return node;
+  };
+  // Same pointer root as the local worker's ingress scanner (src/shared/media-ingress.ts).
+  response = visit(response, ['tool_response']);
+  // Past the bounds the unvisited remainder may still hold image bytes: strip
+  // every remaining recognized block (the images found so far already have
+  // descriptors), with an iterative linear pass that has no depth limit.
+  if (walkLimitReached) stripRemainingImageBlocks(response);
+  return { response, images };
+}
+
+const MEDIA_MAX_DIMENSION = 8192;
+const MEDIA_MAX_PIXELS = 24000000;
+const SOURCE_FILE_EXTENSION = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+
+/**
+ * Stored header dimensions, before any EXIF orientation: PNG IHDR, JPEG
+ * SOF0/SOF2 frame, WebP VP8/VP8L/VP8X header. null when unreadable.
+ */
+function imageHeaderDimensions(bytes, mime) {
+  try {
+    if (mime === 'image/png') {
+      if (bytes.toString('latin1', 12, 16) !== 'IHDR') return null;
+      return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+    }
+    if (mime === 'image/jpeg') {
+      let offset = 2;
+      while (offset + 9 < bytes.length) {
+        if (bytes[offset] !== 0xff) return null;
+        const marker = bytes[offset + 1];
+        if (marker === 0xff) { offset++; continue; }
+        if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) { offset += 2; continue; }
+        if (marker === 0xd9 || marker === 0xda) return null;            // EOI / start of scan before a frame
+        if (marker === 0xc0 || marker === 0xc2) {
+          return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) };
+        }
+        offset += 2 + bytes.readUInt16BE(offset + 2);
+      }
+      return null;
+    }
+    if (mime === 'image/webp') {
+      const chunk = bytes.toString('latin1', 12, 16);
+      if (chunk === 'VP8 ') return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
+      if (chunk === 'VP8L') {
+        const bits = bytes.readUInt32LE(21);
+        return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+      }
+      if (chunk === 'VP8X') {
+        return { width: 1 + bytes.readUIntLE(24, 3), height: 1 + bytes.readUIntLE(27, 3) };
+      }
+    }
+  } catch { /* truncated header */ }
+  return null;
+}
+
+function withinDimensionBounds(dimensions) {
+  return !!dimensions && dimensions.width > 0 && dimensions.height > 0
+    && dimensions.width <= MEDIA_MAX_DIMENSION && dimensions.height <= MEDIA_MAX_DIMENSION
+    && dimensions.width * dimensions.height <= MEDIA_MAX_PIXELS;
+}
+
+/**
+ * The upload body for one image, exactly Pro's unconverted-source shape
+ * (claude-mem-pro reports/image-aware/phase-5-pro.md, client spec step 4):
+ * two fields, `manifest` (no other keys at any level, encoder 'source', no
+ * locator or path) and `canonical` (the decoded source bytes with the MIME
+ * that matches their magic bytes). The server converts with screenshot-v1.
+ */
+function mediaUploadForm(image, toolUseId) {
+  const sourceSha256 = createHash('sha256').update(image.bytes).digest('hex');
+  const manifest = {
+    version: 1,
+    id: image.attachmentId,
+    provenance: {
+      version: 1,
+      attachment_id: image.attachmentId,
+      platform: 'cowork',
+      event_identity: { kind: 'platform_event', id: toolUseId },
+      source_shape: image.shape,
+      source_pointer: image.pointer,
+      source_index: image.index,
+      source_sha256: sourceSha256,
+      recipe: 'screenshot-v1'
+    },
+    canonical: { sha256: sourceSha256, width: image.width, height: image.height, byteLength: image.bytes.length },
+    encoder: 'source'
+  };
+  const form = new FormData();
+  form.append('manifest', JSON.stringify(manifest));
+  form.append('canonical', new File([image.bytes], `source.${SOURCE_FILE_EXTENSION[image.mime]}`, { type: image.mime }));
+  return form;
+}
+
+// One bounded code per failure; never ids, labels, paths or bytes.
+function logMediaFailure(code) {
+  try { process.stderr.write(`claude-mem-cowork: media upload failed (${code})\n`); } catch { /* never break the hook */ }
+}
+
+async function uploadImage(image, toolUseId, deadline) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return false;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), remainingMs);
+  try {
+    const res = await fetch(`${CFG.apiBase}/api/observation-media`, {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        'Authorization': `Bearer ${CFG.apiKey}`,
+        'X-CMEM-Platform': 'cowork',
+        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.3',
+        ...(CFG.userId ? { 'X-CMEM-User-Id': CFG.userId } : {})
+      },
+      body: mediaUploadForm(image, toolUseId)
+    });
+    if (res.status === 200) {
+      await res.arrayBuffer().catch(() => undefined);
+      return true;
+    }
+    let code = `http_${res.status}`;
+    try {
+      const body = JSON.parse(await res.text());
+      if (typeof body?.error === 'string' && /^[a-z_]{1,40}$/.test(body.error)) code = body.error;
+    } catch { /* no parseable code — keep the status */ }
+    logMediaFailure(code);
+    return false;
+  } catch (error) {
+    logMediaFailure(error?.name === 'AbortError' ? 'timeout' : 'network');
+    return false;                              // offline/timeout: text-only, never retried later
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Upload each recognized image BEFORE the first ingest staging. A failed image
+ * keeps a byte-free `upload_failed` descriptor; the envelope is still staged
+ * exactly once, text-only for that image. Pro's ingest dedupe ignores any later
+ * resend of the same tool_use_id, so there is no enrichment resend.
+ */
+async function captureToolResponseMedia(input, rawResponse) {
+  if (!CFG.capture.media || !CFG.apiKey) return rawResponse;
+  const toolUseId = input.tool_use_id;
+  const { response, images } = extractImages(rawResponse);
+  // Without a platform event id there is no stable identity: text-only, but
+  // the recognized bytes are still removed.
+  const hasEventIdentity = typeof toolUseId === 'string' && EVENT_ID_RE.test(toolUseId);
+  const deadline = Date.now() + MEDIA_UPLOAD_BUDGET_MS;
+  for (const image of images) {
+    if (!hasEventIdentity) image.descriptor.cmem_media = 'unsupported';
+    else if (!(await uploadImage(image, toolUseId, deadline))) image.descriptor.cmem_media = 'upload_failed';
+    image.bytes = null;
+  }
+  return response;
+}
+
 async function onObservation(input) {
   const tool = input.tool_name || '';
   if (ALWAYS_SKIP.test(tool) || CFG.capture.skipTools.includes(tool)) return;
+  const toolResponse = await captureToolResponseMedia(input, input.tool_response ?? input.tool_result);
   await ingest('observation', {
     session_id: input.session_id,
     cwd: input.cwd,
     tool_name: tool,
     tool_use_id: input.tool_use_id,
     tool_input: clean(input.tool_input, FIELD_CAP),
-    tool_response: clean(input.tool_response ?? input.tool_result, FIELD_CAP)
+    tool_response: clean(toolResponse, FIELD_CAP)
   });
 }
 

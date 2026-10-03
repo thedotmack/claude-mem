@@ -21,6 +21,15 @@ export interface ParsedObservation {
   concepts: string[];
   files_read: string[];
   files_modified: string[];
+  /**
+   * Raw text of each `<attachment>` in the observation's first lowercase
+   * `<attachments>` block, trimmed, in document order (bounded). Absent when
+   * the observation has no such block or the block holds no elements. These
+   * are request labels the linkage rules still have to validate
+   * (src/services/media/inference.ts linkAttachmentRefs); they are never
+   * stored as text.
+   */
+  attachments?: string[];
 }
 
 export interface ParsedSummary {
@@ -56,8 +65,31 @@ export type ParseResult =
 /** Every tag the observation schema defines, wrappers and elements alike. */
 const OBSERVATION_SCHEMA_TAGS = new Set([
   'type', 'title', 'subtitle', 'narrative', 'facts', 'fact', 'concepts', 'concept',
-  'files_read', 'files_modified', 'file',
+  'files_read', 'files_modified', 'file', 'attachments', 'attachment',
 ]);
+
+/**
+ * docs/media-contract-v1.md "Observation XML attachment refs": lowercase tags,
+ * matched case-sensitively (unlike every other field here), first block only.
+ * Elements past MAX_PARSED_ATTACHMENTS are not kept; the linkage rules reject
+ * everything after the fourth anyway. Element text is clipped so a runaway
+ * label cannot grow the parse.
+ */
+const ATTACHMENTS_BLOCK = /<attachments>([\s\S]*?)<\/attachments>/;
+const ATTACHMENT_ELEMENT = /<attachment>([\s\S]*?)<\/attachment>/g;
+const MAX_PARSED_ATTACHMENTS = 16;
+const MAX_PARSED_ATTACHMENT_CHARS = 128;
+
+function extractAttachmentLabels(content: string): string[] | undefined {
+  const block = ATTACHMENTS_BLOCK.exec(content);
+  if (!block) return undefined;
+  const labels: string[] = [];
+  for (const element of block[1].matchAll(ATTACHMENT_ELEMENT)) {
+    if (labels.length >= MAX_PARSED_ATTACHMENTS) break;
+    labels.push(element[1].trim().slice(0, MAX_PARSED_ATTACHMENT_CHARS));
+  }
+  return labels.length > 0 ? labels : undefined;
+}
 
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -132,6 +164,7 @@ function parseObservationBlocks(
     const concepts = extractArrayElements(obsContent, 'concepts', 'concept');
     const files_read = extractArrayElements(obsContent, 'files_read', 'file');
     const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
+    const attachments = extractAttachmentLabels(obsContent);
 
     const mode = ModeManager.getInstance().getActiveMode();
     const validTypes = mode.observation_types.map(t => t.id);
@@ -199,7 +232,8 @@ function parseObservationBlocks(
       narrative: finalNarrative,
       concepts: cleanedConcepts,
       files_read,
-      files_modified
+      files_modified,
+      ...(attachments ? { attachments } : {}),
     });
   }
 
@@ -289,7 +323,7 @@ function extractUnstructuredObservationText(content: string): string | null {
 
   const stripped = content
     .replace(
-      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
+      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified|attachments)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
       ' '
     )
     .replace(/<[^>]+>/g, ' ')

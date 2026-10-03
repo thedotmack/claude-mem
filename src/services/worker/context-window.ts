@@ -87,13 +87,78 @@ const FIELD_WINDOW_SHARE = 0.1;
 export type ContextWindowProvider = 'claude' | 'gemini' | 'openrouter';
 
 /**
+ * One catalogue entry, reduced to the fields the worker reads: the context
+ * window, plus the alias target, architecture modalities and supported
+ * parameters that image-input qualification needs (docs/media-contract-v1.md,
+ * "Capability qualification"). Pricing and provider routing are not kept.
+ */
+export interface OpenRouterCatalogModel {
+  id: string;
+  canonical_slug: string | null;
+  /** null for a concrete model; `{ slug }` for an alias such as `~vendor/model-latest`. */
+  alias_target: { slug: string | null } | null;
+  context_length: number | null;
+  architecture: { input_modalities: string[]; output_modalities: string[] } | null;
+  supported_parameters: string[] | null;
+}
+
+export interface OpenRouterCatalog {
+  models: OpenRouterCatalogModel[];
+  contextLengthById: Map<string, number>;
+}
+
+/** Bounds on what one cached entry may hold, so a hostile catalogue cannot grow the cache. */
+const MAX_CATALOGUE_MODELS = 10_000;
+const MAX_CATALOGUE_STRING_CHARS = 256;
+const MAX_CATALOGUE_LIST_ENTRIES = 64;
+
+function boundedCatalogueString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_CATALOGUE_STRING_CHARS ? value : null;
+}
+
+/** A string list, or null when the field is missing or malformed (qualification fails closed on null). */
+function boundedCatalogueList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value
+    .slice(0, MAX_CATALOGUE_LIST_ENTRIES)
+    .map(boundedCatalogueString)
+    .filter((entry): entry is string => entry !== null);
+}
+
+function toCatalogModel(raw: unknown): OpenRouterCatalogModel | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const entry = raw as Record<string, unknown>;
+  const id = boundedCatalogueString(entry.id);
+  if (!id) return null;
+  const aliasTarget = entry.alias_target !== null && typeof entry.alias_target === 'object'
+    ? { slug: boundedCatalogueString((entry.alias_target as Record<string, unknown>).slug) }
+    : null;
+  const architecture = entry.architecture !== null && typeof entry.architecture === 'object'
+    ? entry.architecture as Record<string, unknown>
+    : null;
+  const inputModalities = architecture ? boundedCatalogueList(architecture.input_modalities) : null;
+  const outputModalities = architecture ? boundedCatalogueList(architecture.output_modalities) : null;
+  return {
+    id,
+    canonical_slug: boundedCatalogueString(entry.canonical_slug),
+    alias_target: aliasTarget,
+    context_length: typeof entry.context_length === 'number' && entry.context_length > 0 ? entry.context_length : null,
+    architecture: inputModalities && outputModalities
+      ? { input_modalities: inputModalities, output_modalities: outputModalities }
+      : null,
+    supported_parameters: boundedCatalogueList(entry.supported_parameters),
+  };
+}
+
+/**
  * The catalogue is fetched at most once per TTL window (idiom:
- * telemetry.ts consentCache) and cached as the whole id → context_length map,
- * so one fetch serves every model lookup in the window. A failed fetch is
- * negative-cached for CATALOGUE_FAILURE_TTL_MS, then retried.
+ * telemetry.ts consentCache) and cached whole, so one fetch serves every
+ * context-window lookup and every image-capability qualification in the
+ * window. A failed fetch is negative-cached for CATALOGUE_FAILURE_TTL_MS,
+ * then retried.
  */
 const CATALOGUE_CACHE_TTL_MS = 60 * 60 * 1000;
-let catalogueCache: { value: Map<string, number>; expiresAt: number } | null = null;
+let catalogueCache: { value: OpenRouterCatalog; expiresAt: number } | null = null;
 
 /**
  * Negative cache: after a failed fetch, every lookup falls straight back for
@@ -107,7 +172,7 @@ let catalogueFailureUntil = 0;
  * Concurrent cold lookups share one in-flight request instead of herding —
  * N generator starts racing an empty cache must issue exactly one GET.
  */
-let inflightCatalogueFetch: Promise<Map<string, number> | null> | null = null;
+let inflightCatalogueFetch: Promise<OpenRouterCatalog | null> | null = null;
 
 /**
  * Test-only. The catalogue cache is module state shared by the whole bun test
@@ -120,8 +185,11 @@ export function __resetContextWindowCacheForTests(): void {
   inflightCatalogueFetch = null;
 }
 
-/** Pull the catalogue's id → context_length map, or null when it is unreachable. */
-async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | null> {
+/**
+ * The cached OpenRouter catalogue, or null when it is unreachable. Shared by
+ * context-window resolution and image-input qualification: one GET per TTL.
+ */
+export async function fetchOpenRouterModelCatalog(): Promise<OpenRouterCatalog | null> {
   const now = Date.now();
   if (catalogueCache && now < catalogueCache.expiresAt) {
     return catalogueCache.value;
@@ -138,7 +206,7 @@ async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | nu
   return inflightCatalogueFetch;
 }
 
-async function fetchCatalogueOnce(): Promise<Map<string, number> | null> {
+async function fetchCatalogueOnce(): Promise<OpenRouterCatalog | null> {
   try {
     const response = await fetch(MODELS_URL, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -150,18 +218,19 @@ async function fetchCatalogueOnce(): Promise<Map<string, number> | null> {
       return null;
     }
 
-    const payload = (await response.json()) as {
-      data?: Array<{ id?: string; context_length?: number }>;
-    };
-    const byId = new Map<string, number>();
-    for (const m of payload.data ?? []) {
-      if (m?.id && typeof m.context_length === 'number' && m.context_length > 0) {
-        byId.set(m.id, m.context_length);
-      }
+    const payload = (await response.json()) as { data?: unknown };
+    const models: OpenRouterCatalogModel[] = [];
+    const contextLengthById = new Map<string, number>();
+    for (const raw of Array.isArray(payload?.data) ? payload.data.slice(0, MAX_CATALOGUE_MODELS) : []) {
+      const model = toCatalogModel(raw);
+      if (!model) continue;
+      models.push(model);
+      if (model.context_length !== null) contextLengthById.set(model.id, model.context_length);
     }
 
-    catalogueCache = { value: byId, expiresAt: Date.now() + CATALOGUE_CACHE_TTL_MS };
-    return byId;
+    const catalog: OpenRouterCatalog = { models, contextLengthById };
+    catalogueCache = { value: catalog, expiresAt: Date.now() + CATALOGUE_CACHE_TTL_MS };
+    return catalog;
   } catch (err) {
     // Offline workers are normal and must not be blocked by a window lookup.
     logger.debug('WORKER', 'OpenRouter catalogue fetch failed; using fallback context window', { rawError: String(err) });
@@ -223,8 +292,8 @@ export async function resolveContextWindowTokens(
     return FALLBACK_CONTEXT_WINDOW_TOKENS;
   }
 
-  const byId = await fetchOpenRouterContextWindows();
-  return byId?.get(model) ?? FALLBACK_CONTEXT_WINDOW_TOKENS;
+  const catalog = await fetchOpenRouterModelCatalog();
+  return catalog?.contextLengthById.get(model) ?? FALLBACK_CONTEXT_WINDOW_TOKENS;
 }
 
 /**
