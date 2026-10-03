@@ -242,6 +242,15 @@ After enabling on an existing database, run a one-time scan to backfill the IDF 
 surface accumulated near-duplicates: `POST /api/dedup/scan` (worker, localhost-only).
 Review candidates via `GET /api/dedup/candidates?project=<name>`.
 
+### Toolkit
+
+On by default. Once a day, claude-mem finds the series of tool calls your agents repeated
+successfully more than 5 times and turns each one into a reusable, parameterized script.
+
+| Setting                      | Default | Description                           |
+|------------------------------|---------|---------------------------------------|
+| `CLAUDE_MEM_TOOLKIT_ENABLED` | `true`  | Master switch. `false` = no mining run, daily or manual, so no new scripts are built |
+
 ## Model Configuration
 
 Configure which Claude model compresses your observations (only applies when `CLAUDE_MEM_PROVIDER=claude`).

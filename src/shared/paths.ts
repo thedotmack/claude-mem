@@ -143,6 +143,7 @@ export const paths = {
   transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),
   transcriptsState: () => join(DATA_DIR, 'transcript-watch-state.json'),
   corpora: () => join(DATA_DIR, 'corpora'),
+  toolkit: () => join(DATA_DIR, 'toolkit'),
   supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
   envFile: () => join(DATA_DIR, '.env'),
   logsDir: () => LOGS_DIR,

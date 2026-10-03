@@ -29,6 +29,7 @@ import {
   type UpsertToolUseInput,
   type ToolUseQueryFilters,
 } from './tool-uses.js';
+import { createToolkitToolsSchema } from './toolkit-tools.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import {
   computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
@@ -266,6 +267,7 @@ export class SessionStore {
     this.ensureAdvisorCallsTable();
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
+    this.ensureToolkitToolsTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1931,6 +1933,15 @@ export class SessionStore {
   private ensureToolUsesTable(): void {
     createToolUsesSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
+  }
+
+  // v62 — `toolkit_tools`, the Toolkit's catalog of scripts mined from repeated
+  // tool-call series (see toolkit-tools.ts). Idempotent DDL like v51, so a fresh
+  // DB and one migrating up converge. v61 is reserved by the unmerged
+  // feat/work-state branch: do not stamp it here.
+  private ensureToolkitToolsTable(): void {
+    createToolkitToolsSchema(this.db);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, new Date().toISOString());
   }
 
   // v52 — durable claim ledger for one Telegram session wrap-up per route.

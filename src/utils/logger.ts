@@ -56,6 +56,7 @@ export type Component =
   | 'SYNC_CLIENT'
   | 'SYSTEM'
   | 'TELEGRAM'
+  | 'TOOLKIT'
   | 'TRANSCRIPT'
   | 'WINDSURF'
   | 'WORKER';

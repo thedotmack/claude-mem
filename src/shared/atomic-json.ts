@@ -37,8 +37,13 @@ export function ensureDirectoryExists(directoryPath: string): void {
   }
 }
 
+export interface AtomicFileWriteOptions {
+  /** Force the destination mode from the first byte written (for secrets). */
+  mode?: number;
+}
+
 /**
- * Write JSON to disk with crash-safe atomic-rename semantics.
+ * Write text to disk with crash-safe atomic-rename semantics.
  *
  * Sequence: resolve symlinks at the destination, write payload to a uniquely
  * named temp file in the same directory as the resolved target, loop writeSync
@@ -47,15 +52,10 @@ export function ensureDirectoryExists(directoryPath: string): void {
  * crash mid-write leaves either the old contents or the new contents, never a
  * truncated file.
  */
-export interface AtomicJsonWriteOptions {
-  /** Force the destination mode from the first byte written (for secrets). */
-  mode?: number;
-}
-
-export function writeJsonFileAtomic(
+export function writeTextFileAtomic(
   filepath: string,
-  data: any,
-  options: AtomicJsonWriteOptions = {}
+  text: string,
+  options: AtomicFileWriteOptions = {}
 ): void {
   let resolved = filepath;
   try {
@@ -81,7 +81,7 @@ export function writeJsonFileAtomic(
   const dir = dirname(resolved);
   const base = basename(resolved);
   const tmpPath = join(dir, `.${base}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
-  const payload = Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  const payload = Buffer.from(text, 'utf-8');
 
   let mode = options.mode;
   if (mode === undefined) {
@@ -131,4 +131,13 @@ export function writeJsonFileAtomic(
     try { unlinkSync(tmpPath); } catch { /* tempfile may not exist */ }
     throw err;
   }
+}
+
+/** Pretty-printed JSON plus a trailing newline, written by writeTextFileAtomic. */
+export function writeJsonFileAtomic(
+  filepath: string,
+  data: any,
+  options: AtomicFileWriteOptions = {}
+): void {
+  writeTextFileAtomic(filepath, JSON.stringify(data, null, 2) + '\n', options);
 }
