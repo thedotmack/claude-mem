@@ -53,12 +53,14 @@ import {
   buildMutationOperation,
   compareCanonicalDecimals,
   incrementCanonicalDecimal,
+  isSyncE2EEnabled,
   parseCanonicalOperation,
   stableDocumentId,
   type CanonicalWireOp,
   type ContentKind,
 } from './CanonicalContent.js';
 import { PROMPT_TEXT_COLUMNS_SQL, clampPromptTextForSync } from './prompt-text-clamp.js';
+import { E2E_ALG } from './E2ECodec.js';
 import {
   classifySyncAuthFailure,
   friendlySyncError,
@@ -741,6 +743,7 @@ export class CloudSync {
       }
       this.poisonQuarantinesThisFlush = 0;
       this.dropStaleOriginDeviceIdSnapshots();
+      this.rebuildSnapshotsFrozenUnderOtherE2EMode();
       do {
         this.flushAgainRequested = false;
         await this.drainContentOutbox();
@@ -1450,6 +1453,62 @@ export class CloudSync {
     for (const row of mutationRows) {
       this.quarantineMutation(row, reason);
     }
+  }
+
+  /**
+   * Client-side outbox hygiene after E2E is switched on (or off). Snapshots
+   * frozen under the other mode can never be accepted: an opaque hub refuses
+   * plaintext, a plaintext hub refuses sealed payloads, and after three
+   * rejections the poison path would quarantine them for good. None of them
+   * was ever acked (the hub refused every attempt), so rebuilding at the same
+   * revision is safe: content snapshots are deleted and their native rows
+   * left unsynced for drainKind to resnapshot; a mutation's frozen
+   * serialization is cleared so drainMutations rebuilds it from the stored
+   * mutation body. Tombstones carry no payload and are left alone.
+   */
+  private rebuildSnapshotsFrozenUnderOtherE2EMode(): void {
+    const sealed = isSyncE2EEnabled();
+    const mismatch = (path: string): string => sealed
+      ? `json_extract(${path}, '$.alg') IS NOT '${E2E_ALG}'`
+      : `json_extract(${path}, '$.alg') IS '${E2E_ALG}'`;
+
+    const contentRows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, kind, origin_local_id
+      FROM sync_content_outbox
+      WHERE deleted = 0
+        AND json_type(body, '$.payload') = 'object'
+        AND ${mismatch("json_extract(body, '$.payload')")}
+    `).all() as Array<{ id: string; kind: string; origin_local_id: string | null }>;
+    const mutations = this.db.prepare(`
+      SELECT COUNT(*) AS n FROM sync_outbox
+      WHERE canonical_body IS NOT NULL
+        AND ${mismatch("json_extract(canonical_body, '$.mutation')")}
+    `).get() as { n: number };
+    if (contentRows.length === 0 && mutations.n === 0) return;
+
+    const tx = this.db.transaction(() => {
+      for (const row of contentRows) {
+        this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+        const table = TABLE_BY_KIND[row.kind as RowKind];
+        if (table && row.origin_local_id !== null) {
+          this.db.prepare(`
+            UPDATE ${table} SET synced_at = NULL
+            WHERE id = ? AND origin_device_id IS NULL AND (synced_at IS NULL OR synced_at < 0)
+          `).run(row.origin_local_id);
+        }
+      }
+      this.db.prepare(`
+        UPDATE sync_outbox SET canonical_body = NULL, operation_sha256 = NULL
+        WHERE canonical_body IS NOT NULL
+          AND ${mismatch("json_extract(canonical_body, '$.mutation')")}
+      `).run();
+    });
+    tx();
+    logger.info('CLOUD_SYNC', 'Rebuilding outbox snapshots frozen under the other end-to-end encryption mode', {
+      e2e: sealed,
+      contentSnapshots: contentRows.length,
+      mutations: mutations.n,
+    });
   }
 
   private quarantineStaleOriginDeviceIdMutation(op: WireOp, reason: string): boolean {

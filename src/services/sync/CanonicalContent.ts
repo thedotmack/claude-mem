@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
+import { E2E_ALG, assertSealedPayload, type E2ECodec, type SealedPayload } from './E2ECodec.js';
 
 export const CONTENT_BODY_SCHEMA_VERSION = 1 as const;
 export const CONTENT_PAYLOAD_SCHEMA_VERSION = 2 as const;
@@ -23,7 +24,8 @@ export interface CanonicalContentBody {
   entity_rev: string;
   id: string;
   kind: CanonicalKind;
-  mutation: CanonicalMutation | null;
+  // Sealed (E2ECodec) while on the wire under E2E; plaintext once decoded.
+  mutation: CanonicalMutation | SealedPayload | null;
   origin_device_id: string;
   origin_local_id: string | null;
   payload: Record<string, unknown> | null;
@@ -61,6 +63,25 @@ const ENVELOPE_KEYS = [
   'payload_schema_version',
   'payload_sha256',
 ] as const;
+
+// End-to-end encryption (CLAUDE_MEM_CLOUD_SYNC_E2E). When a codec is set,
+// every op this process builds carries a sealed payload/mutation, every op it
+// parses must be sealed, and decodeHubChange opens them. Never mixed: a
+// plaintext op is rejected while E2E is on and vice versa.
+let e2eCodec: E2ECodec | null = null;
+
+export function configureSyncE2E(codec: E2ECodec | null): void {
+  e2eCodec = codec;
+}
+
+export function isSyncE2EEnabled(): boolean {
+  return e2eCodec !== null;
+}
+
+/** Envelope fields a sealed payload is bound to (AES-GCM associated data). */
+function e2eAad(body: Pick<CanonicalContentBody, 'id' | 'kind' | 'entity_rev' | 'origin_device_id'>): string {
+  return canonicalJson([E2E_ALG, body.id, body.kind, body.entity_rev, body.origin_device_id]);
+}
 
 function jsonError(message: string): never {
   logger.debug('CLOUD_SYNC', 'Rejected invalid canonical content', { reason: message });
@@ -179,20 +200,26 @@ export function buildContentOperation(input: {
     if (deletedAt !== null) jsonError('a live/revived operation requires deleted_at=null');
   }
   const originLocalId = assertCanonicalDecimal(input.originLocalId);
-  const payloadJson = canonicalJson(input.payload);
+  const entityRev = assertCanonicalDecimal(input.entityRev, { positive: true });
+  const id = stableDocumentId(input.kind, input.originDeviceId, originLocalId);
+  let payload = input.payload;
+  if (e2eCodec && payload !== null) {
+    validatePayload(input.kind, payload);
+    payload = { ...e2eCodec.seal(canonicalJson(payload), e2eAad({ id, kind: input.kind, entity_rev: entityRev, origin_device_id: input.originDeviceId })) };
+  }
   const body: CanonicalContentBody = {
     body_schema_version: CONTENT_BODY_SCHEMA_VERSION,
     deleted,
     deleted_at: deletedAt,
-    entity_rev: assertCanonicalDecimal(input.entityRev, { positive: true }),
-    id: stableDocumentId(input.kind, input.originDeviceId, originLocalId),
+    entity_rev: entityRev,
+    id,
     kind: input.kind,
     mutation: null,
     origin_device_id: input.originDeviceId,
     origin_local_id: originLocalId,
-    payload: input.payload,
+    payload,
     payload_schema_version: CONTENT_PAYLOAD_SCHEMA_VERSION,
-    payload_sha256: sha256Base64Url(payloadJson),
+    payload_sha256: sha256Base64Url(canonicalJson(payload)),
   };
   return wrapCanonicalBody(body);
 }
@@ -207,14 +234,19 @@ export function buildMutationOperation(input: {
   if (!UUID.test(mutationId)) jsonError('mutation_id must be a UUID');
   validateMutation(input.mutation);
   const payload = null;
+  const entityRev = assertCanonicalDecimal(input.entityRev, { positive: true });
+  const id = `mutation:${mutationId}`;
+  const mutation = e2eCodec
+    ? e2eCodec.seal(canonicalJson(input.mutation), e2eAad({ id, kind: 'mutation', entity_rev: entityRev, origin_device_id: input.originDeviceId }))
+    : input.mutation;
   const body: CanonicalContentBody = {
     body_schema_version: CONTENT_BODY_SCHEMA_VERSION,
     deleted: false,
     deleted_at: null,
-    entity_rev: assertCanonicalDecimal(input.entityRev, { positive: true }),
-    id: `mutation:${mutationId}`,
+    entity_rev: entityRev,
+    id,
     kind: 'mutation',
-    mutation: input.mutation,
+    mutation,
     origin_device_id: input.originDeviceId,
     origin_local_id: null,
     payload,
@@ -306,7 +338,8 @@ function validateBody(body: CanonicalContentBody): void {
     if (typeof record.id !== 'string' || !record.id.startsWith('mutation:') || !UUID.test(record.id.slice(9))) {
       jsonError('mutation id must be mutation:<canonical UUID>');
     }
-    validateMutation(record.mutation);
+    if (e2eCodec) assertSealed(record.mutation, 'mutation');
+    else validateMutation(record.mutation);
     return;
   }
 
@@ -327,9 +360,18 @@ function validateBody(body: CanonicalContentBody): void {
     return;
   }
   if (record.deleted_at !== null) jsonError('live deleted_at must be null');
-  validatePayload(kind, record.payload);
+  if (e2eCodec) assertSealed(record.payload, `${kind} payload`);
+  else validatePayload(kind, record.payload);
   if (sha256Base64Url(canonicalJson(record.payload)) !== record.payload_sha256) {
     jsonError('payload_sha256 does not match canonical payload');
+  }
+}
+
+function assertSealed(value: unknown, name: string): void {
+  try {
+    assertSealedPayload(value);
+  } catch {
+    jsonError(`${name} must be sealed while end-to-end encryption is on`);
   }
 }
 
@@ -511,13 +553,32 @@ export function decodeHubChange(change: CanonicalHubChange): {
   const serverTs = change.server_ts === undefined
     ? 0
     : canonicalDecimalToSafeInteger(change.server_ts, 'server_ts');
+  const body = parseCanonicalOperation({
+    body: change.body,
+    operation_sha256: change.operation_sha256,
+  });
   return {
     seq,
-    body: parseCanonicalOperation({
-      body: change.body,
-      operation_sha256: change.operation_sha256,
-    }),
+    body: e2eCodec ? openSealedBody(e2eCodec, body) : body,
     operation_sha256: change.operation_sha256,
     server_ts: serverTs,
   };
+}
+
+/**
+ * Plaintext copy of a sealed body, validated like a plaintext op would be.
+ * Throws when the key differs or the ciphertext/envelope was tampered with,
+ * which fails the whole pull page: nothing undecryptable is ever applied.
+ */
+function openSealedBody(codec: E2ECodec, body: CanonicalContentBody): CanonicalContentBody {
+  const aad = e2eAad(body);
+  if (body.kind === 'mutation') {
+    const mutation = JSON.parse(codec.open(body.mutation, aad)) as CanonicalMutation;
+    validateMutation(mutation);
+    return { ...body, mutation };
+  }
+  if (body.payload === null) return body;
+  const payload = JSON.parse(codec.open(body.payload, aad)) as Record<string, unknown>;
+  validatePayload(body.kind as ContentKind, payload);
+  return { ...body, payload };
 }

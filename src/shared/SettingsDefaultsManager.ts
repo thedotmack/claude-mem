@@ -254,6 +254,7 @@ export interface SettingsDefaults {
   // (#3618). Defaults: 40 ops / 90s (hub projection lease).
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
   CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: string;
+  CLAUDE_MEM_CLOUD_SYNC_E2E: string;   // 'true' = seal every synced payload with <data dir>/sync-e2e.key (hub sees ciphertext only)
   CLAUDE_MEM_LLM_TIMEOUT_MS: string;
   CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: string;
   // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
@@ -478,6 +479,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
+    CLAUDE_MEM_CLOUD_SYNC_E2E: 'false',  // End-to-end encryption for a self-hosted hub (workers/sync-hub self-host mode). Requires the same key on every device; never falls back to plaintext
     CLAUDE_MEM_LLM_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Per-attempt observer LLM deadline (retry.ts); see DEFAULT_LLM_TIMEOUT_MS
     CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: String(DEFAULT_LLM_TIMEOUT_MS),  // Oversized-field condensation deadline (field-optimizer.ts); a request to the same backend, so the same deadline
     // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not

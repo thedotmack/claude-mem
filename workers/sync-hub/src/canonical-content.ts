@@ -160,7 +160,17 @@ export async function wrapCanonicalBody(body: CanonicalContentBody): Promise<Can
 	return { body: serialized, operation_sha256: await sha256Base64Url(serialized) };
 }
 
-export async function parseCanonicalOperation(op: unknown): Promise<{
+export interface ParseOptions {
+	/**
+	 * End-to-end mode (self-host OPAQUE_PAYLOADS=1): live payloads and
+	 * mutations must be sealed blobs, which the hub never opens. The envelope
+	 * keeps every other rule; plaintext payloads are refused so a
+	 * misconfigured client can never store readable memories here.
+	 */
+	opaque?: boolean;
+}
+
+export async function parseCanonicalOperation(op: unknown, options: ParseOptions = {}): Promise<{
 	body: CanonicalContentBody;
 	serialized: string;
 	operationSha256: string;
@@ -189,7 +199,7 @@ export async function parseCanonicalOperation(op: unknown): Promise<{
 	if (canonicalJson(parsed) !== wrapper.body) invalid("body is not canonical JSON");
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) invalid("body must be an object");
 	const body = parsed as unknown as CanonicalContentBody;
-	await validateBody(body);
+	await validateBody(body, options.opaque === true);
 	return {
 		body,
 		serialized: wrapper.body,
@@ -220,7 +230,7 @@ const PAYLOAD_FILTERABLE_FIELDS = new Set([
 	"content_session_id", "memory_session_id", "merged_into_project", "platform_source", "project",
 ]);
 
-async function validateBody(body: CanonicalContentBody): Promise<void> {
+async function validateBody(body: CanonicalContentBody, opaque = false): Promise<void> {
 	const record = exactObject(body, ENVELOPE_KEYS, "operation body");
 	if (record.body_schema_version !== CONTENT_BODY_SCHEMA_VERSION) invalid("unsupported body_schema_version");
 	if (record.payload_schema_version !== CONTENT_PAYLOAD_SCHEMA_VERSION) invalid("unsupported payload_schema_version");
@@ -240,7 +250,8 @@ async function validateBody(body: CanonicalContentBody): Promise<void> {
 		if (typeof record.id !== "string" || !record.id.startsWith("mutation:") || !UUID.test(record.id.slice(9))) {
 			invalid("mutation id must be mutation:<canonical UUID>");
 		}
-		validateMutation(record.mutation);
+		if (opaque) assertSealed(record.mutation, "mutation");
+		else validateMutation(record.mutation);
 		return;
 	}
 
@@ -261,9 +272,28 @@ async function validateBody(body: CanonicalContentBody): Promise<void> {
 		return;
 	}
 	if (record.deleted_at !== null) invalid("live deleted_at must be null");
-	validatePayload(kind, record.payload);
+	if (opaque) assertSealed(record.payload, `${kind} payload`);
+	else validatePayload(kind, record.payload);
 	if (await sha256Base64Url(canonicalJson(record.payload)) !== record.payload_sha256) {
 		invalid("payload_sha256 does not match canonical payload");
+	}
+}
+
+/** Same shape as the client's E2ECodec SealedPayload (src/services/sync/E2ECodec.ts). */
+const SEALED_ALG = "cmem-e2e-v1";
+const SEALED_KID = /^[0-9a-f]{16}$/;
+const SEALED_NONCE = /^[A-Za-z0-9_-]{16}$/;
+const SEALED_CT = /^[A-Za-z0-9_-]{22,}$/;
+
+function assertSealed(value: unknown, name: string): void {
+	const record = exactObject(value, ["alg", "ct", "kid", "n"], `${name} (sealed)`);
+	if (
+		record.alg !== SEALED_ALG
+		|| typeof record.kid !== "string" || !SEALED_KID.test(record.kid)
+		|| typeof record.n !== "string" || !SEALED_NONCE.test(record.n)
+		|| typeof record.ct !== "string" || !SEALED_CT.test(record.ct)
+	) {
+		invalid(`${name} must be an end-to-end sealed ${SEALED_ALG} payload`);
 	}
 }
 

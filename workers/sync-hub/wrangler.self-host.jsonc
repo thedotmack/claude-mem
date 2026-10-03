@@ -1,0 +1,55 @@
+/**
+ * Self-hosted, end-to-end encrypted Sync Hub for ONE user on the Workers Free
+ * plan (see SELF-HOST.md). Deploy with:
+ *   node scripts/self-host-setup.mjs
+ * which runs `wrangler deploy --config wrangler.self-host.jsonc` and sets the
+ * SELF_HOST_TOKEN and SELF_HOST_USER_ID secrets.
+ *
+ * Differences from the cmem.ai Pro config (wrangler.jsonc):
+ * - auth: one shared bearer secret (SELF_HOST_TOKEN) pinned to one user id,
+ *   no TOKEN_VERIFY_URL call and no AUTH_CACHE KV;
+ * - PROJECTION_MODE=none: no search projector, a push is acked once durable;
+ * - OPAQUE_PAYLOADS=1: payloads must be client-sealed (CLAUDE_MEM_CLOUD_SYNC_E2E),
+ *   the hub stores ciphertext only and refuses plaintext;
+ * - no crons, no watchdog, /internal/* disabled.
+ */
+{
+	"name": "cmem-sync-hub",
+	"main": "src/self-host-entry.ts",
+	"compatibility_date": "2026-07-14",
+	"exports": {
+		"SyncHub": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		}
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "SYNC_HUB",
+				"class_name": "SyncHub"
+			}
+		]
+	},
+	"triggers": {
+		"crons": []
+	},
+	"vars": {
+		"FORWARD_ORIGIN": "",
+		"TOKEN_VERIFY_URL": "",
+		"INTERNAL_PROJECTOR_URL": "",
+		"KILL_SWITCH_CACHE_MS": "",
+		"PROJECTION_MODE": "none",
+		"OPAQUE_PAYLOADS": "1"
+		// SELF_HOST_TOKEN and SELF_HOST_USER_ID are secrets (a var would reset
+		// on every redeploy and shares one namespace with secrets).
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 0.01,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 0.01
+		}
+	}
+}
