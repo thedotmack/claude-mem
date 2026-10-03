@@ -74,6 +74,24 @@ describe('nullable memory item updates', () => {
       expect(response.memories.some((memory: { id: string }) => memory.id === id)).toBe(true);
     }
   });
+  it('allows metadata and link edits on existing empty records without adding content', () => {
+    db = new Database(':memory:');
+    const project = new ProjectsRepository(db).create({ name: 'project' });
+    const session = new ServerSessionsRepository(db).create({ projectId: project.id });
+    const repo = new MemoryItemsRepository(db);
+    // The repository contract allows these rows, including records predating
+    // the public creation check. An unrelated edit does not clear content.
+    const item = repo.create({ projectId: project.id, kind: 'manual', type: 'note' });
+    let patchHandler: any;
+    const app = { get() {}, post() {}, patch(path: string, ...handlers: any[]) { if (path === '/v1/memories/:id') patchHandler = handlers.at(-1); } };
+    new ServerV1Routes({ getDatabase: () => db }).setupRoutes(app as any);
+    let status = 200; let response: any;
+    const res = { json(value: unknown) { response = value; }, status(value: number) { status = value; return this; } };
+    patchHandler({ params: { id: item.id }, body: { metadata: { label: 'updated' }, serverSessionId: session.id } }, res);
+    expect(status).toBe(200);
+    expect(response.memory).toMatchObject({ title: null, text: null, narrative: null, metadata: { label: 'updated' }, serverSessionId: session.id });
+    expect(repo.getById(item.id)?.metadata).toEqual({ label: 'updated' });
+  });
   it('retains creation defaults and PATCH validation', () => {
     expect(CreateMemoryItemSchema.parse({ projectId: 'project', kind: 'manual', type: 'note' })).toMatchObject({ title: null, facts: [], metadata: {} });
     expect(() => UpdateMemoryItemSchema.parse({ title: '' })).toThrow();

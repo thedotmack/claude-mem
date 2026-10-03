@@ -225,8 +225,9 @@ export class ServerV1Routes implements RouteHandler {
         return;
       }
       // PATCH omission preserves stored values, while explicit null/[] clears
-      // them. Check the resulting content before writing, just as creation does.
-      if (!hasSearchableContent({ ...existing, ...body })) {
+      // them. Reject losing searchable content, while allowing unrelated edits
+      // to existing empty records that predate the public creation check.
+      if (hasSearchableContent(existing) && !hasSearchableContent({ ...existing, ...body })) {
         res.status(400).json({
           error: 'ValidationError',
           message: 'memory_items requires at least one searchable text field; refusing to clear the last searchable field',
