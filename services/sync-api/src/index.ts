@@ -385,11 +385,18 @@ export async function startSyncApi(
 		max: 10,
 		idle_timeout: 20,
 		connect_timeout: 10,
+		// Neon's proxy silently drops these GUCs when they are sent as discrete
+		// startup keys (prod read back 0 / 0 / 5min) but honors them as `-c`
+		// flags in the `options` startup parameter. A `?options=` in
+		// DATABASE_URL would replace this string: postgres.js lets URL
+		// parameters win.
 		connection: {
 			application_name: "cmem-sync-api",
-			statement_timeout: timeouts.statementTimeoutMs,
-			lock_timeout: timeouts.lockTimeoutMs,
-			idle_in_transaction_session_timeout: timeouts.idleInTransactionSessionTimeoutMs,
+			options: [
+				`-c statement_timeout=${timeouts.statementTimeoutMs}`,
+				`-c lock_timeout=${timeouts.lockTimeoutMs}`,
+				`-c idle_in_transaction_session_timeout=${timeouts.idleInTransactionSessionTimeoutMs}`,
+			].join(" "),
 		},
 	});
 	await applyMigrations(sql);

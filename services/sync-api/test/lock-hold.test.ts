@@ -33,6 +33,40 @@ async function deviceCursor(observer: postgres.Sql, userId: string, deviceId: st
 	return row.last_ack_seq;
 }
 
+describe("pooled session bounds", () => {
+	// Regression: Neon's proxy drops these GUCs when they arrive as discrete
+	// startup keys (prod read back statement_timeout=0, lock_timeout=0,
+	// idle_in_transaction_session_timeout=5min) and only honors them inside the
+	// `options` startup parameter. Vanilla Postgres honors both forms, so also
+	// pin the transport, or a refactor back to discrete keys would pass here
+	// and silently drop every backstop in production.
+	it("sends statement, lock and idle-in-transaction bounds through the options startup parameter", async () => {
+		const { app } = await trackedApp();
+		const [settings] = await app.sql<Record<string, string>[]>`
+			SELECT current_setting('application_name') AS application_name,
+			       current_setting('statement_timeout') AS statement_timeout,
+			       current_setting('lock_timeout') AS lock_timeout,
+			       current_setting('idle_in_transaction_session_timeout') AS idle_in_transaction_session_timeout
+		`;
+		expect({ ...settings }).toEqual({
+			application_name: "cmem-sync-api",
+			statement_timeout: "20s",
+			lock_timeout: "15s",
+			idle_in_transaction_session_timeout: "15s",
+		});
+
+		const startupParameters = app.sql.options.connection as Record<string, unknown>;
+		expect(Object.keys(startupParameters).filter((key) => key.endsWith("_timeout"))).toEqual([]);
+		for (const flag of [
+			"-c statement_timeout=20000",
+			"-c lock_timeout=15000",
+			"-c idle_in_transaction_session_timeout=15000",
+		]) {
+			expect(String(startupParameters.options)).toContain(flag);
+		}
+	});
+});
+
 describe("per-user lock holds", () => {
 	// Regression: pulls and status ran inside the per-user write transaction,
 	// so every read queued behind the user's slowest work while holding a
