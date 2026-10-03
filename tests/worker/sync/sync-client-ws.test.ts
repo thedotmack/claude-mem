@@ -314,6 +314,26 @@ describe('SyncClient advisory WebSocket', () => {
     expect(apply.getCursor()).toBe('1'); // healed over HTTP
   });
 
+  it('self-heals on a frame carrying an undecodable change instead of setting it aside', async () => {
+    const { state, impl } = makeHub({ epoch: '1' });
+    const { ctor, sockets } = makeWsFactory();
+    const client = makeClient(impl, ctor);
+    client.start();
+    await sleep(30);
+    sockets[0].open();
+    await sleep(30);
+
+    // The hub's own copy is valid; only the socket delivery is corrupted.
+    state.ops = [hubOp(1, '11')];
+    sockets[0].message(opFrame('1', [{ ...hubOp(1, '11'), body: 'not json{' }]));
+    await sleep(50);
+
+    expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1);
+    expect(apply.getCursor()).toBe('1'); // healed over HTTP from the unchanged cursor
+    expect(count('observations')).toBe(1);
+    expect(count('sync_pull_quarantine')).toBe(0);
+  });
+
   it('self-heals on an unknown frame type', async () => {
     const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
