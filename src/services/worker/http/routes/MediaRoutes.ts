@@ -53,6 +53,7 @@ export function isTrustedMediaRead(req: Request): boolean {
   return true;
 }
 
+/** The generic metadata body: no locator, object key, provenance or event identity. */
 function safeMetadata(metadata: MediaMetadata): MediaMetadata {
   const variant = (value: MediaMetadata['viewer']): MediaMetadata['viewer'] => value && ({
     sha256: value.sha256, width: value.width, height: value.height,
@@ -64,6 +65,7 @@ function safeMetadata(metadata: MediaMetadata): MediaMetadata {
     id: metadata.id, state: metadata.state, recipe: metadata.recipe,
     encoderVersion: metadata.encoderVersion, viewer: variant(metadata.viewer),
     llm: variant(metadata.llm), failureCode: metadata.failureCode,
+    capturedAt: metadata.capturedAt,
   };
 }
 
@@ -80,13 +82,15 @@ function sendJsonWithoutCacheValidators(res: Response, status: number, body: unk
 
 export class MediaRoutes extends BaseRouteHandler {
   constructor(
-    private readonly getStore: () => Pick<MediaStore, 'getMetadata' | 'readVariant'>,
+    private readonly getStore: () => Pick<MediaStore, 'getMetadata' | 'readVariant' | 'ownerSourceDetails'>,
     /** Lazily downloads and verifies a second-device replica before any read. */
     private readonly resolveReplica: (id: string) => Promise<void> = async () => {},
   ) { super(); }
 
   setupRoutes(app: express.Application): void {
     app.get('/api/media/:id', this.guard, this.getMetadata);
+    // Registered before the variant route, which would otherwise claim it.
+    app.get('/api/media/:id/details', this.guard, this.getOwnerDetails);
     app.get('/api/media/:id/:variant', this.guard, this.getVariant);
   }
 
@@ -106,9 +110,28 @@ export class MediaRoutes extends BaseRouteHandler {
   private getMetadata = this.wrapHandler(async (req, res): Promise<void> => {
     const id = assertMediaId(req.params.id);
     await this.resolveReplica(id);
+    // Generic metadata never reads provenance: polls stay cheap and a bad
+    // provenance row cannot break readiness. Source details are /details only.
     const metadata = this.getStore().getMetadata(id);
     if (metadata.id !== id || metadata.state === 'deleted') throw new MediaError('media_not_found');
     sendJsonWithoutCacheValidators(res, 200, safeMetadata(metadata));
+  });
+
+  /**
+   * Owner-only provenance, including the trusted local file locator when one
+   * exists. It sits behind the same loopback/own-page guard as the pixels and
+   * is fetched only on an explicit viewer request, never by a feed.
+   */
+  private getOwnerDetails = this.wrapHandler(async (req, res): Promise<void> => {
+    const id = assertMediaId(req.params.id);
+    const store = this.getStore();
+    const metadata = store.getMetadata(id);
+    if (metadata.id !== id || metadata.state === 'deleted') throw new MediaError('media_not_found');
+    const details = store.ownerSourceDetails(id);
+    sendJsonWithoutCacheValidators(res, 200, {
+      id: details.id, platform: details.platform, sourceShape: details.sourceShape,
+      sourceLocatorPath: details.sourceLocatorPath, sourceAvailability: details.sourceAvailability,
+    });
   });
 
   private getVariant = this.wrapHandler(async (req, res): Promise<void> => {

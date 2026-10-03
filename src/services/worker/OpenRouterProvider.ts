@@ -13,6 +13,7 @@ import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '.
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
+import { buildCmemCorrelationHeader, CMEM_CORRELATION_HEADER } from './cmem-request-correlation.js';
 import { ClassifiedProviderError, rateLimitUntilNextKey, type ProviderErrorClass } from './provider-errors.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
@@ -999,6 +1000,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     label?: ObserverRequestLabel,
     forceReasoningOff: boolean = false,
     carriesImages: boolean = false,
+    cmemCorrelationHeaderValue?: string,
   ): Promise<ChatCompletionExchange> {
     return sendChatCompletion({
       url: apiUrl,
@@ -1009,6 +1011,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         // Tracing only: names every send of one batch in our logs and the
         // provider's. Never treated as server-side idempotency.
         'x-client-request-id': clientAttemptId,
+        // ID-only correlation, cmem gateway only (cmem-request-correlation.ts).
+        ...(cmemCorrelationHeaderValue ? { [CMEM_CORRELATION_HEADER]: cmemCorrelationHeaderValue } : {}),
       },
       body: buildOpenRouterRequestBody({
         model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort, label, forceReasoningOff,
@@ -1068,6 +1072,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
           const result = await this.queryOpenRouterRequest(
             history, messages, fitted.messages, apiKey, poolSize, model, fallbackModels, apiUrl, siteUrl, appName,
             signal, plainText, perAttemptTimeoutMs, extraBody, reasoningEffort, paidSendBudget, label, fitted.images.length,
+            fitted.images.map(image => image.eventKey),
           );
           return { ...result, deliveredImageLabels: fitted.images.map(image => image.requestLabel) };
         } catch (error) {
@@ -1083,6 +1088,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const result = await this.queryOpenRouterRequest(
       history, messages, messages, apiKey, poolSize, model, fallbackModels, apiUrl, siteUrl, appName,
       signal, plainText, perAttemptTimeoutMs, extraBody, reasoningEffort, paidSendBudget, label, 0,
+      turnImages?.images.map(image => image.eventKey) ?? [],
     );
     return turnImages?.images.length ? { ...result, deliveredImageLabels: [] } : result;
   }
@@ -1107,8 +1113,19 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     paidSendBudget?: PaidSendBudget,
     label?: ObserverRequestLabel,
     imageCount = 0,
+    /** Media source events this request carries (or, text-only, came from); IDs only. */
+    correlationEventKeys: readonly string[] = [],
   ): Promise<ProviderQueryResult> {
     const carriesImages = imageCount > 0;
+    // One logical request: every send (retries, the reasoning retry) shares
+    // request_id and counts attempts.
+    const correlationRequestId = randomUUID();
+    let correlationAttempt = 0;
+    const nextCorrelationHeaderValue = (): string | undefined => {
+      if (!isCmemGatewayUrl(apiUrl)) return undefined;
+      correlationAttempt += 1;
+      return buildCmemCorrelationHeader({ requestId: correlationRequestId, attempt: correlationAttempt, eventKeys: correlationEventKeys });
+    };
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
     // Text only: image token cost is provider-specific, so it is reported as a count.
     const estimatedTokens = this.estimateTokens(messages.map(m => m.content).join(''));
@@ -1141,6 +1158,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       const exchange = await this.requestChatCompletion(
         apiUrl, apiKey, model, fallbackModels, requestMessages, siteUrl, appName, clientAttemptId, attemptSignal,
         maxOutputTokens, liveness, plainText, extraBody, reasoningEffort, label, false, carriesImages,
+        nextCorrelationHeaderValue(),
       );
       const requestId = openRouterRequestId(exchange.headers);
       finalRequestId = requestId;
@@ -1234,6 +1252,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
           const exchange = await this.requestChatCompletion(
             apiUrl, apiKey, model, fallbackModels, requestMessages, siteUrl, appName, clientAttemptId, retrySignal,
             maxOutputTokens, liveness, plainText, extraBody, reasoningEffort, label, true, carriesImages,
+            nextCorrelationHeaderValue(),
           );
           const requestId = openRouterRequestId(exchange.headers);
           finalRequestId = requestId;

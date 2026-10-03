@@ -33,6 +33,7 @@ import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { logChromaWriteFailure } from '../search/errors.js';
 import { linkAttachmentRefs, type ResponseMediaContext } from '../../media/inference.js';
+import { observationMediaFromMetadata } from '../../media/feed.js';
 import { writeMediaEventResults, writeObservationMediaLinks, type MediaLinkageWriteResult, type ObservationLinkWrite } from '../../media/linkage.js';
 import type { Database } from 'bun:sqlite';
 
@@ -1279,6 +1280,16 @@ async function syncAndBroadcastObservations(
 
     dbManager.getCloudSync()?.notify();
 
+    // Media refs come from the committed row, so SSE carries exactly what the
+    // paged and by-id feeds serialize. Only a turn that delivered pixels can
+    // have written a manifest (linkage runs only then), so other turns skip
+    // the read.
+    const media = context.media?.imagesDelivered
+      ? observationMediaFromMetadata(
+          (dbManager.getSessionStore().db.prepare('SELECT metadata FROM observations WHERE id = ?').get(obsId) as { metadata: unknown } | null)?.metadata,
+        )
+      : undefined;
+
     broadcastObservation(worker, {
       id: obsId,
       memory_session_id: memorySessionId,
@@ -1296,7 +1307,8 @@ async function syncAndBroadcastObservations(
       files_modified: JSON.stringify(obs.files_modified || []),
       project: context.project,
       prompt_number: context.promptNumber,
-      created_at_epoch: result.createdAtEpoch
+      created_at_epoch: result.createdAtEpoch,
+      ...(media ? { media } : {}),
     });
   }
 

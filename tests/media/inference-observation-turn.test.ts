@@ -21,6 +21,9 @@ import { processAgentResponse, snapshotResponseContext } from '../../src/service
 import { freezeResponseMedia, prepareTurnImages } from '../../src/services/media/inference.js';
 import { LOCAL_IMAGE_REQUEST_BOUNDS } from '../../src/services/worker/media-capability.js';
 import { fitTurnImagesToBody, buildOpenRouterRequestBody } from '../../src/services/worker/OpenRouterProvider.js';
+import { DataRoutes } from '../../src/services/worker/http/routes/DataRoutes.js';
+import { PaginationHelper } from '../../src/services/worker/PaginationHelper.js';
+import { CMEM_CORRELATION_HEADER } from '../../src/services/worker/cmem-request-correlation.js';
 
 const SCRATCH = join(import.meta.dir, '../../.scratch');
 const fixtureText = (name: string) => readFileSync(new URL(`../fixtures/media-v1/inference/${name}`, import.meta.url), 'utf8');
@@ -51,6 +54,7 @@ let modeSpy: ReturnType<typeof spyOn>;
 let logSpies: ReturnType<typeof spyOn>[];
 let originalFetch: typeof fetch;
 let chatBodies: string[];
+let chatHeaders: Headers[];
 let chatReplies: Array<() => Response>;
 let catalog: unknown[];
 let otherCalls: string[];
@@ -97,6 +101,7 @@ beforeEach(() => {
   catalog = IMAGE_CATALOG;
   capabilityBody = QUALIFIED_RESPONSE;
   chatBodies = [];
+  chatHeaders = [];
   chatReplies = [];
   otherCalls = [];
   originalFetch = globalThis.fetch;
@@ -111,6 +116,7 @@ beforeEach(() => {
       return new Response(JSON.stringify(capabilityBody), { status: 200 });
     }
     chatBodies.push(String(init?.body));
+    chatHeaders.push(new Headers(init?.headers));
     const reply = chatReplies.shift();
     if (!reply) throw new Error(`unexpected chat call to ${url}`);
     return reply();
@@ -712,5 +718,158 @@ describe('verification fixes', () => {
     expect(stateOf(leftover.mediaEventKey!)).toBe('skipped');
     expect(count('SELECT COUNT(*) n FROM media_event_results WHERE event_key=?', message.mediaEventKey)).toBe(1);
     expect(count('SELECT COUNT(*) n FROM media_event_results WHERE event_key=?', leftover.mediaEventKey)).toBe(0);
+  });
+});
+
+// Phase 6: every local observation feed serializes the same validated refs.
+describe('observation media feeds (phase 6)', () => {
+  type Handler = (req: any, res: any) => unknown;
+
+  function dataRouteHandlers() {
+    const dbManager = { getSessionStore: () => sessions };
+    const routes = new DataRoutes(new PaginationHelper(dbManager as any), dbManager as any, {} as any, { broadcast: () => {} } as any, {} as any, Date.now());
+    const handlers = new Map<string, Handler>();
+    // Only reads are exercised; DELETE shares a path with GET by-id.
+    const register = (path: string, ...chain: Handler[]) => { handlers.set(path, chain.at(-1)!); };
+    routes.setupRoutes({ get: register, post: register, delete: () => {} } as any);
+    return handlers;
+  }
+
+  async function call(handler: Handler, req: Record<string, unknown>) {
+    let body: unknown;
+    let status = 200;
+    const res: any = {
+      status(code: number) { status = code; return res; },
+      json(value: unknown) { body = JSON.parse(JSON.stringify(value)); return res; },
+      headersSent: false,
+    };
+    await handler({ params: {}, query: {}, body: {}, get: () => undefined, ...req }, res);
+    expect({ status, body }).toMatchObject({ status: 200 });
+    return body as any;
+  }
+
+  async function runTurnWithBroadcasts(message: PendingMessageWithId, config: object, xml: string) {
+    const events: any[] = [];
+    chatReplies.push(reply(xml));
+    const observer = provider(() => [message]);
+    await (observer as any).processObservationMessage(makeSession(), message, { sseBroadcaster: { broadcast: (event: any) => events.push(event) } }, config, message._originalTimestamp, join(dir, 'project'));
+    return events.filter(event => event.type === 'new_observation').map(event => JSON.parse(JSON.stringify(event.observation)));
+  }
+
+  it('paged, by-id, batch and SSE responses carry identical refs and no provenance', async () => {
+    await ingest('toolu_feed', redPng, bluePng);
+    const message = pending(queued[0]);
+    const sse = await runTurnWithBroadcasts(message, directConfig(), fixtureText('observation-with-refs.xml'));
+    const ids = rows('SELECT id FROM observations ORDER BY id').map(row => row.id as number);
+    expect(ids).toHaveLength(2);
+    expect(sse.map(row => row.id)).toEqual(ids);
+
+    const handlers = dataRouteHandlers();
+    const paged = await call(handlers.get('/api/observations')!, { query: { offset: '0', limit: '20' } });
+    const batch = await call(handlers.get('/api/observations/batch')!, { body: { ids } });
+    for (const id of ids) {
+      const manifest = JSON.parse(rows('SELECT metadata FROM observations WHERE id=?', id)[0].metadata).cmem_media_v1;
+      const byId = await call(handlers.get('/api/observation/:id')!, { params: { id: String(id) } });
+      const fromPage = paged.items.find((row: any) => row.id === id);
+      const fromBatch = batch.find((row: any) => row.id === id);
+      const fromSse = sse.find(row => row.id === id);
+      expect(manifest.attachments.length).toBeGreaterThan(0);
+      for (const feedRow of [fromPage, byId, fromBatch, fromSse]) expect(feedRow.media).toEqual(manifest);
+      // The paged feed keeps its pre-media shape: no raw metadata column.
+      expect('metadata' in fromPage).toBe(false);
+    }
+
+    const serialized = JSON.stringify({ paged, batch, sse });
+    const attachment = rows('SELECT provenance FROM media_attachments LIMIT 1')[0];
+    const provenance = JSON.parse(attachment.provenance);
+    for (const forbidden of [dir, 'source_pointer', 'source_sha256', provenance.source_sha256, message.mediaEventKey!, 'data:image', '.webp', 'event_identity', 'toolu_feed']) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  it('image-free observations keep exactly their previous feed shape on every route', async () => {
+    await ingest('toolu_plain');
+    const sse = await runTurnWithBroadcasts(pending(queued[0]), directConfig(), '<observation><type>discovery</type><title>Plain</title></observation>');
+    const id = rows('SELECT id FROM observations')[0].id as number;
+    const handlers = dataRouteHandlers();
+    const paged = await call(handlers.get('/api/observations')!, { query: {} });
+    const byId = await call(handlers.get('/api/observation/:id')!, { params: { id: String(id) } });
+    const batch = await call(handlers.get('/api/observations/batch')!, { body: { ids: [id] } });
+    for (const row of [paged.items[0], byId, batch[0], sse[0]]) expect('media' in row).toBe(false);
+    expect(Object.keys(paged.items[0]).sort()).toEqual([
+      'concepts', 'content_session_id', 'created_at', 'created_at_epoch', 'facts', 'files_modified', 'files_read', 'id',
+      'memory_session_id', 'merged_into_project', 'narrative', 'platform_source', 'project', 'prompt_number', 'subtitle', 'text', 'title', 'type',
+    ]);
+  });
+
+  it('an invalid stored namespace fails closed to an image-free row on every route', async () => {
+    await ingest('toolu_invalid', redPng);
+    await runTurnWithBroadcasts(pending(queued[0]), directConfig(), '<observation><type>discovery</type><title>Viewport</title></observation>');
+    const id = rows('SELECT id FROM observations')[0].id as number;
+    db.prepare(`UPDATE observations SET metadata=? WHERE id=?`).run(JSON.stringify({ cmem_media_v1: { version: 1, attachments: [{ id: 'not-a-uuid', label: 'x', inspection: 'inspected' }] } }), id);
+    const handlers = dataRouteHandlers();
+    const warn = logSpies[2];
+    warn.mockClear();
+    const paged = await call(handlers.get('/api/observations')!, { query: {} });
+    const byId = await call(handlers.get('/api/observation/:id')!, { params: { id: String(id) } });
+    expect('media' in paged.items[0]).toBe(false);
+    expect('media' in byId).toBe(false);
+    // A bounded code is logged; never the row ID, labels or metadata text.
+    const logged = warn.mock.calls.filter(call => String(call[1]).includes('manifest invalid'));
+    expect(logged.length).toBeGreaterThan(0);
+    for (const call of logged) expect(call[2]).toEqual({ code: 'invalid_manifest' });
+    expect(JSON.stringify(logged)).not.toContain('not-a-uuid');
+  });
+});
+
+describe('cmem gateway request correlation (phase 6)', () => {
+  it('sends a bounded ID-only X-Cmem-Correlation header to the gateway only', async () => {
+    await ingest('toolu_corr', redPng, bluePng);
+    const message = pending(queued[0]);
+    chatReplies.push(reply('<observation><type>discovery</type><title>Viewport</title></observation>'));
+    await runTurn(message, gatewayConfig());
+    const header = chatHeaders[0].get(CMEM_CORRELATION_HEADER);
+    expect(header).not.toBeNull();
+    expect(Buffer.byteLength(header!)).toBeLessThanOrEqual(1024);
+    const correlation = JSON.parse(header!);
+    expect(Object.keys(correlation).sort()).toEqual(['attempt', 'event_keys', 'request_id']);
+    expect(correlation.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(correlation.attempt).toBe(1);
+    expect(correlation.event_keys).toEqual([message.mediaEventKey]);
+    // The chat body is unchanged by correlation.
+    expect(chatBodies[0]).not.toContain('request_id');
+
+    chatReplies.push(reply('<observation><type>discovery</type><title>Direct</title></observation>'));
+    await ingest('toolu_corr_direct', redPng);
+    await runTurn(pending(queued[1], 2), directConfig());
+    expect(chatHeaders[1].get(CMEM_CORRELATION_HEADER)).toBeNull();
+  });
+
+  it('a transient retry of the same request keeps request_id and increments attempt', async () => {
+    await ingest('toolu_corr_retry', redPng);
+    const message = pending(queued[0]);
+    chatReplies.push(
+      () => new Response(JSON.stringify({ error: { code: 'upstream_error', message: 'busy' } }), { status: 503 }),
+      reply('<observation><type>discovery</type><title>Viewport</title></observation>'),
+    );
+    await runTurn(message, gatewayConfig());
+    const [first, second] = chatHeaders.map(headers => JSON.parse(headers.get(CMEM_CORRELATION_HEADER)!));
+    expect(chatHeaders).toHaveLength(2);
+    expect(second.request_id).toBe(first.request_id);
+    expect([first.attempt, second.attempt]).toEqual([1, 2]);
+  });
+
+  it('a text-only resend is its own request that keeps the originating event keys', async () => {
+    await ingest('toolu_corr_resend', redPng);
+    const message = pending(queued[0]);
+    chatReplies.push(
+      () => new Response(JSON.stringify({ error: { code: 'bad_request', message: 'Bad request', detail: 'media_request_invalid:too_many_images', request_id: 'req_1' } }), { status: 400 }),
+      reply('<observation><type>discovery</type><title>Viewport</title></observation>'),
+    );
+    await runTurn(message, gatewayConfig());
+    const [first, second] = chatHeaders.map(headers => JSON.parse(headers.get(CMEM_CORRELATION_HEADER)!));
+    expect(first.request_id).not.toBe(second.request_id);
+    expect(first.event_keys).toEqual([message.mediaEventKey]);
+    expect(second.event_keys).toEqual([message.mediaEventKey]);
   });
 });

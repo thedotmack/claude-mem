@@ -1,3 +1,4 @@
+import type { MediaManifest } from '../shared/media-contract.js';
 
 import type { Response } from 'express';
 import type { PaidSendBudget } from './worker/paid-send-budget.js';
@@ -309,6 +310,8 @@ export interface Observation {
   prompt_number: number;
   created_at: string;
   created_at_epoch: number;
+  /** Validated `metadata.cmem_media_v1` refs; absent for image-free rows (see media/feed.ts). */
+  media?: MediaManifest;
 }
 
 export interface Summary {
