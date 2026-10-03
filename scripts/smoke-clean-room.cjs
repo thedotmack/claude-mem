@@ -40,6 +40,7 @@ const path = require('path');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const PLUGIN_DIR = path.join(REPO_ROOT, 'plugin');
+const EXPECTED_VERSION = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
 // zod v4 subpath exports that @modelcontextprotocol/sdk (and friends) require at
 // runtime. These are the exact specifiers behind the #2730 incident.
@@ -70,6 +71,46 @@ function rmrf(p) {
     fs.rmSync(p, { recursive: true, force: true });
   } catch {
     // Best-effort cleanup; never mask the real failure.
+  }
+}
+
+function checkMediaRuntime(pluginRoot, failures) {
+  const worker = path.join(pluginRoot, 'scripts', 'worker-service.cjs');
+  let decoder;
+  try {
+    // Sharp0.35's exported entry is dist/index.cjs; anchor resolution in the
+    // installed plugin/package rather than the checkout running this script.
+    decoder = path.dirname(path.dirname(require.resolve('sharp', { paths: [pluginRoot] })));
+  } catch {
+    failures.push('Installed plugin is missing its direct Sharp runtime');
+    return;
+  }
+  if (!fs.existsSync(decoder)) {
+    failures.push('Installed plugin is missing its direct Sharp runtime');
+    return;
+  }
+  const env = { ...process.env, NODE_PATH: '', CLAUDE_MEM_DATA_DIR: path.join(pluginRoot, 'smoke-data'),
+    CLAUDE_MEM_MEDIA_CAPTURE_ENABLED: 'false', CLAUDE_MEM_MEDIA_INFERENCE_ENABLED: 'false' };
+  fs.renameSync(decoder, decoder + '.disabled');
+  try {
+    const text = spawnSync('bun', [worker, '--version'], {
+      cwd: pluginRoot, env, encoding: 'utf8', timeout: 30_000,
+    });
+    if (text.error || text.status !== 0 || text.stdout.trim() !== EXPECTED_VERSION) {
+      failures.push('Flags-off installed worker failed to print its exact version and exit without its media decoder');
+    }
+    const missing = spawnSync('bun', [worker, 'media-smoke'], { cwd: pluginRoot, env, encoding: 'utf8', timeout: 30_000 });
+    if (missing.error || missing.status !== 1 || missing.stderr.trim() !== '{"mediaRuntime":"failed","code":"decoder_unavailable"}') {
+      failures.push('Missing installed decoder did not fail with bounded JSON and nonzero exit');
+    }
+  } finally { fs.renameSync(decoder + '.disabled', decoder); }
+  const result = spawnSync('bun', [worker, 'media-smoke'], {
+    cwd: pluginRoot, env, encoding: 'utf8', timeout: 30_000,
+  });
+  if (result.error || result.status !== 0 || !result.stdout.includes('"mediaRuntime":"ok"')) {
+    failures.push(`Installed worker decoder invocation failed: ${result.stderr || result.stdout}`);
+  } else {
+    log(`  Installed worker decoded both WebP variants: ${result.stdout.trim()}`);
   }
 }
 
@@ -133,13 +174,10 @@ function checkPluginClosure(failures) {
   // long-running server, so we invoke it via `--version`. Invoking with
   // `--version` loads the full bundle — executing every eager top-level require,
   // including `require("zod/v3")` — and exits without starting the long-running
-  // server (the worker has no `--version` handler; argv simply falls through to a
-  // no-op path that prints nothing and exits 0). We bound it with a timeout as
-  // belt-and-suspenders: a TIMEOUT means the bundle loaded fine and started
-  // running (treated as success); the ONLY failure signal we assert on is a
-  // module-resolution error in the output. We deliberately do NOT assert on the
-  // minified internals of the bundle — only on the absence of
-  // `Cannot find module` / `MODULE_NOT_FOUND` and a non-crash exit.
+  // server: the explicit version handler returns before resolving a worker
+  // port or entering daemon startup. A timeout is a failed invocation; it no
+  // longer counts as a successful module load. No test depends on a worker
+  // already running on the developer machine.
   const workerEntry = path.join(tmpPlugin, 'scripts', 'worker-service.cjs');
   if (!fs.existsSync(workerEntry)) {
     failures.push(`bundled worker not found at ${workerEntry}`);
@@ -160,8 +198,7 @@ function checkPluginClosure(failures) {
       .find((l) => MODULE_NOT_FOUND_RE.test(l));
     failures.push(`worker boot hit a module-resolution error: ${firstLine.trim()}`);
   } else if (res.error && res.error.code === 'ETIMEDOUT') {
-    // Loaded fine and kept running — that's a healthy worker. Success.
-    log('  Worker loaded and started running (timeout reached, no missing module).');
+    failures.push('Worker --version failed to exit within the startup deadline');
   } else if (res.error) {
     // Any OTHER spawn error (ENOENT if bun isn't on PATH, EACCES, etc.) means we
     // never actually exercised the bundle — that is NOT a pass. Only a genuine
@@ -175,8 +212,13 @@ function checkPluginClosure(failures) {
         `${workerOut.trim().split('\n').slice(-3).join(' | ')}`
     );
   } else {
-    log('  Worker bundle loaded cleanly (no missing module).');
+    if (res.stdout.trim() !== EXPECTED_VERSION) {
+      failures.push('Worker --version did not print the exact package version');
+    } else {
+      log(`  Worker bundle printed version ${EXPECTED_VERSION} and exited cleanly.`);
+    }
   }
+  checkMediaRuntime(tmpPlugin, failures);
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +268,11 @@ function checkPackageCompleteness(failures) {
     failures.push(`installed package not found at ${pkgRoot}`);
     return;
   }
+
+  // npm installs the package root's direct Sharp dependency. The worker under
+  // plugin/scripts resolves that same installed runtime from its parent.
+  const installedPlugin = path.join(pkgRoot, 'plugin');
+  checkMediaRuntime(installedPlugin, failures);
   const installedPkg = JSON.parse(
     fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8')
   );
