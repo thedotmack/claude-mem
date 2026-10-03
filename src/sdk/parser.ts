@@ -79,7 +79,7 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
         next_steps: null,
         notes: null,
         skipped: true,
-        skip_reason: skipMatch[1] ?? null,
+        skip_reason: skipMatch[1] === undefined ? null : decodeXmlReferences(skipMatch[1]),
       },
     };
   }
@@ -249,12 +249,33 @@ function unwrapLabelWrappedTitle(title: string | null): string | null {
   return inner === '' ? title : inner;
 }
 
+// Decode only after extracting markup: an escaped tag is character data, not
+// another element. A single replacement pass keeps &amp;lt; as literal &lt;.
+const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+function decodeXmlReferences(value: string): string {
+  return value.replace(/<!\[CDATA\[[\s\S]*?\]\]>|&(?:amp|lt|gt|quot|apos|#(?:x[0-9a-fA-F]+|[0-9]+));/g, reference => {
+    if (reference.startsWith('<![CDATA[')) return reference;
+    const name = reference.slice(1, -1);
+    if (!name.startsWith('#')) return XML_ENTITIES[name];
+    const codePoint = name.startsWith('#x') ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+    // Only XML 1.0 legal characters are references; retain existing literal
+    // behavior for malformed/undeclared references in this text-XML bridge.
+    if (codePoint === 9 || codePoint === 10 || codePoint === 13 ||
+        (codePoint >= 0x20 && codePoint <= 0xD7FF) ||
+        (codePoint >= 0xE000 && codePoint <= 0xFFFD) ||
+        (codePoint >= 0x10000 && codePoint <= 0x10FFFF)) {
+      return String.fromCodePoint(codePoint);
+    }
+    return reference;
+  });
+}
+
 function extractField(content: string, fieldName: string): string | null {
   const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`, 'i');
   const match = regex.exec(content);
   if (!match) return null;
 
-  const trimmed = match[1].trim();
+  const trimmed = decodeXmlReferences(match[1]).trim();
   return trimmed === '' ? null : trimmed;
 }
 
@@ -273,7 +294,7 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'gi');
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
-    const trimmed = elementMatch[1].trim();
+    const trimmed = decodeXmlReferences(elementMatch[1]).trim();
     if (trimmed) {
       elements.push(trimmed);
     }
