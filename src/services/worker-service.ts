@@ -81,6 +81,7 @@ import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdopt
 import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
+import { InitPhaseTracker } from './server/init-phase.js';
 import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
 import {
@@ -242,6 +243,8 @@ export class WorkerService implements WorkerRef {
 
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
+  /** Boot progress streamed on GET /api/ready (starting → db_ready → routes_ready → ready | failed). */
+  readonly initPhaseTracker = new InitPhaseTracker();
   private isShuttingDown: boolean = false;
   private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
   private deferredSessionEndReplayTimer: ReturnType<typeof setInterval> | null = null;
@@ -328,6 +331,7 @@ export class WorkerService implements WorkerRef {
 
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
+      initPhaseSource: this.initPhaseTracker,
       getMcpReady: () => this.mcpReady,
       getDependencyHealth: () => snapshotDependencyHealth(),
       getChromaCrashState: () => this.chromaMcpManager
@@ -443,6 +447,7 @@ export class WorkerService implements WorkerRef {
         req.path === '/chroma/status' ||
         req.path === '/health' ||
         req.path === '/readiness' ||
+        req.path === '/ready' ||
         req.path === '/version' ||
         req.path === '/settings/dependency-health'
       ) {
@@ -647,6 +652,7 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+      this.initPhaseTracker.setInitPhase('db_ready');
 
       // A SessionEnd hook gets a tiny host budget and persists its identifier
       // when the worker is unavailable. Drain that idempotent spool as soon as
@@ -753,9 +759,11 @@ export class WorkerService implements WorkerRef {
       // unconfigured install answers {configured: false} instead of 404.
       this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
       logger.info('WORKER', 'CloudSyncRoutes registered');
+      this.initPhaseTracker.setInitPhase('routes_ready');
 
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
+      this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
       // Lifecycle telemetry (person profile = anonymous install UUID). ide is
@@ -856,6 +864,12 @@ export class WorkerService implements WorkerRef {
       return;
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+      // A throw after `ready` (transcript watcher, telemetry, …) leaves a worker
+      // that serves requests; only a pre-ready failure is the wedged state that
+      // /api/ready readers must recycle.
+      if (!this.initializationCompleteFlag) {
+        this.initPhaseTracker.setInitPhase('failed', error instanceof Error ? error.message : String(error));
+      }
     }
   }
 
