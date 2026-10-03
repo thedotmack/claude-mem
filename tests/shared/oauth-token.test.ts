@@ -14,6 +14,8 @@ import {
   resolveClaudeCredentialProfile,
   deriveMacKeychainServiceName,
   readMacOsKeychain,
+  readLinuxLibsecret,
+  readClaudeCredentialsFile,
   sanitizeMacOsKeychainAccount,
 } from '../../src/shared/oauth-token.js';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
@@ -730,6 +732,116 @@ describe('readMacOsKeychain (#4037) — keychain -a account follows Claude Code 
     expect(result.kind).toBe('present');
     if (result.kind === 'present') {
       expect(result.token).toBe('sk-ant-oat01-account-token');
+    }
+  });
+});
+
+/**
+ * #4348 — Linux: OAuth lookup only checked libsecret, but Claude Code stores
+ * credentials at `${configDir}/.credentials.json` (configDir defaults to
+ * ~/.claude). These tests cover the new on-disk fallback and the downgraded
+ * libsecret-miss logging when the file is present.
+ */
+describe('readClaudeCredentialsFile (#4348) — on-disk credentials file fallback', () => {
+  let credDir: string;
+
+  beforeEach(() => {
+    credDir = fs.mkdtempSync(join(fs.realpathSync(require('os').tmpdir()), 'claude-mem-creds-test-'));
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(credDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+
+  function writeCredentials(payload: unknown): void {
+    const content = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    fs.writeFileSync(join(credDir, '.credentials.json'), content);
+  }
+
+  it('returns token + expiry from the credentials file when present', () => {
+    const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+    writeCredentials({ claudeAiOauth: { accessToken: '<redacted>', expiresAt: futureExpiresAt } });
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('<redacted>');
+      expect(result.source).toBe('credentials-file');
+      expect(result.expiresAt).toBe(futureExpiresAt);
+    }
+  });
+
+  it('returns absent when the file is missing (behavior unchanged)', () => {
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('absent');
+    if (result.kind === 'absent') {
+      expect(result.reason).toContain('No credentials file');
+    }
+  });
+
+  it('handles malformed JSON gracefully (absent, no throw)', () => {
+    writeCredentials('{ this is not valid json');
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('absent');
+  });
+
+  it('returns absent when the JSON has no claudeAiOauth.accessToken', () => {
+    writeCredentials({ claudeAiOauth: { refreshToken: 'refresh-x' } });
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('absent');
+  });
+
+  it('returns expired when the file token is past the grace window', () => {
+    const pastMs = Date.now() - 10 * 60 * 1000; // 10 minutes ago, past 60s grace
+    writeCredentials({ claudeAiOauth: { accessToken: '<redacted>', expiresAt: pastMs } });
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('expired');
+    if (result.kind === 'expired') {
+      expect(result.expiresAt).toBe(pastMs);
+    }
+  });
+});
+
+describe('readLinuxLibsecret (#4348) — libsecret stays first, miss downgraded when file present', () => {
+  const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+  const libsecretPayload = JSON.stringify({
+    claudeAiOauth: { accessToken: 'libsecret-token', expiresAt: futureExpiresAt },
+  });
+
+  it('libsecret stays first: a present libsecret entry wins and carries the keychain record', async () => {
+    const fakeExecImpl = mock(() => Promise.resolve({ stdout: libsecretPayload, stderr: '' })) as any;
+    // Even with the credentials file present, libsecret's hit is authoritative.
+    const result = await readLinuxLibsecret(fakeExecImpl, true);
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('libsecret-token');
+      expect(result.source).toBe('keychain');
+      expect(result.expiresAt).toBe(futureExpiresAt);
+    }
+    expect(fakeExecImpl).toHaveBeenCalledTimes(1);
+    const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
+    expect(callArgs[0]).toBe('lookup');
+  });
+
+  it('absent file: keeps the old behavior with the "is secret-tool installed?" hint', async () => {
+    const fakeExecImpl = mock(() => Promise.reject(new Error('spawn secret-tool ENOENT'))) as any;
+    const result = await readLinuxLibsecret(fakeExecImpl, false);
+    expect(result.kind).toBe('absent');
+    if (result.kind === 'absent') {
+      expect(result.reason).toContain('is secret-tool installed?');
+    }
+  });
+
+  it('present file: miss drops the hint text (DEBUG path, no install nudge)', async () => {
+    const fakeExecImpl = mock(() => Promise.reject(new Error('spawn secret-tool ENOENT'))) as any;
+    const result = await readLinuxLibsecret(fakeExecImpl, true);
+    expect(result.kind).toBe('absent');
+    if (result.kind === 'absent') {
+      expect(result.reason).toContain('Linux libsecret lookup failed');
+      expect(result.reason).not.toContain('is secret-tool installed?');
     }
   });
 });

@@ -149,7 +149,7 @@ export function deriveMacKeychainServiceName(profile: ClaudeCredentialProfile): 
 const EXPIRY_GRACE_MS = 60_000;
 
 export type OAuthTokenResult =
-  | { kind: 'present'; token: string; source: 'keychain' | 'env-fallback'; expiresAt?: number }
+  | { kind: 'present'; token: string; source: 'keychain' | 'env-fallback' | 'credentials-file'; expiresAt?: number }
   | { kind: 'expired'; reason: string; expiresAt?: number }
   | { kind: 'absent'; reason: string };
 
@@ -372,18 +372,40 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
  * bare KEYCHAIN_SERVICE_NAME. No verified evidence in this repo of Linux's
  * per-config-dir suffix scheme; do not guess-extend deriveMacKeychainServiceName's
  * logic here without separate verification on an actual Linux box.
+ *
+ * `credentialsFilePresent` is the #4348 seam: when the on-disk credentials
+ * file (see readClaudeCredentialsFile) exists, a libsecret miss is expected
+ * noise — log it at DEBUG instead of WARN and drop the "is secret-tool
+ * installed?" hint, since the file fallback will supply the token. When the
+ * file is absent the original WARN + hint behavior is kept.
+ *
+ * `execImpl` is the same injectable seam readMacOsKeychain exposes, exported
+ * alongside it so tests can fake a libsecret response without a Linux host
+ * or a real secret-tool binary.
  */
-async function readLinuxLibsecret(): Promise<OAuthTokenResult> {
+export async function readLinuxLibsecret(
+  execImpl: typeof execFileAsync = execFileAsync,
+  credentialsFilePresent = false,
+): Promise<OAuthTokenResult> {
   const account = userInfo().username;
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync(
+    ({ stdout } = await execImpl(
       'secret-tool',
       ['lookup', 'service', KEYCHAIN_SERVICE_NAME, 'account', account],
       { timeout: READ_TIMEOUT_MS, windowsHide: true },
     ));
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
+    if (credentialsFilePresent) {
+      // #4348 — the credentials file covers this miss; don't WARN on every
+      // spawn about a keychain source that was never authoritative here.
+      logger.debug('OAUTH', 'Linux libsecret lookup failed; credentials file will be tried', { service: KEYCHAIN_SERVICE_NAME, account }, err);
+      return {
+        kind: 'absent',
+        reason: `Linux libsecret lookup failed: ${err.message}`,
+      };
+    }
     logger.warn('OAUTH', 'Linux libsecret lookup failed', { service: KEYCHAIN_SERVICE_NAME, account }, err);
     return {
       kind: 'absent',
@@ -395,6 +417,46 @@ async function readLinuxLibsecret(): Promise<OAuthTokenResult> {
     return { kind: 'absent', reason: 'Linux libsecret returned empty value for "Claude Code-credentials"' };
   }
   return parseKeychainPayload(raw);
+}
+
+/**
+ * #4348 — On-disk credentials file. Claude Code stores OAuth credentials at
+ * `${configDir}/.credentials.json` (configDir defaults to ~/.claude) with the
+ * same shape the keychain blobs carry:
+ *   {"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":<ms>}}
+ *
+ * Consulted as a fallback AFTER a keychain/libsecret miss, on every platform —
+ * the platform-native store stays the first source, and a keychain miss is
+ * only downgraded in noisiness (see readLinuxLibsecret), never skipped.
+ * Populates the same OAuth token record the libsecret path would produce
+ * (token + expiresAt), so expiry/quota checks downstream see the real
+ * credential. Exported so tests can drive it against fixture files.
+ *
+ * Read/parse failures fall through to `absent` with a DEBUG note — never
+ * thrown — so the env-fallback branch in readClaudeOAuthToken can still run.
+ */
+export function readClaudeCredentialsFile(configDir: string): OAuthTokenResult {
+  const credentialsPath = join(configDir, '.credentials.json');
+  if (!existsSync(credentialsPath)) {
+    return { kind: 'absent', reason: `No credentials file at ${credentialsPath}` };
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(credentialsPath, 'utf-8');
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.debug('OAUTH', 'Failed to read credentials file', { credentialsPath }, err);
+    return { kind: 'absent', reason: `Could not read ${credentialsPath}: ${err.message}` };
+  }
+  const parsed = parseKeychainPayload(raw.trim());
+  if (parsed.kind === 'present') {
+    logger.debug('OAUTH', 'OAuth token read from credentials file after keychain miss', { credentialsPath, expiresAt: parsed.expiresAt });
+    return { ...parsed, source: 'credentials-file' };
+  }
+  // File existed but carried no usable token (corrupt JSON, no
+  // claudeAiOauth.accessToken, expired) — note it and fall through.
+  logger.debug('OAUTH', 'Credentials file unusable, falling through', { credentialsPath, reason: parsed.reason });
+  return parsed;
 }
 
 /**
@@ -468,9 +530,10 @@ function readSidecarExpiresAt(): number | undefined {
 
 /**
  * Read Claude Desktop's OAuth token, preferring the platform-native credential
- * store. Falls back to the CLAUDE_CODE_OAUTH_TOKEN environment variable only
- * when the keychain has no entry — env-as-primary is intended for CI/headless
- * setups where no keychain exists.
+ * store. Falls back to the on-disk `${configDir}/.credentials.json` file
+ * (#4348), then to the CLAUDE_CODE_OAUTH_TOKEN environment variable only
+ * when neither the keychain nor the file has an entry — env-as-primary is
+ * intended for CI/headless setups where no keychain exists.
  *
  * `execImpl` is the same injectable seam `readMacOsKeychain` exposes (see its
  * doc comment) — threaded through here, not just down at readMacOsKeychain,
@@ -499,7 +562,12 @@ export async function readClaudeOAuthToken(
       keychainResult = await readWindowsCredentialManager();
       break;
     case 'linux':
-      keychainResult = await readLinuxLibsecret();
+      // #4348 — pass credentials-file presence so a libsecret miss is logged
+      // at DEBUG (not WARN) when the on-disk file will cover it.
+      keychainResult = await readLinuxLibsecret(
+        execImpl,
+        existsSync(join(credentialProfile.configDir, '.credentials.json')),
+      );
       break;
     default:
       keychainResult = {
@@ -515,8 +583,20 @@ export async function readClaudeOAuthToken(
     return keychainResult;
   }
 
-  // Keychain absent: try env-fallback for CI/headless. Refuse if the sidecar
-  // metadata indicates the env-provided token is stale.
+  // #4348 — keychain missed on every platform: fall back to the on-disk
+  // credentials file before the env var. Claude Code keeps the current
+  // credential at `${configDir}/.credentials.json` even when libsecret (or a
+  // keychain entry) is missing or unused, so this is where the real token
+  // usually is. Present/expired from the file are authoritative the same way
+  // a keychain result is.
+  const credentialsFileResult = readClaudeCredentialsFile(credentialProfile.configDir);
+  if (credentialsFileResult.kind === 'present' || credentialsFileResult.kind === 'expired') {
+    return credentialsFileResult;
+  }
+
+  // Keychain and credentials file both absent: try env-fallback for
+  // CI/headless. Refuse if the sidecar metadata indicates the env-provided
+  // token is stale.
   const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   if (envToken && envToken.trim().length > 0) {
     const sidecarExpiresAt = readSidecarExpiresAt();
