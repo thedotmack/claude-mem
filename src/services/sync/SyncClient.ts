@@ -51,13 +51,15 @@
 // FAILURE CONTRACT (same swallow-and-log posture as CloudSync.notify()):
 // nothing here ever throws into a caller, blocks a write, or crashes the
 // worker. Failures back off (30 s doubling to 10 min, dominating the poll
-// tier) and repeated failure of the SAME page logs distinctly (wedge
-// visibility) — no dead-letter machinery this phase. NO long-polling (prime
+// tier; unforced pullOnce() calls honor it too) and repeated failure of the
+// SAME page logs distinctly (wedge visibility). A single op that can never
+// apply is not a page failure: SyncApply sets it aside in
+// sync_pull_quarantine and the cursor moves on. NO long-polling (prime
 // directive #4): every request is a plain short GET with an AbortSignal
 // timeout.
 
 import { logger } from '../../utils/logger.js';
-import type { SyncApply, SyncOp } from './SyncApply.js';
+import type { SyncApply, SyncOp, UndecodableOp } from './SyncApply.js';
 import {
   assertCanonicalDecimal,
   canonicalDecimalToSafeInteger,
@@ -88,9 +90,22 @@ function localPayload(payload: Record<string, unknown> | null): Record<string, u
   return result;
 }
 
-function decodeChanges(values: unknown[]): SyncOp[] {
-  return values.map(value => {
-    const decoded = decodeHubChange(value as CanonicalHubChange);
+function decodeChanges(values: unknown[]): Array<SyncOp | UndecodableOp> {
+  return values.map((value): SyncOp | UndecodableOp => {
+    let decoded: ReturnType<typeof decodeHubChange>;
+    try {
+      decoded = decodeHubChange(value as CanonicalHubChange);
+    } catch (error) {
+      // One change we cannot decode must not fail the whole page forever:
+      // keep its seq (the page stays contiguous) and let SyncApply set it
+      // aside. A change without a valid seq is a broken page — that throws.
+      const seq = assertCanonicalDecimal((value as { seq?: unknown } | null)?.seq, { positive: true });
+      return {
+        seq,
+        undecodable: error instanceof Error ? error.message : String(error),
+        raw: JSON.stringify(value),
+      };
+    }
     const body = decoded.body;
     return {
       seq: decoded.seq,
@@ -401,9 +416,12 @@ export class SyncClient {
    * timeoutMs. Never throws; failure = the caller proceeds with local data.
    * Counts as session activity and resumes a suspended loop.
    *
-   * `force` bypasses the min-gap skip. Socket callers first honor any
-   * transient HTTP retry deadline; explicit session-start callers can still
-   * request a bounded catch-up during that wait. Single-flight holds.
+   * Unforced calls (the context-inject hook) skip while the failure backoff
+   * is running: the background loop owns that retry. Without this, every
+   * hook re-fetched the same failing page — 2,000+ times in one wedge — and
+   * loaded a hub that was already failing. `force` bypasses the backoff and
+   * the min-gap skip; socket callers check the backoff themselves first.
+   * Single-flight holds.
    */
   async pullOnce(options: { timeoutMs?: number; force?: boolean } = {}): Promise<void> {
     try {
@@ -413,7 +431,10 @@ export class SyncClient {
       const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
       const skip =
         this.pulling || // a cycle is already fetching — don't stack a second
-        (!options.force && this.now() - this.lastPullFinishedAt < this.minPullGapMs);
+        (!options.force && (
+          this.transientRetryAt > this.now()
+          || this.now() - this.lastPullFinishedAt < this.minPullGapMs
+        ));
       if (!skip) {
         await this.pullCycle(this.now() + timeoutMs);
       }

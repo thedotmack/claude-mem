@@ -219,6 +219,7 @@ describe('SyncApply', () => {
       skippedOwn: 0,
       skippedStale: 0,
       skippedCursor: 0,
+      quarantined: 0,
       cursor: '3',
       epochReset: false,
     });
@@ -298,27 +299,133 @@ describe('SyncApply', () => {
   // Atomicity: cursor moves with the rows or not at all
   // ---------------------------------------------------------------------------
 
-  it('rolls back the whole batch (rows AND cursor) when an op throws mid-batch', () => {
+  function quarantined(): Array<{ seq: string; kind: string | null; origin_local_id: string | null; reason: string; raw_body: string }> {
+    return db.prepare(`
+      SELECT seq, kind, origin_local_id, reason, raw_body FROM sync_pull_quarantine ORDER BY id
+    `).all() as Array<{ seq: string; kind: string | null; origin_local_id: string | null; reason: string; raw_body: string }>;
+  }
+
+  it('sets aside an op that can never apply and moves the cursor past it, keeping the rest of the batch', () => {
     const apply = makeApply();
     const poisoned = [
       op(1, 'observation', '11', obsBody()),
-      op(2, 'summary', '21', sumBody()),
-      op(3, 'prompt', '31', 'not json{'),
+      op(2, 'prompt', '31', 'not json{'),
+      op(3, 'summary', '21', sumBody()),
     ];
 
-    expect(() => apply.applyOps(poisoned)).toThrow(/not parseable JSON/);
+    const result = apply.applyOps(poisoned);
 
-    // No partial rows — ops 1 and 2 were rolled back with the cursor.
-    expect(count('observations')).toBe(0);
-    expect(count('session_summaries')).toBe(0);
+    expect(result.applied).toBe(2);
+    expect(result.quarantined).toBe(1);
+    expect(apply.getCursor()).toBe('3');
+    expect(count('observations')).toBe(1);
+    expect(count('session_summaries')).toBe(1);
     expect(count('user_prompts')).toBe(0);
+    expect(quarantined()).toEqual([{
+      seq: '2',
+      kind: 'prompt',
+      origin_local_id: '31',
+      reason: expect.stringMatching(/not parseable JSON/),
+      raw_body: 'not json{',
+    }]);
+  });
+
+  it('rolls back only the failing op: its partial writes (stub session) do not survive the set-aside', () => {
+    const apply = makeApply();
+    // Valid enough to create a stub session, then fails on a typed field.
+    const result = apply.applyOps([
+      op(1, 'summary', '21', sumBody({ memory_session_id: 'mem-only-from-bad-op', prompt_number: 'three' })),
+    ]);
+    expect(result.quarantined).toBe(1);
+    expect(apply.getCursor()).toBe('1');
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sdk_sessions WHERE memory_session_id = 'mem-only-from-bad-op'").get())
+      .toEqual({ n: 0 });
+  });
+
+  it('still rolls back the whole batch (rows AND cursor) on a transient error, so the page is retried', () => {
+    const apply = makeApply();
+    // A missing table is a database fault, not a property of the op — it
+    // must never be set aside (that would drop good ops on a broken disk).
+    db.run('ALTER TABLE session_summaries RENAME TO session_summaries_away');
+
+    expect(() => apply.applyOps(remoteBatch())).toThrow(/no such table/);
+
+    expect(count('observations')).toBe(0);
     expect(count('sdk_sessions')).toBe(1); // stub session rolled back too
+    expect(count('sync_pull_quarantine')).toBe(0);
     expect(apply.getCursor()).toBe('0');
 
-    // The same page can be retried after the poison op is fixed.
-    const result = apply.applyOps(remoteBatch());
-    expect(result.applied).toBe(3);
+    db.run('ALTER TABLE session_summaries_away RENAME TO session_summaries');
+    const retried = apply.applyOps(remoteBatch());
+    expect(retried.applied).toBe(3);
     expect(apply.getCursor()).toBe('3');
+  });
+
+  it('sets aside an op that violates a constraint instead of wedging on it', () => {
+    const apply = makeApply();
+    db.run('CREATE UNIQUE INDEX test_one_request ON session_summaries(request)');
+    const result = apply.applyOps([
+      op(1, 'summary', '21', sumBody({ request: 'same request' })),
+      op(2, 'summary', '22', sumBody({ request: 'same request' })),
+      op(3, 'observation', '11', obsBody()),
+    ]);
+    expect(result.applied).toBe(2);
+    expect(result.quarantined).toBe(1);
+    expect(apply.getCursor()).toBe('3');
+    expect(quarantined().map(row => [row.seq, row.reason])).toEqual([
+      ['2', expect.stringMatching(/UNIQUE constraint failed/)],
+    ]);
+  });
+
+  it('sets aside an undecodable change by seq and keeps applying the page', () => {
+    const apply = makeApply();
+    const result = apply.applyOps([
+      op(1, 'observation', '11', obsBody()),
+      { seq: '2', undecodable: 'operation_sha256 does not match body', raw: '{"seq":"2"}' },
+      op(3, 'summary', '21', sumBody()),
+    ], { requireContiguous: true });
+    expect(result.applied).toBe(2);
+    expect(result.quarantined).toBe(1);
+    expect(apply.getCursor()).toBe('3');
+    expect(quarantined()).toEqual([{
+      seq: '2',
+      kind: null,
+      origin_local_id: null,
+      reason: 'operation_sha256 does not match body',
+      raw_body: '{"seq":"2"}',
+    }]);
+  });
+
+  it('keeps the local copy when the hub sends a different body for an entity revision it already holds', () => {
+    // The Oct 2026 wedge: device fe1d376d reused local id 11749 after a
+    // restore, so the rebuilt hub served a different observation at the same
+    // entity/rev than this device applied before the cutover.
+    const apply = makeApply();
+    const first = {
+      ...op(1, 'observation', '11749', obsBody({ title: 'first copy', content_hash: 'hash-first' })),
+      entity_id: 'observation:collided', entity_rev: '1', operation_sha256: 'sha-first',
+    };
+    apply.applyOps([first], { epoch: 'epoch-old' });
+
+    const collided = {
+      ...op(1, 'observation', '11749', obsBody({ title: 'second copy', content_hash: 'hash-second' })),
+      entity_id: 'observation:collided', entity_rev: '1', operation_sha256: 'sha-second',
+    };
+    const next = { ...op(2, 'observation', '11750', obsBody({ content_hash: 'hash-next' })), entity_id: 'observation:next', entity_rev: '1', operation_sha256: 'sha-next' };
+    const result = apply.applyOps([collided, next], { epoch: 'epoch-new' });
+    expect(result.epochReset).toBe(true); // page discarded, cursor back to 0
+
+    const replay = apply.applyOps([collided, next], { epoch: 'epoch-new', requireContiguous: true });
+    expect(replay.quarantined).toBe(1);
+    expect(replay.applied).toBe(1);
+    expect(apply.getCursor()).toBe('2');
+    expect(db.prepare("SELECT title FROM observations WHERE origin_local_id = '11749'").get())
+      .toEqual({ title: 'first copy' });
+    expect(db.prepare("SELECT operation_sha256 FROM sync_entity_heads WHERE entity_id = 'observation:collided'").get())
+      .toEqual({ operation_sha256: 'sha-first' });
+    expect(quarantined().map(row => row.reason)).toEqual([
+      expect.stringMatching(/different canonical operation hash \(kept local sha-first, hub sent sha-second\)/),
+    ]);
   });
 
   it('rolls back rows and cursor when an HTTP page has a first-seq or internal gap', () => {
@@ -429,25 +536,29 @@ describe('SyncApply', () => {
     });
   });
 
-  it('throws (loud, not lossy) when a present field has the wrong type; missing optional fields stay tolerated', () => {
+  it('sets aside (loud, not lossy) an op whose present field has the wrong type; missing optional fields stay tolerated', () => {
     const apply = makeApply();
 
-    // Wrong type for a PRESENT field = malformed body = whole batch fails.
-    expect(() => apply.applyOps([
+    // Wrong type for a PRESENT field = malformed body = never written as
+    // NULL; the op is set aside with its reason and raw body.
+    const malformed = apply.applyOps([
       op(1, 'observation', '11', obsBody({ title: 42 })),
-    ])).toThrow(/field title must be a string/);
-    expect(() => apply.applyOps([
-      op(1, 'observation', '11', obsBody({ prompt_number: 'three' })),
-    ])).toThrow(/field prompt_number must be a finite number/);
+      op(2, 'observation', '12', obsBody({ prompt_number: 'three' })),
+    ]);
+    expect(malformed.quarantined).toBe(2);
     expect(count('observations')).toBe(0);
-    expect(apply.getCursor()).toBe('0');
+    expect(apply.getCursor()).toBe('2');
+    expect(quarantined().map(row => row.reason)).toEqual([
+      expect.stringMatching(/field title must be a string/),
+      expect.stringMatching(/field prompt_number must be a finite number/),
+    ]);
 
     // MISSING (or null) optional fields are fine — null lands in the column.
     const body = obsBody();
     delete body.title;
     delete body.subtitle;
     body.narrative = null;
-    const result = apply.applyOps([op(1, 'observation', '11', body)]);
+    const result = apply.applyOps([op(3, 'observation', '11', body)]);
     expect(result.applied).toBe(1);
     const row = db.prepare(`SELECT title, subtitle, narrative FROM observations WHERE origin_local_id = '11'`).get() as any;
     expect(row.title).toBeNull();

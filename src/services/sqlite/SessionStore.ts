@@ -916,6 +916,26 @@ export class SessionStore {
         UNIQUE(lane, queue_key, entity_rev, reason)
       )
     `);
+    // Pull-side counterpart: hub ops this device can never apply (malformed,
+    // equal-revision hash conflict, violated constraint), set aside by
+    // SyncApply so the cursor moves past them instead of wedging.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_pull_quarantine (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        epoch TEXT NOT NULL,
+        seq TEXT NOT NULL,
+        kind TEXT,
+        entity_id TEXT,
+        origin_device_id TEXT,
+        origin_local_id TEXT,
+        entity_rev TEXT,
+        operation_sha256 TEXT,
+        reason TEXT NOT NULL,
+        raw_body TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        UNIQUE(epoch, seq)
+      )
+    `);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
       .run(44, new Date().toISOString());
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')

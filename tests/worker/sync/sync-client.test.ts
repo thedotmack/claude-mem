@@ -268,9 +268,21 @@ describe('SyncClient', () => {
     expect(apply.getCursor()).toBe('0');
     expect(count('observations')).toBe(0);
 
+    await sleep(20); // past the 10ms failure backoff
     await client.pullOnce({ timeoutMs: 5_000 });
     expect(apply.getCursor()).toBe('1');
     expect(count('observations')).toBe(1);
+  });
+
+  it('does not re-fetch a failing page on every hook while the failure backoff runs', async () => {
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
+    state.failNext = 1;
+    const client = makeClient(impl, { backoffInitialMs: 60_000, backoffMaxMs: 60_000 });
+
+    await client.pullOnce({ timeoutMs: 1_500 }); // fails: 60s backoff starts
+    for (let i = 0; i < 5; i++) await client.pullOnce({ timeoutMs: 1_500 }); // context-inject hooks
+    expect(state.requests.length).toBe(1);
+    expect(apply.getCursor()).toBe('0');
   });
 
   it('pauses the poll loop on a 401/403 instead of retrying on the normal ladder', async () => {
@@ -307,19 +319,41 @@ describe('SyncClient', () => {
     expect(state.requests.length).toBeGreaterThan(0);
   });
 
-  it('a malformed page fails the batch without moving the cursor, then applies once fixed', async () => {
+  it('sets aside an undecodable change and keeps pulling past it', async () => {
     const bad = hubOp(1, '11');
     bad.body = 'not json{';
-    const { state, impl } = makeHub({ epoch: '1', ops: [bad] });
+    const { impl } = makeHub({ epoch: '1', ops: [bad, hubOp(2, '12')] });
     const client = makeClient(impl);
 
     await client.pullOnce({ timeoutMs: 5_000 });
-    expect(apply.getCursor()).toBe('0'); // applyOps threw, batch rolled back
+    expect(apply.getCursor()).toBe('2');
+    expect(count('observations')).toBe(1);
+    expect(db.prepare('SELECT seq, raw_body FROM sync_pull_quarantine').all()).toEqual([
+      { seq: '1', raw_body: JSON.stringify(bad) },
+    ]);
+  });
 
-    state.ops = [hubOp(1, '11')];
+  it('pulls past a forked device\'s same-revision collision after a hub rebuild (the cursor-0 wedge)', async () => {
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11749')] });
+    const client = makeClient(impl);
     await client.pullOnce({ timeoutMs: 5_000 });
     expect(apply.getCursor()).toBe('1');
-    expect(count('observations')).toBe(1);
+
+    // Rebuilt hub: the device reused local id 11749 for a different
+    // observation, so the same entity/rev now carries another body.
+    state.epoch = '2';
+    state.ops = [
+      observationChange(1, '11749', REMOTE, { title: 'a different observation', content_hash: 'hash-other' }),
+      hubOp(2, '11750'),
+    ];
+    await client.pullOnce({ timeoutMs: 5_000 });
+
+    expect(apply.getEpoch()).toBe('2');
+    expect(apply.getCursor()).toBe('2');
+    expect(db.prepare("SELECT title FROM observations WHERE origin_local_id = '11749'").get())
+      .toEqual({ title: 'obs 11749' });
+    expect(count('observations')).toBe(2);
+    expect(count('sync_pull_quarantine')).toBe(1);
   });
 
   it('rejects HTTP pages that do not start at cursor+1 or contain an internal sequence gap', async () => {
@@ -330,11 +364,13 @@ describe('SyncClient', () => {
     expect(count('observations')).toBe(0);
 
     state.ops = [hubOp(1, '11'), hubOp(3, '13')];
+    await sleep(60); // past the failure backoff
     await client.pullOnce({ timeoutMs: 5_000 });
     expect(apply.getCursor()).toBe('0');
     expect(count('observations')).toBe(0); // seq 1 insert rolled back with the gap
 
     state.ops = [hubOp(1, '11'), hubOp(2, '12'), hubOp(3, '13')];
+    await sleep(60);
     await client.pullOnce({ timeoutMs: 5_000 });
     expect(apply.getCursor()).toBe('3');
     expect(count('observations')).toBe(3);

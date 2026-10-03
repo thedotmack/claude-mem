@@ -169,6 +169,19 @@ import {
   incrementCanonicalDecimal,
 } from './CanonicalContent.js';
 
+/**
+ * A hub change this client could not decode. It keeps its seq so the page
+ * stays contiguous; applyOps sets it aside (sync_pull_quarantine) instead of
+ * failing every op behind it.
+ */
+export interface UndecodableOp {
+  seq: string;
+  /** The decode error message. */
+  undecodable: string;
+  /** The raw change as received, kept for diagnosis. */
+  raw: string;
+}
+
 /** One op as returned by the hub's getChanges (SyncHub.ts ChangeOp). */
 export interface SyncOp {
   seq: string;
@@ -270,6 +283,8 @@ export interface ApplyResult {
   skippedStale: number;
   /** Ops skipped because seq <= stored cursor (already applied earlier). */
   skippedCursor: number;
+  /** Ops that can never apply here, set aside in sync_pull_quarantine. */
+  quarantined: number;
   /** Cursor after this call. */
   cursor: string;
   /** True when the epoch guard reset the cursor; batch was NOT applied. */
@@ -283,15 +298,30 @@ interface RowIdRev {
 
 type ChromaJob = () => Promise<void>;
 
-function invalidOp(op: SyncOp, message: string): Error {
-  return new Error(`SyncApply: invalid op seq=${op.seq} kind=${op.kind} origin=${op.origin_device}/${op.origin_id}: ${message}`);
+/** An op that can never apply on this device as-is (deterministic, not transient). */
+export class SyncApplyInvalidOpError extends Error {}
+
+function invalidOp(op: SyncOp, message: string): SyncApplyInvalidOpError {
+  return new SyncApplyInvalidOpError(`SyncApply: invalid op seq=${op.seq} kind=${op.kind} origin=${op.origin_device}/${op.origin_id}: ${message}`);
+}
+
+/**
+ * True when retrying the same op against the same database can only fail the
+ * same way: a malformed or conflicting op, or a constraint it violates. Any
+ * other error (busy, I/O, disk full) is transient and must fail the batch so
+ * the page is retried — never set aside.
+ */
+function isUnapplicableOp(error: unknown): boolean {
+  if (error instanceof SyncApplyInvalidOpError) return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT');
 }
 
 /**
  * Typed field readers — loud, not lossy: a MISSING (or null) field is
  * tolerated as null (required-ness is enforced by the per-kind checks), but
  * a field that is PRESENT with the wrong type is a malformed body and throws,
- * failing the batch instead of silently writing NULL.
+ * so applyOps sets the op aside instead of silently writing NULL.
  */
 function fieldString(op: SyncOp, obj: Record<string, unknown>, key: string): string | null {
   const v = obj[key];
@@ -424,16 +454,25 @@ export class SyncApply {
    * Apply one pulled batch. Ops must be in ascending seq order (the hub
    * returns them that way). Runs in ONE transaction: row upserts, mutation
    * UPDATEs, and the cursor advance commit together or roll back together.
-   * A malformed op throws and rolls back the whole batch — the cursor does
-   * not move, so the next pull retries the same page (loud, not lossy).
+   *
+   * Each op runs in its own savepoint. An op that can never apply here (a
+   * malformed body, an equal-revision hash conflict, a violated constraint,
+   * an undecodable change) is rolled back alone, recorded with its reason
+   * and raw body in sync_pull_quarantine, logged, and the cursor moves past
+   * it. One bad op used to roll back its whole page forever: a hash conflict
+   * from a device that reused its local ids held one Mac's pull at cursor 0
+   * for three days (3,000 failed retries). Page-level problems (sequence
+   * gaps, out-of-order ops) and transient errors (busy, I/O) still fail the
+   * batch, so the page is retried.
    */
-  applyOps(ops: SyncOp[], options: ApplyOpsOptions = {}): ApplyResult {
+  applyOps(ops: Array<SyncOp | UndecodableOp>, options: ApplyOpsOptions = {}): ApplyResult {
     if (options.epoch !== undefined && this.handleEpoch(options.epoch)) {
       return {
         applied: 0,
         skippedOwn: 0,
         skippedStale: 0,
         skippedCursor: 0,
+        quarantined: 0,
         cursor: '0',
         epochReset: true,
       };
@@ -444,20 +483,22 @@ export class SyncApply {
       skippedOwn: 0,
       skippedStale: 0,
       skippedCursor: 0,
+      quarantined: 0,
       cursor: this.getCursor(),
       epochReset: false,
     };
     if (ops.length === 0) return result;
 
     const chromaJobs: ChromaJob[] = [];
+    const setAside: Array<Record<string, unknown>> = [];
 
     const tx = this.db.transaction(() => {
       const cursor = this.getCursor();
+      const epoch = this.getEpoch() ?? '';
       let lastSeq = cursor;
 
       for (const op of ops) {
         const seq = assertCanonicalDecimal(op.seq, { positive: true });
-        assertCanonicalDecimal(op.rev, { positive: true });
         // Strict HTTP pages describe the exact raw suffix after our cursor.
         // Validate every supplied sequence before the ordinary replay skip;
         // otherwise a stale prefix (even an out-of-order one) is silently
@@ -474,16 +515,45 @@ export class SyncApply {
         }
         lastSeq = seq;
 
+        if ('undecodable' in op) {
+          setAside.push(this.quarantine(epoch, seq, null, op.undecodable, op.raw));
+          result.quarantined++;
+          continue;
+        }
+
         if (op.origin_device === this.deviceId) {
           result.skippedOwn++;
           continue;
         }
 
+        const chromaJobCount = chromaJobs.length;
+        this.db.run('SAVEPOINT sync_apply_op');
         let outcome: 'applied' | 'stale';
-        if (op.kind === 'mutation') {
-          outcome = this.applyMutation(op);
-        } else {
-          outcome = this.applyCanonicalRowOp(op, chromaJobs);
+        try {
+          try {
+            assertCanonicalDecimal(op.rev, { positive: true });
+          } catch (error) {
+            throw invalidOp(op, error instanceof Error ? error.message : String(error));
+          }
+          outcome = op.kind === 'mutation'
+            ? this.applyMutation(op)
+            : this.applyCanonicalRowOp(op, chromaJobs);
+          this.db.run('RELEASE sync_apply_op');
+        } catch (error) {
+          try {
+            this.db.run('ROLLBACK TO sync_apply_op');
+            this.db.run('RELEASE sync_apply_op');
+          } catch {
+            // SQLite already rolled the whole transaction back (I/O, full
+            // disk): fail the batch on the original cause.
+            throw error;
+          }
+          chromaJobs.length = chromaJobCount;
+          if (!isUnapplicableOp(error)) throw error;
+          const reason = error instanceof Error ? error.message : String(error);
+          setAside.push(this.quarantine(epoch, seq, op, reason, op.body));
+          result.quarantined++;
+          continue;
         }
         if (outcome === 'applied') result.applied++;
         else result.skippedStale++;
@@ -498,6 +568,12 @@ export class SyncApply {
     });
     tx();
 
+    // Logged after commit so a batch that later rolls back (and is retried)
+    // does not report ops it never set aside.
+    for (const entry of setAside) {
+      logger.warn('SYNC_APPLY', 'Set aside a pulled op that cannot apply on this device; sync continues past it (sync_pull_quarantine)', entry);
+    }
+
     // Chroma AFTER commit, fire-and-forget (ResponseProcessor.ts pattern):
     // a Chroma failure must never fail or re-order durable application.
     for (const job of chromaJobs) {
@@ -510,6 +586,37 @@ export class SyncApply {
     }
 
     return result;
+  }
+
+  /**
+   * Record an op that can never apply here, inside the batch transaction so
+   * the record commits with the cursor advance past it. Returns the log
+   * entry; applyOps logs it after commit.
+   */
+  private quarantine(
+    epoch: string,
+    seq: string,
+    op: SyncOp | null,
+    reason: string,
+    rawBody: string,
+  ): Record<string, unknown> {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO sync_pull_quarantine
+        (epoch, seq, kind, entity_id, origin_device_id, origin_local_id,
+         entity_rev, operation_sha256, reason, raw_body, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      epoch, seq, op?.kind ?? null, op?.entity_id ?? null, op?.origin_device ?? null,
+      op?.origin_id ?? null, op?.entity_rev ?? op?.rev ?? null, op?.operation_sha256 ?? null,
+      reason, rawBody, this.now(),
+    );
+    return {
+      seq,
+      kind: op?.kind ?? null,
+      entityId: op?.entity_id ?? null,
+      origin: op ? `${op.origin_device}/${op.origin_id}` : null,
+      reason,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -553,7 +660,11 @@ export class SyncApply {
       if (order < 0) return 'stale';
       if (order === 0) {
         if (op.operation_sha256 !== head.operation_sha256) {
-          throw invalidOp(op, 'same entity revision has a different canonical operation hash');
+          // Two different bodies claim one (entity, rev): a device reused a
+          // local id (restored or cloned database) or a rebuilt hub kept the
+          // other copy. The first accepted copy stays, matching the cloud
+          // projector's cross-epoch rule; applyOps sets this op aside.
+          throw invalidOp(op, `same entity revision has a different canonical operation hash (kept local ${head.operation_sha256}, hub sent ${op.operation_sha256})`);
         }
         return 'stale';
       }
