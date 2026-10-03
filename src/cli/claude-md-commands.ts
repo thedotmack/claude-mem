@@ -65,7 +65,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
 
   let output: string;
   try {
-    output = execSync('git ls-files', {
+    output = execSync('git ls-files -z', {
       cwd: workingDir,
       encoding: 'utf-8',
       maxBuffer: 50 * 1024 * 1024
@@ -77,7 +77,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
     return folders;
   }
 
-  const files = output.trim().split('\n').filter(f => f);
+  const files = output.split('\0').filter(f => f);
 
   for (const file of files) {
     const absPath = path.join(workingDir, file);
