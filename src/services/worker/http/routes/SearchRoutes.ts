@@ -12,7 +12,22 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
-import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
+import { observerHealthWarning, withObserverHealthWarning } from '../../../context/ContextBuilder.js';
+import type { ContextInjectStats } from '../../../context/ContextBuilder.js';
+import {
+  ALL_PLATFORM_SOURCES_CACHE_KEY,
+  contextCacheKeys,
+  fillContextPlaceholders,
+  type ContextCacheKeys,
+} from '../../../../shared/context-cache.js';
+import type { ContextCacheService, ContextVariantRender } from '../../ContextCacheService.js';
+
+interface ContextInjectRender {
+  /** The block with its time placeholders. */
+  body: string;
+  stats: ContextInjectStats | null;
+  cacheable: boolean;
+}
 import { buildWorkStateContextSection } from '../../../context/sections/WorkStateRenderer.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
@@ -94,10 +109,10 @@ export class SearchRoutes extends BaseRouteHandler {
 
   constructor(
     private searchManager: SearchManager,
-    // Structural type (not the SyncClient class) so tests can pass a stub and
-    // route construction stays decoupled from sync wiring. Null when sync is
-    // unconfigured — context injection then skips the session-start pull.
-    private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void> } | null = null
+    // Records each live SessionStart render so the hook can read it from disk
+    // next time (liveness plan, Phase 6). Null in tests and tools that only
+    // need the route.
+    private contextCache: Pick<ContextCacheService, 'recordLiveRender'> | null = null
   ) {
     super();
   }
@@ -333,13 +348,90 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
+    const injectStartedAt = Date.now();
+    let rendered: ContextInjectRender;
+    try {
+      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full });
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      // context_injected is HOOK-level (no sessionDbId in scope) → null key,
+      // routed to the 5-minute time-window rollup, NOT the per-session path.
+      telemetryBuffer.record('context_injected', null, {
+        outcome: 'error',
+        duration_ms: Date.now() - injectStartedAt,
+      });
+      logger.error('HTTP', 'Context injection failed', { projects, platformSource, full }, normalizedError);
+      throw error;
+    }
+
+    // Stats are counts/enums computed alongside rendering (ContextInjectStats);
+    // mode/provider snapshot the settings the injection ran under. Empty-state
+    // responses (stats === null) injected no memory and are not counted.
+    if (rendered.stats) {
+      const settingsSnapshot = this.getCachedSettings();
+      // Hook-level → null key, time-window rollup (see error branch above).
+      telemetryBuffer.record('context_injected', null, {
+        outcome: 'ok',
+        duration_ms: Date.now() - injectStartedAt,
+        mode: settingsSnapshot.CLAUDE_MEM_MODE,
+        provider: settingsSnapshot.CLAUDE_MEM_PROVIDER,
+        ...rendered.stats,
+      });
+    }
+
+    // Precomputed SessionStart context (liveness plan, Phase 6): this render is
+    // what the hook reads from disk next time, and the variant is kept fresh
+    // from here on. `full` is a one-off human request and is never cached.
+    const respondedAtEpochMs = Date.now();
+    if (!full && this.contextCache) {
+      this.contextCache.recordLiveRender(
+        contextCacheKeys(projects, platformSource, forHuman),
+        { body: rendered.body, cacheable: rendered.cacheable },
+        respondedAtEpochMs,
+      );
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(fillContextPlaceholders(rendered.body, respondedAtEpochMs));
+  });
+
+  /**
+   * Re-render one cached variant (ContextCacheService). Same body the live
+   * route sends, before its placeholders are filled.
+   */
+  async renderContextVariant(keys: ContextCacheKeys): Promise<ContextVariantRender> {
+    const rendered = await this.renderContextInjectBody({
+      projects: keys.projects,
+      platformSource: keys.platformSource === ALL_PLATFORM_SOURCES_CACHE_KEY ? undefined : keys.platformSource,
+      forHuman: keys.colors,
+      full: false,
+    });
+    return { body: rendered.body, cacheable: rendered.cacheable };
+  }
+
+  /**
+   * The SessionStart block for one request, with its wall-clock parts left as
+   * placeholders (shared/context-cache.ts): the live route fills them on send,
+   * the hook fills them when it reads the cached copy.
+   */
+  private async renderContextInjectBody(request: {
+    projects: string[];
+    platformSource: string | undefined;
+    forHuman: boolean;
+    full: boolean;
+  }): Promise<ContextInjectRender> {
+    const { projects, platformSource, forHuman, full } = request;
+    // The health banner is time-dependent (its durations, its expiry), so a
+    // block that carries one is served live only.
+    const cacheable = observerHealthWarning(false) === '';
+
     // The agent's open to-do lists and working state lead every answer this
     // route gives a session, the welcome hint included; memory is fitted to
     // what that leaves of the 10K delivery limit. The terminal preview is for
     // the human and goes without it.
     const workStateSection = forHuman
       ? ''
-      : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), Date.now());
+      : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), 'placeholders');
     const withWorkState = (text: string): string =>
       workStateSection && text ? `${workStateSection}\n\n${text}` : workStateSection || text;
 
@@ -360,70 +452,32 @@ export class SearchRoutes extends BaseRouteHandler {
         const hintBody = WELCOME_HINT_TEMPLATE
           .replace('{viewer_url}', viewerUrl)
           .replace('{pro_trial_line}', proTrialLine('welcome-hint'));
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         // A project with zero observations is exactly where a failing observer
         // hides: without this the health warning (applied inside
         // generateContextWithStats) never reached the user this early-return serves.
-        res.send(withWorkState(withObserverHealthWarning(hintBody, forHuman)));
-        return;
+        return { body: withWorkState(withObserverHealthWarning(hintBody, forHuman)), stats: null, cacheable };
       }
     }
 
     const { generateContextWithStats } = await import('../../../context-generator.js');
 
-    // Immediate session-start pull (plan Phase 3 task 4, prime directive #3):
-    // catch up on other devices' ops before compiling context. Hard-bounded so
-    // a dead network can't stall injection; pullOnce never throws — failure
-    // simply proceeds with local data.
-    if (this.syncClient) {
-      await this.syncClient.pullOnce({ timeoutMs: 1500 });
-    }
-
+    // No session-start sync pull here: the sync client's own Realtime/poll
+    // loop applies other devices' ops through SyncApply, which invalidates the
+    // cached block, so the block is already current when a session starts.
     const primaryProject = projects[projects.length - 1];
     const cwd = `/context/${primaryProject}`;
 
-    const injectStartedAt = Date.now();
-    const injectRequest = {
+    const contextResult = await generateContextWithStats({
       session_id: 'context-inject-' + Date.now(),
       cwd: cwd,
       projects: projects,
       ...(platformSource ? { platformSource } : {}),
       full,
       reserveChars: workStateSection ? workStateSection.length + 2 : 0,
-    };
-    let contextResult: Awaited<ReturnType<typeof generateContextWithStats>>;
-    try {
-      contextResult = await generateContextWithStats(injectRequest, forHuman);
-    } catch (error) {
-      const normalizedError = error instanceof Error ? error : new Error(String(error));
-      // context_injected is HOOK-level (no sessionDbId in scope) → null key,
-      // routed to the 5-minute time-window rollup, NOT the per-session path.
-      telemetryBuffer.record('context_injected', null, {
-        outcome: 'error',
-        duration_ms: Date.now() - injectStartedAt,
-      });
-      logger.error('HTTP', 'Context injection failed', { projects, platformSource, full }, normalizedError);
-      throw error;
-    }
-
-    // Stats are counts/enums computed alongside rendering (ContextInjectStats);
-    // mode/provider snapshot the settings the injection ran under. Empty-state
-    // responses (stats === null) injected no memory and are not counted.
-    if (contextResult.stats) {
-      const settingsSnapshot = this.getCachedSettings();
-      // Hook-level → null key, time-window rollup (see error branch above).
-      telemetryBuffer.record('context_injected', null, {
-        outcome: 'ok',
-        duration_ms: Date.now() - injectStartedAt,
-        mode: settingsSnapshot.CLAUDE_MEM_MODE,
-        provider: settingsSnapshot.CLAUDE_MEM_PROVIDER,
-        ...contextResult.stats,
-      });
-    }
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(withWorkState(contextResult.text));
-  });
+      timePlaceholders: true,
+    }, forHuman);
+    return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable };
+  }
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';

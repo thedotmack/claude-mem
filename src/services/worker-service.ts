@@ -128,6 +128,9 @@ import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHoo
 import { TranscriptWatcher } from './transcripts/watcher.js';
 import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
+import { ContextCacheService } from './worker/ContextCacheService.js';
+import { projectReadKeys } from './sqlite/project-read-keys.js';
+import { emitContextInvalidation } from '../shared/context-invalidation.js';
 import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -271,6 +274,7 @@ export class WorkerService implements WorkerRef {
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
   private syncClient: SyncClient | null = null;
+  private contextCacheService: ContextCacheService | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -668,6 +672,7 @@ export class WorkerService implements WorkerRef {
         if (adoptions) {
           for (const adoption of adoptions) {
             if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+              emitContextInvalidation('all', 'worktree-adoption');
               logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
             }
             if (adoption.errors.length > 0) {
@@ -730,8 +735,19 @@ export class WorkerService implements WorkerRef {
         formattingService,
         timelineService
       );
-      this.searchRoutes = new SearchRoutes(searchManager, this.syncClient);
+      // Precomputed SessionStart context (liveness plan, Phase 6): the route
+      // records each live render, the service re-renders on writes.
+      const contextCacheDb = this.dbManager.getConnection();
+      this.contextCacheService = new ContextCacheService({
+        renderVariant: (keys) => {
+          if (!this.searchRoutes) throw new Error('Context cache render before search routes exist');
+          return this.searchRoutes.renderContextVariant(keys);
+        },
+        expandProjectReadKeys: (projects) => projectReadKeys(contextCacheDb, projects),
+      });
+      this.searchRoutes = new SearchRoutes(searchManager, this.contextCacheService);
       this.server.registerRoutes(this.searchRoutes);
+      this.contextCacheService.start();
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
       const corpusBuilder = new CorpusBuilder(
@@ -987,6 +1003,9 @@ export class WorkerService implements WorkerRef {
       beforeGracefulShutdown: async () => {
         this.stopPendingSessionResume();
         this.hookSpoolDrainer.stop();
+        // Before the DB closes: a pending re-render would read a closed connection.
+        this.contextCacheService?.stop();
+        this.contextCacheService = null;
 
         await this.codexAgent.close();
         if (this.transcriptWatcher) {

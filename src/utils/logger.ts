@@ -25,6 +25,7 @@ export type Component =
   | 'CLOUD_SYNC'
   | 'CONFIG'
   | 'CONSOLE'
+  | 'CONTEXT_CACHE'
   | 'CURSOR'
   | 'DB'
   | 'DEDUP'

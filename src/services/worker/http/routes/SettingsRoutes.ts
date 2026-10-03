@@ -17,6 +17,7 @@ import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shar
 import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
+import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -308,6 +309,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     clearPortCache();
+    // Context settings (counts, columns, welcome hint) shape the SessionStart block.
+    emitContextInvalidation('all', 'settings');
 
     logger.info('WORKER', 'Settings updated');
     res.json({ success: true, message: 'Settings updated successfully' });

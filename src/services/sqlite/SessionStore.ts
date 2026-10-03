@@ -1,3 +1,4 @@
+import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -2987,7 +2988,9 @@ export class SessionStore {
   }
 
   appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {
-    return appendWorkStateEntryRow(this.db, entry);
+    const entryId = appendWorkStateEntryRow(this.db, entry);
+    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry');
+    return entryId;
   }
 
   getWorkStateEntries(projects: string[], listName?: string): WorkStateEntry[] {
@@ -3652,6 +3655,7 @@ export class SessionStore {
       timestampIso,
       timestampEpoch
     );
+    emitContextInvalidation({ projects: [project] }, 'storeSummary');
 
     return {
       id: Number(result.lastInsertRowid),
@@ -3854,7 +3858,9 @@ export class SessionStore {
       return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
-    return storeTx();
+    const stored = storeTx();
+    emitContextInvalidation({ projects: [project] }, 'storeObservations');
+    return stored;
   }
 
   /**
@@ -4324,6 +4330,7 @@ export class SessionStore {
       summary.created_at,
       summary.created_at_epoch
     );
+    emitContextInvalidation({ projects: [summary.project] }, 'importSessionSummary');
 
     return { imported: true, id: result.lastInsertRowid as number };
   }
@@ -4398,6 +4405,7 @@ export class SessionStore {
       obs.created_at,
       obs.created_at_epoch
     );
+    emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
 
     return { imported: true, id: result.lastInsertRowid as number };
   }
