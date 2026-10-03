@@ -81,10 +81,10 @@ export class SearchManager {
    * dual-project ($or: project + merged_into_project) scoping used by every
    * single-type hybrid search path.
    */
-  private buildDocTypeWhereFilter(docType: string, project?: string, platformSource?: string): Record<string, any> {
+  private buildDocTypeWhereFilter(docType: string, readKeys: string[], platformSource?: string): Record<string, any> {
     const filters: Array<Record<string, any>> = [{ doc_type: docType }];
-    if (project) {
-      filters.push(buildProjectWhereFilter(projectReadKeysFor(this.sessionStore, project, undefined)));
+    if (readKeys.length > 0) {
+      filters.push(buildProjectWhereFilter(readKeys));
     }
     if (platformSource) {
       filters.push({ platform_source: normalizePlatformSource(platformSource) });
@@ -103,9 +103,11 @@ export class SearchManager {
     docType: string,
     project: string | undefined,
     platformSource: string | undefined,
-    hydrate: (ids: number[]) => T[]
+    hydrate: (ids: number[], readKeys: string[]) => T[],
+    projects?: string[]
   ): Promise<T[]> {
-    const whereFilter = this.buildDocTypeWhereFilter(docType, project, platformSource);
+    const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
+    const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
     const chromaResults = await this.queryChroma(query, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, whereFilter);
     logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
 
@@ -119,7 +121,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
 
       if (recentIds.length > 0) {
-        return hydrate(recentIds);
+        return hydrate(recentIds, readKeys);
       }
     }
     return [];
@@ -1000,8 +1002,11 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
       try {
         const limit = options.limit || 20;
-        results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, platformSource: options.platformSource })
+        // `projects` comes parsed from the route (#4304); the keyword fallback
+        // below already reads it, so Chroma and the hydration must too (#4248).
+        results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids, readKeys) =>
+          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, projects: readKeys, platformSource: options.platformSource }),
+          options.projects
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));

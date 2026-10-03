@@ -888,6 +888,45 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     }));
   });
 
+  // #4248: /api/search/observations parses `projects` at the route (#4304) and
+  // its keyword fallback reads it, but the Chroma query and the hydration read
+  // only `project`, so a `projects`-scoped search returned every project.
+  it('scopes /api/search/observations Chroma and hydration by `projects`', async () => {
+    const observation = { id: 9, title: 'from api', created_at: new Date().toISOString(), created_at_epoch: Date.now() };
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [observation.id],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: observation.id, doc_type: 'observation', project: 'api', created_at_epoch: Date.now() }],
+    }));
+    const getProjectReadKeys = mock((projects: string[]) => [...projects, 'old-folder']);
+    const getObservationsByIds = mock(() => [observation]);
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => []),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      { getObservationsByIds, getProjectReadKeys } as any,
+      { queryChroma } as any,
+      { formatTableHeader: () => '', formatObservationIndex: () => '' } as any,
+      {} as any,
+    );
+
+    await manager.searchObservations({ query: 'overlap', projects: ['api', 'acme/api'] });
+
+    expect(getProjectReadKeys).toHaveBeenCalledWith(['api', 'acme/api']);
+    const keys = { $in: ['api', 'acme/api', 'old-folder'] };
+    expect(queryChroma).toHaveBeenCalledWith('overlap', 100, {
+      $and: [
+        { doc_type: 'observation' },
+        { $or: [{ project: keys }, { merged_into_project: keys }] },
+      ],
+    });
+    expect(getObservationsByIds).toHaveBeenCalledWith([observation.id], expect.objectContaining({
+      projects: ['api', 'acme/api', 'old-folder'],
+    }));
+  });
+
   // Gate P2-14: the keyword fallback after a Chroma error was the one search
   // path without a catch, so a query that broke both surfaced as a failed
   // request instead of an empty answer (the Chroma-less path already caught).
