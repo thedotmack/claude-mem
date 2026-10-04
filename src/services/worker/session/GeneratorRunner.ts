@@ -463,7 +463,15 @@ export async function startGeneratorWithProvider(
       // no later ingest guaranteed to pick it up. Resume after a delay, a
       // bounded number of times in a row; an answered queued-work turn resets
       // the count (#4066).
-      if (reason === 'transport:response_stall') {
+      // The stalled prompt was a paid send of its batch (ClaudeProvider counts
+      // it): a batch whose budget is spent is parked rather than resumed, and
+      // only work behind it, if any, is.
+      const parkedOnStall = reason === 'transport:response_stall'
+        ? sessionManager.parkBatchOnSpentPaidSendBudget?.(session) ?? []
+        : [];
+      const nothingLeftAfterParking = parkedOnStall.length > 0
+        && sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId) === 0;
+      if (reason === 'transport:response_stall' && !nothingLeftAfterParking) {
         const { resume, attempts } = planResponseStallResume(session);
         if (!resume) {
           logger.error('SESSION', `Observer went unanswered ${attempts} times in a row — not resuming until the next captured event`, {

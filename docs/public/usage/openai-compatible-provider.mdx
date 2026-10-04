@@ -268,11 +268,14 @@ deliberate: a half-configured endpoint should not fail every observation. Check
 endpoint does not serve; the error names both settings. Note that some gateways
 prefix model ids differently from the vendor's own docs.
 
-**Repeated timeouts.** Each request has a deadline of
-`CLAUDE_MEM_LLM_TIMEOUT_MS` (180 seconds by default), which a large model on a
-slow endpoint can still exceed. Raise it, or prefer a small, fast model:
-observation extraction is a high-volume structured task, not a reasoning
-benchmark.
+**Repeated timeouts.** Requests are streamed, so a request is given up only
+after 90 seconds with no token and no keep-alive from the endpoint, or after
+300 seconds in total. `CLAUDE_MEM_LLM_TIMEOUT_MS` does not apply to streamed
+requests; it is the deadline only for an endpoint that refuses streaming (a 400
+naming `stream` or `stream_options`), which claude-mem then calls non-streamed
+for the rest of the worker's life. If requests keep timing out, prefer a small,
+fast model: observation extraction is a high-volume structured task, not a
+reasoning benchmark.
 
 **Empty or cut-off observations.** A model that will not hold to the output
 schema produces nothing usable. Small instruct-tuned models generally do better

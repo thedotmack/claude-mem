@@ -224,7 +224,12 @@ describe('Codex provider integration', () => {
     });
   }
 
-  it('publishes quota failure from a retry after a transient attempt', async () => {
+  // Never pay twice (Phase 1): a transient Codex fault (connection closed) is
+  // ambiguous — the turn may have run — so it is no longer retried in place.
+  // It surfaces as the transient pause; the session's transport resume and the
+  // batch's paid-send budget decide about a resend. A refusal on the first send
+  // still publishes its breaker.
+  it('does not resend after an ambiguous transient attempt', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     let sends = 0;
     provider.appServer.runTurn = async (options: any) => {
@@ -232,9 +237,8 @@ describe('Codex provider integration', () => {
       options.onFailure(failure);
       throw failure;
     };
-    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'quota_exhausted' });
-    expect(sends).toBe(2);
-    expect(getQuotaCooldown('codex')).not.toBeNull();
+    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+    expect(sends).toBe(1);
   });
 
   it('accepts an empty structured initialization reply without retrying', async () => {
@@ -245,12 +249,25 @@ describe('Codex provider integration', () => {
     expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
   });
 
-  it('retries a completed app-server turn without an agent message once', async () => {
+  // Never pay twice (Phase 1): a completed turn without an agent message was
+  // billed, so it is an output failure, never resent. The session turn passes
+  // it on as an empty reply (OpenAICompatibleProvider.queryObserverTurn, shared
+  // with the HTTP providers).
+  it('raises a completed app-server turn without an agent message as an output failure, without a second turn', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const methods = stubCompletedAppServerTurns(provider, [null, 'Recovered memory']);
-    const result = await provider.query([{ role: 'user', content: 'input' }], config);
-    expect(result.content).toBe('Recovered memory');
-    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
+    await expect(provider.query([{ role: 'user', content: 'input' }], config))
+      .rejects.toMatchObject({ paidSendOutcome: 'output_failure' });
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('passes an output failure on to the session as an empty reply', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    stubCompletedAppServerTurns(provider, [null]);
+    const s = session();
+    s.conversationHistory = [{ role: 'user', content: 'input' }];
+    const result = await provider.queryObserverTurn(s, config, undefined);
+    expect(result.content).toBe('');
   });
 
   it('passes blank structured output on as the reply, without a second turn', async () => {
@@ -259,14 +276,6 @@ describe('Codex provider integration', () => {
     const result = await provider.query([{ role: 'user', content: 'input' }], config);
     expect(result.content).toBe('');
     expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
-  });
-
-  it('passes an empty reply on after a second turn without an agent message', async () => {
-    const provider = new CodexProvider(null as any, null as any) as any;
-    const methods = stubCompletedAppServerTurns(provider, [null, null, '<observation/>']);
-    const result = await provider.query([{ role: 'user', content: 'input' }], config);
-    expect(result.content).toBe('');
-    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
   });
 
   it('cancels a compression request while the session signal remains active', async () => {

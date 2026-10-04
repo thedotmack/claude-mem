@@ -26,6 +26,14 @@ import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
 import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
 import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
+import { TERMINAL_INIT_PHASES, type InitPhaseSource, type InitPhaseState } from './init-phase.js';
+
+/**
+ * Keep-alive comment cadence on GET /api/ready. Clients treat 5 s of silence
+ * as wedged (READY_STREAM_IDLE_TIMEOUT_MS in worker-utils.ts), so the ping
+ * must be comfortably shorter than that: equal values would race.
+ */
+const READY_STREAM_PING_INTERVAL_MS = 2000;
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -108,6 +116,14 @@ export interface AiStatus {
 
 export interface ServerOptions {
   getInitializationComplete: () => boolean;
+  /**
+   * Boot progress for GET /api/ready (the worker's InitPhaseTracker). Absent
+   * (server runtime, tests) ⇒ the phase is derived from
+   * getInitializationComplete(): `ready` or `starting`, re-checked on each ping.
+   */
+  initPhaseSource?: InitPhaseSource;
+  /** Test hook: /api/ready keep-alive cadence. Default 2000 ms. */
+  readyStreamPingIntervalMs?: number;
   getMcpReady: () => boolean;
   // reason feeds worker_stopped telemetry: 'restart' when the CLI restart
   // path tags /api/admin/shutdown with ?reason=restart, 'stop' otherwise.
@@ -279,6 +295,71 @@ export class Server {
     this.options.preBodyParserRoutes?.forEach(handler => handler.setupRoutes(this.app));
   }
 
+  /**
+   * GET /api/ready — SSE boot progress. Sends the current phase at once, then
+   * every transition, with a `: ping` comment between them, and ENDS the
+   * response after `ready` or `failed`. A client that reads silence or a close
+   * without a terminal phase must treat the worker as wedged, never as ready.
+   */
+  private handleReadyStream(req: Request, res: Response): void {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const source = this.options.initPhaseSource;
+    const readPhase = (): InitPhaseState => source
+      ? source.getInitPhase()
+      : { phase: this.options.getInitializationComplete() ? 'ready' : 'starting' };
+
+    let finished = false;
+    let lastSentPhase: string | null = null;
+    let unsubscribe: (() => void) | null = null;
+    let pingTimer: ReturnType<typeof setInterval> | null = null;
+
+    const socket = req.socket;
+    const cleanup = () => {
+      finished = true;
+      if (pingTimer !== null) { clearInterval(pingTimer); pingTimer = null; }
+      if (unsubscribe !== null) { unsubscribe(); unsubscribe = null; }
+      res.off('close', cleanup);
+      socket.off('close', cleanup);
+    };
+
+    const send = (state: InitPhaseState) => {
+      if (finished || state.phase === lastSentPhase) return;
+      lastSentPhase = state.phase;
+      const payload = {
+        phase: state.phase,
+        ...(state.message !== undefined ? { message: state.message } : {}),
+        version: BUILT_IN_VERSION,
+        pid: process.pid,
+      };
+      res.write(`event: phase\ndata: ${JSON.stringify(payload)}\n\n`);
+      if (TERMINAL_INIT_PHASES.includes(state.phase)) {
+        cleanup();
+        res.end();
+      }
+    };
+
+    // Client disconnect: Node emits res 'close'; Bun's node:http does not
+    // (only the socket closes), so listen to both. req 'close' is avoided: on
+    // Node it can fire as soon as a GET body is consumed.
+    res.on('close', cleanup);
+    socket.on('close', cleanup);
+    if (source) unsubscribe = source.subscribeInitPhase(send);
+    send(readPhase());
+    if (finished) return;
+
+    pingTimer = setInterval(() => {
+      if (finished) return;
+      res.write(': ping\n\n');
+      // Without a transition source, the ping tick is the only time the
+      // derived phase can be re-read.
+      if (!source) send(readPhase());
+    }, this.options.readyStreamPingIntervalMs ?? READY_STREAM_PING_INTERVAL_MS);
+  }
+
   private setupCoreRoutes(): void {
     this.app.get('/api/health', async (_req: Request, res: Response) => {
       const queueHealth = this.options.getQueueHealth
@@ -320,6 +401,8 @@ export class Server {
         });
       }
     });
+
+    this.app.get('/api/ready', (req: Request, res: Response) => this.handleReadyStream(req, res));
 
     this.app.get('/api/version', (_req: Request, res: Response) => {
       res.status(200).json({ version: BUILT_IN_VERSION });

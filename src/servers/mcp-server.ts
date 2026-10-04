@@ -42,6 +42,7 @@ import { normalizePlatformSource } from '../shared/platform-source.js';
 import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
+import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 
 /** This server's checkout (Claude Code starts it in the workspace), resolved once. */
 let workspaceCheckout: ProjectContext | null = null;
@@ -81,11 +82,23 @@ function errorIfWorkerScriptMissing(): void {
 
 async function callWorker(
   endpoint: string,
-  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean } = {}
+  opts: {
+    query?: Record<string, any>;
+    body?: Record<string, any>;
+    text?: boolean;
+    /** Long corpus work: read the worker's SSE heartbeat stream instead of one JSON reply. */
+    streamCorpusProgress?: boolean;
+  } = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
+    if (opts.streamCorpusProgress && opts.body) {
+      const corpusResult = await postCorpusRequestOverSse(endpoint, opts.body);
+      logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(corpusResult, null, 2) }] };
+    }
+
     let response: Response;
     if (opts.body) {
       response = await workerHttpRequest(endpoint, {
@@ -874,7 +887,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorker('/api/corpus', { body: args });
+      return await callWorker('/api/corpus', { body: args, streamCorpusProgress: true });
     }
   },
   {
@@ -903,7 +916,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
@@ -921,7 +934,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/query`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/query`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
@@ -939,7 +952,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/rebuild`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/rebuild`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
@@ -956,7 +969,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/reprime`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/reprime`, { body: rest, streamCorpusProgress: true });
     }
   }
 ];

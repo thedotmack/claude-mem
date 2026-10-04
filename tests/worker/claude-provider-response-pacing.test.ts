@@ -278,15 +278,54 @@ function withTimeout<T>(promise: Promise<T>, label: string, ms = 2_000): Promise
 }
 
 let liveSessions: ActiveSession[] = [];
+let previousObserveBarePrompts: string | undefined;
 
 beforeEach(() => {
   currentSdk = null;
   liveSessions = [];
+  // These tests pace the generator's separate init turn; the default, where
+  // the init prompt rides on the first observation, has its own describe below.
+  previousObserveBarePrompts = process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+  process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'true';
 });
 
 afterEach(() => {
   // Release any generator still parked on the pacer so nothing outlives the test.
   for (const session of liveSessions) session.abortController.abort();
+  if (previousObserveBarePrompts === undefined) delete process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+  else process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = previousObserveBarePrompts;
+});
+
+describe('Claude observer feed pacing without a separate init turn (the default)', () => {
+  it('sends the init prompt with the first observation and still holds every claim until it is answered', async () => {
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'false';
+    const h = createHarness(200);
+    liveSessions.push(h.session);
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+
+    await sdk().until(() => sdk().prompts.length >= 1, 'first prompt');
+    await settle();
+    // One prompt out: the user's request and the first observation together.
+    expect(sdk().prompts.length).toBe(1);
+    expect(sdk().prompts[0]).toContain('<user_request>work through the backlog</user_request>');
+    expect(sdk().prompts[0]).toContain('step 0');
+    expect(h.session.claimedMessageIds.length).toBe(1);
+
+    for (let turn = 1; turn <= 3; turn++) {
+      sdk().answer(SKIP_REPLY);
+      await sdk().until(() => sdk().prompts.length >= turn + 1, `prompt ${turn + 1}`);
+      await settle();
+      expect(sdk().prompts.length).toBe(turn + 1);
+      expect(sdk().prompts[turn]).not.toContain('<user_request>');
+      expect(sdk().prompts[turn]).toContain(`step ${turn}`);
+      expect(h.session.claimedMessageIds.length).toBe(1);
+      expect(h.pending()).toBe(200 - turn);
+    }
+
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after abort');
+  });
 });
 
 describe('Claude observer feed pacing (#4066)', () => {

@@ -1,5 +1,6 @@
 
 import type { Response } from 'express';
+import type { PaidSendBudget } from './worker/paid-send-budget.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -91,6 +92,12 @@ export interface ActiveSession {
    * is answered.
    */
   consecutiveUnattendedGatewayResumes?: number;
+  /**
+   * The paid-send allowance of the batch most recently sent (paid-send-budget.ts),
+   * shared by withRetry, transport resumes, stall resumes and Codex retries.
+   * Spent, the batch is parked instead of resent.
+   */
+  paidSendBudget?: PaidSendBudget;
   /**
    * The delayed resume a response stall scheduled. Any generator start cancels
    * it, so a stale timer never restarts a session a newer generation paused.
