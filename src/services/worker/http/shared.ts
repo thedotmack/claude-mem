@@ -379,7 +379,7 @@ export async function ingestSummarize(
   const cleanedLastAssistantMessage = payload.lastAssistantMessage
     ? stripMemoryTags(String(payload.lastAssistantMessage))
     : payload.lastAssistantMessage;
-  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
+  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber);
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
 

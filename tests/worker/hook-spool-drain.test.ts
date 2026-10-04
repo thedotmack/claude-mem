@@ -102,7 +102,7 @@ describe('drainHookSpool', () => {
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(2);
     const sessionDbId = store.findSessionDbIdByContentSessionId('session-a', 'claude');
     expect(sessionDbId).not.toBeNull();
-    expect(sessionManager.queueSummarize).toHaveBeenCalledWith(sessionDbId, 'done');
+    expect(sessionManager.queueSummarize).toHaveBeenCalledWith(sessionDbId, 'done', 0);
     expect(sessionManager.requestSessionWrapup).toHaveBeenCalledWith(sessionDbId);
     expect(store.getAdvisorCalls(0, 10).items.map(call => call.tool_use_id)).toEqual(['srvtoolu_1']);
     expect(ensureGeneratorRunning).toHaveBeenCalledWith(sessionDbId, 'summarize');

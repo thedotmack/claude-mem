@@ -1065,6 +1065,9 @@ export class ClaudeProvider {
         };
         if (!(await this.awaitObserverAnswer(session, pacer, answeredBeforeSend))) return;
       } else if (message.type === 'summarize') {
+        if (message.prompt_number !== undefined) {
+          session.lastPromptNumber = message.prompt_number;
+        }
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,

@@ -572,7 +572,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processSummaryMessage(
     session: ActiveSession,
-    message: { last_assistant_message?: string },
+    message: { last_assistant_message?: string; prompt_number?: number },
     worker: WorkerRef | undefined,
     config: TConfig,
     mode: ModeConfig,
@@ -581,6 +581,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   ): Promise<void> {
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
+    }
+    if (message.prompt_number !== undefined) {
+      session.lastPromptNumber = message.prompt_number;
     }
 
     const summaryPrompt = buildSummaryPrompt({
