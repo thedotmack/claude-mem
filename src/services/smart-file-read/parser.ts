@@ -657,7 +657,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
       }
       if (cap.tag === "imp") {
-        imports.push(cap.text || lines[cap.startRow]?.trim() || "");
+        const capturedLines = lines.slice(cap.startRow, cap.endRow + 1);
+        // Tree-sitter columns are UTF-8 byte offsets, not JS string indices.
+        // A multiline capture is not repeated as `text` in CLI query output.
+        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(cap.startCol).toString();
+        const last = capturedLines.length - 1;
+        const endCol = cap.endCol - (last === 0 ? cap.startCol : 0);
+        capturedLines[last] = Buffer.from(capturedLines[last]).subarray(0, endCol).toString();
+        imports.push(capturedLines.join("\n"));
       }
     }
   }
