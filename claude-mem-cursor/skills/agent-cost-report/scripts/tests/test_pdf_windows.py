@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import _paths  # noqa: F401
 from acr import render
@@ -20,15 +21,19 @@ class WindowsChromePdf(unittest.TestCase):
         if self.chrome is None:
             self.skipTest("Chrome is optional and is not installed in a standard Windows location")
         print("native Chrome:", self.chrome, "google-chrome on PATH:", shutil.which("google-chrome"))
-        if shutil.which("google-chrome") is not None:
-            self.skipTest("requires the ordinary Windows install without a google-chrome PATH alias")
         self.tmp = tempfile.TemporaryDirectory(prefix="acr-native-pdf-")
         self.addCleanup(self.tmp.cleanup)
         self.out = Path(self.tmp.name)
         (self.out / "report.print.html").write_text("<!doctype html><html><body>Native agent report</body></html>", encoding="utf-8")
 
     def test_default_discovers_installed_chrome_and_produces_pdf(self):
-        path, message = render.pdf(str(self.out))
+        # Exercise installed-file discovery even when the runner exposes a
+        # chrome PATH alias. Keep Windows system tools, but no browser folders.
+        system_path = str(Path(os.environ["SystemRoot"]) / "System32")
+        with patch.dict(os.environ, {"PATH": system_path}):
+            self.assertIsNone(shutil.which("google-chrome"))
+            self.assertIsNone(shutil.which("chrome"))
+            path, message = render.pdf(str(self.out))
         self.assertIsNotNone(path, message)
         self.assertTrue(Path(path).read_bytes().startswith(b"%PDF-"))
         self.assertFalse((self.out / ".chrome-profile").exists())

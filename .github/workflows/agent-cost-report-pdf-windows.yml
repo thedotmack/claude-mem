@@ -1,0 +1,44 @@
+name: Agent cost report PDF (Windows)
+
+on:
+  pull_request:
+    paths:
+      - 'plugin/skills/agent-cost-report/**'
+      - 'claude-mem-cursor/skills/agent-cost-report/**'
+      - 'claude-mem-grok-bot/skills/agent-cost-report/**'
+      - 'cowork/skills/agent-cost-report/**'
+      - 'openclaw/skills/agent-cost-report/**'
+      - '.github/workflows/agent-cost-report-pdf-windows.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugin/skills/agent-cost-report/**'
+      - 'claude-mem-cursor/skills/agent-cost-report/**'
+      - 'claude-mem-grok-bot/skills/agent-cost-report/**'
+      - 'cowork/skills/agent-cost-report/**'
+      - 'openclaw/skills/agent-cost-report/**'
+      - '.github/workflows/agent-cost-report-pdf-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report-pdf:
+    name: native Windows installed Chrome PDF export
+    runs-on: windows-2022
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Exercise PDF discovery in every shipped distribution
+        shell: pwsh
+        run: |
+          $distributions = @('plugin', 'claude-mem-cursor', 'claude-mem-grok-bot', 'cowork', 'openclaw')
+          foreach ($distribution in $distributions) {
+            $tests = "$distribution/skills/agent-cost-report/scripts/tests"
+            python -m unittest discover -s $tests -p 'test_pdf_windows.py'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
