@@ -9,7 +9,7 @@ import type { SSEEventPayload } from '../../../src/services/worker/agents/types.
 
 describe('response metadata uses the registered memory identity', () => {
   it('links tool receipts and broadcasts the same memory session as the stored row', async () => {
-    const cleanup: Array<() => void> = [];
+    const cleanup: Array<() => void | Promise<unknown>> = [];
     try {
       const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
         ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
@@ -38,7 +38,7 @@ describe('response metadata uses the registered memory identity', () => {
         sessionDbId: sid, project: session.project, toolName: 'Read', toolInput: '{}', toolResponse: 'Read file' });
       manager.queueObservation(sid, { tool_name: 'Read', tool_input: { file_path: 'src/example.ts' }, tool_response: 'Read file', toolUseId: 'second-tool' });
       const messages = manager.getMessageIterator(sid);
-      cleanup.push(() => { void messages.return(undefined); });
+      cleanup.push(() => messages.return(undefined));
       const events: SSEEventPayload[] = [];
       await messages.next();
       const result = await processAgentResponse('<observation><type>discovery</type><title>Read example</title></observation>',
@@ -53,7 +53,7 @@ describe('response metadata uses the registered memory identity', () => {
       expect(session.memorySessionId).toBe('second-sdk-memory');
       expect(manager.getTotalQueueDepth()).toBe(0);
     } finally {
-      for (const release of cleanup.reverse()) release();
+      for (const release of cleanup.reverse()) await release();
     }
   });
 });
