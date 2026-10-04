@@ -37,6 +37,7 @@ import type { PushOp } from "./do/SyncHub";
 import {
 	DEVICE_LIMIT_ERROR,
 	INVALID_OPS_PREFIX,
+	PROJECTION_LEASE_MIN_REMAINING_MS,
 	PROJECTION_LEASE_MS,
 	PROJECTION_ERROR_PREFIX,
 	SyncHub,
@@ -106,9 +107,11 @@ export const POLL_PUSH_DRAIN_MAX_PAGES = 8;
  * Pro declares a 60-second maximum duration. Abort the complete response-body
  * read at 45 seconds while the Hub holds a 90-second fencing lease:
  * Hub abort (45s) < Pro platform ceiling (60s) < Hub lease (90s).
+ * getProjectionPage can hand out a page with only
+ * PROJECTION_LEASE_MIN_REMAINING_MS (85s) left, so the abort must also fit inside that.
  */
-if (PROJECTION_FETCH_TIMEOUT_MS >= PROJECTION_LEASE_MS) {
-	throw new Error("projection fetch timeout must be strictly shorter than the Hub lease");
+if (PROJECTION_FETCH_TIMEOUT_MS >= PROJECTION_LEASE_MIN_REMAINING_MS) {
+	throw new Error("projection fetch timeout must be strictly shorter than the Hub lease left on a page");
 }
 
 const encoder = new TextEncoder();
@@ -748,7 +751,7 @@ function projectionNow(dependencies: ProjectionDrainDependencies): number | unde
  *
  * RPC budget (deliberate): one getProjectionState, one acquire, then per page
  * getProjectionPage + advanceProjectionCheckpoint. acquire already returns
- * projected_seq, getProjectionPage already renews the 90s lease, and
+ * projected_seq, getProjectionPage keeps at least 85s on the 90s lease, and
  * advance returns the new checkpoint — extra getProjectionState /
  * heartbeatProjectionLease round-trips were waking SQLite DOs for no
  * fencing value.
@@ -866,9 +869,9 @@ export async function drainProjection(
 					retryable: true,
 				};
 			}
-			// getProjectionPage already renews the 90s fencing lease. A second
-			// heartbeat RPC here was waking the SQLite DO again for no extra
-			// fencing: Hub abort (45s) is already strictly inside that window.
+			// getProjectionPage hands out every page with at least 85s left on the
+			// 90s fencing lease. A second heartbeat RPC here was waking the SQLite
+			// DO again for no extra fencing: Hub abort (45s) is strictly inside that.
 			// From this point until a deterministic response/checkpoint outcome,
 			// the upstream may still be applying the request even if our fetch
 			// rejects. Never let a successor overlap that ambiguous predecessor.

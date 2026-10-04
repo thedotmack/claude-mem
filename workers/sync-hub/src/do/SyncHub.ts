@@ -30,6 +30,12 @@ export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
 export const PROJECTION_LEASE_MS = 90_000;
 /**
+ * A lease renewal is skipped while at least this much lease remains. A page
+ * that follows an acquire or a checkpoint advance by milliseconds then skips
+ * a billed row write, and every page still goes out with at least 85s left.
+ */
+export const PROJECTION_LEASE_MIN_REMAINING_MS = PROJECTION_LEASE_MS - 5_000;
+/**
  * How stale devices.last_seen may get before a pull refreshes it. Every SQL
  * row write is billed, and an idle client polls /v1/sync/changes all day, so
  * a pull writes only when something changed or last_seen is this old.
@@ -749,12 +755,14 @@ export class SyncHub extends DurableObject<Env> {
 		return this.getProjectionState();
 	}
 
+	/**
+	 * Expire the lease in place instead of deleting its two meta rows. A delete
+	 * and the next acquire's re-insert each cost billed index writes, but two
+	 * updates do not. The released token still fails assertLease, as expired.
+	 */
 	releaseProjectionLease(leaseToken: string): void {
 		if (this.metaOptional("projection_lease_token") !== leaseToken) return;
-		this.ctx.storage.transactionSync(() => {
-			this.deleteMeta("projection_lease_token");
-			this.deleteMeta("projection_lease_expires_at");
-		});
+		this.setMeta("projection_lease_expires_at", "0");
 	}
 
 	getProjectionState(): ProjectionState {
@@ -766,7 +774,8 @@ export class SyncHub extends DurableObject<Env> {
 		};
 	}
 
-	private assertLease(token: string, now: number): void {
+	/** Returns the lease expiry, which renewProjectionLease uses to skip a fresh lease. */
+	private assertLease(token: string, now: number): string {
 		if (typeof token !== "string" || token.length === 0 || this.metaOptional("projection_lease_token") !== token) {
 			throw projectionError("projection lease is not held");
 		}
@@ -774,11 +783,13 @@ export class SyncHub extends DurableObject<Env> {
 		if (!expires || compareCanonicalDecimals(expires, this.leaseNow(now)) <= 0) {
 			throw projectionError("projection lease expired");
 		}
+		return expires;
 	}
 
 	private renewProjectionLease(token: string, now: number): void {
 		this.ctx.storage.transactionSync(() => {
-			this.assertLease(token, now);
+			const expires = this.assertLease(token, now);
+			if (Number(expires) - now >= PROJECTION_LEASE_MIN_REMAINING_MS) return;
 			this.setMeta("projection_lease_expires_at", this.leaseExpiry(this.leaseNow(now)));
 		});
 	}
@@ -973,10 +984,6 @@ export class SyncHub extends DurableObject<Env> {
 			key,
 			value,
 		);
-	}
-
-	private deleteMeta(key: string): void {
-		this.ctx.storage.sql.exec("DELETE FROM meta WHERE k = ?", key);
 	}
 }
 
