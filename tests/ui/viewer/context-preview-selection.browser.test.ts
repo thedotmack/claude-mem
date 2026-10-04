@@ -25,6 +25,20 @@ for (const { oldStatus, emptySource } of [
         import { createRoot } from 'react-dom/client';
         import { useContextPreview } from './src/ui/viewer/hooks/useContextPreview';
         import { DEFAULT_SETTINGS } from './src/ui/viewer/constants/settings';
+        let oldBodyRead = false;
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+          const response = await nativeFetch(...args);
+          if (String(args[0]).includes('project=project-a')) {
+            const readText = response.text.bind(response);
+            response.text = async () => {
+              const text = await readText();
+              oldBodyRead = true;
+              return text;
+            };
+          }
+          return response;
+        };
         let current;
         function Probe() { current = useContextPreview(DEFAULT_SETTINGS); return null; }
         createRoot(document.getElementById('root')).render(<Probe />);
@@ -44,7 +58,9 @@ for (const { oldStatus, emptySource } of [
             await until(() => current.selectedProject === ${emptySource ? 'null' : "'project-b'"}
               && current.preview === ${emptySource ? "'No project selected'" : "'PREVIEW_B'"} && !current.isLoading);
             await fetch('/release');
-            await new Promise(resolve => setTimeout(resolve, 150));
+            await until(() => oldBodyRead);
+            await new Promise(requestAnimationFrame);
+            await new Promise(requestAnimationFrame);
             await fetch('/result', { method: 'POST', body: JSON.stringify({
               selectedProject: current.selectedProject, preview: current.preview,
               error: current.error, isLoading: current.isLoading,
