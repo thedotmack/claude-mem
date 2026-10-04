@@ -6,9 +6,9 @@ import { SearchOrchestrator } from '../../../src/services/worker/search/SearchOr
 describe('file search preserves explicit date ordering with Chroma', () => {
   let store: SessionStore;
   afterEach(() => store?.close());
-  function seed(epoch: number): number {
-    const memoryId = `memory-${epoch}`;
-    const sdkId = store.createSDKSession(`content-${epoch}`, 'project', 'prompt');
+  function seed(epoch: number, label = String(epoch)): number {
+    const memoryId = `memory-${label}`;
+    const sdkId = store.createSDKSession(`content-${label}`, 'project', 'prompt');
     store.ensureMemorySessionIdRegistered(sdkId, memoryId);
     return store.storeObservation(memoryId, 'project', {
       type: 'discovery', title: memoryId, subtitle: null, narrative: memoryId,
@@ -50,4 +50,20 @@ describe('file search preserves explicit date ordering with Chroma', () => {
       expect(result.usedChroma).toBe(true);
     });
   }
+  for (const orderBy of ['date_asc', 'date_desc'] as const) {
+    for (const limit of [2, 3]) {
+      it(`keeps ${orderBy} timestamp ties stable across Chroma and fallback with limit ${limit}`, async () => {
+        store = new SessionStore(':memory:');
+        const ids = [seed(100, 'first'), seed(100, 'second'), seed(100, 'third')];
+        const expected = (orderBy === 'date_asc' ? ids : [...ids].reverse()).slice(0, limit);
+        for (const ranked of [[], ids, [...ids].reverse()]) {
+          const chroma = { queryChroma: async () => ({ ids: ranked, distances: ranked.map(() => 0.1), metadatas: [] }) };
+          const search = new SearchOrchestrator(new SessionSearch(store.db), store, chroma as any);
+          const result = await search.findByFile('src/file.ts', { project: 'project', limit, orderBy });
+          expect(result.observations.map(row => row.id)).toEqual(expected);
+        }
+      });
+    }
+  }
+
 });
