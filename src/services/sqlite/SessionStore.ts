@@ -4041,22 +4041,22 @@ export class SessionStore {
         SELECT o.id, o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.id <= ? ${observationScope.clause}
-        ORDER BY o.id DESC
+        WHERE (o.created_at_epoch < ? OR (o.created_at_epoch = ? AND o.id <= ?)) ${observationScope.clause}
+        ORDER BY o.created_at_epoch DESC, o.id DESC
         LIMIT ?
       `;
       const afterQuery = `
         SELECT o.id, o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.id >= ? ${observationScope.clause}
-        ORDER BY o.id ASC
+        WHERE (o.created_at_epoch > ? OR (o.created_at_epoch = ? AND o.id >= ?)) ${observationScope.clause}
+        ORDER BY o.created_at_epoch ASC, o.id ASC
         LIMIT ?
       `;
 
       try {
-        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...observationScope.params, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...observationScope.params, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, anchorEpoch, anchorObservationId, ...observationScope.params, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, anchorEpoch, anchorObservationId, ...observationScope.params, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
 
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
           return { observations: [], sessions: [], prompts: [] };
