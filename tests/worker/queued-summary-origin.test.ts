@@ -68,7 +68,8 @@ describe('queued summary origin', () => {
         cleanup.push(() => server.stop(true));
         const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((_input, init) => realFetch(`http://127.0.0.1:${server.port}/generate`, init));
         cleanup.push(() => fetchSpy.mockRestore());
-        await new GeminiProvider(db, manager).startSession(session, { broadcastProcessingStatus() {
+        const provider = new GeminiProvider(db, manager);
+        await provider.startSession(session, { broadcastProcessingStatus() {
           if (manager.getTotalQueueDepth() === 0) session.abortController.abort();
         } });
         const rows = store.db.query('SELECT request, prompt_number FROM session_summaries').all();
@@ -76,6 +77,21 @@ describe('queued summary origin', () => {
         expect(rows).toEqual([{ request: 'Owned summary', prompt_number: expected }]);
         if (kind === 'next-prompt' || kind === 'spooled-stop') expect(session.lastPromptNumber).toBe(2);
         expect(manager.getTotalQueueDepth()).toBe(0);
+        if (kind === 'older-observation') {
+          const retainedPromptNumber = session.lastPromptNumber;
+          const observations = store.db.query('SELECT title, prompt_number FROM observations').all();
+          expect(observations).toEqual([{ title: 'Owned file', prompt_number: 1 }]);
+          manager.queueObservation(sid, { tool_name: 'Read', tool_input: { file_path: 'next.ts' }, tool_response: 'next contents', prompt_number: 2 });
+          session.abortController = new AbortController();
+          await provider.startSession(session, { broadcastProcessingStatus() {
+            if (manager.getTotalQueueDepth() === 0) session.abortController.abort();
+          } });
+          const continued = session.conversationHistory[0].content.startsWith((mode as any).getActiveMode().prompts.continuation_greeting);
+          console.log(JSON.stringify({ kind, retainedPromptNumber, continued, observations }));
+          expect(continued).toBe(true);
+          expect(retainedPromptNumber).toBe(2);
+          expect(session.lastPromptNumber).toBe(2);
+        }
       } finally {
         for (const release of cleanup.reverse()) release();
       }

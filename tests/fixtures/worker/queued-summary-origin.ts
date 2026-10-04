@@ -99,4 +99,17 @@ const rows = store.db.query('SELECT request, prompt_number FROM session_summarie
 console.log(JSON.stringify({kind, expected, rows}));
 assert.deepEqual(rows, [{request: 'Owned summary', prompt_number: expected}]);
 assert.equal(manager.getTotalQueueDepth(), 0);
+if (kind === 'older-observation') {
+  const retainedPromptNumber = session.lastPromptNumber;
+  const observations = store.db.query('SELECT title, prompt_number FROM observations').all();
+  assert.deepEqual(observations, [{ title: 'Owned summary', prompt_number: 1 }]);
+  manager.queueSummarize(sid, 'Second request completed', 2);
+  session.abortController = new AbortController();
+  await provider.startSession(session);
+  const continued = session.conversationHistory[0].content.startsWith((mode as any).getActiveMode().prompts.continuation_greeting);
+  console.log(JSON.stringify({ kind, retainedPromptNumber, continued, observations }));
+  assert.equal(continued, true);
+  assert.equal(retainedPromptNumber, 2);
+  assert.equal(session.lastPromptNumber, 2);
+}
 } finally { for (const release of cleanup.reverse()) await release(); }

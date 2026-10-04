@@ -483,10 +483,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     originalTimestamp: number | null,
     lastCwd: string | undefined
   ): Promise<void> {
-    if (message.prompt_number !== undefined) {
-      session.lastPromptNumber = message.prompt_number;
-    }
-
     if (!session.memorySessionId) {
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
@@ -528,7 +524,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     }, fieldMaxChars, takeObserverSchemaReminder(session));
-    const responseContext = snapshotResponseContext(session);
+    const responseContext = {
+      ...snapshotResponseContext(session),
+      promptNumber: message.prompt_number ?? session.lastPromptNumber,
+    };
 
     const turnPrompt = this.observationTurnPrompt(session, message, obsPrompt);
     if (this.rejectAbortedObservation) session.abortController.signal.throwIfAborted();
