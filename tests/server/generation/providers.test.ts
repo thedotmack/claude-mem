@@ -163,14 +163,17 @@ describe('shared error classification', () => {
     expect((err.cause as Error).message).not.toContain(rawBody);
   });
 
-  it('classifyHttpProviderError treats a 2xx body-level litellm parse error as transient', () => {
+  // Never pay twice (Phase 1): the call was billed, only its output was lost;
+  // this used to be transient (BullMQ-retried) and is now never retried.
+  it('classifyHttpProviderError treats a 2xx body-level litellm parse error as a non-retried output failure', () => {
     const err = classifyHttpProviderError({
       status: 200,
       bodyText: '200 Unable to get json response - Expecting value: line 45 column 1',
       cause: new Error('OpenRouter API error: 200 - Unable to get json response'),
       providerLabel: 'OpenRouter',
     });
-    expect(err.kind).toBe('transient');
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
   });
 
   it('classifyClaudeServerError treats 529 as transient', () => {

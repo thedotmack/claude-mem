@@ -22,13 +22,19 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => mockSettings,
 }));
 
-const workerCallLog: Array<{ path: string; method: string; body: unknown }> = [];
+// PostToolUse spools and exits: any awaited worker call is a regression.
+const awaitedWorkerCallLog: Array<{ path: string; method: string; body: unknown }> = [];
 mock.module('../../../src/shared/worker-utils.js', () => ({
+  ...realWorkerUtilsSnapshot,
   executeWithWorkerFallback: (path: string, method: string, body: unknown) => {
-    workerCallLog.push({ path, method, body });
+    awaitedWorkerCallLog.push({ path, method, body });
     return Promise.resolve({ status: 'queued' });
   },
-  isWorkerFallback: () => false,
+  ensureWorkerRunning: () => {
+    awaitedWorkerCallLog.push({ path: 'ensureWorkerRunning', method: '', body: null });
+    return Promise.resolve(true);
+  },
+  workerHttpRequest: () => Promise.resolve(new Response('{"status":"draining"}', { status: 202 })),
 }));
 
 // Mutable runtime context so individual cases can flip between the `worker` and
@@ -54,11 +60,20 @@ mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
 
 import { logger } from '../../../src/utils/logger.js';
 import { codexAdapter } from '../../../src/cli/adapters/codex.js';
+import { spooledEntries, useTempHookSpoolDataDir } from '../../helpers/temp-hook-spool.js';
+
+/** Observations handed to the worker (via the hook spool). */
+function spooled() {
+  expect(awaitedWorkerCallLog).toHaveLength(0);
+  return spooledEntries('observation');
+}
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let tempSpool: ReturnType<typeof useTempHookSpoolDataDir>;
 
 beforeEach(() => {
-  workerCallLog.length = 0;
+  tempSpool = useTempHookSpoolDataDir();
+  awaitedWorkerCallLog.length = 0;
   recordEventLog.length = 0;
   mockRuntime = { runtime: 'worker' };
   mockSettings = {
@@ -77,6 +92,7 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+  tempSpool.restore();
 });
 
 afterAll(() => {
@@ -111,15 +127,15 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     platform: 'codex',
   });
 
-  it('forwards native Codex tool IDs and agent attribution to worker ingestion', async () => {
+  it('spools native Codex tool IDs and agent attribution for worker ingestion', async () => {
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
     await observationHandler.execute(codexInput());
 
-    expect(workerCallLog).toHaveLength(1);
-    expect(workerCallLog[0].body).toMatchObject({
+    expect(spooled()).toHaveLength(1);
+    expect(spooled()[0].payload).toMatchObject({
       contentSessionId: 'codex-session',
       platformSource: 'codex',
-      tool_use_id: 'call-codex-1',
+      toolUseId: 'call-codex-1',
       agentId: 'codex-agent-1',
       agentType: 'explorer',
     });
@@ -130,16 +146,16 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
     await observationHandler.execute(codexInput());
 
-    expect(workerCallLog).toHaveLength(0);
+    expect(spooled()).toHaveLength(0);
     expect(recordEventLog).toHaveLength(0);
   });
 
-  it('dispatches to the worker for a main-session observation (defaults)', async () => {
+  it('spools a main-session observation for the worker (defaults)', async () => {
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
     const result = await observationHandler.execute(baseInput());
     expect(result.continue).toBe(true);
-    expect(workerCallLog.length).toBe(1);
-    expect(workerCallLog[0].path).toBe('/api/sessions/observations');
+    expect(spooled().length).toBe(1);
+    expect(spooled()[0].kind).toBe('observation');
   });
 
   it('dispatches subagent observations by default (no silent behavior change)', async () => {
@@ -148,7 +164,7 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
       baseInput({ agentId: 'agent-1', agentType: 'workflow-subagent' })
     );
     expect(result.continue).toBe(true);
-    expect(workerCallLog.length).toBe(1);
+    expect(spooled().length).toBe(1);
   });
 
   it('skips ALL subagent observations when CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS=true', async () => {
@@ -159,7 +175,7 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     );
     expect(result.continue).toBe(true);
     expect(result.exitCode).toBe(0);
-    expect(workerCallLog.length).toBe(0); // no HTTP round-trip, no provider call
+    expect(spooled().length).toBe(0); // no HTTP round-trip, no provider call
   });
 
   it('does NOT skip the main session when the global toggle is on', async () => {
@@ -167,7 +183,7 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
     const result = await observationHandler.execute(baseInput()); // no agentId
     expect(result.continue).toBe(true);
-    expect(workerCallLog.length).toBe(1);
+    expect(spooled().length).toBe(1);
   });
 
   it('does NOT skip an agent-id-only event (transcript-watch / Grok Bot seat) when the global toggle is on', async () => {
@@ -176,7 +192,7 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
     const result = await observationHandler.execute(baseInput({ agentId: 'grok-seat-7' }));
     expect(result.continue).toBe(true);
-    expect(workerCallLog.length).toBe(1);
+    expect(spooled().length).toBe(1);
   });
 
   it('skips only the listed agent_type values', async () => {
@@ -187,13 +203,13 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
       baseInput({ agentId: 'a', agentType: 'workflow-subagent' })
     );
     expect(skipped.continue).toBe(true);
-    expect(workerCallLog.length).toBe(0);
+    expect(spooled().length).toBe(0);
 
     const kept = await observationHandler.execute(
       baseInput({ agentId: 'b', agentType: 'Plan' })
     );
     expect(kept.continue).toBe(true);
-    expect(workerCallLog.length).toBe(1);
+    expect(spooled().length).toBe(1);
   });
 
   // The skip check sits AHEAD of the runtime branch, so it must protect the
@@ -209,7 +225,7 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     expect(result.continue).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(recordEventLog.length).toBe(0); // never reached the provider via the server runtime
-    expect(workerCallLog.length).toBe(0);
+    expect(spooled().length).toBe(0);
   });
 
   it('still records main-session observations on the server runtime', async () => {
@@ -219,6 +235,6 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     const result = await observationHandler.execute(baseInput()); // no agentId
     expect(result.continue).toBe(true);
     expect(recordEventLog.length).toBe(1);
-    expect(workerCallLog.length).toBe(0);
+    expect(spooled().length).toBe(0);
   });
 });

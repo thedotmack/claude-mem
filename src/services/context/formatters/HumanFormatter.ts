@@ -17,10 +17,10 @@ function formatActiveMode(): string {
   return `${mode.name} (${manager.getActiveModeId()})`;
 }
 
-export function renderHumanHeader(project: string): string[] {
+export function renderHumanHeader(project: string, headerTime: string = formatHeaderDateTime()): string[] {
   return [
     '',
-    `${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}`,
+    `${colors.bright}${colors.cyan}[${project}] recent context, ${headerTime}${colors.reset}`,
     `${colors.dim}Mode: ${formatActiveMode()}${colors.reset}`,
     `${colors.gray}${'─'.repeat(60)}${colors.reset}`,
     ''
@@ -191,6 +191,6 @@ export function renderHumanFooter(totalDiscoveryTokens: number, totalReadTokens:
   ];
 }
 
-export function renderHumanEmptyState(project: string): string {
-  return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}\n${colors.dim}Mode: ${formatActiveMode()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
+export function renderHumanEmptyState(project: string, headerTime: string = formatHeaderDateTime()): string {
+  return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${headerTime}${colors.reset}\n${colors.dim}Mode: ${formatActiveMode()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
 }
