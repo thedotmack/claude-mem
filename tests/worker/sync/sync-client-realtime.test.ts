@@ -653,6 +653,44 @@ describe('SyncClient Supabase Realtime live updates', () => {
       expect(publishedNow()).toBe('titles: ');
     });
 
+    it('an advance during an in-flight pull after catch-up stays unservable through that stale pull', async () => {
+      const { state, impl } = makeHub(realtime, { epoch: '1', ops: [hubOp(1, '7')] });
+      const client = makeWiredClient(impl);
+      client.start();
+      await waitFor(() => client.isRealtimeCaughtUp(), 'first catch-up');
+      await cache.flushPendingRenders();
+      expect(publishedNow()).toBe('titles: obs 7');
+
+      // An unrelated pull reads the hub before the deletion and holds its answer.
+      let releaseSnapshot!: () => void;
+      state.snapshotGate = new Promise<void>(resolve => { releaseSnapshot = resolve; });
+      state.snapshotGateFromPull = state.pulls + 1;
+      const inFlightPull = client.pullOnce({ force: true });
+      await waitFor(() => state.pulls >= state.snapshotGateFromPull, 'stale pull in flight');
+
+      // The deletion lands and is announced; its pull is skipped (single-flight).
+      state.ops.push(tombstoneChange(2, '7'));
+      realtime.broadcastAdvance('1', '2');
+      await waitFor(() => !client.isRealtimeCaughtUp(), 'fell behind the announced head');
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(false);
+      const publishedBeforeRelease = published.length;
+
+      // The stale answer (head 1) settles without counting as caught up.
+      state.snapshotGate = null;
+      releaseSnapshot();
+      await inFlightPull;
+      expect(client.isRealtimeCaughtUp()).toBe(false);
+      await cache.flushPendingRenders();
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(false);
+
+      await waitFor(() => client.isRealtimeCaughtUp(), 'caught up after the follow-up pull', 3_000);
+      await cache.flushPendingRenders();
+      expect(liveTitles()).toEqual([]);
+      expect(publishedNow()).toBe('titles: ');
+      await sleep(5);
+      expect(published.slice(publishedBeforeRelease).every(body => !body.includes('obs 7'))).toBe(true);
+    });
+
     it('an advance announced mid catch-up pull keeps the join un-caught-up until a follow-up pull applies it', async () => {
       const { state, impl } = makeHub(realtime, { epoch: '1', ops: [hubOp(1, '7')] });
       await makeClient(impl, { wsEnabled: false }).pullOnce({ force: true });
