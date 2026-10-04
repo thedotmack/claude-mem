@@ -31,8 +31,8 @@ export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 export const PROJECTION_LEASE_MS = 90_000;
 /**
  * A lease renewal is skipped while at least this much lease remains. A page
- * that follows an acquire or a checkpoint advance by milliseconds then skips
- * a billed row write, and every page still goes out with at least 85s left.
+ * within 5s of the last acquire or renewal then skips a billed row write,
+ * and every page still goes out with at least 85s left.
  */
 export const PROJECTION_LEASE_MIN_REMAINING_MS = PROJECTION_LEASE_MS - 5_000;
 /**
@@ -749,8 +749,9 @@ export class SyncHub extends DurableObject<Env> {
 			if (compareCanonicalDecimals(through, current) < 0 || compareCanonicalDecimals(through, this.headSeq()) > 0) {
 				throw projectionError("invalid projected through_seq");
 			}
+			// No lease extension here: the next getProjectionPage renews when
+			// needed, and a drain that ends releases the lease right after.
 			this.setMeta("projected_seq", through);
-			this.setMeta("projection_lease_expires_at", this.leaseExpiry(this.leaseNow(now)));
 		});
 		return this.getProjectionState();
 	}

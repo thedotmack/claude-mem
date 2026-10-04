@@ -1734,6 +1734,36 @@ describe("projection lease write budget", () => {
 		});
 	});
 
+	it("a checkpoint advance leaves the expiry alone; the next page renews only when the lease is no longer fresh", async () => {
+		const userId = "lease-advance-no-extend";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [
+			await observationOp("1"), await observationOp("2"), await observationOp("3"),
+		]));
+		const lease = await stub.acquireProjectionLease(pushed.head_seq, 10_000);
+		const acquiredExpiry = String(10_000 + PROJECTION_LEASE_MS);
+
+		await runInDurableObject(stub, (instance: SyncHub, state) => {
+			const step = (pageAt: number, advanceAt: number) => {
+				const page = instance.getProjectionPage(lease.lease_token!, pushed.head_seq, userId, 1, 4_000_000, pageAt);
+				instance.advanceProjectionCheckpoint(
+					lease.lease_token!, page.epoch, page.from_seq_exclusive, page.through_seq, advanceAt,
+				);
+			};
+
+			step(10_000, 12_000);
+			expect(leaseExpiry(state)).toBe(acquiredExpiry);
+
+			// 88s left at this page: still fresh, so no renewal.
+			step(12_000, 30_000);
+			expect(leaseExpiry(state)).toBe(acquiredExpiry);
+
+			// 70s left at this page: it renews.
+			step(30_000, 31_000);
+			expect(leaseExpiry(state)).toBe(String(30_000 + PROJECTION_LEASE_MS));
+		});
+	});
+
 	it("a page renews the lease only when less than PROJECTION_LEASE_MIN_REMAINING_MS remains", async () => {
 		const userId = "lease-renew-threshold";
 		const stub = hub(userId);

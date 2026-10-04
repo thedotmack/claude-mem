@@ -77,10 +77,11 @@ Hub response-body abort (45s) < Pro maxDuration (60s) < Hub lease (90s)
 
 `getProjectionPage` renews the 90s fencing lease when less than 85s remains
 (`PROJECTION_LEASE_MIN_REMAINING_MS`), so every page goes out with at
-least 85s of lease. A page right after an acquire or a checkpoint advance skips
-the renewal and its billed row write. The Worker does not add a
-second heartbeat RPC before the bounded fetch — that extra storage knock
-wakes the SQLite Durable Object without changing fencing (Hub abort is 45s).
+least 85s of lease. A page within 5s of the last acquire or renewal skips the
+renewal and its billed row write. A checkpoint advance does not extend the
+lease. The Worker does not add a second heartbeat RPC before the bounded
+fetch — that extra storage knock wakes the SQLite Durable Object without
+changing fencing (Hub abort is 45s).
 The token check plus checkpoint compare-and-set stay one synchronous
 transaction. A stale request cannot checkpoint after a successor acquires a
 new token.
