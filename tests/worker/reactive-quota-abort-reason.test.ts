@@ -72,7 +72,9 @@ class ThrowingProvider extends OpenAICompatibleProvider<{ apiKey: string; model:
 
   constructor(private readonly toThrow: unknown) {
     super({} as DatabaseManager, {
-      getMessageIterator: async function* () { yield* []; },
+      getMessageIterator: async function* () {
+        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1 };
+      },
     } as unknown as SessionManager);
   }
 

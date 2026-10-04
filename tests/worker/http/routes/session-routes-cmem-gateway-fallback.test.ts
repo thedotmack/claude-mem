@@ -163,6 +163,7 @@ const ENV_KEYS = [
   'CMEM_PRO_ORIGIN',
   'OPENROUTER_BASE_URL',
   'CLAUDE_MEM_LLM_TIMEOUT_MS',
+  'CLAUDE_MEM_OBSERVE_BARE_PROMPTS',
 ] as const;
 
 const mockMode = {
@@ -237,6 +238,8 @@ interface Harness {
 let harness: Harness | null = null;
 /** Claude generators stay running (like a real one) until the test ends them. */
 let claudeRuns: Array<() => void> = [];
+/** Work the session manager hands each generator; empty unless a test queues some. */
+let queuedObservations: Array<Record<string, unknown>> = [];
 
 function makeHarness(
   sessionIds: number[],
@@ -251,7 +254,16 @@ function makeHarness(
     getSession: mock((id: number) => sessions.get(id)),
     getMessageBuffer: mock(() => messageBuffer),
     removeSessionImmediate: mock(() => {}),
-    getMessageIterator: async function* () { /* the init query settles every run here */ },
+    // With nothing queued, the separate init query settles every run
+    // (CLAUDE_MEM_OBSERVE_BARE_PROMPTS=true). A queued observation is claimed
+    // the way SessionManager claims it, then handed to the generator.
+    getMessageIterator: async function* (sessionDbId: number) {
+      const claimingSession = sessions.get(sessionDbId);
+      for (const message of queuedObservations) {
+        if (claimingSession) claimingSession.claimedMessageIds = [message.id as number];
+        yield message;
+      }
+    },
   };
   const completionHandler = { finalizeSession: mock(() => Promise.resolve()) };
   const claudeAgent = {
@@ -295,14 +307,14 @@ async function waitFor(condition: () => boolean, what: string): Promise<void> {
   if (!condition()) throw new Error(`timed out waiting for ${what}`);
 }
 
-let requests: Array<{ url: string; authorization: string | null }> = [];
+let requests: Array<{ url: string; authorization: string | null; body: string }> = [];
 let respond: (url: string) => Promise<Response> = async () => {
   throw new Error('unexpected request');
 };
 let releaseHeldResponses: () => void = () => {};
 const realFetch = globalThis.fetch;
 
-function gatewayRequests(): Array<{ url: string; authorization: string | null }> {
+function gatewayRequests(): Array<{ url: string; authorization: string | null; body: string }> {
   return requests.filter(request => request.url.startsWith(GATEWAY_BASE_URL));
 }
 
@@ -350,6 +362,8 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
+    // Every run here settles on the generator's separate init request.
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'true';
     savedSettings = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null;
     savedHealth = existsSync(healthPath) ? readFileSync(healthPath, 'utf-8') : null;
     rmSync(healthPath, { force: true });
@@ -358,6 +372,7 @@ describe('SessionRoutes — cmem gateway integrity', () => {
 
     requests = [];
     claudeRuns = [];
+    queuedObservations = [];
     respond = async () => { throw new Error('unexpected request'); };
     releaseHeldResponses = () => {};
     // Every test starts with a cold catalogue, not whatever an earlier one cached.
@@ -370,7 +385,11 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       if (url === MODEL_CATALOGUE_URL) {
         return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
-      requests.push({ url, authorization: new Headers(init?.headers).get('authorization') });
+      requests.push({
+        url,
+        authorization: new Headers(init?.headers).get('authorization'),
+        body: typeof init?.body === 'string' ? init.body : '',
+      });
       return respond(url);
     }) as unknown as typeof fetch;
 
@@ -1166,6 +1185,138 @@ describe('SessionRoutes — cmem gateway integrity', () => {
         parkedController.abort();
         parkedSession.generatorPromise = null;
       }
+    });
+  });
+
+  describe('the default: the user prompt rides on the first observation (CLAUDE_MEM_OBSERVE_BARE_PROMPTS unset)', () => {
+    // Every case above pins the separate init request, the opt-in path. By
+    // default there is no such request: the gateway sees the user's prompt and
+    // the first observation together, and its answers must land exactly as
+    // they do on the init request.
+    const FIRST_OBSERVATION = {
+      id: 4336,
+      type: 'observation',
+      tool_name: 'Read',
+      tool_input: { file_path: 'src/router.ts' },
+      tool_response: 'export const router = {};',
+      prompt_number: 1,
+    };
+
+    beforeEach(() => {
+      delete process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+      queuedObservations = [FIRST_OBSERVATION];
+    });
+
+    function expectPromptAndObservationInOneRequest(sent: Array<{ body: string }>): void {
+      expect(sent).toHaveLength(1);
+      expect(sent[0].body).toContain('<user_request>test prompt</user_request>');
+      expect(sent[0].body).toContain('<what_happened>Read</what_happened>');
+    }
+
+    it.each(['allowance_exhausted', 'key_invalid', 'subscription_inactive'] as const)(
+      '%s on that first request records the same fallback, books no outage, and spends none of the batch\'s paid sends',
+      async (code) => {
+        const id = 926001;
+        seedSettings();
+        respond = async () => gatewayRejection(code);
+        const { routes, completionHandler } = makeHarness([id]);
+
+        await routes.ensureGeneratorRunning(id, 'observation');
+        await settle(id);
+
+        expectPromptAndObservationInOneRequest(gatewayRequests());
+        expect(gatewayRequests()[0].authorization).toBe(`Bearer ${MEMORY_KEY}`);
+
+        const persisted = persistedSettings();
+        expect(Math.abs(Date.now() - Date.parse(persisted.CLAUDE_MEM_PRO_FALLBACK_AT))).toBeLessThan(60_000);
+        expect(persisted.CLAUDE_MEM_PRO_FALLBACK_MESSAGE).toBe(GATEWAY[code].message);
+        expect(persisted.CLAUDE_MEM_PRO_FALLBACK_ACTION).toBe(GATEWAY[code].action);
+        expect(persisted.CLAUDE_MEM_PRO_FALLBACK_URL).toBe(GATEWAY[code].url);
+
+        expect(getQuotaCooldown('openrouter')).toBeNull();
+        expect(readObserverHealth()?.consecutiveFailures ?? 0).toBe(0);
+        expect(readObserverHealth()?.quotaCooldown ?? null).toBeNull();
+        expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
+
+        // The refusal did no paid work, so the claimed batch keeps its whole
+        // allowance for the provider that takes it over.
+        expect(session(id).paidSendBudget?.batchHeadMessageId).toBe(FIRST_OBSERVATION.id);
+        expect(session(id).paidSendBudget?.spentPaidSends).toBe(0);
+      },
+    );
+
+    it.each(['allowance_exhausted', 'subscription_inactive'] as const)(
+      '%s on that first request resumes the claimed work on claude at once',
+      async (code) => {
+        const id = 926002;
+        seedSettings();
+        respond = async () => gatewayRejection(code);
+        const { routes, claudeAgent } = makeHarness([id]);
+
+        await routes.ensureGeneratorRunning(id, 'observation');
+        await waitFor(() => claudeAgent.startSession.mock.calls.length === 1, 'the resume on claude');
+
+        expect(session(id).currentProvider).toBe('claude');
+        expectPromptAndObservationInOneRequest(gatewayRequests());
+      },
+    );
+
+    it('the re-probe after the fallback window still admits exactly one of N sessions; its failure re-arms the marker once', async () => {
+      const ids = [926101, 926102, 926103, 926104, 926105];
+      const elapsed = elapsedFallbackAt();
+      seedSettings({ CLAUDE_MEM_PRO_FALLBACK_AT: elapsed });
+      const held = new Promise<void>(resolve => { releaseHeldResponses = resolve; });
+      respond = async () => {
+        await held;
+        return gatewayRejection('allowance_exhausted');
+      };
+      const { routes, claudeAgent } = makeHarness(ids);
+
+      await Promise.all(ids.map(id => routes.ensureGeneratorRunning(id, 'observation')));
+
+      const probing = ids.filter(id => session(id).currentProvider === 'openrouter');
+      expect(probing).toHaveLength(1);
+      expect(claudeAgent.startSession).toHaveBeenCalledTimes(ids.length - 1);
+
+      const probe = session(probing[0]).generatorPromise;
+      releaseHeldResponses();
+      await probe;
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expectPromptAndObservationInOneRequest(gatewayRequests());
+      expect(fallbackRecordings()).toBe(1);
+      expect(Date.parse(persistedFallbackAt())).toBeGreaterThan(Date.parse(elapsed));
+
+      const next = selectProviderForGenerator();
+      releaseCmemGatewayProbe(next.gatewayProbeClaimId);
+      expect(next.provider).toBe('claude');
+    });
+
+    it('a refused non-gateway credential is still booked once, with its detail, and cooled down', async () => {
+      const id = 926201;
+      seedSettings({
+        CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+        CLAUDE_MEM_OPENROUTER_MODEL: 'some/model',
+        CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-revoked-test-key',
+      });
+      respond = async () => new Response(JSON.stringify({ error: { message: 'User not found.', code: 401 } }), { status: 401 });
+      const { routes } = makeHarness([id]);
+      const openRouterRequests = () => requests.filter(request => request.url.startsWith('https://openrouter.ai/'));
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      expect(persistedFallbackAt()).toBe('');
+      expectPromptAndObservationInOneRequest(openRouterRequests());
+      const health = readObserverHealth();
+      expect(health?.lastErrorKind).toBe('auth_invalid');
+      expect(health?.lastErrorMessage).toContain('User not found.');
+      expect(getQuotaCooldown('openrouter')).not.toBeNull();
+
+      // The cooldown holds: the next captured event does not buy the same refusal.
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+      expect(openRouterRequests()).toHaveLength(1);
     });
   });
 });

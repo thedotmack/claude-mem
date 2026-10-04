@@ -244,15 +244,16 @@ describe('observer requests across a long generation', () => {
 
     await provider.startSession(session);
 
-    // The init request plus one per turn: the generation never had to recycle.
-    expect(provider.requestChars).toHaveLength(TURNS + 1);
+    // One request per turn (the init prompt rides on the first): the
+    // generation never had to recycle.
+    expect(provider.requestChars).toHaveLength(TURNS);
     expect(session.abortReason ?? null).toBeNull();
     // Every reply sits in the history exactly once, in order.
     expect(session.conversationHistory.filter(message => message.role === 'assistant').map(message => message.content))
-      .toEqual(Array.from({ length: TURNS + 1 }, (_, i) => `REPLY_${i}`));
+      .toEqual(Array.from({ length: TURNS }, (_, i) => `REPLY_${i}`));
     // Past the verbatim window a turn adds a stub and a reply, never a payload,
     // so the request grows by a few hundred chars a turn instead of ~5k.
-    const growthPerTurn = (provider.requestChars[TURNS] - provider.requestChars[TURNS - 100]) / 100;
+    const growthPerTurn = (provider.requestChars[TURNS - 1] - provider.requestChars[TURNS - 101]) / 100;
     expect(growthPerTurn).toBeLessThan(MIN_PRUNABLE_CHARS);
   }, 30_000);
 });
