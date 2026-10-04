@@ -77,7 +77,7 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore 
             Loading more...
           </div>
         )}
-        {hasMore && !isLoading && items.length > 0 && (
+        {hasMore && !isLoading && (
           <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
         )}
         {!hasMore && items.length > 0 && (
