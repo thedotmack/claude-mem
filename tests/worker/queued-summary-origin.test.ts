@@ -74,6 +74,7 @@ describe('queued summary origin', () => {
         const rows = store.db.query('SELECT request, prompt_number FROM session_summaries').all();
         console.log(JSON.stringify({ kind, expected, rows }));
         expect(rows).toEqual([{ request: 'Owned summary', prompt_number: expected }]);
+        if (kind === 'next-prompt' || kind === 'spooled-stop') expect(session.lastPromptNumber).toBe(2);
         expect(manager.getTotalQueueDepth()).toBe(0);
       } finally {
         for (const release of cleanup.reverse()) release();

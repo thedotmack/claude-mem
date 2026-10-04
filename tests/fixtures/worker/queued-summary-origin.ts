@@ -5,12 +5,13 @@ import type { DatabaseManager } from '../../../src/services/worker/DatabaseManag
 const actualFind = { ...(await import('../../../src/shared/find-claude-executable.js')) };
 const actualRegistry = { ...(await import('../../../src/supervisor/process-registry.js')) };
 const actualEnv = { ...(await import('../../../src/shared/EnvManager.js')) };
+let stallFixture = false;
 const cli = fileURLToPath(new URL('./queued-summary-origin-cli.cjs', import.meta.url));
 mock.module('../../../src/shared/find-claude-executable.js', () => ({ ...actualFind, findClaudeExecutable: () => cli }));
 mock.module('../../../src/supervisor/process-registry.js', () => ({ ...actualRegistry,
   createSdkSpawnFactory: (...args: Parameters<typeof actualRegistry.createSdkSpawnFactory>) => {
     const spawn = actualRegistry.createSdkSpawnFactory(...args);
-    return (options: Parameters<typeof spawn>[0]) => spawn({ ...options, command: process.execPath, args: [cli, ...options.args] });
+    return (options: Parameters<typeof spawn>[0]) => spawn({ ...options, command: process.execPath, args: [cli, ...(stallFixture ? ['--owned-summary-stall'] : []), ...options.args] });
   },
 }));
 mock.module('../../../src/shared/EnvManager.js', () => ({ ...actualEnv,
@@ -68,9 +69,32 @@ try {
           ensureGeneratorRunning: async () => {},
         });
         assert.equal(outcome.status, 'accepted');
-        if (kind === 'next-prompt') advance();
+        if (kind === 'next-prompt' || kind === 'summary-stall') advance();
         const expected = kind === 'older-observation' ? 2 : 1;
-await new ClaudeProvider(db, manager).startSession(session);
+const provider = new ClaudeProvider(db, manager);
+let stalledPromptNumber: number | undefined;
+if (kind === 'summary-stall') {
+  stallFixture = true;
+  (provider as any).responseStallMs = () => 50;
+  try { await provider.startSession(session); } catch (error) {
+    if (session.abortReason !== 'transport:response_stall') throw error;
+  }
+  assert.equal(session.abortReason, 'transport:response_stall');
+  assert.equal(manager.getTotalQueueDepth(), 1);
+  stalledPromptNumber = session.lastPromptNumber;
+  stallFixture = false;
+  session.abortController = new AbortController();
+  session.abortReason = undefined;
+}
+await provider.startSession(session);
+if (kind === 'summary-stall') {
+  const expectedGreeting = (mode as any).getActiveMode().prompts.continuation_greeting;
+  const continued = session.conversationHistory[0].content.startsWith(expectedGreeting);
+  console.log(JSON.stringify({ kind, stalledPromptNumber, retainedPromptNumber: session.lastPromptNumber, continued, rows: store.db.query('SELECT request, prompt_number FROM session_summaries').all() }));
+  assert.equal(continued, true);
+  assert.equal(stalledPromptNumber, 2);
+  assert.equal(session.lastPromptNumber, 2);
+}
 const rows = store.db.query('SELECT request, prompt_number FROM session_summaries').all();
 console.log(JSON.stringify({kind, expected, rows}));
 assert.deepEqual(rows, [{request: 'Owned summary', prompt_number: expected}]);

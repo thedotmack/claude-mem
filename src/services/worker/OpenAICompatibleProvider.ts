@@ -582,10 +582,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
-    if (message.prompt_number !== undefined) {
-      session.lastPromptNumber = message.prompt_number;
-    }
-
     const summaryPrompt = buildSummaryPrompt({
       id: session.sessionDbId,
       memory_session_id: session.memorySessionId,
@@ -593,7 +589,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       user_prompt: session.userPrompt,
       last_assistant_message: message.last_assistant_message || ''
     }, mode);
-    const responseContext = snapshotResponseContext(session);
+    const responseContext = {
+      ...snapshotResponseContext(session),
+      promptNumber: message.prompt_number ?? session.lastPromptNumber,
+    };
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 

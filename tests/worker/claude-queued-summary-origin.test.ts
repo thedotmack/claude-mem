@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-for (const kind of ['next-prompt', 'older-observation', 'spooled-stop', 'legacy-queue', 'control']) {
+for (const kind of ['next-prompt', 'older-observation', 'spooled-stop', 'legacy-queue', 'control', 'summary-stall']) {
   it(`SDK queued-summary origin preserves ${kind}`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'queued-summary-origin-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;

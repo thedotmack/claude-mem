@@ -16,6 +16,7 @@ input.on('line', line => {
     emit({ type: 'system', subtype: 'init', session_id: 'owned-sdk-memory', uuid: '00000000-0000-4000-8000-000000000001',
       model: 'claude-haiku-4-5-20251001', cwd: process.cwd(), tools: [], mcp_servers: [], permissionMode: 'dontAsk',
       apiKeySource: 'user', claude_code_version: '2.1.310', slash_commands: [], output_style: 'default', skills: [], plugins: [] });
+    if (process.argv.includes('--owned-summary-stall') && summary) return;
     emit({ type: 'assistant', session_id: 'owned-sdk-memory', parent_tool_use_id: null,
       uuid: '00000000-0000-4000-8000-000000000002', message: { id: 'owned-message', type: 'message', role: 'assistant',
         model: 'claude-haiku-4-5-20251001', content: [{ type: 'text', text }],
