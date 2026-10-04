@@ -1,5 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { paths } from '../../../src/shared/paths.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { recordObserverFailure, readObserverHealth } from '../../../src/shared/observer-health.js';
 import { recordQuotaExhausted, getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../../src/shared/quota-cooldown.js';
@@ -141,7 +144,14 @@ describe('ResponseProcessor', () => {
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
 
+  let ownedHealthDirectory: string;
+  let dataDirSpy: { mockRestore(): void };
+
   beforeEach(() => {
+    ownedHealthDirectory = mkdtempSync(join(tmpdir(), 'claude-mem-response-health-'));
+    dataDirSpy = spyOn(paths, 'dataDir').mockReturnValue(ownedHealthDirectory);
+    resetQuotaCooldownsForTesting();
+    expect(readObserverHealth()).toBeNull();
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -205,9 +215,12 @@ describe('ResponseProcessor', () => {
   });
 
   afterEach(() => {
+    // Reset while the resolver still points into this test's owned directory.
+    resetQuotaCooldownsForTesting();
+    dataDirSpy.mockRestore();
+    rmSync(ownedHealthDirectory, { recursive: true, force: true });
     loggerSpies.forEach(spy => spy.mockRestore());
     mock.restore();
-    resetQuotaCooldownsForTesting();
   });
 
   function createMockSession(
