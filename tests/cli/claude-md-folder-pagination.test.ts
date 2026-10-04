@@ -42,5 +42,7 @@ describe('CLAUDE.md direct-child pagination', () => {
     const context = readFileSync(join(project, 'src', 'CLAUDE.md'), 'utf8');
     expect(context).toContain('Wanted direct child');
     expect(context).not.toContain('Nested candidate');
-  });
+    // Spawns Bun and runs every migration on a fresh database: well past the
+    // 5s default on a slow runner.
+  }, 30_000);
 });
