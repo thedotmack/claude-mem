@@ -633,7 +633,7 @@ export class ClaudeProvider {
               originalTimestamp,
               'SDK',
               cwdTracker.lastCwd,
-              modelId,
+              message.message.model,
               activeResponseContext.current,
               emptyOutputReason
             );
