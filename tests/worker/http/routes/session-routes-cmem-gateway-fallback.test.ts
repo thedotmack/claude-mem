@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../../../plugin/modes/code.json';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../../../../src/shared/SettingsDefaultsManager.js';
@@ -167,7 +168,7 @@ const ENV_KEYS = [
 
 const mockMode = {
   name: 'code',
-  prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
