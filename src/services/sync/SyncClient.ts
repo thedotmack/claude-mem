@@ -240,15 +240,19 @@ export interface SyncClientOptions {
    */
   onSocketLiveChange?: (live: boolean) => void;
   /**
-   * Fired once per join, after the first pull cycle that STARTED after the
-   * join completes successfully with the hub reporting no more pages. Until
-   * then, ops published while the socket was down (e.g. a remote deletion)
-   * may not be applied yet — so this, not onSocketLiveChange(true), is the
-   * point at which local state is current. A failed catch-up does not fire;
-   * the next successful pull while still live does. Never trusted: a throwing
+   * Called with true after the first pull cycle that STARTED after the join
+   * completes successfully with the hub reporting no more pages and the
+   * cursor at every head announced since the join. Until then, ops published
+   * while the socket was down (e.g. a remote deletion) may not be applied yet
+   * — so this, not onSocketLiveChange(true), is the point at which local
+   * state is current. A failed catch-up does not fire; the next successful
+   * pull while still live does. Called with false when, after that, an
+   * `advance` announces a head beyond the cursor: local state is behind
+   * until a pull reaches it (then true again). A socket drop does not call
+   * it — onSocketLiveChange(false) covers that. Never trusted: a throwing
    * listener is swallowed.
    */
-  onRealtimeCaughtUp?: () => void;
+  onRealtimeCaughtUpChange?: (caughtUp: boolean) => void;
   /** Injectable RNG for the reconnect jitter (tests). */
   random?: () => number;
   /** After realtime-token answers 404 (no Realtime on the server), re-probe this often. Default 1h. */
@@ -293,7 +297,7 @@ export class SyncClient {
   private readonly wsBackoffBaseMs: number;
   private readonly wsBackoffMaxMs: number;
   private readonly onSocketLiveChange: ((live: boolean) => void) | null;
-  private readonly onRealtimeCaughtUp: (() => void) | null;
+  private readonly onRealtimeCaughtUpChange: ((caughtUp: boolean) => void) | null;
   private readonly random: () => number;
   private readonly realtimeUnavailableRetryMs: number;
 
@@ -318,7 +322,7 @@ export class SyncClient {
   private socketLive = false;
   /** Bumped by every join; a pull cycle counts as catch-up only if it began under the current one. */
   private liveGeneration = 0;
-  /** A post-join pull completed for the current liveGeneration (onRealtimeCaughtUp fired). */
+  /** A post-join pull completed for the current liveGeneration (onRealtimeCaughtUpChange(true) fired; reset by a newer advance). */
   private caughtUpSinceLive = false;
   /**
    * Highest head_seq announced by `advance` frames since the current join,
@@ -394,7 +398,7 @@ export class SyncClient {
     this.wsBackoffBaseMs = options.wsBackoffBaseMs ?? 1_000;
     this.wsBackoffMaxMs = options.wsBackoffMaxMs ?? 60_000;
     this.onSocketLiveChange = options.onSocketLiveChange ?? null;
-    this.onRealtimeCaughtUp = options.onRealtimeCaughtUp ?? null;
+    this.onRealtimeCaughtUpChange = options.onRealtimeCaughtUpChange ?? null;
     this.random = options.random ?? Math.random;
     this.realtimeUnavailableRetryMs = options.realtimeUnavailableRetryMs ?? 3_600_000;
   }
@@ -709,7 +713,7 @@ export class SyncClient {
   }
 
   /**
-   * After a pull cycle: fire onRealtimeCaughtUp when it was the first cycle
+   * After a pull cycle: fire onRealtimeCaughtUpChange(true) when it was the first cycle
    * of the current join to reach the hub's head AND the cursor covers every
    * head announced by `advance` since the join. A successful cycle that
    * cannot count (it began before the join — the join's own catch-up pull
@@ -721,28 +725,27 @@ export class SyncClient {
   private settleRealtimeCatchUp(
     liveGenerationAtStart: number | null, succeeded: boolean, reachedHead: boolean, hitPageCap: boolean,
   ): void {
-    if (this.stopped || !this.socketLive || !succeeded) return;
+    if (this.stopped || !this.socketLive || this.caughtUpSinceLive || !succeeded) return;
     const announcedHeadAhead = this.isAnnouncedHeadAheadOfCursor();
-    if (this.caughtUpSinceLive) {
-      // Steady state: an advance that landed mid-pull still needs its pull.
-      if (announcedHeadAhead) this.scheduleFollowUpPull();
-      return;
-    }
     const startedUnderThisJoin = liveGenerationAtStart === this.liveGeneration;
     if (reachedHead && startedUnderThisJoin && !announcedHeadAhead) {
-      this.caughtUpSinceLive = true;
-      if (!this.onRealtimeCaughtUp) return;
-      try {
-        this.onRealtimeCaughtUp();
-      } catch (error) {
-        try {
-          logger.debug('SYNC_CLIENT', 'onRealtimeCaughtUp listener threw (ignored)', {},
-            error instanceof Error ? error : new Error(String(error)));
-        } catch { /* never propagate */ }
-      }
+      this.setRealtimeCaughtUp(true);
       return;
     }
     if (!startedUnderThisJoin || hitPageCap || announcedHeadAhead) this.scheduleFollowUpPull();
+  }
+
+  private setRealtimeCaughtUp(caughtUp: boolean): void {
+    this.caughtUpSinceLive = caughtUp;
+    if (!this.onRealtimeCaughtUpChange) return;
+    try {
+      this.onRealtimeCaughtUpChange(caughtUp);
+    } catch (error) {
+      try {
+        logger.debug('SYNC_CLIENT', 'onRealtimeCaughtUpChange listener threw (ignored)', {},
+          error instanceof Error ? error : new Error(String(error)));
+      } catch { /* never propagate */ }
+    }
   }
 
   /** An announced head (same epoch as the stored cursor) is beyond the cursor. */
@@ -980,7 +983,7 @@ export class SyncClient {
 
   /**
    * Phoenix frames. Our channel's join reply flips the socket live and runs
-   * one catch-up pull (its success fires onRealtimeCaughtUp); `advance` broadcasts trigger the HTTP pull path; a
+   * one catch-up pull (its success fires onRealtimeCaughtUpChange(true)); `advance` broadcasts trigger the HTTP pull path; a
    * join/channel error drops the socket and reconnects with backoff; an
    * epoch mismatch or a malformed frame additionally pulls once over HTTP.
    */
@@ -1075,6 +1078,9 @@ export class SyncClient {
       || compareCanonicalDecimals(head, announced.headSeq) > 0) {
       this.maxAnnouncedHead = { epoch: advance.epoch, headSeq: head };
     }
+    // Local state is behind the hub until a pull reaches this head (a remote
+    // deletion would otherwise stay servable while the pull waits its turn).
+    if (this.caughtUpSinceLive) this.setRealtimeCaughtUp(false);
     this.pullForSocket();
   }
 
