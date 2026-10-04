@@ -8,6 +8,13 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+// Kimi's Read uses `path`; shared read capture and file-context use `file_path`.
+function normalizeToolInput(toolName: string | undefined, input: unknown): unknown {
+  if (toolName !== 'Read' || !input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const readInput = input as Record<string, unknown>;
+  return typeof readInput.path === 'string' ? { ...readInput, file_path: readInput.path } : input;
+}
+
 // Kimi session ids are opaque workDir-scoped identifiers. Restrict to a safe
 // character set so a malicious sessionId from stdin cannot escape
 // ~/.kimi-code/sessions via path separators, '..' segments, or null bytes
@@ -86,12 +93,13 @@ export const kimiAdapter: PlatformAdapter = {
       throw new AdapterRejectedInput('missing_session_id');
     }
     const source = r.source;
+    const toolName = stringOrUndefined(r.tool_name);
     return {
       sessionId,
       cwd,
       prompt: promptText(r.prompt),
-      toolName: stringOrUndefined(r.tool_name),
-      toolInput: r.tool_input,
+      toolName,
+      toolInput: normalizeToolInput(toolName, r.tool_input),
       // Kimi sends `tool_output` on PostToolUse and `error` on
       // PostToolUseFailure where Claude Code sends `tool_response`, and
       // `tool_call_id` where it sends `tool_use_id`.

@@ -34,6 +34,19 @@ describe('kimiAdapter.normalizeInput', () => {
     expect(input.toolResponse).toEqual({ stdout: 'ok' });
   });
 
+  test('maps Read path without mutating its original input or dropping read options', () => {
+    const rawInput = { path: 'src/owned.ts', line_offset: 2, n_lines: 3, column_offset: 4, max_chars: 500 };
+    const before = { ...rawInput };
+    const normalized = kimiAdapter.normalizeInput({ session_id: 'read-path', cwd: process.cwd(),
+      tool_name: 'Read', tool_input: rawInput });
+    expect(normalized.toolInput).toEqual({ ...before, file_path: before.path });
+    expect(normalized.toolInput).not.toBe(rawInput);
+    expect(rawInput).toEqual(before);
+    const write = kimiAdapter.normalizeInput({ session_id: 'write-path', cwd: process.cwd(),
+      tool_name: 'Write', tool_input: rawInput });
+    expect(write.toolInput).toBe(rawInput);
+  });
+
   test('maps SessionStart source startup|resume, drops unknown values', () => {
     const base = { hook_event_name: 'SessionStart', session_id: 's1', cwd: process.cwd() };
     expect(kimiAdapter.normalizeInput({ ...base, source: 'startup' }).sessionSource).toBe('startup');
