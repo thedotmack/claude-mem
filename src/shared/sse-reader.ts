@@ -63,8 +63,11 @@ async function* iterateByteStream(
     }
   } finally {
     // Consumer stopped early (break/throw): release the underlying request.
-    if (!finished) await reader.cancel();
-    reader.releaseLock();
+    try {
+      if (!finished) await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
 
