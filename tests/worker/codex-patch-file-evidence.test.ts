@@ -17,7 +17,7 @@ import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.
 const hookFixture = JSON.parse(readFileSync(new URL('../fixtures/codex/post-tool-use-apply-patch.json', import.meta.url), 'utf8'));
 
 describe('Codex hook patch file evidence', () => {
-  for (const kind of ['update', 'add', 'move', 'legacy-patch', 'bash-control']) {
+  for (const kind of ['fixture-input', 'update', 'add', 'move', 'legacy-patch', 'bash-control']) {
     it(`keeps completed patch files searchable: ${kind}`, async () => {
       const cleanup: Array<() => void> = [];
       try {
@@ -58,7 +58,7 @@ describe('Codex hook patch file evidence', () => {
         });
         const input = codexAdapter.normalizeInput({ ...hookFixture, session_id: `owned-patch-${kind}`,
           cwd, tool_name: kind === 'bash-control' ? 'Bash' : 'apply_patch',
-          tool_input: kind === 'legacy-patch' ? { patch } : { command: patch },
+          tool_input: kind === 'fixture-input' ? hookFixture.tool_input : kind === 'legacy-patch' ? { patch } : { command: patch },
           tool_use_id: `owned-call-${kind}`,
         });
         const outcome = await ingestObservation({ contentSessionId: input.sessionId!, platformSource: 'codex',
