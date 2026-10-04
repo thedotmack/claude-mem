@@ -17,6 +17,7 @@ import {
 } from "../src/canonical-content";
 import {
 	DEVICE_LIMIT_ERROR,
+	LAST_SEEN_REFRESH_MS,
 	MAX_DEVICES_PER_USER,
 	PROJECTION_LEASE_MS,
 	type ChangesOutcome,
@@ -1633,6 +1634,51 @@ describe("fail-soft Durable Object errors", () => {
 			httpStatus: 503,
 			retryable: true,
 			projectedSeq: "0",
+		});
+	});
+});
+
+describe("pull bookkeeping writes", () => {
+	it("an idle pull writes no rows; a cursor advance, a missing name or a stale last_seen writes one", async () => {
+		const stub = hub("pull-idle-writes");
+		ok(await stub.pushOps("dev-a", [await observationOp("1"), await observationOp("2")]));
+
+		await runInDurableObject(stub, (instance: SyncHub, state) => {
+			let rowsWritten = 0;
+			const sql = state.storage.sql;
+			const originalExec = sql.exec.bind(sql);
+			(sql as { exec: typeof sql.exec }).exec = ((query: string, ...bindings: unknown[]) => {
+				const cursor = originalExec(query, ...bindings);
+				rowsWritten += cursor.rowsWritten;
+				return cursor;
+			}) as typeof sql.exec;
+			const pull = (since: string, now: number, name: string | null = null) => {
+				rowsWritten = 0;
+				changes(instance.getChanges("dev-reader", since, 20, name, now));
+				return rowsWritten;
+			};
+			const reader = () =>
+				instance.getMetadata("pull-idle-writes").devices.find((d) => d.device_id === "dev-reader")!;
+
+			const t0 = 1_000_000;
+			expect(pull("1", t0)).toBeGreaterThan(0);
+			expect(pull("1", t0 + 1_000)).toBe(0);
+
+			expect(pull("2", t0 + 2_000)).toBe(1);
+			expect(reader().last_ack_seq).toBe("2");
+
+			// An older cursor never moves the ack back, and writes nothing.
+			expect(pull("1", t0 + 3_000)).toBe(0);
+			expect(reader().last_ack_seq).toBe("2");
+
+			expect(pull("2", t0 + 3_000, "Laptop")).toBe(1);
+			expect(reader().name).toBe("Laptop");
+
+			// The name write at t0 + 3_000 also refreshed last_seen.
+			const stale = t0 + 3_000 + LAST_SEEN_REFRESH_MS;
+			expect(pull("2", stale - 1)).toBe(0);
+			expect(pull("2", stale)).toBe(1);
+			expect(reader().last_seen_epoch_ms).toBe(String(stale));
 		});
 	});
 });

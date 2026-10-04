@@ -29,6 +29,14 @@ export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
 export const PROJECTION_LEASE_MS = 90_000;
+/**
+ * How stale devices.last_seen may get before a pull refreshes it. Every SQL
+ * row write is billed, and an idle client polls /v1/sync/changes all day, so
+ * a pull writes only when something changed or last_seen is this old.
+ * Readers of devices.last_seen (getMetadata) can therefore see a value up to
+ * this much older than the device's most recent pull.
+ */
+export const LAST_SEEN_REFRESH_MS = 5 * 60_000;
 const encoder = new TextEncoder();
 
 export type PushOp = CanonicalWireOp;
@@ -487,6 +495,7 @@ export class SyncHub extends DurableObject<Env> {
 		sinceSeq: string,
 		limit = MAX_PAGE,
 		deviceName: string | null = null,
+		now = Date.now(),
 	): ChangesOutcome {
 		if (typeof deviceId !== "string" || deviceId.length === 0) throw invalid("deviceId must be non-empty");
 		const since = assertCanonicalDecimal(sinceSeq);
@@ -496,19 +505,7 @@ export class SyncHub extends DurableObject<Env> {
 		const sql = this.ctx.storage.sql;
 		try {
 			this.ctx.storage.transactionSync(() => {
-				this.touchDevice(deviceId, normalizeDeviceName(deviceName));
-				const existing = sql.exec<{ last_ack_seq: string }>(
-					"SELECT last_ack_seq FROM devices WHERE device_id = ?",
-					deviceId.trim(),
-				).one();
-				const nextAck = compareCanonicalDecimals(existing.last_ack_seq, acknowledged) > 0
-					? existing.last_ack_seq
-					: acknowledged;
-				sql.exec(
-					"UPDATE devices SET last_ack_seq = ? WHERE device_id = ?",
-					nextAck,
-					deviceId.trim(),
-				);
+				this.recordPull(deviceId, normalizeDeviceName(deviceName), acknowledged, now);
 			});
 		} catch (error) {
 			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
@@ -908,6 +905,36 @@ export class SyncHub extends DurableObject<Env> {
 			MAX_DEVICES_PER_USER,
 		);
 		if (result.rowsWritten === 0) throw deviceLimitError();
+	}
+
+	/**
+	 * Pull bookkeeping: register a new device, or update a known one only when
+	 * its name is still unset, its ack cursor advances, or last_seen is older
+	 * than LAST_SEEN_REFRESH_MS. An idle poll therefore writes no rows.
+	 */
+	private recordPull(deviceId: string, name: string | null, acknowledged: string, now: number): void {
+		const normalizedId = this.normalizeDeviceId(deviceId);
+		const sql = this.ctx.storage.sql;
+		let row = sql.exec<{ name: string | null; last_ack_seq: string; last_seen: number | null }>(
+			"SELECT name, last_ack_seq, last_seen FROM devices WHERE device_id = ?",
+			normalizedId,
+		).toArray()[0];
+		if (!row) {
+			// touchDevice enforces the device limit. The new row starts at the column defaults.
+			this.touchDevice(normalizedId, name, now);
+			row = { name, last_ack_seq: "0", last_seen: now };
+		}
+		const nextName = row.name ?? name;
+		const nextAck = compareCanonicalDecimals(acknowledged, row.last_ack_seq) > 0 ? acknowledged : row.last_ack_seq;
+		const lastSeenStale = row.last_seen === null || now - row.last_seen >= LAST_SEEN_REFRESH_MS;
+		if (nextName === row.name && nextAck === row.last_ack_seq && !lastSeenStale) return;
+		sql.exec(
+			"UPDATE devices SET name = ?, last_ack_seq = ?, last_seen = ? WHERE device_id = ?",
+			nextName,
+			nextAck,
+			now,
+			normalizedId,
+		);
 	}
 
 	private touchExistingDevice(deviceId: string, name: string | null, now = Date.now()): void {
