@@ -2210,17 +2210,17 @@ For more info: https://docs.claude-mem.ai/antigravity-cli/setup
         SELECT o.id, o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE (o.created_at_epoch < ? OR (o.created_at_epoch = ? AND o.id <= ?)) ${l.clause}
-        ORDER BY o.created_at_epoch DESC, o.id DESC
+        WHERE (o.created_at_epoch, o.id) <= (?, ?) ${l.clause}
+        ORDER BY o.created_at_epoch DESC
         LIMIT ?
       `,T=`
         SELECT o.id, o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE (o.created_at_epoch > ? OR (o.created_at_epoch = ? AND o.id >= ?)) ${l.clause}
-        ORDER BY o.created_at_epoch ASC, o.id ASC
+        WHERE (o.created_at_epoch, o.id) >= (?, ?) ${l.clause}
+        ORDER BY o.created_at_epoch ASC
         LIMIT ?
-      `;try{let x=this.db.prepare(w).all(r,r,e,...l.params,n+1),E=this.db.prepare(T).all(r,r,e,...l.params,s+1);if(x.length===0&&E.length===0)return{observations:[],sessions:[],prompts:[]};p=x.length>0?x[x.length-1].created_at_epoch:r,m=E.length>0?E[E.length-1].created_at_epoch:r}catch(x){return x instanceof Error?f.error("DB","Error getting boundary observations",{project:i},x):f.error("DB","Error getting boundary observations with non-Error",{},new Error(String(x))),{observations:[],sessions:[],prompts:[]}}}else{let w=`
+      `;try{let x=this.db.prepare(w).all(r,e,...l.params,n+1),E=this.db.prepare(T).all(r,e,...l.params,s+1);if(x.length===0&&E.length===0)return{observations:[],sessions:[],prompts:[]};p=x.length>0?x[x.length-1].created_at_epoch:r,m=E.length>0?E[E.length-1].created_at_epoch:r}catch(x){return x instanceof Error?f.error("DB","Error getting boundary observations",{project:i},x):f.error("DB","Error getting boundary observations with non-Error",{},new Error(String(x))),{observations:[],sessions:[],prompts:[]}}}else{let w=`
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
