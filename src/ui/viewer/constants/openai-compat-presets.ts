@@ -11,6 +11,8 @@ export interface OpenAICompatPresetOption {
   label: string;
   baseUrl: string;
   defaultModel: string;
+  /** Shown under the preset select when the preset needs a setting the defaults cannot cover. */
+  note?: string;
 }
 
 export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] = [
@@ -25,7 +27,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'together', label: 'Together AI', baseUrl: 'https://api.together.xyz/v1', defaultModel: '' },
   { id: 'minimax', label: 'MiniMax (global)', baseUrl: 'https://api.minimax.io/v1', defaultModel: 'MiniMax-M3' },
   { id: 'minimax-cn', label: 'MiniMax (China)', baseUrl: 'https://api.minimaxi.com/v1', defaultModel: 'MiniMax-M3' },
-  { id: 'iflytek', label: 'iFlytek Spark (Astron MaaS)', baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2', defaultModel: 'spark-x2.5' },
+  { id: 'iflytek', label: 'iFlytek Spark (Astron MaaS)', baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2', defaultModel: 'spark-x2.5', note: 'Token Plan keys need Base URL https://maas-token-api.cn-huabei-1.xf-yun.com/v2; the default endpoint is pay-as-you-go and answers them with 403.' },
   { id: 'ollama', label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1', defaultModel: '' },
   { id: 'lmstudio', label: 'LM Studio (local)', baseUrl: 'http://localhost:1234/v1', defaultModel: '' },
   { id: 'vllm', label: 'vLLM (self-hosted)', baseUrl: 'http://localhost:8000/v1', defaultModel: '' },
