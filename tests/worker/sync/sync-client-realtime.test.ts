@@ -51,9 +51,19 @@ function startRealtimeServer() {
     closes: 0,
     joinStatus: 'ok' as 'ok' | 'error',
     answerHeartbeats: true,
-    /** false ⇒ joins are recorded but never get a phx_reply. */
+    /** false ⇒ joins are recorded but never get a phx_reply (until answerHeldJoins). */
     answerJoins: true,
+    heldJoins: [] as Array<{ ws: ServerWebSocket<unknown>; frame: PhoenixFrame }>,
   };
+  const joinReply = (frame: PhoenixFrame) => JSON.stringify({
+    topic: frame.topic,
+    event: 'phx_reply',
+    payload: state.joinStatus === 'ok'
+      ? { status: 'ok', response: { postgres_changes: [] } }
+      : { status: 'error', response: { reason: 'Unauthorized: You do not have permissions to read from this Channel topic' } },
+    ref: frame.ref,
+    join_ref: frame.join_ref,
+  });
   const server: Server = Bun.serve({
     port: 0,
     hostname: '127.0.0.1',
@@ -68,16 +78,9 @@ function startRealtimeServer() {
       message(ws, message) {
         const frame = JSON.parse(String(message)) as PhoenixFrame;
         state.frames.push(frame);
-        if (frame.event === 'phx_join' && state.answerJoins) {
-          ws.send(JSON.stringify({
-            topic: frame.topic,
-            event: 'phx_reply',
-            payload: state.joinStatus === 'ok'
-              ? { status: 'ok', response: { postgres_changes: [] } }
-              : { status: 'error', response: { reason: 'Unauthorized: You do not have permissions to read from this Channel topic' } },
-            ref: frame.ref,
-            join_ref: frame.join_ref,
-          }));
+        if (frame.event === 'phx_join') {
+          if (state.answerJoins) ws.send(joinReply(frame));
+          else state.heldJoins.push({ ws, frame });
         } else if (frame.event === 'heartbeat' && state.answerHeartbeats) {
           ws.send(JSON.stringify({
             topic: 'phoenix', event: 'phx_reply', payload: { status: 'ok', response: {} }, ref: frame.ref,
@@ -101,6 +104,10 @@ function startRealtimeServer() {
       });
       for (const ws of state.open) ws.send(frame);
     },
+    /** Reply now to every join that arrived while answerJoins was false. */
+    answerHeldJoins() {
+      for (const { ws, frame } of state.heldJoins.splice(0)) ws.send(joinReply(frame));
+    },
     dropAll() { for (const ws of state.open) ws.close(1011, 'test drop'); },
     stop() { server.stop(true); },
   };
@@ -123,6 +130,17 @@ function makeHub(realtime: RealtimeServer, initial: { epoch: string; ops?: TestH
     changesGate: null as Promise<void> | null,
     /** Non-200 ⇒ /changes fails with this status. */
     changesStatus: 200,
+    /**
+     * When set, /changes requests numbered >= snapshotGateFromPull build their
+     * response from the hub as it is NOW, then wait on this before returning
+     * it — a pull whose page was read before a later change landed.
+     */
+    snapshotGate: null as Promise<void> | null,
+    snapshotGateFromPull: 1,
+    /** Ops per /changes page (more=true when the page is truncated). Unbounded when null. */
+    pageSize: null as number | null,
+    /** Date.now() at the arrival of each /changes request. */
+    pullStartedAt: [] as number[],
   };
   const impl = (async (input: any, init?: any) => {
     const url = new URL(String(input));
@@ -143,16 +161,21 @@ function makeHub(realtime: RealtimeServer, initial: { epoch: string; ops?: TestH
       }), { status: 200, headers });
     }
     state.pulls++;
+    const pullNumber = state.pulls;
+    state.pullStartedAt.push(Date.now());
     if (state.changesGate) await state.changesGate;
     if (state.changesStatus !== 200) {
       return new Response('hub down', { status: state.changesStatus, headers });
     }
     const since = Number(url.searchParams.get('since') ?? '0');
-    const page = state.ops.filter(op => Number(op.seq) > since).sort((a, b) => Number(a.seq) - Number(b.seq));
+    const pending = state.ops.filter(op => Number(op.seq) > since).sort((a, b) => Number(a.seq) - Number(b.seq));
+    const page = state.pageSize === null ? pending : pending.slice(0, state.pageSize);
     const head = state.ops.reduce((m, op) => Math.max(m, Number(op.seq)), 0);
-    return new Response(JSON.stringify({
-      protocol_version: 2, epoch: state.epoch, ops: page, head_seq: String(head), more: false,
-    }), { status: 200, headers });
+    const body = JSON.stringify({
+      protocol_version: 2, epoch: state.epoch, ops: page, head_seq: String(head), more: page.length < pending.length,
+    });
+    if (state.snapshotGate && pullNumber >= state.snapshotGateFromPull) await state.snapshotGate;
+    return new Response(body, { status: 200, headers });
   }) as typeof fetch;
   return { state, impl };
 }
@@ -602,6 +625,78 @@ describe('SyncClient Supabase Realtime live updates', () => {
       releaseChanges();
       await waitFor(() => client.isRealtimeCaughtUp(), 'caught up after rejoin');
     });
+
+    it('an advance announced mid catch-up pull keeps the join un-caught-up until a follow-up pull applies it', async () => {
+      const { state, impl } = makeHub(realtime, { epoch: '1', ops: [hubOp(1, '7')] });
+      await makeClient(impl, { wsEnabled: false }).pullOnce({ force: true });
+      expect(liveTitles()).toEqual(['obs 7']);
+
+      const titlesWhenCaughtUp: string[][] = [];
+      const client = makeWiredClient(impl, {
+        onRealtimeCaughtUp: () => { titlesWhenCaughtUp.push(liveTitles()); cache.setServable(true); },
+      });
+      // Hold the join until the pre-join loop pull has settled, so the join's
+      // own catch-up pull is the next request.
+      realtime.state.answerJoins = false;
+      const pullsBeforeStart = state.pulls;
+      client.start();
+      await waitFor(() => realtime.state.heldJoins.length === 1 && state.pulls === pullsBeforeStart + 1, 'join sent, loop pull issued');
+      await sleep(30);
+      // The join's catch-up pull reads the hub as it is now — head 1, no
+      // tombstone — and holds its answer until released.
+      let releaseSnapshot!: () => void;
+      state.snapshotGate = new Promise<void>(resolve => { releaseSnapshot = resolve; });
+      state.snapshotGateFromPull = state.pulls + 1;
+      realtime.answerHeldJoins();
+      await waitFor(() => client.isSocketLive(), 'channel joined');
+      await waitFor(() => state.pulls >= state.snapshotGateFromPull, 'post-join catch-up pull in flight');
+
+      // The deletion lands and is announced while that pull is in flight.
+      state.ops.push(tombstoneChange(2, '7'));
+      realtime.broadcastAdvance('1', '2');
+      await sleep(30);
+      const pullsWhileInFlight = state.pulls;
+      expect(client.isRealtimeCaughtUp()).toBe(false);
+
+      state.snapshotGate = null;
+      releaseSnapshot();
+      await waitFor(() => client.isRealtimeCaughtUp(), 'caught up after the follow-up pull');
+      await cache.flushPendingRenders();
+
+      // The stale catch-up (head 1) did not count; a follow-up pull applied the tombstone.
+      expect(state.pulls).toBeGreaterThan(pullsWhileInFlight);
+      expect(titlesWhenCaughtUp).toEqual([[]]);
+      expect(liveTitles()).toEqual([]);
+      expect(publishedNow()).toBe('titles: ');
+      await sleep(5);
+      expect(published.length).toBeGreaterThan(0);
+      expect(published.every(body => !body.includes('obs 7'))).toBe(true);
+    });
+  });
+
+  it('follow-up pulls after page-capped catch-up cycles wait out the minimum pull gap', async () => {
+    const gapMs = 60;
+    const { state, impl } = makeHub(realtime, { epoch: '1', ops: [1, 2, 3, 4].map(i => hubOp(i, String(10 + i))) });
+    state.pageSize = 1;
+    // Hold the pre-join loop pull so the join's own catch-up is skipped and
+    // every later pull is a client-scheduled follow-up.
+    let releaseChanges!: () => void;
+    state.changesGate = new Promise<void>(resolve => { releaseChanges = resolve; });
+    const client = makeClient(impl, { maxPagesPerCycle: 1, minPullGapMs: gapMs });
+    client.start();
+    await waitFor(() => client.isSocketLive() && state.pulls === 1, 'joined with the first pull in flight');
+    state.changesGate = null;
+    releaseChanges();
+
+    // Three capped cycles (seq 1, 2, 3), then the one that reaches head 4.
+    await waitFor(() => client.isRealtimeCaughtUp(), 'backlog drained', 3_000);
+    expect(apply.getCursor()).toBe('4');
+    expect(state.pulls).toBe(4);
+    const followUpStarts = state.pullStartedAt.slice(1);
+    for (let i = 1; i < followUpStarts.length; i++) {
+      // 1 ms of timer slack; back-to-back pulls would be ~0 ms apart.
+      expect(followUpStarts[i] - followUpStarts[i - 1]).toBeGreaterThanOrEqual(gapMs - 1);
+    }
   });
 
   it('suspension tears the socket down; the session-start pull resumes it', async () => {

@@ -208,7 +208,9 @@ export interface SyncClientOptions {
   /**
    * pullOnce() skips when a pull finished this recently — protects the
    * hot context-inject path from hammering the hub on hook bursts while
-   * keeping session-start data at worst this stale.
+   * keeping session-start data at worst this stale. Follow-up pulls the
+   * client schedules itself (after a page-capped cycle, or for an `advance`
+   * that landed mid-pull) also wait out this gap.
    */
   minPullGapMs?: number;
   /** Session-activity signal (worker: SessionManager.getActiveSessionCount() > 0). */
@@ -296,6 +298,8 @@ export class SyncClient {
   private readonly realtimeUnavailableRetryMs: number;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** Pending min-gap follow-up pull (page cap, unmet announced head, pre-join cycle). */
+  private followUpPullTimer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
   private stopped = false;
   private pulling = false;
@@ -316,6 +320,14 @@ export class SyncClient {
   private liveGeneration = 0;
   /** A post-join pull completed for the current liveGeneration (onRealtimeCaughtUp fired). */
   private caughtUpSinceLive = false;
+  /**
+   * Highest head_seq announced by `advance` frames since the current join,
+   * with the epoch it belongs to. Catch-up (and every settled pull) must reach
+   * it: an advance that arrives while a pull is in flight is skipped by the
+   * single-flight guard, and that pull may have read the page before the
+   * announced change existed.
+   */
+  private maxAnnouncedHead: { epoch: string; headSeq: string } | null = null;
   private wsAttempts = 0;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   /** Armed at socket creation; cleared by the join reply or teardown. */
@@ -414,6 +426,10 @@ export class SyncClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.followUpPullTimer) {
+      clearTimeout(this.followUpPullTimer);
+      this.followUpPullTimer = null;
     }
     this.setSocketLive(false);
     this.teardownSocket();
@@ -694,18 +710,26 @@ export class SyncClient {
 
   /**
    * After a pull cycle: fire onRealtimeCaughtUp when it was the first cycle
-   * of the current join to reach the hub's head. A successful cycle that
+   * of the current join to reach the hub's head AND the cursor covers every
+   * head announced by `advance` since the join. A successful cycle that
    * cannot count (it began before the join — the join's own catch-up pull
-   * was skipped as single-flight — or stopped at the page cap) pulls again
-   * right away. A failed cycle waits for the loop's normal backoff retry;
-   * until a later pull succeeds the join stays un-caught-up.
+   * was skipped as single-flight — stopped at the page cap, or ended short
+   * of an announced head) schedules a follow-up pull, min-gap-limited. A
+   * failed cycle waits for the loop's normal backoff retry; until a later
+   * pull succeeds the join stays un-caught-up.
    */
   private settleRealtimeCatchUp(
     liveGenerationAtStart: number | null, succeeded: boolean, reachedHead: boolean, hitPageCap: boolean,
   ): void {
-    if (this.stopped || !this.socketLive || this.caughtUpSinceLive || !succeeded) return;
+    if (this.stopped || !this.socketLive || !succeeded) return;
+    const announcedHeadAhead = this.isAnnouncedHeadAheadOfCursor();
+    if (this.caughtUpSinceLive) {
+      // Steady state: an advance that landed mid-pull still needs its pull.
+      if (announcedHeadAhead) this.scheduleFollowUpPull();
+      return;
+    }
     const startedUnderThisJoin = liveGenerationAtStart === this.liveGeneration;
-    if (reachedHead && startedUnderThisJoin) {
+    if (reachedHead && startedUnderThisJoin && !announcedHeadAhead) {
       this.caughtUpSinceLive = true;
       if (!this.onRealtimeCaughtUp) return;
       try {
@@ -718,7 +742,35 @@ export class SyncClient {
       }
       return;
     }
-    if (!startedUnderThisJoin || hitPageCap) this.pullForSocket();
+    if (!startedUnderThisJoin || hitPageCap || announcedHeadAhead) this.scheduleFollowUpPull();
+  }
+
+  /** An announced head (same epoch as the stored cursor) is beyond the cursor. */
+  private isAnnouncedHeadAheadOfCursor(): boolean {
+    const announced = this.maxAnnouncedHead;
+    if (announced === null) return false;
+    // A different epoch means the log was rebuilt: that head is meaningless now.
+    if (announced.epoch !== this.apply.getEpoch()) return false;
+    return compareCanonicalDecimals(announced.headSeq, this.apply.getCursor()) > 0;
+  }
+
+  /**
+   * Follow-up pull no sooner than minPullGapMs after the last pull finished
+   * (and never inside a transient-failure backoff): a deep backlog drains at
+   * a bounded request rate instead of back to back. Its own timer, so the
+   * poll loop re-arming its cadence cannot cancel it. If another pull is in
+   * flight when it fires, that pull's settle re-evaluates instead.
+   */
+  private scheduleFollowUpPull(): void {
+    if (this.stopped || this.followUpPullTimer) return;
+    const now = this.now();
+    const delay = Math.max(0, this.transientRetryAt - now, this.lastPullFinishedAt + this.minPullGapMs - now);
+    const timer = setTimeout(() => {
+      this.followUpPullTimer = null;
+      void this.pullCycle(Number.MAX_SAFE_INTEGER);
+    }, delay);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.followUpPullTimer = timer;
   }
 
   // -------------------------------------------------------------------------
@@ -1016,6 +1068,13 @@ export class SyncClient {
     }
     const head = assertCanonicalDecimal(advance.head_seq);
     if (compareCanonicalDecimals(head, this.apply.getCursor()) <= 0) return; // a pull raced it
+    // Record it before pulling: if a pull is in flight this one is skipped
+    // (single-flight), and that pull's settle schedules the follow-up.
+    const announced = this.maxAnnouncedHead;
+    if (announced === null || announced.epoch !== advance.epoch
+      || compareCanonicalDecimals(head, announced.headSeq) > 0) {
+      this.maxAnnouncedHead = { epoch: advance.epoch, headSeq: head };
+    }
     this.pullForSocket();
   }
 
@@ -1160,6 +1219,7 @@ export class SyncClient {
     if (this.socketLive === live) return;
     this.socketLive = live;
     this.caughtUpSinceLive = false;
+    this.maxAnnouncedHead = null;
     if (live) this.liveGeneration++;
     if (this.onSocketLiveChange) {
       try {
