@@ -715,14 +715,15 @@ export class WorkerService implements WorkerRef {
           // Precomputed SessionStart files are current only once Realtime is
           // joined AND the join's catch-up pull has applied whatever was
           // published while the socket was down (e.g. a remote deletion) —
-          // so servable flips on at onRealtimeCaughtUp, never at the join.
+          // so servable follows onRealtimeCaughtUpChange, never the join. A
+          // later advance beyond the cursor flips it off until that is applied.
           // Down = remove them at once so the hook takes the live path,
           // which pulls first.
           onSocketLiveChange: (live) => {
             cloudSyncForPull.setFastDebounce(live);
             if (!live) this.contextCacheService?.setServable(false);
           },
-          onRealtimeCaughtUp: () => this.contextCacheService?.setServable(true),
+          onRealtimeCaughtUpChange: (caughtUp) => this.contextCacheService?.setServable(caughtUp),
         });
         // Push piggyback: a flush that reveals unseen hub ops pulls without
         // waiting for the poll timer (free poll for the active device).
@@ -754,7 +755,7 @@ export class WorkerService implements WorkerRef {
           return this.searchRoutes.renderContextVariant(keys);
         },
         expandProjectReadKeys: (projects) => projectReadKeys(contextCacheDb, projects),
-        // Sync on: nothing is servable until Realtime joins and catches up (onRealtimeCaughtUp above).
+        // Sync on: nothing is servable until Realtime joins and catches up (onRealtimeCaughtUpChange above).
         initiallyServable: this.syncClient === null || this.syncClient.isRealtimeCaughtUp(),
       });
       this.searchRoutes = new SearchRoutes(searchManager, this.contextCacheService, this.syncClient);

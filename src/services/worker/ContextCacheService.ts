@@ -173,8 +173,9 @@ export class ContextCacheService {
 
   /**
    * Cloud sync's Realtime channel joined and caught up (true — SyncClient's
-   * onRealtimeCaughtUp) or dropped (false). Dropping removes every cached file
-   * now; catching up re-renders every known variant.
+   * onRealtimeCaughtUpChange(true)), or dropped or fell behind an announced
+   * head (false). Dropping removes every cached file now; catching up
+   * re-renders every known variant.
    */
   setServable(servable: boolean): void {
     if (this.servable === servable) return;

@@ -543,7 +543,7 @@ describe('SyncClient Supabase Realtime live updates', () => {
     function makeWiredClient(fetchImpl: typeof fetch, options: Partial<SyncClientOptions> = {}): SyncClient {
       return makeClient(fetchImpl, {
         onSocketLiveChange: live => { if (!live) cache.setServable(false); },
-        onRealtimeCaughtUp: () => cache.setServable(true),
+        onRealtimeCaughtUpChange: caughtUp => cache.setServable(caughtUp),
         ...options,
       });
     }
@@ -558,7 +558,7 @@ describe('SyncClient Supabase Realtime live updates', () => {
       state.changesGate = new Promise<void>(resolve => { releaseChanges = resolve; });
 
       const caughtUp: number[] = [];
-      const client = makeWiredClient(impl, { onRealtimeCaughtUp: () => { caughtUp.push(Date.now()); cache.setServable(true); } });
+      const client = makeWiredClient(impl, { onRealtimeCaughtUpChange: isCaughtUp => { caughtUp.push(Date.now()); cache.setServable(isCaughtUp); } });
       client.start();
       await waitFor(() => client.isSocketLive(), 'channel joined');
       await sleep(50); // ample time for a (wrong) servable flip to render
@@ -626,6 +626,33 @@ describe('SyncClient Supabase Realtime live updates', () => {
       await waitFor(() => client.isRealtimeCaughtUp(), 'caught up after rejoin');
     });
 
+    it('an advance beyond the cursor after catch-up removes the files until a pull applies it', async () => {
+      const { state, impl } = makeHub(realtime, { epoch: '1', ops: [hubOp(1, '7')] });
+      const client = makeWiredClient(impl);
+      client.start();
+      await waitFor(() => client.isRealtimeCaughtUp(), 'first catch-up');
+      await cache.flushPendingRenders();
+      expect(publishedNow()).toBe('titles: obs 7');
+
+      // The deletion lands and is announced; the pull it triggers is held.
+      let releaseChanges!: () => void;
+      state.changesGate = new Promise<void>(resolve => { releaseChanges = resolve; });
+      state.ops.push(tombstoneChange(2, '7'));
+      realtime.broadcastAdvance('1', '2');
+      await waitFor(() => !client.isRealtimeCaughtUp(), 'fell behind the announced head');
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(false);
+      await sleep(30);
+      expect(liveTitles()).toEqual(['obs 7']); // not applied yet, and not servable
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(false);
+
+      state.changesGate = null;
+      releaseChanges();
+      await waitFor(() => client.isRealtimeCaughtUp(), 'caught up after the advance pull');
+      await cache.flushPendingRenders();
+      expect(liveTitles()).toEqual([]);
+      expect(publishedNow()).toBe('titles: ');
+    });
+
     it('an advance announced mid catch-up pull keeps the join un-caught-up until a follow-up pull applies it', async () => {
       const { state, impl } = makeHub(realtime, { epoch: '1', ops: [hubOp(1, '7')] });
       await makeClient(impl, { wsEnabled: false }).pullOnce({ force: true });
@@ -633,7 +660,7 @@ describe('SyncClient Supabase Realtime live updates', () => {
 
       const titlesWhenCaughtUp: string[][] = [];
       const client = makeWiredClient(impl, {
-        onRealtimeCaughtUp: () => { titlesWhenCaughtUp.push(liveTitles()); cache.setServable(true); },
+        onRealtimeCaughtUpChange: isCaughtUp => { titlesWhenCaughtUp.push(liveTitles()); cache.setServable(isCaughtUp); },
       });
       // Hold the join until the pre-join loop pull has settled, so the join's
       // own catch-up pull is the next request.
