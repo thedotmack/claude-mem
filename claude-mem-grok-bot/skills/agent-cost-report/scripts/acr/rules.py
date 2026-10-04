@@ -32,7 +32,7 @@ def scan_rule_files(rules_dir):
     out = []
     for f in sorted(glob.glob(os.path.join(rules_dir, "**", "*.md"), recursive=True)):
         try:
-            with open(f, errors="ignore") as fh: text = fh.read(200_000)
+            with open(f, encoding="utf-8", errors="ignore") as fh: text = fh.read(200_000)
         except OSError: continue
         for m in HARD_HEADER.finditer(text):
             out.append(dict(rule_key=re.sub(r"\W+", "_", m.group("name").lower()).strip("_")[:60], name=m.group("name").strip(), landed_pt=m.group("date"), pattern=None, source=os.path.basename(f)))

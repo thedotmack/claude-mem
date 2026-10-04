@@ -81,7 +81,7 @@ def scan_transcripts(files, s_ms=None, e_ms=None):
     """Stream each transcript line by line; yield successful merge/publish tool calls inside the window."""
     for f in files:
         pending = {}
-        try: fh = open(f, errors="ignore")
+        try: fh = open(f, encoding="utf-8", errors="ignore")
         except OSError: continue
         with fh:
             for line in fh:
