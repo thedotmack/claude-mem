@@ -501,13 +501,24 @@ def render_file(inp, outdir, print_mode=False):
 
 def pdf(outdir, chrome="google-chrome"):
     """google-chrome --headless=new ... --print-to-pdf; if Chrome is missing: 'PDF skipped, HTML is canonical' (SKILL.md:165)."""
-    import os, shutil, subprocess
+    import os, shutil, subprocess, sys
+    from pathlib import Path
     src = os.path.join(outdir, "report.print.html")
     if not os.path.exists(src):
         rp = os.path.join(outdir, "report.json")
         if not os.path.exists(rp): raise FileNotFoundError(f"{src} not found and no report.json to render it from")
         render_file(rp, outdir, print_mode=True)
     exe = shutil.which(chrome)
+    if not exe and sys.platform == "win32" and chrome == "google-chrome":
+        exe = shutil.which("chrome")
+        if not exe:
+            for key in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+                root = os.environ.get(key)
+                if root:
+                    candidate = Path(root) / "Google/Chrome/Application/chrome.exe"
+                    if candidate.is_file():
+                        exe = str(candidate)
+                        break
     if not exe: return None, "PDF skipped, HTML is canonical (google-chrome not found)"
     out = os.path.join(outdir, "report.pdf")
     profile = os.path.join(os.path.abspath(outdir), ".chrome-profile")   # a private profile; the box has no D-Bus session
