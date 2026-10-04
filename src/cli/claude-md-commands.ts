@@ -16,6 +16,7 @@ import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
 import { paths } from '../shared/paths.js';
+import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
 
 const DB_PATH = paths.database();
 const SETTINGS_PATH = paths.settings();
@@ -135,22 +136,24 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
 }
 
 function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
-  const queryLimit = limit * 3;
-
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
     WHERE o.project COLLATE NOCASE = ?
       AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
     ORDER BY o.created_at_epoch DESC
-    LIMIT ?
   `;
 
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
   const likePattern = `%"${normalizedFolderPath}/%`;
-  const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
-
-  return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
+  // Page the folder's direct children themselves, not a guessed window of the
+  // broader candidates that nested files can fill.
+  return pageMatchingRows<ObservationRow>(
+    db.prepare(sql),
+    [project, likePattern, likePattern],
+    obs => hasDirectChildFile(obs, relativeFolderPath),
+    { limit },
+  );
 }
 
 function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {

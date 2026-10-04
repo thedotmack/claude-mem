@@ -16,6 +16,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/p
 import { resolveDateBound } from '../../shared/date-bounds.js';
 import { applySqliteConnectionPragmas } from './connection.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
+import { pageMatchingRows } from './stream-rows.js';
 
 /**
  * Code-point ranges of the scripts FTS5's unicode61 tokenizer cannot segment: Thai and Lao,
@@ -653,7 +654,10 @@ export class SessionSearch {
     // filePath is the file filter; a caller's own `files` filter is not added on top.
     delete filters.files;
 
-    const queryLimit = isFolder ? limit * 3 : limit;
+    // Folder matching removes nested descendants, so a folder query pages the
+    // matching rows (pageMatchingRows), not a guessed multiple of the broader
+    // SQL candidates.
+    const paginationSql = isFolder ? '' : 'LIMIT ? OFFSET ?';
     const pathPatterns = SessionSearch.filePathPatterns(filePath, isFolder);
 
     const filterClause = this.buildFilterClause(filters, params, 'o');
@@ -669,16 +673,20 @@ export class SessionSearch {
       FROM observations o
       WHERE ${whereClause}
       ${orderClause}
-      LIMIT ? OFFSET ?
+      ${paginationSql}
     `;
 
-    params.push(queryLimit, offset);
+    if (!isFolder) params.push(limit, offset);
 
-    let observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
-
-    if (isFolder) {
-      observations = observations.filter(obs => this.hasDirectChildFile(obs, filePath)).slice(0, limit);
-    }
+    const observationStatement = this.db.prepare(observationsSql);
+    const observations = isFolder
+      ? pageMatchingRows<ObservationSearchResult>(
+          observationStatement,
+          params,
+          obs => this.hasDirectChildFile(obs, filePath),
+          { limit, offset },
+        )
+      : observationStatement.all(...params) as ObservationSearchResult[];
 
     const sessionParams: any[] = [];
     const sessionFilters = { ...filters };
@@ -721,16 +729,20 @@ export class SessionSearch {
       FROM session_summaries s
       WHERE ${baseConditions.join(' AND ')}
       ORDER BY s.created_at_epoch DESC
-      LIMIT ? OFFSET ?
+      ${paginationSql}
     `;
 
-    sessionParams.push(queryLimit, offset);
+    if (!isFolder) sessionParams.push(limit, offset);
 
-    let sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
-
-    if (isFolder) {
-      sessions = sessions.filter(s => this.hasDirectChildFileSession(s, filePath)).slice(0, limit);
-    }
+    const sessionStatement = this.db.prepare(sessionsSql);
+    const sessions = isFolder
+      ? pageMatchingRows<SessionSummarySearchResult>(
+          sessionStatement,
+          sessionParams,
+          row => this.hasDirectChildFileSession(row, filePath),
+          { limit, offset },
+        )
+      : sessionStatement.all(...sessionParams) as SessionSummarySearchResult[];
 
     return { observations, sessions };
   }
