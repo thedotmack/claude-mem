@@ -30,6 +30,8 @@ import {
   writeE2EKey,
 } from '../../../src/services/sync/E2ECodec.js';
 import { configureSyncE2EFromSettings } from '../../../src/services/sync/e2e-setup.js';
+import { CONTENT_BODY_MAX_BYTES } from '../../../src/services/sync/CanonicalContent.js';
+import { PROMPT_TEXT_MAX_BYTES, clampPromptTextForSync } from '../../../src/services/sync/prompt-text-clamp.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const MARKER = 'PLAINTEXT-MARKER-7f3a';
@@ -122,6 +124,22 @@ describe('sealed canonical operations', () => {
     const mop = buildMutationOperation({ originDeviceId: 'dev-a', entityRev: '1', mutation, mutationId: '3b241101-e2bb-4255-8caf-4136c566a962' });
     expect(mop.body).not.toContain(MARKER);
     expect(decodeHubChange({ ...mop, seq: '2' }).body.mutation).toEqual(mutation);
+  });
+
+  it('a prompt clamped to the sync bound still fits the hub body limit once sealed', () => {
+    configureSyncE2E(new E2ECodec(generateE2EKey()));
+    // Worst case: every byte escapes to two in JSON, so the clamp is at its
+    // full JSON budget with the fewest characters.
+    const head = new TextEncoder().encode('\\'.repeat(PROMPT_TEXT_MAX_BYTES));
+    const op = buildContentOperation({
+      kind: 'prompt', originDeviceId: 'c7cf0eba-b779-41b7-9531-8259450a1394', originLocalId: '12345', entityRev: '1',
+      payload: {
+        content_session_id: 'a46678d3-0550-45c2-9b9f-dcfc93f8e31c', prompt_number: '1',
+        prompt_text: clampPromptTextForSync(null, head), created_at: ISO, created_at_epoch: '1751234567890',
+        memory_session_id: '358eff11-1aef-474b-b20a-6e27ee9a6c37', project: 'proj-secret', platform_source: 'claude',
+      },
+    });
+    expect(Buffer.byteLength(op.body, 'utf8')).toBeLessThanOrEqual(CONTENT_BODY_MAX_BYTES);
   });
 
   it('never mixes modes: plaintext ops are rejected under E2E and sealed ops without it', () => {

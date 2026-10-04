@@ -774,7 +774,7 @@ describe('CloudSync', () => {
     for (const op of ops) expect(Buffer.byteLength(op.body, 'utf8')).toBeLessThanOrEqual(256_000);
     const text: string = calls[0].parsed.ops[0].body.prompt_text;
     const kept = text.slice(0, -PROMPT_TRUNCATION_MARKER.length);
-    expect(kept.length).toBeGreaterThan(60_000);
+    expect(kept.length).toBeGreaterThan((PROMPT_TEXT_MAX_BYTES - 200) / 3);
     expect(kept).toBe('☃'.repeat(kept.length));
     expect(pendingCount('user_prompts')).toBe(0);
     expect(sync.status().quarantine.count).toBe(0);
@@ -794,7 +794,7 @@ describe('CloudSync', () => {
     expect(small).toBe('before\u0000after');
     expect(large.startsWith('a\u0000bbb')).toBe(true);
     expect(large.endsWith(PROMPT_TRUNCATION_MARKER)).toBe(true);
-    expect(large.length).toBeGreaterThan(190_000);
+    expect(large.length).toBeGreaterThan(PROMPT_TEXT_MAX_BYTES - 200);
     expect(pendingCount('user_prompts')).toBe(0);
   });
 

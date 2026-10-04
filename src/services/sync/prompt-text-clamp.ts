@@ -17,10 +17,15 @@
  * that counts against the canonical body's CONTENT_BODY_MAX_BYTES): a prompt
  * that fits goes up byte for byte; a longer one goes up as its longest prefix
  * that fits, plus a marker. The full prompt stays in the local database.
+ *
+ * The bound leaves room for end-to-end encryption: a sealed payload travels as
+ * base64url ciphertext, about 4/3 of its plaintext, and must still fit
+ * CONTENT_BODY_MAX_BYTES (256 000). 180 000 bytes of text seal to about
+ * 240 000; the former 200 000 sealed to about 267 000 and the hub rejected it.
  */
 
 /** Read and upload bound for one prompt, in bytes (see the module docblock). */
-export const PROMPT_TEXT_MAX_BYTES = 200_000;
+export const PROMPT_TEXT_MAX_BYTES = 180_000;
 
 /** Appended to a prompt that was cut to fit. */
 export const PROMPT_TRUNCATION_MARKER =
