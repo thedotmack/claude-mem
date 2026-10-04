@@ -43,6 +43,25 @@ export const CreateMemoryItemSchema = MemoryItemSchema.omit({
   metadata: true
 });
 
+/** PATCH fields have no creation defaults: omission means preserve the stored value. */
+export const UpdateMemoryItemSchema = MemoryItemSchema.pick({
+  projectId: true,
+  kind: true,
+  type: true,
+}).partial().extend({
+  serverSessionId: MemoryItemSchema.shape.serverSessionId.removeDefault().optional(),
+  legacyObservationId: MemoryItemSchema.shape.legacyObservationId.removeDefault().optional(),
+  title: MemoryItemSchema.shape.title.removeDefault().optional(),
+  subtitle: MemoryItemSchema.shape.subtitle.removeDefault().optional(),
+  text: MemoryItemSchema.shape.text.removeDefault().optional(),
+  narrative: MemoryItemSchema.shape.narrative.removeDefault().optional(),
+  facts: MemoryItemSchema.shape.facts.removeDefault().optional(),
+  concepts: MemoryItemSchema.shape.concepts.removeDefault().optional(),
+  filesRead: MemoryItemSchema.shape.filesRead.removeDefault().optional(),
+  filesModified: MemoryItemSchema.shape.filesModified.removeDefault().optional(),
+  metadata: MemoryItemSchema.shape.metadata.removeDefault().optional(),
+});
+
 export const MemorySourceSchema = z.object({
   id: z.string().min(1),
   memoryItemId: z.string().min(1),
