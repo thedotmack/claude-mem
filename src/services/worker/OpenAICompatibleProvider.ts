@@ -18,7 +18,8 @@ import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
 import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
-import { DEADLINE_EXCEEDED_CODE, isClassified, type ClassifiedProviderError } from './provider-errors.js';
+import { DEADLINE_EXCEEDED_CODE, PAID_SEND_BUDGET_EXHAUSTED_CODE, isClassified, paidSendOutcomeOf, type ClassifiedProviderError } from './provider-errors.js';
+import { paidSendBudgetForClaimedBatch, type PaidSendBudget } from './paid-send-budget.js';
 import {
   shouldRecycleConversation,
   describeGenerationUsage,
@@ -143,12 +144,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
    * Issue the actual HTTP request and normalize its response.
    * `perAttemptTimeoutMs` overrides the CLAUDE_MEM_LLM_TIMEOUT_MS per-attempt
    * deadline for callers racing their own, longer deadline (the field pass).
+   * `paidSendBudget` is the claimed batch's allowance (absent for an init
+   * turn, a field condensation or a wrap-up, which are not batches); its
+   * clientAttemptId goes out as `x-client-request-id`.
    */
   protected abstract query(
     history: ConversationMessage[],
     config: TConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
   ): Promise<ProviderQueryResult>;
 
   /**
@@ -370,7 +375,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       try {
         session.lastPromptSentAt = Date.now();
         session.lastGeneratorSource = 'init';
-        const initResponse = await this.query(session.conversationHistory, config);
+        const initResponse = await this.queryObserverTurn(session, config, undefined);
         this.handleInitResponse(initResponse, session, model);
       } catch (error: unknown) {
         if (await this.recycleOnContextOverflow(error, session, worker)) return;
@@ -536,7 +541,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.queryObserverTurn(session, config, paidSendBudgetForClaimedBatch(session));
 
     // Billed usage counts even when the reply came back empty.
     accumulateObserverUsage(session, obsResponse);
@@ -603,7 +608,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    const summaryResponse = await this.queryObserverTurn(session, summaryConfig, paidSendBudgetForClaimedBatch(session));
 
     accumulateObserverUsage(session, summaryResponse);
     this.recordMeasuredContext(session, summaryResponse);
@@ -621,6 +626,36 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
         sessionId: session.sessionDbId
       });
+    }
+  }
+
+  /**
+   * Send one observer turn (init, observation or summary) on the session's
+   * conversation. An output failure (the backend answered and billed it, but
+   * the body was unreadable, a 200 carried litellm's "Unable to get json", or
+   * Codex completed without usable output) is never resent and never ends the
+   * session: it is passed on as an empty reply, so the empty-reply handling
+   * settles this batch alone and the work buffered behind it keeps flowing.
+   * withRetry has already charged it to the batch's PaidSendBudget.
+   */
+  private async queryObserverTurn(
+    session: ActiveSession,
+    config: TConfig,
+    paidSendBudget: PaidSendBudget | undefined,
+  ): Promise<ProviderQueryResult> {
+    try {
+      return await this.query(session.conversationHistory, config, undefined, undefined, paidSendBudget);
+    } catch (error: unknown) {
+      if (!isClassified(error) || paidSendOutcomeOf(error) !== 'output_failure') throw error;
+      logger.warn('SDK', `${this.providerName} answered with unusable output; passing an empty reply on, not resending`, {
+        sessionId: session.sessionDbId,
+        claimedMessageIds: [...session.claimedMessageIds],
+        code: error.code,
+        message: error.message,
+        clientAttemptId: error.clientAttemptId ?? paidSendBudget?.clientAttemptId,
+        paidSendsSpent: paidSendBudget?.spentPaidSends,
+      });
+      return { content: '' };
     }
   }
 
@@ -689,9 +724,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       // observer-text transport path in ResponseProcessor (#3752). Our own
       // per-attempt deadline keeps its own reason, so an abandoned request
       // stays countable apart from a network fault.
+      // A batch whose paid-send budget is spent pauses the same way; the
+      // transport resume parks it instead of resending (SessionManager).
       case 'transient':
-        return error.code === DEADLINE_EXCEEDED_CODE
-          ? `transport:${DEADLINE_EXCEEDED_CODE}`
+        return error.code === DEADLINE_EXCEEDED_CODE || error.code === PAID_SEND_BUDGET_EXHAUSTED_CODE
+          ? `transport:${error.code}`
           : `transport:${error.kind}`;
       default:
         return null;

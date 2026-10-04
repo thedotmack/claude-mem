@@ -1,0 +1,168 @@
+// POST /api/work-state/entries appends one entry under the checkout's primary
+// project key and answers with what is still open in the list; GET /api/work-state
+// reads every key the checkout reads. These are what the work_state_write and
+// work_state_read MCP tools call with the session's cwd.
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import type { Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import express from 'express';
+import {
+  MAX_WORK_STATE_FIELDS_JSON_CHARS,
+  WorkStateRoutes,
+} from '../../../../src/services/worker/http/routes/WorkStateRoutes.js';
+import { WORK_STATE_SECTION_CHARACTER_LIMIT } from '../../../../src/services/context/sections/WorkStateRenderer.js';
+import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
+import { getProjectContext } from '../../../../src/utils/project-name.js';
+import { logger } from '../../../../src/utils/logger.js';
+
+let server: Server | undefined;
+let port = 0;
+let store: SessionStore;
+let checkout: string;
+let project: string;
+let loggerSpies: Array<ReturnType<typeof spyOn>> = [];
+
+beforeEach(async () => {
+  loggerSpies = [
+    spyOn(logger, 'info').mockImplementation(() => {}),
+    spyOn(logger, 'debug').mockImplementation(() => {}),
+    spyOn(logger, 'warn').mockImplementation(() => {}),
+    spyOn(logger, 'error').mockImplementation(() => {}),
+  ];
+  store = new SessionStore(':memory:');
+  checkout = mkdtempSync(join(tmpdir(), 'work-state-checkout-'));
+  project = getProjectContext(checkout).primary;
+
+  const app = express();
+  app.use(express.json());
+  new WorkStateRoutes({ getSessionStore: () => store } as any).setupRoutes(app);
+  await new Promise<void>((resolve, reject) => {
+    server = app.listen(0, '127.0.0.1', () => {
+      const addr = server!.address();
+      if (!addr || typeof addr === 'string') {
+        reject(new Error('work-state test server did not bind a port'));
+        return;
+      }
+      port = addr.port;
+      resolve();
+    });
+  });
+});
+
+afterEach(async () => {
+  loggerSpies.forEach(spy => spy.mockRestore());
+  delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+  await new Promise<void>((resolve, reject) => {
+    if (!server) {
+      resolve();
+      return;
+    }
+    server.close(err => (err ? reject(err) : resolve()));
+    server = undefined;
+  });
+  store.close();
+  rmSync(checkout, { recursive: true, force: true });
+});
+
+function write(body: Record<string, unknown>): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/api/work-state/entries`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+function read(query: Record<string, string>): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/api/work-state?${new URLSearchParams(query)}`);
+}
+
+describe('WorkStateRoutes', () => {
+  it("saves an entry under the checkout's project and answers with what is still open in the list", async () => {
+    await write({ cwd: checkout, list: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' } });
+    await write({ cwd: checkout, list: 'release', fields: { task: 'tag', status: 'done' } });
+    const response = await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'todo' } });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe([
+      `Saved to "release" in ${project}. Still open in it:`,
+      '- release: version=13.25.2, blocked_on=npm token, updated 1 minute ago',
+      '  - [todo] publish, updated 1 minute ago',
+    ].join('\n'));
+    expect(store.getWorkStateEntries([project]).map(entry => entry.fields)).toEqual([
+      { version: '13.25.2', blocked_on: 'npm token' },
+      { task: 'tag', status: 'done' },
+      { task: 'publish', status: 'todo' },
+    ]);
+  });
+
+  it('says when a write leaves nothing open in the list', async () => {
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'doing' } });
+    const response = await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'done' } });
+
+    expect(await response.text()).toBe(`Saved to "release" in ${project}. Nothing in it is open now.`);
+  });
+
+  it('keeps the answer to a write within the SessionStart section limit', async () => {
+    for (let tableNumber = 0; tableNumber < 80; tableNumber++) {
+      store.appendWorkStateEntry({ project, listName: 'migration', fields: { task: `table-${tableNumber}`, status: 'todo', note: 'x'.repeat(60) } });
+    }
+
+    const answer = await (await write({ cwd: checkout, list: 'migration', fields: { owner: 'agent' } })).text();
+
+    expect(answer.length).toBeLessThanOrEqual(WORK_STATE_SECTION_CHARACTER_LIMIT);
+    expect(answer).toStartWith(`Saved to "migration" in ${project}. Still open in it:\n- migration: owner=agent`);
+    expect(answer).toMatch(/\n- \.\.\.\d+ more lines; read them with work_state_read$/);
+  });
+
+  it('refuses an entry it cannot store or show, and saves nothing', async () => {
+    const refused = [
+      { cwd: checkout, list: 'release', fields: {} },
+      { cwd: checkout, list: 'release', fields: { note: { nested: true } } },
+      { cwd: checkout, list: 'release', fields: { note: 'x'.repeat(MAX_WORK_STATE_FIELDS_JSON_CHARS) } },
+      { cwd: checkout, list: '  ', fields: { task: 'publish' } },
+      { list: 'release', fields: { task: 'publish' } },
+    ];
+
+    for (const body of refused) {
+      const response = await write(body);
+      expect({ body, status: response.status }).toEqual({ body, status: 400 });
+    }
+    const emptyFields = await (await write(refused[0])).json() as { issues: Array<{ message: string }> };
+    expect(emptyFields.issues.map(issue => issue.message)).toContain('fields must set at least one key');
+    expect(store.getWorkStateEntries([project])).toEqual([]);
+  });
+
+  it('does not save for a project the user excluded', async () => {
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
+
+    const response = await write({ cwd: checkout, list: 'release', fields: { task: 'publish' } });
+
+    expect(await response.text()).toBe('Not saved: this project is excluded from claude-mem (CLAUDE_MEM_EXCLUDED_PROJECTS).');
+    expect(store.getWorkStateEntries([project])).toEqual([]);
+  });
+
+  it('reads what is open across lists, or one list with its closed items', async () => {
+    await write({ cwd: checkout, list: 'release', fields: { version: '13.25.3' } });
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'todo' } });
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'dropped', reason: 'superseded' } });
+    await write({ cwd: checkout, list: 'todo', fields: { task: 'update-docs', status: 'doing' } });
+
+    expect(await (await read({ cwd: checkout })).text()).toBe([
+      '- todo',
+      '  - [doing] update-docs, updated 1 minute ago',
+      '- release: version=13.25.3, updated 1 minute ago',
+    ].join('\n'));
+    expect(await (await read({ cwd: checkout, list: 'release', includeClosed: 'true' })).text()).toBe([
+      '- release: version=13.25.3, updated 1 minute ago',
+      '  - [dropped] publish (reason=superseded), updated 1 minute ago',
+    ].join('\n'));
+  });
+
+  it('says when nothing is open, and requires a cwd', async () => {
+    expect(await (await read({ cwd: checkout })).text())
+      .toBe(`Nothing open for ${project}. Pass includeClosed to see closed items.`);
+    expect((await read({})).status).toBe(400);
+  });
+});

@@ -15,7 +15,7 @@ import {
   ServerGenerationJobPayloadValidationError,
   type ServerGenerationJobPayload,
 } from '../jobs/types.js';
-import { ServerClassifiedProviderError } from './providers/shared/error-classification.js';
+import { SERVER_MAX_PAID_SENDS_PER_JOB, ServerClassifiedProviderError, serverPaidSendOutcomeOf } from './providers/shared/error-classification.js';
 import type { ServerGenerationProvider, ServerGenerationResult } from './providers/shared/types.js';
 import {
   markGenerationFailed,
@@ -295,9 +295,23 @@ export class ProviderObservationGenerator {
       // under a bogus 'unknown' classification.
       if (!(error instanceof ServerGenerationTerminalOutcomeError)) {
         const classified = error instanceof ServerClassifiedProviderError ? error : null;
-        const retryable = classified
-          ? classified.kind === 'transient' || classified.kind === 'rate_limit'
-          : false;
+        // Never pay twice: a rate limit was refused before any work and keeps
+        // the job's max_attempts; an ambiguous failure (timeout, network, 5xx)
+        // may have been billed, so it is resent only while the job has paid
+        // calls left (fresh.attempts counts this one); an output failure or a
+        // definite refusal is never resent.
+        const paidSendOutcome = classified ? serverPaidSendOutcomeOf(classified) : null;
+        const retryable = paidSendOutcome === 'refused_before_work'
+          || (paidSendOutcome === 'ambiguous' && fresh.attempts < SERVER_MAX_PAID_SENDS_PER_JOB);
+        if (paidSendOutcome === 'ambiguous') {
+          logger.warn('SYSTEM', '[generation] provider call ended ambiguously; it may have been billed', {
+            correlationId,
+            jobId: fresh.id,
+            attempt: fresh.attempts,
+            maxPaidSends: SERVER_MAX_PAID_SENDS_PER_JOB,
+            resent: retryable,
+          });
+        }
         await markGenerationFailed({
           pool: this.options.pool,
           job: fresh,
@@ -341,11 +355,12 @@ export class ProviderObservationGenerator {
     } catch (error) {
       // An abort can surface from fetch (already transient) or from reading the
       // response body (classified parse_error, non-retryable). Either way the
-      // cause is the timeout, so report it as transient.
+      // cause is the timeout: the call may still run and be billed upstream, so
+      // it is ambiguous and resent only within SERVER_MAX_PAID_SENDS_PER_JOB.
       if (signal.aborted) {
         throw new ServerClassifiedProviderError(
           `${this.options.provider.providerLabel} request timed out after ${timeoutMs}ms`,
-          { kind: 'transient', cause: error },
+          { kind: 'transient', paidSendOutcome: 'ambiguous', cause: error },
         );
       }
       throw error;

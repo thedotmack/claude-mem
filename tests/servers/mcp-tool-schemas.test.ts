@@ -41,6 +41,19 @@ describe('MCP tool inputSchema declarations', () => {
     expect(getObsSection).toContain("required:");
   });
 
+  it('work_state tools send the session cwd to the work-state routes', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const section = src.slice(
+      src.indexOf("name: 'work_state_write'"),
+      src.indexOf("name: 'session_start_context'"),
+    );
+    expect(section).toContain("required: ['list', 'fields']");
+    expect(section).toContain("callWorker('/api/work-state/entries'");
+    expect(section).toContain("name: 'work_state_read'");
+    expect(section).toContain("callWorker('/api/work-state'");
+    expect(section.match(/cwd: process\.cwd\(\)/g)).toHaveLength(2);
+  });
+
   it('session_start_context exposes worker SessionStart renderer parameters', async () => {
     const src = await Bun.file(mcpServerPath).text();
     const section = src.slice(

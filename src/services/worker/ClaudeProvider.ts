@@ -52,6 +52,7 @@ import { telemetryBuffer } from '../telemetry/buffer.js';
 import { captureEvent } from '../telemetry/telemetry.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired, OBSERVER_DIR_UNUSABLE_CODE } from '../../shared/dependency-health.js';
 import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
+import { paidSendBudgetForClaimedBatch } from './paid-send-budget.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -612,7 +613,11 @@ export class ClaudeProvider {
             }, truncatedResponse);
           }
 
-          if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
+          // Only the CLI's own auth-failure status line; an observation may quote the phrase (#4253).
+          if (
+            message.error === 'authentication_failed' &&
+            /^Invalid API key(?: · (?:Fix external API key|Please run \/login))?$/.test(textContent.trim())
+          ) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
@@ -1118,6 +1123,9 @@ export class ClaudeProvider {
       // loop, and killing the stream first means no late frame can be processed
       // between the release and the abort.
       session.abortReason = 'transport:response_stall';
+      // The unanswered prompt may have been billed: it counts against the
+      // batch's paid-send budget, read before the reset forgets the claims.
+      paidSendBudgetForClaimedBatch(session)?.recordPaidSend();
       try {
         session.abortController.abort();
       } catch {
