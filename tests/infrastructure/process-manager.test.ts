@@ -681,9 +681,14 @@ describe('ProcessManager', () => {
 
         expect(cleanStalePidFile({ removeStale: false })).toBe('alive');
       } finally {
-        if (worker.pid) {
+        // An exit that already happened never fires 'exit' again, so only wait
+        // for a child still running, and never longer than five seconds.
+        if (worker.exitCode === null && worker.signalCode === null) {
+          const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
           worker.kill('SIGTERM');
-          await new Promise<void>(resolve => worker.once('exit', () => resolve()));
+          let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([exited, new Promise<void>(resolve => { cleanupTimer = setTimeout(resolve, 5_000); })]);
+          clearTimeout(cleanupTimer);
         }
         rmSync(workerDir, { recursive: true, force: true });
       }
