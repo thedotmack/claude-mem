@@ -1929,11 +1929,15 @@ For more info: https://docs.claude-mem.ai/antigravity-cli/setup
       SELECT memory_session_id
       FROM sdk_sessions
       WHERE id = ?
-    `).get(e);!n||n.memory_session_id===r||(this.db.prepare(`
-      UPDATE sdk_sessions
-      SET memory_session_id = ?
-      WHERE id = ?
-    `).run(r,e),r&&this.requeuePromptSync(e))}enqueueMutationOp(e,r){if(!this.syncOpsEnabled)return;let n=JSON.parse(JSON.stringify(r));if(n.op==="set_prompt_session"){let s=n.target;s?.origin_device_id===null&&(s.origin_device_id="self")}uy(n),r.op==="set_prompt_session"&&this.cachedStatement(`
+    `).get(e);!n||n.memory_session_id===r||(this.db.transaction(()=>{this.db.prepare(`
+        UPDATE sdk_sessions
+        SET memory_session_id = ?
+        WHERE id = ?
+      `).run(r,e),this.db.prepare(`
+        UPDATE tool_uses
+        SET memory_session_id = ?
+        WHERE session_db_id = ?
+      `).run(r,e)})(),r&&this.requeuePromptSync(e))}enqueueMutationOp(e,r){if(!this.syncOpsEnabled)return;let n=JSON.parse(JSON.stringify(r));if(n.op==="set_prompt_session"){let s=n.target;s?.origin_device_id===null&&(s.origin_device_id="self")}uy(n),r.op==="set_prompt_session"&&this.cachedStatement(`
         DELETE FROM sync_outbox
         WHERE json_valid(body)
           AND json_extract(body, '$.op') = 'set_prompt_session'
