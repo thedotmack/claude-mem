@@ -223,11 +223,18 @@ function codexSetupError(message: string): Error {
 }
 
 /**
- * `code` on a turn that completed without any agent message: an anomaly worth
- * one retry, never a refusal, so it is classified by code rather than by its
- * diagnostic text.
+ * `code` on a turn that completed without any agent message. The turn ran and
+ * was billed, so it is an output failure, never resent ("never pay twice"); it
+ * is classified by code rather than by its diagnostic text.
  */
 export const CODEX_NO_AGENT_MESSAGE_CODE = 'codex_no_agent_message';
+
+/**
+ * `code` on a completed turn whose structured output was malformed (not JSON,
+ * or no string `content`). Like a missing agent message, the turn was billed:
+ * an output failure, never resent.
+ */
+export const CODEX_MALFORMED_OUTPUT_CODE = 'codex_malformed_structured_output';
 
 /**
  * `code` on a turn refused because Codex could not attest the observer's
@@ -492,10 +499,16 @@ export class CodexAppServerClient {
       try {
         structured = JSON.parse(active.finalText);
       } catch (error) {
-        throw new Error(`Codex app-server returned malformed structured output: ${error instanceof Error ? error.message : String(error)}`);
+        throw Object.assign(
+          new Error(`Codex app-server returned malformed structured output: ${error instanceof Error ? error.message : String(error)}`),
+          { code: CODEX_MALFORMED_OUTPUT_CODE },
+        );
       }
       if (!isObject(structured) || typeof structured.content !== 'string') {
-        throw new Error('Codex app-server structured output omitted string content');
+        throw Object.assign(
+          new Error('Codex app-server structured output omitted string content'),
+          { code: CODEX_MALFORMED_OUTPUT_CODE },
+        );
       }
       const content = structured.content.trim();
       if (!content) {

@@ -2,7 +2,8 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, maxSessionInitRequestTimeoutMs, WEDGED_WORKER_UPTIME_DEFAULT_S, WEDGED_WORKER_UPTIME_BOUNDS_S } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout, maxSessionInitRequestTimeoutMs } from "./hook-constants.js";
+import { readSseEvents } from "./sse-reader.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
@@ -59,28 +60,11 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
 );
 
 /**
- * How long a worker may stay healthy-but-never-ready before it is treated as
- * WEDGED and recycled (seconds of the worker's own reported uptime).
- *
- * Readiness is not recycled on eagerly: a cold boot is legitimately un-ready
- * for a while (Chroma prewarm alone defaults to 120s), and killing during boot
- * is exactly the restart storm #3378 documents. The worker's self-reported
- * uptime separates the two cases without any new state file — a freshly
- * spawned replacement starts at ~0s and is therefore immune until it has had
- * the full window to finish initializing, so this cannot feed back on itself.
- *
- * Without this, a worker whose background init threw stays `initialized:false`
- * forever while still serving 200 on /api/health. Because it reports the
- * CORRECT version, the version-mismatch recycle below never fires and the hook
- * skips every call indefinitely (observed: one worker wedged for 7.15 days
- * after a bun:sqlite API error, until the hook-failure counter tripped and
- * started blocking hooks outright).
+ * GET /api/ready sends a `: ping` every 2 s while the worker boots, so this
+ * much silence means the worker is wedged (alive socket, dead event loop or a
+ * stalled init), not slow. Booting time itself is never a reason to recycle.
  */
-const WEDGED_WORKER_UPTIME_S = readTimeoutEnv(
-  'CLAUDE_MEM_WEDGED_WORKER_UPTIME_S',
-  WEDGED_WORKER_UPTIME_DEFAULT_S,
-  WEDGED_WORKER_UPTIME_BOUNDS_S
-);
+const READY_STREAM_IDLE_TIMEOUT_MS = 5000;
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
 const SESSION_INIT_REQUEST_TIMEOUT_BOUNDS = {
@@ -172,6 +156,159 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
     }
     throw err;
   }
+}
+
+export interface IdleTimeoutOptions {
+  /** Max silence: armed before the request, reset on headers and on every body chunk. */
+  idleTimeoutMs: number;
+  /** Optional hard ceiling for the whole exchange (only where a host imposes one). */
+  absoluteCapMs?: number;
+  /** Called for every body chunk as it arrives (liveness / progress). */
+  onChunk?: (chunk: Uint8Array) => void;
+}
+
+export interface IdleFetchResponseMeta {
+  status: number;
+  statusText: string;
+  ok: boolean;
+  headers: Headers;
+}
+
+export interface IdleFetchTextResult extends IdleFetchResponseMeta {
+  text: string;
+}
+
+export interface IdleFetchStreamResult extends IdleFetchResponseMeta {
+  /** Single-use; start reading promptly (the idle timer runs from headers to the first read). Each chunk resets it; time the consumer spends between reads does not count. */
+  chunks: AsyncIterable<Uint8Array>;
+  /** Abandon the body without reading it (releases the request and all timers). */
+  cancel(): Promise<void>;
+}
+
+/**
+ * Idle + optional absolute-cap watchdog for one request. Aborts through its own
+ * controller (merged with the caller's signal) and remembers why, so the fetch
+ * rejection can be rewritten to the "Request timed out ..." wording callers match.
+ */
+function createIdleWatchdog(options: IdleTimeoutOptions, callerSignal: AbortSignal | null | undefined) {
+  const controller = new AbortController();
+  let timeoutError: Error | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let capTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  const clearIdle = () => {
+    if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+  };
+  const dispose = () => {
+    disposed = true;
+    clearIdle();
+    if (capTimer !== null) { clearTimeout(capTimer); capTimer = null; }
+  };
+  const trip = (error: Error) => {
+    if (disposed) return;
+    timeoutError = error;
+    dispose();
+    controller.abort(error);
+  };
+  const touch = () => {
+    if (disposed) return;
+    clearIdle();
+    idleTimer = setTimeout(
+      () => trip(new Error(`Request timed out after ${options.idleTimeoutMs}ms idle`)),
+      options.idleTimeoutMs
+    );
+  };
+
+  if (options.absoluteCapMs !== undefined && options.absoluteCapMs > 0) {
+    const absoluteCapMs = options.absoluteCapMs;
+    capTimer = setTimeout(() => trip(new Error(`Request timed out after ${absoluteCapMs}ms`)), absoluteCapMs);
+  }
+  touch();
+
+  return {
+    signal: callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal,
+    touch,
+    pause: clearIdle,
+    dispose,
+    /** Our timeout error if the watchdog fired, otherwise the original error. */
+    translate: (err: unknown): unknown => timeoutError ?? err,
+  };
+}
+
+/**
+ * fetch whose deadline is silence, not wall time. Owns the body read, so the idle
+ * timer covers the body too — never hands back a bare Response.
+ */
+export async function fetchStreamWithIdleTimeout(
+  url: string,
+  init: RequestInit,
+  options: IdleTimeoutOptions
+): Promise<IdleFetchStreamResult> {
+  const watchdog = createIdleWatchdog(options, init.signal);
+  let response: Response;
+  try {
+    response = await workerFetch(url, { ...init, signal: watchdog.signal });
+  } catch (err: unknown) {
+    watchdog.dispose();
+    throw watchdog.translate(err);
+  }
+  watchdog.touch();
+
+  const body = response.body;
+  const reader = body ? body.getReader() : null;
+  let bodyFinished = false;
+
+  async function* readChunks(): AsyncGenerator<Uint8Array> {
+    if (!reader) { bodyFinished = true; watchdog.dispose(); return; }
+    try {
+      while (true) {
+        watchdog.touch();
+        let result: Awaited<ReturnType<typeof reader.read>>;
+        try {
+          result = await reader.read();
+        } catch (err: unknown) {
+          bodyFinished = true;
+          throw watchdog.translate(err);
+        }
+        if (result.done) { bodyFinished = true; return; }
+        watchdog.pause();
+        options.onChunk?.(result.value);
+        yield result.value;
+      }
+    } finally {
+      watchdog.dispose();
+      if (!bodyFinished) await reader.cancel();
+    }
+  }
+
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    ok: response.ok,
+    headers: response.headers,
+    chunks: readChunks(),
+    cancel: async () => {
+      watchdog.dispose();
+      if (reader && !bodyFinished) { bodyFinished = true; await reader.cancel(); }
+    },
+  };
+}
+
+/** Buffered form of fetchStreamWithIdleTimeout: resolves once the whole body is read. */
+export async function fetchWithIdleTimeout(
+  url: string,
+  init: RequestInit,
+  options: IdleTimeoutOptions
+): Promise<IdleFetchTextResult> {
+  const streamed = await fetchStreamWithIdleTimeout(url, init, options);
+  const decoder = new TextDecoder();
+  let text = '';
+  for await (const chunk of streamed.chunks) {
+    text += decoder.decode(chunk, { stream: true });
+  }
+  text += decoder.decode();
+  return { status: streamed.status, statusText: streamed.statusText, ok: streamed.ok, headers: streamed.headers, text };
 }
 
 let cachedPort: number | null = null;
@@ -345,10 +482,15 @@ export function workerHttpRequest(
     headers?: Record<string, string>;
     body?: string;
     timeoutMs?: number;
+    /**
+     * Switch to a silence-based deadline (fetchWithIdleTimeout). The body is read
+     * in full under the idle timer and re-wrapped in a Response. An explicit
+     * `timeoutMs` then acts as the absolute cap; without it there is no cap.
+     */
+    idleTimeoutMs?: number;
   } = {}
 ): Promise<Response> {
   const method = options.method ?? 'GET';
-  const timeoutMs = options.timeoutMs ?? getWorkerApiRequestTimeoutMs();
 
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
@@ -359,6 +501,18 @@ export function workerHttpRequest(
     init.body = options.body;
   }
 
+  if (options.idleTimeoutMs !== undefined && options.idleTimeoutMs > 0) {
+    return fetchWithIdleTimeout(url, init, {
+      idleTimeoutMs: options.idleTimeoutMs,
+      absoluteCapMs: options.timeoutMs,
+    }).then((result) => new Response(result.text.length > 0 ? result.text : null, {
+      status: result.status,
+      statusText: result.statusText,
+      headers: result.headers,
+    }));
+  }
+
+  const timeoutMs = options.timeoutMs ?? getWorkerApiRequestTimeoutMs();
   if (timeoutMs > 0) {
     return fetchWithTimeout(url, init, timeoutMs);
   }
@@ -585,33 +739,157 @@ async function waitForWorkerPort(
   return false;
 }
 
-async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT_MS): Promise<boolean> {
-  if (timeoutMs <= 0) {
-    try {
-      return await isWorkerReady();
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.debug('SYSTEM', 'Worker readiness check threw', {}, err);
-      return false;
-    }
+/**
+ * What one GET /api/ready read concluded:
+ * - ready:        the worker finished init.
+ * - failed:       the worker reported its background init died (it never will be ready).
+ * - wedged:       AFTER response headers, the stream closed (or errored)
+ *                 before a terminal phase. Never read as ready.
+ * - unresponsive: silence past the idle window, before response headers OR
+ *                 after them (no phase and no ping). Not proof of a wedge:
+ *                 bun:sqlite's busy_timeout blocks the worker's event loop
+ *                 during lock contention, so a booting worker can be silent for
+ *                 >5 s at any point of the stream. Only the same pid staying
+ *                 unresponsive across hooks for UNRESPONSIVE_WORKER_WEDGED_AFTER_MS
+ *                 counts as wedged.
+ * - still_booting: progress kept arriving but the caller's budget ran out first.
+ * - not_running:  nothing accepted the connection.
+ */
+type WorkerReadyOutcome = 'ready' | 'failed' | 'wedged' | 'unresponsive' | 'still_booting' | 'not_running';
+
+interface WorkerReadyResult {
+  outcome: WorkerReadyOutcome;
+  /** `failed`: the worker's message. `wedged` / `unresponsive`: what was observed. */
+  detail?: string;
+}
+
+/** Older workers have no /api/ready (404, or 503 from their init gate). */
+type ReadyStreamRead = WorkerReadyResult | { outcome: 'unsupported' };
+
+function isIdleTimeoutError(error: unknown): boolean {
+  return error instanceof Error && /^Request timed out after \d+ms idle$/.test(error.message);
+}
+
+function isAbsoluteCapTimeoutError(error: unknown): boolean {
+  return error instanceof Error && /^Request timed out after \d+ms$/.test(error.message);
+}
+
+/**
+ * One read of GET /api/ready: idle-timed (READY_STREAM_IDLE_TIMEOUT_MS), capped
+ * at the caller's budget. Replaces polling /api/readiness and the uptime guess.
+ */
+async function readWorkerReadyStream(budgetMs: number): Promise<ReadyStreamRead> {
+  let stream: Awaited<ReturnType<typeof fetchStreamWithIdleTimeout>>;
+  try {
+    stream = await fetchStreamWithIdleTimeout(buildWorkerUrl('/api/ready'), { method: 'GET' }, {
+      idleTimeoutMs: READY_STREAM_IDLE_TIMEOUT_MS,
+      absoluteCapMs: Math.max(1, budgetMs),
+    });
+  } catch (error: unknown) {
+    if (isIdleTimeoutError(error)) return { outcome: 'unresponsive', detail: 'no response headers within the idle window' };
+    if (isAbsoluteCapTimeoutError(error)) return { outcome: 'still_booting', detail: 'budget spent before response headers' };
+    logger.debug('SYSTEM', 'Worker /api/ready connection failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { outcome: 'not_running' };
   }
 
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  // Dropping the body once the outcome is known must not change it: a cancel
+  // error inside the read loop below would otherwise read as `wedged` and
+  // SIGKILL a worker that just reported `ready`.
+  const releaseStream = (): Promise<void> => stream.cancel().catch((error: unknown) => {
+    logger.debug('SYSTEM', 'Releasing the /api/ready body failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
+  // Headers alone do not clear the unresponsive record: a worker that answers
+  // headers and then goes silent on every hook must still reach the same-pid
+  // threshold. Only a read that shows the worker progressing clears it.
+  const contentType = stream.headers?.get('content-type') ?? '';
+  if (!stream.ok || !contentType.includes('text/event-stream')) {
+    // Not our SSE stream (an older worker's 404 / init-gate 503, or anything
+    // else answering the port): drop the body and use the legacy probe.
+    clearUnresponsiveWorkerRecord();
+    await releaseStream();
+    return { outcome: 'unsupported' };
+  }
+
+  let lastPhase: string | null = null;
+  try {
+    for await (const event of readSseEvents(stream.chunks)) {
+      if (event.event !== 'phase') continue;
+      const parsed = JSON.parse(event.data) as { phase?: unknown; message?: unknown };
+      lastPhase = typeof parsed.phase === 'string' ? parsed.phase : null;
+      if (lastPhase === 'ready') {
+        clearUnresponsiveWorkerRecord();
+        await releaseStream();
+        return { outcome: 'ready' };
+      }
+      if (lastPhase === 'failed') {
+        await releaseStream();
+        return { outcome: 'failed', detail: typeof parsed.message === 'string' ? parsed.message : 'unknown init failure' };
+      }
+    }
+  } catch (error: unknown) {
+    if (isAbsoluteCapTimeoutError(error)) {
+      // Progress (phases or pings) kept arriving until the budget ran out.
+      clearUnresponsiveWorkerRecord();
+      return { outcome: 'still_booting', detail: `last phase ${lastPhase ?? 'none'}` };
+    }
+    if (isIdleTimeoutError(error)) {
+      // Same persistence guard as pre-header silence: a stall, until the same
+      // pid stays silent across hooks for UNRESPONSIVE_WORKER_WEDGED_AFTER_MS.
+      return { outcome: 'unresponsive', detail: `silent past the idle window after response headers (last phase ${lastPhase ?? 'none'})` };
+    }
+    return { outcome: 'wedged', detail: `stream error: ${error instanceof Error ? error.message : String(error)} (last phase ${lastPhase ?? 'none'})` };
+  }
+  return { outcome: 'wedged', detail: `stream closed before ready/failed (last phase ${lastPhase ?? 'none'})` };
+}
+
+/** Pre-/api/ready workers: the historical /api/readiness poll, used only on fallback. */
+async function pollLegacyWorkerReadiness(timeoutMs: number): Promise<WorkerReadyResult> {
+  if (timeoutMs <= 0) {
     try {
-      const waitLeftMs = timeoutMs - (Date.now() - start);
-      if (await isWorkerReady(Math.max(1, Math.min(HEALTH_CHECK_TIMEOUT_MS, waitLeftMs)))) return true;
+      return await isWorkerReady() ? { outcome: 'ready' } : { outcome: 'still_booting' };
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'Worker readiness check threw', {}, error instanceof Error ? error : new Error(String(error)));
+      return { outcome: 'still_booting' };
+    }
+  }
+  const start = Date.now();
+  do {
+    const waitLeftMs = timeoutMs - (Date.now() - start);
+    try {
+      if (await isWorkerReady(Math.max(1, Math.min(HEALTH_CHECK_TIMEOUT_MS, waitLeftMs)))) return { outcome: 'ready' };
     } catch (error: unknown) {
       logger.debug('SYSTEM', 'Worker readiness check threw', {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-
     const remainingMs = timeoutMs - (Date.now() - start);
     if (remainingMs <= 0) break;
     await new Promise<void>(resolve => setTimeout(resolve, Math.min(250, remainingMs)));
-  }
-  return false;
+  } while (Date.now() - start < timeoutMs);
+  return { outcome: 'still_booting', detail: 'legacy /api/readiness never reported ready' };
+}
+
+/**
+ * Wait for the worker to finish init. A worker without /api/ready (an older
+ * version still holding the port) gets the legacy /api/readiness poll once;
+ * the version-mismatch recycle replaces it anyway.
+ */
+async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT_MS): Promise<WorkerReadyResult> {
+  // A 0 budget (CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS=0) still gets one
+  // health-probe-sized look, as the single /api/readiness check used to.
+  const budgetMs = timeoutMs > 0 ? timeoutMs : HEALTH_CHECK_TIMEOUT_MS;
+  const read = await readWorkerReadyStream(budgetMs);
+  // A worker that reached ready ends any never-ready streak: a later failure,
+  // even with the same message, earns a fresh recycle.
+  if (read.outcome === 'ready') clearNeverReadyRecycleRecord();
+  if (read.outcome !== 'unsupported') return read;
+  logger.debug('SYSTEM', 'Worker has no /api/ready stream; falling back to /api/readiness');
+  return pollLegacyWorkerReadiness(timeoutMs);
 }
 
 /**
@@ -628,26 +906,6 @@ async function fetchWorkerHealthVersion(timeoutMs: number = HEALTH_CHECK_TIMEOUT
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.debug('SYSTEM', 'Worker health-version fetch failed', {}, err);
-    return null;
-  }
-}
-
-/**
- * Read the worker's self-reported uptime in seconds from GET /api/health
- * (Server.ts publishes `getUptimeSeconds(startTime)`). Used only to tell a
- * wedged worker apart from one that is still booting. Returns null when the
- * worker is unreachable or the payload lacks a usable number, and callers
- * MUST treat null as "not wedged" — an unreadable uptime is never grounds to
- * kill a process.
- */
-async function fetchWorkerHealthUptimeSeconds(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<number | null> {
-  try {
-    const response = await workerHttpRequest('/api/health', { timeoutMs });
-    const body = await response.json() as { uptime?: unknown };
-    return typeof body.uptime === 'number' && Number.isFinite(body.uptime) ? body.uptime : null;
-  } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.debug('SYSTEM', 'Worker health-uptime fetch failed', {}, err);
     return null;
   }
 }
@@ -722,6 +980,172 @@ async function warnIfVersionStillMismatched(
   }
 }
 
+/**
+ * How long the SAME worker pid must stay unresponsive (accepts connections,
+ * then goes silent before or after the /api/ready headers) across hook events before it is treated as
+ * wedged and recycled. Comfortably above bun:sqlite's 5 s busy_timeout
+ * (src/services/sqlite/connection.ts), which blocks the worker's event loop
+ * under lock contention, and above any single boot stall — so a worker that
+ * is merely slow is never SIGKILLed on one hook's 5 s of silence.
+ */
+const UNRESPONSIVE_WORKER_WEDGED_AFTER_MS = 30_000;
+
+interface UnresponsiveWorkerRecord {
+  pid: number;
+  firstUnresponsiveAtEpochMs: number;
+}
+
+function unresponsiveWorkerRecordPath(): string {
+  return path.join(resolveDataDir(), 'worker-unresponsive.json');
+}
+
+function readUnresponsiveWorkerRecord(): UnresponsiveWorkerRecord | null {
+  try {
+    const parsed = JSON.parse(readFileSync(unresponsiveWorkerRecordPath(), 'utf-8')) as Partial<UnresponsiveWorkerRecord>;
+    if (typeof parsed?.pid !== 'number' || typeof parsed?.firstUnresponsiveAtEpochMs !== 'number') return null;
+    return { pid: parsed.pid, firstUnresponsiveAtEpochMs: parsed.firstUnresponsiveAtEpochMs };
+  } catch {
+    return null;
+  }
+}
+
+function clearUnresponsiveWorkerRecord(): void {
+  const recordPath = unresponsiveWorkerRecordPath();
+  if (!existsSync(recordPath)) return;
+  try {
+    unlinkSync(recordPath);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not clear the unresponsive-worker record', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Silence from the worker on the port (before or after /api/ready headers). True ⇒ the same pid has been
+ * unresponsive for UNRESPONSIVE_WORKER_WEDGED_AFTER_MS across hooks: treat it
+ * as wedged. False ⇒ record (or keep) the first sighting and leave it alone.
+ */
+function unresponsiveWorkerIsWedged(nowEpochMs: number = Date.now()): boolean {
+  const ownerPid = readOwnedWorkerPidInfo()?.pid ?? null;
+  // Without a pid there is nothing to track across hooks, and nothing a
+  // recycle could kill: never escalate.
+  if (ownerPid === null) return false;
+  const previous = readUnresponsiveWorkerRecord();
+  if (previous !== null && previous.pid === ownerPid) {
+    return nowEpochMs - previous.firstUnresponsiveAtEpochMs >= UNRESPONSIVE_WORKER_WEDGED_AFTER_MS;
+  }
+  try {
+    writeJsonFileAtomic(unresponsiveWorkerRecordPath(), { pid: ownerPid, firstUnresponsiveAtEpochMs: nowEpochMs });
+  } catch (error: unknown) {
+    logger.warn('SYSTEM', 'Could not persist the unresponsive-worker record', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return false;
+}
+
+/**
+ * Restart-storm guard for never-ready recycles (#3378 shape). A worker whose
+ * boot fails deterministically (corrupt DB, bad migration) reports `failed`
+ * within ~1 s; without this every hook would SIGKILL and respawn it. Keyed on
+ * (build key + failure message), like worker-version-recycle.json: a new
+ * bundle or a different failure earns another attempt, the same failure from
+ * the same bundle does not. A worker reaching `ready` clears it.
+ */
+interface NeverReadyRecycleRecord {
+  buildKey: string;
+  failureMessage: string;
+  refusalLogged?: boolean;
+}
+
+function neverReadyRecyclePath(): string {
+  return path.join(resolveDataDir(), 'worker-never-ready-recycle.json');
+}
+
+function readNeverReadyRecycleRecord(): NeverReadyRecycleRecord | null {
+  try {
+    const parsed = JSON.parse(readFileSync(neverReadyRecyclePath(), 'utf-8')) as Partial<NeverReadyRecycleRecord>;
+    if (typeof parsed?.buildKey !== 'string' || typeof parsed?.failureMessage !== 'string') return null;
+    return { buildKey: parsed.buildKey, failureMessage: parsed.failureMessage, refusalLogged: parsed.refusalLogged === true };
+  } catch {
+    return null;
+  }
+}
+
+function writeNeverReadyRecycleRecord(record: NeverReadyRecycleRecord): void {
+  try {
+    writeJsonFileAtomic(neverReadyRecyclePath(), record);
+  } catch (error: unknown) {
+    logger.warn('SYSTEM', 'Could not persist the never-ready worker recycle', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function clearNeverReadyRecycleRecord(): void {
+  const recordPath = neverReadyRecyclePath();
+  if (!existsSync(recordPath)) return;
+  try {
+    unlinkSync(recordPath);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not clear the never-ready worker recycle record', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** A stat-less bundle still needs a stable key, or the guard could never match. */
+function neverReadyBuildKey(script: WorkerScriptCandidate | null): string {
+  return workerBuildKey(script, script?.version ?? 'unknown') ?? 'unresolved-worker-bundle';
+}
+
+/**
+ * The (build key, failure message) pair a never-ready recycle is keyed on.
+ * `failed` carries the worker's own message; wedged/unresponsive are keyed on
+ * the outcome, since their observed detail varies run to run.
+ */
+function neverReadyFailureMessage(readiness: WorkerReadyResult): string {
+  return readiness.outcome === 'failed' ? (readiness.detail ?? 'unknown init failure') : readiness.outcome;
+}
+
+/**
+ * Decide whether a same-version, not-ready worker may be recycled now.
+ * still_booting / not_running are never recycled; unresponsive only once it
+ * has been unresponsive long enough (see UNRESPONSIVE_WORKER_WEDGED_AFTER_MS);
+ * failed / wedged (and long-unresponsive) are subject to the storm guard.
+ */
+function neverReadyWorkerMayBeRecycled(readiness: WorkerReadyResult, buildKey: string): boolean {
+  if (readiness.outcome === 'unresponsive' && !unresponsiveWorkerIsWedged()) {
+    logger.warn('SYSTEM', 'Worker went silent on /api/ready; skipping this hook without killing it', {
+      detail: readiness.detail,
+      wedgedAfterMs: UNRESPONSIVE_WORKER_WEDGED_AFTER_MS,
+    });
+    return false;
+  }
+  const failureMessage = neverReadyFailureMessage(readiness);
+  const previous = readNeverReadyRecycleRecord();
+  if (previous !== null && previous.buildKey === buildKey && previous.failureMessage === failureMessage) {
+    if (!previous.refusalLogged) {
+      logger.error('SYSTEM', 'Worker keeps failing to start the same way after a recycle; not recycling again. Run `npx claude-mem doctor` and check the worker logs', {
+        outcome: readiness.outcome,
+        failureMessage,
+        logsDir: path.join(resolveDataDir(), 'logs'),
+      });
+      writeNeverReadyRecycleRecord({ ...previous, refusalLogged: true });
+    } else {
+      logger.debug('SYSTEM', 'Never-ready worker recycle already refused for this bundle and failure', { failureMessage });
+    }
+    return false;
+  }
+  return true;
+}
+
+function recordNeverReadyRecycle(readiness: WorkerReadyResult, buildKey: string): void {
+  writeNeverReadyRecycleRecord({ buildKey, failureMessage: neverReadyFailureMessage(readiness) });
+  clearUnresponsiveWorkerRecord();
+}
+
 async function isWorkerPortAlive(deadline: number = Number.POSITIVE_INFINITY): Promise<boolean> {
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) return false;
@@ -748,6 +1172,78 @@ async function isWorkerPortAlive(deadline: number = Number.POSITIVE_INFINITY): P
     return true;
   }
   return false;
+}
+
+/**
+ * SIGKILL the worker that owns the port (its whole process tree) and wait for
+ * the port to become bindable again. True ⇒ a successor may be spawned.
+ * Shared by the version-mismatch and wedged-worker recycles.
+ */
+async function killWorkerForRecycle(
+  deadlineAt: number | null,
+  outOfBudget: (step: string) => boolean,
+): Promise<boolean> {
+  // The stale worker must never run its own replacement. The previous
+  // design (POST /api/admin/restart, then the dying worker spawns its
+  // successor) executed the OLD install's handoff code: a ≤13.11.0 worker
+  // resolves the successor script from its own install dir, respawns its
+  // own version, and re-binds the port before this hook's lazy-spawn — so
+  // the mismatch recurs on every hook forever (#3378: 2,424 recycles in
+  // one machine-day). SIGKILL is the only teardown guaranteed to run zero
+  // stale-version code; the lazy-spawn below, using this install's
+  // resolver, is then the only spawner.
+  const stalePidInfo = readOwnedWorkerPidInfo();
+  if (stalePidInfo === null || stalePidInfo.port !== getWorkerPort()) {
+    logger.error('SYSTEM', 'Stale worker is serving the port but the PID file does not identify it; kill the claude-mem worker process manually', {
+      port: getWorkerPort(),
+      pidFilePid: stalePidInfo?.pid ?? null,
+      pidFilePort: stalePidInfo?.port ?? null,
+    });
+    return false;
+  }
+  // #3482 — a single-PID kill here orphans the stale worker's whole spawn
+  // chain (uvx -> uv -> python -> chroma-mcp). Those descendants inherited
+  // the worker's listening socket, so they keep the port bound after the
+  // root dies: waitForWorkerPortReleased() below never succeeds, every hook
+  // hard-blocks, and the recycle repeats forever (834 health-check failures
+  // observed). This is NOT Windows-specific — on POSIX the same descendants
+  // simply re-parent to init and survive identically.
+  //
+  // 'immediate' is required, not incidental: it sends SIGKILL with no
+  // SIGTERM and no grace window, so the #3378 invariant above still holds
+  // exactly as written — SIGKILL is uncatchable, so zero stale-version
+  // shutdown code runs anywhere in the tree. A graceful tree-kill would let
+  // the stale worker execute the dying install's handoff logic, which is the
+  // restart storm that invariant exists to prevent.
+  //
+  // With the budget spent, leave the recycle to the next hook event rather
+  // than kill a worker this hook could not wait to replace.
+  if (outOfBudget('stale-worker recycle')) return false;
+  try {
+    await killProcessTree(stalePidInfo.pid, { signalMode: 'immediate' });
+  } catch (error: unknown) {
+    logger.error('SYSTEM', 'Could not kill stale worker', {
+      pid: stalePidInfo.pid,
+      port: stalePidInfo.port,
+    }, error instanceof Error ? error : new Error(String(error)));
+    return false;
+  }
+  if (!(await waitForWorkerPortReleased(boundedByBudget(5000, deadlineAt)))) {
+    // A spent hook budget cut the wait short, which is no evidence of an
+    // orphaned socket: leave the diagnosis to a hook that waits it out.
+    if (outOfBudget('stale port release')) return false;
+    // The worker we killed is gone and its port still cannot be bound: an
+    // orphaned OS socket. Name the fix in the fail-loud message (#4002)
+    // instead of spawning a successor that could never listen.
+    orphanedPortDiagnosis = getWorkerPort();
+    logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
+      pid: stalePidInfo.pid,
+      port: getWorkerPort(),
+      fix: ORPHANED_PORT_REMEDIATION,
+    });
+    return false;
+  }
+  return true;
 }
 
 export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> {
@@ -788,6 +1284,10 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
   let expectedPluginVersion: string | null = null;
   let recycleBuildKey: string | null = null;
   let recycledStaleWorker = false;
+  // Set only when a same-version worker is recycled for never becoming ready,
+  // so the storm guard records the recycle once the kill succeeds.
+  let neverReadyReadiness: WorkerReadyResult | null = null;
+  let neverReadyRecycleBuildKey: string | null = null;
   // CLAUDE_MEM_WORKER_AUTOSTART=false: use a running worker, but never launch,
   // kill or recycle one (see worker-autostart.ts).
   const autostartDisabled = isWorkerAutostartDisabled(loadFromFileOnce());
@@ -810,38 +1310,44 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
     }
     if (matches) {
       if (outOfBudget('readiness wait')) return false;
-      const ready = await waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
-      if (ready) {
+      const readiness = await waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
+      if (readiness.outcome === 'ready') {
         if (expectedPluginVersion !== null && !isBudgetExhausted(deadlineAt)) {
           await warnIfVersionStillMismatched(expectedPluginVersion, null, probeTimeoutMs());
         }
         return true;
       }
 
-      // Same version, but not ready. Either it is still booting (leave it
-      // alone) or its background init died and it will NEVER become ready
-      // (recycle it — nothing else will, because the version matches). The
-      // worker's own uptime is the discriminator; see WEDGED_WORKER_UPTIME_S.
-      if (outOfBudget('wedged-worker check')) return false;
-      const uptimeSeconds = await fetchWorkerHealthUptimeSeconds(probeTimeoutMs());
-      if (uptimeSeconds === null || uptimeSeconds < WEDGED_WORKER_UPTIME_S) {
-        logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call', {
-          uptimeSeconds,
-          wedgedAfterSeconds: WEDGED_WORKER_UPTIME_S,
+      // Same version, not ready. /api/ready tells the cases apart: progress
+      // still arriving ⇒ booting, leave it alone; `failed`, silence past the
+      // idle window after headers, or a close without a terminal phase ⇒ its
+      // init died and it will NEVER become ready — recycle it, since the
+      // version matches and nothing else will. Pre-header silence
+      // (`unresponsive`) and repeated identical failures are gated in
+      // neverReadyWorkerMayBeRecycled.
+      if (readiness.outcome === 'still_booting' || readiness.outcome === 'not_running') {
+        logger.warn('SYSTEM', 'Worker is healthy but not ready yet; skipping hook API call', {
+          outcome: readiness.outcome,
+          detail: readiness.detail,
         });
         return false;
       }
 
       if (autostartDisabled) {
-        logger.warn('SYSTEM', 'Worker is healthy but never became ready; CLAUDE_MEM_WORKER_AUTOSTART=false, so leaving it to whatever manages it', {
-          uptimeSeconds,
+        logger.warn('SYSTEM', 'Worker will never become ready; CLAUDE_MEM_WORKER_AUTOSTART=false, so leaving it to whatever manages it', {
+          outcome: readiness.outcome,
+          detail: readiness.detail,
         });
         return false;
       }
 
-      logger.info('SYSTEM', 'Worker healthy but never became ready — recycling wedged worker', {
-        uptimeSeconds,
-        wedgedAfterSeconds: WEDGED_WORKER_UPTIME_S,
+      neverReadyRecycleBuildKey = neverReadyBuildKey(resolvedScript);
+      if (!neverReadyWorkerMayBeRecycled(readiness, neverReadyRecycleBuildKey)) return false;
+      neverReadyReadiness = readiness;
+
+      logger.info('SYSTEM', 'Worker will never become ready — recycling wedged worker', {
+        outcome: readiness.outcome,
+        detail: readiness.detail,
         version: workerVersion,
       });
     } else {
@@ -851,7 +1357,7 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
           workerVersion,
         });
         if (outOfBudget('readiness wait')) return false;
-        return waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
+        return (await waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt))).outcome === 'ready';
       }
       // The version-mismatch recycle keeps its own guard: an unchanged bundle
       // that still reports a stale version must not be recycled again. The
@@ -865,7 +1371,7 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
           scriptPath: resolvedScript?.scriptPath,
         });
         if (outOfBudget('readiness wait')) return false;
-        return waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
+        return (await waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt))).outcome === 'ready';
       }
 
       logger.info('SYSTEM', 'Worker version mismatch — killing stale worker', {
@@ -873,65 +1379,9 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
         workerVersion,
       });
     }
-    // The stale worker must never run its own replacement. The previous
-    // design (POST /api/admin/restart, then the dying worker spawns its
-    // successor) executed the OLD install's handoff code: a ≤13.11.0 worker
-    // resolves the successor script from its own install dir, respawns its
-    // own version, and re-binds the port before this hook's lazy-spawn — so
-    // the mismatch recurs on every hook forever (#3378: 2,424 recycles in
-    // one machine-day). SIGKILL is the only teardown guaranteed to run zero
-    // stale-version code; the lazy-spawn below, using this install's
-    // resolver, is then the only spawner.
-    const stalePidInfo = readOwnedWorkerPidInfo();
-    if (stalePidInfo === null || stalePidInfo.port !== getWorkerPort()) {
-      logger.error('SYSTEM', 'Stale worker is serving the port but the PID file does not identify it; kill the claude-mem worker process manually', {
-        port: getWorkerPort(),
-        pidFilePid: stalePidInfo?.pid ?? null,
-        pidFilePort: stalePidInfo?.port ?? null,
-      });
-      return false;
-    }
-    // #3482 — a single-PID kill here orphans the stale worker's whole spawn
-    // chain (uvx -> uv -> python -> chroma-mcp). Those descendants inherited
-    // the worker's listening socket, so they keep the port bound after the
-    // root dies: waitForWorkerPortReleased() below never succeeds, every hook
-    // hard-blocks, and the recycle repeats forever (834 health-check failures
-    // observed). This is NOT Windows-specific — on POSIX the same descendants
-    // simply re-parent to init and survive identically.
-    //
-    // 'immediate' is required, not incidental: it sends SIGKILL with no
-    // SIGTERM and no grace window, so the #3378 invariant above still holds
-    // exactly as written — SIGKILL is uncatchable, so zero stale-version
-    // shutdown code runs anywhere in the tree. A graceful tree-kill would let
-    // the stale worker execute the dying install's handoff logic, which is the
-    // restart storm that invariant exists to prevent.
-    //
-    // With the budget spent, leave the recycle to the next hook event rather
-    // than kill a worker this hook could not wait to replace.
-    if (outOfBudget('stale-worker recycle')) return false;
-    try {
-      await killProcessTree(stalePidInfo.pid, { signalMode: 'immediate' });
-    } catch (error: unknown) {
-      logger.error('SYSTEM', 'Could not kill stale worker', {
-        pid: stalePidInfo.pid,
-        port: stalePidInfo.port,
-      }, error instanceof Error ? error : new Error(String(error)));
-      return false;
-    }
-    if (!(await waitForWorkerPortReleased(boundedByBudget(5000, deadlineAt)))) {
-      // A spent hook budget cut the wait short, which is no evidence of an
-      // orphaned socket: leave the diagnosis to a hook that waits it out.
-      if (outOfBudget('stale port release')) return false;
-      // The worker we killed is gone and its port still cannot be bound: an
-      // orphaned OS socket. Name the fix in the fail-loud message (#4002)
-      // instead of spawning a successor that could never listen.
-      orphanedPortDiagnosis = getWorkerPort();
-      logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
-        pid: stalePidInfo.pid,
-        port: getWorkerPort(),
-        fix: ORPHANED_PORT_REMEDIATION,
-      });
-      return false;
+    if (!(await killWorkerForRecycle(deadlineAt, outOfBudget))) return false;
+    if (neverReadyReadiness !== null && neverReadyRecycleBuildKey !== null) {
+      recordNeverReadyRecycle(neverReadyReadiness, neverReadyRecycleBuildKey);
     }
     recycledStaleWorker = true;
     // The killed worker's PID file is left behind; the successor's boot
@@ -1057,9 +1507,14 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
     if (spawnLockHeld) releaseSpawnLock();
   }
   if (outOfBudget('readiness wait')) return false;
-  const ready = await waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
-  if (!ready) {
-    logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout');
+  const readiness = await waitForWorkerReadiness(boundedByBudget(HOOK_READINESS_TIMEOUT_MS, deadlineAt));
+  if (readiness.outcome !== 'ready') {
+    // A fresh worker that reports failed/wedged is left for the next hook
+    // event's recycle: recycling it again here would loop inside one hook.
+    logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout', {
+      outcome: readiness.outcome,
+      detail: readiness.detail,
+    });
     return false;
   }
   // Remember a failed version change across hook invocations, so a stale
@@ -1149,33 +1604,59 @@ export async function ensureWorkerAliveOnce(timeoutMs?: number): Promise<boolean
   return aliveCache;
 }
 
+/**
+ * Bounded startup for callers with their own short budget (Codex, SessionEnd):
+ * one /api/ready read decides. Ready ⇒ go. Failed or wedged ⇒ recycle (kill,
+ * then spawn a fresh worker), subject to neverReadyWorkerMayBeRecycled's
+ * unresponsive window and storm guard. Not running ⇒ spawn. Only "nothing is listening
+ * yet" is retried, because a just-spawned worker has not bound its port.
+ */
 async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  const probe = async (): Promise<boolean> => {
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) return false;
-    try {
-      return await isWorkerReady(Math.min(500, remainingMs));
-    } catch {
-      return false;
-    }
+  const remainingMs = () => deadline - Date.now();
+  const outOfBudget = (step: string): boolean => {
+    if (remainingMs() >= MIN_WORKER_BUDGET_MS) return false;
+    logger.debug('SYSTEM', 'Bounded worker startup ran out of budget', { step, budgetMs: timeoutMs });
+    return true;
   };
 
-  if (await probe()) return true;
+  const first = await waitForWorkerReadiness(Math.max(1, remainingMs()));
+  if (first.outcome === 'ready') return true;
+  if (first.outcome === 'still_booting') {
+    // Progress is still arriving: leave the booting worker alone, skip this call.
+    logger.warn('SYSTEM', 'Worker is still booting; bounded startup budget spent, skipping this call', {
+      detail: first.detail,
+      budgetMs: timeoutMs,
+    });
+    return false;
+  }
 
   // CLAUDE_MEM_WORKER_AUTOSTART=false: wait out the budget for the externally
-  // managed worker, but never take the spawn lock or launch one.
+  // managed worker, but never kill, take the spawn lock or launch one.
   const mayLaunch = !isWorkerAutostartDisabled(loadFromFileOnce());
-  const runtimePath = mayLaunch ? resolveWorkerRuntimePath() : null;
-  const scriptPath = mayLaunch ? resolveWorkerScriptPath() : null;
-  if (mayLaunch && (!runtimePath || !scriptPath)) return false;
+  if (!mayLaunch) return waitForWorkerToListen(deadline);
 
-  const spawnLockHeld = mayLaunch && acquireSpawnLock();
+  const runtimePath = resolveWorkerRuntimePath();
+  const scriptPath = resolveWorkerScriptPath();
+  if (!runtimePath || !scriptPath) return false;
+
+  if (first.outcome === 'failed' || first.outcome === 'wedged' || first.outcome === 'unresponsive') {
+    const buildKey = neverReadyBuildKey(resolveWorkerScript());
+    if (!neverReadyWorkerMayBeRecycled(first, buildKey)) return false;
+    logger.info('SYSTEM', 'Worker will never become ready — recycling wedged worker', {
+      outcome: first.outcome,
+      detail: first.detail,
+    });
+    if (!(await killWorkerForRecycle(deadline, outOfBudget))) return false;
+    recordNeverReadyRecycle(first, buildKey);
+  }
+
+  const spawnLockHeld = acquireSpawnLock();
   try {
-    if (spawnLockHeld && runtimePath && scriptPath) {
+    if (spawnLockHeld) {
       // Same launch as ensureWorkerRunning: hidden on Windows (#3521) and
       // with the daemon's cwd pinned to the data dir, not the caller's project
-      // (#3706). This path used to spawn with no cwd at all.
+      // (#3706).
       const spawned = spawnDetachedWorkerDaemon(
         runtimePath,
         scriptPath,
@@ -1184,19 +1665,11 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
           CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
         }),
         process.platform,
-        Math.max(1, deadline - Date.now()),
+        Math.max(1, remainingMs()),
       );
       if (spawned === undefined) return false;
     }
-
-    while (Date.now() < deadline) {
-      if (await probe()) return true;
-      const remainingMs = deadline - Date.now();
-      if (remainingMs > 0) {
-        await new Promise<void>(resolve => setTimeout(resolve, Math.min(100, remainingMs)));
-      }
-    }
-    return false;
+    return await waitForWorkerToListen(deadline);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'Bounded worker startup failed', {
       error: error instanceof Error ? error.message : String(error),
@@ -1205,6 +1678,28 @@ async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
   } finally {
     if (spawnLockHeld) releaseSpawnLock();
   }
+}
+
+/**
+ * Re-read /api/ready until the deadline while nothing is listening yet (a
+ * just-spawned worker binds its port after a short boot). Any other outcome
+ * is final for this call.
+ */
+async function waitForWorkerToListen(deadline: number): Promise<boolean> {
+  while (deadline - Date.now() > 0) {
+    const readiness = await waitForWorkerReadiness(Math.max(1, deadline - Date.now()));
+    if (readiness.outcome === 'ready') return true;
+    if (readiness.outcome !== 'not_running') {
+      logger.debug('SYSTEM', 'Bounded worker startup did not reach ready', {
+        outcome: readiness.outcome,
+        detail: readiness.detail,
+      });
+      return false;
+    }
+    const waitMs = Math.min(100, deadline - Date.now());
+    if (waitMs > 0) await new Promise<void>(resolve => setTimeout(resolve, waitMs));
+  }
+  return false;
 }
 
 interface HookFailureState {

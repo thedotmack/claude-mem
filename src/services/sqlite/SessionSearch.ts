@@ -242,14 +242,15 @@ export class SessionSearch {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
       const fileConditions = files.map(() => {
         return `(
-          EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ?)
-          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ?)
+          EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
         conditions.push(`(${fileConditions.join(' OR ')})`);
         files.forEach(file => {
-          params.push(`%${file}%`, `%${file}%`);
+          const literal = file.replace(/[\\%_]/g, '\\$&');
+          params.push(`%${literal}%`, `%${literal}%`);
         });
       }
     }
@@ -620,7 +621,8 @@ export class SessionSearch {
    * them.
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
-    const patterns = [`%${filePath}%`];
+    const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
+    const patterns = [`%${escape(filePath)}%`];
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
     }
@@ -628,9 +630,9 @@ export class SessionSearch {
     const firstRelativeSegment = /^[A-Za-z]:$/.test(segments[0] ?? '') ? 1 : 0;
     for (let start = firstRelativeSegment; start < segments.length; start += 1) {
       const trailing = segments.slice(start);
-      patterns.push(`${trailing.join('/')}/%`);
+      patterns.push(`${escape(trailing.join('/') + '/')}%`);
       if (filePath.includes('\\')) {
-        patterns.push(`${trailing.join('\\')}\\%`);
+        patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
       }
     }
     return patterns;
@@ -638,7 +640,7 @@ export class SessionSearch {
 
   /** Any of `columns` (JSON arrays) holds a value matching any pattern; bind every pattern once per column. */
   private static jsonArrayLikeClause(columns: string[], patternCount: number): string {
-    const anyPattern = Array.from({ length: patternCount }, () => 'value LIKE ?').join(' OR ');
+    const anyPattern = Array.from({ length: patternCount }, () => "value LIKE ? ESCAPE '\\'").join(' OR ');
     return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${anyPattern})`).join(' OR ')})`;
   }
 

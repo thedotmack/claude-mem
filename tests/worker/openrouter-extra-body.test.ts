@@ -55,7 +55,7 @@ describe('parseOpenRouterExtraBody', () => {
 
   it('drops the protected fields and names them', () => {
     const parsed = parseOpenRouterExtraBody(JSON.stringify({
-      model: 'x', messages: [], stream: true, max_tokens: 1, max_completion_tokens: 1, models: ['y'], top_p: 0.5,
+      model: 'x', messages: [], stream: false, stream_options: { include_usage: false }, max_tokens: 1, max_completion_tokens: 1, models: ['y'], top_p: 0.5,
     }));
     expect(parsed.extraBody).toEqual({ top_p: 0.5 });
     for (const key of PROTECTED_EXTRA_BODY_KEYS) expect(parsed.warning).toContain(key);
@@ -80,11 +80,12 @@ describe('buildOpenRouterRequestBody with an extra body', () => {
     const body = buildOpenRouterRequestBody({
       ...base,
       apiUrl: OPENROUTER_URL,
-      extraBody: { model: 'other', messages: [], stream: true, max_tokens: 1, max_completion_tokens: 1 },
+      extraBody: { model: 'other', messages: [], stream: false, stream_options: { include_usage: false }, max_tokens: 1, max_completion_tokens: 1 },
     });
     expect(body.model).toBe('vendor/model');
     expect(body.messages).toEqual(MESSAGES);
-    expect(body.stream).toBe(false);
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
     expect(body.max_tokens).toBe(4096);
     expect(body.max_completion_tokens).toBeUndefined();
   });
