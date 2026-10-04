@@ -25,6 +25,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'together', label: 'Together AI', baseUrl: 'https://api.together.xyz/v1', defaultModel: '' },
   { id: 'minimax', label: 'MiniMax (global)', baseUrl: 'https://api.minimax.io/v1', defaultModel: 'MiniMax-M3' },
   { id: 'minimax-cn', label: 'MiniMax (China)', baseUrl: 'https://api.minimaxi.com/v1', defaultModel: 'MiniMax-M3' },
+  { id: 'iflytek', label: 'iFlytek Spark (Astron MaaS)', baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2', defaultModel: 'spark-x2.5' },
   { id: 'ollama', label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1', defaultModel: '' },
   { id: 'lmstudio', label: 'LM Studio (local)', baseUrl: 'http://localhost:1234/v1', defaultModel: '' },
   { id: 'vllm', label: 'vLLM (self-hosted)', baseUrl: 'http://localhost:8000/v1', defaultModel: '' },

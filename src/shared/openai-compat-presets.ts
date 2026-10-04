@@ -145,6 +145,14 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'Mainland-China accounts (platform.minimaxi.com).',
   },
   {
+    id: 'iflytek',
+    label: 'iFlytek Spark (Astron MaaS)',
+    baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
+    defaultModel: 'spark-x2.5',
+    requiresApiKey: true,
+    hint: 'Pay-as-you-go MaaS key. Token Plan keys only work on https://maas-token-api.cn-huabei-1.xf-yun.com/v2.',
+  },
+  {
     id: 'ollama',
     label: 'Ollama (local)',
     baseUrl: 'http://localhost:11434/v1',
