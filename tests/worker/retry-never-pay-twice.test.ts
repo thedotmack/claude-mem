@@ -383,8 +383,10 @@ describe('an output failure consumes only its own batch; the work behind it is s
 
       const session = observerSession();
       const { manager } = stubSessionManager([observation('FailedBatchTool'), observation('NextBatchTool')]);
+      // No separate init reply: by default the user prompt rides on the first
+      // batch's request (CLAUDE_MEM_OBSERVE_BARE_PROMPTS).
       const observer = new ScriptedObserverProvider(
-        ['INIT_REPLY', outputFailure, 'NEXT_BATCH_REPLY'],
+        [outputFailure, 'NEXT_BATCH_REPLY'],
         manager,
         forwardEmptyMessageResponse,
       );
@@ -393,10 +395,10 @@ describe('an output failure consumes only its own batch; the work behind it is s
       // (handleSessionError rethrows) and dropped everything buffered.
       await observer.startSession(session);
 
-      // init + the failed batch once + the batch behind it: nothing resent.
-      expect(observer.sentHistories).toHaveLength(3);
+      // The failed batch once + the batch behind it: nothing resent.
+      expect(observer.sentHistories).toHaveLength(2);
       expect(observer.sentHistories.filter(prompt => prompt.includes('FailedBatchTool'))).toHaveLength(1);
-      expect(observer.sentHistories[2]).toContain('NextBatchTool');
+      expect(observer.sentHistories[1]).toContain('NextBatchTool');
       expect(session.abortReason ?? null).toBeNull();
       expect(session.conversationHistory.some(turn => turn.role === 'assistant' && turn.content === 'NEXT_BATCH_REPLY')).toBe(true);
     });
