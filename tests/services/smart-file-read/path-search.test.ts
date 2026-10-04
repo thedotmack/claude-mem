@@ -25,6 +25,7 @@ describe('smart search path matches', () => {
     const output = formatSearchResults(result, "invoice-ledger");
     expect(output).toContain("── Folded File Views ──");
     expect(output).toContain("billing/invoice-ledger.js");
+    expect(output).toContain("0 symbol matches; 1 matched file");
   }, 120000);
   test('retains directory matches within the requested result limit', async () => {
     const result = await search('billing', { maxResults: 1 });
@@ -49,3 +50,21 @@ describe('smart search path matches', () => {
     expect(result.matchingSymbols).toEqual([]);
   }, 120000);
 });
+
+test('reserves a folded view for a retained symbol before earlier path-only files', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'smart-search-symbol-slots-'));
+  try {
+    mkdirSync(join(dir, 'billing'));
+    writeFileSync(join(dir, 'billing', 'a.js'), 'export function salutation() { return 1; }\n');
+    writeFileSync(join(dir, 'billing', 'z.js'), 'export function billingReport() { return 2; }\n');
+    const one = await searchCodebase(dir, 'billing', { maxResults: 1 });
+    expect(one.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['billingReport']);
+    expect(one.foldedFiles.map(file => file.filePath)).toEqual(['billing/z.js']);
+    const two = await searchCodebase(dir, 'billing', { maxResults: 2 });
+    expect(two.foldedFiles.map(file => file.filePath)).toEqual(['billing/z.js', 'billing/a.js']);
+    expect(two.tokenEstimate).toBe(two.foldedFiles.reduce((sum, file) => sum + file.foldedTokenEstimate, 0));
+    expect(formatSearchResults(two, 'billing')).toContain('1 symbol match; 2 matched files');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 120000);

@@ -203,9 +203,11 @@ export async function searchCodebase(
 
   const trimmedSymbols = matchingSymbols.slice(0, maxResults);
   const relevantFiles = new Set(trimmedSymbols.map(s => s.filePath));
-  const trimmedFiles = foldedFiles.filter(f =>
-    relevantFiles.has(f.filePath) || matchScore(f.filePath.toLowerCase(), queryParts) > 0
-  ).slice(0, maxResults);
+  const trimmedFiles = [
+    ...foldedFiles.filter(f => relevantFiles.has(f.filePath)),
+    ...foldedFiles.filter(f => !relevantFiles.has(f.filePath)
+      && matchScore(f.filePath.toLowerCase(), queryParts) > 0),
+  ].slice(0, maxResults);
 
   const tokenEstimate = trimmedFiles.reduce((sum, f) => sum + f.foldedTokenEstimate, 0);
 
@@ -256,7 +258,7 @@ export function formatSearchResults(result: SearchResult, query: string): string
 
   parts.push(`🔍 Smart Search: "${query}"`);
   parts.push(`   Scanned ${result.totalFilesScanned} files, found ${result.totalSymbolsFound} symbols`);
-  parts.push(`   ${result.matchingSymbols.length} matches across ${result.foldedFiles.length} files (~${result.tokenEstimate} tokens for folded view)`);
+  parts.push(`   ${result.matchingSymbols.length} symbol match${result.matchingSymbols.length === 1 ? '' : 'es'}; ${result.foldedFiles.length} matched file${result.foldedFiles.length === 1 ? '' : 's'} (~${result.tokenEstimate} tokens for folded view)`);
   parts.push("");
 
   if (result.matchingSymbols.length === 0 && result.foldedFiles.length === 0) {
