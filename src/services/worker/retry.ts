@@ -1,15 +1,31 @@
 /**
- * Retry helper that consumes ClassifiedProviderError.kind to decide whether to
- * retry. Pattern adapted from open-agent-sdk's retry.ts (MIT) — exponential
- * backoff with jitter, but driven by classified error kinds, not raw HTTP
- * status codes.
+ * Retry helper driven by ClassifiedProviderError, following the "never pay
+ * twice" rule (xAI SDK retry rules): retry a paid request in place only when it
+ * is known the work did not happen.
  *
- * Used by GeminiProvider + OpenRouterProvider for fetch retries. Cap retries
- * at 2 because POSTs to these APIs aren't strictly idempotent; we honor a
- * provider-supplied request-id (best-effort) for dedup.
+ * | Outcome (PaidSendOutcome)                                    | In place? |
+ * |--------------------------------------------------------------|-----------|
+ * | refused_before_work: 429 / our own pre-send refusals         | yes — Retry-After capped at 60s; none ⇒ 1s→30s backoff, jitter ×(0.5–1) |
+ * | ambiguous: network error before any response, 5xx, deadline  | no — thrown; the session's transport pause decides, against the batch budget |
+ * | output_failure: body read/parse failed, 200 with an error    | never |
+ * | rejected (auth, quota, bad request) and unclassified errors  | no |
+ *
+ * One carve-out for streamed requests (`retryBeforeOutput`, xAI SDK): a
+ * transport failure before the model produced any output may be resent once,
+ * and only while the batch's PaidSendBudget has a send left.
+ *
+ * Every send that may have been billed is counted against the claimed batch's
+ * PaidSendBudget when one is passed; a spent budget refuses to send at all.
  */
 
-import { ClassifiedProviderError, DEADLINE_EXCEEDED_CODE, isClassified } from './provider-errors.js';
+import {
+  ClassifiedProviderError,
+  DEADLINE_EXCEEDED_CODE,
+  PAID_SEND_BUDGET_EXHAUSTED_CODE,
+  isClassified,
+  paidSendOutcomeOf,
+} from './provider-errors.js';
+import type { PaidSendBudget } from './paid-send-budget.js';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_LLM_TIMEOUT_MS, SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -34,11 +50,11 @@ export function parseRetryAfterMs(value: string | null): number | undefined {
 }
 
 export interface RetryOptions {
-  /** Maximum retry attempts (in addition to the initial attempt). Cap=2 by default for non-idempotent POSTs. */
+  /** Maximum in-place retries of a refused-before-work send (in addition to the initial attempt). Default 2. */
   maxRetries?: number;
   /** Per-attempt timeout in ms. Default: CLAUDE_MEM_LLM_TIMEOUT_MS (resolveLlmTimeoutMs). */
   perAttemptTimeoutMs?: number;
-  /** Base delay used for exponential backoff. Default 100ms. */
+  /** Base delay used for exponential backoff when no Retry-After was sent. Default 1s. */
   baseDelayMs?: number;
   /** Cap for backoff delay. Default 30s. */
   maxDelayMs?: number;
@@ -59,7 +75,30 @@ export interface RetryOptions {
    * `transient` keeps retrying in place.
    */
   nonRetryableKinds?: readonly string[];
+  /**
+   * The claimed batch's paid-send allowance, shared with the session's
+   * transport and stall resumes. Each send that may have been billed spends
+   * one; none left, withRetry refuses to send.
+   */
+  paidSendBudget?: PaidSendBudget;
+  /** The `x-client-request-id` the caller sends; stamped on classified errors for logs. */
+  clientAttemptId?: string;
+  /**
+   * The caller bounds each attempt itself (an idle timeout on a streamed reply
+   * plus an absolute cap), so withRetry arms no per-attempt deadline. A live
+   * stream is never abandoned for taking long.
+   */
+  attemptDeadlineOwnedByCaller?: boolean;
+  /**
+   * Resend once a streamed request whose transport failed before any output
+   * (ClassifiedProviderError.failedBeforeOutput), if the PaidSendBudget has a
+   * send left. Still bounded by maxRetries.
+   */
+  retryBeforeOutput?: boolean;
 }
+
+/** A Retry-After longer than this is not waited out in place. */
+export const MAX_RETRY_AFTER_MS = 60_000;
 
 /** Bounds shared with the other CLAUDE_MEM_*_TIMEOUT_MS settings. */
 export const MAX_LLM_TIMEOUT_MS = 300_000;
@@ -153,33 +192,46 @@ export function resolveFieldOptimizeTimeoutMs(
   return parseTimeoutMs(raw, 'CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS', FIELD_OPTIMIZE_TIMEOUT_MS);
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal' | 'perAttemptTimeoutMs' | 'nonRetryableKinds'>> = {
+const DEFAULT_OPTIONS: Required<Pick<RetryOptions, 'maxRetries' | 'baseDelayMs' | 'maxDelayMs'>> = {
   maxRetries: 2,
-  baseDelayMs: 100,
+  baseDelayMs: 1_000,
   maxDelayMs: 30_000,
 };
 
-/** Returns true if a classified error is worth retrying. */
+/**
+ * Returns true only when a failed send may be retried in place: the backend
+ * refused it before doing any work. Ambiguous, output-failure, rejected and
+ * unclassified errors are never retried here.
+ */
 export function isRetryableKind(err: unknown, nonRetryableKinds?: readonly string[]): boolean {
-  if (!isClassified(err)) {
-    // Unclassified errors are treated as transient (preserve old default).
-    return true;
-  }
-  if (nonRetryableKinds?.includes(err.kind)) return false;
-  return err.kind === 'transient' || err.kind === 'rate_limit';
+  if (isClassified(err) && nonRetryableKinds?.includes(err.kind)) return false;
+  return paidSendOutcomeOf(err) === 'refused_before_work';
 }
 
-/** Compute backoff delay: 100 * 2^attempt + random(50). Capped at maxDelayMs. */
+/**
+ * A streamed send that failed before any output may be resent once (see the
+ * carve-out at the top of this file): only when the caller opted in, not yet
+ * used, the caller has not aborted, and the batch budget has a send left. With
+ * no budget (an init turn, a wrap-up) the single resend is still the limit.
+ */
+function isRetryableBeforeOutput(err: unknown, options: RetryOptions, alreadyRetriedBeforeOutput: boolean): boolean {
+  if (!options.retryBeforeOutput || alreadyRetriedBeforeOutput) return false;
+  if (options.abortSignal?.aborted) return false;
+  if (!isClassified(err) || err.failedBeforeOutput !== true) return false;
+  if (paidSendOutcomeOf(err) !== 'ambiguous') return false;
+  return options.paidSendBudget ? options.paidSendBudget.hasRemainingPaidSend() : true;
+}
+
+/** Exponential backoff: baseDelayMs * 2^attempt, capped at maxDelayMs, times a jitter in [0.5, 1). */
 export function computeBackoffMs(attempt: number, opts: { baseDelayMs: number; maxDelayMs: number }): number {
-  const exponential = opts.baseDelayMs * Math.pow(2, attempt);
-  const jitter = Math.random() * 50;
-  return Math.min(exponential + jitter, opts.maxDelayMs);
+  const exponential = Math.min(opts.baseDelayMs * Math.pow(2, attempt), opts.maxDelayMs);
+  return Math.floor(exponential * (0.5 + Math.random() * 0.5));
 }
 
 /**
  * Run `fn` with retry. `fn` receives an AbortSignal scoped to the current
- * attempt's timeout. The classified error from `fn` (if any) drives the
- * retry/no-retry decision. Honors `retryAfterMs` for rate_limit kind.
+ * attempt's timeout. The outcome of a failed send (paidSendOutcomeOf) drives
+ * the retry/no-retry decision; see the table at the top of this file.
  */
 export async function withRetry<T>(
   fn: (attemptSignal: AbortSignal) => Promise<T>,
@@ -192,15 +244,31 @@ export async function withRetry<T>(
   };
   let lastError: unknown;
 
+  const budget = options.paidSendBudget;
+  const clientAttemptId = options.clientAttemptId ?? budget?.clientAttemptId;
+  let retriedBeforeOutput = false;
+
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
     if (options.abortSignal?.aborted) {
       throw new Error('Aborted');
+    }
+    if (budget && !budget.hasRemainingPaidSend()) {
+      throw new ClassifiedProviderError(
+        `${opts.label ?? 'Request'} not sent: this batch already made ${budget.spentPaidSends} paid sends`,
+        {
+          kind: 'transient',
+          code: PAID_SEND_BUDGET_EXHAUSTED_CODE,
+          paidSendOutcome: 'rejected',
+          cause: null,
+          ...(clientAttemptId ? { clientAttemptId } : {}),
+        },
+      );
     }
 
     // Per-attempt timeout via AbortController. Forward external aborts too.
     const attemptController = new AbortController();
     let deadlineExpired = false;
-    const timeoutHandle = setTimeout(() => {
+    const timeoutHandle = options.attemptDeadlineOwnedByCaller ? undefined : setTimeout(() => {
       deadlineExpired = true;
       attemptController.abort();
     }, opts.perAttemptTimeoutMs);
@@ -208,9 +276,14 @@ export async function withRetry<T>(
     options.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
 
     try {
-      return await fn(attemptController.signal);
+      const result = await fn(attemptController.signal);
+      budget?.recordPaidSend();
+      return result;
     } catch (err: unknown) {
       lastError = err;
+      if (isClassified(err) && clientAttemptId && !err.clientAttemptId) {
+        err.clientAttemptId = clientAttemptId;
+      }
 
       // Our own deadline, not a network blip. Retrying it in-loop against a
       // backend that is already saturated is what turns a latency problem into
@@ -221,36 +294,52 @@ export async function withRetry<T>(
       // fault — we abandoned a request the backend may still bill — and the
       // action is the remedy the session-start warning shows for it.
       if (deadlineExpired) {
+        budget?.recordPaidSend();
         throw new ClassifiedProviderError(
           `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline.`,
           {
             kind: 'transient',
             code: DEADLINE_EXCEEDED_CODE,
+            paidSendOutcome: 'ambiguous',
             action: llmTimeoutRemedy(),
             cause: err,
+            ...(clientAttemptId ? { clientAttemptId } : {}),
           },
         );
       }
 
-      if (!isRetryableKind(err, options.nonRetryableKinds)) {
+      const outcome = paidSendOutcomeOf(err);
+      if (outcome !== 'refused_before_work' && outcome !== 'rejected') {
+        budget?.recordPaidSend();
+      }
+
+      // The caller cancelled mid-flight: report it the way the pre-send and
+      // backoff checks do, keeping the runtime's own abort error as the cause.
+      if (options.abortSignal?.aborted && !isClassified(err)) {
+        throw new Error('Aborted', { cause: err });
+      }
+
+      const retryableInPlace = isRetryableKind(err, options.nonRetryableKinds);
+      const resendBeforeOutput = !retryableInPlace && isRetryableBeforeOutput(err, options, retriedBeforeOutput);
+      if (!retryableInPlace && !resendBeforeOutput) {
         throw err;
       }
 
       if (attempt === opts.maxRetries) {
         throw err;
       }
+      if (resendBeforeOutput) retriedBeforeOutput = true;
 
-      // Honor retryAfterMs from rate_limit errors; otherwise exponential backoff.
-      let delayMs: number;
-      if (isClassified(err) && err.kind === 'rate_limit' && err.retryAfterMs !== undefined) {
-        delayMs = err.retryAfterMs;
-      } else {
-        delayMs = computeBackoffMs(attempt, { baseDelayMs: opts.baseDelayMs, maxDelayMs: opts.maxDelayMs });
-      }
+      // Honor the backend's Retry-After, capped; otherwise exponential backoff.
+      const delayMs = isClassified(err) && err.retryAfterMs !== undefined
+        ? Math.min(Math.max(err.retryAfterMs, 0), MAX_RETRY_AFTER_MS)
+        : computeBackoffMs(attempt, { baseDelayMs: opts.baseDelayMs, maxDelayMs: opts.maxDelayMs });
 
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn('SDK', `Retrying ${opts.label ?? 'fetch'} after ${delayMs}ms (attempt ${attempt + 1}/${opts.maxRetries})`, {
         kind: isClassified(err) ? err.kind : 'unclassified',
+        outcome,
+        ...(clientAttemptId ? { clientAttemptId } : {}),
         message: errMsg.substring(0, 200),
       });
       // Abort-aware sleep: an external abort during backoff should exit

@@ -17,9 +17,9 @@ function formatActiveMode(): string {
   return `${mode.name} (${manager.getActiveModeId()})`;
 }
 
-export function renderAgentHeader(project: string): string[] {
+export function renderAgentHeader(project: string, headerTime: string = formatHeaderDateTime()): string[] {
   return [
-    `# [${project}] recent context, ${formatHeaderDateTime()}`,
+    `# [${project}] recent context, ${headerTime}`,
     `Mode: ${formatActiveMode()}`,
     ''
   ];
@@ -168,6 +168,6 @@ export function renderAgentFooter(
   ];
 }
 
-export function renderAgentEmptyState(project: string): string {
-  return `# [${project}] recent context, ${formatHeaderDateTime()}\nMode: ${formatActiveMode()}\n\nNo previous sessions found.`;
+export function renderAgentEmptyState(project: string, headerTime: string = formatHeaderDateTime()): string {
+  return `# [${project}] recent context, ${headerTime}\nMode: ${formatActiveMode()}\n\nNo previous sessions found.`;
 }

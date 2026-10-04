@@ -791,7 +791,7 @@ describe('SessionRoutes — cmem gateway integrity', () => {
 
     // Our own per-request deadline is transient too, but #4278 gives it its own
     // accounting, so these pauses are network and upstream faults only.
-    it('three transient pauses (a network fault, then a 5xx that outlived the retries, twice) raise no banner', async () => {
+    it('three transient pauses (a network fault, then a 5xx, twice) raise no banner', async () => {
       const id = 923003;
       seedSettings();
       const { routes, completionHandler } = makeHarness([id]);
@@ -807,8 +807,10 @@ describe('SessionRoutes — cmem gateway integrity', () => {
         await settle(id);
       }
 
-      // Each run retried in place, then paused with its batch kept.
-      expect(gatewayRequests()).toHaveLength(3 + 3 + 3);
+      // Never pay twice (Phase 1): a network fault and a 5xx are ambiguous, so
+      // no run retries in place any more (it used to send 3 each); each run
+      // sends once, then pauses with its work kept.
+      expect(gatewayRequests()).toHaveLength(1 + 1 + 1);
       expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
       expect(readObserverHealth()?.consecutiveFailures ?? 0).toBe(0);
       expect(observerHealthWarning()).not.toContain("can't save memories");

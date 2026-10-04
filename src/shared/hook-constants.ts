@@ -20,9 +20,11 @@ export const HOOK_TIMEOUTS = {
 } as const;
 
 /**
- * Seconds a worker must have been up before a silent or never-ready worker may
- * be treated as WEDGED (recycled by the hook, or reclaimed by a launcher)
- * instead of still booting. Override with CLAUDE_MEM_WEDGED_WORKER_UPTIME_S.
+ * Seconds a port owner must have been up before a launcher's pre-spawn port
+ * reclaim (port-reclaim.ts) may treat a silent listener as WEDGED instead of
+ * still booting. Hooks no longer use it: they read GET /api/ready, which
+ * reports failure or goes silent instead. Override with
+ * CLAUDE_MEM_WEDGED_WORKER_UPTIME_S.
  */
 export const WEDGED_WORKER_UPTIME_DEFAULT_S = 300;
 export const WEDGED_WORKER_UPTIME_BOUNDS_S = { min: 60, max: 86400 } as const;
