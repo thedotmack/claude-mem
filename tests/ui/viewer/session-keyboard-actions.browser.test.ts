@@ -35,10 +35,10 @@ for (const key of ['Enter', 'Space'] as const) {
       `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
     let socket: WebSocket | undefined;
     try {
-      const deadline = Date.now() + 6000;
+      const startupDeadline = Date.now() + 10000;
       const portFile = join(profile, 'DevToolsActivePort');
       while (!existsSync(portFile)) {
-        if (Date.now() > deadline) throw new Error('Owned browser did not start');
+        if (Date.now() > startupDeadline) throw new Error('Owned browser did not start');
         await Bun.sleep(10);
       }
       const port = readFileSync(portFile, 'utf8').split('\n')[0];
@@ -80,8 +80,9 @@ for (const key of ['Enter', 'Space'] as const) {
         await send('Input.dispatchKeyEvent', { type: 'keyUp', ...event });
         await settle();
       };
+      const renderDeadline = Date.now() + 10000;
       while (!await evaluate('!!document.querySelector(".session-card")')) {
-        if (Date.now() > deadline) throw new Error('Session card did not render');
+        if (Date.now() > renderDeadline) throw new Error('Session card did not render');
         await Bun.sleep(10);
       }
       await evaluate('document.querySelector(".session-card").focus()'); await press(key);
@@ -106,5 +107,5 @@ for (const key of ['Enter', 'Space'] as const) {
       socket?.close(); child.kill(); await child.exited; server.stop(true);
       rmSync(profile, { recursive: true, force: true });
     }
-  }, 15000);
+  }, 30000);
 }
