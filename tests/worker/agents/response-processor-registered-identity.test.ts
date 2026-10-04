@@ -9,31 +9,37 @@ import type { SSEEventPayload } from '../../../src/services/worker/agents/types.
 
 describe('response metadata uses the registered memory identity', () => {
   it('links tool receipts and broadcasts the same memory session as the stored row', async () => {
-    const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
-      ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
-    }));
-    const mode = ModeManager.getInstance() as unknown as { activeMode: unknown; activeModeId: unknown; loadMode(id: string): unknown };
-    const priorMode = mode.activeMode;
-    const priorModeId = mode.activeModeId;
-    mode.loadMode('code');
-    const store = new SessionStore(':memory:');
-    const dbManager = {
-      getSessionById: (id: number) => store.getSessionById(id),
-      getSessionStore: () => store, getChromaSync: () => null, getCloudSync: () => null,
-    } as unknown as DatabaseManager;
-    const manager = new SessionManager(dbManager);
-    const sid = store.createSDKSession('registered-content', 'registered-project', 'Capture a second turn');
-    store.ensureMemorySessionIdRegistered(sid, 'first-memory');
-    const session = manager.initializeSession(sid, undefined, 2);
-    // Claude starts a fresh SDK process per turn; the database retains the first identity.
-    session.memorySessionId = 'second-sdk-memory';
-    expect(store.ensureMemorySessionIdRegistered(sid, session.memorySessionId)).toBe('first-memory');
-    const receiptId = store.upsertToolUse({ toolUseId: 'second-tool', contentSessionId: session.contentSessionId,
-      sessionDbId: sid, project: session.project, toolName: 'Read', toolInput: '{}', toolResponse: 'Read file' });
-    manager.queueObservation(sid, { tool_name: 'Read', tool_input: { file_path: 'src/example.ts' }, tool_response: 'Read file', toolUseId: 'second-tool' });
-    const messages = manager.getMessageIterator(sid);
-    const events: SSEEventPayload[] = [];
+    const cleanup: Array<() => void> = [];
     try {
+      const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+        ...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
+      }));
+      cleanup.push(() => settings.mockRestore());
+      const mode = ModeManager.getInstance() as unknown as { activeMode: unknown; activeModeId: unknown; loadMode(id: string): unknown };
+      const priorMode = mode.activeMode;
+      const priorModeId = mode.activeModeId;
+      cleanup.push(() => { mode.activeMode = priorMode; mode.activeModeId = priorModeId; });
+      mode.loadMode('code');
+      const store = new SessionStore(':memory:');
+      cleanup.push(() => store.close());
+      const dbManager = {
+        getSessionById: (id: number) => store.getSessionById(id),
+        getSessionStore: () => store, getChromaSync: () => null, getCloudSync: () => null,
+      } as unknown as DatabaseManager;
+      const manager = new SessionManager(dbManager);
+      const sid = store.createSDKSession('registered-content', 'registered-project', 'Capture a second turn');
+      store.ensureMemorySessionIdRegistered(sid, 'first-memory');
+      const session = manager.initializeSession(sid, undefined, 2);
+      cleanup.push(() => { session.abortController.abort(); manager.removeSessionImmediate(sid); });
+      // Claude starts a fresh SDK process per turn; the database retains the first identity.
+      session.memorySessionId = 'second-sdk-memory';
+      expect(store.ensureMemorySessionIdRegistered(sid, session.memorySessionId)).toBe('first-memory');
+      const receiptId = store.upsertToolUse({ toolUseId: 'second-tool', contentSessionId: session.contentSessionId,
+        sessionDbId: sid, project: session.project, toolName: 'Read', toolInput: '{}', toolResponse: 'Read file' });
+      manager.queueObservation(sid, { tool_name: 'Read', tool_input: { file_path: 'src/example.ts' }, tool_response: 'Read file', toolUseId: 'second-tool' });
+      const messages = manager.getMessageIterator(sid);
+      cleanup.push(() => { void messages.return(undefined); });
+      const events: SSEEventPayload[] = [];
       await messages.next();
       const result = await processAgentResponse('<observation><type>discovery</type><title>Read example</title></observation>',
         session, dbManager, manager, { sseBroadcaster: { broadcast: event => events.push(event) } }, 10, null, 'SDK');
@@ -47,13 +53,7 @@ describe('response metadata uses the registered memory identity', () => {
       expect(session.memorySessionId).toBe('second-sdk-memory');
       expect(manager.getTotalQueueDepth()).toBe(0);
     } finally {
-      session.abortController.abort();
-      await messages.return(undefined);
-      manager.removeSessionImmediate(sid);
-      store.close();
-      mode.activeMode = priorMode;
-      mode.activeModeId = priorModeId;
-      settings.mockRestore();
+      for (const release of cleanup.reverse()) release();
     }
   });
 });
