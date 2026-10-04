@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, unwatchFile, watchFile } from 'fs';
 import path from 'path';
 import { Database } from 'bun:sqlite';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { DB_PATH, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
@@ -75,7 +76,7 @@ function splitCsv(value: string | undefined): string[] {
 
 function readJson(file: string, fallback: unknown): unknown {
   try {
-    return JSON.parse(readFileSync(file, 'utf8'));
+    return readJsonFileWithBom(file);
   } catch {
     return fallback;
   }

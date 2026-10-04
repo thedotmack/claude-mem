@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
-import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 
 export interface TranscriptWatchState {
   offsets: Record<string, number>;
@@ -35,8 +35,7 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
     if (!existsSync(statePath)) {
       return { offsets: {} };
     }
-    const raw = readFileSync(statePath, 'utf-8');
-    const parsed = JSON.parse(raw) as TranscriptWatchState;
+    const parsed = readJsonFileWithBom<TranscriptWatchState>(statePath);
     if (!parsed.offsets) return { offsets: {} };
     return parsed;
   } catch (error) {

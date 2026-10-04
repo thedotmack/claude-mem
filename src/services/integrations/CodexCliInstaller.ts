@@ -15,6 +15,7 @@ import {
 } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { paths } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, type SpawnSyncInvocation } from '../../shared/spawn.js';
 
@@ -459,8 +460,8 @@ function disableCodexTranscriptAgentsContext(): boolean {
   }
 }
 
-function stripLegacyTranscriptWatchContexts(): void {
-  const parsed = JSON.parse(readFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, 'utf-8')) as unknown;
+export function stripLegacyTranscriptWatchContexts(configPath = CODEX_TRANSCRIPT_WATCH_CONFIG_PATH): void {
+  const parsed = readJsonFileWithBom<unknown>(configPath);
   if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return;
 
   let changed = false;
@@ -472,8 +473,8 @@ function stripLegacyTranscriptWatchContexts(): void {
   }
 
   if (changed) {
-    writeFileSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, `${JSON.stringify(parsed, null, 2)}\n`);
-    console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}`);
+    writeFileSync(configPath, `${JSON.stringify(parsed, null, 2)}\n`);
+    console.log(`  Disabled legacy Codex transcript AGENTS.md context in ${configPath}`);
   }
 }
 
